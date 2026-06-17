@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+.firebase/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Firebase emulator data
+.cache/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test coverage
+coverage/
