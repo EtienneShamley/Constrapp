@@ -1,0 +1,5 @@
+const aud = new Intl.NumberFormat('en-AU', { style: 'currency', currency: 'AUD', maximumFractionDigits: 0 })
+const pct = new Intl.NumberFormat('en-AU', { style: 'percent', maximumFractionDigits: 1 })
+
+export const currency = (n) => aud.format(n)
+export const percent  = (n) => pct.format(n / 100)
