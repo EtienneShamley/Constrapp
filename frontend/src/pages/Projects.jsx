@@ -6,45 +6,77 @@ import ProgBar from '../components/ProgBar'
 import { currency } from '../lib/formatters'
 
 const projects = [
-  { name: 'Harbour Edge Apartments',    status: 'active',    progress: 74, budget: 3_200_000, manager: 'J. Brennan',  location: 'Sydney NSW' },
-  { name: 'Westfield Fitout — Level 3', status: 'active',    progress: 42, budget: 890_000,   manager: 'S. Nguyen',   location: 'Parramatta NSW' },
-  { name: 'North Shore Townhouses',     status: 'pending',   progress: 8,  budget: 1_450_000,  manager: 'E. Shamley',  location: 'Chatswood NSW' },
-  { name: 'CBD Office Refurb',          status: 'active',    progress: 91, budget: 560_000,    manager: 'R. Patel',    location: 'Melbourne VIC' },
-  { name: 'Bondi Retail Strip',         status: 'completed', progress: 100, budget: 720_000,   manager: 'J. Brennan',  location: 'Bondi NSW' },
+  { name: 'Lakeside Apartments',      status: 'In Progress', budget: 3_903_006, start: '01/09/2023', location: 'Brisbane QLD',   pct: 67 },
+  { name: 'Westfield Office Tower',   status: 'Backlogged',  budget: 9_700_000, start: '01/09/2023', location: 'Sydney NSW',     pct: 27 },
+  { name: 'Greenview Retail Complex', status: 'In Progress', budget: 1_056_000, start: '01/03/2023', location: 'Melbourne VIC',  pct: 78 },
+  { name: 'Sunset Villas',            status: 'In Progress', budget: 1_050_000, start: '01/07/2023', location: 'Gold Coast QLD', pct: 28 },
+  { name: 'North Shore Residential',  status: 'In Progress', budget: 4_200_000, start: '15/06/2023', location: 'Sydney NSW',     pct: 57 },
 ]
 
-const statusVariant = { active: 'active', pending: 'pending', completed: 'completed' }
+const dotColors = {
+  'In Progress': '#00C9A7',
+  'Backlogged':  '#F59E0B',
+  'Planning':    '#3B82F6',
+  'Completed':   '#00C9A7',
+}
 
 export default function Projects() {
   return (
-    <div>
-      <PageHeader title="Projects" sub="All projects across your portfolio">
-        <Btn variant="ghost" disabled className="opacity-40 cursor-not-allowed">+ New Project — Coming Soon</Btn>
+    <div className="max-w-[1280px]">
+      <PageHeader title="Projects" sub={`${projects.length} projects · Apex Builders`}>
+        <Btn>+ Add New Project</Btn>
       </PageHeader>
 
-      <div className="grid gap-4">
-        {projects.map((p) => (
-          <Card key={p.name} className="hover:bg-brand-card transition-colors cursor-pointer">
-            <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-sm font-semibold text-brand-text">{p.name}</span>
-                  <Badge label={p.status} variant={statusVariant[p.status]} />
-                </div>
-                <p className="text-xs text-brand-muted">{p.location} · PM: {p.manager}</p>
-                <div className="mt-2">
-                  <ProgBar value={p.progress} />
-                  <p className="text-xs text-brand-muted mt-1">{p.progress}% complete</p>
-                </div>
-              </div>
-              <div className="text-right shrink-0">
-                <p className="text-sm font-semibold text-brand-text">{currency(p.budget)}</p>
-                <p className="text-xs text-brand-muted">budget</p>
-              </div>
-            </div>
-          </Card>
-        ))}
-      </div>
+      <Card padding={false}>
+        <table className="w-full border-collapse">
+          <thead>
+            <tr className="bg-brand-card border-b border-brand-border">
+              {['', 'Project Name', 'Status', 'Budget', 'Start Date', 'Progress', 'Actions'].map(h => (
+                <th
+                  key={h}
+                  className="text-left px-3.5 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px]"
+                >
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {projects.map(p => (
+              <tr key={p.name} className="border-b border-brand-border hover:bg-brand-card transition-colors">
+                <td className="py-3 pl-4 pr-1.5">
+                  <div
+                    className="w-2 h-2 rounded-full"
+                    style={{ background: dotColors[p.status] ?? '#546E84' }}
+                  />
+                </td>
+                <td className="px-3.5 py-3">
+                  <p className="text-[13px] font-semibold text-brand-text m-0 leading-tight">{p.name}</p>
+                  <p className="text-[11px] text-brand-muted mt-0.5 m-0 leading-tight">📍 {p.location}</p>
+                </td>
+                <td className="px-3.5 py-3">
+                  <Badge label={p.status} sm />
+                </td>
+                <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">
+                  {currency(p.budget)}
+                </td>
+                <td className="px-3.5 py-3 text-[12px] text-brand-muted">{p.start}</td>
+                <td className="px-3.5 py-3 min-w-[110px]">
+                  <div className="flex items-center gap-1.5">
+                    <div className="flex-1">
+                      <ProgBar value={p.pct} />
+                    </div>
+                    <span className="text-[10px] text-brand-muted w-7 text-right">{p.pct}%</span>
+                  </div>
+                </td>
+                <td className="px-3.5 py-3">
+                  <Btn variant="ghost" sm>View ▾</Btn>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
     </div>
   )
 }

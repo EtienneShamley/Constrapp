@@ -2,18 +2,20 @@
 @import "tailwindcss";
 
 @theme {
-  --color-brand-bg:      #0B1629;
-  --color-brand-sidebar: #0D1B2A;
-  --color-brand-surface: #112336;
-  --color-brand-card:    #162C42;
-  --color-brand-border:  #1E3248;
-  --color-brand-accent:  #00C9A7;
-  --color-brand-amber:   #F59E0B;
-  --color-brand-red:     #EF4444;
-  --color-brand-blue:    #3B82F6;
-  --color-brand-purple:  #8B5CF6;
-  --color-brand-text:    #E8F0F7;
-  --color-brand-muted:   #546E84;
+  --color-brand-bg:        #0B1629;
+  --color-brand-sidebar:   #0D1B2A;
+  --color-brand-surface:   #112336;
+  --color-brand-card:      #162C42;
+  --color-brand-card-hov:  #1A3350;
+  --color-brand-border:    #1E3248;
+  --color-brand-accent:    #00C9A7;
+  --color-brand-amber:     #F59E0B;
+  --color-brand-red:       #EF4444;
+  --color-brand-blue:      #3B82F6;
+  --color-brand-purple:    #8B5CF6;
+  --color-brand-text:      #E8F0F7;
+  --color-brand-muted:     #546E84;
+  --color-brand-text-soft: #94A9BE;
 
   --font-sans: 'Sora', 'DM Sans', system-ui, sans-serif;
 }
@@ -31,4 +33,9 @@ body {
 #root {
   width: 100%;
   min-height: 100svh;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
 }
