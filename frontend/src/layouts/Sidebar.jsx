@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import { NAV } from '../lib/nav'
+import { useAuth, getInitials, getDisplayName } from '../hooks/useAuth'
 
 const Logo = () => (
   <svg width="32" height="32" viewBox="0 0 40 40" fill="none">
@@ -9,6 +10,10 @@ const Logo = () => (
 )
 
 export default function Sidebar({ open, onClose }) {
+  const { user } = useAuth()
+  const initials    = getInitials(user)
+  const displayName = getDisplayName(user)
+
   return (
     <>
       {/* Mobile overlay */}
@@ -87,10 +92,10 @@ export default function Sidebar({ open, onClose }) {
         <div className="px-3.5 py-3 border-t border-brand-border shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-full bg-brand-accent/10 border-2 border-brand-accent/40 flex items-center justify-center text-[11px] font-black text-brand-accent shrink-0">
-              ES
+              {initials}
             </div>
             <div className="min-w-0">
-              <p className="text-[11px] font-bold text-brand-text truncate leading-tight">Etienne S</p>
+              <p className="text-[11px] font-bold text-brand-text truncate leading-tight">{displayName}</p>
               <p className="text-[9px] text-brand-accent leading-tight mt-0.5">Company Admin</p>
             </div>
           </div>
