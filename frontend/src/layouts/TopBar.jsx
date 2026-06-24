@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { NAV } from '../lib/nav'
 import { useAuth, getInitials, getDisplayName } from '../hooks/useAuth'
+import { useProfile } from '../hooks/useProfile'
+import { useCompany } from '../hooks/useCompany'
 
 function resolveLabel(pathname) {
   const exact = NAV.find(n => pathname === n.to)
@@ -11,11 +13,16 @@ function resolveLabel(pathname) {
 }
 
 export default function TopBar({ onMenuClick }) {
-  const { pathname }       = useLocation()
-  const { user, signOut }  = useAuth()
-  const pageLabel          = resolveLabel(pathname)
-  const initials           = getInitials(user)
-  const displayName        = getDisplayName(user)
+  const { pathname }      = useLocation()
+  const { user, signOut } = useAuth()
+  const { profile }       = useProfile()
+  const { company }       = useCompany()
+  const pageLabel         = resolveLabel(pathname)
+
+  // Prefer Firestore profile name; fall back to Auth-derived value
+  const displayName = profile?.name || getDisplayName(user)
+  const initials    = profile?.avatarInitials || getInitials(user)
+  const companyName = company?.name ?? null
 
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef                 = useRef(null)
@@ -93,7 +100,9 @@ export default function TopBar({ onMenuClick }) {
             </div>
             <div className="hidden sm:block leading-tight text-left">
               <p className="text-[11px] font-bold text-brand-text m-0 leading-none truncate max-w-[80px]">{displayName}</p>
-              <p className="text-[9px] text-brand-muted m-0 mt-0.5 leading-none">Apex Builders</p>
+              {companyName && (
+                <p className="text-[9px] text-brand-muted m-0 mt-0.5 leading-none truncate max-w-[80px]">{companyName}</p>
+              )}
             </div>
             <span
               className="text-brand-muted text-[9px] ml-0.5 transition-transform duration-150 inline-block"
@@ -117,10 +126,12 @@ export default function TopBar({ onMenuClick }) {
                     <p className="text-[10px] text-brand-muted truncate leading-tight mt-0.5">{user?.email}</p>
                   </div>
                 </div>
-                <div className="mt-2.5 flex items-center gap-1.5 bg-brand-bg border border-brand-border rounded-md px-2 py-[5px]">
-                  <div className="w-1.5 h-1.5 rounded-full bg-brand-accent shrink-0" />
-                  <span className="text-[10px] text-brand-text font-medium truncate">Apex Builders</span>
-                </div>
+                {companyName && (
+                  <div className="mt-2.5 flex items-center gap-1.5 bg-brand-bg border border-brand-border rounded-md px-2 py-[5px]">
+                    <div className="w-1.5 h-1.5 rounded-full bg-brand-accent shrink-0" />
+                    <span className="text-[10px] text-brand-text font-medium truncate">{companyName}</span>
+                  </div>
+                )}
               </div>
 
               {/* Actions */}

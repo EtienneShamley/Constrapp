@@ -1,0 +1,28 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Each user may read and write their own profile document only
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // Users may read the company they belong to
+    // Write is blocked here — company creation is handled by admin tooling or Cloud Functions
+    match /companies/{companyId} {
+      allow read: if request.auth != null
+                  && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
+      allow write: if false;
+    }
+
+    // Projects are scoped under companies — enforce companyId ownership on reads
+    // Full CRUD rules will be added when the Projects module is built (Sprint 2)
+    match /companies/{companyId}/projects/{projectId} {
+      allow read: if request.auth != null
+                  && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
+      allow write: if false;
+    }
+  }
+}

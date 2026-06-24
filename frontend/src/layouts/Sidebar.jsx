@@ -1,6 +1,9 @@
 import { NavLink } from 'react-router-dom'
 import { NAV } from '../lib/nav'
 import { useAuth, getInitials, getDisplayName } from '../hooks/useAuth'
+import { useProfile } from '../hooks/useProfile'
+import { useCompany } from '../hooks/useCompany'
+import { formatRole } from '../lib/formatters'
 
 const Logo = () => (
   <svg width="32" height="32" viewBox="0 0 40 40" fill="none">
@@ -10,9 +13,15 @@ const Logo = () => (
 )
 
 export default function Sidebar({ open, onClose }) {
-  const { user } = useAuth()
-  const initials    = getInitials(user)
-  const displayName = getDisplayName(user)
+  const { user }    = useAuth()
+  const { profile } = useProfile()
+  const { company } = useCompany()
+
+  // Prefer Firestore profile name; fall back to Auth-derived value
+  const displayName = profile?.name || getDisplayName(user)
+  const initials    = profile?.avatarInitials || getInitials(user)
+  const roleLabel   = profile?.role ? formatRole(profile.role) : null
+  const companyName = company?.name ?? null
 
   return (
     <>
@@ -38,11 +47,13 @@ export default function Sidebar({ open, onClose }) {
           <span className="text-[17px] font-black text-brand-text tracking-tight">Constrapp</span>
         </div>
 
-        {/* Company switcher — static placeholder */}
+        {/* Company name */}
         <div className="px-3 py-2.5 border-b border-brand-border shrink-0">
           <div className="flex items-center gap-2 bg-brand-bg border border-brand-border rounded-lg px-2.5 py-[7px] cursor-default select-none">
             <div className="w-2 h-2 rounded-full bg-brand-accent shrink-0" />
-            <span className="text-brand-text text-[11px] font-semibold flex-1 truncate">Apex Builders</span>
+            <span className="text-brand-text text-[11px] font-semibold flex-1 truncate">
+              {companyName ?? '—'}
+            </span>
             <span className="text-brand-muted text-[9px]">▼</span>
           </div>
         </div>
@@ -96,7 +107,9 @@ export default function Sidebar({ open, onClose }) {
             </div>
             <div className="min-w-0">
               <p className="text-[11px] font-bold text-brand-text truncate leading-tight">{displayName}</p>
-              <p className="text-[9px] text-brand-accent leading-tight mt-0.5">Company Admin</p>
+              {roleLabel && (
+                <p className="text-[9px] text-brand-accent leading-tight mt-0.5">{roleLabel}</p>
+              )}
             </div>
           </div>
         </div>

@@ -7,6 +7,9 @@ import Stat from '../components/Stat'
 import Badge from '../components/Badge'
 import Btn from '../components/Btn'
 import { currency } from '../lib/formatters'
+import { useAuth, getDisplayName } from '../hooks/useAuth'
+import { useProfile } from '../hooks/useProfile'
+import { useCompany } from '../hooks/useCompany'
 
 const chartData = [
   { mo: 'Jan', budget: 280, actual: 210, forecast: 310 },
@@ -56,12 +59,19 @@ const ChartTooltip = ({ active, payload, label }) => {
 }
 
 export default function Dashboard() {
+  const { user }    = useAuth()
+  const { profile } = useProfile()
+  const { company } = useCompany()
+
+  const displayName = profile?.name || getDisplayName(user)
+  const companyName = company?.name ?? null
+
   return (
     <div className="max-w-[1280px]">
       {/* Welcome */}
       <div className="mb-[22px]">
-        <h2 className="text-[22px] font-black text-brand-text m-0">Welcome, Etienne S 👋</h2>
-        <p className="text-[13px] text-brand-muted mt-1 m-0">Apex Builders · {today}</p>
+        <h2 className="text-[22px] font-black text-brand-text m-0">Welcome, {displayName} 👋</h2>
+        <p className="text-[13px] text-brand-muted mt-1 m-0">{companyName ? `${companyName} · ` : ''}{today}</p>
       </div>
 
       {/* KPI row */}
