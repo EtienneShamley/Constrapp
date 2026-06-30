@@ -6,10 +6,11 @@ import Card from '../components/Card'
 import Stat from '../components/Stat'
 import Badge from '../components/Badge'
 import Btn from '../components/Btn'
-import { currency } from '../lib/formatters'
+import { currency, formatDate } from '../lib/formatters'
 import { useAuth, getDisplayName } from '../hooks/useAuth'
 import { useProfile } from '../hooks/useProfile'
 import { useCompany } from '../hooks/useCompany'
+import { useProjects } from '../hooks/useProjects'
 
 const chartData = [
   { mo: 'Jan', budget: 280, actual: 210, forecast: 310 },
@@ -26,19 +27,6 @@ const donutData = [
   { name: 'Pending',     value: 25, color: '#EF4444'  },
 ]
 
-const kpis = [
-  { label: 'Active Projects',    value: '4',   icon: '🏗', sub: '4 total'                          },
-  { label: 'Pending POs',        value: '5',   icon: '📋'                                          },
-  { label: 'Budget Utilization', value: '68%', icon: '💰', sub: '$2.46M of $3.6M'                  },
-  { label: 'Upcoming Tasks',     value: '29',  icon: '⚡', color: '#F59E0B', sub: 'across projects' },
-]
-
-const projects = [
-  { name: 'Lakeside Apartments',      status: 'In Progress', budget: 3_903_006, start: '01/09/2023', location: 'Brisbane QLD'   },
-  { name: 'Westfield Office Tower',   status: 'Backlogged',  budget: 9_700_000, start: '01/09/2023', location: 'Sydney NSW'     },
-  { name: 'Greenview Retail Complex', status: 'In Progress', budget: 1_056_000, start: '01/03/2023', location: 'Melbourne VIC'  },
-  { name: 'Sunset Villas',            status: 'In Progress', budget: 1_050_000, start: '01/07/2023', location: 'Gold Coast QLD' },
-]
 
 const today = new Date().toLocaleDateString('en-AU', {
   weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
@@ -59,12 +47,22 @@ const ChartTooltip = ({ active, payload, label }) => {
 }
 
 export default function Dashboard() {
-  const { user }    = useAuth()
-  const { profile } = useProfile()
-  const { company } = useCompany()
+  const { user }                     = useAuth()
+  const { profile }                  = useProfile()
+  const { company }                  = useCompany()
+  const { projects, projectsLoading } = useProjects()
 
-  const displayName = profile?.name || getDisplayName(user)
-  const companyName = company?.name ?? null
+  const displayName   = profile?.name || getDisplayName(user)
+  const companyName   = company?.name ?? null
+  const activeCount   = projects.filter(p => p.status === 'In Progress').length
+  const totalCount    = projects.length
+
+  const kpis = [
+    { label: 'Active Projects',    value: String(activeCount), icon: '🏗', sub: `${totalCount} total`      },
+    { label: 'Pending POs',        value: '5',                 icon: '📋'                                  },
+    { label: 'Budget Utilization', value: '68%',               icon: '💰', sub: '$2.46M of $3.6M'          },
+    { label: 'Upcoming Tasks',     value: '29',                icon: '⚡', color: '#F59E0B', sub: 'across projects' },
+  ]
 
   return (
     <div className="max-w-[1280px]">
@@ -150,45 +148,53 @@ export default function Dashboard() {
       <Card padding={false}>
         <div className="flex items-center justify-between px-5 py-4">
           <h3 className="text-[15px] font-bold text-brand-text m-0">Active Projects</h3>
-          <Btn sm>+ Add New Project</Btn>
+          <Btn sm href="/projects">View All ▾</Btn>
         </div>
-        <table className="w-full border-collapse">
-          <thead>
-            <tr className="border-b border-brand-border">
-              {['', 'Project Name', 'Status', 'Budget', 'Start Date', 'Actions'].map(h => (
-                <th
-                  key={h}
-                  className="text-left px-3 py-[7px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px]"
-                >
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {projects.map(p => (
-              <tr key={p.name} className="border-b border-brand-border hover:bg-brand-card transition-colors">
-                <td className="px-3 py-[11px] pl-5">
-                  <div className="w-7 h-7 rounded-md bg-brand-accent/10 flex items-center justify-center text-xs">🏗</div>
-                </td>
-                <td className="px-3 py-[11px] pl-1.5">
-                  <p className="text-[13px] font-semibold text-brand-text m-0 leading-tight">{p.name}</p>
-                  <p className="text-[11px] text-brand-muted mt-0.5 m-0 leading-tight">{p.location}</p>
-                </td>
-                <td className="px-3 py-[11px]">
-                  <Badge label={p.status} sm />
-                </td>
-                <td className="px-3 py-[11px] text-[13px] font-semibold text-brand-text-soft">
-                  {currency(p.budget)}
-                </td>
-                <td className="px-3 py-[11px] text-[12px] text-brand-muted">{p.start}</td>
-                <td className="px-3 py-[11px]">
-                  <Btn variant="ghost" sm>View ▾</Btn>
-                </td>
+        {projectsLoading ? (
+          <div className="px-5 py-8 text-center text-[13px] text-brand-muted">Loading projects…</div>
+        ) : projects.length === 0 ? (
+          <div className="px-5 py-8 text-center text-[13px] text-brand-muted">No projects yet. Head to Projects to create one.</div>
+        ) : (
+          <table className="w-full border-collapse">
+            <thead>
+              <tr className="border-b border-brand-border">
+                {['', 'Project Name', 'Status', 'Budget', 'Start Date', 'Actions'].map(h => (
+                  <th
+                    key={h}
+                    className="text-left px-3 py-[7px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px]"
+                  >
+                    {h}
+                  </th>
+                ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {projects.map(p => (
+                <tr key={p.id} className="border-b border-brand-border hover:bg-brand-card transition-colors">
+                  <td className="px-3 py-[11px] pl-5">
+                    <div className="w-7 h-7 rounded-md bg-brand-accent/10 flex items-center justify-center text-xs">🏗</div>
+                  </td>
+                  <td className="px-3 py-[11px] pl-1.5">
+                    <p className="text-[13px] font-semibold text-brand-text m-0 leading-tight">{p.name}</p>
+                    {p.location && (
+                      <p className="text-[11px] text-brand-muted mt-0.5 m-0 leading-tight">{p.location}</p>
+                    )}
+                  </td>
+                  <td className="px-3 py-[11px]">
+                    <Badge label={p.status} sm />
+                  </td>
+                  <td className="px-3 py-[11px] text-[13px] font-semibold text-brand-text-soft">
+                    {p.budget ? currency(p.budget) : '—'}
+                  </td>
+                  <td className="px-3 py-[11px] text-[12px] text-brand-muted">{formatDate(p.startDate)}</td>
+                  <td className="px-3 py-[11px]">
+                    <Btn variant="ghost" sm>View ▾</Btn>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </Card>
     </div>
   )

@@ -16,13 +16,17 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // Projects are scoped under companies — enforce companyId ownership on reads
-    // Full CRUD rules will be added when the Projects module is built (Sprint 2)
+    // Projects are scoped under companies.
+    // Reads: any authenticated user belonging to this company.
+    // Create/update: company_admin or project_manager role within the same company.
+    // Delete: blocked for Sprint 1.
     match /companies/{companyId}/projects/{projectId} {
       allow read: if request.auth != null
-                  && exists(/databases/$(database)/documents/users/$(request.auth.uid))
                   && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
-      allow write: if false;
+      allow create, update: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager'];
+      allow delete: if false;
     }
   }
 }

@@ -11,6 +11,7 @@ const styles = {
   'Backlogged':   'bg-brand-amber/15   text-brand-amber   border border-brand-amber/25',
   'Planning':     'bg-brand-blue/15    text-brand-blue    border border-brand-blue/25',
   'Completed':    'bg-brand-accent/15  text-brand-accent  border border-brand-accent/25',
+  'On Hold':      'bg-brand-amber/15   text-brand-amber   border border-brand-amber/25',
   'Complete':     'bg-brand-accent/15  text-brand-accent  border border-brand-accent/25',
   'Approved':     'bg-brand-accent/15  text-brand-accent  border border-brand-accent/25',
   'Pending':      'bg-brand-amber/15   text-brand-amber   border border-brand-amber/25',
