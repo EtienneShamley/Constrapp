@@ -2,6 +2,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
 } from 'recharts'
+import { useNavigate } from 'react-router-dom'
 import Card from '../components/Card'
 import Stat from '../components/Stat'
 import Badge from '../components/Badge'
@@ -47,6 +48,7 @@ const ChartTooltip = ({ active, payload, label }) => {
 }
 
 export default function Dashboard() {
+  const navigate                    = useNavigate()
   const { user }                     = useAuth()
   const { profile }                  = useProfile()
   const { company }                  = useCompany()
@@ -148,7 +150,7 @@ export default function Dashboard() {
       <Card padding={false}>
         <div className="flex items-center justify-between px-5 py-4">
           <h3 className="text-[15px] font-bold text-brand-text m-0">Active Projects</h3>
-          <Btn sm href="/projects">View All ▾</Btn>
+          <Btn sm onClick={() => navigate('/projects')}>View All ▾</Btn>
         </div>
         {projectsLoading ? (
           <div className="px-5 py-8 text-center text-[13px] text-brand-muted">Loading projects…</div>
@@ -188,7 +190,7 @@ export default function Dashboard() {
                   </td>
                   <td className="px-3 py-[11px] text-[12px] text-brand-muted">{formatDate(p.startDate)}</td>
                   <td className="px-3 py-[11px]">
-                    <Btn variant="ghost" sm>View ▾</Btn>
+                    <Btn variant="ghost" sm onClick={() => navigate(`/projects/${p.id}/overview`)}>View ▾</Btn>
                   </td>
                 </tr>
               ))}

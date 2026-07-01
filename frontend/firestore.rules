@@ -28,5 +28,29 @@ service cloud.firestore {
                   && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager'];
       allow delete: if false;
     }
+
+    // Company Cost Codes — company-wide taxonomy reused across every project's budget.
+    // Reads: any authenticated user belonging to this company.
+    // Create/update: company_admin, project_manager, or qs (owns budgets/forecasting per PRODUCT.md).
+    // Delete: blocked — use isActive: false instead.
+    match /companies/{companyId}/costCodes/{costCodeId} {
+      allow read: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
+      allow create, update: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      allow delete: if false;
+    }
+
+    // Budget Lines — project-scoped allocations against a company cost code.
+    // Same role set as Cost Codes; delete blocked for Sprint 2.
+    match /companies/{companyId}/projects/{projectId}/budgetLines/{lineId} {
+      allow read: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
+      allow create, update: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      allow delete: if false;
+    }
   }
 }

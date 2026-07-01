@@ -1,17 +1,8 @@
 export const NAV = [
   { to: '/',                label: 'Dashboard',        icon: '⊞', end: true   },
   { to: '/projects',        label: 'Projects',          icon: '🏗'             },
-  { to: '/boq',             label: 'BOQ & Tender',      icon: '📋'             },
-  { to: '/budgets',         label: 'Budgets',           icon: '💰'             },
-  { to: '/forecasting',     label: 'Forecasting',       icon: '📈'             },
   { to: '/contacts',        label: 'Contacts',          icon: '👤'             },
-  { to: '/drawings',        label: 'Drawings & Docs',   icon: '📐'             },
-  { to: '/purchase-orders', label: 'Purchase Orders',   icon: '🛒'             },
-  { to: '/qs-takeoff',      label: 'QS Takeoff',        icon: '📏'             },
   { to: '/subcontractors',  label: 'Subcontractors',    icon: '👷'             },
   { to: '/pulse',           label: 'Constrapp PULSE™',  icon: '💓', pulse: true  },
   { to: '/shield',          label: 'Constrapp SHIELD™', icon: '🛡', shield: true },
-  { to: '/timeline',        label: 'Timeline',          icon: '⏱'             },
-  { to: '/site-photos',     label: 'Photos',            icon: '📷'             },
-  { to: '/reports',         label: 'Reports',           icon: '📊'             },
 ]

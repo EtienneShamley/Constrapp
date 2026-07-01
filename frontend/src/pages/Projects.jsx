@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import Card from '../components/Card'
 import Btn from '../components/Btn'
@@ -151,6 +152,7 @@ function CreateModal({ onClose, onSave }) {
 }
 
 export default function Projects() {
+  const navigate                             = useNavigate()
   const { company }                          = useCompany()
   const { projects, projectsLoading, createProject } = useProjects()
   const [showModal, setShowModal]            = useState(false)
@@ -215,7 +217,7 @@ export default function Projects() {
                     </div>
                   </td>
                   <td className="px-3.5 py-3">
-                    <Btn variant="ghost" sm>View ▾</Btn>
+                    <Btn variant="ghost" sm onClick={() => navigate(`/projects/${p.id}`)}>View ▾</Btn>
                   </td>
                 </tr>
               ))}
