@@ -19,6 +19,7 @@ import Shield         from './pages/Shield'
 import ProjectOverview   from './pages/project/ProjectOverview'
 import ProjectBudget     from './pages/project/ProjectBudget'
 import ProjectCostCodes  from './pages/project/ProjectCostCodes'
+import ProjectPurchaseOrders from './pages/project/ProjectPurchaseOrders'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
 
 export default function App() {
@@ -56,14 +57,7 @@ export default function App() {
                       } />
                       <Route path="budget"      element={<ProjectBudget />} />
                       <Route path="cost-codes"  element={<ProjectCostCodes />} />
-                      <Route path="purchase-orders" element={
-                        <ProjectPlaceholder
-                          icon="🛒"
-                          title="Purchase Orders"
-                          description="Create, send, and track POs linked to this project's cost codes."
-                          badge="Coming Soon"
-                        />
-                      } />
+                      <Route path="purchase-orders" element={<ProjectPurchaseOrders />} />
                       <Route path="progress-claims" element={
                         <ProjectPlaceholder
                           icon="🧾"

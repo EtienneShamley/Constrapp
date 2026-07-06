@@ -52,5 +52,30 @@ service cloud.firestore {
                   && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
       allow delete: if false;
     }
+
+    // Purchase Orders — project-scoped supplier commitments against company cost codes.
+    // Reads: any authenticated user belonging to this company (subcontractors have PO read access).
+    // Create/update: company_admin, project_manager, or qs.
+    // Delete: blocked — cancellation is a status change; POs are audit records.
+    // TODO (approvals feature): enforce status-transition legality and
+    // immutability-after-sent here rather than only in the client hook.
+    match /companies/{companyId}/projects/{projectId}/purchaseOrders/{poId} {
+      allow read: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
+      allow create, update: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      allow delete: if false;
+    }
+
+    // Counters — sequential document numbering (e.g. purchase order numbers).
+    // Read/write restricted to the roles that create numbered documents;
+    // the create transaction must read and increment the counter.
+    match /companies/{companyId}/counters/{counterId} {
+      allow read, create, update: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      allow delete: if false;
+    }
   }
 }
