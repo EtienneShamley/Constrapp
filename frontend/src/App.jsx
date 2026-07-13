@@ -20,6 +20,7 @@ import ProjectOverview   from './pages/project/ProjectOverview'
 import ProjectBudget     from './pages/project/ProjectBudget'
 import ProjectCostCodes  from './pages/project/ProjectCostCodes'
 import ProjectPurchaseOrders from './pages/project/ProjectPurchaseOrders'
+import ProjectProgressClaims from './pages/project/ProjectProgressClaims'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
 
 export default function App() {
@@ -58,14 +59,7 @@ export default function App() {
                       <Route path="budget"      element={<ProjectBudget />} />
                       <Route path="cost-codes"  element={<ProjectCostCodes />} />
                       <Route path="purchase-orders" element={<ProjectPurchaseOrders />} />
-                      <Route path="progress-claims" element={
-                        <ProjectPlaceholder
-                          icon="🧾"
-                          title="Progress Claims"
-                          description="Track progress claims and payment certificates against the project budget."
-                          badge="Coming Soon"
-                        />
-                      } />
+                      <Route path="progress-claims" element={<ProjectProgressClaims />} />
                       <Route path="forecasting" element={
                         <ProjectPlaceholder
                           icon="📈"

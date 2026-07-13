@@ -68,6 +68,23 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Progress Claims — supplier claims assessed against a sent purchase order.
+    // Reads: any authenticated user belonging to this company (subcontractors
+    // read the claims raised on their work).
+    // Create/update: company_admin, project_manager, or qs (assesses/certifies claims).
+    // Delete: blocked — rejection/withdrawal is a status change; claims are audit records.
+    // TODO (approvals feature): enforce status-transition legality, immutability
+    // after submission, and creator ≠ approver segregation here rather than only
+    // in the client hook. Future: scope subcontractor reads to their own supplierId.
+    match /companies/{companyId}/projects/{projectId}/progressClaims/{claimId} {
+      allow read: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
+      allow create, update: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      allow delete: if false;
+    }
+
     // Counters — sequential document numbering (e.g. purchase order numbers).
     // Read/write restricted to the roles that create numbered documents;
     // the create transaction must read and increment the counter.

@@ -7,7 +7,9 @@ import { currency } from '../../lib/formatters'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
+import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { committedByCostCode } from '../../lib/purchaseOrders'
+import { approvedByCostCode, claimedPendingByCostCode } from '../../lib/progressClaims'
 
 const EMPTY_FORM = { costCodeId: '', budgeted: '', notes: '' }
 
@@ -112,6 +114,7 @@ export default function ProjectBudget() {
   const { budgetLines, budgetLinesLoading, createBudgetLine } = useBudgetLines(projectId)
   const { costCodes, costCodesLoading } = useCostCodes()
   const { purchaseOrders } = usePurchaseOrders(projectId)
+  const { progressClaims } = useProgressClaims(projectId)
   const [showModal, setShowModal] = useState(false)
 
   const noCostCodes = !costCodesLoading && costCodes.length === 0
@@ -119,6 +122,10 @@ export default function ProjectBudget() {
 
   // Committed is derived from POs at read time — never stored on budget lines.
   const committedMap = committedByCostCode(purchaseOrders)
+  // Actual is derived from approved progress claims; claimed is uncertified
+  // exposure (submitted/under review). Neither is stored on budget lines.
+  const actualMap  = approvedByCostCode(progressClaims)
+  const claimedMap = claimedPendingByCostCode(progressClaims)
 
   // POs can commit against cost codes that have no budget line yet — surface
   // those as warning rows rather than hiding the commitment.
@@ -132,10 +139,11 @@ export default function ProjectBudget() {
 
   const totals = budgetLines.reduce((acc, l) => ({
     budgeted:  acc.budgeted  + (l.budgeted  || 0),
-    actual:    acc.actual    + (l.actual    || 0),
     invoiced:  acc.invoiced  + (l.invoiced  || 0),
-  }), { budgeted: 0, actual: 0, invoiced: 0 })
+  }), { budgeted: 0, invoiced: 0 })
   totals.committed = Object.values(committedMap).reduce((sum, v) => sum + v, 0)
+  totals.actual    = Object.values(actualMap).reduce((sum, v) => sum + v, 0)
+  totals.claimed   = Object.values(claimedMap).reduce((sum, v) => sum + v, 0)
 
   const remaining     = totals.budgeted - totals.actual
   const usagePercent  = totals.budgeted > 0 ? Math.min(100, (totals.actual / totals.budgeted) * 100) : 0
@@ -143,7 +151,7 @@ export default function ProjectBudget() {
   return (
     <div>
       <Card className="mb-3.5">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5 mb-3">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3.5 mb-3">
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Budgeted</p>
             <p className="text-lg font-bold text-brand-text">{currency(totals.budgeted)}</p>
@@ -151,6 +159,10 @@ export default function ProjectBudget() {
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Committed</p>
             <p className="text-lg font-bold text-brand-text">{currency(totals.committed)}</p>
+          </div>
+          <div>
+            <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Claimed</p>
+            <p className="text-lg font-bold text-brand-text">{currency(totals.claimed)}</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Actual</p>
@@ -211,10 +223,10 @@ export default function ProjectBudget() {
                   <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">{line.costCodeName || '—'}</td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(line.budgeted || 0)}</td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(committedMap[line.costCodeId] || 0)}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(line.actual || 0)}</td>
+                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(actualMap[line.costCodeId] || 0)}</td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(line.invoiced || 0)}</td>
                   <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">
-                    {currency((line.budgeted || 0) - (line.actual || 0))}
+                    {currency((line.budgeted || 0) - (actualMap[line.costCodeId] || 0))}
                   </td>
                 </tr>
               ))}
@@ -226,7 +238,9 @@ export default function ProjectBudget() {
                   </td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-amber">{currency(row.committed)}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>
+                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">
+                    {actualMap[row.costCodeId] ? currency(actualMap[row.costCodeId]) : '—'}
+                  </td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>
                 </tr>
