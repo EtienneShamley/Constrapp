@@ -71,6 +71,35 @@ export function claimTotals(lineAmounts, retention = 0) {
 export const hasOpenClaim = (claims, poId) =>
   claims.some(c => c.poId === poId && CLAIM_OPEN_STATUSES.includes(c.status))
 
+// Certification bounds for one claim line: the approved amount must be a
+// number within [0, claimedThisPeriod]. Accepts raw input strings (empty
+// counts as 0). Returns null when valid, otherwise a message for display.
+export function approvedLineError(line, approvedAmount) {
+  const raw = approvedAmount === '' || approvedAmount == null ? 0 : Number(approvedAmount)
+  if (!Number.isFinite(raw)) return 'Certified amount must be a number'
+  const approved = roundMoney(raw)
+  if (approved < 0) return 'Certified amount cannot be negative'
+  if (approved > roundMoney(Number(line?.claimedThisPeriod) || 0)) {
+    return 'Certified amount cannot exceed the claimed amount'
+  }
+  return null
+}
+
+// Whole-assessment check shared by the Assess modal and the approve
+// transition — invalid amounts are rejected even when submitted
+// programmatically. Returns null when valid, otherwise the first error.
+export function validateApprovedAmounts(lineItems, approvedAmounts) {
+  const lines = lineItems ?? []
+  if (!Array.isArray(approvedAmounts) || approvedAmounts.length !== lines.length) {
+    return 'Approval requires a certified amount for every claim line'
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const err = approvedLineError(lines[i], approvedAmounts[i])
+    if (err) return `Line ${i + 1}: ${err}`
+  }
+  return null
+}
+
 // { poLineIndex: approved ex-GST to date } across earlier certified claims on
 // one PO — seeds previouslyApproved when the next claim is drafted. PO line
 // indexes are stable keys because lines freeze once a PO leaves draft.

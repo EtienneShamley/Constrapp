@@ -10,10 +10,11 @@ import { roundMoney } from '../../lib/purchaseOrders'
 import {
   CLAIM_STATUS, CLAIM_STATUS_LABELS, CLAIM_BADGE_VARIANTS,
   CLAIMABLE_PO_STATUSES, CLAIM_PENDING_STATUSES,
-  claimTotals, hasOpenClaim, previouslyApprovedByPoLine,
+  approvedLineError, claimTotals, hasOpenClaim, previouslyApprovedByPoLine,
 } from '../../lib/progressClaims'
 
-const inputCls = 'w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
+const inputCls    = 'w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
+const inputErrCls = 'w-full bg-brand-bg border border-brand-red rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-red focus:outline-none'
 const labelCls = 'block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1.5'
 const thCls    = 'text-left px-3.5 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px]'
 
@@ -205,7 +206,11 @@ function AssessProgressClaimModal({ claim, onClose, onTransition }) {
   }
   const totals = claimTotals(approvedAmounts, claim.retention)
 
+  const lineErrors = (claim.lineItems ?? []).map((li, idx) => approvedLineError(li, approvedAmounts[idx]))
+  const hasInvalid = lineErrors.some(Boolean)
+
   async function handle(nextStatus) {
+    if (nextStatus === CLAIM_STATUS.APPROVED && hasInvalid) return
     setSaving(true)
     setError(null)
     try {
@@ -242,16 +247,22 @@ function AssessProgressClaimModal({ claim, onClose, onTransition }) {
             <label className={labelCls}>Certified Amounts (ex-GST)</label>
             <div className="flex flex-col gap-2">
               {(claim.lineItems ?? []).map((li, idx) => (
-                <div key={idx} className="grid grid-cols-2 sm:grid-cols-[2fr_2fr_1fr_1fr] gap-2 items-center">
-                  <p className="m-0 text-[12px] text-brand-text truncate">{li.costCodeName || '—'}</p>
-                  <p className="m-0 text-[12px] text-brand-muted truncate">{li.description || '—'}</p>
-                  <p className="m-0 text-[12px] text-brand-muted whitespace-nowrap">claimed {currency(li.claimedThisPeriod || 0)}</p>
-                  <input
-                    type="number" min="0" step="any"
-                    className={inputCls}
-                    value={approvedAmounts[idx] ?? ''}
-                    onChange={setAmount(idx)}
-                  />
+                <div key={idx}>
+                  <div className="grid grid-cols-2 sm:grid-cols-[2fr_2fr_1fr_1fr] gap-2 items-center">
+                    <p className="m-0 text-[12px] text-brand-text truncate">{li.costCodeName || '—'}</p>
+                    <p className="m-0 text-[12px] text-brand-muted truncate">{li.description || '—'}</p>
+                    <p className="m-0 text-[12px] text-brand-muted whitespace-nowrap">claimed {currency(li.claimedThisPeriod || 0)}</p>
+                    <input
+                      type="number" min="0" step="any"
+                      className={lineErrors[idx] ? inputErrCls : inputCls}
+                      aria-invalid={!!lineErrors[idx]}
+                      value={approvedAmounts[idx] ?? ''}
+                      onChange={setAmount(idx)}
+                    />
+                  </div>
+                  {lineErrors[idx] && (
+                    <p className="m-0 mt-1 text-[11px] text-brand-red text-right">{lineErrors[idx]}</p>
+                  )}
                 </div>
               ))}
             </div>
@@ -279,7 +290,7 @@ function AssessProgressClaimModal({ claim, onClose, onTransition }) {
             >
               Reject
             </Btn>
-            <Btn sm type="button" disabled={saving} onClick={() => handle(CLAIM_STATUS.APPROVED)}>
+            <Btn sm type="button" disabled={saving || hasInvalid} onClick={() => handle(CLAIM_STATUS.APPROVED)}>
               {saving ? 'Saving…' : 'Approve'}
             </Btn>
           </div>

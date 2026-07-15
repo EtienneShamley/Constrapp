@@ -8,7 +8,7 @@ import { useAuth } from './useAuth'
 import { useCompany } from './useCompany'
 import {
   CLAIM_STATUS, CLAIMABLE_PO_STATUSES, canTransition, claimTotals,
-  formatClaimNumber, hasOpenClaim,
+  formatClaimNumber, hasOpenClaim, validateApprovedAmounts,
 } from '../lib/progressClaims'
 
 export function useProgressClaims(projectId) {
@@ -122,9 +122,8 @@ export function useProgressClaims(projectId) {
     const ref = doc(db, 'companies', companyId, 'projects', projectId, 'progressClaims', claim.id)
 
     if (nextStatus === CLAIM_STATUS.APPROVED) {
-      if (!Array.isArray(approvedAmounts) || approvedAmounts.length !== (claim.lineItems ?? []).length) {
-        throw new Error('Approval requires a certified amount for every claim line')
-      }
+      const validationError = validateApprovedAmounts(claim.lineItems, approvedAmounts)
+      if (validationError) throw new Error(validationError)
       const lineItems = claim.lineItems.map((li, idx) => ({
         ...li,
         approvedThisPeriod: Number(approvedAmounts[idx]) || 0,
