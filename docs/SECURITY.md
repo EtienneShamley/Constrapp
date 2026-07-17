@@ -1,0 +1,87 @@
+# Security
+
+What is actually enforced today, and what is deliberately deferred. The rules
+source of truth is `frontend/firestore.rules`, published **manually** via the
+Firebase console (see [DEPLOYMENT.md](DEPLOYMENT.md)).
+
+## Authentication & Membership — Implemented
+
+- Firebase Auth **email/password** sign-in only. The Create Account and Forgot
+  Password screens are stubs; users are provisioned manually (Auth user +
+  matching `users/{uid}` document).
+- Membership and role live on the **`users/{uid}` Firestore document**
+  (`companyId`, `role`). Security rules authorize every company-scoped request
+  by `get()`-ing that document and comparing its `companyId` to the path.
+- **Firebase Auth custom claims are NOT implemented.** No rule or UI guard reads
+  `request.auth.token.role`/`companyId`. Any doc that says otherwise is stale.
+- Users can read **and write** their own `users/{uid}` document. Since rules
+  trust that document's `role` and `companyId`, a user can currently edit their
+  own role/company — acceptable only while users are provisioned by hand
+  (see Deferred Controls).
+- Client route protection: `ProtectedRoute` redirects signed-out users to
+  `/login`; `AuthLayout` redirects signed-in users into the app. There is no
+  per-role UI gating yet.
+
+## Current Rules by Collection
+
+Shared pattern: *read* requires being an authenticated member of the company in
+the path; *write* additionally requires role ∈ {`company_admin`,
+`project_manager`, `qs`} (called "financial roles" below); *delete* is blocked
+everywhere.
+
+| Path | Read | Create/Update | Delete |
+|---|---|---|---|
+| `users/{uid}` | own doc only | own doc only | own doc (write includes delete) |
+| `companies/{companyId}` | company member | **blocked** (admin tooling only) | blocked |
+| `…/projects/{id}` | company member | `company_admin`, `project_manager` | blocked |
+| `…/costCodes/{id}` | company member | financial roles | blocked — deactivate via `isActive` |
+| `…/projects/{id}/budgetLines/{id}` | company member | financial roles | blocked |
+| `…/projects/{id}/purchaseOrders/{id}` | company member | financial roles | blocked — cancel via status |
+| `…/projects/{id}/progressClaims/{id}` | company member | financial roles | blocked — reject via status |
+| `…/counters/{id}` | financial roles | financial roles | blocked |
+
+Note the asymmetry: `qs` can write cost codes, budget lines, POs, and claims but
+**not** projects.
+
+## Documented Roles vs Enforced Roles
+
+[PRODUCT.md](../PRODUCT.md) documents six product roles. The rules enforce a much
+coarser model:
+
+| Product role | Actually enforced today |
+|---|---|
+| `super_admin` | **No special powers** — treated as an ordinary company member (cannot even write projects) |
+| `company_admin`, `project_manager` | Write access to everything writable |
+| `qs` | Same, except projects |
+| `subcontractor`, `client` | Read-only across the whole company — **not** scoped to their own projects/POs |
+
+The fine-grained per-module access matrix in PRODUCT.md is product intent, not
+implementation.
+
+## Deferred Controls
+
+These are known gaps, deliberately deferred (client-side checks exist in the
+hooks, but any authorized user could bypass them with direct Firestore calls):
+
+1. **Server-enforced lifecycle transitions** — rules don't validate status
+   changes; `canTransition` runs client-side only. A financial-role user could
+   set any status directly.
+2. **Post-submission immutability** — freezing PO lines after `sent` and claim
+   amounts after submission/approval is client-side only; rules allow full
+   document updates.
+3. **One-open-claim race protection** — the check reads the local snapshot;
+   two simultaneous creators can produce two open claims on one PO.
+4. **Creator vs approver segregation** — nothing prevents the claim creator
+   from approving their own claim.
+5. **Supplier-scoped subcontractor access** — subcontractors can read all
+   company POs/claims, not just those matching their `supplierId`.
+6. **Counter tamper protection** — any financial-role user can set
+   `counters/*.next` to an arbitrary value; rules don't require +1 increments.
+7. **Audit logging** — no audit trail beyond `createdBy`/`approvedBy` and
+   status timestamps; no record of who performed other transitions or edits.
+8. **Self-managed profile** — as above, users can write their own `role`/
+   `companyId`; needs locking down once invites/user management exist.
+
+The intended remediation is server-side enforcement (Cloud Functions and/or
+richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
+is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.

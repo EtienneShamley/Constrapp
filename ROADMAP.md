@@ -4,74 +4,89 @@
 
 - Web-first. Mobile-ready via responsive layout from day one.
 - PWA packaging and native mobile app after web MVP is validated.
-- Firebase backend (Auth, Firestore, Storage, Hosting) throughout.
+- Firebase backend throughout — currently client SDK only; Cloud Functions/Hosting when needed.
 - Each sprint ships working, demo-able software — no dead screens.
 
 ---
 
-## Sprint 1 — Foundation (Current)
+## Completed Foundations
 
-**Goal:** Working app skeleton with auth, data model, and project list.
+- [x] Vite + React + Tailwind v4 scaffolding, dark theme design tokens
+- [x] Responsive shell layout (sidebar drawer + topbar + content area)
+- [x] **Authentication** — email/password sign-in, protected routes (signup/reset screens are stubs; users provisioned manually)
+- [x] **Company/user foundation** — `users/{uid}` profile with `companyId` + `role`; company context throughout the app
+- [x] **Projects** — create, list, status badges, progress
+- [x] **Project Detail** — tabbed layout (`/projects/:projectId/*`) hosting all project modules
+- [x] **Cost Codes** — company-wide taxonomy (create, list)
+- [x] **Budget Lines** — per-project allocations with read-time Committed/Claimed/Actual rollups
+- [x] **Purchase Orders** — embedded line items, transactional numbering, forward-only lifecycle, committed-cost derivation
+- [x] **Progress Claims** — cumulative claiming, one open claim per PO, assessment with partial approval, retention + GST
 
-- [ ] Firebase project setup (Auth, Firestore, Storage, Hosting)
-- [ ] Vite + React + Tailwind scaffolding
-- [ ] Dark theme design tokens (from prototype colour palette)
-- [ ] Responsive shell layout (sidebar + topbar + content area)
-- [ ] Login page with email/password auth
-- [ ] Role-based route protection
-- [ ] Company structure in Firestore (multi-tenant)
-- [ ] User management (invite, assign role, assign company)
-- [ ] Projects list — create, view, status badges, progress
-- [ ] Dashboard shell — KPI stat cards (static/placeholder data)
-
-**Not in Sprint 1:** AI, billing, BOQ, drawing takeoff, subscriptions, Stripe, photos, native mobile.
+Firestore security rules for all of the above are written in `frontend/firestore.rules` and published manually.
 
 ---
 
-## Sprint 2 — Financial Core
+## Documentation Sprint — Current
 
-- Budgets module — cost codes with committed/actual/invoiced/remaining
-- Purchase Orders — create, send, link to cost code
-- Contacts — subcontractors, suppliers, consultants
-- Budget burn bar and variance indicators
-- Project detail view (budget summary, linked POs, cost code breakdown)
+Bring documentation in line with the implemented system:
+
+- Corrected root docs (AGENT, README, PRODUCT, ROADMAP) + new CLAUDE.md
+- New `docs/`: ARCHITECTURE, DATA_MODEL, FINANCIAL_WORKFLOWS, SECURITY, TESTING, DESIGN_SYSTEM, PROJECT_DECISIONS, DEPLOYMENT
 
 ---
 
-## Sprint 3 — Tender & Reporting
+## Known Gaps & Deferred Work
+
+**Placeholders (screens exist, no functionality):** Contacts, Subcontractors, PULSE™, SHIELD™, and the BOQ, Forecasting, Variations, Documents, Photos, Timeline, and Reports project tabs. Dashboard KPIs/charts are partly static. None of these are complete.
+
+**Deferred security hardening** (client-enforced today, server enforcement deferred — full list in [docs/SECURITY.md](docs/SECURITY.md)):
+
+- Server-enforced lifecycle transitions and post-submission immutability
+- One-open-claim race protection
+- Creator ≠ approver segregation
+- Supplier-scoped subcontractor access
+- Counter tamper protection
+- Audit logging
+
+**Other deferred foundations:** user management UI (invite, assign role/company), project edit/delete, self-serve signup and password reset, Firebase CLI config (`firebase.json`/`.firebaserc`), Hosting, CI.
+
+---
+
+## Next — Financial Core Completion
+
+- Contacts — subcontractors, suppliers, consultants (unlocks `supplierId` links on POs/claims)
+- Supplier invoices matched to approved claims → real Invoiced values; Committed matures to PO value − invoiced-to-date
+- Variations affecting budget and claims
+- Budget burn bar and variance indicators; project edit
+- User management (invite, assign role, assign company)
+
+## Then — Tender & Reporting
 
 - BOQ & Tender Tool — QS line items → overhead/margin → tender price → transfer to budget
 - Reports — PDF export (financial summary, project progress)
 - Subcontractors module — linked to contacts and cost codes
 
----
-
-## Sprint 4 — Site, Field & Forecasting
+## Then — Site, Field & Forecasting
 
 - Forecasting & Cashflow — area charts, profit breakdown per project
 - Drawings & Documents — upload, version control, revision warnings
 - Site Photos — upload, tag by project, gallery view
 - Timeline — Gantt-style schedule, delay flags
-- Basic markup tool on drawings (annotate, pin, circle)
+- Basic markup tool on drawings
 
----
-
-## Sprint 5 — Intelligence Layer
+## Then — Intelligence Layer (Sprint 5)
 
 - Constrapp PULSE™ — portfolio health scoring engine
 - Constrapp IQ™ — AI alerts for schedule, variations, accountability
 - Constrapp SHIELD™ — document hashing, audit trail, access anomaly detection
 
----
-
-## Sprint 6 — Growth
+## Then — Growth (Sprint 6)
 
 - Constrapp Quant™ — AI quantity takeoff from uploaded PDFs/drawings
 - Billing & subscriptions — Stripe integration, plan management in-app
+- Accounting integrations — Xero, MYOB, QuickBooks (via `externalRefs`)
 - Client portal — limited external access for project owners
 - PWA packaging and mobile-optimised layouts
-
----
 
 ## Future
 
