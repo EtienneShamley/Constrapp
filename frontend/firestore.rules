@@ -85,6 +85,21 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Contacts — company-wide directory of suppliers, subcontractors,
+    // consultants, and clients (third-party PII: names, phones, emails, ABNs,
+    // payment terms).
+    // Reads: restricted to internal financial roles — subcontractor and client
+    // users must NOT see the company's full contact directory.
+    // Create/update: same roles (QS quick-creates suppliers while raising POs).
+    // Delete: blocked — archive via isActive: false; contacts referenced by
+    // POs/claims are part of the financial audit story.
+    match /companies/{companyId}/contacts/{contactId} {
+      allow read, create, update: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      allow delete: if false;
+    }
+
     // Counters — sequential document numbering (e.g. purchase order numbers).
     // Read/write restricted to the roles that create numbered documents;
     // the create transaction must read and increment the counter.

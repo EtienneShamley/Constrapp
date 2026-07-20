@@ -34,6 +34,46 @@ project.
 - [ ] Create one (code + name required; category/unit optional) → appears in **every** project's Cost Codes tab and in PO/budget-line dropdowns.
 - [ ] New codes are created `isActive: true`; there is no delete action.
 
+## 3a. Contacts
+
+- [ ] `/contacts` lists contacts ordered by display name; empty state prompts creation.
+- [ ] Create an **organisation**: legal name required; trading name optional; display name in the list is trading name when set, else legal name.
+- [ ] Create an **individual**: first and last name both required; display name is "First Last".
+- [ ] At least one contact type must be ticked; multiple types show multiple badges.
+- [ ] ABN: an invalid 11-digit Australian ABN (e.g. `12 345 678 901`) shows a red inline error and blocks saving; a valid one (e.g. `51 824 753 556`) saves and displays formatted `XX XXX XXX XXX`.
+- [ ] With country ≠ Australia, ABN checksum is not enforced.
+- [ ] Duplicate warnings: entering an ABN, email, or name matching an existing contact shows an amber "possible duplicates" panel but still allows saving.
+- [ ] Contact people (organisations only): add/remove people; the primary radio sets exactly one primary; the primary person shows in the list; unnamed person rows are dropped on save.
+- [ ] Edit preserves all fields; contact kind (organisation/individual) is locked when editing.
+- [ ] Archive (with confirm) hides the contact from the default Active filter and from the PO supplier picker; Reactivate restores it. There is no delete action.
+- [ ] Search matches name, ABN, email, and people; type and active/archived filters combine with search.
+- [ ] Signed in as a `subcontractor` or `client` role user, `/contacts` shows no contact data (reads are blocked by rules).
+
+## 3b. Subcontractors View
+
+- [ ] `/subcontractors` lists only active contacts whose types include Subcontractor; records edited on `/contacts` update here live.
+- [ ] The Constrapp IQ™ "Coming Soon" card still renders below the list.
+- [ ] "Manage in Contacts" navigates to `/contacts`.
+
+## 3c. Contact Project Assignments
+
+- [ ] Contact create/edit forms show a **Projects** checkbox list of the company's projects; zero, one, or many can be ticked; with no projects yet an explanatory note shows instead.
+- [ ] Assigning projects and saving shows the project names in the contact list's **Projects** column; unassigned contacts show "—".
+- [ ] The **project filter** on `/contacts` narrows to contacts assigned to the chosen project; **Unassigned** shows only contacts with no assignments; both combine with search/type/status filters.
+- [ ] Unticking a project and saving removes the assignment; the contact's other fields are untouched.
+- [ ] Editing an **archived** contact: existing assignments stay ticked and can be unticked, but unassigned projects are disabled ("can't be assigned to new projects" note shows).
+- [ ] A contact created before this feature (no `projectAssignments`/`projectIds` fields) opens, edits, and saves normally, appearing as unassigned — no migration required.
+- [ ] Project assignment changes never modify any existing PO or progress claim (spot-check a PO raised for that contact before and after unassigning).
+
+## 3d. PO Supplier Picker Grouping
+
+- [ ] In a project with at least one assigned supplier/subcontractor contact, the new-PO supplier picker shows a **"This project"** group first and, when other eligible contacts exist, an **"Other company contacts"** group after it.
+- [ ] Contacts in **both** groups can be selected and the PO saves normally either way.
+- [ ] Selecting a contact from "Other company contacts" does **not** assign it to the project (check the contact on `/contacts` afterwards).
+- [ ] In a project with **no** assigned contacts, the picker shows a flat ungrouped list (no empty "This project" group).
+- [ ] Quick-create ("+ New") from a PO creates the contact, auto-selects it, **and** assigns it to the current project — it appears under "This project" on the next PO and carries the project on `/contacts`.
+- [ ] Archived contacts appear in neither group.
+
 ## 4. Budget Lines
 
 - [ ] With zero cost codes: Budget tab disables "Add Budget Line" and links to Cost Codes.
@@ -43,7 +83,10 @@ project.
 ## 5. Purchase Orders
 
 - [ ] With zero cost codes: PO tab disables creation and links to Cost Codes.
-- [ ] Create a draft PO: supplier required, every line needs a cost code; line total = qty × rate; footer shows Subtotal, GST 10%, Total.
+- [ ] Create a draft PO: supplier is picked from active supplier/subcontractor contacts (required); every line needs a cost code; line total = qty × rate; footer shows Subtotal, GST 10%, Total.
+- [ ] "+ New" beside the supplier picker quick-creates a minimal contact (name + type) and auto-selects it; the contact then appears on `/contacts`.
+- [ ] The created PO stores `supplierId` and shows the contact's display name; renaming the contact afterwards does **not** change the PO's supplier name.
+- [ ] POs created before the Contacts module (`supplierId: null`) still display their free-text supplier name.
 - [ ] PO number is sequential company-wide (`PO-0001`, `PO-0002`, …) even when two users create simultaneously.
 - [ ] Draft badge shown; draft can be **Sent** or **Cancelled** (with confirm dialog).
 - [ ] Sent PO: no edit path; can be **Closed** or **Cancelled**; Closed/Cancelled show no further actions.

@@ -10,6 +10,7 @@ Current, implemented schema. Financial semantics and formulas:
 users/{uid}
 companies/{companyId}
   costCodes/{costCodeId}
+  contacts/{contactId}
   counters/{counterId}                 (purchaseOrders, progressClaims)
   projects/{projectId}
     budgetLines/{lineId}
@@ -55,6 +56,59 @@ Company-wide taxonomy shared by every project (see
 Budget lines, PO lines, and claim lines all reference cost codes by
 `costCodeId` and denormalise a display string `costCodeName`
 (`"03-100 — Concrete Slab"`) at write time, so renames don't rewrite history.
+
+## companies/{companyId}/contacts/{contactId}
+
+Company-wide directory of the businesses and individuals the company deals
+with. One shared collection — a contact can hold several types at once (the
+same entity is often both supplier and subcontractor). The Subcontractors page
+is a filtered view of this collection. Reads are restricted to internal
+financial roles (third-party PII — see [SECURITY.md](SECURITY.md)).
+
+| Field | Type | Notes |
+|---|---|---|
+| `entityType` | string | `organisation` \| `individual` |
+| `contactTypes` | array | ≥ 1 of `supplier`, `subcontractor`, `consultant`, `client`, `other` |
+| `legalName` | string | Required for organisations |
+| `tradingName` | string | Optional (organisations) |
+| `firstName` / `lastName` | string | Required for individuals |
+| `displayName` | string | Denormalised: `tradingName \|\| legalName` (org) or `firstName lastName` (individual) — the string POs snapshot |
+| `nameLower` | string | `displayName` lower-cased — list ordering and search |
+| `abn` | string | Optional; digits only; checksum-validated (blocked if invalid) when `country` is `AU` |
+| `country` | string | Default `AU` |
+| `email`, `phone` | string | Organisation-level |
+| `address` | map | `{ street, suburb, state, postcode }` — all optional |
+| `trades` | array | Free-text trade/category tags, e.g. `['Concrete']` |
+| `paymentTerms` | map \| null | `{ days, basis: 'invoice' \| 'eom' }` — stored only; unused by calculations until invoices |
+| `gstStatus` | string | `unknown` (default) \| `registered` \| `not_registered` — **not** connected to PO/claim GST math |
+| `notes` | string | |
+| `people` | array | Embedded contact people (organisations only) — see below |
+| `primaryPersonId` | string \| null | Points at a `people[].id`; the only primary indicator |
+| `projectAssignments` | array | Embedded project assignments — see below. Missing on contacts created before this field existed ⇒ unassigned |
+| `projectIds` | array | **Derived** from `projectAssignments` (deduped `projectId`s) in the same write — membership filters and future `array-contains` queries; never edited directly |
+| `isActive` | boolean | Archive flag — archive/reactivate instead of delete (deletes blocked by rules) |
+| `externalRefs` | map | Empty today; reserved for accounting-system contact IDs (Xero/MYOB/QuickBooks) |
+| `createdAt` / `createdBy` | timestamp / uid | |
+| `updatedAt` / `updatedBy` | timestamp / uid | Contacts are editable, unlike frozen financial documents |
+
+Each embedded person: `{ id, name, jobTitle, email, phone, notes }` — `id` is a
+client-generated stable UUID. People are embedded (not a subcollection) for the
+same reasons as PO line items (ADR-6): few per organisation, always read and
+written with their parent, no independent query need yet.
+
+Each project assignment:
+`{ projectId, trade, projectRole, scope, status, notes }` — at most one per
+`projectId` (normalisation dedupes; first wins). Defaults on creation:
+`status: 'active'`, all other fields `''`; only membership (`projectId`) is
+editable in the UI today — the remaining fields are reserved for future
+project-specific detail and are preserved through every save. Assignments are
+**administrative**, not financial: they never alter POs or claims (which stay
+self-contained via their `supplierId`/`supplierName` snapshots), removing one
+touches nothing else, and no `projectName` snapshot is stored — names resolve
+live from the projects collection (projects can't be deleted; every contact
+reader can read projects). Contacts predating these fields are simply
+unassigned — **no migration or backfill**; they acquire the fields on their
+next save. Embedding (not a `contactAssignments` subcollection) follows ADR-16.
 
 ## companies/{companyId}/counters/{counterId}
 
@@ -112,8 +166,8 @@ Lifecycle and semantics: [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md).
 |---|---|---|
 | `poNumber` | string | `PO-0001` — from the company-wide counter |
 | `status` | string | `draft` \| `pending_approval` (reserved) \| `sent` \| `closed` \| `cancelled` |
-| `supplierName` | string | Free text today |
-| `supplierId` | string \| null | Always null until the Contacts module exists |
+| `supplierName` | string | Snapshot of the contact's `displayName` at write time — permanently denormalised; contact renames never rewrite issued documents. Free text on POs created before the Contacts module |
+| `supplierId` | string \| null | → company contact. Null on POs created before the Contacts module — such POs render from `supplierName` and are never backfilled; code must never assume `supplierId` resolves |
 | `description`, `notes` | string | |
 | `lineItems` | array | **Embedded**; frozen once the PO leaves draft |
 | `subtotal`, `gst`, `total` | number | Denormalised from lines; GST = 10% of subtotal |
@@ -164,6 +218,8 @@ Each claim line item:
 ## Relationships & Denormalisation Summary
 
 - Budget lines, PO lines, claim lines → cost codes via `costCodeId`; each carries a `costCodeName` snapshot.
-- Claims → POs via `poId`, with `poNumber`/`supplierName`/`supplierId`/`poLineTotal` snapshotted.
-- `supplierId` and `variationId` are forward-references to unbuilt modules (Contacts, Variations) — always null today.
-- Counters are company-wide: PO/claim numbers are unique per **company**, not per project.
+- Contacts → projects via `projectAssignments[].projectId` (with derived `projectIds`) — administrative preference only; no name snapshot, and financial documents never read it. The PO supplier picker groups project-assigned contacts first but any active supplier remains selectable.
+- POs → contacts via `supplierId`, with `supplierName` snapshotted at write time (same pattern as `costCodeName`). Null `supplierId` = pre-Contacts PO; render from the snapshot.
+- Claims → POs via `poId`, with `poNumber`/`supplierName`/`supplierId`/`poLineTotal` snapshotted. Claims inherit supplier identity from the PO — they never reference contacts directly.
+- `variationId` is a forward-reference to the unbuilt Variations module — always null today.
+- Counters are company-wide: PO/claim numbers are unique per **company**, not per project. Contacts carry no sequential number.

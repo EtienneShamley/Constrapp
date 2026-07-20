@@ -21,6 +21,8 @@
 - [x] **Budget Lines** — per-project allocations with read-time Committed/Claimed/Actual rollups
 - [x] **Purchase Orders** — embedded line items, transactional numbering, forward-only lifecycle, committed-cost derivation
 - [x] **Progress Claims** — cumulative claiming, one open claim per PO, assessment with partial approval, retention + GST
+- [x] **Contacts** — company-wide directory (suppliers, subcontractors, consultants, clients; organisations + individuals), ABN validation, embedded contact people, duplicate warnings, archive/reactivate; PO supplier picker with quick-create writes `supplierId` + `supplierName` snapshot; Subcontractors page is a filtered contacts view
+- [x] **Contact project assignments** — embedded `projectAssignments` (+ derived `projectIds`) on contacts; multi-project checkbox assignment on the contact form, project/unassigned filter, PO picker grouped "This project" / "Other company contacts", quick-create auto-assigns to the current project; no rules changes, no migration of existing contacts
 
 Firestore security rules for all of the above are written in `frontend/firestore.rules` and published manually.
 
@@ -37,7 +39,7 @@ Bring documentation in line with the implemented system:
 
 ## Known Gaps & Deferred Work
 
-**Placeholders (screens exist, no functionality):** Contacts, Subcontractors, PULSE™, SHIELD™, and the BOQ, Forecasting, Variations, Documents, Photos, Timeline, and Reports project tabs. Dashboard KPIs/charts are partly static. None of these are complete.
+**Placeholders (screens exist, no functionality):** PULSE™, SHIELD™, and the BOQ, Forecasting, Variations, Documents, Photos, Timeline, and Reports project tabs. Dashboard KPIs/charts are partly static. Subcontractors shows the live contacts directory but its IQ™ scoring is a placeholder. None of these are complete.
 
 **Deferred security hardening** (client-enforced today, server enforcement deferred — full list in [docs/SECURITY.md](docs/SECURITY.md)):
 
@@ -54,7 +56,7 @@ Bring documentation in line with the implemented system:
 
 ## Next — Financial Core Completion
 
-- Contacts — subcontractors, suppliers, consultants (unlocks `supplierId` links on POs/claims)
+- ~~Contacts~~ — done: company-wide directory; new POs link `supplierId` (pre-existing POs keep `supplierId: null` and are not backfilled)
 - Supplier invoices matched to approved claims → real Invoiced values; Committed matures to PO value − invoiced-to-date
 - Variations affecting budget and claims
 - Budget burn bar and variance indicators; project edit

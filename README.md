@@ -10,13 +10,14 @@ Web-first · React 19 + Vite + Tailwind CSS v4 · Firebase (client SDK)
 - Multi-tenant company/user foundation (`users/{uid}` → `companies/{companyId}`)
 - Projects: create and list, with a Project Detail area (Overview, Budget, Cost Codes, Purchase Orders, Progress Claims tabs live; other tabs are placeholders)
 - Company-wide Cost Codes
+- Company-wide Contacts: suppliers, subcontractors, consultants, and clients with ABN validation, contact people, duplicate warnings, and archive/reactivate (reads restricted to internal financial roles)
 - Budget Lines per project, with Committed / Claimed / Actual derived live from POs and claims
-- Purchase Orders: draft → sent → closed/cancelled lifecycle with transactional numbering
+- Purchase Orders: draft → sent → closed/cancelled lifecycle with transactional numbering; supplier picked from Contacts (older POs keep their free-text supplier)
 - Progress Claims: cumulative claiming against sent POs, assessment, and partial approval
 
-Dashboard KPIs and charts are partly placeholder data. Contacts, Subcontractors,
-PULSE™, and SHIELD™ are placeholder screens. See [PRODUCT.md](PRODUCT.md) for
-module-by-module status.
+Dashboard KPIs and charts are partly placeholder data. PULSE™ and SHIELD™ are
+placeholder screens; Subcontractors lists live contacts but its IQ™ scoring is
+a placeholder. See [PRODUCT.md](PRODUCT.md) for module-by-module status.
 
 ## Local Setup
 

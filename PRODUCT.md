@@ -35,15 +35,15 @@ Status legend: **Implemented** · **Partial** · **Placeholder** (screen exists,
 - **Projects** — *Implemented (foundation).* Create and list projects with status, budget, progress; Project Detail area with tabbed modules. No edit/delete yet.
 - **Budgets** — *Implemented (foundation).* Per-project budget lines against company-wide cost codes, tracking **Budgeted, Committed, Claimed, Actual, Invoiced, Remaining**. Committed/Claimed/Actual are derived live from POs and progress claims; Invoiced awaits the invoices module. Definitions: [docs/FINANCIAL_WORKFLOWS.md](docs/FINANCIAL_WORKFLOWS.md).
 - **Cost Codes** — *Implemented (foundation).* Company-wide taxonomy (code, name, category, unit) reused across all projects.
-- **Purchase Orders** — *Implemented (foundation).* Create draft POs with embedded line items against cost codes, transactional PO numbering, draft → sent → closed/cancelled lifecycle. Sending to suppliers by email/PDF is future.
+- **Purchase Orders** — *Implemented (foundation).* Create draft POs with embedded line items against cost codes, transactional PO numbering, draft → sent → closed/cancelled lifecycle. Suppliers are picked from company Contacts (with inline quick-create); sending to suppliers by email/PDF is future.
 - **Progress Claims** — *Implemented (foundation).* Cumulative supplier claims against sent POs: claimed-to-date entry per PO line, overclaim warnings, one open claim per PO, assessment with per-line certification, partial approval, retention and GST handling.
 - **BOQ & Tender Tool** — *Placeholder.* Build a Bill of Quantities, set margin/overheads, transfer to budget.
 - **Forecasting & Cashflow** — *Placeholder.* Income/expense curves, profit analysis per project.
 - **Variations** — *Placeholder.* Scope variations and their budget impact.
-- **Contacts** — *Placeholder.* Subcontractors, suppliers, consultants with ABN/trade/notes.
+- **Contacts** — *Implemented (foundation).* Company-wide directory of suppliers, subcontractors, consultants, and clients (organisations and individuals) with ABN validation, trades, payment terms, GST status, embedded contact people, duplicate warnings, and archive/reactivate. Contacts can be assigned to any number of projects (administrative tags — contacts always stay company-wide); the PO supplier picker lists the current project's contacts first, and quick-created suppliers are auto-assigned to that project. New Purchase Orders pick their supplier from Contacts (`supplierId` + `supplierName` snapshot). Directory reads are restricted to internal financial roles.
 - **Drawings & Documents** — *Placeholder.* Upload, version, and mark up drawings.
 - **Site Photos** — *Placeholder.* Tagged photo uploads per project.
-- **Subcontractors** — *Placeholder.* IQ™ accountability scoring, budget vs cost code breakdown.
+- **Subcontractors** — *Partial.* Live filtered view of Contacts (type = subcontractor). IQ™ accountability scoring and budget vs cost code breakdown remain future.
 - **Timeline** — *Placeholder.* Gantt-style schedule view with delay detection.
 - **Reports** — *Placeholder.* PDF/CSV exports for financial, progress, and cashflow.
 - **Invoices & Payments** — *Future.* Supplier invoices matched to approved claims; drives Invoiced and matures Committed. Accounting integrations (Xero, MYOB, QuickBooks) attach here via the `externalRefs` fields already stored on POs and claims.

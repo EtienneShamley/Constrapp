@@ -27,7 +27,8 @@ Firebase console (see [DEPLOYMENT.md](DEPLOYMENT.md)).
 Shared pattern: *read* requires being an authenticated member of the company in
 the path; *write* additionally requires role ∈ {`company_admin`,
 `project_manager`, `qs`} (called "financial roles" below); *delete* is blocked
-everywhere.
+everywhere. **Contacts and counters are exceptions: reads are also restricted
+to financial roles.**
 
 | Path | Read | Create/Update | Delete |
 |---|---|---|---|
@@ -35,10 +36,17 @@ everywhere.
 | `companies/{companyId}` | company member | **blocked** (admin tooling only) | blocked |
 | `…/projects/{id}` | company member | `company_admin`, `project_manager` | blocked |
 | `…/costCodes/{id}` | company member | financial roles | blocked — deactivate via `isActive` |
+| `…/contacts/{id}` | **financial roles only** | financial roles | blocked — archive via `isActive` |
 | `…/projects/{id}/budgetLines/{id}` | company member | financial roles | blocked |
 | `…/projects/{id}/purchaseOrders/{id}` | company member | financial roles | blocked — cancel via status |
 | `…/projects/{id}/progressClaims/{id}` | company member | financial roles | blocked — reject via status |
 | `…/counters/{id}` | financial roles | financial roles | blocked |
+
+Contacts reads are deliberately tighter than the shared pattern: the directory
+holds third-party PII (names, phones, emails, ABNs, payment terms), so
+`subcontractor` and `client` users must not read the company's full contact
+book. Financial documents still render supplier identity for those roles via
+the `supplierName` snapshot on POs/claims — no contact read required.
 
 Note the asymmetry: `qs` can write cost codes, budget lines, POs, and claims but
 **not** projects.
@@ -79,8 +87,25 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
    `counters/*.next` to an arbitrary value; rules don't require +1 increments.
 7. **Audit logging** — no audit trail beyond `createdBy`/`approvedBy` and
    status timestamps; no record of who performed other transitions or edits.
+   Contacts additionally carry `updatedAt`/`updatedBy`, but last-write only —
+   no field-level change history (contacts feed payment flows later, so this
+   joins the audit-logging remediation).
 8. **Self-managed profile** — as above, users can write their own `role`/
    `companyId`; needs locking down once invites/user management exist.
+9. **Contact uniqueness** — duplicate detection (ABN/email/name) is a
+   client-side warn-only check against the in-memory list; two simultaneous
+   creators can still produce duplicate contacts. Server-enforced uniqueness
+   would need an index collection or Cloud Functions.
+10. **Contact project-assignment guards** — the `projectAssignments` /
+    `projectIds` fields on contacts required **no rules changes** (they live on
+    documents already covered by the contacts block), but their invariants are
+    client-enforced only: rules don't verify that `projectIds` matches
+    `projectAssignments`, that `projectId`s reference real projects, that there
+    is at most one assignment per project, or that **archived contacts gain no
+    new assignments**. Same trust level as other client-written denormalised
+    fields (`displayName`, `nameLower`, `supplierName`). Assignments are
+    administrative and never alter financial documents, so the blast radius of
+    a tampered assignment is picker grouping and list filters, not money.
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this

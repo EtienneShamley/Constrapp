@@ -30,9 +30,10 @@ frontend/
     layouts/        AppShell (Sidebar + TopBar), AuthLayout, ProjectDetailLayout
     pages/          Top-level routes; pages/project/ holds Project Detail tabs
     hooks/          useAuth, useProfile, useCompany, useProjects, useProject,
-                    useCostCodes, useBudgetLines, usePurchaseOrders, useProgressClaims
+                    useCostCodes, useContacts, useBudgetLines, usePurchaseOrders,
+                    useProgressClaims
     lib/            firebase.js, formatters.js, nav.js, projectTabs.js,
-                    purchaseOrders.js, progressClaims.js (pure domain logic)
+                    purchaseOrders.js, progressClaims.js, contacts.js (pure domain logic)
 ```
 
 ## Design Tokens
@@ -68,6 +69,9 @@ Full detail, field lists, and relationships: [docs/DATA_MODEL.md](docs/DATA_MODE
 users/{uid}                                  name, email, role, companyId, avatarInitials
 companies/{companyId}                        name, …
 companies/{companyId}/costCodes/{id}         code, name, category, unit, isActive — company-wide taxonomy
+companies/{companyId}/contacts/{contactId}   entityType, contactTypes[], names, abn, gstStatus, people[],
+                                             projectAssignments[] + derived projectIds[], isActive —
+                                             company-wide directory; reads restricted to financial roles
 companies/{companyId}/counters/{counterId}   next — sequential numbering (purchaseOrders, progressClaims)
 companies/{companyId}/projects/{projectId}   name, status, budget, startDate, location, progress
   …/budgetLines/{lineId}                     costCodeId, costCodeName, budgeted, notes
@@ -83,6 +87,7 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
 - PO line items freeze once a PO leaves `draft`; claim amounts freeze once submitted; approved amounts are frozen forever
 - Lifecycles are forward-only; financial documents are never deleted — cancellation/rejection is a status change
 - One open Progress Claim per PO at a time; claims are cumulative (claimed-to-date per PO line)
+- POs snapshot `supplierName` from the chosen contact at write time (`supplierId` is the live link); contact edits or archiving never rewrite issued documents, and POs/claims with `supplierId: null` (pre-Contacts) render from the snapshot and are never backfilled
 - Exact definitions and formulas: [docs/FINANCIAL_WORKFLOWS.md](docs/FINANCIAL_WORKFLOWS.md); rationale: [docs/PROJECT_DECISIONS.md](docs/PROJECT_DECISIONS.md)
 
 ## Naming

@@ -39,12 +39,13 @@ frontend/                  The entire application (run all npm commands here)
     components/            Card, Btn, Badge, Stat, ProgBar, PageHeader, ProtectedRoute
     layouts/               AppShell, Sidebar, TopBar, AuthLayout, ProjectDetailLayout
     pages/                 Login, CreateAccount, ForgotPassword, Dashboard, Projects,
-                           Contacts, Subcontractors, Pulse, Shield
+                           Contacts (company directory), Subcontractors (filtered
+                           contacts view + IQ™ placeholder), Pulse, Shield
     pages/project/         ProjectOverview, ProjectBudget, ProjectCostCodes,
                            ProjectPurchaseOrders, ProjectProgressClaims, ProjectPlaceholder
     hooks/                 All Firestore access (see below)
     lib/                   firebase.js, formatters.js, nav.js, projectTabs.js,
-                           purchaseOrders.js, progressClaims.js
+                           purchaseOrders.js, progressClaims.js, contacts.js
 docs/                      This documentation + design-reference assets
                            (Constrapp_v5.jsx prototype, screenshots, Word doc — do not move)
 AGENT.md / CLAUDE.md / README.md / PRODUCT.md / ROADMAP.md   (canonical root docs)
@@ -66,7 +67,7 @@ AuthProvider          Firebase Auth user (onAuthStateChanged)
 ```
 
 Per-page hooks (not context providers): `useProject(projectId)` (lookup within
-ProjectsProvider), `useCostCodes()`, `useBudgetLines(projectId)`,
+ProjectsProvider), `useCostCodes()`, `useContacts()`, `useBudgetLines(projectId)`,
 `usePurchaseOrders(projectId)`, `useProgressClaims(projectId)`.
 
 ## Routing Structure
@@ -81,8 +82,8 @@ ProtectedRoute (redirects to /login when signed out)
    ├─ /projects/:projectId     ProjectDetailLayout (tab bar; index → overview)
    │    overview | budget | cost-codes | purchase-orders | progress-claims   (live)
    │    boq | forecasting | variations | documents | photos | timeline | reports  (ProjectPlaceholder)
-   ├─ /contacts                Placeholder
-   ├─ /subcontractors          Placeholder
+   ├─ /contacts                Company-wide contact directory
+   ├─ /subcontractors          Filtered contacts view (+ IQ™ placeholder card)
    ├─ /pulse                   Placeholder (PULSE™)
    ├─ /shield                  Placeholder (SHIELD™)
    └─ *                        → /projects
@@ -93,9 +94,9 @@ ProtectedRoute (redirects to /login when signed out)
 Everything except `users/` is scoped under `companies/{companyId}` for
 multi-tenancy. The signed-in user's profile (`users/{uid}`) carries `companyId`,
 which selects the company; projects nest under the company; budget lines,
-purchase orders, and progress claims nest under each project. Cost codes and
-counters are **company-wide** (shared across projects). Full field detail:
-[DATA_MODEL.md](DATA_MODEL.md).
+purchase orders, and progress claims nest under each project. Cost codes,
+contacts, and counters are **company-wide** (shared across projects). Full
+field detail: [DATA_MODEL.md](DATA_MODEL.md).
 
 ## Implemented vs Placeholder Modules
 
@@ -109,7 +110,9 @@ counters are **company-wide** (shared across projects). Full field detail:
 | Purchase Orders | Implemented |
 | Progress Claims | Implemented |
 | Dashboard | Partial — live project list; static KPI/chart data |
-| Contacts, Subcontractors, PULSE™, SHIELD™ | Placeholder screens |
+| Contacts | Implemented (foundation) — company-wide directory; supplier picker on POs |
+| Subcontractors | Partial — filtered contacts view; IQ™ scoring is a placeholder |
+| PULSE™, SHIELD™ | Placeholder screens |
 | BOQ, Forecasting, Variations, Documents, Photos, Timeline, Reports tabs | Placeholder (`ProjectPlaceholder`) |
 
 ## Hooks-Only Firestore Access

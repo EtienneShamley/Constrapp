@@ -6,22 +6,103 @@ import Badge from '../../components/Badge'
 import { currency } from '../../lib/formatters'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useCostCodes } from '../../hooks/useCostCodes'
+import { useContacts } from '../../hooks/useContacts'
 import {
   PO_STATUS, PO_STATUS_LABELS, PO_BADGE_VARIANTS,
   lineTotal, poTotals,
 } from '../../lib/purchaseOrders'
+import {
+  ENTITY_TYPE, CONTACT_TYPE, CONTACT_TYPE_LABELS, PO_SUPPLIER_TYPES,
+  duplicateWarnings, isAssignedToProject,
+} from '../../lib/contacts'
 
 const EMPTY_LINE = { costCodeId: '', description: '', qty: '', unit: '', unitPrice: '' }
-const EMPTY_FORM = { supplierName: '', description: '', notes: '' }
+const EMPTY_FORM = { supplierId: '', description: '', notes: '' }
 
 const inputCls  = 'w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
 const labelCls  = 'block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1.5'
 
-function CreatePurchaseOrderModal({ costCodes, onClose, onSave }) {
-  const [form, setForm]   = useState(EMPTY_FORM)
-  const [lines, setLines] = useState([{ ...EMPTY_LINE }])
+// Inline minimal contact creation so raising a PO is never blocked by
+// directory admin. Full details are added later on the Contacts page.
+// The new contact is auto-assigned to the current project.
+function QuickCreateSupplier({ contacts, projectId, onCreateContact, onCreated, onCancel }) {
+  const [name, setName]     = useState('')
+  const [types, setTypes]   = useState([CONTACT_TYPE.SUPPLIER])
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState(null)
+
+  const toggleType = (type) => () => setTypes(ts =>
+    ts.includes(type) ? ts.filter(t => t !== type) : [...ts, type]
+  )
+  const warnings = duplicateWarnings(contacts, { displayName: name })
+  const valid    = name.trim() && types.length > 0
+
+  async function handleCreate() {
+    if (!valid) return
+    setSaving(true)
+    setError(null)
+    try {
+      const id = await onCreateContact({
+        entityType:   ENTITY_TYPE.ORGANISATION,
+        contactTypes: types,
+        legalName:    name,
+        projectAssignments: [{ projectId }],
+      })
+      onCreated(id)
+    } catch (err) {
+      setError(err?.message || 'Failed to create contact. Check your connection and try again.')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="border border-brand-border rounded-lg px-3 py-2.5 flex flex-col gap-2">
+      <p className="m-0 text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px]">New supplier contact</p>
+      <input
+        className={inputCls}
+        placeholder="Company / legal name"
+        value={name}
+        onChange={e => setName(e.target.value)}
+        autoFocus
+      />
+      <div className="flex flex-wrap gap-x-3 gap-y-1.5">
+        {PO_SUPPLIER_TYPES.map(type => (
+          <label key={type} className="flex items-center gap-1.5 text-[13px] text-brand-text cursor-pointer min-h-[24px]">
+            <input type="checkbox" checked={types.includes(type)} onChange={toggleType(type)} className="accent-[#00C9A7]" />
+            {CONTACT_TYPE_LABELS[type]}
+          </label>
+        ))}
+      </div>
+      {warnings.map((w, i) => (
+        <p key={i} className="m-0 text-[11px] text-brand-amber">{w.message}</p>
+      ))}
+      {error && <p className="m-0 text-[12px] text-brand-red">{error}</p>}
+      <div className="flex gap-1.5">
+        <Btn sm type="button" disabled={saving || !valid} onClick={handleCreate}>
+          {saving ? 'Creating…' : 'Create & select'}
+        </Btn>
+        <Btn sm variant="ghost" type="button" onClick={onCancel} disabled={saving}>Cancel</Btn>
+      </div>
+    </div>
+  )
+}
+
+function CreatePurchaseOrderModal({ costCodes, contacts, projectId, onCreateContact, onClose, onSave }) {
+  const [form, setForm]   = useState(EMPTY_FORM)
+  const [lines, setLines] = useState([{ ...EMPTY_LINE }])
+  const [showQuickCreate, setShowQuickCreate] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError]   = useState(null)
+
+  // Active contacts that can be a PO supplier (supplier or subcontractor type).
+  const supplierContacts = contacts.filter(c =>
+    c.isActive !== false && (c.contactTypes ?? []).some(t => PO_SUPPLIER_TYPES.includes(t))
+  )
+  // Contacts assigned to this project are preferred but never exclusive; picking
+  // an unassigned contact must not silently assign it — the PO records the link.
+  const assignedSuppliers = supplierContacts.filter(c => isAssignedToProject(c, projectId))
+  const otherSuppliers    = supplierContacts.filter(c => !isAssignedToProject(c, projectId))
+  const selectedSupplier  = supplierContacts.find(c => c.id === form.supplierId) ?? null
 
   const set = (key) => (e) => setForm(f => ({ ...f, [key]: e.target.value }))
   const setLine = (idx, key) => (e) => {
@@ -48,13 +129,15 @@ function CreatePurchaseOrderModal({ costCodes, onClose, onSave }) {
 
   async function handleSubmit(e) {
     e.preventDefault()
-    if (!form.supplierName.trim() || !linesValid) return
+    if (!selectedSupplier || !linesValid) return
     setSaving(true)
     setError(null)
     try {
+      // supplierName is a permanent write-time snapshot of the contact's
+      // display name — contact renames never rewrite issued documents.
       await onSave({
-        supplierName: form.supplierName,
-        supplierId:   null,
+        supplierName: selectedSupplier.displayName,
+        supplierId:   selectedSupplier.id,
         description:  form.description,
         notes:        form.notes,
         lineItems:    builtLines,
@@ -87,14 +170,44 @@ function CreatePurchaseOrderModal({ costCodes, onClose, onSave }) {
               <label className={labelCls}>
                 Supplier <span className="text-brand-red">*</span>
               </label>
-              <input
-                className={inputCls}
-                placeholder="e.g. Boral Concrete"
-                value={form.supplierName}
-                onChange={set('supplierName')}
-                required
-                autoFocus
-              />
+              <div className="flex items-center gap-2">
+                <select
+                  className={inputCls}
+                  value={form.supplierId}
+                  onChange={set('supplierId')}
+                  required
+                  autoFocus
+                >
+                  <option value="" disabled>
+                    {supplierContacts.length === 0 ? 'No supplier contacts yet…' : 'Select a supplier…'}
+                  </option>
+                  {assignedSuppliers.length === 0 ? (
+                    supplierContacts.map(c => (
+                      <option key={c.id} value={c.id}>{c.displayName}</option>
+                    ))
+                  ) : (
+                    <>
+                      <optgroup label="This project">
+                        {assignedSuppliers.map(c => (
+                          <option key={c.id} value={c.id}>{c.displayName}</option>
+                        ))}
+                      </optgroup>
+                      {otherSuppliers.length > 0 && (
+                        <optgroup label="Other company contacts">
+                          {otherSuppliers.map(c => (
+                            <option key={c.id} value={c.id}>{c.displayName}</option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </>
+                  )}
+                </select>
+                {!showQuickCreate && (
+                  <Btn variant="ghost" type="button" sm className="whitespace-nowrap" onClick={() => setShowQuickCreate(true)}>
+                    + New
+                  </Btn>
+                )}
+              </div>
             </div>
             <div>
               <label className={labelCls}>Description</label>
@@ -106,6 +219,19 @@ function CreatePurchaseOrderModal({ costCodes, onClose, onSave }) {
               />
             </div>
           </div>
+
+          {showQuickCreate && (
+            <QuickCreateSupplier
+              contacts={contacts}
+              projectId={projectId}
+              onCreateContact={onCreateContact}
+              onCreated={(id) => {
+                setForm(f => ({ ...f, supplierId: id }))
+                setShowQuickCreate(false)
+              }}
+              onCancel={() => setShowQuickCreate(false)}
+            />
+          )}
 
           <div>
             <label className={labelCls}>
@@ -225,6 +351,7 @@ export default function ProjectPurchaseOrders() {
   const { projectId } = useOutletContext()
   const { purchaseOrders, purchaseOrdersLoading, createPurchaseOrder, transitionStatus } = usePurchaseOrders(projectId)
   const { costCodes, costCodesLoading } = useCostCodes()
+  const { contacts, createContact } = useContacts()
   const [showModal, setShowModal] = useState(false)
   const [actionError, setActionError] = useState(null)
 
@@ -315,6 +442,9 @@ export default function ProjectPurchaseOrders() {
       {showModal && (
         <CreatePurchaseOrderModal
           costCodes={costCodes}
+          contacts={contacts}
+          projectId={projectId}
+          onCreateContact={createContact}
           onClose={() => setShowModal(false)}
           onSave={createPurchaseOrder}
         />

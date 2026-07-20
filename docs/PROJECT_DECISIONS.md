@@ -139,3 +139,56 @@ product is unlaunched.
 **Consequences:** a malicious/buggy authorized client can corrupt financial
 state; hardening (Functions and/or richer rules) must land before external
 users — tracked in [ROADMAP.md](../ROADMAP.md).
+
+## ADR-15: Single Company-wide Contacts Collection
+
+Contacts live in one collection (`companies/{id}/contacts`) of entities —
+organisations or individuals — carrying a multi-valued `contactTypes` array
+(supplier, subcontractor, consultant, client, other). Contact people are
+embedded on organisation documents (stable generated `id`s, `primaryPersonId`
+pointer). The Subcontractors page is a filtered view, not a collection.
+POs store `supplierId` (live link) plus a permanent `supplierName` snapshot of
+the contact's display name at write time; claims inherit both from the PO.
+Historical documents are never backfilled — `supplierId: null` remains valid
+forever. Directory reads are restricted to internal financial roles
+(third-party PII). Archive via `isActive: false`; deletes blocked (ADR-12
+applies — contacts are referenced by financial audit records).
+**Why:** real construction entities hold several roles at once — separate
+collections would force duplicate records and ambiguous PO references;
+embedding people follows ADR-6 (few, always read with parent, no independent
+query); the snapshot pattern matches `costCodeName` so renames never rewrite
+history.
+**Consequences:** type-specific views filter client-side; people needing
+independent identity (portal logins) will require extraction to a
+subcollection later; duplicate detection is client-side warn-only (see
+SECURITY.md); GST status and payment terms are stored but not yet connected
+to any calculation.
+
+## ADR-16: Embedded Project Assignments on Contacts
+
+Contacts carry an embedded `projectAssignments` array
+(`{ projectId, trade, projectRole, scope, status, notes }`, one entry per
+project) plus a `projectIds` string array derived from it in the same write
+(the `displayName`/`nameLower` denormalisation idiom — single writer, no
+drift). A contact stays company-wide; assignment is an additive preference,
+never an ownership or visibility boundary. The PO supplier picker groups
+project-assigned contacts first but every active supplier remains selectable;
+quick-creating a supplier from a PO auto-assigns it to that project, while
+merely *selecting* an unassigned contact never mutates it. No `projectName`
+snapshot is stored — assignments are administrative, not frozen financial
+records, and names resolve live from the (undeletable) projects collection.
+**Why not a `contactAssignments` subcollection:** assignments are few, always
+read/written with their parent contact, and every consumer already filters the
+full in-memory directory (ADR-6/ADR-15 reasoning); a subcollection would force
+batched multi-document writes, extra listeners or collection-group indexes,
+and — decisively — new manually-published security rules to keep contact PII
+restricted to financial roles, whereas embedded fields are covered by the
+existing contacts rules with **zero rules changes**.
+**Consequences:** POs and claims are untouched — they stay self-contained via
+`supplierId`/`supplierName` snapshots, so assignments can be added or removed
+freely; pre-existing contacts lack the fields and are treated as unassigned
+(no migration/backfill); archived-contact assignment restrictions and
+`projectIds` consistency are client-enforced only (ADR-14 posture — see
+SECURITY.md); if per-project data later needs independent lifecycle (portal
+access, compliance documents), extraction to a subcollection is the recorded
+path, mirroring ADR-15's escape hatch for `people`.
