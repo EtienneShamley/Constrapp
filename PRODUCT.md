@@ -33,10 +33,11 @@ Status legend: **Implemented** · **Partial** · **Placeholder** (screen exists,
 
 - **Dashboard** — *Partial.* Live project list and company/user context; KPI cards and charts still show static placeholder numbers.
 - **Projects** — *Implemented (foundation).* Create and list projects with status, budget, progress; Project Detail area with tabbed modules. No edit/delete yet.
-- **Budgets** — *Implemented (foundation).* Per-project budget lines against company-wide cost codes, tracking **Budgeted, Committed, Claimed, Actual, Invoiced, Remaining**. Committed/Claimed/Actual are derived live from POs and progress claims; Invoiced awaits the invoices module. Definitions: [docs/FINANCIAL_WORKFLOWS.md](docs/FINANCIAL_WORKFLOWS.md).
+- **Budgets** — *Implemented (foundation).* Per-project budget lines against company-wide cost codes, tracking **Budgeted, Committed, Claimed, Actual, Invoiced, Remaining**. All six are derived live from POs, progress claims, and supplier invoices — none are stored on budget lines. Committed is *remaining open commitment* (PO value net of posted invoicing). Definitions: [docs/FINANCIAL_WORKFLOWS.md](docs/FINANCIAL_WORKFLOWS.md).
 - **Cost Codes** — *Implemented (foundation).* Company-wide taxonomy (code, name, category, unit) reused across all projects.
 - **Purchase Orders** — *Implemented (foundation).* Create draft POs with embedded line items against cost codes, transactional PO numbering, draft → sent → closed/cancelled lifecycle. Suppliers are picked from company Contacts (with inline quick-create); sending to suppliers by email/PDF is future.
 - **Progress Claims** — *Implemented (foundation).* Cumulative supplier claims against sent POs: claimed-to-date entry per PO line, overclaim warnings, one open claim per PO, assessment with per-line certification, partial approval, retention and GST handling.
+- **Supplier Invoices** — *Implemented (foundation).* Accounts-payable supplier bills (`SI-0001`), created either directly against a sent/closed PO (`direct_po`) or from one approved progress claim (`progress_claim`). Per-line ex-GST amounts with per-line tax codes (GST / GST-free / input-taxed), retention carried from the claim, `draft → approved → posted` lifecycle (posted is immutable). Posted/paid invoices drive **Invoiced**, mature **Committed** to remaining open commitment, and feed **Actual** (replacing their source claim without double-counting). Reads restricted to internal financial roles. Payments, Credit Notes, attachments, and accounting sync are reserved/future.
 - **BOQ & Tender Tool** — *Placeholder.* Build a Bill of Quantities, set margin/overheads, transfer to budget.
 - **Forecasting & Cashflow** — *Placeholder.* Income/expense curves, profit analysis per project.
 - **Variations** — *Placeholder.* Scope variations and their budget impact.
@@ -46,7 +47,8 @@ Status legend: **Implemented** · **Partial** · **Placeholder** (screen exists,
 - **Subcontractors** — *Partial.* Live filtered view of Contacts (type = subcontractor). IQ™ accountability scoring and budget vs cost code breakdown remain future.
 - **Timeline** — *Placeholder.* Gantt-style schedule view with delay detection.
 - **Reports** — *Placeholder.* PDF/CSV exports for financial, progress, and cashflow.
-- **Invoices & Payments** — *Future.* Supplier invoices matched to approved claims; drives Invoiced and matures Committed. Accounting integrations (Xero, MYOB, QuickBooks) attach here via the `externalRefs` fields already stored on POs and claims.
+- **Payments** — *Future.* Recording payments against posted supplier invoices (the reserved `paid` status / `paidAt`), plus retention release. Accounting integrations (Xero, MYOB, QuickBooks) attach via the `externalRefs` fields on POs, claims, and invoices.
+- **Credit Notes** — *Future.* Supplier credits/negative adjustments against posted invoices (reserved `docType: 'credit_note'` / `adjustsInvoiceId`), reducing Invoiced.
 
 ## Proprietary Features (Future Phases)
 

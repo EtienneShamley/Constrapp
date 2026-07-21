@@ -140,6 +140,52 @@ project.
 - [ ] Reject a submitted claim → Claimed falls; Actual unchanged.
 - [ ] Closing a PO keeps its value in Committed.
 
+## 13a. Supplier Invoices — Direct PO
+
+- [ ] Invoices tab sits after Progress Claims. With no sent/closed PO, creation is disabled and links to Purchase Orders.
+- [ ] New Supplier Invoice → **Direct against PO**: only sent/closed POs are selectable; lines seed from the PO lines with fixed cost codes; enter an amount per line (zero allowed on unused lines).
+- [ ] Supplier and PO snapshot show above the lines; supplier invoice number and invoice date are required.
+- [ ] Per-line tax code (GST / GST-free / input-taxed) is selectable; the footer shows ex-GST subtotal, GST, and payable total; a GST-free line contributes no GST.
+- [ ] Due date auto-fills from the supplier contact's payment terms when set, and stays editable; editing it stops further auto-fill.
+- [ ] `SI-0001`, `SI-0002`… numbering is sequential company-wide even across two simultaneous creators.
+- [ ] Entering an amount that pushes invoiced-to-date above a PO line (or the PO total) shows an amber ⚠ but still allows creation.
+- [ ] Re-using the same supplier invoice number for the same supplier shows an amber duplicate warning but does not block.
+
+## 13b. Supplier Invoices — From Approved Claim
+
+- [ ] **From approved claim**: only approved progress claims with no active (non-cancelled) invoice are selectable.
+- [ ] Lines seed from the claim's certified amounts and are **read-only** (cannot invoice more or less than the approved claim); retention is carried from the claim and read-only.
+- [ ] PO and claim references are populated from the claim snapshot; supplier is the claim's supplier snapshot.
+- [ ] Once an invoice exists for a claim, that claim disappears from the selector; cancelling the invoice makes it selectable again.
+- [ ] The invoice's **Net payable** equals the approved claim's total payable (inc. GST); the footer additionally shows the higher **Gross invoice total** and the **Retention withheld** (ex-GST + its GST). If the figures don't reconcile, creation is blocked with a clear red error.
+
+## 13c. Retention & GST Representation (reconciliation)
+
+The invoice footer/list distinguish the full taxable supply (**Gross**) from the
+amount due after retention (**Net payable**) — net payable is never labelled as
+the full tax-invoice value.
+
+- [ ] **Example A — claim with retention.** Certified subtotal 1,000 ex-GST,
+  retention 100 (all GST lines). Expect: Subtotal 1,000 · GST 100 · Gross 1,100 ·
+  Retention withheld 110 (ex-GST 100 + GST 10) · **Net payable 990**. The Net
+  payable (990) and its GST (90) match the approved claim's `approvedTotal` /
+  `approvedGst`.
+- [ ] **Example B — direct invoice, no retention.** Lines 1,000 ex-GST, retention
+  0. Expect: Subtotal 1,000 · GST 100 · Gross 1,100 · Retention — · **Net payable
+  1,100** (Gross = Net payable when retention is 0).
+- [ ] Budget **Invoiced/Actual** for both examples rise by the ex-GST line total
+  (1,000), unaffected by GST or retention.
+
+## 13d. Supplier Invoice Lifecycle & Budget Effects
+
+- [ ] Draft invoice can be **Approved** or **Cancelled**; an approved invoice can be **Posted** or **Cancelled**; a posted invoice shows **no further actions** (no cancel/unpost, no manual Paid).
+- [ ] Search matches internal number, supplier invoice number, supplier, and PO; status and supplier filters combine with search.
+- [ ] An invoice with a past due date (not paid/cancelled) shows an **Overdue** indicator in the Due column.
+- [ ] **Direct invoice, budget effect:** post a direct invoice against a budgeted cost code → Budget **Invoiced** rises by the ex-GST line total, **Committed** for that PO line drops by the same amount (remaining open commitment), **Actual** rises, **Remaining** falls. Nothing is written to the budget line document.
+- [ ] **Claim-sourced invoice, no double-count:** approve a progress claim (Actual reflects it) → create + **post** an invoice from it → Actual is unchanged in total (the posted invoice replaces the claim; the claim is not mutated and its status stays `approved`), and Invoiced now reflects the invoice.
+- [ ] Posting invoices beyond a PO's value drives that PO line's Committed to zero (never negative).
+- [ ] Signed in as a `subcontractor` or `client` role user, the Invoices tab shows no data (reads are blocked by rules).
+
 ## 14. Responsive Checks — 375px, 768px, 1280px
 
 - [ ] **375px:** sidebar hidden behind hamburger; drawer opens/closes (tap overlay); nav items ≥44px tall; project tab bar wraps; PO/claim tables scroll horizontally inside their card; modals fit with internal scrolling; all actions reachable by tap (no hover-only).

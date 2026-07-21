@@ -69,3 +69,25 @@ export function committedByCostCode(purchaseOrders) {
   }
   return map
 }
+
+// Matured Committed: the remaining *open* commitment once supplier invoices
+// exist. Per PO line, the open commitment is the line total minus what has been
+// invoiced (posted/paid) against that line, floored at zero, then grouped by
+// cost code. Committed therefore now means "ordered but not yet invoiced"; as
+// invoices post, value moves out of Committed and into Invoiced/Actual, so the
+// two are complementary rather than overlapping. `invoicedByPoLine` comes from
+// supplierInvoices.postedInvoicedByPoLine → { [poId]: { [poLineIndex]: amount } }.
+export function maturedCommittedByCostCode(purchaseOrders, invoicedByPoLine = {}) {
+  const map = {}
+  for (const po of purchaseOrders) {
+    if (!PO_COMMITTED_STATUSES.includes(po.status)) continue
+    const invForPo = invoicedByPoLine[po.id] ?? {}
+    ;(po.lineItems ?? []).forEach((li, idx) => {
+      if (!li.costCodeId) return
+      const remaining = Math.max(roundMoney((li.lineTotal || 0) - (invForPo[idx] || 0)), 0)
+      if (remaining <= 0) return
+      map[li.costCodeId] = roundMoney((map[li.costCodeId] || 0) + remaining)
+    })
+  }
+  return map
+}

@@ -31,9 +31,10 @@ frontend/
     pages/          Top-level routes; pages/project/ holds Project Detail tabs
     hooks/          useAuth, useProfile, useCompany, useProjects, useProject,
                     useCostCodes, useContacts, useBudgetLines, usePurchaseOrders,
-                    useProgressClaims
+                    useProgressClaims, useSupplierInvoices
     lib/            firebase.js, formatters.js, nav.js, projectTabs.js,
-                    purchaseOrders.js, progressClaims.js, contacts.js (pure domain logic)
+                    purchaseOrders.js, progressClaims.js, supplierInvoices.js,
+                    contacts.js (pure domain logic)
 ```
 
 ## Design Tokens
@@ -72,19 +73,23 @@ companies/{companyId}/costCodes/{id}         code, name, category, unit, isActiv
 companies/{companyId}/contacts/{contactId}   entityType, contactTypes[], names, abn, gstStatus, people[],
                                              projectAssignments[] + derived projectIds[], isActive —
                                              company-wide directory; reads restricted to financial roles
-companies/{companyId}/counters/{counterId}   next — sequential numbering (purchaseOrders, progressClaims)
+companies/{companyId}/counters/{counterId}   next — sequential numbering (purchaseOrders, progressClaims,
+                                             supplierInvoices)
 companies/{companyId}/projects/{projectId}   name, status, budget, startDate, location, progress
   …/budgetLines/{lineId}                     costCodeId, costCodeName, budgeted, notes
   …/purchaseOrders/{poId}                    poNumber, status, supplierName, lineItems[], subtotal, gst, total
   …/progressClaims/{claimId}                 claimNumber, status, poId, cumulative lineItems[], retention,
                                              claimed/approved subtotal-gst-total
+  …/supplierInvoices/{invoiceId}             invoiceNumber (SI-####), status, source, poId, progressClaimId,
+                                             ex-GST lineItems[] w/ per-line taxCode, retention, subtotal-gst-net-total —
+                                             accounts payable; reads restricted to financial roles
 ```
 
 ## Financial Invariants (mandatory)
 
-- **Purchase Orders and Progress Claims never write financial values onto Budget Lines.** Committed, Claimed, and Actual are derived at read time from PO and claim documents (`lib/purchaseOrders.js`, `lib/progressClaims.js`) — never stored back
-- Document numbers (`PO-0001`, `PC-0001`) come from company-wide counters incremented in the same transaction as the document write
-- PO line items freeze once a PO leaves `draft`; claim amounts freeze once submitted; approved amounts are frozen forever
+- **Purchase Orders, Progress Claims, and Supplier Invoices never write financial values onto Budget Lines.** Committed, Claimed, Actual, and Invoiced are derived at read time from PO, claim, and invoice documents (`lib/purchaseOrders.js`, `lib/progressClaims.js`, `lib/supplierInvoices.js`) — never stored back. Committed now means *remaining open commitment* (PO line − posted/paid invoiced-to-date); Actual counts a posted invoice instead of its source claim (read-time exclusion — the claim is never mutated)
+- Document numbers (`PO-0001`, `PC-0001`, `SI-0001`) come from company-wide counters incremented in the same transaction as the document write
+- PO line items freeze once a PO leaves `draft`; claim amounts freeze once submitted; approved amounts are frozen forever; supplier invoices freeze once `posted` (and posted invoices cannot be cancelled/unposted)
 - Lifecycles are forward-only; financial documents are never deleted — cancellation/rejection is a status change
 - One open Progress Claim per PO at a time; claims are cumulative (claimed-to-date per PO line)
 - POs snapshot `supplierName` from the chosen contact at write time (`supplierId` is the live link); contact edits or archiving never rewrite issued documents, and POs/claims with `supplierId: null` (pre-Contacts) render from the snapshot and are never backfilled
@@ -93,7 +98,7 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
 ## Naming
 
 - Files: `PascalCase` for components, `camelCase` for hooks and lib files
-- Firestore collections: `camelCase` plural (`projects`, `costCodes`, `purchaseOrders`, `progressClaims`)
+- Firestore collections: `camelCase` plural (`projects`, `costCodes`, `purchaseOrders`, `progressClaims`, `supplierInvoices`)
 - Tailwind class order: layout → spacing → colour → typography → interactive
 
 ## What Not To Do

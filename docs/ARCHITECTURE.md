@@ -42,10 +42,12 @@ frontend/                  The entire application (run all npm commands here)
                            Contacts (company directory), Subcontractors (filtered
                            contacts view + IQ™ placeholder), Pulse, Shield
     pages/project/         ProjectOverview, ProjectBudget, ProjectCostCodes,
-                           ProjectPurchaseOrders, ProjectProgressClaims, ProjectPlaceholder
+                           ProjectPurchaseOrders, ProjectProgressClaims,
+                           ProjectInvoices, ProjectPlaceholder
     hooks/                 All Firestore access (see below)
     lib/                   firebase.js, formatters.js, nav.js, projectTabs.js,
-                           purchaseOrders.js, progressClaims.js, contacts.js
+                           purchaseOrders.js, progressClaims.js, supplierInvoices.js,
+                           contacts.js
 docs/                      This documentation + design-reference assets
                            (Constrapp_v5.jsx prototype, screenshots, Word doc — do not move)
 AGENT.md / CLAUDE.md / README.md / PRODUCT.md / ROADMAP.md   (canonical root docs)
@@ -68,7 +70,8 @@ AuthProvider          Firebase Auth user (onAuthStateChanged)
 
 Per-page hooks (not context providers): `useProject(projectId)` (lookup within
 ProjectsProvider), `useCostCodes()`, `useContacts()`, `useBudgetLines(projectId)`,
-`usePurchaseOrders(projectId)`, `useProgressClaims(projectId)`.
+`usePurchaseOrders(projectId)`, `useProgressClaims(projectId)`,
+`useSupplierInvoices(projectId)`.
 
 ## Routing Structure
 
@@ -80,7 +83,7 @@ ProtectedRoute (redirects to /login when signed out)
    ├─ /                        Dashboard
    ├─ /projects                Projects list
    ├─ /projects/:projectId     ProjectDetailLayout (tab bar; index → overview)
-   │    overview | budget | cost-codes | purchase-orders | progress-claims   (live)
+   │    overview | budget | cost-codes | purchase-orders | progress-claims | invoices  (live)
    │    boq | forecasting | variations | documents | photos | timeline | reports  (ProjectPlaceholder)
    ├─ /contacts                Company-wide contact directory
    ├─ /subcontractors          Filtered contacts view (+ IQ™ placeholder card)
@@ -109,6 +112,7 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Budget Lines + financial rollups | Implemented |
 | Purchase Orders | Implemented |
 | Progress Claims | Implemented |
+| Supplier Invoices (accounts payable) | Implemented (foundation) |
 | Dashboard | Partial — live project list; static KPI/chart data |
 | Contacts | Implemented (foundation) — company-wide directory; supplier picker on POs |
 | Subcontractors | Partial — filtered contacts view; IQ™ scoring is a placeholder |
@@ -122,5 +126,6 @@ Every Firestore read/write goes through a hook in `frontend/src/hooks/`
 the only exceptions today are the Login page calling `signInWithEmailAndPassword`
 and the hooks themselves. Reads are live `onSnapshot` subscriptions; writes are
 `addDoc`/`updateDoc`/`runTransaction` inside hook callbacks. Pure domain logic
-(status machines, totals, derivations) lives in `lib/purchaseOrders.js` and
-`lib/progressClaims.js` so it is testable and shared between create/assess flows.
+(status machines, totals, derivations) lives in `lib/purchaseOrders.js`,
+`lib/progressClaims.js`, and `lib/supplierInvoices.js` so it is testable and
+shared between create/assess/invoice flows.

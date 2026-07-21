@@ -128,6 +128,25 @@ export function approvedByCostCode(claims) {
   return map
 }
 
+// Actual, claim side: { costCodeId: approved ex-GST } across certified claims,
+// EXCLUDING any claim whose id is in `excludeClaimIds` — those claims have been
+// superseded by a posted/paid supplier invoice, so their value now flows through
+// the invoice instead (no double-count). The claim document is never mutated;
+// exclusion is a read-time set (see supplierInvoices.invoicedClaimIds). Passing
+// an empty set makes this identical to approvedByCostCode.
+export function actualClaimsByCostCode(claims, excludeClaimIds = new Set()) {
+  const map = {}
+  for (const claim of claims) {
+    if (!CLAIM_APPROVED_STATUSES.includes(claim.status)) continue
+    if (excludeClaimIds.has(claim.id)) continue
+    for (const li of claim.lineItems ?? []) {
+      if (!li.costCodeId) continue
+      map[li.costCodeId] = roundMoney((map[li.costCodeId] || 0) + (li.approvedThisPeriod || 0))
+    }
+  }
+  return map
+}
+
 // { costCodeId: claimed-not-yet-certified ex-GST } — pending exposure only;
 // never counts toward actual cost.
 export function claimedPendingByCostCode(claims) {

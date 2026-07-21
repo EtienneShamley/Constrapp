@@ -192,3 +192,45 @@ freely; pre-existing contacts lack the fields and are treated as unassigned
 SECURITY.md); if per-project data later needs independent lifecycle (portal
 access, compliance documents), extraction to a subcollection is the recorded
 path, mirroring ADR-15's escape hatch for `people`.
+
+## ADR-17: Supplier Invoices (Accounts Payable)
+
+Supplier invoices live at
+`companies/{id}/projects/{id}/supplierInvoices` — project-scoped, `SI-0001`
+numbered from a company-wide counter (ADR-5). They are the **cost side**
+(accounts payable); the word *invoices* is reserved for future client/AR
+invoicing. Two sources: `direct_po` (against one sent/closed PO, no claim, entered
+amounts, multiple over time) and `progress_claim` (from one approved claim,
+certified amounts fixed, one non-cancelled invoice per claim). One PO per invoice;
+multiple POs per invoice and partial invoicing of a claim are deferred. Line
+amounts are ex-GST with per-line `taxCode` (`gst`/`gst_free`/`input_taxed`) and
+computed `gstAmount`, so mixed-tax invoices are representable; contact `gstStatus`
+is advisory only. Gross and payable totals are stored separately
+(`subtotal`/`gstTotal`/`grossTotal` vs `net`/`payableGst`/`payableTotal`), with
+retention carrying its own `retentionGst` (`retention × 10%`) so a claim-sourced
+invoice reconciles **exactly** to the approved claim's `approvedGst`/
+`approvedTotal` — creation is blocked otherwise; direct-PO invoices use retention
+0 so payable equals gross. Lifecycle `draft → approved → posted` (+ `cancelled` pre-post);
+`received`/`under_review`/`disputed`/`paid` reserved. **`posted` is the financial
+commit point and is immutable — no cancel/unpost; corrections are future Credit
+Notes.** Reads are restricted to financial roles (AP billing detail).
+**Why:** real AU construction has two distinct invoicing realities — subbies
+invoice against a certified progress claim, while material suppliers invoice
+directly with no claim — and both must reach Actual. Per-line tax codes match
+real supplier invoices and map cleanly to accounting tax codes later. The
+snapshot/immutability/forward-only patterns mirror POs and claims (ADR-7/11/12).
+**Consequences (budget figures):** all figures stay **read-time derived** — no
+Budget Line writes (ADR-3/ADR-4 upheld; the vestigial `invoiced: 0` field stays
+ignored). **Committed matures** to *remaining open commitment* (PO line −
+posted/paid invoiced-to-date, floored at 0), so Committed and Invoiced/Actual
+become complementary rather than overlapping. **Actual** = approved claims *not
+superseded by a posted/paid invoice* + posted/paid invoice lines; the anti-double-
+count is a **read-time exclusion** keyed on the invoice's `progressClaimId` — the
+claim document is **never** mutated or stamped `invoiced` (honouring "don't
+rewrite claims" and self-healing when an invoice is cancelled). Over-invoicing and
+duplicate `supplierInvoiceNumber`s warn but never block; server-side transition
+legality, post-`posted` immutability, one-invoice-per-claim races, and uniqueness
+are deferred (ADR-14). Existing `supplierId: null` POs remain invoiceable via
+their `supplierName` snapshot. **Reserved for later:** Payments (`paid`/`paidAt`),
+Credit Notes (`docType`/`adjustsInvoiceId`), attachments (`attachments: []`),
+accounting sync (`externalRefs`).

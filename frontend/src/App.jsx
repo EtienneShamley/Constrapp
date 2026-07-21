@@ -21,6 +21,7 @@ import ProjectBudget     from './pages/project/ProjectBudget'
 import ProjectCostCodes  from './pages/project/ProjectCostCodes'
 import ProjectPurchaseOrders from './pages/project/ProjectPurchaseOrders'
 import ProjectProgressClaims from './pages/project/ProjectProgressClaims'
+import ProjectInvoices from './pages/project/ProjectInvoices'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
 
 export default function App() {
@@ -60,6 +61,7 @@ export default function App() {
                       <Route path="cost-codes"  element={<ProjectCostCodes />} />
                       <Route path="purchase-orders" element={<ProjectPurchaseOrders />} />
                       <Route path="progress-claims" element={<ProjectProgressClaims />} />
+                      <Route path="invoices" element={<ProjectInvoices />} />
                       <Route path="forecasting" element={
                         <ProjectPlaceholder
                           icon="📈"

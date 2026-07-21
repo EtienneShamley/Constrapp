@@ -11,11 +11,12 @@ users/{uid}
 companies/{companyId}
   costCodes/{costCodeId}
   contacts/{contactId}
-  counters/{counterId}                 (purchaseOrders, progressClaims)
+  counters/{counterId}                 (purchaseOrders, progressClaims, supplierInvoices)
   projects/{projectId}
     budgetLines/{lineId}
     purchaseOrders/{poId}
     progressClaims/{claimId}
+    supplierInvoices/{invoiceId}
 ```
 
 `users/` is the only top-level collection besides `companies/`. Everything else
@@ -112,13 +113,14 @@ next save. Embedding (not a `contactAssignments` subcollection) follows ADR-16.
 
 ## companies/{companyId}/counters/{counterId}
 
-Company-wide sequential numbering. Documents: `purchaseOrders`, `progressClaims`.
+Company-wide sequential numbering. Documents: `purchaseOrders`, `progressClaims`,
+`supplierInvoices`.
 
 | Field | Type | Notes |
 |---|---|---|
 | `next` | number | The next number to assign. Read and incremented in the **same transaction** as the numbered document's creation, so concurrent users never share a number. Missing counter ⇒ starts at 1 |
 
-Numbers render as `PO-0001` / `PC-0001` (zero-padded to 4).
+Numbers render as `PO-0001` / `PC-0001` / `SI-0001` (zero-padded to 4).
 
 ## companies/{companyId}/projects/{projectId}
 
@@ -141,7 +143,7 @@ One allocation of project budget against a company cost code.
 | `costCodeId` | string | → company cost code |
 | `costCodeName` | string | Denormalised display string |
 | `budgeted` | number | **Stored** — the allocation (ex-GST) |
-| `invoiced` | number | **Stored** — always 0 today; will be written by the future invoices module |
+| `invoiced` | number | Written once as `0` at creation and **never updated — ignored by the UI.** Invoiced is derived at read time from supplier invoices (see below), matching Committed/Actual — nothing writes this field |
 | `committed` | number | Written once as `0` at creation and **never updated — ignored by the UI** |
 | `actual` | number | Written once as `0` at creation and **never updated — ignored by the UI** |
 | `notes` | string | |
@@ -149,14 +151,16 @@ One allocation of project budget against a company cost code.
 
 ### Stored vs derived
 
-Only `budgeted` (and, in future, `invoiced`) are authoritative stored values.
-**Committed, Claimed, and Actual are derived at read time** — computed in the
-browser from the project's purchase orders and progress claims
-(`committedByCostCode`, `approvedByCostCode`, `claimedPendingByCostCode` in
-`lib/`), keyed by `costCodeId`. Nothing ever writes these onto budget lines; the
-`committed`/`actual` fields exist only as vestigial zeros from creation.
-A PO can commit against a cost code that has no budget line — the Budget page
-shows it as a warning row rather than hiding it.
+Only `budgeted` is an authoritative stored value.
+**Committed, Claimed, Actual, and Invoiced are all derived at read time** —
+computed in the browser from the project's purchase orders, progress claims, and
+supplier invoices (`maturedCommittedByCostCode`, `actualClaimsByCostCode` +
+`invoicedByCostCode`, `claimedPendingByCostCode`, `invoicedByCostCode` in `lib/`),
+keyed by `costCodeId`. Nothing ever writes these onto budget lines; the
+`committed`/`actual`/`invoiced` fields exist only as vestigial zeros from
+creation. A PO or invoice can hit a cost code that has no budget line — the
+Budget page shows it as a warning row rather than hiding it. Exact formulas
+(including Committed as *remaining open commitment*): [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md).
 
 ## …/projects/{projectId}/purchaseOrders/{poId}
 
@@ -215,6 +219,68 @@ Each claim line item:
   approvedThisPeriod }    // null until assessed; certified ex-GST amount
 ```
 
+## …/projects/{projectId}/supplierInvoices/{invoiceId}
+
+Accounts-payable supplier invoices ("bills") the company receives. The general
+word *invoices* is reserved for future client/accounts-receivable invoicing.
+Lifecycle and the budget-figure effects: [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md).
+Reads are restricted to internal financial roles (see [SECURITY.md](SECURITY.md)).
+
+Two sources: `progress_claim` (from one approved claim) and `direct_po` (directly
+against one sent/closed PO, no claim). All canonical line amounts are **ex-GST**;
+GST is stored per line as `gstAmount`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `invoiceNumber` | string | `SI-0001` — from the company-wide `counters/supplierInvoices` |
+| `supplierInvoiceNumber` | string | The supplier's own invoice number — the duplicate-detection key |
+| `status` | string | `draft` \| `approved` \| `posted` \| `cancelled` (live); `received` \| `under_review` \| `disputed` \| `paid` reserved |
+| `docType` | string | `invoice`; `credit_note` reserved (Credit Notes are future) |
+| `source` | string | `progress_claim` \| `direct_po` |
+| `supplierId` | string \| null | → contact, snapshotted from the PO/claim; null for pre-Contacts POs |
+| `supplierName` | string | Snapshot from the PO/claim — never re-read |
+| `poId`, `poNumber` | string \| null | The one PO this invoice bills against (snapshot) |
+| `progressClaimId`, `claimNumber` | string \| null | The one approved claim (source `progress_claim`), else null |
+| `invoiceDate` | string | Supplier's tax-invoice date (`YYYY-MM-DD`) |
+| `receivedDate` | string | When the invoice was received |
+| `dueDate` | string | Explicit; seeded from payment terms, editable |
+| `paymentTerms` | map \| null | `{ days, basis }` snapshot from the contact at write time |
+| `lineItems` | array | See below — **ex-GST** amounts + per-line tax |
+| `subtotal` | number | Σ line `amount` — gross certified ex-GST |
+| `gstTotal` | number | Σ line `gstAmount` — GST on the gross lines |
+| `grossTotal` | number | `subtotal + gstTotal` — full taxable supply inc. GST |
+| `retention` | number | Ex-GST header-level withholding; carried from the claim (`progress_claim`), normally 0 for `direct_po` |
+| `retentionGst` | number | GST on the retained amount (`retention × 10%`; 0 when retention 0) |
+| `retentionTotal` | number | `retention + retentionGst` — amount withheld from the payable |
+| `net` | number | `subtotal − retention` |
+| `payableGst` | number | `gstTotal − retentionGst` — equals the source claim's `approvedGst` |
+| `payableTotal` | number | `grossTotal − retentionTotal` — net payable; equals the source claim's `approvedTotal`. **Not** the full tax-invoice value (that is `grossTotal`) |
+| `currency`, `revision` | | `AUD`, 1 |
+| `notes` | string | |
+| `approvedAt`/`approvedBy` | timestamp / uid | Stamped on approve |
+| `postedAt`/`postedBy` | timestamp / uid | Stamped on post (the financial commit point) |
+| `cancelledAt` | timestamp \| null | Stamped on cancel |
+| `paidAt` | timestamp \| null | **Reserved** — set by the future Payments module |
+| `adjustsInvoiceId` | string \| null | **Reserved** — Credit Note target |
+| `attachments` | array | **Reserved** — always `[]`; no Storage uploads yet |
+| `externalRefs` | map | **Reserved** — accounting-system IDs (Xero/MYOB/QuickBooks) |
+| `createdAt` / `createdBy` | timestamp / uid | |
+
+Each line item:
+
+```
+{ poLineIndex,            // links to the PO line (stable — PO lines freeze after draft)
+  costCodeId, costCodeName, description,   // cost code inherited from the PO/claim line
+  amount,                 // ex-GST (certified value for progress_claim; entered for direct_po)
+  taxCode,                // 'gst' (10%) | 'gst_free' | 'input_taxed'
+  gstAmount }             // GST for the line: 10% of amount for 'gst', else 0
+```
+
+GST-inclusive entry may be offered as a UI mode, but storage is always ex-GST +
+`gstAmount`. Contact `gstStatus` is **advisory only** — it can raise a warning
+but never auto-selects a tax code and never blocks. Cost codes are constrained to
+the selected PO/claim lines — arbitrary non-PO cost-code lines are not allowed.
+
 ## Relationships & Denormalisation Summary
 
 - Budget lines, PO lines, claim lines → cost codes via `costCodeId`; each carries a `costCodeName` snapshot.
@@ -222,4 +288,5 @@ Each claim line item:
 - POs → contacts via `supplierId`, with `supplierName` snapshotted at write time (same pattern as `costCodeName`). Null `supplierId` = pre-Contacts PO; render from the snapshot.
 - Claims → POs via `poId`, with `poNumber`/`supplierName`/`supplierId`/`poLineTotal` snapshotted. Claims inherit supplier identity from the PO — they never reference contacts directly.
 - `variationId` is a forward-reference to the unbuilt Variations module — always null today.
-- Counters are company-wide: PO/claim numbers are unique per **company**, not per project. Contacts carry no sequential number.
+- Supplier invoices → POs via `poId` (required; one PO per invoice) and → approved claims via `progressClaimId` (source `progress_claim` only). Supplier identity is snapshotted from the PO/claim (`supplierId`/`supplierName`) — invoices never read contacts for identity. Invoice lines link to PO lines via `poLineIndex`. Claims are **never** mutated or stamped when invoiced; double-counting is avoided at read time (see [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md)).
+- Counters are company-wide: PO/claim/invoice numbers are unique per **company**, not per project. Contacts carry no sequential number.

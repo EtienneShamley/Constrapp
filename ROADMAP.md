@@ -23,6 +23,7 @@
 - [x] **Progress Claims** — cumulative claiming, one open claim per PO, assessment with partial approval, retention + GST
 - [x] **Contacts** — company-wide directory (suppliers, subcontractors, consultants, clients; organisations + individuals), ABN validation, embedded contact people, duplicate warnings, archive/reactivate; PO supplier picker with quick-create writes `supplierId` + `supplierName` snapshot; Subcontractors page is a filtered contacts view
 - [x] **Contact project assignments** — embedded `projectAssignments` (+ derived `projectIds`) on contacts; multi-project checkbox assignment on the contact form, project/unassigned filter, PO picker grouped "This project" / "Other company contacts", quick-create auto-assigns to the current project; no rules changes, no migration of existing contacts
+- [x] **Supplier Invoices** — accounts-payable bills (`SI-0001`) via two paths: `direct_po` (against a sent/closed PO) and `progress_claim` (from one approved claim); per-line ex-GST amounts with per-line tax codes, retention carried from claims, `draft → approved → posted` lifecycle (posted immutable), duplicate + over-invoicing warnings, financial-role-only reads. Read-time derivation: Invoiced from posted/paid invoices, Committed matured to remaining open commitment, Actual replaces a source claim with its posted invoice (no claim mutation, no double-count). No Budget Line writes; no migration
 
 Firestore security rules for all of the above are written in `frontend/firestore.rules` and published manually.
 
@@ -57,7 +58,9 @@ Bring documentation in line with the implemented system:
 ## Next — Financial Core Completion
 
 - ~~Contacts~~ — done: company-wide directory; new POs link `supplierId` (pre-existing POs keep `supplierId: null` and are not backfilled)
-- Supplier invoices matched to approved claims → real Invoiced values; Committed matures to PO value − invoiced-to-date
+- ~~Supplier invoices~~ — done: `direct_po` + `progress_claim` paths → real Invoiced values; Committed matured to remaining open commitment; Actual replaces source claims with posted invoices
+- Payments — record payments against posted invoices (`paid`/`paidAt`); retention release
+- Credit Notes — supplier credits against posted invoices (`docType`/`adjustsInvoiceId`)
 - Variations affecting budget and claims
 - Budget burn bar and variance indicators; project edit
 - User management (invite, assign role, assign company)

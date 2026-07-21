@@ -5,6 +5,7 @@ export const PROJECT_TABS = [
   { to: 'cost-codes',       label: 'Cost Codes' },
   { to: 'purchase-orders',  label: 'Purchase Orders' },
   { to: 'progress-claims',  label: 'Progress Claims' },
+  { to: 'invoices',         label: 'Invoices' },
   { to: 'forecasting',      label: 'Forecasting' },
   { to: 'variations',       label: 'Variations' },
   { to: 'documents',        label: 'Documents' },

@@ -122,6 +122,110 @@ total     = net + gst          ← "Total payable" (inc. GST)
 - PO totals are simpler: `gst = subtotal × 0.10`, `total = subtotal + gst`.
 - Retention release is not yet modelled (future work alongside invoices).
 
+## Supplier Invoice Lifecycle
+
+Supplier invoices are **accounts payable** — the cost-side bills the company
+receives. (The word *invoices* is reserved for future client/AR invoicing.)
+Numbering: `SI-0001` from `counters/supplierInvoices`, same transactional pattern
+as POs/claims.
+
+Two sources:
+
+- **`direct_po`** — entered directly against one **sent** or **closed** PO, with
+  no progress claim. Lines seed from the PO lines; the user enters the invoiced
+  amount per line (zero on unused lines). Multiple direct invoices may be entered
+  against the same PO over time. Retention is normally 0.
+- **`progress_claim`** — created from one **approved** progress claim. Lines seed
+  from the claim's certified `approvedThisPeriod` amounts, which are **fixed**
+  (invoice exactly the approved claim — no more, no less; partial invoicing of a
+  claim is deferred). PO and claim references and the claim's retention are
+  copied. One approved claim may have only **one non-cancelled** supplier invoice.
+
+Statuses: `draft` → `approved` → `posted`, with `cancelled` reachable from
+`draft`/`approved`. Forward-only. `received`, `under_review`, `disputed`, and
+`paid` are **reserved** (defined, no UI transition yet — `paid` arrives with the
+Payments module).
+
+- **Draft** — fully editable.
+- **Approved** — internally certified; locked except for valid lifecycle actions.
+  `approvedAt`/`approvedBy` stamped.
+- **Posted** — the **financial commit point**: the invoice now counts toward
+  Invoiced and Actual and matures Committed. Immutable. `postedAt`/`postedBy`
+  stamped. **Posted invoices cannot be cancelled or unposted** — corrections are
+  future Credit Notes.
+- **Cancelled** — audit record retained (never deleted); contributes nothing.
+  `cancelledAt` stamped.
+
+**Counting statuses** (contribute to budget figures): `posted` and `paid`. `paid`
+is reserved but already included in the domain calculations for forward
+compatibility with the Payments module.
+
+### Line amounts, GST & retention
+
+All canonical line `amount`s are **ex-GST**. Each line carries a `taxCode`
+(`gst` 10% · `gst_free` · `input_taxed`) and a computed `gstAmount`, so one
+invoice can mix tax treatments. GST-inclusive entry may be a UI mode, but storage
+stays ex-GST + per-line `gstAmount`.
+
+Gross figures describe the **full taxable supply**; payable figures are what is
+**due this invoice** after retention. They are stored separately and
+unambiguously:
+
+```
+subtotal       = Σ line amount            (gross certified, ex-GST)
+gstTotal       = Σ line gstAmount         (GST on the gross lines)
+grossTotal     = subtotal + gstTotal      (full tax-invoice value, inc. GST)
+
+retention      = retained ex-GST (clamped to subtotal)
+retentionGst   = retention × 10%          (0 when retention is 0)
+retentionTotal = retention + retentionGst
+
+net            = subtotal − retention
+payableGst     = gstTotal − retentionGst
+payableTotal   = grossTotal − retentionTotal   ← net payable (NOT the full value)
+```
+
+**Retention carries its own GST** so that a claim-sourced invoice reconciles
+exactly to the approved Progress Claim (whose GST is charged on the *net*,
+post-retention amount — see "Retention & GST" above). Because Progress Claims use
+flat 10% GST, `retentionGst = retention × 10%`, which makes
+`payableGst = approvedGst` and `payableTotal = approvedTotal`. **Direct-PO
+invoices** use retention 0, so `retentionGst`/`retentionTotal` are 0 and
+`payableGst = gstTotal`, `payableTotal = grossTotal`.
+
+- Worked example (claim path): subtotal 1,000, retention 100 → gstTotal 100,
+  grossTotal 1,100, retentionGst 10, retentionTotal 110, net 900, payableGst 90,
+  **payableTotal 990** (= the claim's approvedTotal).
+- Worked example (direct path): subtotal 1,000, retention 0 → gstTotal 100,
+  **grossTotal = payableTotal 1,100**.
+- Contact `gstStatus` is **advisory only** (may warn; never auto-selects a tax
+  code; never blocks). Retention **release** is not yet modelled (future work
+  alongside Payments/Retentions).
+
+### Claim reconciliation guard
+
+Creating a `progress_claim` invoice is **blocked** unless its `payableGst` equals
+the approved claim's `approvedGst` **and** its `payableTotal` equals the claim's
+`approvedTotal` (`claimReconciliationError`, enforced in the create modal and
+again in the hook). This guarantees a claim-sourced invoice never drifts from the
+certified amount it bills.
+
+### Over-invoicing & duplicates
+
+- Invoicing beyond a PO line (or PO total) is **warned (amber ⚠) but never
+  blocked** — variations and price changes are real. It simply drives that line's
+  open commitment to zero.
+- Duplicate detection is **warning-only and client-side**: it flags a matching
+  normalised `supplierInvoiceNumber` for the same supplier (`supplierId` when
+  present, else the `supplierName` snapshot for pre-Contacts POs). Never blocks;
+  server-enforced uniqueness is deferred.
+
+### No Budget Line writes
+
+Like POs and claims, supplier invoices **never write onto Budget Line
+documents**. Invoiced, and the invoice contributions to Committed and Actual, are
+all derived at read time from invoice documents.
+
 ## The Six Budget Figures — Exact Definitions
 
 All derived figures group PO/claim **line items by `costCodeId`** and are ex-GST.
@@ -129,29 +233,45 @@ All derived figures group PO/claim **line items by `costCodeId`** and are ex-GST
 | Figure | Definition | Source |
 |---|---|---|
 | **Budgeted** | Σ `budgeted` across the project's budget lines | Stored on budget lines |
-| **Committed** | Σ `lineTotal` of PO lines, POs in `sent`/`closed` | Derived from POs |
+| **Committed** | Remaining **open** commitment: per PO line (POs in `sent`/`closed`), `lineTotal − posted/paid invoiced-to-date against that line`, floored at 0, grouped by cost code | Derived from POs + invoices |
 | **Claimed** | Σ `claimedThisPeriod` of claim lines, claims in `submitted`/`under_review` — uncertified exposure only | Derived from claims |
-| **Actual** | Σ `approvedThisPeriod` of claim lines, claims in `approved`/`invoiced` | Derived from claims |
-| **Invoiced** | Stored `invoiced` on budget lines — always 0 until the invoices module exists | Stored (future) |
+| **Actual** | Σ `approvedThisPeriod` of claim lines (claims in `approved`/`invoiced`) **not superseded by a posted/paid invoice** + Σ ex-GST line `amount` of posted/paid supplier invoices | Derived from claims + invoices |
+| **Invoiced** | Σ ex-GST line `amount` of supplier invoices in `posted`/`paid`, grouped by cost code | Derived from invoices |
 | **Remaining** | `Budgeted − Actual` (per line and in total) | Computed |
 
-### Committed and Actual overlap — never add them
+### Committed now means *remaining open commitment*
 
-A claim certifies part of a PO's value. That value is **already inside
-Committed** (the PO) and, once approved, **also inside Actual** (the claim).
-They answer different questions — "what have we promised to pay?" vs "what
-value have we certified?" — and summing them double-counts. Today Committed
-stays at full PO value regardless of claims; once invoicing exists, Committed
-matures to *PO value − invoiced-to-date* so the figures become complementary.
+Before invoices, Committed was the full value of every sent/closed PO. **Now that
+supplier invoices exist, Committed matures to the remaining open commitment** —
+each PO line's value less what has been invoiced (posted/paid) against it, floored
+at zero. As invoices post, value moves out of Committed and into Invoiced/Actual,
+so the figures are **complementary rather than overlapping**: Committed answers
+"what have we ordered but not yet been billed for?", Actual answers "what has this
+project actually cost?" Over-invoicing a line simply drives its open commitment to
+zero (never negative).
+
+### Actual: claims are replaced by their invoice, never double-counted
+
+An approved progress claim contributes to Actual **until a supplier invoice
+sourced from it is posted**. At that point the claim is excluded from the
+claim-side Actual (a **read-time** exclusion keyed on the invoice's
+`progressClaimId` — the claim document is *never* mutated or stamped) and the
+posted invoice contributes instead. A **direct** supplier invoice (no claim) adds
+to Actual on its own — so material/direct costs that never had a progress claim
+now reach Actual, which the claims-only model could not do. The net effect: each
+cost is counted exactly once.
 
 ## Future Integrations
 
-- **Invoices** — supplier invoices matched to approved claims will populate
-  `invoiced` (and `invoicedAt` on claims via the reserved `invoiced` status),
-  and mature the Committed formula as above.
+- **Payments** — the reserved `paid` status / `paidAt` stamp, payment records,
+  and retention release follow the invoices foundation.
+- **Credit Notes** — the reserved `docType: 'credit_note'` / `adjustsInvoiceId`
+  fields will carry supplier credits/negative adjustments that reduce Invoiced.
+- **Attachments** — the reserved `attachments: []` array on invoices anchors
+  future Firebase Storage uploads (invoice PDFs); no uploads today.
 - **Variations** — the reserved `variationId` on claims will link approved
   scope changes into claiming and budget adjustments.
-- **Payments** — payment recording and retention release follow invoices.
-- **Xero / MYOB / QuickBooks** — the empty `externalRefs` map on POs and claims
-  is the anchor for accounting-system document IDs; `roundMoney` exists so
-  totals reconcile to the cent with those systems.
+- **Xero / MYOB / QuickBooks** — the empty `externalRefs` map on POs, claims, and
+  invoices is the anchor for accounting-system document IDs; per-line invoice
+  `taxCode`s map to accounting tax codes; `roundMoney` exists so totals reconcile
+  to the cent with those systems.

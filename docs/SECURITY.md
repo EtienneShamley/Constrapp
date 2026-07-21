@@ -40,6 +40,7 @@ to financial roles.**
 | `…/projects/{id}/budgetLines/{id}` | company member | financial roles | blocked |
 | `…/projects/{id}/purchaseOrders/{id}` | company member | financial roles | blocked — cancel via status |
 | `…/projects/{id}/progressClaims/{id}` | company member | financial roles | blocked — reject via status |
+| `…/projects/{id}/supplierInvoices/{id}` | **financial roles only** | financial roles | blocked — cancel via status |
 | `…/counters/{id}` | financial roles | financial roles | blocked |
 
 Contacts reads are deliberately tighter than the shared pattern: the directory
@@ -47,6 +48,10 @@ holds third-party PII (names, phones, emails, ABNs, payment terms), so
 `subcontractor` and `client` users must not read the company's full contact
 book. Financial documents still render supplier identity for those roles via
 the `supplierName` snapshot on POs/claims — no contact read required.
+
+**Supplier invoices reads are likewise restricted to financial roles** (tighter
+than the POs/claims read pattern): the accounts-payable register exposes supplier
+billing detail, so `subcontractor` and `client` users must not read it.
 
 Note the asymmetry: `qs` can write cost codes, budget lines, POs, and claims but
 **not** projects.
@@ -73,12 +78,14 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
 
 1. **Server-enforced lifecycle transitions** — rules don't validate status
    changes; `canTransition` runs client-side only. A financial-role user could
-   set any status directly.
-2. **Post-submission immutability** — freezing PO lines after `sent` and claim
-   amounts after submission/approval is client-side only; rules allow full
-   document updates.
-3. **One-open-claim race protection** — the check reads the local snapshot;
-   two simultaneous creators can produce two open claims on one PO.
+   set any status directly. Applies equally to supplier invoices (including the
+   "posted invoices cannot be cancelled/unposted" rule).
+2. **Post-submission immutability** — freezing PO lines after `sent`, claim
+   amounts after submission/approval, and supplier invoices after `posted` is
+   client-side only; rules allow full document updates.
+3. **One-open-claim / one-invoice-per-claim race protection** — these checks
+   read the local snapshot; two simultaneous creators can produce two open claims
+   on one PO, or two supplier invoices against one approved claim.
 4. **Creator vs approver segregation** — nothing prevents the claim creator
    from approving their own claim.
 5. **Supplier-scoped subcontractor access** — subcontractors can read all
@@ -92,10 +99,11 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
    joins the audit-logging remediation).
 8. **Self-managed profile** — as above, users can write their own `role`/
    `companyId`; needs locking down once invites/user management exist.
-9. **Contact uniqueness** — duplicate detection (ABN/email/name) is a
-   client-side warn-only check against the in-memory list; two simultaneous
-   creators can still produce duplicate contacts. Server-enforced uniqueness
-   would need an index collection or Cloud Functions.
+9. **Contact & supplier-invoice uniqueness** — duplicate detection (contacts:
+   ABN/email/name; supplier invoices: `supplierId`/`supplierName` +
+   `supplierInvoiceNumber`) is a client-side warn-only check against the
+   in-memory list; two simultaneous creators can still produce duplicates.
+   Server-enforced uniqueness would need an index collection or Cloud Functions.
 10. **Contact project-assignment guards** — the `projectAssignments` /
     `projectIds` fields on contacts required **no rules changes** (they live on
     documents already covered by the contacts block), but their invariants are

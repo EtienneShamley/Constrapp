@@ -85,6 +85,25 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Supplier Invoices — project-scoped accounts-payable bills against a sent/
+    // closed PO, optionally sourced from one approved progress claim.
+    // Reads: restricted to internal financial roles — the AP register exposes
+    // supplier billing detail, so subcontractor and client users must NOT read
+    // it (tighter than the POs/claims read pattern, matching Contacts).
+    // Create/update: same financial roles.
+    // Delete: blocked — cancellation is a status change; posted invoices are
+    // immutable audit records (corrections are future Credit Notes).
+    // TODO (server-side hardening): enforce status-transition legality,
+    // post-`posted` immutability, one-active-invoice-per-claim, and
+    // (supplierId + supplierInvoiceNumber) uniqueness here rather than only in
+    // the client hook.
+    match /companies/{companyId}/projects/{projectId}/supplierInvoices/{invoiceId} {
+      allow read, create, update: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      allow delete: if false;
+    }
+
     // Contacts — company-wide directory of suppliers, subcontractors,
     // consultants, and clients (third-party PII: names, phones, emails, ABNs,
     // payment terms).

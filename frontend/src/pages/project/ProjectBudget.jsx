@@ -8,8 +8,10 @@ import { useBudgetLines } from '../../hooks/useBudgetLines'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
-import { committedByCostCode } from '../../lib/purchaseOrders'
-import { approvedByCostCode, claimedPendingByCostCode } from '../../lib/progressClaims'
+import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
+import { maturedCommittedByCostCode } from '../../lib/purchaseOrders'
+import { actualClaimsByCostCode, claimedPendingByCostCode } from '../../lib/progressClaims'
+import { invoicedByCostCode, invoicedClaimIds, postedInvoicedByPoLine } from '../../lib/supplierInvoices'
 
 const EMPTY_FORM = { costCodeId: '', budgeted: '', notes: '' }
 
@@ -115,35 +117,59 @@ export default function ProjectBudget() {
   const { costCodes, costCodesLoading } = useCostCodes()
   const { purchaseOrders } = usePurchaseOrders(projectId)
   const { progressClaims } = useProgressClaims(projectId)
+  const { supplierInvoices } = useSupplierInvoices(projectId)
   const [showModal, setShowModal] = useState(false)
 
   const noCostCodes = !costCodesLoading && costCodes.length === 0
   const goToCostCodes = () => navigate(`/projects/${projectId}/cost-codes`)
 
-  // Committed is derived from POs at read time — never stored on budget lines.
-  const committedMap = committedByCostCode(purchaseOrders)
-  // Actual is derived from approved progress claims; claimed is uncertified
-  // exposure (submitted/under review). Neither is stored on budget lines.
-  const actualMap  = approvedByCostCode(progressClaims)
+  // Every figure is derived at read time from source documents — never stored on
+  // budget lines. Supplier invoices now feed all four cost figures:
+  //
+  // Committed = remaining OPEN commitment: PO line total − posted/paid invoiced
+  //   against that line (floored at 0), grouped by cost code. As invoices post,
+  //   value moves from Committed into Invoiced/Actual, so they are complementary.
+  const committedMap = maturedCommittedByCostCode(purchaseOrders, postedInvoicedByPoLine(supplierInvoices))
+  // Invoiced = ex-GST posted/paid supplier invoice lines by cost code.
+  const invoicedMap = invoicedByCostCode(supplierInvoices)
+  // Actual = approved claims NOT yet superseded by a posted/paid invoice (read-
+  //   time exclusion — the claim is never mutated) PLUS posted/paid invoices.
+  const invoicedClaims = invoicedClaimIds(supplierInvoices)
+  const claimActualMap = actualClaimsByCostCode(progressClaims, invoicedClaims)
+  const actualMap = {}
+  for (const cc of new Set([...Object.keys(claimActualMap), ...Object.keys(invoicedMap)])) {
+    actualMap[cc] = (claimActualMap[cc] || 0) + (invoicedMap[cc] || 0)
+  }
+  // Claimed = uncertified exposure (submitted/under review claims). Unchanged.
   const claimedMap = claimedPendingByCostCode(progressClaims)
 
-  // POs can commit against cost codes that have no budget line yet — surface
-  // those as warning rows rather than hiding the commitment.
+  // POs/invoices can hit cost codes that have no budget line yet — surface those
+  // as warning rows rather than hiding the commitment or cost.
   const budgetedCostCodeIds = new Set(budgetLines.map(l => l.costCodeId))
-  const unbudgetedCommitted = Object.entries(committedMap)
-    .filter(([costCodeId]) => !budgetedCostCodeIds.has(costCodeId))
-    .map(([costCodeId, committed]) => {
+  const unbudgetedRows = [...new Set([
+    ...Object.keys(committedMap),
+    ...Object.keys(invoicedMap),
+    ...Object.keys(actualMap),
+  ])]
+    .filter(costCodeId => !budgetedCostCodeIds.has(costCodeId))
+    .map(costCodeId => {
       const cc = costCodes.find(c => c.id === costCodeId)
-      return { costCodeId, committed, costCodeName: cc ? `${cc.code} — ${cc.name}` : 'Unknown cost code' }
+      return {
+        costCodeId,
+        committed: committedMap[costCodeId] || 0,
+        invoiced:  invoicedMap[costCodeId] || 0,
+        actual:    actualMap[costCodeId] || 0,
+        costCodeName: cc ? `${cc.code} — ${cc.name}` : 'Unknown cost code',
+      }
     })
 
   const totals = budgetLines.reduce((acc, l) => ({
     budgeted:  acc.budgeted  + (l.budgeted  || 0),
-    invoiced:  acc.invoiced  + (l.invoiced  || 0),
-  }), { budgeted: 0, invoiced: 0 })
+  }), { budgeted: 0 })
   totals.committed = Object.values(committedMap).reduce((sum, v) => sum + v, 0)
   totals.actual    = Object.values(actualMap).reduce((sum, v) => sum + v, 0)
   totals.claimed   = Object.values(claimedMap).reduce((sum, v) => sum + v, 0)
+  totals.invoiced  = Object.values(invoicedMap).reduce((sum, v) => sum + v, 0)
 
   const remaining     = totals.budgeted - totals.actual
   const usagePercent  = totals.budgeted > 0 ? Math.min(100, (totals.actual / totals.budgeted) * 100) : 0
@@ -224,24 +250,22 @@ export default function ProjectBudget() {
                   <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(line.budgeted || 0)}</td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(committedMap[line.costCodeId] || 0)}</td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(actualMap[line.costCodeId] || 0)}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(line.invoiced || 0)}</td>
+                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(invoicedMap[line.costCodeId] || 0)}</td>
                   <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">
                     {currency((line.budgeted || 0) - (actualMap[line.costCodeId] || 0))}
                   </td>
                 </tr>
               ))}
-              {unbudgetedCommitted.map(row => (
+              {unbudgetedRows.map(row => (
                 <tr key={row.costCodeId} className="border-b border-brand-border bg-brand-amber/5">
                   <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-amber">
                     {row.costCodeName}
-                    <span className="block text-[11px] font-normal">Committed via PO — no budget line</span>
+                    <span className="block text-[11px] font-normal">Cost against a code with no budget line</span>
                   </td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">{currency(row.committed)}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">
-                    {actualMap[row.costCodeId] ? currency(actualMap[row.costCodeId]) : '—'}
-                  </td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>
+                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.committed ? currency(row.committed) : '—'}</td>
+                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.actual ? currency(row.actual) : '—'}</td>
+                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.invoiced ? currency(row.invoiced) : '—'}</td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>
                 </tr>
               ))}
