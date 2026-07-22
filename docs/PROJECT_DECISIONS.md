@@ -4,6 +4,52 @@ Concise architectural decision records (ADRs). Each records what was decided,
 why, and the accepted consequences. Mechanics live in
 [DATA_MODEL.md](DATA_MODEL.md) and [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md).
 
+## ADR-0a: Cost Codes as the Commercial Spine
+
+Cost Codes are the single join key connecting every commercial stage of the
+lifecycle (Drawing → Quantity → BOQ → Estimate → Tender → Award → Approved
+Budget → Commitment → PO → Variation → Progress Claim → Supplier Invoice →
+Actual Cost → Forecast → Cash Flow → Final Project Margin → Final Account).
+Every commercial document references a `costCodeId` and snapshots a
+`costCodeName` at write time.
+**Why:** a builder's commercial truth reconciles only if one taxonomy runs
+through estimate, budget, commitment, claim, invoice, and final account; a
+parallel key at any stage breaks cross-stage reconciliation and reporting.
+**Consequences:** every new commercial module must integrate through the
+cost-code spine rather than invent its own key (ADR-1 makes cost codes
+company-wide precisely so they can serve this role); the snapshot pattern
+(ADR-15/ADR-6 idiom) is mandatory so renames never rewrite history.
+
+## ADR-0b: Field Information Must Feed Commercial Outcomes
+
+Field features are included only when they feed or evidence a commercial
+outcome — site progress → forecast update, approved variation → budget and
+commitment update, defect/delay → risk and forecast impact, drawing
+measurement → BOQ quantity, subcontractor bid → award and commitment, site
+photo → progress/claim evidence.
+**Why:** Constrapp is a commercial-control system, not a field-reporting
+product; every field capability must earn its place by improving a commercial
+decision, or it dilutes the product into a generic tool.
+**Consequences:** a proposed field feature with no stated commercial input or
+output is out of scope; Drawings, Photos, and Timeline are positioned as
+commercial inputs (see [PRODUCT.md](../PRODUCT.md)), not standalone modules.
+
+## ADR-0c: Opinionated Commercial Workflow Instead of Form-First Configuration
+
+Constrapp ships an opinionated commercial workflow for small and mid-sized
+contractors rather than a configurable, form-first toolkit. It is explicitly
+**not** a Dashpivot-style platform: no generic no-code form builders, HSEQ
+template libraries, generic field reporting, payroll/workforce, fleet/equipment,
+or broad enterprise integrations before product-market fit.
+**Why:** the differentiated value is a connected commercial lifecycle with
+strong defaults; a form-first configuration surface would fragment the data,
+undermine the cost-code spine, and compete in a commoditised category.
+**Consequences:** these directions are anti-goals requiring an approved
+strategy change, not backlog items (see [ROADMAP.md](../ROADMAP.md) →
+Anti-Goals and [AGENT.md](../AGENT.md) → Strategic Invariants); detailed
+data-model ADRs for BOQ, Tender, Variations, and Forecast are deferred to those
+features' implementation sprints.
+
 ## ADR-1: Company-wide Cost Codes
 
 Cost codes live at `companies/{companyId}/costCodes`, not per project.

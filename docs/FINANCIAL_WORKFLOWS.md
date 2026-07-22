@@ -261,6 +261,64 @@ to Actual on its own — so material/direct costs that never had a progress clai
 now reach Actual, which the claims-only model could not do. The net effect: each
 cost is counted exactly once.
 
+## Planned Commercial Lifecycle (not yet implemented)
+
+The sections above describe **implemented** behaviour. The following extend the
+commercial lifecycle upstream (preconstruction) and downstream (forecast, margin,
+final account). They are **conceptual and planned** — the app does not calculate
+them today, and their exact formulas, fields, and lifecycles are decided in each
+feature's design sprint (order: [ROADMAP.md](../ROADMAP.md)). Nothing below is a
+shipped guarantee; all commercial figures will follow the read-time-derivation and
+cost-code-spine invariants when built.
+
+### BOQ and Estimating *(planned)*
+
+A Bill of Quantities captures measured quantities against **cost codes**; applying
+rates plus margin/overheads produces an **estimate**, which transfers into an
+**approved budget** (budget lines). The cost code is the join from measurement all
+the way to budget. Manual quantity entry precedes any AI takeoff.
+
+### Tender and Award *(planned)*
+
+Tender packages are assembled from BOQ items grouped by trade/cost code;
+subcontractors are invited; bids are compared and levelled **by cost code** against
+the estimate. The winning bid is **awarded**, becoming a commitment (a purchase
+order). Award snapshots values at the transfer point, mirroring the existing
+snapshot idiom.
+
+### Variations *(planned)*
+
+Approved scope changes adjust the **approved budget and commitment** and flow into
+claiming and forecast — the connector between commitment, claims, invoices, and
+forecast. This activates the reserved `variationId` on claims. Whether a variation
+adjusts a PO, a budget line, or both, and how it interacts with cumulative
+claiming, is settled in its design sprint.
+
+### Forecast Cost to Complete *(planned)*
+
+A forward-looking figure derived from approved budget, committed cost, approved
+variations, and actual cost — **read-time derived**, like the six budget figures,
+never a stored rollup. It answers "what will remain to spend?" rather than "what
+has been spent?"
+
+### Cash Flow *(planned)*
+
+Time-phased projection of cost and income across the project, driven by claims,
+invoices, payment terms, and schedule inputs. A commercial output, not a generic
+chart.
+
+### Project Margin *(planned)*
+
+The gap between contract/income value and forecast final cost, tracked over the
+project's life so margin erosion is visible early. Feeds PULSE™'s commercial-health
+signals.
+
+### Final Account *(planned)*
+
+The closing reconciliation: approved budget + approved variations vs actual cost,
+resolving to the **final project margin**. Commercial reporting summarises margin,
+cost-to-complete, cash flow, and the final account.
+
 ## Future Integrations
 
 - **Payments** — the reserved `paid` status / `paidAt` stamp, payment records,

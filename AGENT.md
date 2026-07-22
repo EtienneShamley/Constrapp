@@ -4,6 +4,16 @@ This file governs how AI agents and contributors must approach work in this code
 It covers mandatory conventions, guardrails, workflow, and architectural invariants.
 For detail, follow the links into `docs/`.
 
+## Strategic Invariants (mandatory)
+
+Constrapp is **the connected commercial operating system for construction projects**. These invariants are as binding as the financial ones below:
+
+- **Cost Codes are the commercial spine.** Every commercial document references a cost code (`costCodeId` + a `costCodeName` snapshot). New commercial modules join through it — they must not invent a parallel key.
+- **New commercial modules integrate with the existing lifecycle** (Drawing → Quantity → BOQ → Estimate → Tender → Award → Approved Budget → Commitment → PO → Variation → Progress Claim → Supplier Invoice → Actual Cost → Forecast → Cash Flow → Final Project Margin → Final Account) rather than operate as standalone tools.
+- **Field features must state their commercial input or output** (e.g. drawing measurement → BOQ quantity, site photo → progress/claim evidence, delay → forecast impact). A field feature with no commercial linkage is out of scope.
+- **Do not build generic form-first or HSEQ-first functionality** (no-code form builders, HSEQ template libraries, generic field reporting, payroll/workforce, fleet/equipment, or broad enterprise integrations before product-market fit) **without an approved strategy change.** See [PRODUCT.md](PRODUCT.md) → "What Constrapp Is Not".
+- **PULSE™, SHIELD™, IQ™, and Quant™ remain placeholders** until their planned sprint (see [ROADMAP.md](ROADMAP.md) and the AI Feature Placeholder Rule below).
+
 ## Stack
 
 | Layer | Technology |

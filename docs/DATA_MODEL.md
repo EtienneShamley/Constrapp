@@ -281,6 +281,32 @@ GST-inclusive entry may be offered as a UI mode, but storage is always ex-GST +
 but never auto-selects a tax code and never blocks. Cost codes are constrained to
 the selected PO/claim lines — arbitrary non-PO cost-code lines are not allowed.
 
+## Planned Commercial Entities (not yet modelled)
+
+The schema above is **implemented**. The commercial lifecycle will introduce
+further entities as their features are built. They are listed here for orientation
+only — **exact fields, collection paths, and lifecycle schemas are deliberately
+not defined yet**; each is decided in that feature's design assessment (order:
+[ROADMAP.md](../ROADMAP.md)). What is fixed now is that every one of them joins the
+commercial lifecycle through **`costCodeId`** (with a `costCodeName` snapshot),
+exactly as budget lines, PO lines, claim lines, and invoice lines already do.
+
+| Planned entity | Role in the lifecycle | Cost-code relationship (intended) |
+|---|---|---|
+| **BOQ lines** | Measured quantities in the Bill of Quantities | Each line carries a `costCodeId` |
+| **Estimates** | Rates + margin/overheads applied to BOQ lines → estimate | Priced per cost code |
+| **Tender packages** | BOQ items grouped for tender | Scoped by cost code / trade |
+| **Tender bids** | Subcontractor responses, compared and levelled | Levelled per cost code against the estimate |
+| **Awards** | The winning bid, transferred to commitment | Carries cost-coded amounts into POs/budget |
+| **Variations** | Approved scope changes to budget/commitment | Adjust amounts by cost code; link to claims via the reserved `variationId` |
+| **Forecast snapshots / inputs** | Cost-to-complete, cash-flow, margin inputs | Aggregated by cost code |
+| **Final account records** | Closing budget-vs-actual reconciliation | Reconciled per cost code |
+
+No collection paths or field lists are committed here; adding any of these requires
+a design assessment, a hook, and (where a new collection is introduced) a manual
+`firestore.rules` change and security review — per [AGENT.md](../AGENT.md) and
+[SECURITY.md](SECURITY.md).
+
 ## Relationships & Denormalisation Summary
 
 - Budget lines, PO lines, claim lines → cost codes via `costCodeId`; each carries a `costCodeName` snapshot.

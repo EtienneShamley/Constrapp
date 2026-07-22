@@ -3,6 +3,39 @@
 Current, factual description of the implemented system. Product intent lives in
 [PRODUCT.md](../PRODUCT.md); conventions in [AGENT.md](../AGENT.md).
 
+## Conceptual Commercial Architecture
+
+Constrapp is organised around one connected commercial dataset. Conceptually it
+moves through six phases, joined end-to-end by the **cost-code spine**:
+
+```
+Preconstruction → Procurement → Delivery → Cost Control → Forecasting → Final Account
+```
+
+| Phase | What happens | Modules (status) |
+|---|---|---|
+| **Preconstruction** | Measure quantities, build the BOQ, estimate, transfer to an approved budget | Drawings/Takeoff, BOQ & Estimating *(planned)*; **Cost Codes**, **Budgets** *(implemented)* |
+| **Procurement** | Tender packages, subcontractor invitations, bid levelling, award, commitment | Tender & Award *(future)* → **Purchase Orders** *(implemented)* |
+| **Delivery** | Scope variations, cumulative progress claims against commitments | Variations *(placeholder/planned)*; **Progress Claims** *(implemented)* |
+| **Cost Control** | Supplier invoices, actual cost, payments/credit notes | **Supplier Invoices** *(implemented)*; Payments, Credit Notes *(future)* |
+| **Forecasting** | Forecast cost to complete, cash flow, project margin | Forecast & Cash Flow *(placeholder/planned)* |
+| **Final Account** | Reconcile budget + variations + actual into final margin; commercial reporting | Final Account, Commercial Reporting *(future/planned)* |
+
+**Cost Codes are the spine** across all six phases: a cost code links a BOQ line
+to an estimate, an award to a budget line, a budget line to a PO, and a PO to its
+variations, claims, and supplier invoices. Every commercial document snapshots its
+`costCodeName` at write time so the whole lifecycle reconciles through one taxonomy.
+
+**What is implemented today** is the Delivery and Cost-Control middle
+(Budgets → POs → Progress Claims → Supplier Invoices) plus the Cost-Code spine and
+Contacts — see the module table and factual detail below. **Planned commercial
+architecture** (Preconstruction, Procurement front, Variations, Forecasting, Final
+Account) is described conceptually here and in
+[FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md); it has **no implemented schema
+yet** — exact collections and fields are decided in each feature's design sprint
+(see [DATA_MODEL.md](DATA_MODEL.md) → "Planned Commercial Entities"). **Placeholder
+modules** (screens exist, no functionality) are listed in the module-status table.
+
 ## Stack
 
 | Layer | Technology | Notes |

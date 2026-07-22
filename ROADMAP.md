@@ -55,41 +55,63 @@ Bring documentation in line with the implemented system:
 
 ---
 
-## Next — Financial Core Completion
+## Development Order
 
-- ~~Contacts~~ — done: company-wide directory; new POs link `supplierId` (pre-existing POs keep `supplierId: null` and are not backfilled)
-- ~~Supplier invoices~~ — done: `direct_po` + `progress_claim` paths → real Invoiced values; Committed matured to remaining open commitment; Actual replaces source claims with posted invoices
-- Payments — record payments against posted invoices (`paid`/`paidAt`); retention release
-- Credit Notes — supplier credits against posted invoices (`docType`/`adjustsInvoiceId`)
-- Variations affecting budget and claims
+The sequence closes the commercial-control loop first (the back half of the lifecycle is already in the schema), then completes the preconstruction side (the front half), then layers intelligence and commercially linked field features. Each item integrates through the cost-code spine.
+
+**1. Variations**
+The missing connector between commitments, claims, invoices, and forecast. Approved scope changes update budget and commitment and flow into claiming — activating the reserved `variationId`. Highest leverage because every downstream figure depends on it, and the schema already anticipates it.
+
+**2. Forecast Cost to Complete**
+Derives remaining cost from budget, commitment, variations, and actuals — read-time, like the six budget figures. This is what turns recorded cost into a forward-looking control number.
+
+**3. Cash-flow Forecasting and Project Margin**
+Cash-flow curves and project margin close the current project-control loop: the system can now answer "where does this project finish?" not just "what has it cost?"
+
+**4. BOQ and Estimating**
+Opens the preconstruction side: a Bill of Quantities against cost codes, with rates/margin/overheads producing an estimate that transfers to an approved budget.
+
+**5. Tender Packages, Subcontractor Invitations, and Bid Levelling**
+Tender packages built from the BOQ, subcontractor invitations, and bid comparison/levelling by cost code, feeding award → commitment.
+
+**6. Manual QS Takeoff connected to BOQ quantities**
+Measured quantities populate BOQ quantity lines by cost code. Manual takeoff must exist before Quant™ AI — the AI accelerates an established pipeline rather than inventing one.
+
+**7. Payments and Credit Notes**
+Record payments against posted invoices (`paid`/`paidAt`, retention release) and supplier credits (`docType`/`adjustsInvoiceId`). Important for completeness, but less differentiating than Variations and Forecasting — hence sequenced after them despite the reserved fields already existing.
+
+**8. Final Account and Commercial Reporting**
+Reconcile approved budget, variations, and actual cost into final project margin; commercial reporting on margin, cost-to-complete, cash flow, and final account (not a generic export builder).
+
+**9. Intelligence layer**
+Constrapp PULSE™ (commercial health), IQ™ (schedule/variation/accountability intelligence), SHIELD™ (commercial audit and assurance), and Quant™ (AI takeoff into BOQ quantities). Each reads the commercial spine; all remain placeholders until this sprint.
+
+**10. Commercially linked field modules**
+Drawings (drawing measurement → BOQ quantity), Site Photos (→ progress/claim evidence), Timeline (delay → forecast impact). Each lands only with its commercial input/output defined.
+
+### Also tracked (not lifecycle-ordered)
+
 - Budget burn bar and variance indicators; project edit
 - User management (invite, assign role, assign company)
-
-## Then — Tender & Reporting
-
-- BOQ & Tender Tool — QS line items → overhead/margin → tender price → transfer to budget
-- Reports — PDF export (financial summary, project progress)
 - Subcontractors module — linked to contacts and cost codes
 
-## Then — Site, Field & Forecasting
+## Anti-Goals (out of scope without an approved strategy change)
 
-- Forecasting & Cashflow — area charts, profit breakdown per project
-- Drawings & Documents — upload, version control, revision warnings
-- Site Photos — upload, tag by project, gallery view
-- Timeline — Gantt-style schedule, delay flags
-- Basic markup tool on drawings
+Constrapp is the connected commercial operating system for construction — **not a Dashpivot-style form-first platform**. The following are deliberately not on the roadmap:
 
-## Then — Intelligence Layer (Sprint 5)
+- Generic no-code form builders
+- Large HSEQ template libraries
+- Generic field reporting
+- Payroll or broad workforce management
+- Fleet or equipment management
+- Broad enterprise integrations before product-market fit
 
-- Constrapp PULSE™ — portfolio health scoring engine
-- Constrapp IQ™ — AI alerts for schedule, variations, accountability
-- Constrapp SHIELD™ — document hashing, audit trail, access anomaly detection
+Field features are prioritised only when they feed or evidence a commercial outcome.
 
-## Then — Growth (Sprint 6)
+## Growth (later)
 
-- Constrapp Quant™ — AI quantity takeoff from uploaded PDFs/drawings
 - Billing & subscriptions — Stripe integration, plan management in-app
-- Accounting integrations — Xero, MYOB, QuickBooks (via `externalRefs`)
+- Accounting integrations — Xero, MYOB, QuickBooks (via `externalRefs`) — after product-market fit
 - Client portal — limited external access for project owners
 - PWA packaging and mobile-optimised layouts
 

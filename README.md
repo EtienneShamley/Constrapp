@@ -1,8 +1,23 @@
 # Constrapp
 
-Australian-built construction project management platform.
+**Constrapp is the connected commercial operating system for construction projects.**
+
+Australian-built and web-first, it gives builders, contractors, and quantity surveyors one connected commercial dataset — from preconstruction to final account — instead of disconnected spreadsheets and tools.
 
 Web-first · React 19 + Vite + Tailwind CSS v4 · Firebase (client SDK)
+
+## The Commercial Lifecycle
+
+One connected dataset flows through every stage, with **Cost Codes as the spine** joining them:
+
+```
+Drawing → Quantity → BOQ → Estimate → Tender → Award → Approved Budget
+  → Commitment → Purchase Order → Variation → Progress Claim
+  → Supplier Invoice → Actual Cost → Forecast → Cash Flow
+  → Final Project Margin → Final Account
+```
+
+Today the delivery-and-cost-control middle of this lifecycle is implemented (budgets → POs → claims → supplier invoices); the preconstruction front (BOQ, tender, takeoff), variations, and forecasting are planned. See [PRODUCT.md](PRODUCT.md) and [ROADMAP.md](ROADMAP.md) for module-by-module status, and [PRODUCT.md](PRODUCT.md) → "What Constrapp Is Not" for the strategic boundaries.
 
 ## What Works Today
 

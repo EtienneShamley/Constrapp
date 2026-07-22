@@ -1,5 +1,19 @@
 # CLAUDE.md — Task Routing
 
+## Strategic Positioning
+
+**Constrapp is the connected commercial operating system for construction projects.** Every session must preserve:
+
+- **The connected commercial lifecycle** — Drawing → Quantity → BOQ → Estimate → Tender → Award → Approved Budget → Commitment → PO → Variation → Progress Claim → Supplier Invoice → Actual Cost → Forecast → Cash Flow → Final Project Margin → Final Account.
+- **The cost-code spine** — Cost Codes join every commercial stage; new commercial modules integrate through them.
+- **The field-feeds-commercial principle** — field features exist to serve a commercial outcome, never as standalone reporting.
+- **An opinionated commercial workflow for small and mid-sized contractors** — not a configurable, form-first toolkit.
+- **No form-first scope drift** — no generic form builders, HSEQ libraries, payroll, fleet, or broad integrations before product-market fit without an approved strategy change.
+
+Full detail: [PRODUCT.md](PRODUCT.md) and [AGENT.md](AGENT.md) → Strategic Invariants.
+
+## Reading Order
+
 Before working in this repository, read in order:
 
 1. [AGENT.md](AGENT.md) — mandatory conventions, guardrails, and architectural invariants
