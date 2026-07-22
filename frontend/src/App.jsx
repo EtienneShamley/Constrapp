@@ -22,6 +22,7 @@ import ProjectCostCodes  from './pages/project/ProjectCostCodes'
 import ProjectPurchaseOrders from './pages/project/ProjectPurchaseOrders'
 import ProjectProgressClaims from './pages/project/ProjectProgressClaims'
 import ProjectInvoices from './pages/project/ProjectInvoices'
+import ProjectVariations from './pages/project/ProjectVariations'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
 
 export default function App() {
@@ -70,14 +71,7 @@ export default function App() {
                           badge="Coming in Sprint 4"
                         />
                       } />
-                      <Route path="variations" element={
-                        <ProjectPlaceholder
-                          icon="🔀"
-                          title="Variations"
-                          description="Track scope variations and their impact on this project's budget."
-                          badge="Coming Soon"
-                        />
-                      } />
+                      <Route path="variations" element={<ProjectVariations />} />
                       <Route path="documents" element={
                         <ProjectPlaceholder
                           icon="📐"

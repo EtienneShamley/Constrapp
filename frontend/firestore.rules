@@ -104,6 +104,29 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Variations — project-scoped commercial change control. One type-
+    // discriminated collection holds Client Variations (variationType 'client',
+    // head-contract revenue changes) and Supplier Variations (variationType
+    // 'supplier', subcontract commitment changes). Numbered CV-#### / SV-####
+    // from company-wide counters (variationsClient / variationsSupplier).
+    // Reads: restricted to internal financial roles — variations expose client
+    // contract revenue and supplier pricing, so subcontractor and client users
+    // must NOT read them (matching Contacts and Supplier Invoices). Client- and
+    // subcontractor-scoped visibility is future work.
+    // Create/update: same financial roles.
+    // Delete: blocked — rejection/withdrawal is a status change; variations are
+    // audit records.
+    // TODO (server-side hardening): enforce status-transition legality, post-
+    // submit/post-approval immutability, creator != approver segregation, and
+    // (counterparty + external reference) uniqueness here rather than only in
+    // the client hook.
+    match /companies/{companyId}/projects/{projectId}/variations/{variationId} {
+      allow read, create, update: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      allow delete: if false;
+    }
+
     // Contacts — company-wide directory of suppliers, subcontractors,
     // consultants, and clients (third-party PII: names, phones, emails, ABNs,
     // payment terms).

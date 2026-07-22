@@ -26,7 +26,7 @@ project.
 - [ ] Project name is required; budget/progress inputs reject negatives (progress clamps 0–100).
 - [ ] Open a project → lands on `/projects/{id}/overview` showing budget, start date, progress bar.
 - [ ] Unknown project ID shows "Project not found."; unmatched routes redirect to `/projects`.
-- [ ] BOQ/Forecasting/Variations/Documents/Photos/Timeline/Reports tabs show placeholder cards, no data wiring.
+- [ ] BOQ/Forecasting/Documents/Photos/Timeline/Reports tabs show placeholder cards, no data wiring (Variations is now live — see §14).
 
 ## 3. Cost Codes
 
@@ -186,7 +186,48 @@ the full tax-invoice value.
 - [ ] Posting invoices beyond a PO's value drives that PO line's Committed to zero (never negative).
 - [ ] Signed in as a `subcontractor` or `client` role user, the Invoices tab shows no data (reads are blocked by rules).
 
-## 14. Responsive Checks — 375px, 768px, 1280px
+## 14. Variations
+
+### 14a. Client Variation
+
+- [ ] Variations tab is live (not a placeholder). Summary cards show Approved Supplier Variations, Pending Supplier Exposure, Approved Client Variations, Pending Client Exposure, and Open Variations; a note explains figures are ex-GST, approved-only, and do not yet mature against claims/invoices.
+- [ ] New Variation → choose **Client Variation**; help text reads "Head Contract Variation". Only client-type contacts appear in the Client picker; there is **no** quick-create.
+- [ ] Title is required; add cost-coded lines (each line requires a cost code); enter an amount and pick a tax code per line. Footer shows submitted subtotal, GST, total; a GST-free line contributes no GST.
+- [ ] Numbering is `CV-0001`, `CV-0002`… sequential company-wide even across two simultaneous creators.
+- [ ] Create → status Draft. Approved and pending client totals on the summary cards update after submit/approve.
+- [ ] A client variation never changes the Budget tab's Budgeted/Committed/Actual/Invoiced or Commitment Exposure.
+
+### 14b. Supplier Variation — against a PO
+
+- [ ] New Variation → **Supplier Variation** (help text "Subcontract Variation") → **Against a Purchase Order**: only sent/closed POs are selectable; the supplier name is shown locked from the PO snapshot.
+- [ ] A line can pick an existing PO line (inherits and **locks** its cost code, prefills description) or "New scope" (requires its own cost code). The PO document is never modified (spot-check the PO before/after).
+- [ ] Numbering is `SV-0001`… sequential company-wide.
+
+### 14c. Supplier Variation — no PO
+
+- [ ] **No PO (manual)**: select an active supplier/subcontractor contact; every line requires a cost code entered manually. No synthetic PO is created (check Purchase Orders tab).
+
+### 14d. Lifecycle & assessment
+
+- [ ] Draft can be **Submitted** or **Withdrawn** (withdraw confirms). Submitted content is locked; actions are **Assess** or **Withdraw**.
+- [ ] Assess prefills each approved amount from its submitted amount. Approved amounts accept values above, below, equal, zero, and **negative**. Approved GST/total recalculate live.
+- [ ] Changing any approved amount away from its submitted value makes **Assessment Notes required** — Approve is blocked with a clear message until notes are entered.
+- [ ] Approve (confirms) freezes approved amounts; Reject (confirms) and Withdraw are terminal and show no further actions. No delete action exists anywhere.
+
+### 14e. Negatives, duplicates, filters
+
+- [ ] A negative-amount supplier variation approved against a budgeted cost code **reduces** Approved Supplier Variations and Commitment Exposure (not clamped to zero).
+- [ ] Re-using the same external reference for the same counterparty shows an amber possible-duplicate warning but does **not** block.
+- [ ] All / Client / Supplier sub-tabs filter the list; search matches variation number, title, description, counterparty, client/supplier ref, and PO number; status, counterparty, and cost-code filters combine with search.
+- [ ] Signed in as a `subcontractor` or `client` role user, the Variations tab shows no data (reads are blocked by rules).
+
+### 14f. Budget-page integration
+
+- [ ] Budget summary still shows the six canonical figures unchanged. Below them, **Approved Supplier Variations** and **Commitment Exposure** appear separately, with helper text stating Commitment Exposure = Committed + approved supplier variations and that variation amounts do not yet mature against claims/invoices.
+- [ ] The Budget table has an **Appr. Supplier Var.** column showing approved supplier variation amounts by cost code; a variation on a cost code with no budget line surfaces as an amber warning row.
+- [ ] Approving/withdrawing a supplier variation changes Commitment Exposure but leaves the canonical Committed figure untouched.
+
+## 15. Responsive Checks — 375px, 768px, 1280px
 
 - [ ] **375px:** sidebar hidden behind hamburger; drawer opens/closes (tap overlay); nav items ≥44px tall; project tab bar wraps; PO/claim tables scroll horizontally inside their card; modals fit with internal scrolling; all actions reachable by tap (no hover-only).
 - [ ] **768px:** sidebar visible and static; two-column grids engage; modals centred with margin.

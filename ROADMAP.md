@@ -24,6 +24,7 @@
 - [x] **Contacts** — company-wide directory (suppliers, subcontractors, consultants, clients; organisations + individuals), ABN validation, embedded contact people, duplicate warnings, archive/reactivate; PO supplier picker with quick-create writes `supplierId` + `supplierName` snapshot; Subcontractors page is a filtered contacts view
 - [x] **Contact project assignments** — embedded `projectAssignments` (+ derived `projectIds`) on contacts; multi-project checkbox assignment on the contact form, project/unassigned filter, PO picker grouped "This project" / "Other company contacts", quick-create auto-assigns to the current project; no rules changes, no migration of existing contacts
 - [x] **Supplier Invoices** — accounts-payable bills (`SI-0001`) via two paths: `direct_po` (against a sent/closed PO) and `progress_claim` (from one approved claim); per-line ex-GST amounts with per-line tax codes, retention carried from claims, `draft → approved → posted` lifecycle (posted immutable), duplicate + over-invoicing warnings, financial-role-only reads. Read-time derivation: Invoiced from posted/paid invoices, Committed matured to remaining open commitment, Actual replaces a source claim with its posted invoice (no claim mutation, no double-count). No Budget Line writes; no migration
+- [x] **Variations (foundation)** — one type-discriminated collection (`variations`): **Client Variations** (`CV-0001`, head-contract revenue) and **Supplier Variations** (`SV-0001`, subcontract commitment, one/no PO), company-wide counters. Cost-code spine on every line, per-line tax codes (ex-GST canonical, derived GST, negatives supported), `draft → submitted → approved`/`rejected`/`withdrawn` lifecycle with unbounded per-line approval and required assessment notes on change. Approved-only, read-time: Approved Supplier Variations + **Commitment Exposure** (separate from Committed) on the Budget tab; approved Client Variations are revenue-side only. Financial-role-only reads. **No** Budget Line/PO/claim/invoice mutation; `progressClaims.variationId` stays `null` (claim/invoice linkage deferred); no uploads; no migration
 
 Firestore security rules for all of the above are written in `frontend/firestore.rules` and published manually.
 
@@ -40,7 +41,7 @@ Bring documentation in line with the implemented system:
 
 ## Known Gaps & Deferred Work
 
-**Placeholders (screens exist, no functionality):** PULSE™, SHIELD™, and the BOQ, Forecasting, Variations, Documents, Photos, Timeline, and Reports project tabs. Dashboard KPIs/charts are partly static. Subcontractors shows the live contacts directory but its IQ™ scoring is a placeholder. None of these are complete.
+**Placeholders (screens exist, no functionality):** PULSE™, SHIELD™, and the BOQ, Forecasting, Documents, Photos, Timeline, and Reports project tabs. Dashboard KPIs/charts are partly static. Subcontractors shows the live contacts directory but its IQ™ scoring is a placeholder. None of these are complete.
 
 **Deferred security hardening** (client-enforced today, server enforcement deferred — full list in [docs/SECURITY.md](docs/SECURITY.md)):
 
@@ -59,8 +60,14 @@ Bring documentation in line with the implemented system:
 
 The sequence closes the commercial-control loop first (the back half of the lifecycle is already in the schema), then completes the preconstruction side (the front half), then layers intelligence and commercially linked field features. Each item integrates through the cost-code spine.
 
-**1. Variations**
-The missing connector between commitments, claims, invoices, and forecast. Approved scope changes update budget and commitment and flow into claiming — activating the reserved `variationId`. Highest leverage because every downstream figure depends on it, and the schema already anticipates it.
+**1. Variations** — *foundation shipped (see Completed Foundations).*
+One type-discriminated `variations` collection (Client/​Supplier), cost-code spine,
+approved-only read-time derivation, and a **Commitment Exposure** figure kept
+separate from Committed. **Remaining (deferred to a follow-up phase):**
+claim-against-variation and invoice-against-variation linkage (activating the
+reserved `progressClaims.variationId` and maturing variation commitment against
+claims/invoices). The foundation deliberately does not fold variations into the
+canonical Committed formula until that linkage lands.
 
 **2. Forecast Cost to Complete**
 Derives remaining cost from budget, commitment, variations, and actuals — read-time, like the six budget figures. This is what turns recorded cost into a forward-looking control number.

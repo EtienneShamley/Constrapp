@@ -41,10 +41,10 @@ frontend/
     pages/          Top-level routes; pages/project/ holds Project Detail tabs
     hooks/          useAuth, useProfile, useCompany, useProjects, useProject,
                     useCostCodes, useContacts, useBudgetLines, usePurchaseOrders,
-                    useProgressClaims, useSupplierInvoices
+                    useProgressClaims, useSupplierInvoices, useVariations
     lib/            firebase.js, formatters.js, nav.js, projectTabs.js,
                     purchaseOrders.js, progressClaims.js, supplierInvoices.js,
-                    contacts.js (pure domain logic)
+                    variations.js, contacts.js (pure domain logic)
 ```
 
 ## Design Tokens
@@ -93,11 +93,15 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
   …/supplierInvoices/{invoiceId}             invoiceNumber (SI-####), status, source, poId, progressClaimId,
                                              ex-GST lineItems[] w/ per-line taxCode, retention, subtotal-gst-net-total —
                                              accounts payable; reads restricted to financial roles
+  …/variations/{variationId}                 variationNumber (CV-#### client / SV-#### supplier), variationType,
+                                             status, client/supplier + poId snapshots, ex-GST lineItems[] w/ per-line
+                                             taxCode (submitted/approved sides), costCodeId spine — commercial change
+                                             control; approved-only read-time; reads restricted to financial roles
 ```
 
 ## Financial Invariants (mandatory)
 
-- **Purchase Orders, Progress Claims, and Supplier Invoices never write financial values onto Budget Lines.** Committed, Claimed, Actual, and Invoiced are derived at read time from PO, claim, and invoice documents (`lib/purchaseOrders.js`, `lib/progressClaims.js`, `lib/supplierInvoices.js`) — never stored back. Committed now means *remaining open commitment* (PO line − posted/paid invoiced-to-date); Actual counts a posted invoice instead of its source claim (read-time exclusion — the claim is never mutated)
+- **Purchase Orders, Progress Claims, Supplier Invoices, and Variations never write financial values onto Budget Lines.** Committed, Claimed, Actual, Invoiced, and the variation figures (Approved Supplier Variations / Commitment Exposure) are derived at read time from PO, claim, invoice, and variation documents (`lib/purchaseOrders.js`, `lib/progressClaims.js`, `lib/supplierInvoices.js`, `lib/variations.js`) — never stored back. Approved variations count only at read time and never mutate POs, claims, or invoices; **Commitment Exposure is separate from Committed** (variation commitment does not yet mature against claims/invoices). Committed now means *remaining open commitment* (PO line − posted/paid invoiced-to-date); Actual counts a posted invoice instead of its source claim (read-time exclusion — the claim is never mutated)
 - Document numbers (`PO-0001`, `PC-0001`, `SI-0001`) come from company-wide counters incremented in the same transaction as the document write
 - PO line items freeze once a PO leaves `draft`; claim amounts freeze once submitted; approved amounts are frozen forever; supplier invoices freeze once `posted` (and posted invoices cannot be cancelled/unposted)
 - Lifecycles are forward-only; financial documents are never deleted — cancellation/rejection is a status change

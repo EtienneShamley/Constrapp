@@ -9,9 +9,11 @@ import { useCostCodes } from '../../hooks/useCostCodes'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
+import { useVariations } from '../../hooks/useVariations'
 import { maturedCommittedByCostCode } from '../../lib/purchaseOrders'
 import { actualClaimsByCostCode, claimedPendingByCostCode } from '../../lib/progressClaims'
 import { invoicedByCostCode, invoicedClaimIds, postedInvoicedByPoLine } from '../../lib/supplierInvoices'
+import { approvedSupplierVariationsByCostCode } from '../../lib/variations'
 
 const EMPTY_FORM = { costCodeId: '', budgeted: '', notes: '' }
 
@@ -118,6 +120,7 @@ export default function ProjectBudget() {
   const { purchaseOrders } = usePurchaseOrders(projectId)
   const { progressClaims } = useProgressClaims(projectId)
   const { supplierInvoices } = useSupplierInvoices(projectId)
+  const { variations } = useVariations(projectId)
   const [showModal, setShowModal] = useState(false)
 
   const noCostCodes = !costCodesLoading && costCodes.length === 0
@@ -143,6 +146,12 @@ export default function ProjectBudget() {
   // Claimed = uncertified exposure (submitted/under review claims). Unchanged.
   const claimedMap = claimedPendingByCostCode(progressClaims)
 
+  // Approved Supplier Variations by cost code — a SEPARATE read-time figure that
+  // does NOT alter the six canonical figures above. Committed is unchanged; this
+  // is surfaced alongside as Commitment Exposure (Committed + approved supplier
+  // variations). It does not yet mature against claims or invoices. Ex-GST.
+  const supplierVarMap = approvedSupplierVariationsByCostCode(variations)
+
   // POs/invoices can hit cost codes that have no budget line yet — surface those
   // as warning rows rather than hiding the commitment or cost.
   const budgetedCostCodeIds = new Set(budgetLines.map(l => l.costCodeId))
@@ -150,6 +159,7 @@ export default function ProjectBudget() {
     ...Object.keys(committedMap),
     ...Object.keys(invoicedMap),
     ...Object.keys(actualMap),
+    ...Object.keys(supplierVarMap),
   ])]
     .filter(costCodeId => !budgetedCostCodeIds.has(costCodeId))
     .map(costCodeId => {
@@ -159,6 +169,7 @@ export default function ProjectBudget() {
         committed: committedMap[costCodeId] || 0,
         invoiced:  invoicedMap[costCodeId] || 0,
         actual:    actualMap[costCodeId] || 0,
+        supplierVar: supplierVarMap[costCodeId] || 0,
         costCodeName: cc ? `${cc.code} — ${cc.name}` : 'Unknown cost code',
       }
     })
@@ -170,6 +181,9 @@ export default function ProjectBudget() {
   totals.actual    = Object.values(actualMap).reduce((sum, v) => sum + v, 0)
   totals.claimed   = Object.values(claimedMap).reduce((sum, v) => sum + v, 0)
   totals.invoiced  = Object.values(invoicedMap).reduce((sum, v) => sum + v, 0)
+  // Separate, non-canonical figures (do not change Committed or Remaining).
+  totals.supplierVariations = Object.values(supplierVarMap).reduce((sum, v) => sum + v, 0)
+  const commitmentExposure  = totals.committed + totals.supplierVariations
 
   const remaining     = totals.budgeted - totals.actual
   const usagePercent  = totals.budgeted > 0 ? Math.min(100, (totals.actual / totals.budgeted) * 100) : 0
@@ -200,6 +214,25 @@ export default function ProjectBudget() {
           </div>
         </div>
         <ProgBar value={usagePercent} colour={usagePercent >= 100 ? 'brand-red' : 'brand-accent'} />
+
+        {/* Read-time variation figures — kept SEPARATE from the six canonical
+            figures above. Committed is unchanged; Commitment Exposure adds
+            approved supplier variations for visibility only. */}
+        <div className="grid grid-cols-2 gap-3.5 mt-3 pt-3 border-t border-brand-border">
+          <div>
+            <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Approved Supplier Variations</p>
+            <p className="text-lg font-bold text-brand-text">{currency(totals.supplierVariations)}</p>
+          </div>
+          <div>
+            <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Commitment Exposure</p>
+            <p className="text-lg font-bold text-brand-text">{currency(commitmentExposure)}</p>
+          </div>
+        </div>
+        <p className="m-0 mt-2 text-[11px] text-brand-muted">
+          Commitment Exposure = Committed + approved Supplier Variations (ex-GST). It is separate from the
+          canonical Committed figure — approved variation amounts do not yet mature against progress claims or
+          supplier invoices.
+        </p>
       </Card>
 
       <div className="flex items-center justify-between gap-3 mb-3.5">
@@ -236,7 +269,7 @@ export default function ProjectBudget() {
           <table className="w-full border-collapse">
             <thead>
               <tr className="bg-brand-card border-b border-brand-border">
-                {['Cost Code', 'Budgeted', 'Committed', 'Actual', 'Invoiced', 'Remaining'].map(h => (
+                {['Cost Code', 'Budgeted', 'Committed', 'Appr. Supplier Var.', 'Actual', 'Invoiced', 'Remaining'].map(h => (
                   <th key={h} className="text-left px-3.5 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px]">
                     {h}
                   </th>
@@ -249,6 +282,7 @@ export default function ProjectBudget() {
                   <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">{line.costCodeName || '—'}</td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(line.budgeted || 0)}</td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(committedMap[line.costCodeId] || 0)}</td>
+                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{supplierVarMap[line.costCodeId] ? currency(supplierVarMap[line.costCodeId]) : '—'}</td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(actualMap[line.costCodeId] || 0)}</td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(invoicedMap[line.costCodeId] || 0)}</td>
                   <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">
@@ -264,6 +298,7 @@ export default function ProjectBudget() {
                   </td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.committed ? currency(row.committed) : '—'}</td>
+                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.supplierVar ? currency(row.supplierVar) : '—'}</td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.actual ? currency(row.actual) : '—'}</td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.invoiced ? currency(row.invoiced) : '—'}</td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>

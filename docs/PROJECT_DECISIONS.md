@@ -280,3 +280,44 @@ are deferred (ADR-14). Existing `supplierId: null` POs remain invoiceable via
 their `supplierName` snapshot. **Reserved for later:** Payments (`paid`/`paidAt`),
 Credit Notes (`docType`/`adjustsInvoiceId`), attachments (`attachments: []`),
 accounting sync (`externalRefs`).
+
+## ADR-18: Variations (one type-discriminated collection; approved-only; read-time)
+
+Commercial variations live in **one** collection
+(`companies/{id}/projects/{id}/variations`) discriminated by `variationType`:
+**client** (head-contract revenue change) and **supplier** (subcontract commitment
+change). Numbered `CV-0001`/`SV-0001` from company-wide counters
+(`variationsClient`/`variationsSupplier`, ADR-5). Cost Codes are the mandatory
+spine on every line (`costCodeId` + frozen `costCodeName`). Amounts are ex-GST with
+a per-line `taxCode` (`gst`/`gst_free`/`input_taxed`); header totals derive from
+the lines (no flat header rate); negative amounts/GST (credits/omissions) are
+supported and never clamped. Lifecycle `draft → submitted → approved`, plus
+`rejected`/`withdrawn` (all terminal); `under_review`/`disputed`/`superseded`
+reserved. A submitted **request** becomes an approved **order** through approval —
+stages, not separate entities. Approval uses per-line `approvedAmount` prefilled
+from submitted, **unbounded** (above/below/zero/negative), requiring
+`assessmentNotes` when values differ. **Only `approved` counts, and only at read
+time.** A supplier variation references **one** sent/closed PO or **none**; a line
+may inherit+lock a PO line via `poLineIndex` (new scope otherwise). Reads are
+restricted to internal financial roles.
+**Why:** real construction has two distinct change realities — a change to what the
+client pays (revenue) and a change to what a subcontractor is owed (cost) — and
+both must reconcile through the cost-code spine; one type-discriminated collection
+mirrors ADR-15's single-contacts decision and shares one register/hook/rules block.
+**Consequences (budget figures):** the six canonical figures are **unchanged**.
+Approved **supplier** variations are surfaced as a **separate** read-time
+**Commitment Exposure** (`Committed + approved supplier variations`, ex-GST) —
+deliberately *not* "Adjusted Committed" and not folded into Committed, because
+variation commitment **does not yet mature** against claims/invoices. Approved
+**client** variations are a **revenue-side input only** — they never touch the cost
+Budget. Variations **never** write onto Budget Lines and **never** mutate POs,
+claims, or invoices (ADR-3/ADR-4/ADR-7 upheld). The reserved
+`progressClaims.variationId` stays `null`; claim-against-variation and
+invoice-against-variation linkage are **deferred**, and no variation references are
+added to PO/claim/invoice line items. **Internal Budget Adjustments** (transfers/
+revisions with no external counterparty) are a **separate future document type**,
+not variations. Attachments (`attachments: []`) reserved — no uploads. Server-side
+transition legality, post-submit/approval immutability, creator≠approver
+segregation, and (counterparty + reference) uniqueness are **deferred** (ADR-14);
+duplicate detection is client-side warn-only. No migration — additive only;
+existing documents and snapshots are untouched.

@@ -11,12 +11,14 @@ users/{uid}
 companies/{companyId}
   costCodes/{costCodeId}
   contacts/{contactId}
-  counters/{counterId}                 (purchaseOrders, progressClaims, supplierInvoices)
+  counters/{counterId}                 (purchaseOrders, progressClaims, supplierInvoices,
+                                        variationsClient, variationsSupplier)
   projects/{projectId}
     budgetLines/{lineId}
     purchaseOrders/{poId}
     progressClaims/{claimId}
     supplierInvoices/{invoiceId}
+    variations/{variationId}
 ```
 
 `users/` is the only top-level collection besides `companies/`. Everything else
@@ -114,13 +116,14 @@ next save. Embedding (not a `contactAssignments` subcollection) follows ADR-16.
 ## companies/{companyId}/counters/{counterId}
 
 Company-wide sequential numbering. Documents: `purchaseOrders`, `progressClaims`,
-`supplierInvoices`.
+`supplierInvoices`, `variationsClient`, `variationsSupplier`.
 
 | Field | Type | Notes |
 |---|---|---|
 | `next` | number | The next number to assign. Read and incremented in the **same transaction** as the numbered document's creation, so concurrent users never share a number. Missing counter ⇒ starts at 1 |
 
-Numbers render as `PO-0001` / `PC-0001` / `SI-0001` (zero-padded to 4).
+Numbers render as `PO-0001` / `PC-0001` / `SI-0001` / `CV-0001` / `SV-0001`
+(zero-padded to 4).
 
 ## companies/{companyId}/projects/{projectId}
 
@@ -196,7 +199,7 @@ Cumulative supplier claims against one **sent** PO. One open claim
 | `poId`, `poNumber`, `supplierName`, `supplierId` | | Denormalised from the PO at creation |
 | `periodEnding` | string | Date string (may be empty) |
 | `claimRef` | string | Supplier's own reference |
-| `variationId` | string \| null | Always null until the Variations module exists |
+| `variationId` | string \| null | **Reserved forward-link** to a Supplier Variation. Always `null` in the current branch — the Variations foundation does **not** wire claim-against-variation yet (claim documents are never modified). Activated in a later phase (claim-against-variation linkage) |
 | `lineItems` | array | One per PO line — see below |
 | `retention` | number | Ex-GST amount withheld, clamped to subtotal |
 | `claimedSubtotal`, `claimedGst`, `claimedTotal` | number | GST applies to (subtotal − retention) |
@@ -281,6 +284,71 @@ GST-inclusive entry may be offered as a UI mode, but storage is always ex-GST +
 but never auto-selects a tax code and never blocks. Cost codes are constrained to
 the selected PO/claim lines — arbitrary non-PO cost-code lines are not allowed.
 
+## …/projects/{projectId}/variations/{variationId}
+
+Project-scoped commercial change control. **One type-discriminated collection**
+holds both commercial variation types (ADR-18). Lifecycle and financial
+semantics: [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md). Reads are restricted
+to internal financial roles (see [SECURITY.md](SECURITY.md)).
+
+- **Client Variation** (`variationType: 'client'`) — a change to **contract
+  revenue** (a.k.a. *Head Contract Variation*). No PO relationship. Revenue-side
+  only: never touches Budgeted/Committed/Claimed/Invoiced/Actual.
+- **Supplier Variation** (`variationType: 'supplier'`) — a change to a
+  **supplier/subcontract commitment** (a.k.a. *Subcontract Variation*). References
+  **one** sent/closed PO, or **none**. Approved amounts feed **Commitment
+  Exposure** at read time — a figure kept separate from the canonical Committed.
+
+All canonical amounts are **ex-GST**; GST is derived per line from `taxCode`.
+Header totals derive from the line items (no flat header rate). Numbers come from
+`counters/variationsClient` (`CV-0001`) / `counters/variationsSupplier`
+(`SV-0001`), incremented in the same transaction as the write.
+
+| Field | Type | Notes |
+|---|---|---|
+| `variationNumber` | string | `CV-0001` (client) or `SV-0001` (supplier) |
+| `variationType` | string | `client` \| `supplier` |
+| `status` | string | `draft` \| `submitted` \| `approved` \| `rejected` \| `withdrawn`; `under_review` \| `disputed` \| `superseded` reserved |
+| `title`, `description` | string | |
+| `reason` | string | Optional reserved enum: `design_change` \| `site_condition` \| `client_instruction` \| `error_omission` \| `other` \| `''` |
+| `clientId` | string \| null | Client type: → contact (type `client`). `null` on supplier variations |
+| `clientName` | string \| null | Snapshot of the client's display name at write time (frozen). `null` on supplier variations |
+| `clientRef` | string \| null | Client's/superintendent's own VO number (optional). `null` on supplier variations |
+| `supplierId` | string \| null | Supplier type: → contact, or snapshotted from the linked PO. `null` on client variations |
+| `supplierName` | string \| null | Snapshot (frozen). `null` on client variations |
+| `supplierRef` | string \| null | Supplier's own variation/quote number (optional). `null` on client variations |
+| `poId` | string \| null | Supplier type: the **one** PO this varies, or `null` (no-PO / manual). Always `null` on client variations |
+| `poNumber` | string \| null | Snapshot of the PO number |
+| `lineItems` | array | See below — ex-GST, per-line tax |
+| `submittedSubtotal`, `submittedGst`, `submittedTotal` | number | Derived from submitted line amounts (signed) |
+| `approvedSubtotal`, `approvedGst`, `approvedTotal` | number \| null | Null until approved; frozen after (signed) |
+| `forecastAmount` | number \| null | **Reserved** — likely settlement value of a pending variation, for future forecast |
+| `identifiedDate`, `submittedDate`, `responseDueDate`, `approvedDate`, `effectiveDate` | string | Human `YYYY-MM-DD` strings (may be empty) |
+| `currency`, `revision` | | `AUD`, 1 |
+| `notes`, `assessmentNotes` | string | `assessmentNotes` required when approved amounts differ from submitted |
+| `submittedAt`/`submittedBy`, `approvedAt`/`approvedBy`, `rejectedAt`/`rejectedBy`, `withdrawnAt`/`withdrawnBy` | timestamp / uid | Stamped on transition |
+| `attachments` | array | **Reserved** — always `[]`; no Storage uploads yet |
+| `externalRefs` | map | **Reserved** — accounting-system IDs |
+| `supersededByVariationId` | string \| null | **Reserved** — revision workflow |
+| `createdAt` / `createdBy` | timestamp / uid | |
+
+Each line item:
+
+```
+{ costCodeId, costCodeName,       // MANDATORY spine + frozen snapshot
+  description,
+  submittedAmount, submittedGst,  // ex-GST proposed amount + derived GST (signed)
+  approvedAmount, approvedGst,     // null until approved; ex-GST certified + derived GST (signed)
+  poLineIndex,                     // supplier only: the PO line this extends, or null (new scope)
+  taxCode }                        // 'gst' (10%) | 'gst_free' (0%) | 'input_taxed' (0%)
+```
+
+Only `approved` variations count financially, derived at read time
+(`approvedSupplierVariationsByCostCode` and the exposure/total helpers in
+`lib/variations.js`). Variations **never** write onto Budget Lines and **never**
+mutate POs, claims, or invoices. Negative amounts (credits/omissions) are
+supported and are **not** clamped to zero.
+
 ## Planned Commercial Entities (not yet modelled)
 
 The schema above is **implemented**. The commercial lifecycle will introduce
@@ -298,7 +366,7 @@ exactly as budget lines, PO lines, claim lines, and invoice lines already do.
 | **Tender packages** | BOQ items grouped for tender | Scoped by cost code / trade |
 | **Tender bids** | Subcontractor responses, compared and levelled | Levelled per cost code against the estimate |
 | **Awards** | The winning bid, transferred to commitment | Carries cost-coded amounts into POs/budget |
-| **Variations** | Approved scope changes to budget/commitment | Adjust amounts by cost code; link to claims via the reserved `variationId` |
+| **Budget Adjustments** | Internal budget transfers/revisions (no external counterparty) — **a distinct future document type, not a variation** | Reallocate budget by cost code |
 | **Forecast snapshots / inputs** | Cost-to-complete, cash-flow, margin inputs | Aggregated by cost code |
 | **Final account records** | Closing budget-vs-actual reconciliation | Reconciled per cost code |
 
@@ -313,6 +381,7 @@ a design assessment, a hook, and (where a new collection is introduced) a manual
 - Contacts → projects via `projectAssignments[].projectId` (with derived `projectIds`) — administrative preference only; no name snapshot, and financial documents never read it. The PO supplier picker groups project-assigned contacts first but any active supplier remains selectable.
 - POs → contacts via `supplierId`, with `supplierName` snapshotted at write time (same pattern as `costCodeName`). Null `supplierId` = pre-Contacts PO; render from the snapshot.
 - Claims → POs via `poId`, with `poNumber`/`supplierName`/`supplierId`/`poLineTotal` snapshotted. Claims inherit supplier identity from the PO — they never reference contacts directly.
-- `variationId` is a forward-reference to the unbuilt Variations module — always null today.
+- Variations → cost codes via `costCodeId` (with `costCodeName` snapshot) on every line; supplier variations → one PO via `poId` (with `poNumber`/`supplierName` snapshot) and optionally a PO line via `poLineIndex`; client variations → a client contact via `clientId`/`clientName`. Approved variations affect figures **only at read time** — no PO/claim/invoice/budget-line mutation.
+- `progressClaims.variationId` is a **reserved** forward-link to a Supplier Variation — still `null`; the Variations foundation does not wire claim-against-variation yet.
 - Supplier invoices → POs via `poId` (required; one PO per invoice) and → approved claims via `progressClaimId` (source `progress_claim` only). Supplier identity is snapshotted from the PO/claim (`supplierId`/`supplierName`) — invoices never read contacts for identity. Invoice lines link to PO lines via `poLineIndex`. Claims are **never** mutated or stamped when invoiced; double-counting is avoided at read time (see [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md)).
 - Counters are company-wide: PO/claim/invoice numbers are unique per **company**, not per project. Contacts carry no sequential number.

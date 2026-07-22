@@ -239,6 +239,19 @@ All derived figures group PO/claim **line items by `costCodeId`** and are ex-GST
 | **Invoiced** | Σ ex-GST line `amount` of supplier invoices in `posted`/`paid`, grouped by cost code | Derived from invoices |
 | **Remaining** | `Budgeted − Actual` (per line and in total) | Computed |
 
+**The six canonical figures are unchanged by Variations.** The Budget page adds
+two **separate, clearly-labelled** read-time figures sourced from approved supplier
+variations (`lib/variations.js`), and **does not** alter the Committed formula:
+
+| Figure | Definition | Source |
+|---|---|---|
+| **Approved Supplier Variations** | Σ approved supplier-variation line `approvedAmount` by cost code (signed; not clamped) | Derived from variations |
+| **Commitment Exposure** | `Committed + Approved Supplier Variations` (ex-GST) — **not** "Adjusted Committed" | Computed |
+
+Commitment Exposure is explicitly **separate** from Committed: approved variation
+amounts **do not yet mature** against progress claims or supplier invoices. UI
+helper text states this.
+
 ### Committed now means *remaining open commitment*
 
 Before invoices, Committed was the full value of every sent/closed PO. **Now that
@@ -286,13 +299,67 @@ the estimate. The winning bid is **awarded**, becoming a commitment (a purchase
 order). Award snapshots values at the transfer point, mirroring the existing
 snapshot idiom.
 
-### Variations *(planned)*
+### Variations *(implemented — foundation)*
 
-Approved scope changes adjust the **approved budget and commitment** and flow into
-claiming and forecast — the connector between commitment, claims, invoices, and
-forecast. This activates the reserved `variationId` on claims. Whether a variation
-adjusts a PO, a budget line, or both, and how it interacts with cumulative
-claiming, is settled in its design sprint.
+Commercial change control is modelled as **one type-discriminated collection**
+(`variations`, ADR-18), project-scoped, `CV-0001`/`SV-0001` numbered from
+company-wide counters. Two types:
+
+- **Client Variation** (`variationType: 'client'`, *Head Contract Variation*) — a
+  change to **contract revenue**. No PO relationship. Approved client variations
+  are a **revenue-side input only**: they never alter Budgeted, Committed,
+  Claimed, Invoiced, or Actual. Forecast Revenue / Cash Flow / Margin consumers
+  are deferred.
+- **Supplier Variation** (`variationType: 'supplier'`, *Subcontract Variation*) — a
+  change to a **supplier/subcontract commitment**, referencing **one** sent/closed
+  PO or **none**. Approved supplier variations feed **Commitment Exposure** at
+  read time (see below).
+
+**Lifecycle** (forward-only, no deletion):
+
+```
+draft → submitted → approved            (terminal)
+                  → rejected            (terminal)
+      → withdrawn / (submitted →) withdrawn   (terminal)
+```
+
+`under_review`, `disputed`, and `superseded` are **reserved** (no UI transition).
+A **submitted** request becomes an **approved** order through approval — these are
+lifecycle stages, not separate entities.
+
+- **Draft** — fully editable.
+- **Submitted** — content freezes; may only be assessed or transitioned.
+- **Approved** — carries per-line `approvedAmount` values, **prefilled from
+  submitted** and **unbounded** (above, below, equal, zero, or negative — variation
+  negotiation is not bounded like a progress claim). `assessmentNotes` are
+  **required** when any approved amount differs from its submitted amount.
+  Approved amounts and commercial content freeze forever.
+- **Rejected / Withdrawn** — terminal audit records; contribute nothing financially.
+
+**Tax & totals.** All line amounts are **ex-GST**. Per-line `taxCode`
+(`gst` 10% · `gst_free` 0% · `input_taxed` 0%) yields a per-line, per-side
+`submittedGst`/`approvedGst`; header subtotals/GST/totals **derive from the lines**
+(no flat header rate). Negative amounts and negative GST are supported for
+credits/omissions and are **not** clamped.
+
+**Counting point — `approved` only.** Pending (`draft`/`submitted`) variations are
+**exposure only** and count nowhere.
+
+- **Approved Supplier Variations** are derived by `costCodeId` at read time
+  (`approvedSupplierVariationsByCostCode`). They **never** write to Budget Lines,
+  **never** mutate POs/claims/invoices, and **do not** directly affect Claimed,
+  Invoiced, or Actual. Negative approved supplier variations reduce the total;
+  nothing is clamped to zero.
+- **Approved Client Variations** are derived as revenue totals at read time and do
+  **not** alter the cost Budget. Revenue and supplier-cost variations stay strictly
+  separate.
+
+**Deferred (not in this foundation):** claim-against-variation and
+invoice-against-variation linkage (the reserved `progressClaims.variationId` stays
+`null`; no variation references are added to PO/claim/invoice line items), and
+maturing variation commitment against claims/invoices. **Internal Budget
+Adjustments** (budget transfers/revisions with no external counterparty) are a
+**separate future document type**, deliberately *not* modelled as variations.
 
 ### Forecast Cost to Complete *(planned)*
 
@@ -327,8 +394,13 @@ cost-to-complete, cash flow, and the final account.
   fields will carry supplier credits/negative adjustments that reduce Invoiced.
 - **Attachments** — the reserved `attachments: []` array on invoices anchors
   future Firebase Storage uploads (invoice PDFs); no uploads today.
-- **Variations** — the reserved `variationId` on claims will link approved
-  scope changes into claiming and budget adjustments.
+- **Variation → claim/invoice linkage** — the reserved `variationId` on claims
+  will link a Supplier Variation into claiming; invoice-against-variation and
+  maturing variation commitment against claims/invoices follow. The Variations
+  foundation itself is implemented (see above); only this downstream linkage is
+  deferred.
+- **Budget Adjustments** — internal budget transfers/revisions (no external
+  counterparty) as a distinct future document type, separate from Variations.
 - **Xero / MYOB / QuickBooks** — the empty `externalRefs` map on POs, claims, and
   invoices is the anchor for accounting-system document IDs; per-line invoice
   `taxCode`s map to accounting tax codes; `roundMoney` exists so totals reconcile
