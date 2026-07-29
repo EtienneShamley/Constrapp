@@ -18,7 +18,7 @@ Preconstruction → Procurement → Delivery → Cost Control → Forecasting �
 | **Procurement** | Tender packages, subcontractor invitations, bid levelling, award, commitment | Tender & Award *(future)* → **Purchase Orders** *(implemented)* |
 | **Delivery** | Scope variations, cumulative progress claims against commitments | **Variations** *(implemented — foundation)*; **Progress Claims** *(implemented)* |
 | **Cost Control** | Supplier invoices, actual cost, payments/credit notes | **Supplier Invoices** *(implemented)*; Payments, Credit Notes *(future)* |
-| **Forecasting** | Forecast cost to complete, cash flow, project margin | Forecast & Cash Flow *(placeholder/planned)* |
+| **Forecasting** | Forecast cost to complete *(implemented — foundation)*; cash flow, project margin | **Forecast Cost to Complete** *(implemented)*; Cash Flow, Margin *(planned)* |
 | **Final Account** | Reconcile budget + variations + actual into final margin; commercial reporting | Final Account, Commercial Reporting *(future/planned)* |
 
 **Cost Codes are the spine** across all six phases: a cost code links a BOQ line
@@ -28,9 +28,10 @@ variations, claims, and supplier invoices. Every commercial document snapshots i
 
 **What is implemented today** is the Delivery and Cost-Control middle
 (Budgets → POs → Progress Claims → Supplier Invoices) plus the Cost-Code spine and
-Contacts, plus the **Variations** foundation — see the module table and factual
-detail below. **Planned commercial architecture** (Preconstruction, Procurement
-front, Forecasting, Final Account) is described conceptually here and in
+Contacts, the **Variations** foundation, and the **Forecast Cost to Complete**
+foundation (read-time, cost-side) — see the module table and factual detail below.
+**Planned commercial architecture** (Preconstruction, Procurement
+front, Cash Flow/Margin, Final Account) is described conceptually here and in
 [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md); it has **no implemented schema
 yet** — exact collections and fields are decided in each feature's design sprint
 (see [DATA_MODEL.md](DATA_MODEL.md) → "Planned Commercial Entities"). **Placeholder
@@ -76,11 +77,12 @@ frontend/                  The entire application (run all npm commands here)
                            contacts view + IQ™ placeholder), Pulse, Shield
     pages/project/         ProjectOverview, ProjectBudget, ProjectCostCodes,
                            ProjectPurchaseOrders, ProjectProgressClaims,
-                           ProjectInvoices, ProjectVariations, ProjectPlaceholder
+                           ProjectInvoices, ProjectVariations, ProjectForecast,
+                           ProjectPlaceholder
     hooks/                 All Firestore access (see below)
     lib/                   firebase.js, formatters.js, nav.js, projectTabs.js,
                            purchaseOrders.js, progressClaims.js, supplierInvoices.js,
-                           variations.js, contacts.js
+                           variations.js, forecast.js, contacts.js
 docs/                      This documentation + design-reference assets
                            (Constrapp_v5.jsx prototype, screenshots, Word doc — do not move)
 AGENT.md / CLAUDE.md / README.md / PRODUCT.md / ROADMAP.md   (canonical root docs)
@@ -104,7 +106,8 @@ AuthProvider          Firebase Auth user (onAuthStateChanged)
 Per-page hooks (not context providers): `useProject(projectId)` (lookup within
 ProjectsProvider), `useCostCodes()`, `useContacts()`, `useBudgetLines(projectId)`,
 `usePurchaseOrders(projectId)`, `useProgressClaims(projectId)`,
-`useSupplierInvoices(projectId)`, `useVariations(projectId)`.
+`useSupplierInvoices(projectId)`, `useVariations(projectId)`,
+`useForecastLines(projectId)`.
 
 ## Routing Structure
 
@@ -116,8 +119,9 @@ ProtectedRoute (redirects to /login when signed out)
    ├─ /                        Dashboard
    ├─ /projects                Projects list
    ├─ /projects/:projectId     ProjectDetailLayout (tab bar; index → overview)
-   │    overview | budget | cost-codes | purchase-orders | progress-claims | invoices | variations  (live)
-   │    boq | forecasting | documents | photos | timeline | reports  (ProjectPlaceholder)
+   │    overview | budget | cost-codes | purchase-orders | progress-claims | invoices | variations | forecasting  (live)
+   │      (the `forecasting` route renders the Forecast Cost to Complete page; the tab is labelled "Forecast")
+   │    boq | documents | photos | timeline | reports  (ProjectPlaceholder)
    ├─ /contacts                Company-wide contact directory
    ├─ /subcontractors          Filtered contacts view (+ IQ™ placeholder card)
    ├─ /pulse                   Placeholder (PULSE™)
@@ -147,11 +151,12 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Progress Claims | Implemented |
 | Supplier Invoices (accounts payable) | Implemented (foundation) |
 | Variations (client + supplier) | Implemented (foundation) |
+| Forecast Cost to Complete | Implemented (foundation) — read-time, cost-side |
 | Dashboard | Partial — live project list; static KPI/chart data |
 | Contacts | Implemented (foundation) — company-wide directory; supplier picker on POs |
 | Subcontractors | Partial — filtered contacts view; IQ™ scoring is a placeholder |
 | PULSE™, SHIELD™ | Placeholder screens |
-| BOQ, Forecasting, Documents, Photos, Timeline, Reports tabs | Placeholder (`ProjectPlaceholder`) |
+| BOQ, Documents, Photos, Timeline, Reports tabs | Placeholder (`ProjectPlaceholder`) |
 
 ## Hooks-Only Firestore Access
 
@@ -161,5 +166,7 @@ the only exceptions today are the Login page calling `signInWithEmailAndPassword
 and the hooks themselves. Reads are live `onSnapshot` subscriptions; writes are
 `addDoc`/`updateDoc`/`runTransaction` inside hook callbacks. Pure domain logic
 (status machines, totals, derivations) lives in `lib/purchaseOrders.js`,
-`lib/progressClaims.js`, and `lib/supplierInvoices.js` so it is testable and
-shared between create/assess/invoice flows.
+`lib/progressClaims.js`, `lib/supplierInvoices.js`, `lib/variations.js`, and
+`lib/forecast.js` so it is testable and shared between create/assess/invoice/
+forecast flows. `lib/forecast.js` **composes** the other modules' read-time
+helpers rather than duplicating them.

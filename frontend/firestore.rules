@@ -127,6 +127,26 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Forecast Lines — project-scoped Forecast Cost to Complete inputs, one
+    // document per cost code keyed by a deterministic costCodeId. The only stored
+    // input is uncommittedCostToComplete (number | null; null = not forecast) plus
+    // notes and audit stamps — Actual, Remaining Committed, Cost to Complete,
+    // Forecast Final Cost, Variance, Budgeted, and variation exposure are all
+    // derived at read time and never written here.
+    // Reads: restricted to internal financial roles — forecast data is
+    // commercially sensitive and may reveal expected overruns or implied margin,
+    // so subcontractor and client users must NOT read it (matching Variations,
+    // Supplier Invoices, and Contacts).
+    // Create/update: same financial roles (idempotent upsert by costCodeId).
+    // Delete: blocked — clearing an input writes null; forecast lines are not
+    // deleted.
+    match /companies/{companyId}/projects/{projectId}/forecastLines/{costCodeId} {
+      allow read, create, update: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      allow delete: if false;
+    }
+
     // Contacts — company-wide directory of suppliers, subcontractors,
     // consultants, and clients (third-party PII: names, phones, emails, ABNs,
     // payment terms).

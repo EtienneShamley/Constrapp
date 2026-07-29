@@ -19,6 +19,7 @@ companies/{companyId}
     progressClaims/{claimId}
     supplierInvoices/{invoiceId}
     variations/{variationId}
+    forecastLines/{costCodeId}           (deterministic id = costCodeId)
 ```
 
 `users/` is the only top-level collection besides `companies/`. Everything else
@@ -349,6 +350,36 @@ Only `approved` variations count financially, derived at read time
 mutate POs, claims, or invoices. Negative amounts (credits/omissions) are
 supported and are **not** clamped to zero.
 
+## …/projects/{projectId}/forecastLines/{costCodeId}
+
+Per-cost-code **Forecast Cost to Complete** inputs — the forward-looking,
+**strictly cost-side** control layer. The document ID is the **costCodeId**
+itself (a deterministic natural key), so there is exactly one current forecast
+per cost code and saves are idempotent upserts (never `addDoc` with a random ID).
+Semantics and formulas: [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md). Reads
+are restricted to internal financial roles (commercially sensitive — see
+[SECURITY.md](SECURITY.md)).
+
+| Field | Type | Notes |
+|---|---|---|
+| `costCodeId` | string | → company cost code; also the document ID |
+| `costCodeName` | string | Snapshot of the **current** cost-code display string at save time; the stored value is the fallback when the cost code is missing/inactive |
+| `uncommittedCostToComplete` | number \| **null** | **The only authored input.** `null` = *not forecast*; `0` = reviewed, no further uncommitted cost expected; values `< 0` are rejected |
+| `notes` | string | Optional assessor commentary |
+| `createdAt` / `createdBy` | timestamp / uid | Set **only on first creation** and preserved across edits |
+| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on **every** save (`updatedBy` doubles as "prepared by") |
+
+**Stored vs derived.** Only `uncommittedCostToComplete` and `notes` are authored;
+everything shown on the Forecast page — **Actual, Remaining Committed, Cost to
+Complete, Forecast Final Cost, Variance to Budget, Budgeted, and the approved/
+pending supplier-variation exposure** — is **derived at read time** from the same
+POs, claims, supplier invoices, variations, and budget lines the Budget page uses
+(`lib/forecast.js` composes the existing `lib/` helpers). Nothing derived is ever
+written here or onto Budget Lines. `null` contributes **zero** to totals for
+calculation while the row stays visibly *not forecast*. No sequential number, no
+counter. **No migration** — a project with no `forecastLines` loads normally and
+every relevant cost code appears as *not forecast*.
+
 ## Planned Commercial Entities (not yet modelled)
 
 The schema above is **implemented**. The commercial lifecycle will introduce
@@ -367,7 +398,7 @@ exactly as budget lines, PO lines, claim lines, and invoice lines already do.
 | **Tender bids** | Subcontractor responses, compared and levelled | Levelled per cost code against the estimate |
 | **Awards** | The winning bid, transferred to commitment | Carries cost-coded amounts into POs/budget |
 | **Budget Adjustments** | Internal budget transfers/revisions (no external counterparty) — **a distinct future document type, not a variation** | Reallocate budget by cost code |
-| **Forecast snapshots / inputs** | Cost-to-complete, cash-flow, margin inputs | Aggregated by cost code |
+| **Forecast period snapshots** | Immutable monthly cost-to-complete snapshots + prior-period comparison (the *current* per-cost-code forecast inputs are **implemented** above as `forecastLines`) | Aggregated by cost code |
 | **Final account records** | Closing budget-vs-actual reconciliation | Reconciled per cost code |
 
 No collection paths or field lists are committed here; adding any of these requires
@@ -384,4 +415,5 @@ a design assessment, a hook, and (where a new collection is introduced) a manual
 - Variations → cost codes via `costCodeId` (with `costCodeName` snapshot) on every line; supplier variations → one PO via `poId` (with `poNumber`/`supplierName` snapshot) and optionally a PO line via `poLineIndex`; client variations → a client contact via `clientId`/`clientName`. Approved variations affect figures **only at read time** — no PO/claim/invoice/budget-line mutation.
 - `progressClaims.variationId` is a **reserved** forward-link to a Supplier Variation — still `null`; the Variations foundation does not wire claim-against-variation yet.
 - Supplier invoices → POs via `poId` (required; one PO per invoice) and → approved claims via `progressClaimId` (source `progress_claim` only). Supplier identity is snapshotted from the PO/claim (`supplierId`/`supplierName`) — invoices never read contacts for identity. Invoice lines link to PO lines via `poLineIndex`. Claims are **never** mutated or stamped when invoiced; double-counting is avoided at read time (see [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md)).
-- Counters are company-wide: PO/claim/invoice numbers are unique per **company**, not per project. Contacts carry no sequential number.
+- Forecast lines → cost codes via `costCodeId`, which is **also the document ID** (one current forecast per cost code). They store only the manual `uncommittedCostToComplete` + `notes`; every displayed figure is derived at read time and never written back (`lib/forecast.js`). Forecast lines never mutate POs, claims, invoices, variations, or budget lines.
+- Counters are company-wide: PO/claim/invoice numbers are unique per **company**, not per project. Contacts and forecast lines carry no sequential number.

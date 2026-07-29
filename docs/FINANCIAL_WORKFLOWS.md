@@ -361,12 +361,81 @@ maturing variation commitment against claims/invoices. **Internal Budget
 Adjustments** (budget transfers/revisions with no external counterparty) are a
 **separate future document type**, deliberately *not* modelled as variations.
 
-### Forecast Cost to Complete *(planned)*
+### Forecast Cost to Complete *(implemented — foundation)*
 
-A forward-looking figure derived from approved budget, committed cost, approved
-variations, and actual cost — **read-time derived**, like the six budget figures,
-never a stored rollup. It answers "what will remain to spend?" rather than "what
-has been spent?"
+A forward-looking, **strictly cost-side** control layer that answers "what do we
+currently expect this project to cost when complete?" It is **read-time derived**
+like the six budget figures — the only stored value is one manual input per cost
+code. Lives on the project **Forecast** tab; inputs are per-cost-code
+`forecastLines` (document ID = `costCodeId`; see [DATA_MODEL.md](DATA_MODEL.md)).
+
+**The single manual input.** Per cost code, the forecaster enters **Uncommitted
+Cost to Complete** — the Estimate to Complete for work *not already represented by
+Actual or Remaining Committed*. It is `number | null`: `null` = *not forecast*,
+`0` = reviewed with no further uncommitted cost expected, `< 0` = rejected. Every
+other figure below is derived from the exact same read-time calculations the
+Budget page uses (`lib/forecast.js` composes the existing `lib/` helpers — Actual,
+Remaining Committed, approved/pending supplier-variation exposure are **not**
+recomputed independently).
+
+**Formulas (all ex-GST, per cost code and rolled up per project):**
+
+```
+Cost to Complete    = Remaining Committed + Uncommitted Cost to Complete
+Forecast Final Cost = Actual + Remaining Committed + Uncommitted Cost to Complete   (a.k.a. Estimate at Completion / EAC)
+Variance to Budget  = Budgeted − Forecast Final Cost                                (a.k.a. Variance at Completion / VAC)
+```
+
+- **Variance to Budget > 0 ⇒ forecast under budget; < 0 ⇒ forecast over budget.**
+- **`null` (not forecast) contributes zero** to totals for calculation while the
+  row stays visibly *not forecast*; a project-level count of unforecasted cost
+  codes is shown.
+
+**No automatic remaining-budget forecast.** A **Remaining Budget Reference**
+(`Budgeted − Actual − Remaining Committed`) is shown as information only and backs
+an explicit **"Use remaining budget"** action (copies the reference when positive,
+otherwise 0). It is **never** auto-applied: remaining budget is a target, not a
+prediction — assuming it equals remaining cost would force Variance to zero and
+hide overruns.
+
+**Supplier variations are separate exposure, never added to the forecast.**
+Approved and pending supplier variations **do not yet mature** against claims or
+invoices, so they are shown as **separate context** (Approved Supplier Variation
+Exposure, Pending Supplier Variation Exposure) and are **not** added into Forecast
+Final Cost. There is deliberately **no "Forecast Final Cost including variation
+exposure" total** — because a variation cannot yet be attributed against the claims
+or invoices on its PO, auto-adding it would double-count it the moment the varied
+PO is invoiced. The forecaster instead consciously folds the remaining expected
+variation cost into **Uncommitted Cost to Complete**. (Client variations are
+revenue-side and do **not** appear on the cost forecast at all.)
+
+**Cost-code union.** The Forecast table includes every cost code that appears in
+**any** of: budget lines, sent/closed PO lines, Actual, posted/paid supplier
+invoices, supplier variations, or existing forecast lines — using the same
+unbudgeted-row treatment as the Budget page (amber row when there is no budget
+line). A cost code never disappears for having only actual / only a PO / only a
+variation / only a forecast line, and inactive cost codes are retained.
+
+**Closed-PO residual.** Remaining Committed uses the **identical** calculation as
+the Budget page (PO lifecycle and commitment maths are unchanged). When a **closed**
+PO still carries uninvoiced commitment, the row shows an amber indicator so the QS
+can judge it — the amount is **left visible**, never silently removed.
+
+**Lifecycle.** Current forecast lines are **living, editable inputs** — not
+immutable financial records. There is intentionally **no** Draft/Review/Approved/
+Superseded status, no formal approval, and no creator-vs-approver segregation in
+this foundation. Saving is explicit (per dirty row or all dirty rows), rejects
+negatives, shows progress/errors, and never auto-saves on keypress or silently
+discards edits; `updatedAt`/`updatedBy` are shown after save. No calculated
+staleness flag is claimed (there is no reliable source-change / reporting-period
+rule yet) — only *Not forecast*, *Last updated*, and *Updated by* are surfaced.
+
+**Deferred:** reporting periods, monthly reporting, forecast cut-off dates, period
+locking, immutable period snapshots, prior-period comparison, approval workflow,
+probability weighting, risk allowance, forecast adjustment, final-forecast
+override, and — strictly out of this cost-side branch — Forecast Revenue, Cash
+Flow, Project Margin, Final Account, and PULSE. `variations.forecastAmount` is
+**not** used here.
 
 ### Cash Flow *(planned)*
 

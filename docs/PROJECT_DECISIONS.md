@@ -321,3 +321,54 @@ transition legality, post-submit/approval immutability, creator≠approver
 segregation, and (counterparty + reference) uniqueness are **deferred** (ADR-14);
 duplicate detection is client-side warn-only. No migration — additive only;
 existing documents and snapshots are untouched.
+
+## ADR-19: Forecast Cost to Complete (per-cost-code inputs; read-time; cost-side only)
+
+The **Forecast Cost to Complete** foundation lives at
+`companies/{id}/projects/{id}/forecastLines`, one document per cost code with the
+**document ID = `costCodeId`** (a deterministic natural key — one current forecast
+per cost code, idempotent upsert, never `addDoc`). The **only** stored input is
+`uncommittedCostToComplete` (`number | null`) plus `notes` and audit stamps; a
+transaction sets `createdAt`/`createdBy` once and refreshes `updatedAt`/`updatedBy`
+every save. `null` = *not forecast*, `0` = reviewed/no further cost, `< 0` rejected.
+Every displayed figure is **derived at read time** by composing the existing
+Budget-page helpers (`lib/forecast.js` over `purchaseOrders.js`/`progressClaims.js`/
+`supplierInvoices.js`/`variations.js`), never stored back (ADR-3/ADR-4 upheld):
+
+```
+Cost to Complete    = Remaining Committed + Uncommitted Cost to Complete
+Forecast Final Cost = Actual + Remaining Committed + Uncommitted Cost to Complete   (EAC)
+Variance to Budget  = Budgeted − Forecast Final Cost                                (VAC)
+```
+
+**Why cost-side only, single input, no auto-defaults, variations kept separate:**
+a builder's forward number must be a *conscious* estimate, not an arithmetic
+assumption. The forecast is deliberately **strictly cost-side** (no revenue, cash
+flow, margin, or final account). Defaulting Uncommitted CTC to remaining budget is
+**refused** — it would force Variance to zero and mask overruns; a **Remaining
+Budget Reference** is shown only behind an explicit "Use remaining budget" action.
+Approved **and** pending supplier variations are shown as **separate exposure** and
+are **never** added into Forecast Final Cost — there is intentionally **no**
+"FFC including variation exposure" total — because supplier variations do not yet
+mature against claims/invoices (ADR-18), so auto-adding one would double-count it
+once its PO is invoiced; the forecaster folds the remaining expected variation cost
+into Uncommitted CTC instead. Client variations do not appear on the cost forecast.
+**Consequences:** the Forecast tab reuses the exact Remaining Committed / Actual
+calculations (PO lifecycle and commitment maths unchanged); closed-PO residual
+commitment is flagged (amber) but left visible for QS judgement, not removed. The
+cost-code **union** spans budget lines, sent/closed PO lines, Actual, posted/paid
+invoices, supplier variations, and existing forecast lines (same unbudgeted-row
+idiom as the Budget page); inactive codes are retained. Current forecast lines are
+**living editable inputs**, not immutable records — **no** Draft/Review/Approved
+status, formal approval, or creator≠approver segregation (all deferred, ADR-14
+posture). Reads are restricted to internal financial roles (forecast reveals
+expected overruns/implied margin — tighter than the company-member `budgetLines`
+read, matching Variations/Supplier Invoices/Contacts). Deletes blocked — clearing
+an input writes `null`. **Deferred:** reporting periods, monthly reporting, cut-off
+dates, period locking, immutable snapshots, prior-period comparison, probability
+weighting, risk allowance, forecast adjustment, final-forecast override, and (out
+of this branch) Forecast Revenue, Cash Flow, Project Margin, Final Account, PULSE.
+`variations.forecastAmount` is **not** used. No migration — additive only; a project
+without `forecastLines` loads normally with every cost code *not forecast*. Current
+inputs vs future **immutable period snapshots** is the recorded evolution path
+(mirrors the current-vs-frozen split elsewhere).

@@ -42,6 +42,7 @@ to financial roles.**
 | `…/projects/{id}/progressClaims/{id}` | company member | financial roles | blocked — reject via status |
 | `…/projects/{id}/supplierInvoices/{id}` | **financial roles only** | financial roles | blocked — cancel via status |
 | `…/projects/{id}/variations/{id}` | **financial roles only** | financial roles | blocked — reject/withdraw via status |
+| `…/projects/{id}/forecastLines/{id}` | **financial roles only** | financial roles | blocked — clear via `null`, never deleted |
 | `…/counters/{id}` | financial roles | financial roles | blocked |
 
 Contacts reads are deliberately tighter than the shared pattern: the directory
@@ -53,6 +54,15 @@ the `supplierName` snapshot on POs/claims — no contact read required.
 **Supplier invoices reads are likewise restricted to financial roles** (tighter
 than the POs/claims read pattern): the accounts-payable register exposes supplier
 billing detail, so `subcontractor` and `client` users must not read it.
+
+**Forecast Lines reads are restricted to financial roles** — deliberately tighter
+than the company-member `budgetLines` read. The Forecast Cost to Complete data
+exposes expected project overruns and implied margin (Forecast Final Cost,
+Variance to Budget), so `subcontractor` and `client` users must not read it. This
+is a considered asymmetry with budget lines (which are company-member readable),
+matching the more conservative posture already applied to Variations, Supplier
+Invoices, and Contacts. Delete is blocked — clearing an input writes `null`; the
+document is never deleted.
 
 **Variations reads are also restricted to financial roles.** The register exposes
 client contract revenue (Client Variations) and supplier pricing (Supplier

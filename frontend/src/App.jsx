@@ -23,6 +23,7 @@ import ProjectPurchaseOrders from './pages/project/ProjectPurchaseOrders'
 import ProjectProgressClaims from './pages/project/ProjectProgressClaims'
 import ProjectInvoices from './pages/project/ProjectInvoices'
 import ProjectVariations from './pages/project/ProjectVariations'
+import ProjectForecast from './pages/project/ProjectForecast'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
 
 export default function App() {
@@ -63,14 +64,7 @@ export default function App() {
                       <Route path="purchase-orders" element={<ProjectPurchaseOrders />} />
                       <Route path="progress-claims" element={<ProjectProgressClaims />} />
                       <Route path="invoices" element={<ProjectInvoices />} />
-                      <Route path="forecasting" element={
-                        <ProjectPlaceholder
-                          icon="📈"
-                          title="Forecasting & Cashflow"
-                          description="Income/expense curves, profit analysis, and budget burn forecasting for this project."
-                          badge="Coming in Sprint 4"
-                        />
-                      } />
+                      <Route path="forecasting" element={<ProjectForecast />} />
                       <Route path="variations" element={<ProjectVariations />} />
                       <Route path="documents" element={
                         <ProjectPlaceholder

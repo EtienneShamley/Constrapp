@@ -234,6 +234,25 @@ function sumSubtotals(variations, type, statuses, side) {
   return roundMoney(sum)
 }
 
+// { costCodeId: submitted ex-GST } across PENDING (draft/submitted) SUPPLIER
+// variations — the per-cost-code companion to pendingSupplierVariationExposureTotal
+// (and the pending-side mirror of approvedSupplierVariationsByCostCode). Exposure
+// only: it never matures against claims/invoices and is NEVER added to any
+// forecast total — the Forecast page shows it as separate context. Signed —
+// negatives (credits/omissions) are not clamped.
+export function pendingSupplierVariationExposureByCostCode(variations) {
+  const map = {}
+  for (const v of variations) {
+    if (v.variationType !== VARIATION_TYPE.SUPPLIER) continue
+    if (!VARIATION_PENDING_STATUSES.includes(v.status)) continue
+    for (const li of v.lineItems ?? []) {
+      if (!li.costCodeId) continue
+      map[li.costCodeId] = roundMoney((map[li.costCodeId] || 0) + (Number(li.submittedAmount) || 0))
+    }
+  }
+  return map
+}
+
 export const approvedSupplierVariationsTotal = (variations) =>
   sumSubtotals(variations, VARIATION_TYPE.SUPPLIER, VARIATION_APPROVED_STATUSES, 'approved')
 

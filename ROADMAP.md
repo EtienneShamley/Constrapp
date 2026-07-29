@@ -26,6 +26,8 @@
 - [x] **Supplier Invoices** — accounts-payable bills (`SI-0001`) via two paths: `direct_po` (against a sent/closed PO) and `progress_claim` (from one approved claim); per-line ex-GST amounts with per-line tax codes, retention carried from claims, `draft → approved → posted` lifecycle (posted immutable), duplicate + over-invoicing warnings, financial-role-only reads. Read-time derivation: Invoiced from posted/paid invoices, Committed matured to remaining open commitment, Actual replaces a source claim with its posted invoice (no claim mutation, no double-count). No Budget Line writes; no migration
 - [x] **Variations (foundation)** — one type-discriminated collection (`variations`): **Client Variations** (`CV-0001`, head-contract revenue) and **Supplier Variations** (`SV-0001`, subcontract commitment, one/no PO), company-wide counters. Cost-code spine on every line, per-line tax codes (ex-GST canonical, derived GST, negatives supported), `draft → submitted → approved`/`rejected`/`withdrawn` lifecycle with unbounded per-line approval and required assessment notes on change. Approved-only, read-time: Approved Supplier Variations + **Commitment Exposure** (separate from Committed) on the Budget tab; approved Client Variations are revenue-side only. Financial-role-only reads. **No** Budget Line/PO/claim/invoice mutation; `progressClaims.variationId` stays `null` (claim/invoice linkage deferred); no uploads; no migration
 
+- [x] **Forecast Cost to Complete (foundation)** — forward-looking, **strictly cost-side** control layer. Per-cost-code `forecastLines` keyed by a deterministic `costCodeId` document ID; the **only** stored input is `uncommittedCostToComplete` (`number | null`; `null` = not forecast, `0` = reviewed/no further cost, `< 0` rejected) plus notes and audit stamps. Everything else is derived at read time by composing the existing Budget-page helpers (`lib/forecast.js`): **Forecast Final Cost** = Actual + Remaining Committed + Uncommitted CTC; **Variance to Budget** = Budgeted − Forecast Final Cost. No automatic remaining-budget default (a Remaining Budget Reference backs an explicit "Use remaining budget" action). Approved/pending **supplier variation exposure shown separately, never added** to the forecast (variations don't yet mature). Cost-code union across budget/PO/actual/invoice/variation/forecast rows; closed-PO residual flagged, not removed. Living editable inputs (no approval/snapshots). Financial-role-only reads; deletes blocked (clear via `null`). **No** Budget Line/PO/claim/invoice/variation mutation; no migration
+
 Firestore security rules for all of the above are written in `frontend/firestore.rules` and published manually.
 
 ---
@@ -41,7 +43,7 @@ Bring documentation in line with the implemented system:
 
 ## Known Gaps & Deferred Work
 
-**Placeholders (screens exist, no functionality):** PULSE™, SHIELD™, and the BOQ, Forecasting, Documents, Photos, Timeline, and Reports project tabs. Dashboard KPIs/charts are partly static. Subcontractors shows the live contacts directory but its IQ™ scoring is a placeholder. None of these are complete.
+**Placeholders (screens exist, no functionality):** PULSE™, SHIELD™, and the BOQ, Documents, Photos, Timeline, and Reports project tabs. Dashboard KPIs/charts are partly static. Subcontractors shows the live contacts directory but its IQ™ scoring is a placeholder. None of these are complete. (The Forecast tab is now live — Forecast Cost to Complete foundation.)
 
 **Deferred security hardening** (client-enforced today, server enforcement deferred — full list in [docs/SECURITY.md](docs/SECURITY.md)):
 
@@ -69,8 +71,13 @@ reserved `progressClaims.variationId` and maturing variation commitment against
 claims/invoices). The foundation deliberately does not fold variations into the
 canonical Committed formula until that linkage lands.
 
-**2. Forecast Cost to Complete**
-Derives remaining cost from budget, commitment, variations, and actuals — read-time, like the six budget figures. This is what turns recorded cost into a forward-looking control number.
+**2. Forecast Cost to Complete** — *foundation shipped (see Completed Foundations).*
+Per-cost-code `forecastLines` (deterministic `costCodeId` IDs) with a single manual
+input (Uncommitted Cost to Complete), read-time Forecast Final Cost / Variance to
+Budget, no automatic remaining-budget default, and supplier-variation exposure kept
+strictly separate from the forecast total. **Remaining (deferred):** reporting
+periods, immutable monthly snapshots, prior-period comparison, and any approval
+workflow — the current forecast is a living editable input until those land.
 
 **3. Cash-flow Forecasting and Project Margin**
 Cash-flow curves and project margin close the current project-control loop: the system can now answer "where does this project finish?" not just "what has it cost?"

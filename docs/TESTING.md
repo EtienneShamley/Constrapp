@@ -26,7 +26,7 @@ project.
 - [ ] Project name is required; budget/progress inputs reject negatives (progress clamps 0–100).
 - [ ] Open a project → lands on `/projects/{id}/overview` showing budget, start date, progress bar.
 - [ ] Unknown project ID shows "Project not found."; unmatched routes redirect to `/projects`.
-- [ ] BOQ/Forecasting/Documents/Photos/Timeline/Reports tabs show placeholder cards, no data wiring (Variations is now live — see §14).
+- [ ] BOQ/Documents/Photos/Timeline/Reports tabs show placeholder cards, no data wiring (Variations — see §14 — and Forecast — see §15 — are now live).
 
 ## 3. Cost Codes
 
@@ -227,7 +227,53 @@ the full tax-invoice value.
 - [ ] The Budget table has an **Appr. Supplier Var.** column showing approved supplier variation amounts by cost code; a variation on a cost code with no budget line surfaces as an amber warning row.
 - [ ] Approving/withdrawing a supplier variation changes Commitment Exposure but leaves the canonical Committed figure untouched.
 
-## 15. Responsive Checks — 375px, 768px, 1280px
+## 15. Forecast Cost to Complete
+
+Sign in as a financial-role user (`company_admin`/`project_manager`/`qs`).
+
+### 15a. Page, tab, and summary
+
+- [ ] The project tab reads **Forecast** (not "Forecasting"); opening it shows a real page (no placeholder card).
+- [ ] Core summary cards show **Approved Budget, Actual, Remaining Committed, Forecast Final Cost, Variance to Budget**, with helper text "Estimate at Completion (EAC)" under Forecast Final Cost and "Variance at Completion (VAC)" under Variance to Budget.
+- [ ] Separate **Approved Supplier Variation Exposure** and **Pending Supplier Variation Exposure** cards appear with the note that they are shown separately, may overlap Actual/manual cost, and are **not** added to Forecast Final Cost.
+- [ ] With no forecast inputs, every relevant cost code shows **Not forecast**, and the header shows "N of M cost codes not yet forecast."
+
+### 15b. Cost-code union & unbudgeted rows
+
+- [ ] The table lists every cost code appearing in budget lines, sent/closed POs, Actual, posted invoices, supplier variations, or existing forecast lines — even one with only a PO, only Actual, only a variation, or only a forecast line.
+- [ ] A cost code with commitment/actual/variation but **no budget line** shows an amber row and a "no budget line" note, with Budgeted, Remaining Budget Reference, and Variance shown as "—".
+- [ ] An **inactive** cost code that still has activity remains listed (marked "Inactive cost code"), not hidden.
+
+### 15c. The single manual input & live calculations
+
+- [ ] **Uncommitted Cost to Complete** is the only editable money field; Actual, Remaining Committed, variation exposure, Cost to Complete, Forecast Final Cost, and Variance are read-only.
+- [ ] Entering a value updates **Cost to Complete** (= Remaining Committed + Uncommitted CTC), **Forecast Final Cost** (= Actual + Remaining Committed + Uncommitted CTC), and **Variance to Budget** (= Budgeted − FFC) immediately, before saving.
+- [ ] A **blank** input shows "Not forecast"; entering **0** is treated as a completed forecast value (not missing) and clears the "Not forecast" marker.
+- [ ] A **negative** value is rejected (red field, Save blocked / errors); non-numeric junk is rejected.
+- [ ] Positive Variance renders normally; **negative Variance renders in red** (over budget) on budgeted rows.
+
+### 15d. Remaining Budget suggestion
+
+- [ ] Nothing is prefilled automatically — new rows start blank ("Not forecast").
+- [ ] Pressing **"Use remaining budget"** copies the Remaining Budget Reference (`Budgeted − Actual − Remaining Committed`) into Uncommitted CTC when positive, and **0** when the reference is zero or negative; the copied value is then editable.
+- [ ] The suggestion never includes supplier variation amounts.
+
+### 15e. Saving & audit
+
+- [ ] Editing a row reveals a **Save** action; a **Save all changes (N)** control saves every dirty row.
+- [ ] Save shows progress, blocks negatives, surfaces clear errors, and does not discard other unsaved edits.
+- [ ] After a successful save the row shows **Last updated** (date) and **Updated by**, and a "Saved" badge until edited again.
+- [ ] Editing does not auto-save on each keypress.
+- [ ] Reloading the page preserves saved inputs; a project that never had forecast lines still loads (every cost code "Not forecast").
+
+### 15f. Closed-PO residual, filters, security
+
+- [ ] A **closed** PO that still holds uninvoiced commitment shows an amber "incl. … on closed PO" indicator on Remaining Committed; the amount stays visible (not removed from the forecast).
+- [ ] Search matches cost-code code/name; the **Not forecast**, **Forecast over budget**, **Unbudgeted**, and **All** filters work and combine with search.
+- [ ] Saving a forecast line never changes any Budget Line, PO, Progress Claim, Supplier Invoice, or Variation (spot-check the Budget tab figures are unchanged).
+- [ ] Signed in as a `subcontractor` or `client` role user, the Forecast tab shows no data (reads are blocked by rules).
+
+## 16. Responsive Checks — 375px, 768px, 1280px
 
 - [ ] **375px:** sidebar hidden behind hamburger; drawer opens/closes (tap overlay); nav items ≥44px tall; project tab bar wraps; PO/claim tables scroll horizontally inside their card; modals fit with internal scrolling; all actions reachable by tap (no hover-only).
 - [ ] **768px:** sidebar visible and static; two-column grids engage; modals centred with margin.
