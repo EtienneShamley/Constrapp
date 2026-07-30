@@ -14,6 +14,31 @@ Constrapp is **the connected commercial operating system for construction projec
 - **Do not build generic form-first or HSEQ-first functionality** (no-code form builders, HSEQ template libraries, generic field reporting, payroll/workforce, fleet/equipment, or broad enterprise integrations before product-market fit) **without an approved strategy change.** See [PRODUCT.md](PRODUCT.md) → "What Constrapp Is Not".
 - **PULSE™, SHIELD™, IQ™, and Quant™ remain placeholders** until their planned sprint (see [ROADMAP.md](ROADMAP.md) and the AI Feature Placeholder Rule below).
 
+## Engineering & Security Standards (mandatory)
+
+[docs/ENGINEERING_STANDARDS.md](docs/ENGINEERING_STANDARDS.md) is **binding** for
+every change, by humans or AI agents — as binding as the Strategic and Financial
+Invariants. Before writing code, run its pre-implementation checklist; before
+marking a task done, run its validation and security-review checklists. In
+particular:
+
+- **Firestore Security Rules are the single trust boundary.** Client-side role and
+  lifecycle checks are **UX only** and never sufficient authorisation. When you
+  describe a control, distinguish *rules-enforced* from *client-enforced* — **never
+  claim a feature is secure or a control is enforced when it is client-side only.**
+  Use the honesty protocol in ENGINEERING_STANDARDS.md §7 and cite the relevant
+  [docs/SECURITY.md](docs/SECURITY.md) Deferred Controls item.
+- **No secret in the frontend, ever.** Every `VITE_`-prefixed variable ships in the
+  public bundle. Never `VITE_`-prefix or read a real secret (Stripe/AI/email keys,
+  service-account JSON) from frontend code, and never call a privileged provider
+  operation directly from the browser (see [docs/SECURITY.md](docs/SECURITY.md) →
+  Secrets & the Vite bundle).
+- **A new collection or field is not done until its rules block is written and a
+  security-review pass is complete.** Rule changes need a manual publish and a review
+  against [docs/SECURITY.md](docs/SECURITY.md).
+- The `backend/` directory is a **reserved, intentionally empty placeholder** — it
+  contains no code; do not treat it as an existing backend.
+
 ## Stack
 
 | Layer | Technology |

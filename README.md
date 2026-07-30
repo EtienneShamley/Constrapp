@@ -23,12 +23,15 @@ Today the delivery-and-cost-control middle of this lifecycle is implemented (bud
 
 - Email/password sign-in (account creation and password reset screens are stubs — users are provisioned manually)
 - Multi-tenant company/user foundation (`users/{uid}` → `companies/{companyId}`)
-- Projects: create and list, with a Project Detail area (Overview, Budget, Cost Codes, Purchase Orders, Progress Claims tabs live; other tabs are placeholders)
+- Projects: create and list, with a Project Detail area (Overview, Budget, Cost Codes, Purchase Orders, Progress Claims, Supplier Invoices, Variations, and Forecast tabs live; other tabs are placeholders)
 - Company-wide Cost Codes
 - Company-wide Contacts: suppliers, subcontractors, consultants, and clients with ABN validation, contact people, duplicate warnings, and archive/reactivate (reads restricted to internal financial roles)
 - Budget Lines per project, with Committed / Claimed / Actual derived live from POs and claims
 - Purchase Orders: draft → sent → closed/cancelled lifecycle with transactional numbering; supplier picked from Contacts (older POs keep their free-text supplier)
 - Progress Claims: cumulative claiming against sent POs, assessment, and partial approval
+- Supplier Invoices (Actual Cost): accounts-payable bills against a sent/closed PO or from one approved claim; `draft → approved → posted` (posted is immutable); reads restricted to internal financial roles
+- Variations (foundation): client (`CV-####`) and supplier (`SV-####`) commercial change control, approved-only read-time, with Commitment Exposure shown separately from Committed; reads restricted to financial roles
+- Forecast Cost to Complete (foundation): one manual Uncommitted Cost to Complete input per cost code, every other figure derived at read time; reads restricted to financial roles
 
 Dashboard KPIs and charts are partly placeholder data. PULSE™ and SHIELD™ are
 placeholder screens; Subcontractors lists live contacts but its IQ™ scoring is
@@ -88,6 +91,7 @@ ROADMAP.md        Sprint plan and current status
 | Document | Contents |
 |---|---|
 | [AGENT.md](AGENT.md) | Mandatory conventions, guardrails, architectural invariants |
+| [docs/ENGINEERING_STANDARDS.md](docs/ENGINEERING_STANDARDS.md) | Binding engineering & security standards, checklists, control matrix |
 | [CLAUDE.md](CLAUDE.md) | Task routing for AI agents |
 | [PRODUCT.md](PRODUCT.md) | Vision, roles, modules with implementation status |
 | [ROADMAP.md](ROADMAP.md) | Sprint plan — what's done, current, and next |

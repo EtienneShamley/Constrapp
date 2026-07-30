@@ -278,3 +278,49 @@ Sign in as a financial-role user (`company_admin`/`project_manager`/`qs`).
 - [ ] **375px:** sidebar hidden behind hamburger; drawer opens/closes (tap overlay); nav items ≥44px tall; project tab bar wraps; PO/claim tables scroll horizontally inside their card; modals fit with internal scrolling; all actions reachable by tap (no hover-only).
 - [ ] **768px:** sidebar visible and static; two-column grids engage; modals centred with margin.
 - [ ] **1280px:** dashboard/detail content capped at max-width 1280px; 4-column KPI grid; 5-column budget summary; no horizontal page scroll at any width.
+
+## 17. Security & Authorisation (negative-path)
+
+Firestore Security Rules are the only trust boundary — these checks confirm the
+**rules** (not just the UI) enforce access. See
+[SECURITY.md](SECURITY.md) and [ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md)
+§4–§5. Run them whenever a collection, field, or rule changes.
+
+### 17a. Tenant isolation
+
+- [ ] A user whose `users/{uid}.companyId` differs from a document's company path
+  cannot read or write that document (verify with a second company's data — a
+  cross-company read returns nothing / is denied, not just hidden by the UI).
+
+### 17b. Role-restricted reads (PII & financial collections)
+
+- [ ] Signed in as a `subcontractor` or `client` role user, **Contacts, Supplier
+  Invoices, Variations, and Forecast** all show no data — reads are blocked by
+  rules, not merely absent from the nav.
+- [ ] The same user **can** still read company members' Projects, Cost Codes,
+  Budget Lines, POs, and Progress Claims (the intended coarser read model).
+
+### 17c. Write authorisation & delete-blocking
+
+- [ ] A `subcontractor`/`client` role user cannot create or update POs, claims,
+  invoices, variations, budget lines, or cost codes (rules reject the write).
+- [ ] No client path can delete a financial/audit document (POs, claims,
+  invoices, variations, budget lines, cost codes, contacts, counters, forecast
+  lines) — cancellation/rejection/archive is always a status/`isActive` change.
+
+### 17d. Client-only controls are *not* a security boundary (known gaps)
+
+These document current deferred limitations — a direct SDK call by an authorized
+financial-role user can still bypass client checks (see SECURITY.md → Deferred
+Controls). They are **expected** to be bypassable today; do not report them as
+enforced.
+
+- [ ] Lifecycle-transition legality, post-submission/`posted`/`approved`
+  immutability, one-open-claim / one-invoice-per-claim races, creator ≠ approver
+  segregation, counter integrity, and uniqueness are all client-enforced only.
+
+### 17e. Secrets
+
+- [ ] The built bundle (`frontend/dist/`) contains only public `VITE_*` values
+  (Firebase web config). No Stripe/AI/email/service-account secret appears in the
+  bundle or in any `VITE_`-prefixed variable.

@@ -17,9 +17,10 @@ Full detail: [PRODUCT.md](PRODUCT.md) and [AGENT.md](AGENT.md) → Strategic Inv
 Before working in this repository, read in order:
 
 1. [AGENT.md](AGENT.md) — mandatory conventions, guardrails, and architectural invariants
-2. [PRODUCT.md](PRODUCT.md) — what the product is, roles, module status
-3. [ROADMAP.md](ROADMAP.md) — what is current, done, and out of scope
-4. The relevant detailed docs for the area you are touching (below)
+2. [docs/ENGINEERING_STANDARDS.md](docs/ENGINEERING_STANDARDS.md) — binding engineering & security standards, checklists, control matrix
+3. [PRODUCT.md](PRODUCT.md) — what the product is, roles, module status
+4. [ROADMAP.md](ROADMAP.md) — what is current, done, and out of scope
+5. The relevant detailed docs for the area you are touching (below)
 
 ## Rules of Engagement
 
@@ -29,12 +30,15 @@ Before working in this repository, read in order:
 - **Never commit automatically.** Only commit or push when explicitly asked.
 - **No unrelated changes.** Keep diffs scoped to the task; flag anything else instead of fixing it silently.
 - **Financial invariant:** Purchase Orders and Progress Claims never write financial values onto Budget Lines (see AGENT.md → Financial Invariants).
+- **Run the checklists.** Before writing code, complete the pre-implementation checklist in [docs/ENGINEERING_STANDARDS.md](docs/ENGINEERING_STANDARDS.md); before finishing, complete its validation and security-review checklists.
+- **Report security limitations honestly.** Firestore Security Rules are the only trust boundary; client-side role/lifecycle checks are UX only. Never claim a feature is secure or a control is enforced when it is client-side only — follow the reporting protocol in ENGINEERING_STANDARDS.md §7.
 
 ## Canonical Documentation
 
 | Topic | Document |
 |---|---|
 | Conventions & guardrails | [AGENT.md](AGENT.md) |
+| Engineering & security standards | [docs/ENGINEERING_STANDARDS.md](docs/ENGINEERING_STANDARDS.md) |
 | Product scope & roles | [PRODUCT.md](PRODUCT.md) |
 | Sprint status | [ROADMAP.md](ROADMAP.md) |
 | Setup & repo overview | [README.md](README.md) |

@@ -2,7 +2,24 @@
 
 What is actually enforced today, and what is deliberately deferred. The rules
 source of truth is `frontend/firestore.rules`, published **manually** via the
-Firebase console (see [DEPLOYMENT.md](DEPLOYMENT.md)).
+Firebase console (see [DEPLOYMENT.md](DEPLOYMENT.md)). Working conventions and the
+current-vs-backend control matrix live in
+[ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md).
+
+## Firestore Security Rules — not SQL Row Level Security
+
+Constrapp's data-access boundary is **Firestore Security Rules**, evaluated by
+Firebase on every read/write. Firestore does **not** use SQL Row Level Security
+(RLS); there is no relational database in the stack today. If PostgreSQL or
+Supabase is introduced later, **RLS becomes mandatory and must be enabled and
+tested on every tenant-owned table** (see Trusted-Backend Activation
+Requirements below) — it does not replace the Firestore rules while both exist,
+it sits alongside them.
+
+Client-side role and lifecycle checks (in hooks and `lib/`) are **UX only** and
+are never sufficient authorisation — any authenticated, authorized client can
+bypass them with direct SDK calls. The only thing standing between a client and
+the data is the rules file.
 
 ## Authentication & Membership — Implemented
 
@@ -125,11 +142,11 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
    client-side warn-only check against the in-memory list; two simultaneous
    creators can still produce duplicates. Server-enforced uniqueness would need
    an index collection or Cloud Functions.
-11. **Scoped variation visibility** — variations are readable only by financial
+10. **Scoped variation visibility** — variations are readable only by financial
     roles today; a future client portal (client sees their own head-contract
     variations) and subcontractor-scoped supplier-variation access are deferred
     with the other scoping controls (item 5).
-10. **Contact project-assignment guards** — the `projectAssignments` /
+11. **Contact project-assignment guards** — the `projectAssignments` /
     `projectIds` fields on contacts required **no rules changes** (they live on
     documents already covered by the contacts block), but their invariants are
     client-enforced only: rules don't verify that `projectIds` matches
@@ -143,3 +160,85 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
 is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.
+
+## Secrets & the Vite bundle
+
+**Every `VITE_`-prefixed environment variable is compiled into the public
+frontend bundle and is readable by anyone.** Treat all `VITE_*` values as public.
+
+- The Firebase web config (`VITE_FIREBASE_*`) is **public by design** — it
+  identifies the project, it does not grant access. Access is enforced by
+  Firestore Security Rules, not by hiding the config. Shipping it in the bundle
+  is expected and safe.
+- **No real secret may ever be `VITE_`-prefixed or read from frontend code.**
+  That includes Stripe secret keys, AI provider API keys, email/SMS provider
+  keys, webhook signing secrets, and any Firebase **service-account** JSON.
+  These belong only in a trusted backend's server-side environment (which does
+  not exist yet).
+- **Privileged provider operations must not be called directly from the
+  browser.** Payment charges, AI inference against a keyed provider, and
+  transactional email must run server-side once that provider is introduced —
+  see Trusted-Backend Activation Requirements.
+- `.env.local` is git-ignored and must never be committed; neither may any
+  service-account key file (AGENT.md → Git Workflow). The root `.env.example`
+  carries a few extra placeholders the app never reads — the canonical file is
+  `frontend/.env.example` (see [DEPLOYMENT.md](DEPLOYMENT.md)).
+
+## Security review checklist
+
+Run this on every change that touches data access or `frontend/firestore.rules`.
+The full working checklist (with the pre-implementation and validation steps
+around it) lives in [ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md) §5;
+the security-specific gate is:
+
+- [ ] Every path is scoped to the caller's `companyId` (rules `get()` the
+      `users/{uid}` doc and compare `companyId` to the path).
+- [ ] Read/write role sets are correct; PII and commercially sensitive
+      collections (Contacts, Supplier Invoices, Variations, Forecast Lines,
+      Counters) restrict **reads** to financial roles.
+- [ ] Delete is blocked on financial/audit collections; lifecycle is a status
+      change.
+- [ ] No secret is `VITE_`-prefixed or read in frontend code; no privileged
+      provider call from the browser.
+- [ ] New collections/fields have a matching rules block, published manually.
+- [ ] Any control that is client-side only is labelled deferred here — not
+      presented as enforced (see the honesty protocol in
+      [ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md) §7).
+
+## Trusted-Backend Activation Requirements
+
+These controls are **not achievable** in the current client-SDK architecture.
+They become **mandatory** the moment a trusted backend (Cloud Functions and/or a
+server API, and/or PostgreSQL/Supabase) is introduced, and they **must** be in
+place before any non-hand-provisioned (external) users are onboarded — see
+[PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) ADR-14 and the control matrix in
+[ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md) §6.
+
+1. **PostgreSQL/Supabase Row Level Security** — enabled and **tested** on every
+   tenant-owned table (company/project isolation), with an explicit deny-by-
+   default posture.
+2. **Server-enforced authorisation** — lifecycle-transition legality, post-
+   submission/`posted`/`approved` immutability, one-open-claim and
+   one-invoice-per-claim race guards, creator ≠ approver segregation, counter
+   integrity (+1 only), and (contacts / supplier-invoice / variation) uniqueness
+   — all moved server-side (the Deferred Controls above, promoted to hard gates).
+3. **Authentication hardening** — Firebase Auth custom claims for role/company,
+   invites and user management, self-serve signup and password reset, and
+   locking down self-managed `role`/`companyId`.
+4. **Rate limiting** on all write/mutating endpoints and auth flows.
+5. **Server-side input validation and explicit API schemas** — the client
+   validation is convenience only; the server is authoritative.
+6. **Secrets server-side** — Stripe, AI, email/SMS provider keys and any
+   service-account credentials held in a server secret store, never in the
+   bundle; **privileged provider calls run server-side only.**
+7. **Webhook security** — signature verification plus replay/idempotency
+   protection on every inbound webhook (payments, email events, etc.).
+8. **File-upload controls** — Firebase Storage Security Rules **before** the
+   first upload feature ships, plus server-side size/type/content validation and
+   antivirus scanning; scoped, company-namespaced storage paths.
+9. **Audit logging** — who performed each transition/edit, when, and from what
+   prior state, beyond the current `createdBy`/`approvedBy` stamps.
+10. **Cost & budget caps** — per-provider spend caps and alerting on metered
+    services (AI inference, email/SMS, storage) to bound abuse and runaway cost.
+11. **Dependency scanning in CI** — automated advisory scanning and an update
+    policy, in addition to the manual `npm audit` gate used today.

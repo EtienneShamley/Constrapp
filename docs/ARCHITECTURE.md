@@ -60,6 +60,13 @@ Firestore security rules (see [SECURITY.md](SECURITY.md) for what that does and
 does not enforce). Cloud Functions and server-side enforcement are deliberate
 deferrals — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md).
 
+A root-level `backend/` directory exists but is a **reserved, intentionally empty
+placeholder** — it holds no code and no configuration. It marks where a future
+trusted backend would live; do not treat it as an existing backend. The controls
+that must be activated when that backend arrives are listed in
+[SECURITY.md](SECURITY.md) → Trusted-Backend Activation Requirements and
+[ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md) §6.
+
 ## Repository Layout
 
 ```
