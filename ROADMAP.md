@@ -28,6 +28,8 @@
 
 - [x] **Forecast Cost to Complete (foundation)** — forward-looking, **strictly cost-side** control layer. Per-cost-code `forecastLines` keyed by a deterministic `costCodeId` document ID; the **only** stored input is `uncommittedCostToComplete` (`number | null`; `null` = not forecast, `0` = reviewed/no further cost, `< 0` rejected) plus notes and audit stamps. Everything else is derived at read time by composing the existing Budget-page helpers (`lib/forecast.js`): **Forecast Final Cost** = Actual + Remaining Committed + Uncommitted CTC; **Variance to Budget** = Budgeted − Forecast Final Cost. No automatic remaining-budget default (a Remaining Budget Reference backs an explicit "Use remaining budget" action). Approved/pending **supplier variation exposure shown separately, never added** to the forecast (variations don't yet mature). Cost-code union across budget/PO/actual/invoice/variation/forecast rows; closed-PO residual flagged, not removed. Living editable inputs (no approval/snapshots). Financial-role-only reads; deletes blocked (clear via `null`). **No** Budget Line/PO/claim/invoice/variation mutation; no migration
 
+- [x] **Project Margin (foundation)** — the first revenue-and-margin layer, closing the "what profit do we forecast?" question. A dedicated **Project Commercial Baseline** document (`…/projects/{projectId}/commercial/baseline`, deterministic id `baseline`) stores the only authored inputs — `originalContractValue`, `originalApprovedBudget` (`number | null`), `contractStartDate`/`contractCompletionDate` (`Timestamp | null`), `clientId`/`clientName` snapshot, `notes`, audit stamps. Everything else is derived at read time (`lib/margin.js` composing `lib/variations.js` + `lib/forecast.js`): **Current Contract Sum** = Original Contract Value + Approved Client Variations; **Forecast Revenue** = Current Contract Sum; **Forecast Gross Profit** = Forecast Revenue − Forecast Final Cost; **Forecast Margin %**; **Original Planned Profit/Margin %**; **Margin Movement**. All ex-GST. Pending client variations stay separate revenue exposure; approved/pending supplier variations stay separate cost exposure and are **never** added to Forecast Final Cost. New **Commercial** project tab + financial-role-only margin cards on Overview (one shared derivation). Reads/writes restricted to financial roles via a rules block scoped to the single `baseline` document; delete blocked. **No** mutation of Projects/Budget Lines/POs/Claims/Invoices/Variations/Forecast Lines; no migration. **Deferred:** Cash Flow, Client Invoices, Accounts Receivable, Payments, retention modelling, monthly periods, snapshots, approvals, probability weighting. Currency remains the app's existing AUD display — see **Company Country & Currency** next.
+
 Firestore security rules for all of the above are written in `frontend/firestore.rules` and published manually.
 
 ---
@@ -79,8 +81,34 @@ strictly separate from the forecast total. **Remaining (deferred):** reporting
 periods, immutable monthly snapshots, prior-period comparison, and any approval
 workflow — the current forecast is a living editable input until those land.
 
-**3. Cash-flow Forecasting and Project Margin**
-Cash-flow curves and project margin close the current project-control loop: the system can now answer "where does this project finish?" not just "what has it cost?"
+**3. Project Margin** — *foundation shipped (see Completed Foundations).*
+Project Commercial Baseline + read-time margin derivation (Current Contract Sum,
+Forecast Revenue, Forecast Gross Profit/Margin %, Original Planned Profit/Margin %,
+Margin Movement), all ex-GST, on a new Commercial tab. **Remaining (deferred):**
+cash-flow forecasting (see item 3c), manual/probability-weighted revenue forecast,
+and immutable margin period snapshots.
+
+**3a. Company Country & Currency** *(next foundation after Margin)*
+The immediate next step. Introduce a company (and inherited project) country and
+reporting currency, then replace the hard-coded AUD number/currency formatting
+(`lib/formatters.js`) with currency inheritance. Margin deliberately stored **no**
+`currency` field and added **no** new hard-coded AUD values — it continues to use
+the existing AUD display until this foundation lands. **No FX conversion** is in
+scope: a project reports in one currency. Company/project currency inheritance and
+the removal of hard-coded AUD formatting are tracked under
+`feature/company-country-currency`.
+
+**3b. Payments / Client Invoices foundation**
+The honest prerequisite for cash flow. Record client-side billing (Client Invoices /
+Accounts Receivable) and Payments against posted supplier invoices (the reserved
+`paid`/`paidAt`) so that "cash in" and "actual cash out" become real, not forecast.
+
+**3c. Cash-flow Forecasting**
+Cash-flow curves close the current project-control loop: the system can then answer
+"when does cash enter and leave, and which months create a shortfall?" Built as a
+hybrid (posted supplier-invoice due dates for known cash-out, time-phased future
+cost, and a clearly-labelled manual forecast cash-in) once items 3a–3b exist so it
+never presents forecast timing as actual cash.
 
 **4. BOQ and Estimating**
 Opens the preconstruction side: a Bill of Quantities against cost codes, with rates/margin/overheads producing an estimate that transfers to an approved budget.

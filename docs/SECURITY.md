@@ -60,6 +60,7 @@ to financial roles.**
 | `…/projects/{id}/supplierInvoices/{id}` | **financial roles only** | financial roles | blocked — cancel via status |
 | `…/projects/{id}/variations/{id}` | **financial roles only** | financial roles | blocked — reject/withdraw via status |
 | `…/projects/{id}/forecastLines/{id}` | **financial roles only** | financial roles | blocked — clear via `null`, never deleted |
+| `…/projects/{id}/commercial/baseline` | **financial roles only** | financial roles | blocked — the single baseline doc is never deleted |
 | `…/counters/{id}` | financial roles | financial roles | blocked |
 
 Contacts reads are deliberately tighter than the shared pattern: the directory
@@ -80,6 +81,21 @@ is a considered asymmetry with budget lines (which are company-member readable),
 matching the more conservative posture already applied to Variations, Supplier
 Invoices, and Contacts. Delete is blocked — clearing an input writes `null`; the
 document is never deleted.
+
+**Project Commercial Baseline reads are restricted to financial roles.** The
+baseline holds the Original Contract Value and drives Project Margin (Forecast
+Revenue, Forecast Gross Profit, Margin %), so `subcontractor` and `client` users
+must not read it — the same conservative posture as Variations, Supplier Invoices,
+and Forecast Lines. This is precisely why the baseline is a **separate document**
+rather than fields on the Project document (which is company-member readable):
+Firestore rules apply one read rule per document, so keeping contract value off the
+Project doc is what lets it stay financial-role-only without locking down the whole
+Projects collection. The rule matches only the deterministic `baseline` document id,
+so no arbitrary `commercial/*` documents are permitted. Delete is blocked — the
+baseline is edited in place, never deleted. **Client-enforced only (deferred):**
+non-negative amounts and Original-Approved-Budget immutability once set are validated
+in the hook only and can be bypassed by a direct SDK call by a financial-role user
+(ADR-14 posture); server-side enforcement is deferred.
 
 **Variations reads are also restricted to financial roles.** The register exposes
 client contract revenue (Client Variations) and supplier pricing (Supplier
@@ -195,7 +211,7 @@ the security-specific gate is:
       `users/{uid}` doc and compare `companyId` to the path).
 - [ ] Read/write role sets are correct; PII and commercially sensitive
       collections (Contacts, Supplier Invoices, Variations, Forecast Lines,
-      Counters) restrict **reads** to financial roles.
+      Commercial Baseline, Counters) restrict **reads** to financial roles.
 - [ ] Delete is blocked on financial/audit collections; lifecycle is a status
       change.
 - [ ] No secret is `VITE_`-prefixed or read in frontend code; no privileged

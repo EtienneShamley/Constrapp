@@ -18,7 +18,7 @@ Preconstruction → Procurement → Delivery → Cost Control → Forecasting �
 | **Procurement** | Tender packages, subcontractor invitations, bid levelling, award, commitment | Tender & Award *(future)* → **Purchase Orders** *(implemented)* |
 | **Delivery** | Scope variations, cumulative progress claims against commitments | **Variations** *(implemented — foundation)*; **Progress Claims** *(implemented)* |
 | **Cost Control** | Supplier invoices, actual cost, payments/credit notes | **Supplier Invoices** *(implemented)*; Payments, Credit Notes *(future)* |
-| **Forecasting** | Forecast cost to complete *(implemented — foundation)*; cash flow, project margin | **Forecast Cost to Complete** *(implemented)*; Cash Flow, Margin *(planned)* |
+| **Forecasting** | Forecast cost to complete and project margin *(implemented — foundation)*; cash flow | **Forecast Cost to Complete**, **Project Margin** *(implemented)*; Cash Flow *(planned)* |
 | **Final Account** | Reconcile budget + variations + actual into final margin; commercial reporting | Final Account, Commercial Reporting *(future/planned)* |
 
 **Cost Codes are the spine** across all six phases: a cost code links a BOQ line
@@ -85,11 +85,11 @@ frontend/                  The entire application (run all npm commands here)
     pages/project/         ProjectOverview, ProjectBudget, ProjectCostCodes,
                            ProjectPurchaseOrders, ProjectProgressClaims,
                            ProjectInvoices, ProjectVariations, ProjectForecast,
-                           ProjectPlaceholder
+                           ProjectCommercial, ProjectPlaceholder
     hooks/                 All Firestore access (see below)
     lib/                   firebase.js, formatters.js, nav.js, projectTabs.js,
                            purchaseOrders.js, progressClaims.js, supplierInvoices.js,
-                           variations.js, forecast.js, contacts.js
+                           variations.js, forecast.js, margin.js, contacts.js
 docs/                      This documentation + design-reference assets
                            (Constrapp_v5.jsx prototype, screenshots, Word doc — do not move)
 AGENT.md / CLAUDE.md / README.md / PRODUCT.md / ROADMAP.md   (canonical root docs)
@@ -114,7 +114,7 @@ Per-page hooks (not context providers): `useProject(projectId)` (lookup within
 ProjectsProvider), `useCostCodes()`, `useContacts()`, `useBudgetLines(projectId)`,
 `usePurchaseOrders(projectId)`, `useProgressClaims(projectId)`,
 `useSupplierInvoices(projectId)`, `useVariations(projectId)`,
-`useForecastLines(projectId)`.
+`useForecastLines(projectId)`, `useProjectCommercial(projectId)`.
 
 ## Routing Structure
 
@@ -126,8 +126,9 @@ ProtectedRoute (redirects to /login when signed out)
    ├─ /                        Dashboard
    ├─ /projects                Projects list
    ├─ /projects/:projectId     ProjectDetailLayout (tab bar; index → overview)
-   │    overview | budget | cost-codes | purchase-orders | progress-claims | invoices | variations | forecasting  (live)
-   │      (the `forecasting` route renders the Forecast Cost to Complete page; the tab is labelled "Forecast")
+   │    overview | budget | cost-codes | purchase-orders | progress-claims | invoices | variations | forecasting | commercial  (live)
+   │      (the `forecasting` route renders the Forecast Cost to Complete page; the tab is labelled "Forecast".
+   │       the `commercial` route renders the Project Margin page; the tab is labelled "Commercial")
    │    boq | documents | photos | timeline | reports  (ProjectPlaceholder)
    ├─ /contacts                Company-wide contact directory
    ├─ /subcontractors          Filtered contacts view (+ IQ™ placeholder card)
@@ -159,6 +160,7 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Supplier Invoices (accounts payable) | Implemented (foundation) |
 | Variations (client + supplier) | Implemented (foundation) |
 | Forecast Cost to Complete | Implemented (foundation) — read-time, cost-side |
+| Project Margin (Commercial tab) | Implemented (foundation) — read-time, ex-GST; commercial baseline is the only stored input |
 | Dashboard | Partial — live project list; static KPI/chart data |
 | Contacts | Implemented (foundation) — company-wide directory; supplier picker on POs |
 | Subcontractors | Partial — filtered contacts view; IQ™ scoring is a placeholder |

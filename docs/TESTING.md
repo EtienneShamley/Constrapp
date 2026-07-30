@@ -26,7 +26,7 @@ project.
 - [ ] Project name is required; budget/progress inputs reject negatives (progress clamps 0–100).
 - [ ] Open a project → lands on `/projects/{id}/overview` showing budget, start date, progress bar.
 - [ ] Unknown project ID shows "Project not found."; unmatched routes redirect to `/projects`.
-- [ ] BOQ/Documents/Photos/Timeline/Reports tabs show placeholder cards, no data wiring (Variations — see §14 — and Forecast — see §15 — are now live).
+- [ ] BOQ/Documents/Photos/Timeline/Reports tabs show placeholder cards, no data wiring (Variations — see §14 — Forecast — see §15 — and Commercial — see §15g — are now live).
 
 ## 3. Cost Codes
 
@@ -273,6 +273,50 @@ Sign in as a financial-role user (`company_admin`/`project_manager`/`qs`).
 - [ ] Saving a forecast line never changes any Budget Line, PO, Progress Claim, Supplier Invoice, or Variation (spot-check the Budget tab figures are unchanged).
 - [ ] Signed in as a `subcontractor` or `client` role user, the Forecast tab shows no data (reads are blocked by rules).
 
+## 15g. Project Margin (Commercial tab)
+
+Sign in as a financial-role user (`company_admin`/`project_manager`/`qs`).
+
+### 15g-i. Baseline form & missing baseline
+
+- [ ] The project tab **Commercial** opens a real page. With no baseline saved, the margin summary shows "—" for Original Contract Value, Current Contract Sum, Forecast Revenue, Forecast Gross Profit, and Forecast Margin %, an amber prompt to set an Original Contract Value, and the baseline form below.
+- [ ] Forecast Final Cost shows a real figure even with no baseline (it is the cost side, shown regardless), matching the Forecast tab's Forecast Final Cost for the same project.
+- [ ] **Save** is disabled until a valid Original Contract Value (≥ 0) is entered; a negative or non-numeric value shows a red field and blocks saving.
+- [ ] Saving creates the baseline; a "Saved" badge appears and **Last updated** / updated-by show. Reloading preserves the saved values.
+- [ ] **Use current approved budget** copies the live Σ budget lines into Original Approved Budget; the value stays editable afterward. Leaving it blank keeps it "not established".
+
+### 15g-ii. Margin maths (exact example)
+
+Set up a project with budget lines totalling **1,000,000** ex-GST, a Forecast Final
+Cost of **1,020,000** (via the Forecast tab), one **approved** client variation of
+**+50,000** ex-GST, one **pending** (submitted) client variation of **+30,000**, and
+one **approved** supplier variation of **+12,000**. On the Commercial tab with
+`originalContractValue = 1,000,000` and `originalApprovedBudget = 950,000`:
+
+- [ ] **Current Contract Sum** = 1,050,000 (1,000,000 + 50,000 approved client variation).
+- [ ] **Forecast Revenue** = 1,050,000 (= Current Contract Sum).
+- [ ] **Forecast Gross Profit** = 30,000 (1,050,000 − 1,020,000).
+- [ ] **Forecast Margin %** = 2.9% (30,000 ÷ 1,050,000 × 100 = 2.857…, shown to 1 dp).
+- [ ] **Original Planned Profit** = 50,000 (1,000,000 − 950,000).
+- [ ] **Original Planned Margin %** = 5.0% (50,000 ÷ 1,000,000 × 100).
+- [ ] **Margin Movement** = −20,000 (30,000 − 50,000), shown in red.
+- [ ] **Pending Client Variation Exposure** = 30,000, shown separately; it is **not** in Forecast Revenue.
+- [ ] **Approved Supplier Variation Exposure** = 12,000 and **Pending Supplier Variation Exposure** are shown separately and are **not** added to Forecast Final Cost.
+
+### 15g-iii. Negative variations, zero & null behaviour
+
+- [ ] A **negative** approved client variation (e.g. −40,000) **reduces** Current Contract Sum (1,000,000 → 960,000); it is not clamped.
+- [ ] With `originalContractValue = 0` (and no positive approved client variation), Forecast Revenue ≤ 0 ⇒ **Forecast Margin %** displays **"—"** (no `NaN`/`Infinity`).
+- [ ] With **Original Approved Budget blank** (null), **Original Planned Profit**, **Original Planned Margin %**, and **Margin Movement** all display **"—"**.
+
+### 15g-iv. Overview cards, security & no-mutation
+
+- [ ] On the **Overview** tab (financial role, baseline established) a **Commercial** card row shows Current Contract Sum, Forecast Final Cost, Forecast Gross Profit, and Forecast Margin %, matching the Commercial tab (one shared derivation).
+- [ ] With no baseline established, the Overview Commercial card row does not appear.
+- [ ] Signed in as a `subcontractor` or `client` role user: the **Commercial tab** shows a "restricted" message and **no** contract or margin data (reads blocked by rules), and the **Overview** Commercial cards do not appear.
+- [ ] Saving or editing the baseline never changes any Budget Line, PO, Progress Claim, Supplier Invoice, Variation, or Forecast Line (spot-check the Budget and Forecast tabs before/after).
+- [ ] No client path can delete the baseline document (delete blocked by rules); editing overwrites in place and preserves `createdAt`/`createdBy`.
+
 ## 16. Responsive Checks — 375px, 768px, 1280px
 
 - [ ] **375px:** sidebar hidden behind hamburger; drawer opens/closes (tap overlay); nav items ≥44px tall; project tab bar wraps; PO/claim tables scroll horizontally inside their card; modals fit with internal scrolling; all actions reachable by tap (no hover-only).
@@ -295,8 +339,8 @@ Firestore Security Rules are the only trust boundary — these checks confirm th
 ### 17b. Role-restricted reads (PII & financial collections)
 
 - [ ] Signed in as a `subcontractor` or `client` role user, **Contacts, Supplier
-  Invoices, Variations, and Forecast** all show no data — reads are blocked by
-  rules, not merely absent from the nav.
+  Invoices, Variations, Forecast, and Commercial** all show no data — reads are
+  blocked by rules, not merely absent from the nav.
 - [ ] The same user **can** still read company members' Projects, Cost Codes,
   Budget Lines, POs, and Progress Claims (the intended coarser read model).
 
@@ -306,7 +350,8 @@ Firestore Security Rules are the only trust boundary — these checks confirm th
   invoices, variations, budget lines, or cost codes (rules reject the write).
 - [ ] No client path can delete a financial/audit document (POs, claims,
   invoices, variations, budget lines, cost codes, contacts, counters, forecast
-  lines) — cancellation/rejection/archive is always a status/`isActive` change.
+  lines, commercial baseline) — cancellation/rejection/archive is always a
+  status/`isActive` change (the baseline is edited in place).
 
 ### 17d. Client-only controls are *not* a security boundary (known gaps)
 

@@ -109,7 +109,7 @@ without an approved architecture change (record it in
       `get()` the `users/{uid}` doc and compare `companyId` to the path.
 - [ ] **Authorisation**: read/write role sets are correct; PII and commercially
       sensitive collections (Contacts, Supplier Invoices, Variations, Forecast Lines,
-      Counters) restrict **reads** to financial roles, not just writes.
+      Commercial Baseline, Counters) restrict **reads** to financial roles, not just writes.
 - [ ] **Deletes blocked** on financial/audit collections; lifecycle is a status change.
 - [ ] **No secret in the bundle**: nothing sensitive is `VITE_`-prefixed or read in
       frontend code (see SECURITY.md → Secrets & the Vite bundle).

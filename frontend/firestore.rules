@@ -147,6 +147,29 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Project Commercial Baseline — the stored inputs of the Project Margin
+    // foundation (Original Contract Value, Original Approved Budget, contract
+    // dates, client snapshot, notes). Lives in a single-document subcollection
+    // keyed by the DETERMINISTIC id `baseline`. The match is deliberately
+    // restricted to that one document id — any other `commercial/*` document has
+    // no matching rule and is denied by default (no arbitrary commercial docs).
+    // Reads: restricted to internal financial roles — contract value and implied
+    // margin are commercially sensitive, so subcontractor and client users must
+    // NOT read it (matching Variations, Supplier Invoices, Forecast Lines, and
+    // Contacts, and deliberately tighter than the company-member-readable Project
+    // document, which is why the baseline is NOT stored on the Project doc).
+    // Create/update: same financial roles (idempotent upsert of `baseline`).
+    // Delete: blocked — the baseline is not deleted; clearing an input is a save.
+    // TODO (server-side hardening): enforce non-negative amounts and
+    // Original-Approved-Budget immutability once a baseline is set, here rather
+    // than only in the client hook.
+    match /companies/{companyId}/projects/{projectId}/commercial/baseline {
+      allow read, create, update: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      allow delete: if false;
+    }
+
     // Contacts — company-wide directory of suppliers, subcontractors,
     // consultants, and clients (third-party PII: names, phones, emails, ABNs,
     // payment terms).

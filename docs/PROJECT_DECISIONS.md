@@ -372,3 +372,64 @@ of this branch) Forecast Revenue, Cash Flow, Project Margin, Final Account, PULS
 without `forecastLines` loads normally with every cost code *not forecast*. Current
 inputs vs future **immutable period snapshots** is the recorded evolution path
 (mirrors the current-vs-frozen split elsewhere).
+
+## ADR-20: Project Margin (commercial baseline as a separate document; read-time; ex-GST; no currency field)
+
+The **Project Margin** foundation adds a per-project **Commercial Baseline** at
+`companies/{id}/projects/{id}/commercial/baseline` — a single document with the
+**deterministic id `baseline`** (idempotent upsert; a transaction sets
+`createdAt`/`createdBy` once and refreshes `updatedAt`/`updatedBy`). It stores the
+**only** authored inputs: `originalContractValue` (ex-GST),
+`originalApprovedBudget` (ex-GST, `number | null`), `contractStartDate`/
+`contractCompletionDate` (`Timestamp | null`), `clientId` + frozen `clientName`
+snapshot, and `notes`. Every margin figure is **derived at read time** by
+`lib/margin.js`, which **composes** `lib/variations.js` (approved/pending client &
+supplier variation totals) and `lib/forecast.js` (Forecast Final Cost) — nothing is
+recomputed independently and nothing is written back (ADR-3/ADR-4 upheld):
+
+```
+Current Contract Sum      = Original Contract Value + Approved Client Variations
+Forecast Revenue          = Current Contract Sum
+Forecast Gross Profit     = Forecast Revenue − Forecast Final Cost
+Forecast Margin %         = Forecast Gross Profit ÷ Forecast Revenue × 100
+Original Planned Profit   = Original Contract Value − Original Approved Budget
+Original Planned Margin %  = Original Planned Profit ÷ Original Contract Value × 100
+Margin Movement           = Forecast Gross Profit − Original Planned Profit
+```
+
+**Why a separate document, not fields on the Project doc:** Firestore rules apply one
+read rule per document. The Project document is **company-member readable**
+(subcontractors/clients can read it), but contract value and implied margin are
+commercially sensitive and must be **financial-role-only** reads (matching Variations,
+Supplier Invoices, Forecast Lines, Contacts). A dedicated document gets its own rules
+block restricted to the single `baseline` id (no arbitrary `commercial/*` docs), keeps
+contract value off the company-member-readable Project doc, and lets `qs` write it
+(the Project doc is writable only by `company_admin`/`project_manager`). No migration
+— a project without a baseline loads with a "not set" empty state.
+**Why read-time, revenue = current contract sum, no currency field, no cash:**
+margin must never drift, so only the baseline is stored. Forecast Revenue equals the
+**Current Contract Sum** in the foundation (no separate manual revenue forecast —
+there is no reliable anchor for one yet); pending client variations are separate
+**revenue exposure**, approved/pending supplier variations are separate **cost
+exposure** never folded into Forecast Final Cost (ADR-19 reasoning — they don't yet
+mature, so auto-adding double-counts). Values are **ex-GST** and use the app's existing
+AUD display; the baseline stores **no `currency` field** and introduces **no** new
+hard-coded AUD values — company/project currency inheritance and removal of hard-coded
+AUD formatting are the **next foundation** (`feature/company-country-currency`), with
+**no FX conversion**. There is deliberately **no cash figure**: Client Invoices,
+Accounts Receivable, and Payments do not exist, so *Forecast Revenue* is never
+presented as invoiced or received. **Null/zero:** revenue ≤ 0 ⇒ Margin % `null` ("—");
+`originalApprovedBudget === null` ⇒ Original Planned Profit/Margin and Margin Movement
+"—"; negative approved variations stay signed and reduce Current Contract Sum.
+**Consequences:** the six budget figures and the Forecast tab are unchanged; margin is
+project-level (it sits above the cost-code spine — contract revenue has no cost code,
+exactly as client variations have no PO), shown on a new **Commercial** tab and as
+financial-role-only cards on Overview via the same `lib/margin.js` derivation (no
+duplicated logic). The baseline is a **living editable input** — no draft/approved
+status, no snapshots, no approval workflow; **Original-Approved-Budget immutability is
+not claimed** (unenforceable without a trusted backend). Server-side non-negative
+validation and immutability are **deferred** (ADR-14; duplicate/immutability guards are
+client-side only). **Deferred:** Cash Flow, Client Invoices, Accounts Receivable,
+Payments, retention modelling, monthly periods, immutable snapshots, probability
+weighting. The recorded sequence is **Project Margin → Company Country & Currency →
+Payments/Client Invoices → Cash Flow**.

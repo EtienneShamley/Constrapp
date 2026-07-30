@@ -443,11 +443,79 @@ Time-phased projection of cost and income across the project, driven by claims,
 invoices, payment terms, and schedule inputs. A commercial output, not a generic
 chart.
 
-### Project Margin *(planned)*
+### Project Margin *(implemented — foundation)*
 
-The gap between contract/income value and forecast final cost, tracked over the
-project's life so margin erosion is visible early. Feeds PULSE™'s commercial-health
-signals.
+The first revenue-and-margin layer, answering "how much profit and margin do we
+forecast, and how far has it moved from what we originally planned?" It is
+**read-time derived** exactly like the six budget figures — the only stored values
+are the **Project Commercial Baseline** inputs (one document per project;
+`…/projects/{projectId}/commercial/baseline`, deterministic id `baseline`; see
+[DATA_MODEL.md](DATA_MODEL.md)). Lives on the project **Commercial** tab, with
+financial-role-only headline cards mirrored on the Overview tab from the **same**
+derivation (`lib/margin.js`).
+
+**Stored inputs** (baseline): `originalContractValue` (ex-GST),
+`originalApprovedBudget` (ex-GST, `number | null`), `contractStartDate`,
+`contractCompletionDate`, `clientId`/`clientName`, `notes`, audit stamps. **Everything
+below is derived** by `lib/margin.js`, composing `lib/variations.js` (approved/pending
+client & supplier variation totals) and `lib/forecast.js` (Forecast Final Cost) — no
+figure is written back.
+
+**Formulas (all ex-GST):**
+
+```
+Current Contract Sum       = Original Contract Value + Approved Client Variations
+Forecast Revenue           = Current Contract Sum
+Forecast Gross Profit      = Forecast Revenue − Forecast Final Cost
+Forecast Margin %          = Forecast Gross Profit ÷ Forecast Revenue × 100
+Original Planned Profit    = Original Contract Value − Original Approved Budget
+Original Planned Margin %  = Original Planned Profit ÷ Original Contract Value × 100
+Margin Movement            = Forecast Gross Profit − Original Planned Profit
+```
+
+- **Forecast Final Cost** is the identical read-time Estimate at Completion shown on
+  the Forecast tab (Actual + Remaining Committed + Uncommitted Cost to Complete) —
+  not recomputed independently.
+- **Margin vs markup, revenue vs cash.** Margin % is profit as a share of **revenue**
+  (markup — profit over **cost** — is a different, larger number and is not shown).
+  *Forecast Revenue* is the contractual value of work; it is **not** invoiced revenue
+  or cash received — Constrapp has no Client Invoices / Accounts Receivable or
+  Payments, so there is deliberately **no cash figure** in this foundation.
+
+**Null / zero behaviour (mandatory):**
+
+- **Forecast Revenue ≤ 0** ⇒ Forecast Margin % is `null`, displayed **"—"** (never
+  `NaN`/`Infinity`/`0%`). Same guard for Original Planned Margin % when Original
+  Contract Value ≤ 0.
+- **`originalApprovedBudget === null`** (baseline not established) ⇒ Original Planned
+  Profit, Original Planned Margin %, and Margin Movement all display **"—"**.
+- **No baseline / no Original Contract Value** ⇒ the revenue-side figures display
+  **"—"** with a prompt to set the baseline; the cost side (Forecast Final Cost) still
+  shows.
+
+**Variations stay separate.** **Approved client variations** raise Current Contract
+Sum (signed — negative approved client variations reduce it, never clamped).
+**Pending client variations** are shown as separate **revenue exposure** and are
+**not** in Forecast Revenue. **Approved and pending supplier variations** are shown as
+separate **cost exposure** and are **never** added to Forecast Final Cost (they do not
+yet mature against claims/invoices — auto-adding would double-count once the varied PO
+is invoiced; the forecaster folds real expected variation cost into Uncommitted Cost
+to Complete on the Forecast tab).
+
+**Currency.** Margin values are **ex-GST** and use the app's existing AUD display; the
+baseline stores no `currency` field and no new hard-coded AUD values are introduced.
+Company/project currency inheritance and removal of hard-coded AUD formatting are the
+next foundation (`feature/company-country-currency`); no FX conversion is planned.
+
+**Lifecycle.** The baseline is a **living, editable input** — no draft/approved
+status, no snapshots, no approval workflow, and Original-Approved-Budget immutability
+is **not** claimed (it cannot be enforced without a trusted backend). Reads/writes are
+restricted to internal financial roles; the baseline **never** mutates Projects,
+Budget Lines, POs, claims, supplier invoices, variations, or forecast lines.
+
+**Deferred:** Cash Flow, Client Invoices, Accounts Receivable, Payments, retention
+modelling, monthly periods, immutable snapshots, approval workflow, probability
+weighting, and any manual/probability-weighted revenue forecast override.
 
 ### Final Account *(planned)*
 

@@ -8,6 +8,7 @@ export const PROJECT_TABS = [
   { to: 'invoices',         label: 'Invoices' },
   { to: 'forecasting',      label: 'Forecast' },
   { to: 'variations',       label: 'Variations' },
+  { to: 'commercial',       label: 'Commercial' },
   { to: 'documents',        label: 'Documents' },
   { to: 'photos',           label: 'Photos' },
   { to: 'timeline',         label: 'Timeline' },

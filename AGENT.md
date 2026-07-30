@@ -66,10 +66,11 @@ frontend/
     pages/          Top-level routes; pages/project/ holds Project Detail tabs
     hooks/          useAuth, useProfile, useCompany, useProjects, useProject,
                     useCostCodes, useContacts, useBudgetLines, usePurchaseOrders,
-                    useProgressClaims, useSupplierInvoices, useVariations
+                    useProgressClaims, useSupplierInvoices, useVariations,
+                    useForecastLines, useProjectCommercial
     lib/            firebase.js, formatters.js, nav.js, projectTabs.js,
                     purchaseOrders.js, progressClaims.js, supplierInvoices.js,
-                    variations.js, contacts.js (pure domain logic)
+                    variations.js, forecast.js, margin.js, contacts.js (pure domain logic)
 ```
 
 ## Design Tokens
@@ -125,6 +126,11 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
   …/forecastLines/{costCodeId}               costCodeId (= doc id), costCodeName, uncommittedCostToComplete (number|null),
                                              notes — the ONLY stored Forecast Cost to Complete input; all other forecast
                                              figures derived at read time; reads restricted to financial roles
+  …/commercial/baseline                      single doc (id = "baseline"): originalContractValue, originalApprovedBudget
+                                             (number|null), contract start/completion (Timestamp|null), clientId/clientName
+                                             snapshot, notes — the ONLY stored Project Margin inputs; Current Contract Sum,
+                                             Forecast Revenue, Forecast Gross Profit, Margin %, Margin Movement all derived
+                                             at read time (lib/margin.js); ex-GST; reads restricted to financial roles
 ```
 
 ## Financial Invariants (mandatory)

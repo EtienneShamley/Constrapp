@@ -24,6 +24,7 @@ import ProjectProgressClaims from './pages/project/ProjectProgressClaims'
 import ProjectInvoices from './pages/project/ProjectInvoices'
 import ProjectVariations from './pages/project/ProjectVariations'
 import ProjectForecast from './pages/project/ProjectForecast'
+import ProjectCommercial from './pages/project/ProjectCommercial'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
 
 export default function App() {
@@ -66,6 +67,7 @@ export default function App() {
                       <Route path="invoices" element={<ProjectInvoices />} />
                       <Route path="forecasting" element={<ProjectForecast />} />
                       <Route path="variations" element={<ProjectVariations />} />
+                      <Route path="commercial" element={<ProjectCommercial />} />
                       <Route path="documents" element={
                         <ProjectPlaceholder
                           icon="📐"

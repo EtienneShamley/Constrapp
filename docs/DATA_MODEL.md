@@ -20,6 +20,7 @@ companies/{companyId}
     supplierInvoices/{invoiceId}
     variations/{variationId}
     forecastLines/{costCodeId}           (deterministic id = costCodeId)
+    commercial/baseline                  (single doc; deterministic id = "baseline")
 ```
 
 `users/` is the only top-level collection besides `companies/`. Everything else
@@ -380,6 +381,45 @@ calculation while the row stays visibly *not forecast*. No sequential number, no
 counter. **No migration** — a project with no `forecastLines` loads normally and
 every relevant cost code appears as *not forecast*.
 
+## …/projects/{projectId}/commercial/baseline
+
+The **Project Commercial Baseline** — the only authored inputs of the **Project
+Margin** foundation. A single document in a one-document subcollection, keyed by a
+**deterministic id `baseline`** (idempotent upsert, never `addDoc`). Stored on its
+own document rather than on the Project document because contract value and implied
+margin are commercially sensitive: reads are restricted to internal financial roles,
+whereas the Project document is company-member readable. Firestore rules match only
+the `baseline` id — no other `commercial/*` document is permitted. Reads restricted
+to financial roles (see [SECURITY.md](SECURITY.md)). Semantics and margin formulas:
+[FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md).
+
+| Field | Type | Notes |
+|---|---|---|
+| `originalContractValue` | number | **Ex-GST.** The original head-contract sum. Required to establish the baseline and to calculate margin |
+| `originalApprovedBudget` | number \| **null** | **Ex-GST.** The original planned cost budget. `null` = *not established* — Original Planned Profit/Margin and Margin Movement then display "—". Never silently populated; an explicit "Use current approved budget" action copies the live Σ budget lines, and the value stays editable (server-enforced immutability is deferred) |
+| `contractStartDate` | Timestamp \| null | Contract commencement (optional) |
+| `contractCompletionDate` | Timestamp \| null | Contract completion (optional) |
+| `clientId` | string \| null | → company contact (type `client`); optional |
+| `clientName` | string \| null | Snapshot of the client contact's `displayName` at save time (frozen idiom); `null` when no client chosen |
+| `notes` | string | Optional |
+| `createdAt` / `createdBy` | timestamp / uid | Set **only on first creation** and preserved across edits |
+| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on **every** save |
+
+**No `currency` field.** The Margin foundation deliberately stores no currency and
+introduces no new hard-coded AUD values; amounts use the app's existing AUD display
+until the **Company Country & Currency** foundation (`feature/company-country-currency`)
+adds company/project currency inheritance and removes hard-coded AUD formatting. No
+FX conversion is planned.
+
+**Stored vs derived.** Only the fields above are authored. **Current Contract Sum,
+Forecast Revenue, Forecast Gross Profit, Forecast Margin %, Original Planned
+Profit/Margin %, and Margin Movement are all derived at read time** by `lib/margin.js`
+(composing `lib/variations.js` for approved/pending client & supplier variation
+totals and `lib/forecast.js` for Forecast Final Cost) — never written here or onto
+any other document. **No migration** — a project with no baseline document loads
+normally and shows an empty "baseline not set" state; margin figures appear once an
+Original Contract Value is saved.
+
 ## Planned Commercial Entities (not yet modelled)
 
 The schema above is **implemented**. The commercial lifecycle will introduce
@@ -416,4 +456,5 @@ a design assessment, a hook, and (where a new collection is introduced) a manual
 - `progressClaims.variationId` is a **reserved** forward-link to a Supplier Variation — still `null`; the Variations foundation does not wire claim-against-variation yet.
 - Supplier invoices → POs via `poId` (required; one PO per invoice) and → approved claims via `progressClaimId` (source `progress_claim` only). Supplier identity is snapshotted from the PO/claim (`supplierId`/`supplierName`) — invoices never read contacts for identity. Invoice lines link to PO lines via `poLineIndex`. Claims are **never** mutated or stamped when invoiced; double-counting is avoided at read time (see [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md)).
 - Forecast lines → cost codes via `costCodeId`, which is **also the document ID** (one current forecast per cost code). They store only the manual `uncommittedCostToComplete` + `notes`; every displayed figure is derived at read time and never written back (`lib/forecast.js`). Forecast lines never mutate POs, claims, invoices, variations, or budget lines.
-- Counters are company-wide: PO/claim/invoice numbers are unique per **company**, not per project. Contacts and forecast lines carry no sequential number.
+- The commercial baseline → a client contact via `clientId` (with a frozen `clientName` snapshot); optional. It stores contract inputs only — every margin figure is derived at read time from the baseline, approved client variations, and Forecast Final Cost, and is never written back to the baseline or any other document.
+- Counters are company-wide: PO/claim/invoice numbers are unique per **company**, not per project. Contacts, forecast lines, and the commercial baseline carry no sequential number.
