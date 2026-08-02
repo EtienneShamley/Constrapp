@@ -3,7 +3,7 @@ import { useOutletContext } from 'react-router-dom'
 import Card from '../../components/Card'
 import Btn from '../../components/Btn'
 import Badge from '../../components/Badge'
-import { currency, percent, formatDate } from '../../lib/formatters'
+import { formatCurrency, percent, formatDate } from '../../lib/formatters'
 import { useAuth } from '../../hooks/useAuth'
 import { useProfile } from '../../hooks/useProfile'
 import { useProjectCommercial } from '../../hooks/useProjectCommercial'
@@ -24,7 +24,6 @@ import {
 const inputCls = 'w-full bg-brand-bg border border-brand-border rounded-lg px-2.5 py-1.5 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
 const labelCls = 'block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1'
 
-const money = (n) => (n === null || n === undefined ? '—' : currency(n))
 const pct   = (n) => (n === null || n === undefined ? '—' : percent(n))
 
 // Timestamp → 'YYYY-MM-DD' for a date input. Uses the Timestamp's own toDate()
@@ -65,7 +64,9 @@ function ReconRow({ label, value, op, strong, danger, muted }) {
 // it a `key` tied to the baseline's last-saved time so a successful save (which
 // updates the snapshot) remounts the form on the freshly-saved values, while
 // unsaved edits persist as long as the baseline is unchanged.
-function BaselineForm({ baseline, saveBaseline, clientContacts, currentApprovedBudget, currentUserId, currentUserName, baselineError }) {
+function BaselineForm({ baseline, saveBaseline, clientContacts, currentApprovedBudget, currencyCode, currentUserId, currentUserName, baselineError }) {
+  const money = (n) => formatCurrency(n, currencyCode)
+
   const [form, setForm] = useState(() => ({
     ocv:        baseline?.originalContractValue != null ? String(baseline.originalContractValue) : '',
     oab:        baseline?.originalApprovedBudget != null ? String(baseline.originalApprovedBudget) : '',
@@ -144,7 +145,7 @@ function BaselineForm({ baseline, saveBaseline, clientContacts, currentApprovedB
             onChange={setField('oab')}
           />
           <p className="m-0 mt-1 text-[11px] text-brand-muted">
-            Current Approved Budget (live): <span className="text-brand-text font-semibold">{currency(currentApprovedBudget)}</span>{' '}
+            Current Approved Budget (live): <span className="text-brand-text font-semibold">{money(currentApprovedBudget)}</span>{' '}
             <button type="button" onClick={useCurrentBudget} className="text-brand-accent hover:underline cursor-pointer">Use current approved budget</button>
             . Blank leaves the original budget baseline not established. Stays editable (server-enforced immutability is deferred).
           </p>
@@ -192,7 +193,9 @@ function BaselineForm({ baseline, saveBaseline, clientContacts, currentApprovedB
 }
 
 export default function ProjectCommercial() {
-  const { projectId } = useOutletContext()
+  const { projectId, currencyCode } = useOutletContext()
+  const money = (n) => formatCurrency(n, currencyCode)
+
   const { user }    = useAuth()
   const { profile, profileLoading } = useProfile()
 
@@ -282,9 +285,9 @@ export default function ProjectCommercial() {
           </p>
         )}
         <p className="m-0 mt-3 text-[11px] text-brand-muted">
-          All figures are ex-GST and derived at read time. Forecast Final Cost is the same Estimate at Completion shown on
-          the Forecast tab. Amounts display in the app's current currency format; a Company Country &amp; Currency foundation
-          is the next step after Margin.
+          All figures are ex-GST, derived at read time, and shown in this project&apos;s currency ({currencyCode}). Forecast
+          Final Cost is the same Estimate at Completion shown on the Forecast tab. Currency is a label, never a conversion —
+          Constrapp performs no FX conversion. Tax calculations remain Australian GST regardless of currency.
         </p>
       </Card>
 
@@ -333,6 +336,7 @@ export default function ProjectCommercial() {
 
       {/* ── Baseline form ──────────────────────────────────────────────────── */}
       <BaselineForm
+        currencyCode={currencyCode}
         key={formKey}
         baseline={baseline}
         saveBaseline={saveBaseline}

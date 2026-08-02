@@ -68,7 +68,7 @@ frontend/
                     useCostCodes, useContacts, useBudgetLines, usePurchaseOrders,
                     useProgressClaims, useSupplierInvoices, useVariations,
                     useForecastLines, useProjectCommercial
-    lib/            firebase.js, formatters.js, nav.js, projectTabs.js,
+    lib/            firebase.js, formatters.js, currency.js, nav.js, projectTabs.js,
                     purchaseOrders.js, progressClaims.js, supplierInvoices.js,
                     variations.js, forecast.js, margin.js, contacts.js (pure domain logic)
 ```
@@ -104,14 +104,19 @@ Full detail, field lists, and relationships: [docs/DATA_MODEL.md](docs/DATA_MODE
 
 ```
 users/{uid}                                  name, email, role, companyId, avatarInitials
-companies/{companyId}                        name, …
+companies/{companyId}                        name, countryCode (ISO 3166-1 alpha-2),
+                                             baseCurrency (ISO 4217), currencyUpdatedAt/By —
+                                             client may update ONLY those four currency fields
+                                             (company_admin); create/delete blocked
 companies/{companyId}/costCodes/{id}         code, name, category, unit, isActive — company-wide taxonomy
 companies/{companyId}/contacts/{contactId}   entityType, contactTypes[], names, abn, gstStatus, people[],
                                              projectAssignments[] + derived projectIds[], isActive —
                                              company-wide directory; reads restricted to financial roles
 companies/{companyId}/counters/{counterId}   next — sequential numbering (purchaseOrders, progressClaims,
                                              supplierInvoices)
-companies/{companyId}/projects/{projectId}   name, status, budget, startDate, location, progress
+companies/{companyId}/projects/{projectId}   name, status, budget, startDate, location, progress,
+                                             currency (ISO 4217 — the display authority),
+                                             currencyLocked (one-way ratchet)
   …/budgetLines/{lineId}                     costCodeId, costCodeName, budgeted, notes
   …/purchaseOrders/{poId}                    poNumber, status, supplierName, lineItems[], subtotal, gst, total
   …/progressClaims/{claimId}                 claimNumber, status, poId, cumulative lineItems[], retention,
@@ -141,6 +146,8 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
 - Lifecycles are forward-only; financial documents are never deleted — cancellation/rejection is a status change
 - One open Progress Claim per PO at a time; claims are cumulative (claimed-to-date per PO line)
 - POs snapshot `supplierName` from the chosen contact at write time (`supplierId` is the live link); contact edits or archiving never rewrite issued documents, and POs/claims with `supplierId: null` (pre-Contacts) render from the snapshot and are never backfilled
+- **One currency per project; a currency is a label, never a conversion.** There is **no FX conversion**, no exchange rates, and no mixed-currency transactions. Money is formatted **only** through `formatCurrency(amount, currencyCode)` in `lib/formatters.js` with the currency resolved by `lib/currency.js` (`project.currency` → `company.baseCurrency` → `AUD`) — never hard-code a currency code or a `$`. Project currency **locks** once the project holds any monetary value (non-zero `budget`, budget lines, POs incl. draft/cancelled, claims, invoices, variations, non-null forecast inputs, established baseline); Cost Codes and Contacts never lock. The lock *condition* is client-enforced (rules cannot enumerate subcollections); the *ratchet* is rules-enforced once set (ADR-21)
+- **Currency is not tax.** `GST_RATE` remains a flat Australian 10% and every "GST 10%" label is Australian. Selecting another country changes the currency label only — never describe Constrapp as tax-compliant outside Australia
 - Exact definitions and formulas: [docs/FINANCIAL_WORKFLOWS.md](docs/FINANCIAL_WORKFLOWS.md); rationale: [docs/PROJECT_DECISIONS.md](docs/PROJECT_DECISIONS.md)
 
 ## Naming
@@ -158,6 +165,8 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
 - Do not put business logic in page components — extract to hooks or `lib/`
 - Do not create new colour values — use the tokens in `frontend/src/index.css`
 - Do not write committed/claimed/actual values onto budget lines from any client code
+- Do not hard-code a currency code, a currency symbol, or a locale in a component — use `formatCurrency` with the resolved project currency
+- Do not add FX conversion, exchange rates, or mixed-currency transactions
 - Do not edit `frontend/firestore.rules` casually — rule changes need a manual publish and a security review against [docs/SECURITY.md](docs/SECURITY.md)
 
 ## Inspection Workflow

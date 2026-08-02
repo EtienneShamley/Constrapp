@@ -6,6 +6,9 @@ import {
 import { db } from '../lib/firebase'
 import { useAuth } from './useAuth'
 import { useCompany } from './useCompany'
+import { useProject } from './useProject'
+import { stageProjectCurrencyLock } from './projectCurrencyLock'
+import { resolveProjectCurrency } from '../lib/currency'
 import {
   SI_STATUS, SI_DOC_TYPE, SI_SOURCE,
   canTransition, invoiceTotals, formatSupplierInvoiceNumber, claimHasActiveInvoice,
@@ -15,10 +18,16 @@ import {
 export function useSupplierInvoices(projectId) {
   const { user }    = useAuth()
   const { company } = useCompany()
+  const { project } = useProject(projectId)
   const [supplierInvoices, setSupplierInvoices]               = useState([])
   const [supplierInvoicesLoading, setSupplierInvoicesLoading] = useState(true)
 
   const companyId = company?.id ?? null
+
+  // The currency this project reports in — project.currency, falling back to
+  // the company base currency and finally AUD for records predating the
+  // Company Country & Currency foundation.
+  const projectCurrency = resolveProjectCurrency(project, company)
 
   useEffect(() => {
     if (!companyId || !projectId) {
@@ -76,6 +85,12 @@ export function useSupplierInvoices(projectId) {
     await runTransaction(db, async (tx) => {
       const counterSnap = await tx.get(counterRef)
       const next = counterSnap.exists() ? counterSnap.data().next : 1
+      // The currency ratchet is staged during the transaction's READ phase and
+      // committed below, so this invoice and the project lock succeed or fail
+      // together — the project can never hold amounts with a still-changeable
+      // currency. Firestore requires all transaction reads before any writes.
+      const commitLock = await stageProjectCurrencyLock(tx, companyId, projectId)
+
       tx.set(counterRef, { next: next + 1 }, { merge: true })
 
       tx.set(invoiceRef, {
@@ -115,7 +130,12 @@ export function useSupplierInvoices(projectId) {
         net:            totals.net,
         payableGst:     totals.payableGst,
         payableTotal:   totals.payableTotal,
-        currency:  'AUD',
+        // Audit snapshot of the currency this document was raised in (the frozen
+        // supplierName/costCodeName idiom). The PROJECT currency remains the
+        // display authority — this field is never read for rendering, so a
+        // project can never show mixed currencies. Historical documents keep
+        // their stored 'AUD' and are never rewritten.
+        currency:  projectCurrency,
         revision:  1,
 
         notes: notes?.trim() || '',
@@ -136,9 +156,10 @@ export function useSupplierInvoices(projectId) {
         createdAt: serverTimestamp(),
         createdBy: user.uid,
       })
+      commitLock()
     })
     return invoiceRef.id
-  }, [companyId, projectId, user, supplierInvoices])
+  }, [companyId, projectId, user, supplierInvoices, projectCurrency])
 
   // Draft-only edits — everything freezes once an invoice leaves draft.
   const updateSupplierInvoice = useCallback(async (invoice, { supplierInvoiceNumber, invoiceDate, receivedDate, dueDate, lineItems, retention, notes }) => {

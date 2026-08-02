@@ -4,9 +4,38 @@ How Budget Lines, Purchase Orders, and Progress Claims behave and how the six
 budget figures are computed. Schema detail: [DATA_MODEL.md](DATA_MODEL.md).
 Decision rationale: [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md).
 
-All amounts are AUD. Budget figures, PO line totals, retention, and claim line
-amounts are **ex-GST**. Every money figure passes through `roundMoney()`
-(round-half-up to cents) so totals reconcile against accounting exports later.
+All amounts are in the **project's currency** (`project.currency` →
+`company.baseCurrency` → `AUD`) — see *Currency & tax* below. Budget figures, PO
+line totals, retention, and claim line amounts are **ex-GST**. Every money figure
+passes through `roundMoney()` (round-half-up to cents) so totals reconcile
+against accounting exports later.
+
+## Currency & tax
+
+**Currency is a label, never a conversion.** Each project reports in exactly one
+currency. Constrapp performs **no FX conversion**, holds no exchange rates, and
+supports no mixed-currency project transactions. Changing a currency never
+converts, recalculates, or alters a stored amount — which is why the project
+currency **locks** as soon as the project holds any monetary value (a non-zero
+headline budget, budget line, purchase order including draft/cancelled, progress
+claim, supplier invoice, variation, forecast input, or established commercial
+baseline). Cost Codes and Contacts hold no money and never lock. POs, claims,
+supplier invoices, and variations snapshot the project currency at write time as
+**audit context**; the project currency remains the display authority, and
+documents created before this foundation keep their stored `AUD`. Definitions:
+[DATA_MODEL.md](DATA_MODEL.md); rationale: ADR-21.
+
+> **⚠️ Tax limitation.** Currency **display** is configurable; **tax calculation
+> is not.** `GST_RATE` is a flat Australian **10%**, and the "GST 10%" labels on
+> purchase orders, progress claims, supplier invoices, and variations are
+> Australian. Every formula in this document — PO GST, claim GST on the net
+> post-retention amount, `retentionGst = retention × 10%`, per-line `taxCode`
+> handling — is **Australian GST**. Selecting New Zealand (GST 15%), South Africa
+> (VAT 15%), the United Kingdom (VAT 20%), the United States (sales tax, a
+> different model), or any other country changes **only the currency label** and
+> does **not** make Constrapp tax-compliant there. Company Settings states this
+> whenever the chosen country is not `AU`. Country-specific tax configuration is
+> a separate future foundation.
 
 ## The Core Invariant
 
@@ -502,10 +531,11 @@ yet mature against claims/invoices — auto-adding would double-count once the v
 is invoiced; the forecaster folds real expected variation cost into Uncommitted Cost
 to Complete on the Forecast tab).
 
-**Currency.** Margin values are **ex-GST** and use the app's existing AUD display; the
-baseline stores no `currency` field and no new hard-coded AUD values are introduced.
-Company/project currency inheritance and removal of hard-coded AUD formatting are the
-next foundation (`feature/company-country-currency`); no FX conversion is planned.
+**Currency.** Margin values are **ex-GST** and display in the **project's**
+currency. The baseline stores no `currency` field and needs none — it inherits the
+project currency like every other figure (and an established baseline is itself
+monetary data, so it locks that currency). No FX conversion is performed or
+planned. Tax remains Australian GST regardless of currency (see *Currency & tax*).
 
 **Lifecycle.** The baseline is a **living, editable input** — no draft/approved
 status, no snapshots, no approval workflow, and Original-Approved-Budget immutability

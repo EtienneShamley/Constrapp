@@ -2,7 +2,7 @@
 
 **Constrapp is the connected commercial operating system for construction projects.**
 
-Australian-built and web-first, it gives builders, contractors, and quantity surveyors one connected commercial dataset — from preconstruction to final account — instead of disconnected spreadsheets and tools.
+Australian-built and web-first, it gives builders, contractors, and quantity surveyors one connected commercial dataset — from preconstruction to final account — instead of disconnected spreadsheets and tools. Projects report in a configurable currency (no FX conversion); tax calculation remains Australian GST.
 
 Web-first · React 19 + Vite + Tailwind CSS v4 · Firebase (client SDK)
 
@@ -23,6 +23,7 @@ Today the delivery-and-cost-control middle of this lifecycle is implemented (bud
 
 - Email/password sign-in (account creation and password reset screens are stubs — users are provisioned manually)
 - Multi-tenant company/user foundation (`users/{uid}` → `companies/{companyId}`)
+- Company Country & Currency: a company sets its country (which suggests a currency) and confirms a base currency; new projects inherit it, each project reports in one currency, and that currency locks once the project holds monetary data. **No FX conversion.** *Currency display is configurable; tax calculation is not — GST remains a flat Australian 10%*
 - Projects: create and list, with a Project Detail area (Overview, Budget, Cost Codes, Purchase Orders, Progress Claims, Supplier Invoices, Variations, Forecast, and Commercial tabs live; other tabs are placeholders)
 - Company-wide Cost Codes
 - Company-wide Contacts: suppliers, subcontractors, consultants, and clients with ABN validation, contact people, duplicate warnings, and archive/reactivate (reads restricted to internal financial roles)

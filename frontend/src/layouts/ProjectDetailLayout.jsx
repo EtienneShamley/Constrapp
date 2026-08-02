@@ -1,12 +1,19 @@
 import { NavLink, Outlet, useParams } from 'react-router-dom'
 import Badge from '../components/Badge'
-import { currency } from '../lib/formatters'
+import { formatCurrency } from '../lib/formatters'
 import { useProject } from '../hooks/useProject'
+import { useCompany } from '../hooks/useCompany'
+import { resolveProjectCurrency } from '../lib/currency'
 import { PROJECT_TABS } from '../lib/projectTabs'
 
 export default function ProjectDetailLayout() {
   const { projectId } = useParams()
   const { project, projectLoading } = useProject(projectId)
+  const { company } = useCompany()
+
+  // Resolved ONCE here and handed to every project tab through the outlet
+  // context, so no page resolves a currency for itself and no page can drift.
+  const currencyCode = resolveProjectCurrency(project, company)
 
   if (projectLoading) {
     return <div className="text-[13px] text-brand-muted">Loading project…</div>
@@ -23,7 +30,8 @@ export default function ProjectDetailLayout() {
           <h1 className="text-xl font-semibold text-brand-text">{project.name}</h1>
           <p className="text-sm text-brand-muted mt-0.5">
             {project.location ? `${project.location} · ` : ''}
-            {project.budget ? currency(project.budget) : '—'}
+            {project.budget ? formatCurrency(project.budget, currencyCode) : '—'}
+            <span className="ml-2 text-[11px] font-semibold text-brand-muted">{currencyCode}</span>
           </p>
         </div>
         <Badge label={project.status} />
@@ -44,7 +52,7 @@ export default function ProjectDetailLayout() {
         ))}
       </nav>
 
-      <Outlet context={{ project, projectId }} />
+      <Outlet context={{ project, projectId, currencyCode }} />
     </div>
   )
 }

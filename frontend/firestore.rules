@@ -7,25 +7,105 @@ service cloud.firestore {
       allow read, write: if request.auth != null && request.auth.uid == uid;
     }
 
-    // Users may read the company they belong to
-    // Write is blocked here — company creation is handled by admin tooling or Cloud Functions
+    // Users may read the company they belong to.
+    // Company CREATION and DELETION remain blocked — companies are provisioned
+    // by admin tooling, never from the client (opening `create` would let any
+    // authenticated user mint companies).
+    // UPDATE is permitted to company_admin for the FOUR currency fields ONLY.
+    // `affectedKeys().hasOnly(...)` is what keeps the rest of the document
+    // (notably `name`) immutable from the client: this does not make the company
+    // document writable, it makes four named fields writable.
+    // Codes are validated by SHAPE (ISO 3166-1 alpha-2 / ISO 4217), not against
+    // an enum: an enum duplicated into this manually-published file would drift
+    // out of sync with frontend/src/lib/currency.js and start rejecting valid
+    // writes in production. The known-code check is client-side (see
+    // docs/SECURITY.md → Deferred Controls).
     match /companies/{companyId} {
       allow read: if request.auth != null
                   && exists(/databases/$(database)/documents/users/$(request.auth.uid))
                   && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
-      allow write: if false;
+      allow create, delete: if false;
+      allow update: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'company_admin'
+                  && request.resource.data.diff(resource.data).affectedKeys()
+                       .hasOnly(['countryCode', 'baseCurrency', 'currencyUpdatedAt', 'currencyUpdatedBy'])
+                  && request.resource.data.countryCode is string
+                  && request.resource.data.countryCode.matches('^[A-Z]{2}$')
+                  && request.resource.data.baseCurrency is string
+                  && request.resource.data.baseCurrency.matches('^[A-Z]{3}$');
     }
 
     // Projects are scoped under companies.
-    // Reads: any authenticated user belonging to this company.
+    // Reads: any authenticated user belonging to this company (so every role can
+    // read `currency` and render amounts with the correct label).
     // Create/update: company_admin or project_manager role within the same company.
     // Delete: blocked for Sprint 1.
+    //
+    // CURRENCY RATCHET. `currency` is the display authority for every money
+    // figure on the project; changing it after amounts exist would RELABEL them
+    // without converting them. Firestore rules CANNOT determine whether a
+    // project holds financial records — rules offer get()/exists() on a known
+    // document path only, with no list, query, or count, and budget lines, POs,
+    // claims, invoices, and variations all use random document ids. Detecting
+    // financial activity is therefore CLIENT-enforced (lib/currency.js →
+    // monetaryLockReasons; see docs/SECURITY.md → Deferred Controls).
+    // What IS enforced here, once `currencyLocked` is true:
+    //   · `currency` can never change, and
+    //   · `currencyLocked` can never return to false.
+    // A client can decline to SET the lock; no client can unset it or change a
+    // locked currency.
+    //
+    // QS RATCHET. `qs` deliberately has NO general project write access (it may
+    // write cost codes, budget lines, POs, claims, invoices, variations and
+    // forecast lines, but not projects). Because those financial writes engage
+    // the lock, `qs` is granted one narrowly-scoped permission: flipping
+    // `currencyLocked` from false/absent to true and changing NOTHING else. The
+    // `hasOnly(['currencyLocked'])` diff is what prevents a qs user from
+    // touching currency, name, budget, status, dates, or any other field.
     match /companies/{companyId}/projects/{projectId} {
       allow read: if request.auth != null
                   && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
-      allow create, update: if request.auth != null
+
+      allow create: if request.auth != null
                   && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager'];
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager']
+                  && (!('currency' in request.resource.data)
+                      || (request.resource.data.currency is string
+                          && request.resource.data.currency.matches('^[A-Z]{3}$')))
+                  && (!('currencyLocked' in request.resource.data)
+                      || request.resource.data.currencyLocked is bool);
+
+      allow update: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+                  && (
+                       // (a) Normal project write — company_admin / project_manager,
+                       //     subject to the currency ratchet.
+                       (
+                         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager']
+                         && (!('currency' in request.resource.data)
+                             || (request.resource.data.currency is string
+                                 && request.resource.data.currency.matches('^[A-Z]{3}$')))
+                         && (!('currencyLocked' in request.resource.data)
+                             || request.resource.data.currencyLocked is bool)
+                         // Never unlock.
+                         && (resource.data.get('currencyLocked', false) == false
+                             || request.resource.data.get('currencyLocked', false) == true)
+                         // Currency frozen while locked.
+                         && (resource.data.get('currencyLocked', false) == false
+                             || request.resource.data.get('currency', '') == resource.data.get('currency', ''))
+                       )
+                       ||
+                       // (b) QS currency-lock ratchet ONLY: false/absent -> true,
+                       //     affecting that single key and nothing else.
+                       (
+                         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'qs'
+                         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currencyLocked'])
+                         && request.resource.data.currencyLocked == true
+                         && resource.data.get('currencyLocked', false) == false
+                       )
+                     );
+
       allow delete: if false;
     }
 

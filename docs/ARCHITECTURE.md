@@ -80,14 +80,17 @@ frontend/                  The entire application (run all npm commands here)
     components/            Card, Btn, Badge, Stat, ProgBar, PageHeader, ProtectedRoute
     layouts/               AppShell, Sidebar, TopBar, AuthLayout, ProjectDetailLayout
     pages/                 Login, CreateAccount, ForgotPassword, Dashboard, Projects,
+                           CompanySettings (country & base currency),
                            Contacts (company directory), Subcontractors (filtered
                            contacts view + IQ™ placeholder), Pulse, Shield
     pages/project/         ProjectOverview, ProjectBudget, ProjectCostCodes,
                            ProjectPurchaseOrders, ProjectProgressClaims,
                            ProjectInvoices, ProjectVariations, ProjectForecast,
                            ProjectCommercial, ProjectPlaceholder
-    hooks/                 All Firestore access (see below)
-    lib/                   firebase.js, formatters.js, nav.js, projectTabs.js,
+    hooks/                 All Firestore access (see below); projectCurrencyLock.js
+                           stages the project currency ratchet inside a caller's
+                           transaction so monetary writes and the lock are atomic
+    lib/                   firebase.js, formatters.js, currency.js, nav.js, projectTabs.js,
                            purchaseOrders.js, progressClaims.js, supplierInvoices.js,
                            variations.js, forecast.js, margin.js, contacts.js
 docs/                      This documentation + design-reference assets
@@ -130,6 +133,7 @@ ProtectedRoute (redirects to /login when signed out)
    │      (the `forecasting` route renders the Forecast Cost to Complete page; the tab is labelled "Forecast".
    │       the `commercial` route renders the Project Margin page; the tab is labelled "Commercial")
    │    boq | documents | photos | timeline | reports  (ProjectPlaceholder)
+   ├─ /settings/company        Company country & base currency (company_admin writes)
    ├─ /contacts                Company-wide contact directory
    ├─ /subcontractors          Filtered contacts view (+ IQ™ placeholder card)
    ├─ /pulse                   Placeholder (PULSE™)
@@ -152,7 +156,8 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 |---|---|
 | Auth (sign-in), protected routing | Implemented (signup/reset screens are stubs) |
 | Company/user context | Implemented |
-| Projects (create, list) + Project Detail shell | Implemented (no edit/delete) |
+| Projects (create, list) + Project Detail shell | Implemented (no general edit/delete; currency editable until locked) |
+| Company Country & Currency | Implemented (foundation) — company country/base currency, project currency inheritance + ratchet lock, one shared formatter; no FX, tax stays Australian GST |
 | Cost Codes (create, list) | Implemented |
 | Budget Lines + financial rollups | Implemented |
 | Purchase Orders | Implemented |

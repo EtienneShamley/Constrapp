@@ -1,8 +1,9 @@
 import { useEffect, useState, useCallback } from 'react'
-import { collection, onSnapshot, addDoc, serverTimestamp, query, orderBy } from 'firebase/firestore'
+import { collection, doc, onSnapshot, runTransaction, serverTimestamp, query, orderBy } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { useAuth } from './useAuth'
 import { useCompany } from './useCompany'
+import { stageProjectCurrencyLock } from './projectCurrencyLock'
 
 export function useBudgetLines(projectId) {
   const { user }    = useAuth()
@@ -39,17 +40,28 @@ export function useBudgetLines(projectId) {
 
   const createBudgetLine = useCallback(async ({ costCodeId, costCodeName, budgeted, notes }) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
-    const col = collection(db, 'companies', companyId, 'projects', projectId, 'budgetLines')
-    await addDoc(col, {
-      costCodeId,
-      costCodeName,
-      budgeted:  Number(budgeted) || 0,
-      committed: 0,
-      actual:    0,
-      invoiced:  0,
-      notes:     notes?.trim() || '',
-      createdAt: serverTimestamp(),
-      createdBy: user.uid,
+    const lineRef = doc(collection(db, 'companies', companyId, 'projects', projectId, 'budgetLines'))
+
+    // A budget line is monetary data, so the project currency ratchet is engaged
+    // in the SAME transaction as the line — the two succeed or fail together and
+    // the project can never end up holding amounts with a still-changeable
+    // currency. (A transaction rather than addDoc/writeBatch because the lock
+    // write depends on reading the project's current lock state.)
+    await runTransaction(db, async (tx) => {
+      const commitLock = await stageProjectCurrencyLock(tx, companyId, projectId)
+
+      tx.set(lineRef, {
+        costCodeId,
+        costCodeName,
+        budgeted:  Number(budgeted) || 0,
+        committed: 0,
+        actual:    0,
+        invoiced:  0,
+        notes:     notes?.trim() || '',
+        createdAt: serverTimestamp(),
+        createdBy: user.uid,
+      })
+      commitLock()
     })
   }, [companyId, projectId, user])
 

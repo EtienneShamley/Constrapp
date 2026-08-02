@@ -6,6 +6,9 @@ import {
 import { db } from '../lib/firebase'
 import { useAuth } from './useAuth'
 import { useCompany } from './useCompany'
+import { useProject } from './useProject'
+import { stageProjectCurrencyLock } from './projectCurrencyLock'
+import { resolveProjectCurrency } from '../lib/currency'
 import {
   CLAIM_STATUS, CLAIMABLE_PO_STATUSES, canTransition, claimTotals,
   formatClaimNumber, hasOpenClaim, validateApprovedAmounts,
@@ -14,10 +17,16 @@ import {
 export function useProgressClaims(projectId) {
   const { user }    = useAuth()
   const { company } = useCompany()
+  const { project } = useProject(projectId)
   const [progressClaims, setProgressClaims]               = useState([])
   const [progressClaimsLoading, setProgressClaimsLoading] = useState(true)
 
   const companyId = company?.id ?? null
+
+  // The currency this project reports in — project.currency, falling back to
+  // the company base currency and finally AUD for records predating the
+  // Company Country & Currency foundation.
+  const projectCurrency = resolveProjectCurrency(project, company)
 
   useEffect(() => {
     if (!companyId || !projectId) {
@@ -57,6 +66,12 @@ export function useProgressClaims(projectId) {
     await runTransaction(db, async (tx) => {
       const counterSnap = await tx.get(counterRef)
       const next = counterSnap.exists() ? counterSnap.data().next : 1
+      // The currency ratchet is staged during the transaction's READ phase and
+      // committed below, so this claim and the project lock succeed or fail
+      // together — the project can never hold amounts with a still-changeable
+      // currency. Firestore requires all transaction reads before any writes.
+      const commitLock = await stageProjectCurrencyLock(tx, companyId, projectId)
+
       tx.set(counterRef, { next: next + 1 }, { merge: true })
 
       const totals = claimTotals(lineItems.map(li => li.claimedThisPeriod), retention)
@@ -80,7 +95,12 @@ export function useProgressClaims(projectId) {
         approvedTotal:    null,
         notes:            notes?.trim() || '',
         assessmentNotes:  '',
-        currency:         'AUD',
+        // Audit snapshot of the currency this document was raised in (the frozen
+        // supplierName/costCodeName idiom). The PROJECT currency remains the
+        // display authority — this field is never read for rendering, so a
+        // project can never show mixed currencies. Historical documents keep
+        // their stored 'AUD' and are never rewritten.
+        currency:         projectCurrency,
         revision:         1,
         submittedAt:      null,
         approvedAt:       null,
@@ -91,8 +111,9 @@ export function useProgressClaims(projectId) {
         createdAt:        serverTimestamp(),
         createdBy:        user.uid,
       })
+      commitLock()
     })
-  }, [companyId, projectId, user, progressClaims])
+  }, [companyId, projectId, user, progressClaims, projectCurrency])
 
   // Draft-only edits — claimed amounts freeze once a claim is submitted.
   const updateProgressClaim = useCallback(async (claim, { periodEnding, claimRef, notes, retention, lineItems }) => {

@@ -317,6 +317,182 @@ one **approved** supplier variation of **+12,000**. On the Commercial tab with
 - [ ] Saving or editing the baseline never changes any Budget Line, PO, Progress Claim, Supplier Invoice, Variation, or Forecast Line (spot-check the Budget and Forecast tabs before/after).
 - [ ] No client path can delete the baseline document (delete blocked by rules); editing overwrites in place and preserves `createdAt`/`createdBy`.
 
+## 15h. Company Country & Currency
+
+Setup: a `company_admin`, a `project_manager`, a `qs`, and a `subcontractor`/`client`
+in one company; a second company for isolation checks.
+
+### 15h-i. Unconfigured company (backwards compatibility)
+
+- [ ] A company with **no** `countryCode`/`baseCurrency` loads normally and every money
+  figure renders exactly as before (`$1,235` style, whole units, no cents) on Projects,
+  Dashboard, Budget, POs, Claims, Invoices, Variations, Forecast, and Commercial.
+- [ ] A **setup banner** appears above page content: `company_admin` sees a
+  "Set country & currency" action; other roles see the passive text with **no** action.
+- [ ] Nothing is written to Firestore by merely viewing the banner or the settings page —
+  the company document still has no `countryCode`/`baseCurrency` (check the console).
+
+### 15h-ii. Country suggests, user confirms
+
+- [ ] `/settings/company` (sidebar company chip) opens with country **unselected** — there
+  is no pre-selection and no inference from browser locale, time zone, or IP.
+- [ ] Country **New Zealand** → currency auto-sets to **NZD**; helper text names the
+  suggestion. Repeat: **Australia → AUD**, **South Africa → ZAR**, **United States → USD**,
+  **United Kingdom → GBP**, **Germany → EUR**.
+- [ ] **Save is disabled** until country, currency, **and** the confirmation checkbox are all
+  set.
+- [ ] **Manual override:** with country NZ, change currency to **USD** → an amber note reads
+  "NZD is normal for New Zealand — you have selected USD"; saving is still allowed and USD
+  persists after reload.
+
+### 15h-iii. Tax limitation notice
+
+- [ ] Selecting **any country other than Australia** shows the amber tax note: currency
+  display is configurable but tax calculations use existing Australian GST rules, and
+  country-specific tax configuration is a separate future foundation.
+- [ ] Selecting **Australia** shows **no** tax note.
+- [ ] With an NZ/ZA/GB/US company configured, a PO footer still reads **"GST 10%"** and the
+  GST is 10% of subtotal — the app does **not** claim NZ 15% / ZA 15% / UK 20% / US sales tax.
+
+### 15h-iv. Existing projects are pinned, never floated
+
+- [ ] With existing projects, the settings page lists **every** project with its stored
+  currency ("Not set" in amber where absent) and a "will be set to" selector defaulted to the
+  chosen company currency.
+- [ ] Individual projects can be **overridden** to a different currency before confirming;
+  the confirmation text names how many projects will be pinned.
+- [ ] The page states explicitly that **no amount is converted**.
+- [ ] Save → every listed project now carries an explicit `currency`; **no** `budget`,
+  budget line, PO, claim, invoice, variation, or forecast amount changed (spot-check the
+  Budget tab totals before and after — identical).
+- [ ] **Ordering:** project currencies are written **before** the company document. Simulate a
+  failure (e.g. offline mid-save) → the company stays unconfigured and the banner stays up;
+  retrying is safe.
+- [ ] **Idempotent:** re-opening settings and saving the same choices writes nothing new and
+  changes nothing.
+- [ ] A project that **already** carries an explicit currency is **not** overwritten unless it
+  is deliberately re-pointed while still eligible.
+
+### 15h-v. New project inheritance & override
+
+- [ ] With company base **NZD**, the New Project modal shows a Currency select pre-set to
+  **NZD** with "Inherited from your company (NZD)".
+- [ ] Entering a **non-zero budget** switches the helper text to the amber warning that the
+  currency **locks immediately on creation** — choose it correctly now.
+- [ ] The Budget field's label tracks the selected currency, e.g. **"Budget (NZD)"**.
+- [ ] Creating with the inherited NZD → project header, Overview budget card, and the
+  Projects-list budget cell all show NZD.
+- [ ] Creating with an **override** to AUD → that project shows AUD everywhere while sibling
+  NZD projects are unaffected.
+- [ ] A project created with **budget > 0** is immediately locked; one created with
+  **budget = 0** (or blank) is not.
+
+### 15h-vi. Currency locking — each condition alone must lock
+
+Sign in as `company_admin`/`project_manager` and use the **Project currency** card on Overview.
+Start each check from a fresh project with **budget 0** and no records.
+
+- [ ] Fresh project → the card shows an **enabled** currency select; changing and saving works
+  and re-renders every project page in the new currency.
+- [ ] Adding only **cost codes** (company-wide) leaves it **editable** — cost codes never lock.
+- [ ] Adding only a **contact** leaves it **editable**.
+- [ ] A **forecast row saved blank** (`null`, "Not forecast") leaves it **editable**.
+- [ ] An **absent/empty commercial baseline** leaves it **editable**.
+- [ ] Each of the following, **alone**, locks the currency (card becomes static text + 🔒 +
+  a reason naming the cause): a **non-zero headline budget**; one **budget line**; one
+  **draft PO**; one **cancelled PO**; one **progress claim**; one **supplier invoice**; one
+  **client variation**; one **supplier variation**; one **forecast input of 0**; one **saved
+  commercial baseline**.
+- [ ] The locked message explains that changing currency would **relabel amounts without
+  converting them** and suggests raising a new project instead.
+
+### 15h-vii. The ratchet (rules-enforced) and its honest limits
+
+- [ ] Once locked, a **direct SDK** write changing `currency` on that project is **rejected by
+  rules** (not merely hidden by the UI).
+- [ ] A **direct SDK** write setting `currencyLocked` back to `false` is **rejected by rules**.
+- [ ] A project holding financial records but with **no** `currencyLocked` flag (created before
+  this foundation) gets the flag set the first time a `company_admin`/`project_manager` opens
+  its Overview — and the UI shows it as locked **immediately**, from live records, even before
+  the flag is written.
+- [ ] **Atomicity — the record and the lock commit together.** For each of budget line, PO,
+  progress claim, supplier invoice, variation, forecast input, and commercial baseline: create
+  the record on an unlocked project and confirm the project is locked **in the same step** —
+  there is never a state where the record exists and `currencyLocked` is absent. Simulate a
+  failure mid-write (go offline, or use a role whose rules reject the project update) and
+  confirm **neither** the record nor the lock is written — the financial record must not
+  commit on its own.
+- [ ] Creating a **second** record on an already-locked project still succeeds (the lock write
+  is skipped, not re-attempted) — verify specifically as a **`qs`** user, whose rule permits
+  only `false` → `true` and would reject a redundant re-write.
+- [ ] **Known deferred limitation (expected to be bypassable — do not report as enforced):** a
+  financial-role user can create monetary data by **direct SDK call**, bypassing the app,
+  without setting `currencyLocked`, leaving the currency changeable. Firestore rules cannot
+  enumerate random-id subcollections. Within the app this cannot occur (the writes are
+  atomic). See SECURITY.md → Deferred Controls 12.
+
+### 15h-viii. Roles & the qs ratchet rule
+
+- [ ] `project_manager`, `qs`, `subcontractor`, and `client` all see `/settings/company` as
+  **read-only** ("managed by a Company Admin") with no country/currency controls.
+- [ ] A **direct SDK** company-currency write as `project_manager` or `qs` is **rejected by
+  rules**.
+- [ ] A **direct SDK** write to `companies/{id}.name` as `company_admin` is **rejected by
+  rules** (only the four currency fields are writable).
+- [ ] `qs` **cannot** change a project currency, name, budget, status, or dates (rules reject).
+- [ ] `qs` **can** create a budget line / PO / claim / invoice / variation / forecast input on a
+  fresh project, and doing so **succeeds** — the accompanying `currencyLocked` false→true write
+  is permitted by the narrow qs ratchet rule and the financial write is not blocked.
+- [ ] `qs` attempting a direct SDK write of `{ currencyLocked: true, budget: 999 }` is
+  **rejected** (the diff affects more than `currencyLocked`).
+- [ ] `subcontractor`/`client` can still **read** Projects and see correctly-labelled Budget,
+  PO, and Claim figures in the project currency.
+
+### 15h-ix. Company currency change does not touch existing projects
+
+- [ ] With projects pinned to NZD (some with financial records), change the company base
+  currency to **USD** and save → **every existing project still displays NZD**; no amount
+  changed; Budget, Forecast, and Commercial figures are identical before and after.
+- [ ] The **next new project** defaults to **USD**.
+- [ ] Locked projects appear in the settings list as **frozen** (🔒, read-only), not editable.
+
+### 15h-x. Formatting
+
+- [ ] **AUD is unchanged:** an AUD project renders `$1,235` for 1234.56 — whole units, no
+  cents, identical to before this foundation.
+- [ ] **Non-AUD is unambiguous:** NZD/ZAR/USD/GBP/EUR render with the ISO code
+  (`NZD 1,235`), never a bare `$`, so an AUD figure can't be mistaken for an NZD/USD one.
+- [ ] **Zero** renders as a formatted zero (`$0` / `NZD 0`), **never** `—` — including a
+  forecast input of `0` ("reviewed, no further cost").
+- [ ] **null / undefined / NaN / Infinity** render `—`, never `NaN`, `$NaN`, `undefined`, or
+  `∞` (check Margin "—" states with no baseline and blank Original Approved Budget).
+- [ ] **Negatives** render with a leading minus in the project currency (e.g. a negative
+  approved client variation, a negative Variance to Budget) and keep their existing red
+  styling.
+- [ ] **No hard-coded symbols:** `grep -rn "AUD" frontend/src` returns matches only in
+  `lib/currency.js` and code comments; the `currency` export no longer exists in
+  `formatters.js` (`npm run build` proves no caller survives).
+- [ ] Sweep all eleven financial surfaces at **NZD**, **ZAR**, and **USD** — no `$` appears
+  where the currency is not dollar-denominated.
+- [ ] **Known limitation:** dates still format `en-AU` (`dd/mm/yyyy`) regardless of country —
+  a US company will misread `03/04/2026`. Date localisation is deferred (ADR-21).
+
+### 15h-xi. Isolation, persistence, responsiveness, no mutation
+
+- [ ] A `company_admin` of Company A cannot read or write Company B's `countryCode`/
+  `baseCurrency` (rules-denied). Company A on NZD and Company B on ZAR display independently.
+- [ ] Company currency, project currency, and locked state all survive a hard reload and a
+  re-login.
+- [ ] Company Settings (including the projects table), the setup banner, the project currency
+  card, and the locked state all render correctly at **375px / 768px / 1280px**; the projects
+  table scrolls horizontally inside its card; touch targets ≥44px; no horizontal page scroll.
+- [ ] **No mutation of financial amounts:** record every Budget figure, Forecast rollup, and
+  Commercial margin figure before company setup; repeat after setup, after a project currency
+  change, and after a company currency change → **every number identical**; only the symbol or
+  code changes.
+- [ ] Existing POs, claims, invoices, and variations retain their stored `currency: 'AUD'` —
+  no backfill occurred. Newly created ones snapshot the project currency.
+
 ## 16. Responsive Checks — 375px, 768px, 1280px
 
 - [ ] **375px:** sidebar hidden behind hamburger; drawer opens/closes (tap overlay); nav items ≥44px tall; project tab bar wraps; PO/claim tables scroll horizontally inside their card; modals fit with internal scrolling; all actions reachable by tap (no hover-only).

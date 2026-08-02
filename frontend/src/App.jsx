@@ -13,6 +13,7 @@ import ForgotPassword from './pages/ForgotPassword'
 import Dashboard      from './pages/Dashboard'
 import Projects       from './pages/Projects'
 import Contacts       from './pages/Contacts'
+import CompanySettings from './pages/CompanySettings'
 import Subcontractors from './pages/Subcontractors'
 import Pulse          from './pages/Pulse'
 import Shield         from './pages/Shield'
@@ -103,6 +104,7 @@ export default function App() {
                     </Route>
 
                     <Route path="contacts"       element={<Contacts />} />
+                    <Route path="settings/company" element={<CompanySettings />} />
                     <Route path="subcontractors" element={<Subcontractors />} />
                     <Route path="pulse"          element={<Pulse />} />
                     <Route path="shield"         element={<Shield />} />

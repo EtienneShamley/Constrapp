@@ -3,6 +3,7 @@ import { doc, onSnapshot, runTransaction, serverTimestamp, Timestamp } from 'fir
 import { db } from '../lib/firebase'
 import { useAuth } from './useAuth'
 import { useCompany } from './useCompany'
+import { stageProjectCurrencyLock } from './projectCurrencyLock'
 
 // The Project Commercial Baseline — the ONLY authored inputs of the Project
 // Margin foundation. It lives in a dedicated single-document subcollection
@@ -71,9 +72,11 @@ export function useProjectCommercial(projectId) {
   // createdAt/createdBy only on first creation and always refreshes
   // updatedAt/updatedBy, preserving provenance across edits. Dates arrive as
   // 'YYYY-MM-DD' strings (or '') and are converted to Timestamps here so pages
-  // never import firebase/* (hooks-only Firestore access). This never touches
-  // Projects, Budget Lines, POs, Claims, Supplier Invoices, Variations, or
-  // Forecast Lines — it only writes the baseline document.
+  // never import firebase/* (hooks-only Firestore access). It writes the
+  // baseline document and — in the same transaction — the project's
+  // `currencyLocked` ratchet flag (an established baseline is monetary data).
+  // It never touches Budget Lines, POs, Claims, Supplier Invoices, Variations,
+  // or Forecast Lines, and never any financial value on the project.
   const saveBaseline = useCallback(async ({
     originalContractValue,
     originalApprovedBudget,
@@ -122,6 +125,12 @@ export function useProjectCommercial(projectId) {
     const ref = commercialBaselineRef(companyId, projectId)
     await runTransaction(db, async (tx) => {
       const snap = await tx.get(ref)
+      // An established baseline carries the Original Contract Value — monetary
+      // data — so the currency ratchet is engaged IN THIS TRANSACTION and the
+      // two succeed or fail together. Firestore requires all transaction reads
+      // before any writes, hence the staged read here.
+      const commitLock = await stageProjectCurrencyLock(tx, companyId, projectId)
+
       if (snap.exists()) {
         // Preserve createdAt/createdBy; refresh inputs + audit.
         tx.update(ref, fields)
@@ -132,6 +141,7 @@ export function useProjectCommercial(projectId) {
           createdBy: user.uid,
         })
       }
+      commitLock()
     })
   }, [companyId, projectId, user])
 

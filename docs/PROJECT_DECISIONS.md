@@ -433,3 +433,129 @@ client-side only). **Deferred:** Cash Flow, Client Invoices, Accounts Receivable
 Payments, retention modelling, monthly periods, immutable snapshots, probability
 weighting. The recorded sequence is **Project Margin → Company Country & Currency →
 Payments/Client Invoices → Cash Flow**.
+
+## ADR-21: Company Country & Project Currency (inherited, locked, label-only; no FX)
+
+A company stores `countryCode` (ISO 3166-1 alpha-2) and `baseCurrency` (ISO
+4217); a project stores `currency` (ISO 4217) and `currencyLocked` (boolean).
+Country **suggests** a currency, the user **confirms or overrides** it, a new
+project **inherits** the company base currency (overridable at creation), and
+every financial screen displays the **project's** currency through one shared
+`formatCurrency(amount, currencyCode)` helper. Display resolves
+`project.currency` → `company.baseCurrency` → `AUD`.
+
+**Why a label and never a conversion.** Constrapp performs **no FX conversion**,
+holds no rates, and supports no mixed-currency project transactions. A currency
+is a *label* for amounts that were entered in it. This is the reason for every
+other decision here: relabelling a number without converting it silently
+falsifies it.
+
+**Why currency locks on any monetary value.** Currency locks as soon as the
+project holds money — a non-zero headline `budget`, any budget line, any
+purchase order (**including draft and cancelled** — a cancelled PO is a retained
+audit record carrying amounts, ADR-12), any progress claim, supplier invoice,
+client or supplier variation, any forecast line with
+`uncommittedCostToComplete !== null` (a `null` row is *not forecast* and carries
+no money), or an established commercial baseline. `project.budget` is
+**deliberately included**: it is a monetary amount, and excluding it would let a
+project's headline budget be relabelled after entry. Cost Codes and Contacts are
+company-wide and hold no monetary value, so they never lock.
+
+**Why the ratchet, and what it does not do.** Firestore Security Rules offer
+`get()`/`exists()` on a known document path only — no list, query, or count — and
+every financial subcollection uses random document ids. **No rule can determine
+whether a project has financial records.** Rather than pretend, the design
+splits the control: the *evidence check* is client-side (`lib/currency.js` →
+`monetaryLockReasons`), and the *consequence* is rules-enforced — once
+`currencyLocked` is `true`, rules reject any change to `currency` and any attempt
+to set the flag back to `false`. A client that bypasses the app can decline to
+**set** the lock; no client can **unset** it.
+
+**Lock activation is atomic with the record.** Every hook that writes monetary
+data stages the ratchet inside its **own Firestore transaction** via one shared
+helper (`hooks/projectCurrencyLock.js` → `stageProjectCurrencyLock`), so the
+record and the lock succeed or fail together. A separate post-write lock would
+have left a real gap: if the record committed and the lock write then failed
+(network drop, closed tab, rules rejection), the project would hold amounts while
+its currency stayed changeable — the exact harm the ratchet exists to prevent.
+Because Firestore requires all transaction reads before any writes, the helper
+splits into a read phase (returning a commit callback) and a write phase. It
+stages the write **only** when the project is not already locked: besides saving
+a redundant write, an unconditional `true` would be **rejected** by the narrow
+`qs` rule (`false` → `true` only) and would fail the whole financial write for a
+QS user. `useProjects.lockProjectCurrency` survives solely as a repair path for
+projects whose monetary data predates this behaviour, self-healing on the next
+Project Overview visit by a `company_admin`/`project_manager`. No page ever writes
+the project document to engage the lock.
+
+**Why `qs` gets one narrow project permission.** `qs` writes budget lines, POs,
+claims, invoices, variations, and forecast lines, all of which must engage the
+lock — but `qs` deliberately has no general project write access. Rules therefore
+grant `qs` exactly one project update: `currencyLocked` `false`→`true`, with a
+`hasOnly(['currencyLocked'])` diff so it cannot touch currency, name, budget,
+status, or dates. The lock write carries **no audit stamps** so that rule can
+stay maximally narrow.
+
+**Why existing companies are not auto-backfilled.** A company without
+`baseCurrency` displays `AUD` — reproducing the previous output byte-for-byte —
+and shows a setup banner. **Nothing is written until an admin confirms.**
+Auto-writing `AUD` would assert a business fact nobody stated and would make a
+guess indistinguishable from a confirmed choice.
+
+**Why existing projects are pinned during setup.** A project with no stored
+`currency` resolves through the company, so confirming a base currency would
+otherwise **relabel every historical project at once**. Company setup therefore
+lists every existing project, defaults each to the chosen currency, lets the
+admin override individual projects, and pins them in the same confirmed action.
+Writes are **projects first, then the company**: if the project writes fail the
+company stays unconfigured, the banner stays up, and retrying is safe — the
+reverse order would leave a configured company with floating projects. The
+backfill is additive and idempotent (only projects whose effective currency
+differs are written; a project that already carries an explicit currency is never
+overwritten unless the admin deliberately re-points it while still eligible), and
+it deliberately does **not** set `currencyLocked`, so one confirmation never
+performs two irreversible operations.
+
+**Why document `currency` snapshots are kept but never displayed.** POs, claims,
+supplier invoices, and variations already stored a hard-coded `currency: 'AUD'`
+that nothing read. They now snapshot the resolved **project** currency at write
+time (the frozen `supplierName`/`costCodeName` idiom) and remain **audit context
+only** — the project currency stays the display authority, so a project can never
+render mixed currencies. Historical `'AUD'` values are **never rewritten**: they
+are the correct record of documents raised when the app was AUD-only.
+
+**Why one fixed display locale.** `formatCurrency` uses a single `en-AU` locale,
+unchanged from the previous formatter. AUD therefore still renders `$1,235` —
+byte-for-byte the old output — while every other currency renders with its ISO
+code (`NZD 1,235`), so an AUD figure can never be mistaken for an NZD or USD one
+in a company running projects in several currencies. Whole units
+(`maximumFractionDigits: 0`) are preserved as the default so migrating 77 call
+sites changed no existing display; `{ precise: true }` defers to each currency's
+ISO 4217 minor-unit convention. `0` formats as a real zero (ADR-19 relies on `0`
+meaning *reviewed, no further cost*); `null`/`undefined`/non-finite render `—`; a
+malformed code falls back to `CODE 1,235` rather than throwing, so one bad
+document cannot blank a financial page. **Per-country display locales and date
+localisation are deliberately out of scope** and recorded as a later improvement
+— `formatDate` remains `en-AU`, which is a known limitation for US users
+(`03/04/2026` reads differently there).
+
+**Why a local country/currency mapping.** ~100 lines of data that changes on a
+decade timescale, against AGENT.md's prohibition on new dependencies. Complete
+ISO data would also produce a 249-entry dropdown for a product targeting a
+handful of markets. The mapping only ever *suggests*: country → currency is not
+a function (dollarised economies, EU-but-not-eurozone, cross-border currency
+unions, and decisively — a company's country is not its contract's currency),
+which is exactly why confirmation is mandatory.
+
+**Consequences.** No financial calculation changes anywhere: `lib/` domain
+modules stay currency-agnostic pure number maths, the six budget figures,
+forecast, and margin derivations are untouched, and no stored amount is
+converted, recalculated, or migrated. **Tax is explicitly not in scope** —
+`GST_RATE` remains a flat Australian 10% and the "GST 10%" labels remain
+Australian; Company Settings warns whenever the chosen country is not `AU` that
+currency display is configurable while tax calculation is not. Country-specific
+tax configuration is a separate future foundation. **Deferred:** FX conversion
+(never planned), mixed-currency transactions, per-country display locales, date
+localisation, self-serve company signup (the settings form is designed to be
+reused as a signup step), server-derived lock activation, and known-code
+validation in rules.

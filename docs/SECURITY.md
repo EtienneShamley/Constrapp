@@ -50,8 +50,8 @@ to financial roles.**
 | Path | Read | Create/Update | Delete |
 |---|---|---|---|
 | `users/{uid}` | own doc only | own doc only | own doc (write includes delete) |
-| `companies/{companyId}` | company member | **blocked** (admin tooling only) | blocked |
-| `…/projects/{id}` | company member | `company_admin`, `project_manager` | blocked |
+| `companies/{companyId}` | company member | **`company_admin`, four currency fields only** (`countryCode`, `baseCurrency`, `currencyUpdatedAt`, `currencyUpdatedBy`); create blocked | blocked |
+| `…/projects/{id}` | company member | `company_admin`, `project_manager`; **`qs`: `currencyLocked` false→true only** | blocked |
 | `…/costCodes/{id}` | company member | financial roles | blocked — deactivate via `isActive` |
 | `…/contacts/{id}` | **financial roles only** | financial roles | blocked — archive via `isActive` |
 | `…/projects/{id}/budgetLines/{id}` | company member | financial roles | blocked |
@@ -105,7 +105,75 @@ subcontractor-scoped visibility (e.g. a client seeing their own head-contract
 variations) is future work alongside the deferred scoping controls below.
 
 Note the asymmetry: `qs` can write cost codes, budget lines, POs, and claims but
-**not** projects.
+**not** projects — with one deliberate, narrowly-scoped exception described below.
+
+## Company Country & Currency
+
+**Company document — four fields, not the document.** The company document was
+previously `allow write: if false`. It now permits `company_admin` to **update**
+`countryCode`, `baseCurrency`, `currencyUpdatedAt`, and `currencyUpdatedBy`, and
+nothing else: the rule requires
+`request.resource.data.diff(resource.data).affectedKeys().hasOnly([...])`, so
+`name` and every other field stay immutable from the client. **Create and delete
+remain blocked** — opening `create` would let any authenticated user mint
+companies. Codes are validated by **shape** (`^[A-Z]{2}$` / `^[A-Z]{3}$`) rather
+than against an enum, because an enum duplicated into this manually-published
+file would drift out of sync with `frontend/src/lib/currency.js` and start
+rejecting valid writes; the *known-code* check is client-side only.
+
+**⚠️ Escalation note.** Deferred Control 8 below records that users can write
+their own `users/{uid}` document, including `role`. Because rules trust that
+document, **any authenticated user can currently self-assign `company_admin`**,
+so the `company_admin` gate on the currency fields is not a real boundary
+against a determined insider today. This is pre-existing (ADR-14: all users are
+hand-provisioned insiders while the product is unlaunched), but this foundation
+is the first to grant *any* client write access to the company document, and it
+widens the blast radius of that gap from reading another company's data to
+rewriting its base currency. Keeping `create`/`delete` blocked and scoping the
+update to four fields bounds it; locking down self-managed `role`/`companyId`
+remains a trusted-backend requirement.
+
+**Project currency ratchet — what is and is not enforced.** `project.currency`
+is the display authority for every money figure on a project, so changing it
+after amounts exist would **relabel** them without converting them.
+
+*Rules-enforced:* once `project.currencyLocked` is `true`, rules reject any
+change to `currency` **and** any attempt to set `currencyLocked` back to
+`false`. Codes are shape-validated on create and update. Reads stay
+company-member level so every role can render amounts with the correct label.
+
+*Client-enforced (deferred — Deferred Control 12):* **deciding that the lock
+should engage.** Firestore Security Rules offer `get()`/`exists()` on a known
+document path only — there is no list, query, or count — and budget lines, POs,
+claims, invoices, and variations all use random document ids. **No rule can
+determine whether a project holds financial records.** The evidence check lives
+in `lib/currency.js` (`monetaryLockReasons`), and every hook that writes monetary
+data engages the flag **inside the same Firestore transaction as the record
+itself** (`hooks/projectCurrencyLock.js` → `stageProjectCurrencyLock`), so the
+record and the lock commit or roll back together — a project can never end up
+holding amounts with a still-changeable currency because a separate lock write
+failed. The honest guarantee is therefore asymmetric: a client that bypasses the
+app entirely can **decline to set** the lock, but no client can **unset** it or
+change a locked currency, and no *in-app* write can leave the two out of step.
+
+**The `qs` ratchet rule.** `qs` deliberately has **no** general project write
+access, yet `qs` can write budget lines, POs, claims, invoices, variations, and
+forecast lines — all of which must engage the lock. `qs` is therefore granted
+exactly one project permission: flipping `currencyLocked` from `false`/absent to
+`true`, with
+`request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currencyLocked'])`.
+That single-key diff is what prevents a `qs` user from touching `currency`,
+`name`, `budget`, `status`, dates, or any other project field through this rule.
+The lock write carries no audit stamps for exactly this reason — adding them
+would force the rule to be widened.
+
+**Tax is not currency.** This foundation makes currency **display** configurable.
+It does **not** make tax calculation configurable: `GST_RATE` is a flat
+Australian 10% and the "GST 10%" labels on POs, claims, invoices, and variations
+are Australian. Selecting NZ, ZA, US, GB, or any other country does **not** make
+Constrapp tax-compliant there; Company Settings states this explicitly whenever
+the chosen country is not `AU`. Country-specific tax configuration is a separate
+future foundation.
 
 ## Documented Roles vs Enforced Roles
 
@@ -162,7 +230,20 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     roles today; a future client portal (client sees their own head-contract
     variations) and subcontractor-scoped supplier-variation access are deferred
     with the other scoping controls (item 5).
-11. **Contact project-assignment guards** — the `projectAssignments` /
+11. **Company currency validation** — rules validate the *shape* of
+    `countryCode`/`baseCurrency` (`^[A-Z]{2}$` / `^[A-Z]{3}$`) but not that the
+    code is a **known** country or currency; `XX`/`XXX` would be accepted. The
+    known-code check, the confirmation step, and the "which existing projects
+    get pinned" review are client-side only.
+12. **Project currency lock activation** — rules enforce the one-way ratchet
+    once `currencyLocked` is `true`, but **cannot** determine whether a project
+    holds financial records (no collection enumeration in rules). A
+    financial-role user could create monetary data via a **direct SDK call**,
+    bypassing the app, without setting the flag — leaving the currency
+    changeable. Within the app this cannot happen: every monetary write engages
+    the flag in the **same transaction** as the record, and Project Overview
+    self-heals any project whose records predate this behaviour.
+13. **Contact project-assignment guards** — the `projectAssignments` /
     `projectIds` fields on contacts required **no rules changes** (they live on
     documents already covered by the contacts block), but their invariants are
     client-enforced only: rules don't verify that `projectIds` matches
@@ -212,6 +293,10 @@ the security-specific gate is:
 - [ ] Read/write role sets are correct; PII and commercially sensitive
       collections (Contacts, Supplier Invoices, Variations, Forecast Lines,
       Commercial Baseline, Counters) restrict **reads** to financial roles.
+- [ ] Company document writes stay scoped to the four currency fields
+      (`affectedKeys().hasOnly`); create/delete remain blocked.
+- [ ] The `qs` project rule still affects `currencyLocked` **only**, and only
+      `false` → `true`.
 - [ ] Delete is blocked on financial/audit collections; lifecycle is a status
       change.
 - [ ] No secret is `VITE_`-prefixed or read in frontend code; no privileged
@@ -236,8 +321,10 @@ place before any non-hand-provisioned (external) users are onboarded — see
 2. **Server-enforced authorisation** — lifecycle-transition legality, post-
    submission/`posted`/`approved` immutability, one-open-claim and
    one-invoice-per-claim race guards, creator ≠ approver segregation, counter
-   integrity (+1 only), and (contacts / supplier-invoice / variation) uniqueness
-   — all moved server-side (the Deferred Controls above, promoted to hard gates).
+   integrity (+1 only), (contacts / supplier-invoice / variation) uniqueness, and
+   **project-currency lock activation derived server-side from actual financial
+   records (plus known-code validation of country/currency)** — all moved
+   server-side (the Deferred Controls above, promoted to hard gates).
 3. **Authentication hardening** — Firebase Auth custom claims for role/company,
    invites and user management, self-serve signup and password reset, and
    locking down self-managed `role`/`companyId`.

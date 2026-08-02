@@ -6,6 +6,7 @@ import {
 import { db } from '../lib/firebase'
 import { useAuth } from './useAuth'
 import { useCompany } from './useCompany'
+import { stageProjectCurrencyLock } from './projectCurrencyLock'
 
 // Forecast Lines — the ONLY authored input of the Forecast Cost to Complete
 // feature. One document per cost code, keyed by a DETERMINISTIC document id
@@ -79,6 +80,15 @@ export function useForecastLines(projectId) {
 
     await runTransaction(db, async (tx) => {
       const snap = await tx.get(ref)
+      // An authored number (including 0) is monetary data and engages the
+      // currency ratchet IN THIS TRANSACTION, so the forecast input and the lock
+      // succeed or fail together. `null` means "not forecast" and carries no
+      // money, so it deliberately does not lock. Firestore requires all
+      // transaction reads before any writes, hence the staged read here.
+      const commitLock = ctc === null
+        ? () => {}
+        : await stageProjectCurrencyLock(tx, companyId, projectId)
+
       if (snap.exists()) {
         // Preserve createdAt/createdBy; refresh input, notes, name, and audit.
         tx.update(ref, {
@@ -101,7 +111,9 @@ export function useForecastLines(projectId) {
           updatedBy: user.uid,
         })
       }
+      commitLock()
     })
+
     return ref.id
   }, [companyId, projectId, user])
 

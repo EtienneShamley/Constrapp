@@ -1,4 +1,4 @@
-import { NavLink } from 'react-router-dom'
+import { NavLink, Link } from 'react-router-dom'
 import { NAV } from '../lib/nav'
 import { useAuth, getInitials, getDisplayName } from '../hooks/useAuth'
 import { useProfile } from '../hooks/useProfile'
@@ -47,15 +47,20 @@ export default function Sidebar({ open, onClose }) {
           <span className="text-[17px] font-black text-brand-text tracking-tight">Constrapp</span>
         </div>
 
-        {/* Company name */}
+        {/* Company name → Company Settings */}
         <div className="px-3 py-2.5 border-b border-brand-border shrink-0">
-          <div className="flex items-center gap-2 bg-brand-bg border border-brand-border rounded-lg px-2.5 py-[7px] cursor-default select-none">
+          <Link
+            to="/settings/company"
+            onClick={onClose}
+            title="Company settings"
+            className="flex items-center gap-2 bg-brand-bg border border-brand-border rounded-lg px-2.5 py-[7px] min-h-[44px] select-none hover:border-brand-accent/40 transition-colors"
+          >
             <div className="w-2 h-2 rounded-full bg-brand-accent shrink-0" />
             <span className="text-brand-text text-[11px] font-semibold flex-1 truncate">
               {companyName ?? '—'}
             </span>
-            <span className="text-brand-muted text-[9px]">▼</span>
-          </div>
+            <span className="text-brand-muted text-[9px]">⚙</span>
+          </Link>
         </div>
 
         {/* Nav */}

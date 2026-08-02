@@ -3,7 +3,7 @@ import { useOutletContext, useNavigate } from 'react-router-dom'
 import Card from '../../components/Card'
 import Btn from '../../components/Btn'
 import ProgBar from '../../components/ProgBar'
-import { currency } from '../../lib/formatters'
+import { formatCurrency } from '../../lib/formatters'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
@@ -17,7 +17,7 @@ import { approvedSupplierVariationsByCostCode } from '../../lib/variations'
 
 const EMPTY_FORM = { costCodeId: '', budgeted: '', notes: '' }
 
-function CreateBudgetLineModal({ costCodes, onClose, onSave }) {
+function CreateBudgetLineModal({ costCodes, currencyCode, onClose, onSave }) {
   const [form, setForm]     = useState(EMPTY_FORM)
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState(null)
@@ -79,7 +79,7 @@ function CreateBudgetLineModal({ costCodes, onClose, onSave }) {
           </div>
 
           <div>
-            <label className="block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1.5">Budgeted (AUD)</label>
+            <label className="block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1.5">Budgeted ({currencyCode})</label>
             <input
               type="number"
               min="0"
@@ -114,7 +114,9 @@ function CreateBudgetLineModal({ costCodes, onClose, onSave }) {
 
 export default function ProjectBudget() {
   const navigate = useNavigate()
-  const { projectId } = useOutletContext()
+  const { projectId, currencyCode } = useOutletContext()
+  const money = (n) => formatCurrency(n, currencyCode)
+
   const { budgetLines, budgetLinesLoading, createBudgetLine } = useBudgetLines(projectId)
   const { costCodes, costCodesLoading } = useCostCodes()
   const { purchaseOrders } = usePurchaseOrders(projectId)
@@ -194,23 +196,23 @@ export default function ProjectBudget() {
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3.5 mb-3">
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Budgeted</p>
-            <p className="text-lg font-bold text-brand-text">{currency(totals.budgeted)}</p>
+            <p className="text-lg font-bold text-brand-text">{money(totals.budgeted)}</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Committed</p>
-            <p className="text-lg font-bold text-brand-text">{currency(totals.committed)}</p>
+            <p className="text-lg font-bold text-brand-text">{money(totals.committed)}</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Claimed</p>
-            <p className="text-lg font-bold text-brand-text">{currency(totals.claimed)}</p>
+            <p className="text-lg font-bold text-brand-text">{money(totals.claimed)}</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Actual</p>
-            <p className="text-lg font-bold text-brand-text">{currency(totals.actual)}</p>
+            <p className="text-lg font-bold text-brand-text">{money(totals.actual)}</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Remaining</p>
-            <p className="text-lg font-bold text-brand-text">{currency(remaining)}</p>
+            <p className="text-lg font-bold text-brand-text">{money(remaining)}</p>
           </div>
         </div>
         <ProgBar value={usagePercent} colour={usagePercent >= 100 ? 'brand-red' : 'brand-accent'} />
@@ -221,11 +223,11 @@ export default function ProjectBudget() {
         <div className="grid grid-cols-2 gap-3.5 mt-3 pt-3 border-t border-brand-border">
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Approved Supplier Variations</p>
-            <p className="text-lg font-bold text-brand-text">{currency(totals.supplierVariations)}</p>
+            <p className="text-lg font-bold text-brand-text">{money(totals.supplierVariations)}</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Commitment Exposure</p>
-            <p className="text-lg font-bold text-brand-text">{currency(commitmentExposure)}</p>
+            <p className="text-lg font-bold text-brand-text">{money(commitmentExposure)}</p>
           </div>
         </div>
         <p className="m-0 mt-2 text-[11px] text-brand-muted">
@@ -280,13 +282,13 @@ export default function ProjectBudget() {
               {budgetLines.map(line => (
                 <tr key={line.id} className="border-b border-brand-border hover:bg-brand-card transition-colors">
                   <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">{line.costCodeName || '—'}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(line.budgeted || 0)}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(committedMap[line.costCodeId] || 0)}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{supplierVarMap[line.costCodeId] ? currency(supplierVarMap[line.costCodeId]) : '—'}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(actualMap[line.costCodeId] || 0)}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{currency(invoicedMap[line.costCodeId] || 0)}</td>
+                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{money(line.budgeted || 0)}</td>
+                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{money(committedMap[line.costCodeId] || 0)}</td>
+                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{supplierVarMap[line.costCodeId] ? money(supplierVarMap[line.costCodeId]) : '—'}</td>
+                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{money(actualMap[line.costCodeId] || 0)}</td>
+                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{money(invoicedMap[line.costCodeId] || 0)}</td>
                   <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">
-                    {currency((line.budgeted || 0) - (actualMap[line.costCodeId] || 0))}
+                    {money((line.budgeted || 0) - (actualMap[line.costCodeId] || 0))}
                   </td>
                 </tr>
               ))}
@@ -297,10 +299,10 @@ export default function ProjectBudget() {
                     <span className="block text-[11px] font-normal">Cost against a code with no budget line</span>
                   </td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.committed ? currency(row.committed) : '—'}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.supplierVar ? currency(row.supplierVar) : '—'}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.actual ? currency(row.actual) : '—'}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.invoiced ? currency(row.invoiced) : '—'}</td>
+                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.committed ? money(row.committed) : '—'}</td>
+                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.supplierVar ? money(row.supplierVar) : '—'}</td>
+                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.actual ? money(row.actual) : '—'}</td>
+                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.invoiced ? money(row.invoiced) : '—'}</td>
                   <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>
                 </tr>
               ))}
@@ -311,6 +313,7 @@ export default function ProjectBudget() {
 
       {showModal && (
         <CreateBudgetLineModal
+          currencyCode={currencyCode}
           costCodes={costCodes}
           onClose={() => setShowModal(false)}
           onSave={createBudgetLine}

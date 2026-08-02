@@ -3,7 +3,7 @@ import { useOutletContext, useNavigate } from 'react-router-dom'
 import Card from '../../components/Card'
 import Btn from '../../components/Btn'
 import Badge from '../../components/Badge'
-import { currency } from '../../lib/formatters'
+import { formatCurrency } from '../../lib/formatters'
 import { roundMoney } from '../../lib/purchaseOrders'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
@@ -28,20 +28,22 @@ function todayIso() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
-function TotalsFooter({ totals }) {
+function TotalsFooter({ totals, currencyCode }) {
+  const money = (n) => formatCurrency(n, currencyCode)
+
   const hasRetention = totals.retention > 0
   return (
     <div className="flex flex-col items-end gap-1 text-[13px] text-brand-text border-t border-brand-border pt-3">
-      <p className="m-0">Subtotal (ex-GST) <span className="font-semibold ml-2">{currency(totals.subtotal)}</span></p>
-      <p className="m-0 text-brand-muted">GST <span className="ml-2">{currency(totals.gstTotal)}</span></p>
-      <p className="m-0">Gross invoice total (inc. GST) <span className="font-semibold ml-2">{currency(totals.grossTotal)}</span></p>
+      <p className="m-0">Subtotal (ex-GST) <span className="font-semibold ml-2">{money(totals.subtotal)}</span></p>
+      <p className="m-0 text-brand-muted">GST <span className="ml-2">{money(totals.gstTotal)}</span></p>
+      <p className="m-0">Gross invoice total (inc. GST) <span className="font-semibold ml-2">{money(totals.grossTotal)}</span></p>
       {hasRetention && (
         <p className="m-0 text-brand-muted">
-          Retention withheld <span className="ml-2">−{currency(totals.retentionTotal)}</span>
-          <span className="ml-1 text-[11px]">(ex-GST {currency(totals.retention)} + GST {currency(totals.retentionGst)})</span>
+          Retention withheld <span className="ml-2">−{money(totals.retentionTotal)}</span>
+          <span className="ml-1 text-[11px]">(ex-GST {money(totals.retention)} + GST {money(totals.retentionGst)})</span>
         </p>
       )}
-      <p className="m-0 font-bold">Net payable <span className="ml-2">{currency(totals.payableTotal)}</span></p>
+      <p className="m-0 font-bold">Net payable <span className="ml-2">{money(totals.payableTotal)}</span></p>
     </div>
   )
 }
@@ -56,7 +58,9 @@ function TaxSelect({ value, onChange }) {
   )
 }
 
-function CreateInvoiceModal({ invoiceablePOs, invoiceableClaims, purchaseOrders, supplierInvoices, contacts, onClose, onSave }) {
+function CreateInvoiceModal({ invoiceablePOs, invoiceableClaims, purchaseOrders, supplierInvoices, contacts, currencyCode, onClose, onSave }) {
+  const money = (n) => formatCurrency(n, currencyCode)
+
   const [source, setSource]   = useState(SI_SOURCE.DIRECT_PO)
   const [selectedId, setSelectedId] = useState('')      // poId (direct) or claimId (progress_claim)
   const [supplierInvoiceNumber, setSupplierInvoiceNumber] = useState('')
@@ -329,13 +333,13 @@ function CreateInvoiceModal({ invoiceablePOs, invoiceableClaims, purchaseOrders,
                       <p className="m-0 text-[12px] text-brand-muted truncate">{line.description || '—'}</p>
                       {claim ? (
                         <p className={`m-0 text-[12px] whitespace-nowrap ${over ? 'text-brand-amber' : 'text-brand-text'}`}>
-                          {currency(line.amount)}{over ? ' ⚠' : ''}
+                          {money(line.amount)}{over ? ' ⚠' : ''}
                         </p>
                       ) : (
                         <input
                           type="number" min="0" step="any"
                           className={inputCls}
-                          placeholder={`of ${currency(sourceLines[idx]?.lineTotal || 0)}`}
+                          placeholder={`of ${money(sourceLines[idx]?.lineTotal || 0)}`}
                           value={amounts[idx] ?? ''}
                           onChange={setAmount(idx)}
                         />
@@ -381,7 +385,7 @@ function CreateInvoiceModal({ invoiceablePOs, invoiceableClaims, purchaseOrders,
           {gstAdvisory && <p className="m-0 text-[12px] text-brand-amber">⚠ {gstAdvisory}</p>}
           {reconcileError && <p className="m-0 text-[12px] text-brand-red">{reconcileError}</p>}
 
-          {hasSource && <TotalsFooter totals={totals} />}
+          {hasSource && <TotalsFooter totals={totals} currencyCode={currencyCode} />}
 
           {error && <p className="text-[12px] text-brand-red">{error}</p>}
 
@@ -420,7 +424,9 @@ function RowActions({ invoice, onTransition }) {
 
 export default function ProjectInvoices() {
   const navigate = useNavigate()
-  const { projectId } = useOutletContext()
+  const { projectId, currencyCode } = useOutletContext()
+  const money = (n) => formatCurrency(n, currencyCode)
+
   const { supplierInvoices, supplierInvoicesLoading, createSupplierInvoice, transitionStatus } = useSupplierInvoices(projectId)
   const { purchaseOrders, purchaseOrdersLoading } = usePurchaseOrders(projectId)
   const { progressClaims } = useProgressClaims(projectId)
@@ -552,11 +558,11 @@ export default function ProjectInvoices() {
                           ? <span className={overdue ? 'text-brand-red font-semibold' : 'text-brand-muted'}>{inv.dueDate}{overdue ? ' • Overdue' : ''}</span>
                           : <span className="text-brand-muted">—</span>}
                       </td>
-                      <td className="px-3.5 py-3 text-[13px] text-brand-text whitespace-nowrap">{currency(inv.subtotal || 0)}</td>
-                      <td className="px-3.5 py-3 text-[13px] text-brand-muted whitespace-nowrap">{currency(inv.gstTotal || 0)}</td>
-                      <td className="px-3.5 py-3 text-[13px] text-brand-muted whitespace-nowrap">{currency(inv.grossTotal || 0)}</td>
-                      <td className="px-3.5 py-3 text-[13px] text-brand-muted whitespace-nowrap">{inv.retentionTotal ? `−${currency(inv.retentionTotal)}` : '—'}</td>
-                      <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">{currency(inv.payableTotal || 0)}</td>
+                      <td className="px-3.5 py-3 text-[13px] text-brand-text whitespace-nowrap">{money(inv.subtotal || 0)}</td>
+                      <td className="px-3.5 py-3 text-[13px] text-brand-muted whitespace-nowrap">{money(inv.gstTotal || 0)}</td>
+                      <td className="px-3.5 py-3 text-[13px] text-brand-muted whitespace-nowrap">{money(inv.grossTotal || 0)}</td>
+                      <td className="px-3.5 py-3 text-[13px] text-brand-muted whitespace-nowrap">{inv.retentionTotal ? `−${money(inv.retentionTotal)}` : '—'}</td>
+                      <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">{money(inv.payableTotal || 0)}</td>
                       <td className="px-3.5 py-3">
                         <Badge label={SI_STATUS_LABELS[inv.status] ?? inv.status} variant={SI_BADGE_VARIANTS[inv.status]} sm />
                       </td>
@@ -574,6 +580,7 @@ export default function ProjectInvoices() {
 
       {showCreate && (
         <CreateInvoiceModal
+          currencyCode={currencyCode}
           invoiceablePOs={invoiceablePOs}
           invoiceableClaims={invoiceableClaims}
           purchaseOrders={purchaseOrders}

@@ -6,11 +6,15 @@ import {
 import { db } from '../lib/firebase'
 import { useAuth } from './useAuth'
 import { useCompany } from './useCompany'
+import { useProject } from './useProject'
+import { stageProjectCurrencyLock } from './projectCurrencyLock'
+import { resolveProjectCurrency } from '../lib/currency'
 import { PO_STATUS, canTransition, poTotals, formatPoNumber } from '../lib/purchaseOrders'
 
 export function usePurchaseOrders(projectId) {
   const { user }    = useAuth()
   const { company } = useCompany()
+  const { project } = useProject(projectId)
   const [purchaseOrders, setPurchaseOrders]               = useState([])
   const [purchaseOrdersLoading, setPurchaseOrdersLoading] = useState(true)
 
@@ -41,6 +45,11 @@ export function usePurchaseOrders(projectId) {
     return unsubscribe
   }, [companyId, projectId])
 
+  // The currency this project reports in — project.currency, falling back to
+  // the company base currency and finally AUD for records predating the
+  // Company Country & Currency foundation.
+  const projectCurrency = resolveProjectCurrency(project, company)
+
   // Creates a draft PO. The company-wide counter is read and incremented in the
   // same transaction as the PO write so concurrent users never share a number.
   const createPurchaseOrder = useCallback(async ({ supplierName, supplierId, description, notes, lineItems }) => {
@@ -51,6 +60,12 @@ export function usePurchaseOrders(projectId) {
     await runTransaction(db, async (tx) => {
       const counterSnap = await tx.get(counterRef)
       const next = counterSnap.exists() ? counterSnap.data().next : 1
+      // The currency ratchet is staged during the transaction's READ phase and
+      // committed below, so this po and the project lock succeed or fail
+      // together — the project can never hold amounts with a still-changeable
+      // currency. Firestore requires all transaction reads before any writes.
+      const commitLock = await stageProjectCurrencyLock(tx, companyId, projectId)
+
       tx.set(counterRef, { next: next + 1 }, { merge: true })
 
       const { subtotal, gst, total } = poTotals(lineItems)
@@ -64,7 +79,12 @@ export function usePurchaseOrders(projectId) {
         subtotal,
         gst,
         total,
-        currency:    'AUD',
+        // Audit snapshot of the currency this PO was raised in (the frozen
+        // supplierName/costCodeName idiom). The PROJECT currency remains the
+        // display authority — this field is never read for rendering, so a
+        // project can never show mixed currencies. Historical documents keep
+        // their stored 'AUD' and are never rewritten.
+        currency:    projectCurrency,
         revision:    1,
         notes:       notes?.trim() || '',
         sentAt:      null,
@@ -74,8 +94,9 @@ export function usePurchaseOrders(projectId) {
         createdAt:   serverTimestamp(),
         createdBy:   user.uid,
       })
+      commitLock()
     })
-  }, [companyId, projectId, user])
+  }, [companyId, projectId, user, projectCurrency])
 
   // Draft-only edits — amounts and lines are frozen once a PO leaves draft.
   const updatePurchaseOrder = useCallback(async (po, { supplierName, supplierId, description, notes, lineItems }) => {

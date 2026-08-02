@@ -6,6 +6,9 @@ import {
 import { db } from '../lib/firebase'
 import { useAuth } from './useAuth'
 import { useCompany } from './useCompany'
+import { useProject } from './useProject'
+import { stageProjectCurrencyLock } from './projectCurrencyLock'
+import { resolveProjectCurrency } from '../lib/currency'
 import {
   VARIATION_TYPE, VARIATION_STATUS, VARIATION_COUNTER_ID,
   canTransition, variationTotals, validateApprovedAmounts, buildApprovedLineItems,
@@ -21,10 +24,16 @@ function todayIso() {
 export function useVariations(projectId) {
   const { user }    = useAuth()
   const { company } = useCompany()
+  const { project } = useProject(projectId)
   const [variations, setVariations]               = useState([])
   const [variationsLoading, setVariationsLoading] = useState(true)
 
   const companyId = company?.id ?? null
+
+  // The currency this project reports in — project.currency, falling back to
+  // the company base currency and finally AUD for records predating the
+  // Company Country & Currency foundation.
+  const projectCurrency = resolveProjectCurrency(project, company)
 
   useEffect(() => {
     if (!companyId || !projectId) {
@@ -75,6 +84,12 @@ export function useVariations(projectId) {
     await runTransaction(db, async (tx) => {
       const counterSnap = await tx.get(counterRef)
       const next = counterSnap.exists() ? counterSnap.data().next : 1
+      // The currency ratchet is staged during the transaction's READ phase and
+      // committed below, so this variation and the project lock succeed or fail
+      // together — the project can never hold amounts with a still-changeable
+      // currency. Firestore requires all transaction reads before any writes.
+      const commitLock = await stageProjectCurrencyLock(tx, companyId, projectId)
+
       tx.set(counterRef, { next: next + 1 }, { merge: true })
 
       const submitted = variationTotals(lineItems, 'submitted')
@@ -117,7 +132,12 @@ export function useVariations(projectId) {
         approvedDate:    '',
         effectiveDate:   effectiveDate   || '',
 
-        currency: 'AUD',
+        // Audit snapshot of the currency this document was raised in (the frozen
+        // supplierName/costCodeName idiom). The PROJECT currency remains the
+        // display authority — this field is never read for rendering, so a
+        // project can never show mixed currencies. Historical documents keep
+        // their stored 'AUD' and are never rewritten.
+        currency: projectCurrency,
         revision: 1,
         notes:           notes?.trim() || '',
         assessmentNotes: '',
@@ -136,9 +156,10 @@ export function useVariations(projectId) {
         createdAt: serverTimestamp(),
         createdBy: user.uid,
       })
+      commitLock()
     })
     return varRef.id
-  }, [companyId, projectId, user])
+  }, [companyId, projectId, user, projectCurrency])
 
   // Draft-only edits — content freezes once a variation is submitted. The caller
   // supplies rebuilt line items; submitted totals are re-derived here.

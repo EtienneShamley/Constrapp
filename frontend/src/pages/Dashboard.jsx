@@ -7,7 +7,8 @@ import Card from '../components/Card'
 import Stat from '../components/Stat'
 import Badge from '../components/Badge'
 import Btn from '../components/Btn'
-import { currency, formatDate } from '../lib/formatters'
+import { formatCurrency, formatDate } from '../lib/formatters'
+import { resolveProjectCurrency } from '../lib/currency'
 import { useAuth, getDisplayName } from '../hooks/useAuth'
 import { useProfile } from '../hooks/useProfile'
 import { useCompany } from '../hooks/useCompany'
@@ -62,7 +63,7 @@ export default function Dashboard() {
   const kpis = [
     { label: 'Active Projects',    value: String(activeCount), icon: '🏗', sub: `${totalCount} total`      },
     { label: 'Pending POs',        value: '5',                 icon: '📋'                                  },
-    { label: 'Budget Utilization', value: '68%',               icon: '💰', sub: '$2.46M of $3.6M'          },
+    { label: 'Budget Utilization', value: '68%',               icon: '💰', sub: 'placeholder data'          },
     { label: 'Upcoming Tasks',     value: '29',                icon: '⚡', color: '#F59E0B', sub: 'across projects' },
   ]
 
@@ -186,7 +187,7 @@ export default function Dashboard() {
                     <Badge label={p.status} sm />
                   </td>
                   <td className="px-3 py-[11px] text-[13px] font-semibold text-brand-text-soft">
-                    {p.budget ? currency(p.budget) : '—'}
+                    {p.budget ? formatCurrency(p.budget, resolveProjectCurrency(p, company)) : '—'}
                   </td>
                   <td className="px-3 py-[11px] text-[12px] text-brand-muted">{formatDate(p.startDate)}</td>
                   <td className="px-3 py-[11px]">

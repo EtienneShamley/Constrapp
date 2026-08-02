@@ -3,7 +3,7 @@ import { useOutletContext } from 'react-router-dom'
 import Card from '../../components/Card'
 import Btn from '../../components/Btn'
 import Badge from '../../components/Badge'
-import { currency, formatDate } from '../../lib/formatters'
+import { formatCurrency, formatDate } from '../../lib/formatters'
 import { useAuth } from '../../hooks/useAuth'
 import { useProfile } from '../../hooks/useProfile'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
@@ -33,15 +33,17 @@ const FILTERS = [
 
 const storedCtcString = (v) => (v === null || v === undefined ? '' : String(v))
 
-function SummaryCards({ rollups }) {
+function SummaryCards({ rollups, currencyCode }) {
+  const money = (n) => formatCurrency(n, currencyCode)
+
   const core = [
-    { label: 'Approved Budget',    value: currency(rollups.budgeted) },
-    { label: 'Actual',             value: currency(rollups.actual),             help: 'Cost to Date' },
-    { label: 'Remaining Committed', value: currency(rollups.remainingCommitted) },
-    { label: 'Forecast Final Cost', value: currency(rollups.forecastFinalCost), help: 'Estimate at Completion (EAC)' },
+    { label: 'Approved Budget',    value: money(rollups.budgeted) },
+    { label: 'Actual',             value: money(rollups.actual),             help: 'Cost to Date' },
+    { label: 'Remaining Committed', value: money(rollups.remainingCommitted) },
+    { label: 'Forecast Final Cost', value: money(rollups.forecastFinalCost), help: 'Estimate at Completion (EAC)' },
     {
       label: 'Variance to Budget',
-      value: currency(rollups.varianceToBudget),
+      value: money(rollups.varianceToBudget),
       help: 'Variance at Completion (VAC)',
       danger: rollups.varianceToBudget < 0,
     },
@@ -69,11 +71,11 @@ function SummaryCards({ rollups }) {
         <div className="grid grid-cols-2 gap-3.5">
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Approved Supplier Variation Exposure</p>
-            <p className="text-lg font-bold text-brand-text">{currency(rollups.approvedSupplierVariations)}</p>
+            <p className="text-lg font-bold text-brand-text">{money(rollups.approvedSupplierVariations)}</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Pending Supplier Variation Exposure</p>
-            <p className="text-lg font-bold text-brand-text">{currency(rollups.pendingSupplierVariationExposure)}</p>
+            <p className="text-lg font-bold text-brand-text">{money(rollups.pendingSupplierVariationExposure)}</p>
           </div>
         </div>
         <p className="m-0 mt-3 text-[11px] text-brand-muted">
@@ -87,7 +89,9 @@ function SummaryCards({ rollups }) {
 }
 
 export default function ProjectForecast() {
-  const { projectId } = useOutletContext()
+  const { projectId, currencyCode } = useOutletContext()
+  const money = (n) => formatCurrency(n, currencyCode)
+
   const { user }    = useAuth()
   const { profile } = useProfile()
   const { budgetLines }     = useBudgetLines(projectId)
@@ -226,7 +230,7 @@ export default function ProjectForecast() {
 
   return (
     <div>
-      <SummaryCards rollups={rollups} />
+      <SummaryCards rollups={rollups} currencyCode={currencyCode} />
 
       {/* Toolbar: unforecasted count + save-all */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3.5">
@@ -305,32 +309,32 @@ export default function ProjectForecast() {
                       </td>
 
                       {/* Budgeted */}
-                      <td className={tdCls}>{row.hasBudgetLine ? currency(row.budgeted || 0) : '—'}</td>
+                      <td className={tdCls}>{row.hasBudgetLine ? money(row.budgeted || 0) : '—'}</td>
 
                       {/* Actual */}
-                      <td className={tdCls}>{currency(row.actual || 0)}</td>
+                      <td className={tdCls}>{money(row.actual || 0)}</td>
 
                       {/* Remaining Committed (+ closed-PO residual flag) */}
                       <td className={tdCls}>
-                        {currency(row.remainingCommitted || 0)}
+                        {money(row.remainingCommitted || 0)}
                         {row.closedResidual > 0 && (
                           <span
                             className="block text-[11px] text-brand-amber"
                             title="A closed purchase order still holds uninvoiced commitment. Left visible for QS judgement — not removed from the forecast."
                           >
-                            ⚠ incl. {currency(row.closedResidual)} on closed PO
+                            ⚠ incl. {money(row.closedResidual)} on closed PO
                           </span>
                         )}
                       </td>
 
                       {/* Approved Supplier Variations (context) */}
-                      <td className={tdCls}>{row.approvedSupplierVariations ? currency(row.approvedSupplierVariations) : '—'}</td>
+                      <td className={tdCls}>{row.approvedSupplierVariations ? money(row.approvedSupplierVariations) : '—'}</td>
 
                       {/* Pending Supplier Variation Exposure (context) */}
-                      <td className={tdCls}>{row.pendingSupplierVariationExposure ? currency(row.pendingSupplierVariationExposure) : '—'}</td>
+                      <td className={tdCls}>{row.pendingSupplierVariationExposure ? money(row.pendingSupplierVariationExposure) : '—'}</td>
 
                       {/* Remaining Budget Reference (informational) */}
-                      <td className={tdCls}>{row.hasBudgetLine ? currency(row.remainingBudgetRef) : '—'}</td>
+                      <td className={tdCls}>{row.hasBudgetLine ? money(row.remainingBudgetRef) : '—'}</td>
 
                       {/* Uncommitted Cost to Complete (editable) */}
                       <td className={`${tdCls} min-w-[150px]`}>
@@ -353,14 +357,14 @@ export default function ProjectForecast() {
                       </td>
 
                       {/* Cost to Complete (derived) */}
-                      <td className={tdCls}>{currency(row.costToComplete)}</td>
+                      <td className={tdCls}>{money(row.costToComplete)}</td>
 
                       {/* Forecast Final Cost (derived) */}
-                      <td className={`${tdCls} font-semibold`}>{currency(row.forecastFinalCost)}</td>
+                      <td className={`${tdCls} font-semibold`}>{money(row.forecastFinalCost)}</td>
 
                       {/* Variance to Budget (derived) */}
                       <td className={`${tdCls} font-semibold ${row.hasBudgetLine && row.overBudget ? 'text-brand-red' : 'text-brand-text'}`}>
-                        {row.hasBudgetLine ? currency(row.varianceToBudget) : '—'}
+                        {row.hasBudgetLine ? money(row.varianceToBudget) : '—'}
                       </td>
 
                       {/* Notes (editable) */}

@@ -24,8 +24,11 @@ companies/{companyId}
 ```
 
 `users/` is the only top-level collection besides `companies/`. Everything else
-is company-scoped for multi-tenancy. All money amounts are AUD numbers; line and
-budget amounts are **ex-GST** unless a field name says otherwise.
+is company-scoped for multi-tenancy. Money amounts are plain numbers in the
+**project's currency** (`project.currency` → `company.baseCurrency` → `AUD`; see
+Company Country & Currency below); line and budget amounts are **ex-GST** unless
+a field name says otherwise. There is **no FX conversion** — a currency is a
+label for amounts entered in it, never a conversion instruction.
 
 ## users/{uid}
 
@@ -41,8 +44,20 @@ Document ID = Firebase Auth UID. Created manually today (no signup/invite flow).
 
 ## companies/{companyId}
 
-Read-only from the client (rules block all client writes). Only `name` is read
-by the app today; other fields (e.g. `createdAt`, `plan`) are incidental.
+Company **creation and deletion are blocked** from the client (admin tooling
+only). Rules permit `company_admin` to update **four named currency fields and
+nothing else** — `name` and every other field remain immutable from the client.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | Read-only from the client |
+| `countryCode` | string | **ISO 3166-1 alpha-2** (`NZ`, `AU`, `ZA`, `US`, `GB`). **Absent = never configured.** Suggests a currency; never forces one |
+| `baseCurrency` | string | **ISO 4217** (`NZD`, `AUD`, `ZAR`, `USD`, `GBP`, `EUR`). The default inherited by **new** projects. Absent ⇒ display falls back to `AUD` and the setup banner shows; **nothing is auto-written** |
+| `currencyUpdatedAt` / `currencyUpdatedBy` | timestamp / uid | Stamped on every currency configuration save |
+
+Other fields (e.g. `createdAt`, `plan`) are incidental. Changing `baseCurrency`
+later affects only the default for **new** projects — it never converts,
+recalculates, or relabels any existing project or amount.
 
 ## companies/{companyId}/costCodes/{costCodeId}
 
@@ -137,7 +152,26 @@ Numbers render as `PO-0001` / `PC-0001` / `SI-0001` / `CV-0001` / `SV-0001`
 | `startDate` | Timestamp \| null | |
 | `location` | string | |
 | `progress` | number | 0–100, manually set at creation |
+| `currency` | string | **ISO 4217** — THE display authority for every money figure on this project. Inherited from `company.baseCurrency` at creation and overridable there. **Absent** on projects predating this foundation ⇒ resolved through the company (see below) |
+| `currencyLocked` | boolean | The **currency ratchet**. Once `true`, Firestore rules reject any change to `currency` and any attempt to set this back to `false`. Set at creation when `budget > 0`, and by the single centralised lock operation whenever monetary data is first written. **Absent** ⇒ treated as `false` |
 | `createdAt` / `createdBy` | timestamp / uid | |
+
+### Currency resolution & locking
+
+Display resolves `project.currency` → `company.baseCurrency` → `AUD`
+(`lib/currency.js` → `resolveProjectCurrency`). Company setup pins an explicit
+`currency` onto every existing project precisely so a later company-currency
+change can never relabel it.
+
+Currency **locks** as soon as the project holds any monetary value — a non-zero
+`budget`, any budget line, any purchase order (**including draft and
+cancelled**), any progress claim, supplier invoice, client or supplier
+variation, any forecast line with `uncommittedCostToComplete !== null`, or an
+established commercial baseline. Cost Codes and Contacts are company-wide and
+hold no money, so they **never** lock. Detecting that evidence is
+**client-enforced** (`lib/currency.js` → `monetaryLockReasons`); Firestore rules
+cannot enumerate random-id subcollections. What rules **do** enforce is the
+one-way ratchet once the flag is set. See [SECURITY.md](SECURITY.md).
 
 ## …/projects/{projectId}/budgetLines/{lineId}
 
@@ -180,7 +214,7 @@ Lifecycle and semantics: [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md).
 | `description`, `notes` | string | |
 | `lineItems` | array | **Embedded**; frozen once the PO leaves draft |
 | `subtotal`, `gst`, `total` | number | Denormalised from lines; GST = 10% of subtotal |
-| `currency` | string | `AUD` |
+| `currency` | string | **Audit snapshot** of the project currency at write time (frozen, like `supplierName`/`costCodeName`). **Never read for display** — the project currency is the display authority, so a project can never render mixed currencies. Documents created before this foundation keep their stored `AUD` and are **never rewritten** |
 | `revision` | number | 1 today |
 | `sentAt`, `closedAt`, `cancelledAt` | timestamp \| null | Stamped on transition |
 | `externalRefs` | map | Empty today; reserved for accounting integrations (Xero/MYOB/QuickBooks IDs) |
@@ -207,7 +241,7 @@ Cumulative supplier claims against one **sent** PO. One open claim
 | `claimedSubtotal`, `claimedGst`, `claimedTotal` | number | GST applies to (subtotal − retention) |
 | `approvedSubtotal`, `approvedGst`, `approvedTotal` | number \| null | Null until approved; frozen after |
 | `assessmentNotes`, `notes` | string | |
-| `currency`, `revision` | | `AUD`, 1 |
+| `currency`, `revision` | | **Audit snapshot** of the project currency at write time (never read for display; historical `AUD` values are never rewritten), 1 |
 | `submittedAt`, `approvedAt`, `rejectedAt`, `invoicedAt` | timestamp \| null | Stamped on transition |
 | `approvedBy` | uid \| null | |
 | `externalRefs` | map | Reserved for accounting integrations |
@@ -260,7 +294,7 @@ GST is stored per line as `gstAmount`.
 | `net` | number | `subtotal − retention` |
 | `payableGst` | number | `gstTotal − retentionGst` — equals the source claim's `approvedGst` |
 | `payableTotal` | number | `grossTotal − retentionTotal` — net payable; equals the source claim's `approvedTotal`. **Not** the full tax-invoice value (that is `grossTotal`) |
-| `currency`, `revision` | | `AUD`, 1 |
+| `currency`, `revision` | | **Audit snapshot** of the project currency at write time (never read for display; historical `AUD` values are never rewritten), 1 |
 | `notes` | string | |
 | `approvedAt`/`approvedBy` | timestamp / uid | Stamped on approve |
 | `postedAt`/`postedBy` | timestamp / uid | Stamped on post (the financial commit point) |
@@ -326,7 +360,7 @@ Header totals derive from the line items (no flat header rate). Numbers come fro
 | `approvedSubtotal`, `approvedGst`, `approvedTotal` | number \| null | Null until approved; frozen after (signed) |
 | `forecastAmount` | number \| null | **Reserved** — likely settlement value of a pending variation, for future forecast |
 | `identifiedDate`, `submittedDate`, `responseDueDate`, `approvedDate`, `effectiveDate` | string | Human `YYYY-MM-DD` strings (may be empty) |
-| `currency`, `revision` | | `AUD`, 1 |
+| `currency`, `revision` | | **Audit snapshot** of the project currency at write time (never read for display; historical `AUD` values are never rewritten), 1 |
 | `notes`, `assessmentNotes` | string | `assessmentNotes` required when approved amounts differ from submitted |
 | `submittedAt`/`submittedBy`, `approvedAt`/`approvedBy`, `rejectedAt`/`rejectedBy`, `withdrawnAt`/`withdrawnBy` | timestamp / uid | Stamped on transition |
 | `attachments` | array | **Reserved** — always `[]`; no Storage uploads yet |
@@ -405,11 +439,10 @@ to financial roles (see [SECURITY.md](SECURITY.md)). Semantics and margin formul
 | `createdAt` / `createdBy` | timestamp / uid | Set **only on first creation** and preserved across edits |
 | `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on **every** save |
 
-**No `currency` field.** The Margin foundation deliberately stores no currency and
-introduces no new hard-coded AUD values; amounts use the app's existing AUD display
-until the **Company Country & Currency** foundation (`feature/company-country-currency`)
-adds company/project currency inheritance and removes hard-coded AUD formatting. No
-FX conversion is planned.
+**No `currency` field.** The baseline stores no currency and needs none: it
+inherits the **project** currency like every other figure on the project (an
+established baseline is itself monetary data and therefore locks that currency).
+No FX conversion is performed or planned.
 
 **Stored vs derived.** Only the fields above are authored. **Current Contract Sum,
 Forecast Revenue, Forecast Gross Profit, Forecast Margin %, Original Planned

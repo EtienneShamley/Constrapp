@@ -30,6 +30,8 @@
 
 - [x] **Project Margin (foundation)** — the first revenue-and-margin layer, closing the "what profit do we forecast?" question. A dedicated **Project Commercial Baseline** document (`…/projects/{projectId}/commercial/baseline`, deterministic id `baseline`) stores the only authored inputs — `originalContractValue`, `originalApprovedBudget` (`number | null`), `contractStartDate`/`contractCompletionDate` (`Timestamp | null`), `clientId`/`clientName` snapshot, `notes`, audit stamps. Everything else is derived at read time (`lib/margin.js` composing `lib/variations.js` + `lib/forecast.js`): **Current Contract Sum** = Original Contract Value + Approved Client Variations; **Forecast Revenue** = Current Contract Sum; **Forecast Gross Profit** = Forecast Revenue − Forecast Final Cost; **Forecast Margin %**; **Original Planned Profit/Margin %**; **Margin Movement**. All ex-GST. Pending client variations stay separate revenue exposure; approved/pending supplier variations stay separate cost exposure and are **never** added to Forecast Final Cost. New **Commercial** project tab + financial-role-only margin cards on Overview (one shared derivation). Reads/writes restricted to financial roles via a rules block scoped to the single `baseline` document; delete blocked. **No** mutation of Projects/Budget Lines/POs/Claims/Invoices/Variations/Forecast Lines; no migration. **Deferred:** Cash Flow, Client Invoices, Accounts Receivable, Payments, retention modelling, monthly periods, snapshots, approvals, probability weighting. Currency remains the app's existing AUD display — see **Company Country & Currency** next.
 
+- [x] **Company Country & Currency (foundation)** — Constrapp is no longer hard-coded to AUD. A company stores `countryCode` (ISO 3166-1 alpha-2) + `baseCurrency` (ISO 4217) + audit stamps, set on a new **Company Settings** page (`/settings/company`, `company_admin` only) reached from the sidebar company chip or a first-run setup banner: country **suggests** a currency, the admin **confirms or overrides** it, and every existing project is listed and **pinned** to an explicit currency in the same confirmed action (projects written first, then the company; additive and idempotent; **no amount converted**). Projects store `currency` (inherited from the company base currency, overridable at creation) and `currencyLocked`. Currency **locks** on any monetary value — non-zero `project.budget`, budget lines, POs (**including draft/cancelled**), claims, supplier invoices, variations, forecast lines with a non-null input, or an established commercial baseline; Cost Codes/Contacts never lock. One shared `formatCurrency(amount, currencyCode)` (`Intl.NumberFormat`, fixed `en-AU` locale, whole units) replaced **all 77** money call sites; the old `currency()` export was **deleted** so a missed site is a build error. POs/claims/invoices/variations now snapshot the resolved project currency as **audit context** (never displayed; historical `'AUD'` never rewritten). Rules: `company_admin` may update **four company currency fields only** (`affectedKeys().hasOnly`, create/delete still blocked); the currency **ratchet** is rules-enforced once set (no currency change, no unlock); `qs` gets one narrow permission — `currencyLocked` `false`→`true` and nothing else. Lock activation is **atomic**: every monetary write engages the ratchet inside its own Firestore transaction (`hooks/projectCurrencyLock.js`), so record and lock commit or roll back together. **Client-enforced (deferred):** deciding the lock should engage, since rules cannot enumerate random-id subcollections. **No FX conversion, no mixed-currency transactions, no migration** (unconfigured companies display AUD and show the banner; nothing auto-written). **Tax is NOT in scope** — GST stays a flat Australian 10% and Company Settings warns for any non-AU country
+
 Firestore security rules for all of the above are written in `frontend/firestore.rules` and published manually.
 
 ---
@@ -56,7 +58,14 @@ Bring documentation in line with the implemented system:
 - Counter tamper protection
 - Audit logging
 
-**Other deferred foundations:** user management UI (invite, assign role/company), project edit/delete, self-serve signup and password reset, Firebase CLI config (`firebase.json`/`.firebaserc`), Hosting, CI.
+**Other deferred foundations:** user management UI (invite, assign role/company), project edit/delete (currency is the only project field editable after creation), self-serve signup and password reset, Firebase CLI config (`firebase.json`/`.firebaserc`), Hosting, CI.
+
+**Country-specific tax configuration** — currency display is configurable as of
+the Company Country & Currency foundation, but **tax calculation is not**:
+`GST_RATE` is a flat Australian 10% and every "GST 10%" label is Australian.
+NZ GST 15%, ZA VAT 15%, UK VAT 20%, and US sales tax are **not** supported.
+Company Settings warns about this for any non-AU country. A tax-regime foundation
+must land before Constrapp can claim tax compliance in those markets.
 
 ---
 
@@ -88,15 +97,19 @@ Margin Movement), all ex-GST, on a new Commercial tab. **Remaining (deferred):**
 cash-flow forecasting (see item 3c), manual/probability-weighted revenue forecast,
 and immutable margin period snapshots.
 
-**3a. Company Country & Currency** *(next foundation after Margin)*
-The immediate next step. Introduce a company (and inherited project) country and
-reporting currency, then replace the hard-coded AUD number/currency formatting
-(`lib/formatters.js`) with currency inheritance. Margin deliberately stored **no**
-`currency` field and added **no** new hard-coded AUD values — it continues to use
-the existing AUD display until this foundation lands. **No FX conversion** is in
-scope: a project reports in one currency. Company/project currency inheritance and
-the removal of hard-coded AUD formatting are tracked under
-`feature/company-country-currency`.
+**3a. Company Country & Currency** — *foundation shipped (see Completed Foundations).*
+Company `countryCode`/`baseCurrency`, project `currency`/`currencyLocked`, a
+Company Settings page with confirmed setup and existing-project pinning, the
+currency ratchet, and one shared `formatCurrency` across every financial screen.
+**No FX conversion** — a project reports in one currency and a currency is a label,
+never a conversion. **Remaining (deferred):** server-derived lock activation and
+known-code validation in rules (both need a trusted backend), per-country display
+locales, **date localisation** (`formatDate` is still `en-AU`, a known limitation
+for US users), self-serve company signup (the settings form is built to be reused
+as a signup step), and — importantly — **country-specific tax configuration**:
+this foundation makes currency *display* configurable but leaves GST a flat
+Australian 10%, so selecting NZ/ZA/US/GB does **not** make Constrapp tax-compliant
+there. That is the honest prerequisite for genuinely serving those markets.
 
 **3b. Payments / Client Invoices foundation**
 The honest prerequisite for cash flow. Record client-side billing (Client Invoices /

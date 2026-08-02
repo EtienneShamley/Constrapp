@@ -3,7 +3,7 @@ import { useOutletContext, useNavigate } from 'react-router-dom'
 import Card from '../../components/Card'
 import Btn from '../../components/Btn'
 import Badge from '../../components/Badge'
-import { currency } from '../../lib/formatters'
+import { formatCurrency } from '../../lib/formatters'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { roundMoney } from '../../lib/purchaseOrders'
@@ -18,18 +18,22 @@ const inputErrCls = 'w-full bg-brand-bg border border-brand-red rounded-lg px-3 
 const labelCls = 'block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1.5'
 const thCls    = 'text-left px-3.5 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px]'
 
-function TotalsFooter({ totals, heading }) {
+function TotalsFooter({ totals, heading, currencyCode }) {
+  const money = (n) => formatCurrency(n, currencyCode)
+
   return (
     <div className="flex flex-col items-end gap-1 text-[13px] text-brand-text border-t border-brand-border pt-3">
-      <p className="m-0">{heading} <span className="font-semibold ml-2">{currency(totals.subtotal)}</span></p>
-      <p className="m-0 text-brand-muted">Retention <span className="ml-2">−{currency(totals.retention)}</span></p>
-      <p className="m-0 text-brand-muted">GST 10% <span className="ml-2">{currency(totals.gst)}</span></p>
-      <p className="m-0 font-bold">Total payable <span className="ml-2">{currency(totals.total)}</span></p>
+      <p className="m-0">{heading} <span className="font-semibold ml-2">{money(totals.subtotal)}</span></p>
+      <p className="m-0 text-brand-muted">Retention <span className="ml-2">−{money(totals.retention)}</span></p>
+      <p className="m-0 text-brand-muted">GST 10% <span className="ml-2">{money(totals.gst)}</span></p>
+      <p className="m-0 font-bold">Total payable <span className="ml-2">{money(totals.total)}</span></p>
     </div>
   )
 }
 
-function CreateProgressClaimModal({ claimablePOs, progressClaims, onClose, onSave }) {
+function CreateProgressClaimModal({ claimablePOs, progressClaims, currencyCode, onClose, onSave }) {
+  const money = (n) => formatCurrency(n, currencyCode)
+
   const [poId, setPoId]                 = useState('')
   const [periodEnding, setPeriodEnding] = useState('')
   const [claimRef, setClaimRef]         = useState('')
@@ -139,7 +143,7 @@ function CreateProgressClaimModal({ claimablePOs, progressClaims, onClose, onSav
                     <div key={idx} className="grid grid-cols-2 sm:grid-cols-[2fr_2fr_1fr_1fr_1fr] gap-2 items-center">
                       <p className="m-0 text-[12px] text-brand-text truncate">{line.costCodeName || '—'}</p>
                       <p className="m-0 text-[12px] text-brand-muted truncate">{line.description || '—'}</p>
-                      <p className="m-0 text-[12px] text-brand-muted whitespace-nowrap">of {currency(line.poLineTotal)}</p>
+                      <p className="m-0 text-[12px] text-brand-muted whitespace-nowrap">of {money(line.poLineTotal)}</p>
                       <input
                         type="number" min="0" step="any"
                         className={inputCls}
@@ -149,7 +153,7 @@ function CreateProgressClaimModal({ claimablePOs, progressClaims, onClose, onSav
                       <p className={`m-0 text-[12px] whitespace-nowrap ${line.claimedThisPeriod < 0 ? 'text-brand-red' : overclaimed ? 'text-brand-amber' : 'text-brand-muted'}`}>
                         {line.claimedThisPeriod < 0
                           ? 'Below approved'
-                          : `+${currency(line.claimedThisPeriod)}${overclaimed ? ' ⚠' : ''}`}
+                          : `+${money(line.claimedThisPeriod)}${overclaimed ? ' ⚠' : ''}`}
                       </p>
                     </div>
                   )
@@ -178,7 +182,7 @@ function CreateProgressClaimModal({ claimablePOs, progressClaims, onClose, onSav
             </div>
           </div>
 
-          <TotalsFooter totals={totals} heading="Claimed this period" />
+          <TotalsFooter totals={totals} heading="Claimed this period" currencyCode={currencyCode} />
 
           {error && <p className="text-[12px] text-brand-red">{error}</p>}
 
@@ -192,7 +196,9 @@ function CreateProgressClaimModal({ claimablePOs, progressClaims, onClose, onSav
   )
 }
 
-function AssessProgressClaimModal({ claim, onClose, onTransition }) {
+function AssessProgressClaimModal({ claim, currencyCode, onClose, onTransition }) {
+  const money = (n) => formatCurrency(n, currencyCode)
+
   const [approvedAmounts, setApprovedAmounts] = useState(
     (claim.lineItems ?? []).map(li => String(li.claimedThisPeriod ?? 0))
   )
@@ -251,7 +257,7 @@ function AssessProgressClaimModal({ claim, onClose, onTransition }) {
                   <div className="grid grid-cols-2 sm:grid-cols-[2fr_2fr_1fr_1fr] gap-2 items-center">
                     <p className="m-0 text-[12px] text-brand-text truncate">{li.costCodeName || '—'}</p>
                     <p className="m-0 text-[12px] text-brand-muted truncate">{li.description || '—'}</p>
-                    <p className="m-0 text-[12px] text-brand-muted whitespace-nowrap">claimed {currency(li.claimedThisPeriod || 0)}</p>
+                    <p className="m-0 text-[12px] text-brand-muted whitespace-nowrap">claimed {money(li.claimedThisPeriod || 0)}</p>
                     <input
                       type="number" min="0" step="any"
                       className={lineErrors[idx] ? inputErrCls : inputCls}
@@ -278,7 +284,7 @@ function AssessProgressClaimModal({ claim, onClose, onTransition }) {
             />
           </div>
 
-          <TotalsFooter totals={totals} heading="Certified this period" />
+          <TotalsFooter totals={totals} heading="Certified this period" currencyCode={currencyCode} />
 
           {error && <p className="text-[12px] text-brand-red">{error}</p>}
 
@@ -327,7 +333,9 @@ function RowActions({ claim, onTransition, onAssess }) {
 
 export default function ProjectProgressClaims() {
   const navigate = useNavigate()
-  const { projectId } = useOutletContext()
+  const { projectId, currencyCode } = useOutletContext()
+  const money = (n) => formatCurrency(n, currencyCode)
+
   const { progressClaims, progressClaimsLoading, createProgressClaim, transitionStatus } = useProgressClaims(projectId)
   const { purchaseOrders, purchaseOrdersLoading } = usePurchaseOrders(projectId)
   const [showCreate, setShowCreate]     = useState(false)
@@ -407,9 +415,9 @@ export default function ProjectProgressClaims() {
                     <td className="px-3.5 py-3 text-[13px] text-brand-text whitespace-nowrap">{claim.poNumber}</td>
                     <td className="px-3.5 py-3 text-[13px] text-brand-text">{claim.supplierName}</td>
                     <td className="px-3.5 py-3 text-[12px] text-brand-muted whitespace-nowrap">{claim.periodEnding || '—'}</td>
-                    <td className="px-3.5 py-3 text-[13px] text-brand-text whitespace-nowrap">{currency(claim.claimedTotal || 0)}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-text whitespace-nowrap">{money(claim.claimedTotal || 0)}</td>
                     <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">
-                      {claim.approvedTotal == null ? '—' : currency(claim.approvedTotal)}
+                      {claim.approvedTotal == null ? '—' : money(claim.approvedTotal)}
                     </td>
                     <td className="px-3.5 py-3">
                       <Badge label={CLAIM_STATUS_LABELS[claim.status] ?? claim.status} variant={CLAIM_BADGE_VARIANTS[claim.status]} sm />
@@ -427,6 +435,7 @@ export default function ProjectProgressClaims() {
 
       {showCreate && (
         <CreateProgressClaimModal
+          currencyCode={currencyCode}
           claimablePOs={claimablePOs}
           progressClaims={progressClaims}
           onClose={() => setShowCreate(false)}
@@ -435,6 +444,7 @@ export default function ProjectProgressClaims() {
       )}
       {assessing && (
         <AssessProgressClaimModal
+          currencyCode={currencyCode}
           claim={assessing}
           onClose={() => setAssessing(null)}
           onTransition={handleTransition}

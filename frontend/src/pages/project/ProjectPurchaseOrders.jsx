@@ -3,7 +3,7 @@ import { useOutletContext, useNavigate } from 'react-router-dom'
 import Card from '../../components/Card'
 import Btn from '../../components/Btn'
 import Badge from '../../components/Badge'
-import { currency } from '../../lib/formatters'
+import { formatCurrency } from '../../lib/formatters'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { useContacts } from '../../hooks/useContacts'
@@ -87,7 +87,9 @@ function QuickCreateSupplier({ contacts, projectId, onCreateContact, onCreated, 
   )
 }
 
-function CreatePurchaseOrderModal({ costCodes, contacts, projectId, onCreateContact, onClose, onSave }) {
+function CreatePurchaseOrderModal({ costCodes, contacts, projectId, currencyCode, onCreateContact, onClose, onSave }) {
+  const money = (n) => formatCurrency(n, currencyCode)
+
   const [form, setForm]   = useState(EMPTY_FORM)
   const [lines, setLines] = useState([{ ...EMPTY_LINE }])
   const [showQuickCreate, setShowQuickCreate] = useState(false)
@@ -305,9 +307,9 @@ function CreatePurchaseOrderModal({ costCodes, contacts, projectId, onCreateCont
           </div>
 
           <div className="flex flex-col items-end gap-1 text-[13px] text-brand-text border-t border-brand-border pt-3">
-            <p className="m-0">Subtotal <span className="font-semibold ml-2">{currency(totals.subtotal)}</span></p>
-            <p className="m-0 text-brand-muted">GST 10% <span className="ml-2">{currency(totals.gst)}</span></p>
-            <p className="m-0 font-bold">Total <span className="ml-2">{currency(totals.total)}</span></p>
+            <p className="m-0">Subtotal <span className="font-semibold ml-2">{money(totals.subtotal)}</span></p>
+            <p className="m-0 text-brand-muted">GST 10% <span className="ml-2">{money(totals.gst)}</span></p>
+            <p className="m-0 font-bold">Total <span className="ml-2">{money(totals.total)}</span></p>
           </div>
 
           {error && <p className="text-[12px] text-brand-red">{error}</p>}
@@ -348,7 +350,9 @@ function RowActions({ po, onTransition }) {
 
 export default function ProjectPurchaseOrders() {
   const navigate = useNavigate()
-  const { projectId } = useOutletContext()
+  const { projectId, currencyCode } = useOutletContext()
+  const money = (n) => formatCurrency(n, currencyCode)
+
   const { purchaseOrders, purchaseOrdersLoading, createPurchaseOrder, transitionStatus } = usePurchaseOrders(projectId)
   const { costCodes, costCodesLoading } = useCostCodes()
   const { contacts, createContact } = useContacts()
@@ -424,7 +428,7 @@ export default function ProjectPurchaseOrders() {
                     <td className="px-3.5 py-3 text-[12px] text-brand-muted">
                       {[...new Set((po.lineItems ?? []).map(li => li.costCodeName).filter(Boolean))].join(', ') || '—'}
                     </td>
-                    <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">{currency(po.total || 0)}</td>
+                    <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">{money(po.total || 0)}</td>
                     <td className="px-3.5 py-3">
                       <Badge label={PO_STATUS_LABELS[po.status] ?? po.status} variant={PO_BADGE_VARIANTS[po.status]} sm />
                     </td>
@@ -441,6 +445,7 @@ export default function ProjectPurchaseOrders() {
 
       {showModal && (
         <CreatePurchaseOrderModal
+          currencyCode={currencyCode}
           costCodes={costCodes}
           contacts={contacts}
           projectId={projectId}
