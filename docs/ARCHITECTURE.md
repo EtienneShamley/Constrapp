@@ -18,6 +18,7 @@ Preconstruction → Procurement → Delivery → Cost Control → Forecasting �
 | **Procurement** | Tender packages, subcontractor invitations, bid levelling, award, commitment | Tender & Award *(future)* → **Purchase Orders** *(implemented)* |
 | **Delivery** | Scope variations, cumulative progress claims against commitments | **Variations** *(implemented — foundation)*; **Progress Claims** *(implemented)* |
 | **Cost Control** | Supplier invoices, actual cost, payments/credit notes | **Supplier Invoices** *(implemented)*; Payments, Credit Notes *(future)* |
+| **Revenue Control** | Client invoices issued against the contract sum and approved client variations; receivables | **Client Invoices / Accounts Receivable** *(implemented — foundation)*; Payments & Receipts *(future)* |
 | **Forecasting** | Forecast cost to complete and project margin *(implemented — foundation)*; cash flow | **Forecast Cost to Complete**, **Project Margin** *(implemented)*; Cash Flow *(planned)* |
 | **Final Account** | Reconcile budget + variations + actual into final margin; commercial reporting | Final Account, Commercial Reporting *(future/planned)* |
 
@@ -49,11 +50,15 @@ modules** (screens exist, no functionality) are listed in the module-status tabl
 | Charts | Recharts 3 | Dashboard only |
 | Backend | Firebase JS SDK 12 — Auth, Firestore, Storage | **Client SDK only** |
 | Lint | ESLint 10 (flat config) | `npm run lint` |
+| Rules tests | Vitest 4 + `@firebase/rules-unit-testing` + `firebase-tools` 13 (emulator) | `npm run test:rules` — **dev-only**; the only automated suite. Requires JDK 17 |
 
 ## Client-SDK-Only Backend
 
 There is **no backend code**: no Cloud Functions, no server, no `functions/`
-directory, no `firebase.json` or `.firebaserc`. The browser talks directly to
+directory, and no `.firebaserc`. (`frontend/firebase.json` exists, but declares
+only the Firestore emulator and the rules-file path for the automated Security
+Rules suite — no hosting and no functions target, and with no `.firebaserc` there
+is no project to deploy to.) The browser talks directly to
 Firebase Auth and Firestore; Storage is initialised in `lib/firebase.js` but not
 yet used by any feature. All business rules run client-side, backed only by
 Firestore security rules (see [SECURITY.md](SECURITY.md) for what that does and
@@ -72,27 +77,34 @@ that must be activated when that backend arrives are listed in
 ```
 frontend/                  The entire application (run all npm commands here)
   firestore.rules          Security rules — published manually (see DEPLOYMENT.md)
+  firebase.json            Firestore EMULATOR + rules path only (no hosting/functions,
+                           no .firebaserc) — backs `npm run test:rules`
+  vitest.rules.config.js   Vitest config for the rules suite (Node, no app plugins)
+  tests/rules/             Firestore Security Rules tests (the only automated suite)
   .env.example             Vite env vars (Firebase web config)
   src/
     main.jsx               Entry — StrictMode + App
     App.jsx                Providers + all routes
     index.css              Tailwind import + @theme tokens + base styles
     components/            Card, Btn, Badge, Stat, ProgBar, PageHeader, ProtectedRoute
-    layouts/               AppShell, Sidebar, TopBar, AuthLayout, ProjectDetailLayout
+    layouts/               AppShell, Sidebar, TopBar, AuthLayout, ProjectDetailLayout,
+                           ProjectCommercialLayout (Commercial sub-nav: Margin | Client Invoices)
     pages/                 Login, CreateAccount, ForgotPassword, Dashboard, Projects,
                            CompanySettings (country & base currency),
                            Contacts (company directory), Subcontractors (filtered
                            contacts view + IQ™ placeholder), Pulse, Shield
     pages/project/         ProjectOverview, ProjectBudget, ProjectCostCodes,
                            ProjectPurchaseOrders, ProjectProgressClaims,
-                           ProjectInvoices, ProjectVariations, ProjectForecast,
-                           ProjectCommercial, ProjectPlaceholder
+                           ProjectInvoices (supplier/AP), ProjectClientInvoices (client/AR),
+                           ProjectVariations, ProjectForecast,
+                           ProjectCommercial (margin), ProjectPlaceholder
     hooks/                 All Firestore access (see below); projectCurrencyLock.js
                            stages the project currency ratchet inside a caller's
                            transaction so monetary writes and the lock are atomic
     lib/                   firebase.js, formatters.js, currency.js, nav.js, projectTabs.js,
                            purchaseOrders.js, progressClaims.js, supplierInvoices.js,
-                           variations.js, forecast.js, margin.js, contacts.js
+                           clientInvoices.js, variations.js, forecast.js, margin.js,
+                           contacts.js
 docs/                      This documentation + design-reference assets
                            (Constrapp_v5.jsx prototype, screenshots, Word doc — do not move)
 AGENT.md / CLAUDE.md / README.md / PRODUCT.md / ROADMAP.md   (canonical root docs)
@@ -116,8 +128,9 @@ AuthProvider          Firebase Auth user (onAuthStateChanged)
 Per-page hooks (not context providers): `useProject(projectId)` (lookup within
 ProjectsProvider), `useCostCodes()`, `useContacts()`, `useBudgetLines(projectId)`,
 `usePurchaseOrders(projectId)`, `useProgressClaims(projectId)`,
-`useSupplierInvoices(projectId)`, `useVariations(projectId)`,
-`useForecastLines(projectId)`, `useProjectCommercial(projectId)`.
+`useSupplierInvoices(projectId)`, `useClientInvoices(projectId)`,
+`useVariations(projectId)`, `useForecastLines(projectId)`,
+`useProjectCommercial(projectId)`.
 
 ## Routing Structure
 
@@ -131,7 +144,9 @@ ProtectedRoute (redirects to /login when signed out)
    ├─ /projects/:projectId     ProjectDetailLayout (tab bar; index → overview)
    │    overview | budget | cost-codes | purchase-orders | progress-claims | invoices | variations | forecasting | commercial  (live)
    │      (the `forecasting` route renders the Forecast Cost to Complete page; the tab is labelled "Forecast".
-   │       the `commercial` route renders the Project Margin page; the tab is labelled "Commercial")
+   │       the `invoices` route renders SUPPLIER invoices (AP); the tab is labelled "Supplier Invoices".
+   │       the `commercial` route is a nested layout — index = Project Margin,
+   │       `commercial/client-invoices` = Client Invoices / Accounts Receivable (AR))
    │    boq | documents | photos | timeline | reports  (ProjectPlaceholder)
    ├─ /settings/company        Company country & base currency (company_admin writes)
    ├─ /contacts                Company-wide contact directory
@@ -163,6 +178,7 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Purchase Orders | Implemented |
 | Progress Claims | Implemented |
 | Supplier Invoices (accounts payable) | Implemented (foundation) |
+| Client Invoices / Accounts Receivable | Implemented (foundation) — read-time contract control; **no payments, no receipts, no tax-invoice output** |
 | Variations (client + supplier) | Implemented (foundation) |
 | Forecast Cost to Complete | Implemented (foundation) — read-time, cost-side |
 | Project Margin (Commercial tab) | Implemented (foundation) — read-time, ex-GST; commercial baseline is the only stored input |

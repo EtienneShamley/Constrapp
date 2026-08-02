@@ -15,6 +15,7 @@ import { useCostCodes } from '../../hooks/useCostCodes'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
+import { useClientInvoices } from '../../hooks/useClientInvoices'
 import { useVariations } from '../../hooks/useVariations'
 import { useForecastLines } from '../../hooks/useForecastLines'
 import {
@@ -176,13 +177,18 @@ function ProjectFinancialCards({ project, projectId, currencyCode, canEditCurren
   const { purchaseOrders }   = usePurchaseOrders(projectId)
   const { progressClaims }   = useProgressClaims(projectId)
   const { supplierInvoices } = useSupplierInvoices(projectId)
+  const { clientInvoices }   = useClientInvoices(projectId)
   const { variations }       = useVariations(projectId)
   const { forecastLines }    = useForecastLines(projectId)
   const { baseline, baselineLoading } = useProjectCommercial(projectId)
 
+  // Client invoices are monetary data, so they are part of the currency-lock
+  // evidence (lib/currency.js → monetaryLockReasons) alongside every other
+  // financial record. They do not feed margin — revenue recognition is not
+  // modelled — so they are deliberately absent from MarginCards below.
   const sources = useMemo(
-    () => ({ budgetLines, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines, baseline }),
-    [budgetLines, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines, baseline],
+    () => ({ budgetLines, purchaseOrders, progressClaims, supplierInvoices, clientInvoices, variations, forecastLines, baseline }),
+    [budgetLines, purchaseOrders, progressClaims, supplierInvoices, clientInvoices, variations, forecastLines, baseline],
   )
 
   return (

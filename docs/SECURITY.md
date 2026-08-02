@@ -58,6 +58,7 @@ to financial roles.**
 | `…/projects/{id}/purchaseOrders/{id}` | company member | financial roles | blocked — cancel via status |
 | `…/projects/{id}/progressClaims/{id}` | company member | financial roles | blocked — reject via status |
 | `…/projects/{id}/supplierInvoices/{id}` | **financial roles only** | financial roles | blocked — cancel via status |
+| `…/projects/{id}/clientInvoices/{id}` | **financial roles only** | financial roles, **create draft-only; transitions and issued-immutability rules-enforced** | blocked — void via status |
 | `…/projects/{id}/variations/{id}` | **financial roles only** | financial roles | blocked — reject/withdraw via status |
 | `…/projects/{id}/forecastLines/{id}` | **financial roles only** | financial roles | blocked — clear via `null`, never deleted |
 | `…/projects/{id}/commercial/baseline` | **financial roles only** | financial roles | blocked — the single baseline doc is never deleted |
@@ -72,6 +73,77 @@ the `supplierName` snapshot on POs/claims — no contact read required.
 **Supplier invoices reads are likewise restricted to financial roles** (tighter
 than the POs/claims read pattern): the accounts-payable register exposes supplier
 billing detail, so `subcontractor` and `client` users must not read it.
+
+## Client Invoices — deliberately stricter than every other collection
+
+**Reads are restricted to financial roles.** Client invoices expose contract
+revenue, client PII (legal name, ABN, billing address, email, phone), and — read
+against the Current Contract Sum — the project's implied margin position, so
+`subcontractor` and `client` users must not read them. In this foundation a
+`client`-role user has **no** access to their own invoices; a client portal is
+separate, later work with its own scoping design (see Deferred Control 10).
+
+**This is the first collection whose lifecycle is enforced by Firestore rules.**
+Everywhere else, transition legality and post-commit immutability are
+client-enforced only (Deferred Controls 1 and 2). Here both are rules-enforced,
+because the client-invoice lifecycle is small enough to express **without any
+cross-document read**, and an invoice issued to a client is an outward-facing
+revenue document. **This asymmetry is intentional and is the intended future
+standard** for POs, claims, supplier invoices, and variations — those remain
+client-enforced until a hardening pass or a trusted backend lands.
+
+*Rules-enforced:*
+
+- `create` only with `status: 'draft'`, `docType: 'invoice'`, a shape-valid
+  `currency`, `createdBy == request.auth.uid`, `createdAt == request.time`, and
+  **null lifecycle stamps** (`issuedAt`/`issuedBy`/`voidedAt`/`voidedBy`) — they
+  cannot be forged at creation.
+- **Every** update must preserve `invoiceNumber`, `currency`, `createdAt`,
+  `createdBy`, `docType`, and `revision`, and must stamp
+  `updatedBy == request.auth.uid` and `updatedAt == request.time`.
+- **Draft edits** may change content but not the status, and may not forge a
+  lifecycle stamp.
+- **`draft → issued`** may affect **only** `status`, `issuedAt`, `issuedBy`,
+  `updatedAt`, `updatedBy`, with `issuedBy == request.auth.uid` and
+  `issuedAt == request.time`. Issuing is therefore necessarily a **separate
+  operation** after the draft is saved — it can carry no content change.
+- **`draft|issued → void`** may affect **only** `status`, `voidedAt`, `voidedBy`,
+  `voidReason`, `updatedAt`, `updatedBy`, with `voidedBy == request.auth.uid`,
+  `voidedAt == request.time`, and a **non-empty** `voidReason`.
+- **Issued-invoice immutability** falls out of the above: once `status` is
+  `issued`, voiding is the only permitted update and it may touch nothing else.
+- **`void` is terminal**; there is no `issued → draft` and no `void → anything`.
+  There is **no `paid`/`partially_paid` status** — a payment status without a
+  Receipt record would be fabricated.
+- `delete` is blocked for drafts as well as issued invoices.
+
+*Client-enforced only (deferred — never describe these as enforced):*
+
+- **Line-total consistency** (`subtotal`/`gstTotal`/`grossTotal` matching the
+  lines) — rules cannot iterate or aggregate an array.
+- **Available-to-Invoice and per-variation limits** — rules have no list, query,
+  or count, so an aggregate over sibling documents is impossible. Over-invoicing
+  is warned with an explicit acknowledgement, never blocked, and **two users can
+  concurrently consume the same remaining availability** (Deferred Control 14).
+- **Company-wide invoice-number uniqueness** — the transaction prevents
+  concurrent collision, but the counter is client-writable (Deferred Control 6).
+- **Approved-variation linkage validity** — verifying each line's `variationId`
+  points at an approved *client* variation would need a `get()` per array
+  element; rules cannot iterate `lineItems`.
+- **Creator ≠ issuer segregation** — nothing stops the drafter issuing their own
+  invoice (Deferred Control 4 posture).
+
+**Constrapp does not produce a compliant Australian Tax Invoice.** The company
+document holds no legal name, ABN, address, or tax number, and the company rules
+permit updating only the four currency fields — so the supplier-identity content
+an ATO tax invoice requires cannot be captured today. This branch therefore ships
+**no printable invoice, no PDF, no email, and no "Tax Invoice" labelling**; the
+register records what was invoiced and carries an optional
+`externalInvoiceReference` pointing at the document the client actually received.
+Adding company legal/tax identity requires new fields, a Company Settings
+section, and a rules change widening the company `hasOnly([...])` allow-list —
+which would be the **second** grant of client write access to the company
+document and needs its own security review.
 
 **Forecast Lines reads are restricted to financial roles** — deliberately tighter
 than the company-member `budgetLines` read. The Forecast Cost to Complete data
@@ -200,10 +272,14 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
    set any status directly. Applies equally to supplier invoices (including the
    "posted invoices cannot be cancelled/unposted" rule) and to variations
    (draft → submitted → approved/rejected/withdrawn legality).
+   **Exception: `clientInvoices` transitions ARE rules-enforced** — that is the
+   intended future standard for the collections above.
 2. **Post-submission immutability** — freezing PO lines after `sent`, claim
    amounts after submission/approval, supplier invoices after `posted`, and
    variation content after `submitted` / approved amounts after `approved` is
    client-side only; rules allow full document updates.
+   **Exception: issued `clientInvoices` ARE immutable by rules** (voiding is the
+   only permitted update, and it may touch only the void audit fields).
 3. **One-open-claim / one-invoice-per-claim race protection** — these checks
    read the local snapshot; two simultaneous creators can produce two open claims
    on one PO, or two supplier invoices against one approved claim.
@@ -253,6 +329,22 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     fields (`displayName`, `nameLower`, `supplierName`). Assignments are
     administrative and never alter financial documents, so the blast radius of
     a tampered assignment is picker grouping and list filters, not money.
+14. **Client-invoice aggregate limits & concurrency** — *Available to Invoice*
+    (Current Contract Sum − issued invoices) and the per-variation remaining
+    balance are **client-side warnings only**. Firestore rules offer no list,
+    query, or count, so no rule can sum sibling documents, and a stored rollup is
+    forbidden by ADR-3/ADR-4. Consequences, all accepted and never presented
+    otherwise: over-invoicing is warned (with an explicit acknowledgement) rather
+    than blocked; **two users can simultaneously invoice the same remaining
+    contract or variation value**, and both writes succeed; and line-total
+    consistency and approved-variation linkage validity are likewise unverified
+    server-side. The invoice *number* is still race-free (transactional counter).
+15. **Company legal & tax identity absent** — no legal name, ABN, address, or tax
+    number exists on the company document, so Constrapp cannot produce a
+    compliant Australian Tax Invoice. This is a **capability gap, not a control
+    gap**, but it is recorded here because the remediation (new company fields)
+    requires widening the company document's `hasOnly([...])` update allow-list —
+    a change needing its own security review.
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
@@ -291,8 +383,13 @@ the security-specific gate is:
 - [ ] Every path is scoped to the caller's `companyId` (rules `get()` the
       `users/{uid}` doc and compare `companyId` to the path).
 - [ ] Read/write role sets are correct; PII and commercially sensitive
-      collections (Contacts, Supplier Invoices, Variations, Forecast Lines,
-      Commercial Baseline, Counters) restrict **reads** to financial roles.
+      collections (Contacts, Supplier Invoices, **Client Invoices**, Variations,
+      Forecast Lines, Commercial Baseline, Counters) restrict **reads** to
+      financial roles.
+- [ ] The `clientInvoices` lifecycle rules still permit exactly
+      draft-edit / draft→issued / draft|issued→void, still require
+      `issuedBy`/`voidedBy` to equal the caller and the stamps to equal
+      `request.time`, and still reject `issued → draft` and `void → *`.
 - [ ] Company document writes stay scoped to the four currency fields
       (`affectedKeys().hasOnly`); create/delete remain blocked.
 - [ ] The `qs` project rule still affects `currencyLocked` **only**, and only

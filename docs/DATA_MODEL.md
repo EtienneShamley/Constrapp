@@ -12,12 +12,13 @@ companies/{companyId}
   costCodes/{costCodeId}
   contacts/{contactId}
   counters/{counterId}                 (purchaseOrders, progressClaims, supplierInvoices,
-                                        variationsClient, variationsSupplier)
+                                        variationsClient, variationsSupplier, clientInvoices)
   projects/{projectId}
     budgetLines/{lineId}
     purchaseOrders/{poId}
     progressClaims/{claimId}
     supplierInvoices/{invoiceId}
+    clientInvoices/{invoiceId}
     variations/{variationId}
     forecastLines/{costCodeId}           (deterministic id = costCodeId)
     commercial/baseline                  (single doc; deterministic id = "baseline")
@@ -133,14 +134,14 @@ next save. Embedding (not a `contactAssignments` subcollection) follows ADR-16.
 ## companies/{companyId}/counters/{counterId}
 
 Company-wide sequential numbering. Documents: `purchaseOrders`, `progressClaims`,
-`supplierInvoices`, `variationsClient`, `variationsSupplier`.
+`supplierInvoices`, `variationsClient`, `variationsSupplier`, `clientInvoices`.
 
 | Field | Type | Notes |
 |---|---|---|
 | `next` | number | The next number to assign. Read and incremented in the **same transaction** as the numbered document's creation, so concurrent users never share a number. Missing counter ⇒ starts at 1 |
 
-Numbers render as `PO-0001` / `PC-0001` / `SI-0001` / `CV-0001` / `SV-0001`
-(zero-padded to 4).
+Numbers render as `PO-0001` / `PC-0001` / `SI-0001` / `CV-0001` / `SV-0001` /
+`CI-0001` (zero-padded to 4).
 
 ## companies/{companyId}/projects/{projectId}
 
@@ -165,9 +166,9 @@ change can never relabel it.
 
 Currency **locks** as soon as the project holds any monetary value — a non-zero
 `budget`, any budget line, any purchase order (**including draft and
-cancelled**), any progress claim, supplier invoice, client or supplier
-variation, any forecast line with `uncommittedCostToComplete !== null`, or an
-established commercial baseline. Cost Codes and Contacts are company-wide and
+cancelled**), any progress claim, supplier invoice, **client invoice (including
+draft and void)**, client or supplier variation, any forecast line with
+`uncommittedCostToComplete !== null`, or an established commercial baseline. Cost Codes and Contacts are company-wide and
 hold no money, so they **never** lock. Detecting that evidence is
 **client-enforced** (`lib/currency.js` → `monetaryLockReasons`); Firestore rules
 cannot enumerate random-id subcollections. What rules **do** enforce is the
@@ -319,6 +320,85 @@ GST-inclusive entry may be offered as a UI mode, but storage is always ex-GST +
 `gstAmount`. Contact `gstStatus` is **advisory only** — it can raise a warning
 but never auto-selects a tax code and never blocks. Cost codes are constrained to
 the selected PO/claim lines — arbitrary non-PO cost-code lines are not allowed.
+
+## …/projects/{projectId}/clientInvoices/{invoiceId}
+
+Accounts-**receivable** invoices issued to the head-contract client — the revenue
+mirror of `supplierInvoices`. They reference the project's commercial baseline
+(contract sum) and **approved client variations**; they never reference a PO, a
+progress claim, or a supplier. Lifecycle, formulas, and the receivables
+limitation: [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md). Reads are
+restricted to internal financial roles (see [SECURITY.md](SECURITY.md)).
+
+All canonical line amounts are **ex-GST**; GST is stored per line as `gstAmount`.
+There is **no retention and no payable/gross split** on the client side in this
+foundation — `grossTotal` is what the client was billed. Numbers come from the
+company-wide `counters/clientInvoices` (`CI-0001`), incremented in the same
+transaction as the write.
+
+| Field | Type | Notes |
+|---|---|---|
+| `invoiceNumber` | string | `CI-0001` — from the company-wide counter |
+| `status` | string | `draft` \| `issued` \| `void`; `sent` **reserved** (no delivery mechanism exists, so nothing transitions into it). There is deliberately **no** `paid`/`partially_paid` — not even reserved |
+| `docType` | string | `invoice`; `credit_note` reserved |
+| `adjustsInvoiceId` | string \| null | **Reserved** — Credit Note target |
+| `clientId` | string \| null | → company contact (type `client`) |
+| `clientName` | string | **Frozen snapshot** of the contact's `displayName` at creation |
+| `clientLegalName`, `clientAbn`, `clientEmail`, `clientPhone` | string | **Frozen snapshots** (`''` when unknown) |
+| `clientAddress` | map | **Frozen snapshot** `{ street, suburb, state, postcode }` |
+| `clientRef` | string | The **client's** own contract/PO reference. **Not** an invoice number |
+| `externalInvoiceReference` | string | **Authored, optional.** The reference of the invoice actually issued to the client from Xero / MYOB / QuickBooks or a manual process. Editable while `draft`, **immutable after issue**. Distinct from `clientRef`; `externalRefs` below stays reserved for future *structured* integrations |
+| `description` | string | Optional header description |
+| `periodEnding` | string | `'YYYY-MM-DD'` \| `''` — the period this invoice covers |
+| `invoiceDate` | string | `'YYYY-MM-DD'` |
+| `dueDate` | string | `'YYYY-MM-DD'` \| `''` — seeded from `paymentTerms`, always editable; **blank when no terms exist** (never a hidden default) |
+| `paymentTerms` | map \| null | `{ days, basis }` **frozen snapshot** from the client contact at creation |
+| `lineItems` | array | **Embedded** (ADR-6) — see below |
+| `subtotal` | number | Σ line `amount` — ex-GST |
+| `gstTotal` | number | Σ line `gstAmount` |
+| `grossTotal` | number | `subtotal + gstTotal` — the amount billed |
+| `currency` | string | **Audit snapshot** of the project currency at write time. **Never read for display** — the project currency is the display authority |
+| `revision` | number | 1 |
+| `notes` | string | |
+| `issuedAt` / `issuedBy` | timestamp / uid | `null` until issued. Rules require `issuedBy == request.auth.uid` and `issuedAt == request.time` |
+| `voidedAt` / `voidedBy` | timestamp / uid | `null` unless void. Same rules constraints |
+| `voidReason` | string | **Required non-empty** on void (rules-enforced) |
+| `attachments` | array | **Reserved** — always `[]` |
+| `externalRefs` | map | **Reserved** — structured accounting-system IDs |
+| `createdAt` / `createdBy` | timestamp / uid | Set once; rules reject any later change |
+| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on **every** write path |
+
+Each line item:
+
+```
+{ description,            // required
+  amount,                 // ex-GST authored amount (≥ 0; credits are future Credit Notes)
+  taxCode,                // 'gst' (10%) | 'gst_free' | 'input_taxed'
+  gstAmount,              // derived at write time
+  variationId,            // → an APPROVED client variation, or null for a contract line
+  variationNumber,        // frozen snapshot 'CV-0003' | null
+  variationDescription,   // frozen snapshot of the variation title | null
+  costCodeId,             // OPTIONAL — null on contract lines (see below)
+  costCodeName,           // frozen snapshot | null
+  sortOrder }
+```
+
+**`costCodeId` is optional here — a deliberate, recorded exception (ADR-22).**
+Head-contract revenue sits **above** the cost-code spine, exactly as ADR-20
+already established for the commercial baseline ("contract revenue has no cost
+code, exactly as client variations have no PO"). A **contract line** always
+stores `null`; a **variation line** inherits a frozen cost-code snapshot **only
+when the linked variation resolves to exactly one cost code**, and stores `null`
+when the variation spans several (a single snapshot would be a false
+attribution). Users are never made to invent a revenue cost code.
+
+**Stored vs derived.** Only the fields above are authored or snapshotted.
+**Issued Client Invoices, Available to Invoice, invoiced-and-remaining per
+variation, and every receivables ageing bucket are derived at read time**
+(`lib/clientInvoices.js`) and are **never** written back — not to this document,
+not to the commercial baseline, not to variations, not to Budget Lines. Voided
+invoices retain their number, so a void leaves an intentional, visible gap in the
+sequence. **No migration** — a project with no `clientInvoices` loads normally.
 
 ## …/projects/{projectId}/variations/{variationId}
 
@@ -490,4 +570,5 @@ a design assessment, a hook, and (where a new collection is introduced) a manual
 - Supplier invoices → POs via `poId` (required; one PO per invoice) and → approved claims via `progressClaimId` (source `progress_claim` only). Supplier identity is snapshotted from the PO/claim (`supplierId`/`supplierName`) — invoices never read contacts for identity. Invoice lines link to PO lines via `poLineIndex`. Claims are **never** mutated or stamped when invoiced; double-counting is avoided at read time (see [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md)).
 - Forecast lines → cost codes via `costCodeId`, which is **also the document ID** (one current forecast per cost code). They store only the manual `uncommittedCostToComplete` + `notes`; every displayed figure is derived at read time and never written back (`lib/forecast.js`). Forecast lines never mutate POs, claims, invoices, variations, or budget lines.
 - The commercial baseline → a client contact via `clientId` (with a frozen `clientName` snapshot); optional. It stores contract inputs only — every margin figure is derived at read time from the baseline, approved client variations, and Forecast Final Cost, and is never written back to the baseline or any other document.
+- Client invoices → a client contact via `clientId`, with the client's name, legal name, ABN, email, phone, and address **snapshotted at creation** so later contact edits never rewrite billing history; → approved **client** variations via an optional per-line `variationId` (+ frozen `variationNumber`/`variationDescription`). The linkage is **read-time only**: invoicing **never** mutates a variation (no stamp, no status change, no back-reference) and never touches the commercial baseline or Budget Lines. Line `costCodeId` is **optional** (ADR-22).
 - Counters are company-wide: PO/claim/invoice numbers are unique per **company**, not per project. Contacts, forecast lines, and the commercial baseline carry no sequential number.

@@ -62,15 +62,17 @@ frontend/
   firestore.rules   Firestore security rules (published manually — see docs/DEPLOYMENT.md)
   src/
     components/     UI primitives: Card, Btn, Badge, Stat, ProgBar, PageHeader, ProtectedRoute
-    layouts/        AppShell (Sidebar + TopBar), AuthLayout, ProjectDetailLayout
+    layouts/        AppShell (Sidebar + TopBar), AuthLayout, ProjectDetailLayout,
+                    ProjectCommercialLayout (Commercial sub-nav: Margin | Client Invoices)
     pages/          Top-level routes; pages/project/ holds Project Detail tabs
     hooks/          useAuth, useProfile, useCompany, useProjects, useProject,
                     useCostCodes, useContacts, useBudgetLines, usePurchaseOrders,
-                    useProgressClaims, useSupplierInvoices, useVariations,
-                    useForecastLines, useProjectCommercial
+                    useProgressClaims, useSupplierInvoices, useClientInvoices,
+                    useVariations, useForecastLines, useProjectCommercial
     lib/            firebase.js, formatters.js, currency.js, nav.js, projectTabs.js,
                     purchaseOrders.js, progressClaims.js, supplierInvoices.js,
-                    variations.js, forecast.js, margin.js, contacts.js (pure domain logic)
+                    clientInvoices.js, variations.js, forecast.js, margin.js,
+                    contacts.js (pure domain logic)
 ```
 
 ## Design Tokens
@@ -96,7 +98,8 @@ debt, not licence to add more) are in [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM
 - Multi-tenancy: everything except `users/` nests under `companies/{companyId}/…`
 - Membership and role come from the `users/{uid}` Firestore document (`companyId`, `role`); security rules `get()` that document to authorize access. **Firebase Auth custom claims are not implemented** — do not reference them in rules or UI guards
 - Check `frontend/firestore.rules` before adding any new collection or field; rules are published manually via the Firebase console (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md))
-- `firebase.json` and `.firebaserc` do not exist yet — do not claim or assume Firebase CLI/Hosting configuration
+- `frontend/firebase.json` exists **only** to point the Firestore emulator at `firestore.rules` for the automated Security Rules suite (`npm run test:rules`). There is **no `.firebaserc`**, no hosting, and no functions config — do not claim or assume Firebase CLI/Hosting deployment, and never run `firebase deploy`. Rules are still published manually
+- **Run `npm run test:rules` before any `firestore.rules` change is published** (see [docs/TESTING.md](docs/TESTING.md) §0)
 
 ## Firestore Data Model (summary)
 
@@ -113,7 +116,8 @@ companies/{companyId}/contacts/{contactId}   entityType, contactTypes[], names, 
                                              projectAssignments[] + derived projectIds[], isActive —
                                              company-wide directory; reads restricted to financial roles
 companies/{companyId}/counters/{counterId}   next — sequential numbering (purchaseOrders, progressClaims,
-                                             supplierInvoices)
+                                             supplierInvoices, variationsClient, variationsSupplier,
+                                             clientInvoices)
 companies/{companyId}/projects/{projectId}   name, status, budget, startDate, location, progress,
                                              currency (ISO 4217 — the display authority),
                                              currencyLocked (one-way ratchet)
@@ -124,6 +128,13 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
   …/supplierInvoices/{invoiceId}             invoiceNumber (SI-####), status, source, poId, progressClaimId,
                                              ex-GST lineItems[] w/ per-line taxCode, retention, subtotal-gst-net-total —
                                              accounts payable; reads restricted to financial roles
+  …/clientInvoices/{invoiceId}               invoiceNumber (CI-####), status draft|issued|void, client identity
+                                             snapshot (name/legalName/abn/email/phone/address), ex-GST lineItems[]
+                                             w/ per-line taxCode + OPTIONAL costCodeId + optional variationId,
+                                             invoiceDate/dueDate, paymentTerms snapshot, externalInvoiceReference —
+                                             accounts receivable; contract control + ageing derived read-time;
+                                             LIFECYCLE + ISSUED IMMUTABILITY ARE RULES-ENFORCED (the only collection
+                                             where they are); reads restricted to financial roles
   …/variations/{variationId}                 variationNumber (CV-#### client / SV-#### supplier), variationType,
                                              status, client/supplier + poId snapshots, ex-GST lineItems[] w/ per-line
                                              taxCode (submitted/approved sides), costCodeId spine — commercial change
@@ -141,7 +152,8 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
 ## Financial Invariants (mandatory)
 
 - **Purchase Orders, Progress Claims, Supplier Invoices, Variations, and Forecast Lines never write financial values onto Budget Lines.** Committed, Claimed, Actual, Invoiced, the variation figures (Approved Supplier Variations / Commitment Exposure), and every forecast figure (Cost to Complete, Forecast Final Cost, Variance to Budget) are derived at read time from PO, claim, invoice, and variation documents (`lib/purchaseOrders.js`, `lib/progressClaims.js`, `lib/supplierInvoices.js`, `lib/variations.js`, `lib/forecast.js`) — never stored back. **Forecast Lines store only the manual `uncommittedCostToComplete` (number|null) + notes; supplier-variation exposure is shown separately and is never added into Forecast Final Cost.** Approved variations count only at read time and never mutate POs, claims, or invoices; **Commitment Exposure is separate from Committed** (variation commitment does not yet mature against claims/invoices). Committed now means *remaining open commitment* (PO line − posted/paid invoiced-to-date); Actual counts a posted invoice instead of its source claim (read-time exclusion — the claim is never mutated)
-- Document numbers (`PO-0001`, `PC-0001`, `SI-0001`) come from company-wide counters incremented in the same transaction as the document write
+- Document numbers (`PO-0001`, `PC-0001`, `SI-0001`, `CV-0001`, `SV-0001`, `CI-0001`) come from company-wide counters incremented in the same transaction as the document write
+- **Client Invoices are revenue-side and never touch a cost figure.** They never write onto Budget Lines, the Commercial Baseline, or Variations; `Issued Client Invoices`, `Available to Invoice`, per-variation invoiced/remaining, and receivables ageing are all derived at read time (`lib/clientInvoices.js`). Only **approved** client variations are invoiceable; **negative** approved ones reduce the Current Contract Sum but cannot be invoiced. Over-invoicing is **warned, never blocked** — the limit cannot be rules-enforced. **There is no payment state**: no `paid`/`partially_paid` status, no payment field, and the words *paid, unpaid, amount owing, outstanding receivables, overdue receivables* must not appear — use *"Issued, not yet reconciled"*, *"Past due date"*, *"Ageing by due date"*. Constrapp does **not** produce a compliant Australian Tax Invoice (no company legal name/ABN) — never label output "Tax Invoice"
 - PO line items freeze once a PO leaves `draft`; claim amounts freeze once submitted; approved amounts are frozen forever; supplier invoices freeze once `posted` (and posted invoices cannot be cancelled/unposted)
 - Lifecycles are forward-only; financial documents are never deleted — cancellation/rejection is a status change
 - One open Progress Claim per PO at a time; claims are cumulative (claimed-to-date per PO line)

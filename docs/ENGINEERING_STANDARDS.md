@@ -92,9 +92,13 @@ without an approved architecture change (record it in
 ## 4. Validation & testing checks (required)
 
 - `npm run lint` **and** `npm run build` pass clean (run from `frontend/`).
+- **If `frontend/firestore.rules` changed: `npm run test:rules` passes**, and new
+  rules behaviour has matching cases in `frontend/tests/rules/`. This suite runs
+  against the **Firestore emulator only** and must pass **before** rules are
+  published (see [DEPLOYMENT.md](DEPLOYMENT.md)).
 - Add or update **manual acceptance steps** in [docs/TESTING.md](TESTING.md) for the
-  feature — there is no automated suite yet; pure `lib/` functions are the first target
-  when one is added.
+  feature — the rules suite is the only automated one; pure `lib/` functions are the
+  next target.
 - **Negative-path / authorisation test**: attempt the operation signed in as a
   `subcontractor` or `client` role and confirm **Firestore Rules** (not just the UI)
   block reads/writes on PII and financial-role-only collections.
@@ -108,8 +112,9 @@ without an approved architecture change (record it in
 - [ ] **Tenant isolation**: every path is scoped to the caller's `companyId`; rules
       `get()` the `users/{uid}` doc and compare `companyId` to the path.
 - [ ] **Authorisation**: read/write role sets are correct; PII and commercially
-      sensitive collections (Contacts, Supplier Invoices, Variations, Forecast Lines,
-      Commercial Baseline, Counters) restrict **reads** to financial roles, not just writes.
+      sensitive collections (Contacts, Supplier Invoices, Client Invoices, Variations,
+      Forecast Lines, Commercial Baseline, Counters) restrict **reads** to financial
+      roles, not just writes.
 - [ ] **Deletes blocked** on financial/audit collections; lifecycle is a status change.
 - [ ] **No secret in the bundle**: nothing sensitive is `VITE_`-prefixed or read in
       frontend code (see SECURITY.md → Secrets & the Vite bundle).

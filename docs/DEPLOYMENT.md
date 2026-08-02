@@ -1,9 +1,15 @@
 # Deployment
 
-What exists today: a Vite static build and manually published Firestore rules.
-**Not implemented:** `firebase.json`, `.firebaserc`, Firebase Hosting
-configuration, Cloud Functions, and CI deployment — all future work. Do not
-run `firebase deploy`; there is nothing configured for it to do.
+What exists today: a Vite static build and manually published Firestore rules,
+plus a **`frontend/firebase.json` scoped to the Firestore emulator and the rules
+file** (added for the Security Rules test suite — see [TESTING.md](TESTING.md)).
+**Not implemented:** `.firebaserc`, Firebase Hosting configuration, Cloud
+Functions, and CI deployment — all future work.
+
+**Do not run `firebase deploy`.** No `.firebaserc` exists, so no Firebase project
+is targeted, and `firebase.json` declares no hosting or functions target. Rules
+publishing remains **manual** (below); `firebase.json` exists so
+`firebase emulators:exec` can run the rules tests locally, not to enable deploys.
 
 ## Prerequisites
 
@@ -48,21 +54,24 @@ configured yet.
 ## Publishing Firestore Rules — Manual Process
 
 The rules source of truth is `frontend/firestore.rules`, but **there is no CLI
-wiring to deploy it**. Publishing is manual:
+wiring to deploy it** (no `.firebaserc`, so no project is targeted). Publishing is
+manual:
 
 1. Edit `frontend/firestore.rules` in the repo (review against
    [SECURITY.md](SECURITY.md)).
-2. Open Firebase console → Firestore Database → **Rules**.
-3. Paste the full file contents over the editor content.
-4. **Publish.**
+2. **Run `npm run test:rules`** and confirm it passes — the emulator suite loads
+   this exact file (see [TESTING.md](TESTING.md) §0).
+3. Open Firebase console → Firestore Database → **Rules**.
+4. Paste the full file contents over the editor content.
+5. **Publish.**
 
 Keep the console and the repo file identical — the repo copy is the reviewed
 artifact; the console copy is what actually enforces.
 
 ## Future Work (not current functionality)
 
-- `firebase.json` + `.firebaserc` so rules deploy via
-  `firebase deploy --only firestore:rules`
+- `.firebaserc` (and a hosting/functions section in `firebase.json`) so rules
+  deploy via `firebase deploy --only firestore:rules`
 - Firebase Hosting configuration for the built frontend
 - Cloud Functions (server-side enforcement — see
   [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) ADR-14)

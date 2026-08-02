@@ -24,7 +24,7 @@ Today the delivery-and-cost-control middle of this lifecycle is implemented (bud
 - Email/password sign-in (account creation and password reset screens are stubs — users are provisioned manually)
 - Multi-tenant company/user foundation (`users/{uid}` → `companies/{companyId}`)
 - Company Country & Currency: a company sets its country (which suggests a currency) and confirms a base currency; new projects inherit it, each project reports in one currency, and that currency locks once the project holds monetary data. **No FX conversion.** *Currency display is configurable; tax calculation is not — GST remains a flat Australian 10%*
-- Projects: create and list, with a Project Detail area (Overview, Budget, Cost Codes, Purchase Orders, Progress Claims, Supplier Invoices, Variations, Forecast, and Commercial tabs live; other tabs are placeholders)
+- Projects: create and list, with a Project Detail area (Overview, Budget, Cost Codes, Purchase Orders, Progress Claims, Supplier Invoices, Variations, Forecast, and Commercial tabs live — Commercial holds Margin and Client Invoices; other tabs are placeholders)
 - Company-wide Cost Codes
 - Company-wide Contacts: suppliers, subcontractors, consultants, and clients with ABN validation, contact people, duplicate warnings, and archive/reactivate (reads restricted to internal financial roles)
 - Budget Lines per project, with Committed / Claimed / Actual derived live from POs and claims
@@ -33,6 +33,7 @@ Today the delivery-and-cost-control middle of this lifecycle is implemented (bud
 - Supplier Invoices (Actual Cost): accounts-payable bills against a sent/closed PO or from one approved claim; `draft → approved → posted` (posted is immutable); reads restricted to internal financial roles
 - Variations (foundation): client (`CV-####`) and supplier (`SV-####`) commercial change control, approved-only read-time, with Commitment Exposure shown separately from Committed; reads restricted to financial roles
 - Forecast Cost to Complete (foundation): one manual Uncommitted Cost to Complete input per cost code, every other figure derived at read time; reads restricted to financial roles
+- Client Invoices / Accounts Receivable (foundation): client invoices (`CI-####`) controlled against the Current Contract Sum and approved Client Variations, with read-time **Available to Invoice**, per-variation invoiced/remaining balances, and ageing by due date; `draft → issued → void` with issued-invoice immutability **enforced by Firestore rules**; reads restricted to internal financial roles. *No payments or receipts, so issued invoices are shown as "issued, not yet reconciled" — never paid, unpaid, or overdue. Not a Tax Invoice: company legal name and ABN are not captured, so there is no printable invoice, PDF, or email*
 - Project Margin (foundation): a per-project Commercial Baseline (Original Contract Value + Original Approved Budget + contract dates + client) drives read-time Current Contract Sum, Forecast Revenue, Forecast Gross Profit, Forecast Margin %, and Margin Movement (all ex-GST) on a new Commercial tab; reads restricted to financial roles
 
 Dashboard KPIs and charts are partly placeholder data. PULSE™ and SHIELD™ are
@@ -62,6 +63,17 @@ npm run dev
 ```bash
 cd frontend
 npm run build
+```
+
+### Firestore Security Rules tests
+
+The only automated suite. Runs `frontend/firestore.rules` against the **Firestore
+emulator** — never a real project. Requires a JDK (17 is fine; `firebase-tools` is
+pinned to v13 for that reason). Run it before publishing any rules change.
+
+```bash
+cd frontend
+npm run test:rules
 ```
 
 ## Firebase Setup

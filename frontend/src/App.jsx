@@ -7,6 +7,7 @@ import ProtectedRoute from './components/ProtectedRoute'
 import AppShell from './layouts/AppShell'
 import AuthLayout from './layouts/AuthLayout'
 import ProjectDetailLayout from './layouts/ProjectDetailLayout'
+import ProjectCommercialLayout from './layouts/ProjectCommercialLayout'
 import Login          from './pages/Login'
 import CreateAccount  from './pages/CreateAccount'
 import ForgotPassword from './pages/ForgotPassword'
@@ -26,6 +27,7 @@ import ProjectInvoices from './pages/project/ProjectInvoices'
 import ProjectVariations from './pages/project/ProjectVariations'
 import ProjectForecast from './pages/project/ProjectForecast'
 import ProjectCommercial from './pages/project/ProjectCommercial'
+import ProjectClientInvoices from './pages/project/ProjectClientInvoices'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
 
 export default function App() {
@@ -68,7 +70,12 @@ export default function App() {
                       <Route path="invoices" element={<ProjectInvoices />} />
                       <Route path="forecasting" element={<ProjectForecast />} />
                       <Route path="variations" element={<ProjectVariations />} />
-                      <Route path="commercial" element={<ProjectCommercial />} />
+                      {/* Commercial is the project's revenue-side workspace:
+                          Project Margin (index) and Client Invoices / AR. */}
+                      <Route path="commercial" element={<ProjectCommercialLayout />}>
+                        <Route index element={<ProjectCommercial />} />
+                        <Route path="client-invoices" element={<ProjectClientInvoices />} />
+                      </Route>
                       <Route path="documents" element={
                         <ProjectPlaceholder
                           icon="📐"

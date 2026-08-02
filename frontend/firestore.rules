@@ -143,7 +143,8 @@ service cloud.firestore {
       allow read: if request.auth != null
                   && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
       allow create, update: if request.auth != null
-                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+                  && get(
+                    /databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
                   && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
       allow delete: if false;
     }
@@ -250,6 +251,136 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Client Invoices — project-scoped ACCOUNTS-RECEIVABLE invoices issued to
+    // the head-contract client. CI-#### from the company-wide
+    // counters/clientInvoices document (covered by the counters block below —
+    // no separate rule needed).
+    //
+    // Reads: restricted to internal financial roles — client invoices expose
+    // contract revenue, client PII/ABN, and (read against the Current Contract
+    // Sum) the project's implied margin position, so subcontractor and client
+    // users must NOT read them. A client portal is separate, future work.
+    // Delete: blocked — voiding is a status change; invoices are audit records.
+    //
+    // ⚠️ DELIBERATELY STRICTER THAN EVERY OTHER FINANCIAL COLLECTION.
+    // POs, claims, supplier invoices, and variations enforce lifecycle legality
+    // and post-issue immutability in the client hook only (docs/SECURITY.md →
+    // Deferred Controls 1 and 2). Here both are enforced BY RULES, because the
+    // client-invoice lifecycle is small enough to express without any
+    // cross-document read, and an invoice issued to a client is an outward-
+    // facing revenue document. This asymmetry is intentional and is the
+    // INTENDED FUTURE STANDARD for the other financial collections — see
+    // docs/SECURITY.md and PROJECT_DECISIONS.md ADR-22.
+    //
+    // What is enforced here:
+    //   · create only with status 'draft', docType 'invoice', null lifecycle
+    //     stamps, createdBy == caller, createdAt == server request time
+    //   · draft edits must preserve invoiceNumber, currency, createdAt,
+    //     createdBy, docType and revision, and may not forge lifecycle stamps
+    //   · issuing is a SEPARATE operation, touching only
+    //     status/issuedAt/issuedBy/updatedAt/updatedBy, with issuedBy == caller
+    //     and issuedAt == server request time
+    //   · voiding (from draft or issued) touches only
+    //     status/voidedAt/voidedBy/voidReason/updatedAt/updatedBy, with
+    //     voidedBy == caller, voidedAt == server request time, and a NON-EMPTY
+    //     voidReason
+    //   · void is terminal; there is no issued -> draft and no void -> anything
+    //   · there is no 'paid' or 'partially_paid' status — a payment status
+    //     without a Receipt record would be fabricated
+    //
+    // What is NOT enforced here (client-side only — never describe as enforced):
+    //   · line-total consistency (rules cannot iterate or aggregate an array)
+    //   · company-wide invoice-number uniqueness (no queries; the counter is
+    //     client-writable — Deferred Control 6)
+    //   · Available-to-Invoice and per-variation limits (rules cannot sum
+    //     sibling documents), so concurrent users can consume the same
+    //     remaining availability
+    //   · approved-variation linkage validity
+    //   · creator != issuer segregation
+    match /companies/{companyId}/projects/{projectId}/clientInvoices/{invoiceId} {
+      function financialMember() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // The document identity that no update of any kind may rewrite.
+      function corePreserved() {
+        return request.resource.data.invoiceNumber == resource.data.invoiceNumber
+            && request.resource.data.currency      == resource.data.currency
+            && request.resource.data.createdAt     == resource.data.createdAt
+            && request.resource.data.createdBy     == resource.data.createdBy
+            && request.resource.data.docType       == resource.data.docType
+            && request.resource.data.revision      == resource.data.revision;
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+
+      allow read: if financialMember();
+
+      allow create: if financialMember()
+                  && request.resource.data.status == 'draft'
+                  && request.resource.data.docType == 'invoice'
+                  && request.resource.data.invoiceNumber is string
+                  && request.resource.data.currency is string
+                  && request.resource.data.currency.matches('^[A-Z]{3}$')
+                  && request.resource.data.revision is number
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  // Lifecycle stamps cannot be forged at creation.
+                  && request.resource.data.issuedAt == null
+                  && request.resource.data.issuedBy == null
+                  && request.resource.data.voidedAt == null
+                  && request.resource.data.voidedBy == null;
+
+      allow update: if financialMember() && corePreserved() && updateStamped() && (
+                    // (a) DRAFT EDIT — content is freely editable while draft,
+                    //     but the status may not move and no lifecycle stamp
+                    //     may be forged.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'draft'
+                      && request.resource.data.issuedAt == resource.data.issuedAt
+                      && request.resource.data.issuedBy == resource.data.issuedBy
+                      && request.resource.data.voidedAt == resource.data.voidedAt
+                      && request.resource.data.voidedBy == resource.data.voidedBy
+                    )
+                    ||
+                    // (b) DRAFT -> ISSUED. A separate operation carrying no
+                    //     content change whatsoever.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'issued'
+                      && changedKeys().hasOnly(['status', 'issuedAt', 'issuedBy', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.issuedBy == request.auth.uid
+                      && request.resource.data.issuedAt == request.time
+                    )
+                    ||
+                    // (c) DRAFT|ISSUED -> VOID (terminal). This branch is what
+                    //     makes an ISSUED invoice immutable: voiding is the only
+                    //     permitted update, and it may touch nothing else.
+                    (
+                      (resource.data.status == 'draft' || resource.data.status == 'issued')
+                      && request.resource.data.status == 'void'
+                      && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.voidedBy == request.auth.uid
+                      && request.resource.data.voidedAt == request.time
+                      && request.resource.data.voidReason is string
+                      && request.resource.data.voidReason.size() > 0
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
     // Contacts — company-wide directory of suppliers, subcontractors,
     // consultants, and clients (third-party PII: names, phones, emails, ABNs,
     // payment terms).
@@ -265,9 +396,12 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Counters — sequential document numbering (e.g. purchase order numbers).
+    // Counters — sequential document numbering (purchaseOrders, progressClaims,
+    // supplierInvoices, variationsClient, variationsSupplier, clientInvoices).
     // Read/write restricted to the roles that create numbered documents;
     // the create transaction must read and increment the counter.
+    // Counter integrity (+1 only, no arbitrary set) is NOT enforced here — see
+    // docs/SECURITY.md → Deferred Control 6.
     match /companies/{companyId}/counters/{counterId} {
       allow read, create, update: if request.auth != null
                   && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId

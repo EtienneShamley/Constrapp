@@ -559,3 +559,107 @@ tax configuration is a separate future foundation. **Deferred:** FX conversion
 localisation, self-serve company signup (the settings form is designed to be
 reused as a signup step), server-derived lock activation, and known-code
 validation in rules.
+
+## ADR-22: Client Invoices & Accounts Receivable (read-time control; rules-enforced lifecycle; no payment state)
+
+Client invoices live at
+`companies/{id}/projects/{id}/clientInvoices` — project-scoped, `CI-0001`
+numbered from a company-wide counter (ADR-5). They are the **revenue mirror** of
+supplier invoices (ADR-17): controlled against the **Current Contract Sum** and
+**approved client variations**, never against a PO, a claim, or a supplier. Line
+amounts are ex-GST with a per-line `taxCode` (`gst`/`gst_free`/`input_taxed`) and
+a derived `gstAmount`; there is **no retention and no payable/gross split** on the
+client side, so `grossTotal` is unambiguously what the client was billed.
+Lifecycle `draft → issued → void` (void terminal); `sent` reserved. Reads are
+restricted to internal financial roles. Every control figure — Issued Client
+Invoices, Available to Invoice, per-variation invoiced/remaining, and the ageing
+buckets — is **derived at read time** (`lib/clientInvoices.js`) and never written
+back (ADR-3/ADR-4 upheld).
+
+**Why no payment state, not even reserved.** Supplier invoices reserved a
+`paidAt: null`. Client invoices deliberately reserve **nothing** payment-related —
+no `paid`/`partially_paid` status, no `amountReceived`, no `balance`. A payment
+field on the invoice is an invitation for a client-maintained rollup; receipts
+will be their own collection and every balance will be derived. Because no
+Receipt record exists, the product may not say **paid, unpaid, amount owing,
+outstanding receivables,** or **overdue receivables** — it says
+**"Issued, not yet reconciled"**, **"Past due date"**, and **"Ageing by due
+date"**, with a permanent notice that an issued invoice stays listed until it is
+voided regardless of payment. `sent` is reserved rather than live for the same
+honesty reason: with no delivery mechanism, a `sent` status would assert
+something about the outside world that the app cannot evidence.
+
+**Why `costCodeId` is OPTIONAL on invoice lines (a recorded spine exception).**
+AGENT.md requires every commercial document to join through the cost-code spine,
+but ADR-20 already carved a project-level exception for contract revenue
+("contract revenue has no cost code, exactly as client variations have no PO").
+Head-contract billing has no natural cost code, and forcing one would make
+builders invent revenue codes that corrupt the taxonomy. A **contract line**
+therefore stores `null`; a **variation line** inherits a frozen cost-code
+snapshot **only when the linked variation resolves to exactly one cost code**,
+and `null` when it spans several — a single snapshot across a multi-code
+variation would be a false attribution.
+
+**Why the lifecycle is enforced in Firestore rules — a deliberate asymmetry.**
+Every other financial collection enforces transitions and immutability in the
+client hook only (SECURITY.md Deferred Controls 1–2). Here they are
+**rules-enforced**, because this lifecycle needs no cross-document read and an
+invoice issued to a client is an outward-facing revenue document: create is
+draft-only with unforgeable lifecycle stamps; every update must preserve
+`invoiceNumber`/`currency`/`createdAt`/`createdBy`/`docType`/`revision` and stamp
+the caller and `request.time`; `draft → issued` and `draft|issued → void` may
+each affect only their own key set, with `issuedBy`/`voidedBy` equal to the
+caller, stamps equal to `request.time`, and a non-empty `voidReason`; issued
+invoices are consequently immutable except for voiding; `void` is terminal and
+delete is blocked outright. Issuing is therefore necessarily a **separate
+operation** from saving the draft. **This asymmetry is the intended future
+standard** for POs, claims, supplier invoices, and variations.
+
+**What remains client-enforced (never claim otherwise).** Rules have no list,
+query, or count, so they cannot sum sibling documents: **Available to Invoice and
+the per-variation remaining balance are advisory warnings only**, over-invoicing
+is warned with an explicit acknowledgement rather than blocked, and **two users
+can concurrently invoice the same remaining value**. Line-total consistency
+(rules cannot iterate an array), approved-variation linkage validity, invoice-
+number uniqueness (Deferred Control 6), and creator ≠ issuer segregation are
+likewise client-side. The invoice *number* itself is race-free — counter,
+invoice, and the project currency ratchet commit in **one transaction** (ADR-21),
+so a project can never hold an invoice with a still-changeable currency, and a
+failed transaction leaves no counter gap. Gaps arise only from **voided
+invoices**, which retain their number: intentional audit behaviour, not a defect.
+
+**Why pending and negative variations are not invoiceable.** Approval is the
+counting point (ADR-18), so billing a pending variation would bill unagreed work.
+A **negative** approved variation (a credit/omission) cannot be positively
+invoiced either — it still reduces the Current Contract Sum through the existing
+signed `approvedClientVariationsTotal`, and a future Credit Note bills it.
+Invoicing **never mutates a variation** — no stamp, no status change, no
+back-reference — exactly as ADR-17 keeps claims unmutated by supplier invoices.
+
+**Why `externalInvoiceReference` is authored while `externalRefs` stays reserved.**
+Constrapp cannot produce a compliant Australian Tax Invoice: the company document
+holds no legal name, ABN, address, or tax number, and its rules permit updating
+only the four currency fields. This branch therefore ships **no printable
+invoice, no PDF, no email, and no "Tax Invoice" labelling** — it is a commercial
+control register, and the optional `externalInvoiceReference` string ties a record
+to the invoice the client actually received from Xero/MYOB/QuickBooks or a manual
+process. It is editable while draft and frozen on issue, and is distinct from
+`clientRef` (the *client's* contract/PO reference). `externalRefs` remains an
+empty reserved map for future *structured* integrations.
+
+**Consequences.** The six budget figures, the Forecast tab, and Project Margin are
+**unchanged** — client invoices are revenue-side and feed no cost figure, and
+margin is deliberately not affected by invoicing (invoiced revenue is not
+recognised revenue). Default client payment terms come from the **client contact**
+and are snapshotted; contract-level terms on the commercial baseline are the
+correct long-term home but are **deferred**, since this branch does not modify the
+baseline. Client invoices join the currency-lock evidence in `lib/currency.js`.
+The Commercial tab gains sub-navigation (Margin · Client Invoices) rather than a
+fifteenth project tab, and the existing supplier-invoice tab is relabelled
+**Supplier Invoices** so two modules are not both called "Invoices". **No
+migration** — additive only; a project without `clientInvoices` loads normally.
+**Deferred:** Payments and Receipts, cash flow, credit notes (`docType`/
+`adjustsInvoiceId` reserved), client retention, revenue recognition, client
+progress claims, printable/PDF/email output, company legal & tax identity, and
+client-portal access. The recorded sequence is **Company Country & Currency →
+Client Invoices / Accounts Receivable → Payments and Receipts → Cash Flow**.

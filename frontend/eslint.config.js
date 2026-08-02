@@ -18,4 +18,15 @@ export default defineConfig([
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
   },
+  // Firestore Security Rules tests run in Node against the emulator, not in the
+  // browser, and use Vitest's globals. React rules do not apply to them.
+  {
+    files: ['tests/**/*.js', '*.config.js'],
+    languageOptions: {
+      globals: { ...globals.node, ...globals.vitest },
+    },
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 ])

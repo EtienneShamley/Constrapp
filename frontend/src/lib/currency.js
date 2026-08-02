@@ -298,6 +298,7 @@ export function monetaryLockReasons({
   purchaseOrders = [],
   progressClaims = [],
   supplierInvoices = [],
+  clientInvoices = [],
   variations = [],
   forecastLines = [],
   baseline = null,
@@ -314,6 +315,9 @@ export function monetaryLockReasons({
   if (purchaseOrders.length)   reasons.push(plural(purchaseOrders.length, 'purchase order', 'purchase orders'))
   if (progressClaims.length)   reasons.push(plural(progressClaims.length, 'progress claim', 'progress claims'))
   if (supplierInvoices.length) reasons.push(plural(supplierInvoices.length, 'supplier invoice', 'supplier invoices'))
+  // Every client invoice counts, including drafts and voids: a voided invoice
+  // is a retained audit record carrying amounts, exactly like a cancelled PO.
+  if (clientInvoices.length)   reasons.push(plural(clientInvoices.length, 'client invoice', 'client invoices'))
   if (variations.length)       reasons.push(plural(variations.length, 'variation', 'variations'))
 
   // A forecast row that exists with `null` is "not forecast" and carries no

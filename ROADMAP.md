@@ -32,6 +32,8 @@
 
 - [x] **Company Country & Currency (foundation)** — Constrapp is no longer hard-coded to AUD. A company stores `countryCode` (ISO 3166-1 alpha-2) + `baseCurrency` (ISO 4217) + audit stamps, set on a new **Company Settings** page (`/settings/company`, `company_admin` only) reached from the sidebar company chip or a first-run setup banner: country **suggests** a currency, the admin **confirms or overrides** it, and every existing project is listed and **pinned** to an explicit currency in the same confirmed action (projects written first, then the company; additive and idempotent; **no amount converted**). Projects store `currency` (inherited from the company base currency, overridable at creation) and `currencyLocked`. Currency **locks** on any monetary value — non-zero `project.budget`, budget lines, POs (**including draft/cancelled**), claims, supplier invoices, variations, forecast lines with a non-null input, or an established commercial baseline; Cost Codes/Contacts never lock. One shared `formatCurrency(amount, currencyCode)` (`Intl.NumberFormat`, fixed `en-AU` locale, whole units) replaced **all 77** money call sites; the old `currency()` export was **deleted** so a missed site is a build error. POs/claims/invoices/variations now snapshot the resolved project currency as **audit context** (never displayed; historical `'AUD'` never rewritten). Rules: `company_admin` may update **four company currency fields only** (`affectedKeys().hasOnly`, create/delete still blocked); the currency **ratchet** is rules-enforced once set (no currency change, no unlock); `qs` gets one narrow permission — `currencyLocked` `false`→`true` and nothing else. Lock activation is **atomic**: every monetary write engages the ratchet inside its own Firestore transaction (`hooks/projectCurrencyLock.js`), so record and lock commit or roll back together. **Client-enforced (deferred):** deciding the lock should engage, since rules cannot enumerate random-id subcollections. **No FX conversion, no mixed-currency transactions, no migration** (unconfigured companies display AUD and show the banner; nothing auto-written). **Tax is NOT in scope** — GST stays a flat Australian 10% and Company Settings warns for any non-AU country
 
+- [x] **Client Invoices / Accounts Receivable (foundation)** — the revenue-side register, answering "what have we invoiced, what remains available to invoice, and when was it due?" Project-scoped `clientInvoices` (`CI-0001` from a company-wide counter), controlled against the **Current Contract Sum** and **approved client variations** — never against a PO, claim, or supplier. Lifecycle `draft → issued → void` (void terminal, non-empty reason required; `sent` reserved). Lines are amount-only, ex-GST, with the existing per-line tax codes; `costCodeId` is **optional** (contract revenue sits above the cost-code spine, ADR-22) and a variation line inherits a cost code only when its variation resolves to exactly one. Read-time derivation: **Issued Client Invoices**, **Available to Invoice**, per-variation invoiced/remaining, and **ageing by due date** — nothing written back to the baseline, variations, or Budget Lines. Client identity (name, legal name, ABN, email, phone, address) and payment terms are **snapshotted** at creation; the due date is suggested from the client contact's terms with the source **named in the UI**, blank when no terms exist. Over-invoicing (contract and per-variation) is **warned with an explicit acknowledgement, never blocked**. Pending client variations are not invoiceable; negative approved ones reduce the contract sum but cannot be invoiced. **First collection whose lifecycle and post-issue immutability are enforced by Firestore rules** — the intended future standard for the others. Invoice creation, number allocation, and the project-currency ratchet commit in **one transaction**. An optional authored `externalInvoiceReference` ties a record to the invoice actually issued from Xero/MYOB/QuickBooks. Lives under the **Commercial** tab (Margin | Client Invoices); the supplier tab is relabelled **Supplier Invoices**. Financial-role-only reads; deletes blocked. **No** payments, receipts, paid status, credit notes, retention, revenue recognition, printable/PDF/email output, or "Tax Invoice" labelling — company legal name and ABN do not exist, so Constrapp cannot produce a compliant Australian Tax Invoice. No migration
+
 Firestore security rules for all of the above are written in `frontend/firestore.rules` and published manually.
 
 ---
@@ -57,6 +59,15 @@ Bring documentation in line with the implemented system:
 - Supplier-scoped subcontractor access
 - Counter tamper protection
 - Audit logging
+- Client-invoice **Available to Invoice** and per-variation limits (rules cannot
+  sum sibling documents, so over-invoicing is warned, never blocked, and
+  concurrent invoicing of the same remaining value is possible)
+- Company legal name / ABN / address / tax number — absent, so Constrapp cannot
+  produce a compliant Australian Tax Invoice
+
+*Note:* `clientInvoices` is the first collection whose lifecycle transitions and
+post-issue immutability **are** rules-enforced — the intended future standard for
+purchase orders, claims, supplier invoices, and variations.
 
 **Other deferred foundations:** user management UI (invite, assign role/company), project edit/delete (currency is the only project field editable after creation), self-serve signup and password reset, Firebase CLI config (`firebase.json`/`.firebaserc`), Hosting, CI.
 
@@ -111,17 +122,30 @@ this foundation makes currency *display* configurable but leaves GST a flat
 Australian 10%, so selecting NZ/ZA/US/GB does **not** make Constrapp tax-compliant
 there. That is the honest prerequisite for genuinely serving those markets.
 
-**3b. Payments / Client Invoices foundation**
-The honest prerequisite for cash flow. Record client-side billing (Client Invoices /
-Accounts Receivable) and Payments against posted supplier invoices (the reserved
-`paid`/`paidAt`) so that "cash in" and "actual cash out" become real, not forecast.
+**3b-i. Client Invoices / Accounts Receivable** — *foundation shipped (see Completed
+Foundations).* Client-side billing controlled against the Current Contract Sum and
+approved client variations, with read-time Available to Invoice, per-variation
+balances, and ageing by due date. **Remaining (deferred):** client retention,
+credit notes, client progress claims, revenue recognition, printable/PDF/email
+output, company legal & tax identity (the prerequisite for a compliant Australian
+Tax Invoice), and contract-level payment terms on the commercial baseline.
+
+**3b-ii. Payments and Receipts**
+The honest prerequisite for cash flow, and the reason no client-invoice figure may
+yet be called *paid*, *unpaid*, or *owing*. Record **client receipts** allocated
+against issued client invoices (turning "issued, not yet reconciled" into a real
+receivables balance) and **payments** against posted supplier invoices (the
+reserved `paid`/`paidAt`), so that "cash in" and "actual cash out" become real,
+not forecast. Balances will be **derived at read time** from receipt records —
+deliberately no payment field was reserved on the client invoice (ADR-22).
 
 **3c. Cash-flow Forecasting**
 Cash-flow curves close the current project-control loop: the system can then answer
 "when does cash enter and leave, and which months create a shortfall?" Built as a
-hybrid (posted supplier-invoice due dates for known cash-out, time-phased future
-cost, and a clearly-labelled manual forecast cash-in) once items 3a–3b exist so it
-never presents forecast timing as actual cash.
+hybrid (client-invoice due dates and posted supplier-invoice due dates for known
+timing, time-phased future cost, and a clearly-labelled manual forecast) once items
+3a–3b exist so it never presents forecast timing — or an invoice due date — as
+actual cash.
 
 **4. BOQ and Estimating**
 Opens the preconstruction side: a Bill of Quantities against cost codes, with rates/margin/overheads producing an estimate that transfers to an approved budget.

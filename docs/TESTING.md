@@ -1,10 +1,40 @@
 # Testing
 
-**There is no automated test suite.** No test runner, no test files, no CI. The
-`lib/` domain modules (`purchaseOrders.js`, `progressClaims.js`) are pure
-functions and are the natural first target when a suite is added. Until then,
-verify changes with the manual acceptance tests below, run against a dev
+**One automated suite exists: the Firestore Security Rules tests (§0).**
+Everything else is manual. There is no application/unit test suite and no CI. The
+`lib/` domain modules (`purchaseOrders.js`, `progressClaims.js`,
+`clientInvoices.js`) are pure functions and are the natural next target. Verify
+application changes with the manual acceptance tests below, run against a dev
 Firebase project with the current rules published.
+
+## 0. Firestore Security Rules — automated (emulator)
+
+The only automated tests in the repo. They load `frontend/firestore.rules`
+verbatim and exercise it against the **Firestore emulator** — never a real
+project (the suite throws if `FIRESTORE_EMULATOR_HOST` is unset).
+
+```bash
+cd frontend
+npm run test:rules
+```
+
+That script runs
+`firebase emulators:exec --only firestore --project constrapp-rules-test "vitest run --config vitest.rules.config.js"`.
+
+- **Requires a JDK.** `firebase-tools` is pinned to `^13` because v14+ requires
+  **JDK 21**, while the Firestore emulator under v13 runs on **JDK 17**. If you
+  upgrade `firebase-tools`, you must also install JDK 21+.
+- Config: `frontend/firebase.json` (emulator + rules pointer only — no hosting,
+  no functions, and **no `.firebaserc`**, so nothing can be deployed).
+- Tests: `frontend/tests/rules/clientInvoices.rules.test.js` — **30 tests**
+  covering every case in §15i-x below, for `company_admin`, `project_manager`,
+  `qs`, `subcontractor`, `client`, an unauthenticated caller, and a
+  financial-role user in a **second company**.
+- **Run this before publishing any rules change** (see
+  [DEPLOYMENT.md](DEPLOYMENT.md)).
+
+§15i-x below remains the human-readable specification of what those tests assert;
+the other manual sections are not automated.
 
 Setup: two provisioned users in the same company (e.g. a `project_manager` and a
 `qs`), signed in via `/login`. Reset state between suites by using a fresh
@@ -493,6 +523,212 @@ Start each check from a fresh project with **budget 0** and no records.
 - [ ] Existing POs, claims, invoices, and variations retain their stored `currency: 'AUD'` —
   no backfill occurred. Newly created ones snapshot the project currency.
 
+## 15i. Client Invoices & Accounts Receivable
+
+Sign in as a financial-role user (`company_admin`/`project_manager`/`qs`). Setup:
+a project with an established commercial baseline (Original Contract Value
+**1,000,000**), at least one **client**-type contact, one **approved** client
+variation of **+50,000**, one **submitted** (pending) client variation of
+**+30,000**, and one **approved** client variation of **−40,000**.
+
+### 15i-i. Navigation & gating
+
+- [ ] The project tab formerly labelled "Invoices" now reads **Supplier Invoices**; its
+  URL is unchanged (`/projects/{id}/invoices`) and the page is unchanged.
+- [ ] The **Commercial** tab shows sub-navigation **Margin · Client Invoices**. Margin is
+  the default and is byte-for-byte the previous Commercial page.
+- [ ] `/projects/{id}/commercial/client-invoices` loads directly and is shareable.
+- [ ] On a project with **no** commercial baseline, the Client Invoices view shows
+  "Set the commercial baseline first" and a link to Margin — creation is not offered.
+- [ ] In a company with **no** client-type contacts, creation is disabled with a link to
+  Contacts.
+
+### 15i-ii. Numbering
+
+- [ ] First draft is `CI-0001`; the next is `CI-0002`.
+- [ ] Numbering is sequential **company-wide** — create a draft on a second project in
+  the same company and confirm it continues the sequence.
+- [ ] Two simultaneous creators never receive the same number.
+- [ ] Void `CI-0002` and create another → it is `CI-0003`. The number is **not reused**;
+  the gap is intentional.
+- [ ] A create that fails (go offline mid-save) leaves **no** counter gap — the next
+  successful create takes the number that failed.
+
+### 15i-iii. Draft creation & editing
+
+- [ ] The client picker lists **client-type active contacts only** and pre-selects the
+  baseline's client; it can be overridden.
+- [ ] Save is blocked until a client, an invoice date, and at least one described,
+  non-zero line exist.
+- [ ] A trailing empty editor row does **not** block saving (it is dropped, not stored).
+- [ ] A negative line amount is rejected with a message naming Credit Notes.
+- [ ] Editing a draft preserves `CI-` number, currency, and created stamps; reloading
+  shows the saved values.
+- [ ] An **issued** invoice offers **no** Edit action.
+
+### 15i-iv. GST totals
+
+- [ ] Mixed invoice — 1,000 `GST 10%` + 500 `GST-free` + 200 `Input-taxed`:
+  Subtotal **1,700**, GST **100**, Invoice total **1,800**.
+- [ ] A GST-free line contributes no GST.
+- [ ] There is no retention field and no "net payable" line — gross is what was billed.
+
+### 15i-v. Contract-value control
+
+- [ ] With OCV 1,000,000, an approved client variation of +50,000, and an approved
+  variation of −40,000: **Current Contract Sum = 1,010,000**.
+- [ ] Issue a 400,000 ex-GST invoice → **Issued Client Invoices 400,000**,
+  **Available to Invoice 610,000**.
+- [ ] A **draft** of 100,000 shows under **Draft Client Invoices** and does **not**
+  reduce Available to Invoice.
+- [ ] **Pending Client Variation Exposure** shows 30,000 and is **not** in the Current
+  Contract Sum.
+- [ ] Voiding an issued invoice returns its value to Available to Invoice immediately.
+
+### 15i-vi. Over-invoicing (warned, never blocked)
+
+- [ ] An invoice taking issued value above the Current Contract Sum shows an amber
+  warning **and** requires the acknowledgement tick; Save stays disabled until ticked.
+- [ ] After ticking, the invoice saves and issues successfully.
+- [ ] Available to Invoice renders **negative in red** — never clamped to zero.
+- [ ] No UI text anywhere claims over-invoicing is "prevented" or "blocked".
+
+### 15i-vii. Variation linking
+
+- [ ] The line picker's first column offers **Contract line** plus only **approved**
+  client variations. The **pending** (+30,000) variation is absent.
+- [ ] The **negative** (−40,000) approved variation is absent from the picker, yet it
+  still reduces the Current Contract Sum (checked in 15i-v).
+- [ ] Selecting a variation seeds the description and its **remaining** amount.
+- [ ] The "Approved client variations" table shows approved / invoiced / remaining.
+  Issue 30,000 against the +50,000 variation → invoiced 30,000, remaining 20,000.
+- [ ] A second invoice of 25,000 against it warns (double-invoicing) and requires the
+  acknowledgement, then saves; remaining renders **−5,000 in red**.
+- [ ] A variation whose lines all share one cost code shows that cost code; one spanning
+  several shows "—" and stores `costCodeId: null` (check the invoice detail view).
+- [ ] Contract lines show no cost code.
+- [ ] **The variation document is byte-identical before and after invoicing** — check
+  status, `approvedSubtotal`, `lineItems`, and that no invoice reference was added.
+
+### 15i-viii. Due dates and payment terms
+
+- [ ] Client contact with `{30, invoice}` → due date auto-fills 30 days after the
+  invoice date, and the helper text **names the source** ("Suggested from … payment
+  terms (30 days from invoice)").
+- [ ] Client contact with `{14, eom}` → due date is end-of-month + 14 days.
+- [ ] Editing the due date stops further auto-fill even when the invoice date changes.
+- [ ] A client with **no** payment terms leaves the due date **blank** with an
+  explanatory note — no hidden 30-day default is applied.
+- [ ] The invoice detail view shows the frozen payment-terms snapshot.
+
+### 15i-ix. Accounts Receivable wording & ageing
+
+- [ ] The AR panel is titled **"Accounts Receivable — ageing by due date"** and shows
+  **"Issued, not yet reconciled"**, plus buckets *No due date*, *Not yet due*,
+  *Past due 1–30 / 31–60 / 61–90 / 90+ days*.
+- [ ] A permanent amber notice states that receipts are not recorded and that issued
+  invoices stay listed until voided regardless of payment.
+- [ ] `grep -rniE "unpaid|amount owing|outstanding receivable|overdue receivable" frontend/src`
+  returns **no** matches.
+- [ ] Buckets use **gross (inc. GST)** amounts and count **issued** invoices only —
+  drafts and voids appear in none of them.
+- [ ] An invoice dated 45 days past due lands in *Past due 31–60 days*; the register row
+  shows "Past due 45d" in red; the **Past due date** filter narrows to it.
+
+### 15i-x. Lifecycle — Rules-enforced (AUTOMATED — see §0)
+
+**These cases are covered by the automated emulator suite** in
+`frontend/tests/rules/clientInvoices.rules.test.js` (`npm run test:rules`, 30
+tests). The list below is the specification those tests assert; re-run the suite
+rather than performing these by hand, and always before publishing rules.
+
+Every rejection must come from **Firestore**, signed in as a financial-role user —
+these verify the rules, not the UI.
+
+**Must be ALLOWED:**
+- [ ] create with `status: 'draft'`; draft content edit; `draft → issued`;
+  `draft → void` with a reason; `issued → void` with a reason.
+
+**Must be REJECTED:**
+- [ ] create with `status: 'issued'` or `status: 'void'`.
+- [ ] create with `docType: 'credit_note'`, or with a non-null `issuedAt`/`issuedBy`/
+  `voidedAt`/`voidedBy`.
+- [ ] create with `createdBy` set to another user's uid, or `createdAt` set to a client
+  clock value instead of `serverTimestamp()`.
+- [ ] draft edit changing `invoiceNumber`, `currency`, `createdAt`, `createdBy`,
+  `docType`, or `revision`.
+- [ ] draft edit that also sets `status: 'issued'` **in the same write** (issuing must be
+  a separate operation).
+- [ ] draft edit that forges `issuedAt`/`issuedBy`/`voidedAt`/`voidedBy`.
+- [ ] `draft → issued` that also changes `lineItems`, `subtotal`, `dueDate`,
+  `externalInvoiceReference`, or any other field.
+- [ ] `draft → issued` with `issuedBy` ≠ the caller, or `issuedAt` ≠ `serverTimestamp()`.
+- [ ] **any** update to an `issued` invoice that is not a void — changing `lineItems`,
+  `subtotal`, `clientName`, `dueDate`, `notes`, or `externalInvoiceReference`.
+- [ ] `issued → draft`; `void → draft`; `void → issued`; any update to a `void` invoice.
+- [ ] void with an empty or whitespace-only `voidReason`, or with `voidedBy` ≠ the caller.
+- [ ] setting `status` to `paid`, `partially_paid`, or `sent`.
+- [ ] **delete** of a draft invoice **and** of an issued invoice.
+- [ ] create/update with a malformed `currency` (e.g. `AU`, `aud`, `1234`).
+
+### 15i-xi. Currency
+
+- [ ] On an NZD project every figure renders `NZD …`; the stored invoice `currency` is
+  `NZD` and is never displayed.
+- [ ] **Atomic lock:** on a fresh project with budget 0 and no records, creating the
+  first client invoice locks the project currency **in the same step**; go offline
+  mid-save and confirm **neither** the invoice nor the lock is written.
+- [ ] Creating a second invoice on an already-locked project succeeds — verify
+  specifically as a **`qs`** user (whose rule permits only `false → true`).
+- [ ] Project Overview's currency card lists "N client invoices" among the lock reasons,
+  and a **draft** or **void** invoice alone is enough to lock.
+
+### 15i-xii. Tax limitation
+
+- [ ] With `countryCode: 'NZ'`, the register and the editor show the amber tax-limitation
+  notice, and GST is still **10%** (not NZ's 15%).
+- [ ] With `countryCode: 'AU'`, no tax notice appears.
+- [ ] No screen, button, or export anywhere says **"Tax Invoice"**; the footer states
+  Constrapp does not produce a compliant Australian Tax Invoice. There is no print, PDF,
+  download, or email action.
+
+### 15i-xiii. External invoice reference
+
+- [ ] `External Invoice Reference` is optional — an invoice saves and issues while blank.
+- [ ] It is editable while draft, appears in the register and the detail view, and is
+  matched by search.
+- [ ] After issuing it is **not** editable, and a direct SDK write changing it on an
+  issued invoice is **rejected by rules**.
+- [ ] It is distinct from **Client Reference** — both are stored and displayed separately.
+
+### 15i-xiv. Register, search & detail
+
+- [ ] Clicking a `CI-` number opens the read-only detail view with the full client
+  snapshot, lines, totals, payment-terms snapshot, and (when void) the void reason.
+- [ ] Search matches CI number, client name, client reference, external reference,
+  description, and variation number.
+- [ ] Status, client, and **Past due date** filters combine with search.
+- [ ] Editing the client contact afterwards (rename, change ABN/address) does **not**
+  change any existing invoice's snapshot.
+
+### 15i-xv. Roles, isolation & no-mutation
+
+- [ ] Signed in as `subcontractor` or `client`: the Client Invoices view shows the
+  restricted card and **no** invoice data; a direct SDK read is **denied by rules**, and
+  a direct SDK create/update is **denied**.
+- [ ] A user in Company B cannot read or write Company A's `clientInvoices`.
+- [ ] Record every Budget figure, Forecast rollup, and Commercial margin figure before
+  and after this whole suite → **every number identical**. Client invoices are
+  revenue-side and change no cost figure and no margin figure.
+- [ ] No Budget Line, PO, Progress Claim, Supplier Invoice, Variation, Forecast Line, or
+  Commercial Baseline document is modified by any client-invoice action.
+
+### 15i-xvi. Responsive
+
+- [ ] At **375px / 768px / 1280px**: the Commercial sub-nav wraps, the register and the
+  variation table scroll horizontally **inside their cards**, the editor modal scrolls
+  internally, all touch targets are ≥44px, and there is no horizontal page scroll.
+
 ## 16. Responsive Checks — 375px, 768px, 1280px
 
 - [ ] **375px:** sidebar hidden behind hamburger; drawer opens/closes (tap overlay); nav items ≥44px tall; project tab bar wraps; PO/claim tables scroll horizontally inside their card; modals fit with internal scrolling; all actions reachable by tap (no hover-only).
@@ -515,8 +751,8 @@ Firestore Security Rules are the only trust boundary — these checks confirm th
 ### 17b. Role-restricted reads (PII & financial collections)
 
 - [ ] Signed in as a `subcontractor` or `client` role user, **Contacts, Supplier
-  Invoices, Variations, Forecast, and Commercial** all show no data — reads are
-  blocked by rules, not merely absent from the nav.
+  Invoices, Client Invoices, Variations, Forecast, and Commercial** all show no
+  data — reads are blocked by rules, not merely absent from the nav.
 - [ ] The same user **can** still read company members' Projects, Cost Codes,
   Budget Lines, POs, and Progress Claims (the intended coarser read model).
 
@@ -539,6 +775,12 @@ enforced.
 - [ ] Lifecycle-transition legality, post-submission/`posted`/`approved`
   immutability, one-open-claim / one-invoice-per-claim races, creator ≠ approver
   segregation, counter integrity, and uniqueness are all client-enforced only.
+  **Exception:** `clientInvoices` transitions and issued-invoice immutability
+  **are** rules-enforced — see §15i-x, which tests them as real rejections.
+- [ ] Client-invoice **Available to Invoice** and **per-variation remaining**
+  limits are client-side warnings only: two users invoicing the same remaining
+  value concurrently both succeed. Expected — do not report as enforced
+  (SECURITY.md → Deferred Control 14).
 
 ### 17e. Secrets
 

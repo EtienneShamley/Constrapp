@@ -255,6 +255,168 @@ Like POs and claims, supplier invoices **never write onto Budget Line
 documents**. Invoiced, and the invoice contributions to Committed and Actual, are
 all derived at read time from invoice documents.
 
+## Client Invoice Lifecycle (Accounts Receivable)
+
+Client invoices are the **revenue side** — what the company has formally billed
+the head-contract client. They are the mirror of supplier invoices (accounts
+payable) and share no documents with them: a client invoice is controlled against
+the **Current Contract Sum** and **approved client variations**, never against a
+PO, a progress claim, or a supplier. Numbering: `CI-0001` from
+`counters/clientInvoices`, incremented in the same transaction as the write.
+
+> **⚠️ Invoiced is not paid, and invoiced revenue is not cash.** Constrapp has no
+> Receipt records, so **no client-invoice figure anywhere is a statement of what a
+> client owes or has paid.** An issued invoice is *issued, not yet reconciled*
+> until the Payments and Receipts foundation lands. The words **paid, unpaid,
+> amount owing, outstanding receivables,** and **overdue receivables** are
+> deliberately absent from the product and from this document.
+
+### The six terms that must never blur
+
+```
+Client Progress Claim   what we ASK the client to certify          (NOT MODELLED)
+Client Invoice          what we FORMALLY BILL the client           (implemented)
+Invoiced Revenue        Σ issued, non-void client invoices ex-GST  (read-time)
+Accounts Receivable     issued invoices not yet settled by a Receipt
+                        → today this equals EVERY issued non-void invoice,
+                          because no Receipt record exists
+Cash Received           money actually banked                      (NOT MODELLED)
+Recognised Revenue      revenue earned under an accounting policy  (NOT MODELLED)
+```
+
+*Forecast Revenue* (Project Margin, below) is **contractual value** and is none of
+these.
+
+### Lifecycle
+
+```
+draft ──▶ issued ──▶ void        (void is terminal)
+  └────────────────▶ void
+```
+
+- **Draft** — fully editable. Contributes to nothing; shown as a separate
+  "Draft Client Invoices" figure, never netted against Available to Invoice.
+- **Issued** — the commercial commit point and the single counting status.
+  Immutable: the only permitted change is voiding. `issuedAt`/`issuedBy` stamped.
+- **Void** — terminal audit record, contributing nothing forever. Requires a
+  **non-empty reason**. The invoice number is retained, so a void leaves an
+  intentional, visible gap in the sequence. Financial records are never deleted.
+- **`sent` is reserved** (defined with no transition into it). Constrapp has no
+  delivery mechanism and no email provider, so a `sent` status would assert that
+  a client received something the app cannot evidence.
+- **There is no `paid` or `partially_paid` status — not even reserved.** Payment
+  state will be derived at read time from Receipt records; a payment field on the
+  invoice would invite a client-maintained rollup (ADR-3/ADR-4).
+
+**Unlike every other financial collection, this lifecycle is enforced by
+Firestore rules, not only by the client hook** — see [SECURITY.md](SECURITY.md).
+
+### Contract-value control (all read-time, all ex-GST)
+
+```
+Current Contract Sum   = Original Contract Value + Approved Client Variations   (lib/margin.js)
+Issued Client Invoices = Σ subtotal of invoices with status 'issued'            (drafts & voids excluded)
+Available to Invoice   = Current Contract Sum − Issued Client Invoices          (a.k.a. Unbilled Contract Value)
+```
+
+`Available to Invoice` is **signed** — it goes negative on an over-invoiced
+contract and is never clamped, because hiding an over-invoiced position is the
+whole problem.
+
+**Over-invoicing is warned, never blocked**, matching over-claiming and AP
+over-invoicing. Exceeding the Current Contract Sum, or a variation's approved
+amount, raises an amber warning and requires an **explicit acknowledgement tick**
+before saving. It is never described as prevented: Firestore rules cannot sum
+sibling documents, so **the limit is client-side only and two users can
+concurrently consume the same remaining availability** (SECURITY.md → Deferred
+Controls).
+
+### Variation invoicing
+
+An invoice line is either a **contract line** (billed against the contract sum,
+`variationId: null`, no cost code) or an **approved client variation line**
+carrying `variationId` plus frozen `variationNumber`/`variationDescription`.
+
+```
+Invoiced (variation)  = Σ ex-GST line amount across ISSUED invoices for that variationId
+Remaining (variation) = approvedSubtotal − Invoiced                    (signed)
+```
+
+- **Only `approved` client variations are invoiceable.** Pending
+  (draft/submitted) variations are exposure only — approval is the counting point
+  (ADR-18) — and billing unapproved work is exactly what this guard prevents.
+- **Negative approved client variations (credits/omissions) are not offered.** A
+  credit cannot be positively invoiced. They still **reduce the Current Contract
+  Sum**, and therefore Available to Invoice, through the existing signed
+  `approvedClientVariationsTotal`; a future Credit Note bills them.
+- **Variation documents are never mutated by invoicing** — no stamp, no status
+  change, no back-reference. The linkage is entirely read-time, exactly as ADR-17
+  keeps claims unmutated by supplier invoices.
+
+### Line amounts, GST & currency
+
+All canonical line `amount`s are **ex-GST**, each with a `taxCode`
+(`gst` 10% · `gst_free` · `input_taxed`) and a computed `gstAmount`.
+
+```
+subtotal   = Σ line amount        (ex-GST)
+gstTotal   = Σ line gstAmount
+grossTotal = subtotal + gstTotal  ← what the client was billed
+```
+
+There is **no retention and no payable/gross split** on the client side in this
+foundation (client retention is a separate future foundation), so `grossTotal` is
+unambiguous. GST remains a flat **Australian 10%** regardless of the project's
+currency; a non-AU company sees the standard tax-limitation notice. The project
+currency is snapshotted as **audit context** and never read for display, and a
+client invoice is monetary data, so creating one **locks the project currency in
+the same transaction** (ADR-21).
+
+### Due dates and payment terms
+
+`invoiceDate` and `dueDate` are `'YYYY-MM-DD'` strings. The due date is suggested
+from the **client contact's** `paymentTerms` (`{ days, basis: 'invoice' | 'eom' }`),
+snapshotted onto the invoice, and **always editable**. The resolution chain is
+deliberately shallow and is **named in the UI**:
+
+```
+manual override on the invoice   →   client contact's payment terms   →   BLANK
+```
+
+When no terms exist the due date is **left blank with an explanatory note** — no
+hidden 30-day default is ever applied. Contract-level payment terms on the
+commercial baseline are the correct long-term home (the same client can carry
+different terms on two contracts) and are **deferred**, since this branch does not
+modify the baseline.
+
+### Accounts Receivable — ageing by due date
+
+Issued invoices are bucketed on their **gross** (inc. GST) amount:
+*No due date* · *Not yet due* · *Past due 1–30* · *31–60* · *61–90* · *90+ days*.
+
+> **This is ageing by due date, not a receivables balance.** Because no Receipt
+> records exist, every issued non-void invoice appears until it is voided —
+> whether or not the client has paid. The UI carries this notice permanently and
+> uses only the honest labels: **"Issued, not yet reconciled"**, **"Past due
+> date"**, **"Ageing by due date"**.
+
+### No writes to any other document
+
+Like POs, claims, and supplier invoices, client invoices **never write onto
+Budget Lines** — and additionally never write onto the commercial baseline or
+variations. Every contract-control and receivables figure is derived at read time
+in `lib/clientInvoices.js`. The six budget figures are **completely unchanged**:
+client invoices are revenue-side and touch no cost figure.
+
+### Deferred
+
+Payment receipts, allocations, partial payments, overpayments, payment
+date/method/bank reference, invoice balance after receipts, bank reconciliation,
+actual Cash In · printable invoice, PDF, email, branding · **"Tax Invoice"
+labelling and company legal/tax identity** (see [SECURITY.md](SECURITY.md)) ·
+credit notes (fields reserved) · client retention · revenue recognition · client
+progress claims · client portal access.
+
 ## The Six Budget Figures — Exact Definitions
 
 All derived figures group PO/claim **line items by `costCodeId`** and are ex-GST.
@@ -508,8 +670,10 @@ Margin Movement            = Forecast Gross Profit − Original Planned Profit
 - **Margin vs markup, revenue vs cash.** Margin % is profit as a share of **revenue**
   (markup — profit over **cost** — is a different, larger number and is not shown).
   *Forecast Revenue* is the contractual value of work; it is **not** invoiced revenue
-  or cash received — Constrapp has no Client Invoices / Accounts Receivable or
-  Payments, so there is deliberately **no cash figure** in this foundation.
+  or cash received. Client Invoices / Accounts Receivable now exist (see above) and
+  report **Issued Client Invoices** separately on the Commercial tab's Client Invoices
+  view — margin is deliberately **not** affected by invoicing, and there is still **no
+  cash figure**, because Payments and Receipts are not implemented.
 
 **Null / zero behaviour (mandatory):**
 
@@ -543,9 +707,11 @@ is **not** claimed (it cannot be enforced without a trusted backend). Reads/writ
 restricted to internal financial roles; the baseline **never** mutates Projects,
 Budget Lines, POs, claims, supplier invoices, variations, or forecast lines.
 
-**Deferred:** Cash Flow, Client Invoices, Accounts Receivable, Payments, retention
-modelling, monthly periods, immutable snapshots, approval workflow, probability
-weighting, and any manual/probability-weighted revenue forecast override.
+**Deferred:** Cash Flow, Payments and Receipts, retention modelling, monthly
+periods, immutable snapshots, approval workflow, probability weighting, and any
+manual/probability-weighted revenue forecast override. (Client Invoices and
+Accounts Receivable have since shipped — see the Client Invoice Lifecycle above.
+They report invoiced value alongside margin and do **not** feed it.)
 
 ### Final Account *(planned)*
 
