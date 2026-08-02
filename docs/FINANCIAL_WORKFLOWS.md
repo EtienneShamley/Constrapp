@@ -18,8 +18,9 @@ supports no mixed-currency project transactions. Changing a currency never
 converts, recalculates, or alters a stored amount — which is why the project
 currency **locks** as soon as the project holds any monetary value (a non-zero
 headline budget, budget line, purchase order including draft/cancelled, progress
-claim, supplier invoice, variation, forecast input, or established commercial
-baseline). Cost Codes and Contacts hold no money and never lock. POs, claims,
+claim, supplier invoice, client invoice, **client receipt**, variation, forecast
+input, or established commercial baseline). Cost Codes and Contacts hold no money
+and never lock. POs, claims,
 supplier invoices, and variations snapshot the project currency at write time as
 **audit context**; the project currency remains the display authority, and
 documents created before this foundation keep their stored `AUD`. Definitions:
@@ -264,12 +265,12 @@ the **Current Contract Sum** and **approved client variations**, never against a
 PO, a progress claim, or a supplier. Numbering: `CI-0001` from
 `counters/clientInvoices`, incremented in the same transaction as the write.
 
-> **⚠️ Invoiced is not paid, and invoiced revenue is not cash.** Constrapp has no
-> Receipt records, so **no client-invoice figure anywhere is a statement of what a
-> client owes or has paid.** An issued invoice is *issued, not yet reconciled*
-> until the Payments and Receipts foundation lands. The words **paid, unpaid,
-> amount owing, outstanding receivables,** and **overdue receivables** are
-> deliberately absent from the product and from this document.
+> **⚠️ Invoiced is not paid, and invoiced revenue is not cash.** Client Receipts
+> now exist (see *Client Receipts* below), so a real receivables balance is
+> available — but it is **derived at read time from receipt allocations and never
+> stored on an invoice**. There is still **no `paid` status** on any invoice, and
+> *paid*/*unpaid* are never used as an invoice status. Constrapp records the cash
+> a user tells it about; it cannot verify that money was genuinely received.
 
 ### The six terms that must never blur
 
@@ -277,12 +278,15 @@ PO, a progress claim, or a supplier. Numbering: `CI-0001` from
 Client Progress Claim   what we ASK the client to certify          (NOT MODELLED)
 Client Invoice          what we FORMALLY BILL the client           (implemented)
 Invoiced Revenue        Σ issued, non-void client invoices ex-GST  (read-time)
-Accounts Receivable     issued invoices not yet settled by a Receipt
-                        → today this equals EVERY issued non-void invoice,
-                          because no Receipt record exists
-Cash Received           money actually banked                      (NOT MODELLED)
+Accounts Receivable     issued invoices less posted receipt allocations
+                        → the REMAINING BALANCE (read-time, gross inc. GST)
+Cash Received           money actually banked                      (implemented —
+                        Client Receipts; posted receipts only)
 Recognised Revenue      revenue earned under an accounting policy  (NOT MODELLED)
 ```
+
+*Cash Received* is **not** revenue: it feeds no budget figure, no forecast, and
+no margin figure. An unallocated receipt is cash received against **no** invoice.
 
 *Forecast Revenue* (Project Margin, below) is **contractual value** and is none of
 these.
@@ -389,16 +393,33 @@ commercial baseline are the correct long-term home (the same client can carry
 different terms on two contracts) and are **deferred**, since this branch does not
 modify the baseline.
 
-### Accounts Receivable — ageing by due date
+### Accounts Receivable — ageing on the remaining balance
 
-Issued invoices are bucketed on their **gross** (inc. GST) amount:
-*No due date* · *Not yet due* · *Past due 1–30* · *31–60* · *61–90* · *90+ days*.
+Issued invoices are bucketed on their **remaining gross (inc. GST) balance after
+posted receipt allocations**: *No due date* · *Not yet due* · *Past due 1–30* ·
+*31–60* · *61–90* · *90+ days*.
 
-> **This is ageing by due date, not a receivables balance.** Because no Receipt
-> records exist, every issued non-void invoice appears until it is voided —
-> whether or not the client has paid. The UI carries this notice permanently and
-> uses only the honest labels: **"Issued, not yet reconciled"**, **"Past due
-> date"**, **"Ageing by due date"**.
+- **Fully reconciled invoices contribute zero and leave ageing entirely** — they
+  stay in the register with a *Fully reconciled* badge, so nothing is hidden.
+- **Partially reconciled invoices age only their remainder.**
+- **Over-reconciled invoices are excluded from the buckets** and listed in a
+  dedicated callout with their signed negative balance, so a credit position can
+  never offset genuine arrears inside a bucket total.
+- **Voiding a receipt restores the balance immediately** at the next render —
+  there is no reversal record and no invoice write.
+- **Unallocated receipts reduce no invoice balance** and appear nowhere in
+  ageing; they are reported separately as money on account.
+- *Past due* means past the due date **and still owing** — an invoice past its
+  due date but fully reconciled is not past due in any sense that matters.
+
+The pre-Receipts disclaimer ("Constrapp has no Receipt records, so every issued
+invoice stays here until it is voided") is **removed**, replaced by the limits
+that genuinely remain:
+
+> Balances reflect posted receipts allocated to each invoice. Constrapp warns but
+> does not block over-allocation, and cannot prevent two users allocating the
+> same balance concurrently. Unallocated receipts are shown separately and do not
+> reduce any invoice balance.
 
 ### No writes to any other document
 
@@ -410,12 +431,154 @@ client invoices are revenue-side and touch no cost figure.
 
 ### Deferred
 
-Payment receipts, allocations, partial payments, overpayments, payment
-date/method/bank reference, invoice balance after receipts, bank reconciliation,
-actual Cash In · printable invoice, PDF, email, branding · **"Tax Invoice"
-labelling and company legal/tax identity** (see [SECURITY.md](SECURITY.md)) ·
-credit notes (fields reserved) · client retention · revenue recognition · client
-progress claims · client portal access.
+Printable invoice, PDF, email, branding · **"Tax Invoice" labelling and company
+legal/tax identity** (see [SECURITY.md](SECURITY.md)) · credit notes (fields
+reserved) · client retention · revenue recognition · client progress claims ·
+client portal access. (Receipts, allocations, partial settlement, overpayments,
+payment date/method/bank reference, and the invoice balance after receipts have
+since **shipped** — see *Client Receipts* below.)
+
+## Client Receipts (cash received — accounts receivable settlement)
+
+Client Receipts record **money actually received** from a head-contract client
+and allocate it against issued Client Invoices. They are the settlement half of
+accounts receivable, and the first real cash record in Constrapp. Numbering:
+`CR-0001` from `counters/clientReceipts`, incremented in the same transaction as
+the write. Schema: [DATA_MODEL.md](DATA_MODEL.md); rationale: ADR-23.
+
+> **⚠️ Cash is not revenue, and a receipt is not a taxable supply.** A receipt
+> stores **gross cash only** — no GST, no tax code, no net amount. The tax was
+> already recorded on the invoice being reconciled; recomputing it here would
+> double-count it and would disagree with the invoice on a partial payment.
+> Receipts feed **no** budget figure, **no** forecast figure, and **no** margin
+> figure.
+
+### Lifecycle
+
+```
+draft ──▶ posted ──▶ void        (void is terminal)
+  └────────────────▶ void
+```
+
+- **Draft** — fully editable (amount, date, method, references, allocations).
+  Contributes to nothing; shown as a separate "Draft Receipts" figure.
+- **Posted** — the financial commit point and the single counting status.
+  Immutable: the only permitted change is voiding. `postedAt`/`postedBy` stamped.
+- **Void** — terminal audit record, contributing nothing forever. Requires a
+  **non-whitespace reason**. The number is retained, leaving an intentional,
+  visible gap. Financial records are never deleted.
+- **`posted`, not "confirmed" or "reconciled".** *Reconciled* names the derived
+  state of an **invoice**; reusing it as a transaction status would blur the two
+  ideas this module exists to keep apart.
+
+Like `clientInvoices`, **this lifecycle is enforced by Firestore rules**, not
+only by the client hook — see [SECURITY.md](SECURITY.md).
+
+### Allocation
+
+Allocations are **embedded** on the receipt (ADR-6 idiom):
+`{ clientInvoiceId, invoiceNumber, allocatedAmount }`.
+
+```
+Allocated Total     = Σ allocations[].allocatedAmount
+Unallocated Amount  = Receipt Amount − Allocated Total
+```
+
+- One receipt may allocate across **several** invoices; several receipts may
+  allocate against **one** invoice.
+- Only **issued**, non-void invoices **belonging to the selected client** on
+  **this project** may be allocated (client-enforced).
+- Allocations are freely editable while `draft` and **freeze permanently** when
+  posted.
+- Changing the client on a draft **clears its allocations after an explicit
+  confirmation** — an invoice belongs to one client.
+- Allocating **more than the receipt amount is hard-blocked** (the money does not
+  exist) — and the scalar arithmetic is rules-enforced.
+- Allocating **more than an invoice's remaining balance is warned with an
+  explicit acknowledgement, never blocked** — it cannot be enforced anywhere
+  (rules cannot sum sibling documents).
+
+### Unallocated receipts are permitted and normal
+
+A receipt may be saved and posted fully allocated, partly allocated, or entirely
+unallocated. Real cases: the client pays before the invoice is raised, the client
+overpays, or the payment is recorded before the allocation is known.
+
+**Unallocated money reduces no invoice balance.** It is reported separately as
+*"Unallocated — on account"* and is **never** auto-applied to the oldest invoice:
+that is an accounting policy decision Constrapp does not make on the user's
+behalf. An explicit **"Allocate oldest first"** action exists, produces an
+editable proposal, and runs only when pressed.
+
+### Invoice balance derivation (read-time, never stored)
+
+```
+Received Against Invoice = Σ allocatedAmount across POSTED, non-void receipts
+                             referencing that invoice
+Remaining to Reconcile   = clientInvoice.grossTotal − Received Against Invoice   (SIGNED)
+```
+
+Measured against **gross** (inc. GST), because gross is what the client was
+billed — client invoices carry no retention and no payable/gross split (ADR-22).
+The balance is **signed and never clamped**.
+
+Derived reconciliation state — **never an authored invoice status**:
+
+| State | Condition |
+|---|---|
+| **Unreconciled** | received = 0 |
+| **Partly reconciled** | 0 < received < gross |
+| **Fully reconciled** | received = gross (compared in whole cents) |
+| **Over-reconciled** | received > gross |
+
+Draft receipts count nothing. Void receipts count nothing — **which is why
+voiding restores balances automatically at read time, with no reversal document
+and no write to any invoice.**
+
+### Receipt dates
+
+`receiptDate` is a `'YYYY-MM-DD'` string — the date money was **received**, not
+the date it was entered. **The future Cash Flow module consumes `receiptDate`,
+never `createdAt` or `postedAt`,** and can group by month with
+`receiptDate.slice(0, 7)` without constructing a Date.
+
+- **Backdating is allowed** without warning — entering last month's bank
+  statement is the normal case.
+- **A future-dated draft may be SAVED but not POSTED.** Posting asserts money has
+  actually been received. ⚠️ This block is **client-enforced only**: Firestore
+  rules validate the `'YYYY-MM-DD'` shape and have no reliable comparison against
+  the caller's local calendar date.
+
+### Allocation exceptions
+
+An issued invoice can be **voided after** a receipt was posted against it; rules
+cannot prevent that (voiding needs no cross-document read). Constrapp surfaces it
+rather than automating a fix:
+
+- the **cash stays real** — the receipt keeps its amount and stays counted;
+- the **allocation is listed as an exception** on both the Receipts and Client
+  Invoices views;
+- the void invoice stays out of ageing (it is void);
+- **nothing is deleted, reassigned, or reversed automatically.**
+
+Documented remedy: void the receipt and record a new one against the correct
+invoice.
+
+### No writes to any other document
+
+Client receipts **never write onto Client Invoices** (no balance field, no
+payment status, no back-reference), and never onto Budget Lines, the commercial
+baseline, variations, POs, claims, or supplier invoices. Every figure is derived
+in `lib/clientReceipts.js` over `lib/payments.js`. The six budget figures,
+Forecast Final Cost, and every margin figure are **completely unchanged**.
+
+### Deferred (Client Receipts)
+
+**Supplier Payments** (money out — the next branch) · **Cash Flow reporting**
+(needs both directions) · refunds and reversal records (`docType: 'refund'`
+reserved) · client credit notes · bank reconciliation and bank feeds ·
+accounting integrations · attachments · printable remittance · email ·
+automatic allocation policies · financial periods and period locking.
 
 ## The Six Budget Figures — Exact Definitions
 
@@ -628,11 +791,16 @@ override, and — strictly out of this cost-side branch — Forecast Revenue, Ca
 Flow, Project Margin, Final Account, and PULSE. `variations.forecastAmount` is
 **not** used here.
 
-### Cash Flow *(planned)*
+### Cash Flow *(planned — blocked on Supplier Payments)*
 
-Time-phased projection of cost and income across the project, driven by claims,
-invoices, payment terms, and schedule inputs. A commercial output, not a generic
-chart.
+Time-phased projection of cost and income across the project. **Actual Cash In
+now exists** (posted Client Receipts: amount, `receiptDate`, project, client,
+currency). **Actual Cash Out does not** — Supplier Payments are the next branch,
+and until they exist any cash-out figure would be forecast presented as fact.
+Cash Flow therefore lands only after both directions exist. It must consume the
+**total transaction amount** (that is what moved through the bank), with the
+allocated/unallocated split available alongside, and must never sum across
+currencies — a project reports in one currency and there is no FX.
 
 ### Project Margin *(implemented — foundation)*
 
@@ -721,8 +889,16 @@ cost-to-complete, cash flow, and the final account.
 
 ## Future Integrations
 
-- **Payments** — the reserved `paid` status / `paidAt` stamp, payment records,
-  and retention release follow the invoices foundation.
+- **Supplier Payments** — the money-out mirror of Client Receipts, allocated
+  against posted supplier invoices' `payableTotal` (**not** `grossTotal` —
+  retention is withheld and is not payable). It reuses the shared
+  `lib/payments.js` foundation shipped with Client Receipts. **The supplier
+  invoice `paid` status and `paidAt` field will be DEPRECATED IN PLACE, not
+  activated** — payment state derives from allocations, and activating them would
+  create a second, contradictory source of payment truth. That code and
+  documentation change belongs to the Supplier Payments branch; **nothing about
+  them has changed yet** (see [ROADMAP.md](../ROADMAP.md)). Retention release
+  remains unmodelled.
 - **Credit Notes** — the reserved `docType: 'credit_note'` / `adjustsInvoiceId`
   fields will carry supplier credits/negative adjustments that reduce Invoiced.
 - **Attachments** — the reserved `attachments: []` array on invoices anchors

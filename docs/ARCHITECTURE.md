@@ -18,7 +18,7 @@ Preconstruction → Procurement → Delivery → Cost Control → Forecasting �
 | **Procurement** | Tender packages, subcontractor invitations, bid levelling, award, commitment | Tender & Award *(future)* → **Purchase Orders** *(implemented)* |
 | **Delivery** | Scope variations, cumulative progress claims against commitments | **Variations** *(implemented — foundation)*; **Progress Claims** *(implemented)* |
 | **Cost Control** | Supplier invoices, actual cost, payments/credit notes | **Supplier Invoices** *(implemented)*; Payments, Credit Notes *(future)* |
-| **Revenue Control** | Client invoices issued against the contract sum and approved client variations; receivables | **Client Invoices / Accounts Receivable** *(implemented — foundation)*; Payments & Receipts *(future)* |
+| **Revenue Control** | Client invoices issued against the contract sum and approved client variations; receivables, and the cash received to settle them | **Client Invoices / Accounts Receivable**, **Client Receipts** *(implemented — foundation)*; Supplier Payments *(next)* |
 | **Forecasting** | Forecast cost to complete and project margin *(implemented — foundation)*; cash flow | **Forecast Cost to Complete**, **Project Margin** *(implemented)*; Cash Flow *(planned)* |
 | **Final Account** | Reconcile budget + variations + actual into final margin; commercial reporting | Final Account, Commercial Reporting *(future/planned)* |
 
@@ -88,7 +88,8 @@ frontend/                  The entire application (run all npm commands here)
     index.css              Tailwind import + @theme tokens + base styles
     components/            Card, Btn, Badge, Stat, ProgBar, PageHeader, ProtectedRoute
     layouts/               AppShell, Sidebar, TopBar, AuthLayout, ProjectDetailLayout,
-                           ProjectCommercialLayout (Commercial sub-nav: Margin | Client Invoices)
+                           ProjectCommercialLayout (Commercial sub-nav:
+                           Margin | Client Invoices | Receipts)
     pages/                 Login, CreateAccount, ForgotPassword, Dashboard, Projects,
                            CompanySettings (country & base currency),
                            Contacts (company directory), Subcontractors (filtered
@@ -96,6 +97,7 @@ frontend/                  The entire application (run all npm commands here)
     pages/project/         ProjectOverview, ProjectBudget, ProjectCostCodes,
                            ProjectPurchaseOrders, ProjectProgressClaims,
                            ProjectInvoices (supplier/AP), ProjectClientInvoices (client/AR),
+                           ProjectClientReceipts (cash received),
                            ProjectVariations, ProjectForecast,
                            ProjectCommercial (margin), ProjectPlaceholder
     hooks/                 All Firestore access (see below); projectCurrencyLock.js
@@ -103,7 +105,8 @@ frontend/                  The entire application (run all npm commands here)
                            transaction so monetary writes and the lock are atomic
     lib/                   firebase.js, formatters.js, currency.js, nav.js, projectTabs.js,
                            purchaseOrders.js, progressClaims.js, supplierInvoices.js,
-                           clientInvoices.js, variations.js, forecast.js, margin.js,
+                           clientInvoices.js, payments.js (shared, direction-agnostic),
+                           clientReceipts.js, variations.js, forecast.js, margin.js,
                            contacts.js
 docs/                      This documentation + design-reference assets
                            (Constrapp_v5.jsx prototype, screenshots, Word doc — do not move)
@@ -129,6 +132,7 @@ Per-page hooks (not context providers): `useProject(projectId)` (lookup within
 ProjectsProvider), `useCostCodes()`, `useContacts()`, `useBudgetLines(projectId)`,
 `usePurchaseOrders(projectId)`, `useProgressClaims(projectId)`,
 `useSupplierInvoices(projectId)`, `useClientInvoices(projectId)`,
+`useClientReceipts(projectId)`,
 `useVariations(projectId)`, `useForecastLines(projectId)`,
 `useProjectCommercial(projectId)`.
 
@@ -146,7 +150,8 @@ ProtectedRoute (redirects to /login when signed out)
    │      (the `forecasting` route renders the Forecast Cost to Complete page; the tab is labelled "Forecast".
    │       the `invoices` route renders SUPPLIER invoices (AP); the tab is labelled "Supplier Invoices".
    │       the `commercial` route is a nested layout — index = Project Margin,
-   │       `commercial/client-invoices` = Client Invoices / Accounts Receivable (AR))
+   │       `commercial/client-invoices` = Client Invoices / Accounts Receivable (AR),
+   │       `commercial/receipts` = Client Receipts (cash received))
    │    boq | documents | photos | timeline | reports  (ProjectPlaceholder)
    ├─ /settings/company        Company country & base currency (company_admin writes)
    ├─ /contacts                Company-wide contact directory
@@ -178,7 +183,8 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Purchase Orders | Implemented |
 | Progress Claims | Implemented |
 | Supplier Invoices (accounts payable) | Implemented (foundation) |
-| Client Invoices / Accounts Receivable | Implemented (foundation) — read-time contract control; **no payments, no receipts, no tax-invoice output** |
+| Client Invoices / Accounts Receivable | Implemented (foundation) — read-time contract control and read-time reconciliation against receipts; **no tax-invoice output** |
+| Client Receipts (cash received) | Implemented (foundation) — embedded allocations, read-time balances; **no supplier payments, no cash flow** |
 | Variations (client + supplier) | Implemented (foundation) |
 | Forecast Cost to Complete | Implemented (foundation) — read-time, cost-side |
 | Project Margin (Commercial tab) | Implemented (foundation) — read-time, ex-GST; commercial baseline is the only stored input |

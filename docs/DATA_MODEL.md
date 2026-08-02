@@ -12,13 +12,15 @@ companies/{companyId}
   costCodes/{costCodeId}
   contacts/{contactId}
   counters/{counterId}                 (purchaseOrders, progressClaims, supplierInvoices,
-                                        variationsClient, variationsSupplier, clientInvoices)
+                                        variationsClient, variationsSupplier, clientInvoices,
+                                        clientReceipts)
   projects/{projectId}
     budgetLines/{lineId}
     purchaseOrders/{poId}
     progressClaims/{claimId}
     supplierInvoices/{invoiceId}
     clientInvoices/{invoiceId}
+    clientReceipts/{receiptId}
     variations/{variationId}
     forecastLines/{costCodeId}           (deterministic id = costCodeId)
     commercial/baseline                  (single doc; deterministic id = "baseline")
@@ -134,14 +136,15 @@ next save. Embedding (not a `contactAssignments` subcollection) follows ADR-16.
 ## companies/{companyId}/counters/{counterId}
 
 Company-wide sequential numbering. Documents: `purchaseOrders`, `progressClaims`,
-`supplierInvoices`, `variationsClient`, `variationsSupplier`, `clientInvoices`.
+`supplierInvoices`, `variationsClient`, `variationsSupplier`, `clientInvoices`,
+`clientReceipts`.
 
 | Field | Type | Notes |
 |---|---|---|
 | `next` | number | The next number to assign. Read and incremented in the **same transaction** as the numbered document's creation, so concurrent users never share a number. Missing counter ⇒ starts at 1 |
 
 Numbers render as `PO-0001` / `PC-0001` / `SI-0001` / `CV-0001` / `SV-0001` /
-`CI-0001` (zero-padded to 4).
+`CI-0001` / `CR-0001` (zero-padded to 4).
 
 ## companies/{companyId}/projects/{projectId}
 
@@ -167,7 +170,8 @@ change can never relabel it.
 Currency **locks** as soon as the project holds any monetary value — a non-zero
 `budget`, any budget line, any purchase order (**including draft and
 cancelled**), any progress claim, supplier invoice, **client invoice (including
-draft and void)**, client or supplier variation, any forecast line with
+draft and void)**, **client receipt (including draft and void)**, client or
+supplier variation, any forecast line with
 `uncommittedCostToComplete !== null`, or an established commercial baseline. Cost Codes and Contacts are company-wide and
 hold no money, so they **never** lock. Detecting that evidence is
 **client-enforced** (`lib/currency.js` → `monetaryLockReasons`); Firestore rules
@@ -400,6 +404,73 @@ not to the commercial baseline, not to variations, not to Budget Lines. Voided
 invoices retain their number, so a void leaves an intentional, visible gap in the
 sequence. **No migration** — a project with no `clientInvoices` loads normally.
 
+## …/projects/{projectId}/clientReceipts/{receiptId}
+
+**Cash actually received** from the head-contract client, with **embedded
+allocations** against issued Client Invoices — the settlement half of accounts
+receivable. Semantics, lifecycle, and the balance formulas:
+[FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md). Reads are restricted to
+internal financial roles (see [SECURITY.md](SECURITY.md)). Rationale: ADR-23.
+
+A receipt records **gross cash**, not an accrual figure. It carries **no GST, no
+tax code, no net amount, and no revenue meaning** — the tax was already recorded
+on the invoice being reconciled, and a cash movement is not a new taxable supply.
+Numbers come from the company-wide `counters/clientReceipts` (`CR-0001`),
+incremented in the same transaction as the write.
+
+| Field | Type | Notes |
+|---|---|---|
+| `receiptNumber` | string | `CR-0001` — from the company-wide counter |
+| `status` | string | `draft` \| `posted` \| `void`. **No `cleared`, no `reconciled`** — reconciliation is a derived state of an *invoice*, never a receipt status |
+| `docType` | string | `receipt`; `refund` **reserved** (money moving *back* to a client is a different event from voiding a mis-keyed receipt) |
+| `clientId` | string | **REQUIRED non-empty** → company contact (type `client`). Unlike every other counterparty link in the app this is **never null**: a receipt with no client is not a record (rules-enforced) |
+| `clientName` | string | **REQUIRED non-empty frozen snapshot** of the contact's `displayName` at creation |
+| `receiptDate` | string | `'YYYY-MM-DD'` — the date the money was **received**. **This, never `createdAt`/`postedAt`, is the cash date the future Cash Flow module consumes** |
+| `amount` | number | **Gross cash received**, `> 0` (rules-enforced), in the project currency |
+| `paymentMethod` | string | `bank_transfer` \| `card` \| `cash` \| `cheque` \| `direct_debit` \| `other`. **Required and never defaulted** — an unselected method is an unanswered question. Rules validate *shape* only (ADR-21 anti-drift precedent) |
+| `paymentMethodOther` | string | Required non-empty when `paymentMethod` is `other`; `''` otherwise |
+| `bankReference` | string | Optional — our bank-statement reference; the key for future bank reconciliation |
+| `externalReference` | string | Optional — the receipt in Xero / MYOB / QuickBooks |
+| `notes` | string | Optional |
+| `allocations` | array | **Embedded** (ADR-6) — see below. Max 100 (rules-enforced) |
+| `allocatedTotal` | number | **Derived at write** — Σ `allocations[].allocatedAmount` |
+| `unallocatedAmount` | number | **Derived at write** — `amount − allocatedTotal`. Stored *specifically* so rules can enforce the scalar invariant below |
+| `currency` | string | **Audit snapshot** of the project currency at write time. **Never read for display** |
+| `revision` | number | 1 |
+| `postedAt` / `postedBy` | timestamp / uid | `null` until posted. Rules require `postedBy == request.auth.uid` and `postedAt == request.time` |
+| `voidedAt` / `voidedBy` | timestamp / uid | `null` unless void. Same constraints |
+| `voidReason` | string | **Required non-whitespace** on void (rules-enforced) |
+| `attachments` | array | **Reserved** — always `[]` |
+| `externalRefs` | map | **Reserved** — structured accounting-system IDs |
+| `createdAt` / `createdBy` | timestamp / uid | Set once; rules reject any later change |
+| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on **every** write path |
+
+Each allocation:
+
+```
+{ clientInvoiceId,   // → an ISSUED client invoice on THIS project
+  invoiceNumber,     // frozen snapshot 'CI-0004' — so a register row renders
+                     // without reading invoice documents
+  allocatedAmount }  // > 0, gross (inc. GST), in the project currency
+```
+
+**The scalar invariant.** Rules enforce
+`allocatedTotal + unallocatedAmount == amount` (with both ≥ 0 and `amount > 0`),
+compared in **whole cents** via `math.round(v * 100)`. Exact float equality would
+reject legitimate money — `0.10 + 0.20` is `0.30000000000000004` in IEEE-754 — so
+both sides are compared as integers. This is a *representation fix, not a
+loosened invariant*: any discrepancy of one cent or more still fails.
+`lib/payments.js → toCents()` mirrors it exactly.
+
+**Stored vs derived.** Only the fields above are authored or snapshotted.
+**Received to Date, Remaining to Reconcile, reconciliation state, the corrected
+AR ageing, and every project-level cash total are derived at read time**
+(`lib/clientReceipts.js` over `lib/payments.js`) and are **never** written
+back — not onto this document, and above all **not onto Client Invoices**, which
+gain no balance field, no payment status, and no receipt back-reference. Voiding
+a receipt therefore restores every invoice balance for free, with no reversal
+document. **No migration** — a project with no `clientReceipts` loads normally.
+
 ## …/projects/{projectId}/variations/{variationId}
 
 Project-scoped commercial change control. **One type-discriminated collection**
@@ -571,4 +642,5 @@ a design assessment, a hook, and (where a new collection is introduced) a manual
 - Forecast lines → cost codes via `costCodeId`, which is **also the document ID** (one current forecast per cost code). They store only the manual `uncommittedCostToComplete` + `notes`; every displayed figure is derived at read time and never written back (`lib/forecast.js`). Forecast lines never mutate POs, claims, invoices, variations, or budget lines.
 - The commercial baseline → a client contact via `clientId` (with a frozen `clientName` snapshot); optional. It stores contract inputs only — every margin figure is derived at read time from the baseline, approved client variations, and Forecast Final Cost, and is never written back to the baseline or any other document.
 - Client invoices → a client contact via `clientId`, with the client's name, legal name, ABN, email, phone, and address **snapshotted at creation** so later contact edits never rewrite billing history; → approved **client** variations via an optional per-line `variationId` (+ frozen `variationNumber`/`variationDescription`). The linkage is **read-time only**: invoicing **never** mutates a variation (no stamp, no status change, no back-reference) and never touches the commercial baseline or Budget Lines. Line `costCodeId` is **optional** (ADR-22).
-- Counters are company-wide: PO/claim/invoice numbers are unique per **company**, not per project. Contacts, forecast lines, and the commercial baseline carry no sequential number.
+- Client receipts → a client contact via a **required** `clientId` (with a frozen `clientName` snapshot); → issued client invoices via **embedded** `allocations[].clientInvoiceId` (+ a frozen `invoiceNumber` snapshot). The linkage is **read-time only**: a receipt **never** mutates an invoice (no balance field, no payment status, no back-reference), which is exactly why voiding a receipt restores every balance with no reversal record. Receipts touch no cost figure, no forecast, and no margin figure — cash is not revenue.
+- Counters are company-wide: PO/claim/invoice/receipt numbers are unique per **company**, not per project. Contacts, forecast lines, and the commercial baseline carry no sequential number.

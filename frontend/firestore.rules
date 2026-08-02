@@ -381,6 +381,188 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Client Receipts — project-scoped records of CASH ACTUALLY RECEIVED from a
+    // head-contract client, with EMBEDDED allocations against issued Client
+    // Invoices. CR-#### from the company-wide counters/clientReceipts document
+    // (covered by the counters block below — no separate rule needed).
+    //
+    // Reads: restricted to internal financial roles — receipts expose cash
+    // position, bank references, and unallocated balances, so subcontractor and
+    // client users must NOT read them. A client portal must never expose a
+    // receipt's allocations, unallocated amount, bank reference, or notes.
+    // Delete: blocked — voiding is a status change; receipts are audit records.
+    //
+    // Lifecycle is RULES-ENFORCED, following the clientInvoices block as the
+    // standard (ADR-22):
+    //   · create only with status 'draft', docType 'receipt', null lifecycle
+    //     stamps, createdBy == caller, createdAt == server request time
+    //   · draft edits may change content but not the status, and may not forge
+    //     a lifecycle stamp
+    //   · posting is a SEPARATE operation touching only
+    //     status/postedAt/postedBy/updatedAt/updatedBy, with postedBy == caller
+    //     and postedAt == server request time
+    //   · voiding (from draft or posted) touches only
+    //     status/voidedAt/voidedBy/voidReason/updatedAt/updatedBy, with
+    //     voidedBy == caller, voidedAt == server request time, and a voidReason
+    //     containing NON-WHITESPACE text
+    //   · posted receipt content is consequently immutable — voiding is the only
+    //     permitted update
+    //   · void is terminal; there is no posted -> draft and no void -> anything
+    //
+    // What is NOT enforced here (client-side only — NEVER describe as enforced):
+    //   · the SHAPE OF EACH allocations[] ELEMENT — rules cannot iterate or
+    //     index into an array, so clientInvoiceId / invoiceNumber /
+    //     allocatedAmount are unverified, as is the > 0 rule on each amount and
+    //     the no-duplicate-invoice rule
+    //   · allocatedTotal MATCHING the sum of allocations[] — same limitation.
+    //     What IS enforced is the SCALAR invariant below, which prevents a
+    //     document CLAIMING more allocation than the receipt amount
+    //   · that an allocated invoice EXISTS, is ISSUED (not draft/void), and
+    //     belongs to the SELECTED CLIENT — each would need a get() per array
+    //     element
+    //   · the REMAINING BALANCE of any invoice, and therefore over-allocation:
+    //     rules have no list, query, or count, so no rule can sum sibling
+    //     receipt documents. Two users CAN allocate the same remaining balance
+    //     concurrently and both writes succeed
+    //   · that the receipt date is not in the FUTURE — only the YYYY-MM-DD shape
+    //     is checked; posting a future-dated receipt is blocked in the client only
+    //   · payment-method MEMBERSHIP of the app's enum — validated by shape only,
+    //     because an enum duplicated into this manually-published file would
+    //     drift out of sync with lib/payments.js (the ADR-21 precedent)
+    //   · company-wide receipt-number uniqueness (the counter is client-writable
+    //     — Deferred Control 6)
+    //   · BUSINESS TRUTH — that the money was genuinely received at all
+    match /companies/{companyId}/projects/{projectId}/clientReceipts/{receiptId} {
+      function financialMember() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // The document identity that no update of any kind may rewrite.
+      function corePreserved() {
+        return request.resource.data.receiptNumber == resource.data.receiptNumber
+            && request.resource.data.currency      == resource.data.currency
+            && request.resource.data.createdAt     == resource.data.createdAt
+            && request.resource.data.createdBy     == resource.data.createdBy
+            && request.resource.data.docType       == resource.data.docType
+            && request.resource.data.revision      == resource.data.revision;
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // MONEY IS DECIMAL; IEEE-754 IS NOT. Rules numbers are doubles, so an
+      // exact `allocatedTotal + unallocatedAmount == amount` REJECTS legitimate
+      // cent values: 0.10 + 0.20 evaluates to 0.30000000000000004, which is not
+      // 0.30. Both sides are therefore compared as WHOLE CENTS via math.round().
+      //
+      // This is a REPRESENTATION FIX, NOT A WEAKENED INVARIANT: it is exactly
+      // equivalent to a half-cent tolerance, so any discrepancy of one cent or
+      // more still fails. lib/payments.js → toCents() mirrors this precisely, so
+      // a write the client considers valid is never rejected here (or vice versa).
+      function cents(v) {
+        return math.round(v * 100);
+      }
+      // The one arithmetic guarantee rules CAN give: a receipt may never claim
+      // to have allocated more money than it received.
+      function amountInvariant() {
+        return request.resource.data.amount is number
+            && request.resource.data.amount > 0
+            && request.resource.data.allocatedTotal is number
+            && request.resource.data.allocatedTotal >= 0
+            && request.resource.data.unallocatedAmount is number
+            && request.resource.data.unallocatedAmount >= 0
+            && cents(request.resource.data.allocatedTotal + request.resource.data.unallocatedAmount)
+               == cents(request.resource.data.amount);
+      }
+      // Shape required of every stored state (create and draft edit alike).
+      function shapeValid() {
+        return request.resource.data.docType == 'receipt'
+            && request.resource.data.receiptNumber is string
+            && request.resource.data.revision is number
+            // A receipt without a client is not a record — clientId/clientName
+            // are REQUIRED non-empty strings, never null.
+            && request.resource.data.clientId is string
+            && request.resource.data.clientId.size() > 0
+            && request.resource.data.clientName is string
+            && request.resource.data.clientName.size() > 0
+            && request.resource.data.currency is string
+            && request.resource.data.currency.matches('^[A-Z]{3}$')
+            && request.resource.data.receiptDate is string
+            && request.resource.data.receiptDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+            && request.resource.data.paymentMethod is string
+            && request.resource.data.paymentMethod.size() > 0
+            && request.resource.data.paymentMethod.size() <= 40
+            && request.resource.data.allocations is list
+            && request.resource.data.allocations.size() <= 100
+            && amountInvariant();
+      }
+
+      allow read: if financialMember();
+
+      allow create: if financialMember()
+                  && shapeValid()
+                  && request.resource.data.status == 'draft'
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  // Lifecycle stamps cannot be forged at creation.
+                  && request.resource.data.postedAt == null
+                  && request.resource.data.postedBy == null
+                  && request.resource.data.voidedAt == null
+                  && request.resource.data.voidedBy == null;
+
+      allow update: if financialMember() && corePreserved() && updateStamped() && (
+                    // (a) DRAFT EDIT — content (amount, date, method,
+                    //     references, allocations) is freely editable while
+                    //     draft, but the status may not move and no lifecycle
+                    //     stamp may be forged.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'draft'
+                      && shapeValid()
+                      && request.resource.data.postedAt == resource.data.postedAt
+                      && request.resource.data.postedBy == resource.data.postedBy
+                      && request.resource.data.voidedAt == resource.data.voidedAt
+                      && request.resource.data.voidedBy == resource.data.voidedBy
+                    )
+                    ||
+                    // (b) DRAFT -> POSTED. A separate operation carrying no
+                    //     content change whatsoever — the amount, date, and
+                    //     allocations that were reviewed are the ones committed.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'posted'
+                      && changedKeys().hasOnly(['status', 'postedAt', 'postedBy', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.postedBy == request.auth.uid
+                      && request.resource.data.postedAt == request.time
+                    )
+                    ||
+                    // (c) DRAFT|POSTED -> VOID (terminal). This branch is what
+                    //     makes a POSTED receipt immutable: voiding is the only
+                    //     permitted update, and it may touch nothing else.
+                    //     Voiding needs no reversal document — every balance is
+                    //     derived at read time, so it restores immediately.
+                    (
+                      (resource.data.status == 'draft' || resource.data.status == 'posted')
+                      && request.resource.data.status == 'void'
+                      && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.voidedBy == request.auth.uid
+                      && request.resource.data.voidedAt == request.time
+                      && request.resource.data.voidReason is string
+                      && request.resource.data.voidReason.trim().size() > 0
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
     // Contacts — company-wide directory of suppliers, subcontractors,
     // consultants, and clients (third-party PII: names, phones, emails, ABNs,
     // payment terms).
@@ -397,7 +579,8 @@ service cloud.firestore {
     }
 
     // Counters — sequential document numbering (purchaseOrders, progressClaims,
-    // supplierInvoices, variationsClient, variationsSupplier, clientInvoices).
+    // supplierInvoices, variationsClient, variationsSupplier, clientInvoices,
+    // clientReceipts).
     // Read/write restricted to the roles that create numbered documents;
     // the create transaction must read and increment the counter.
     // Counter integrity (+1 only, no arbitrary set) is NOT enforced here — see

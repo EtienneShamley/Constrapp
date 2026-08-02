@@ -28,6 +28,7 @@ import ProjectVariations from './pages/project/ProjectVariations'
 import ProjectForecast from './pages/project/ProjectForecast'
 import ProjectCommercial from './pages/project/ProjectCommercial'
 import ProjectClientInvoices from './pages/project/ProjectClientInvoices'
+import ProjectClientReceipts from './pages/project/ProjectClientReceipts'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
 
 export default function App() {
@@ -70,11 +71,14 @@ export default function App() {
                       <Route path="invoices" element={<ProjectInvoices />} />
                       <Route path="forecasting" element={<ProjectForecast />} />
                       <Route path="variations" element={<ProjectVariations />} />
-                      {/* Commercial is the project's revenue-side workspace:
-                          Project Margin (index) and Client Invoices / AR. */}
+                      {/* Commercial is the project's revenue-and-cash workspace:
+                          Project Margin (index), Client Invoices / AR, and the
+                          Client Receipts register. Supplier Payments and Cash
+                          Flow join it in later branches. */}
                       <Route path="commercial" element={<ProjectCommercialLayout />}>
                         <Route index element={<ProjectCommercial />} />
                         <Route path="client-invoices" element={<ProjectClientInvoices />} />
+                        <Route path="receipts" element={<ProjectClientReceipts />} />
                       </Route>
                       <Route path="documents" element={
                         <ProjectPlaceholder

@@ -663,3 +663,114 @@ migration** — additive only; a project without `clientInvoices` loads normally
 progress claims, printable/PDF/email output, company legal & tax identity, and
 client-portal access. The recorded sequence is **Company Country & Currency →
 Client Invoices / Accounts Receivable → Payments and Receipts → Cash Flow**.
+(Client Receipts — the money-in half of Payments and Receipts — have since
+shipped; see ADR-23.)
+
+## ADR-23: Client Receipts (embedded allocations; read-time balances; cash ≠ revenue)
+
+Client Receipts live at
+`companies/{id}/projects/{id}/clientReceipts` — project-scoped, `CR-0001`
+numbered from a company-wide counter (ADR-5). They record **cash actually
+received** from a head-contract client and allocate it against issued Client
+Invoices, turning *"issued, not yet reconciled"* into a real receivables balance.
+Lifecycle `draft → posted → void` (void terminal), enforced by Firestore rules.
+Reads are restricted to internal financial roles.
+
+**Two collections, not one `cashTransactions`.** Supplier Payments will be a
+separate sibling collection (`supplierPayments`), not a direction field on a
+shared one. The app's precedent is the split, not the merge: `clientInvoices` and
+`supplierInvoices` were deliberately kept apart (ADR-17/ADR-22) despite being
+structurally similar. `variations` is the one type-discriminated collection
+(ADR-18) precisely because both types share one register, one hook, and one rules
+block — which receipts and payments do not. A merged collection would force every
+rules clause to branch on direction, which is how rules become unreviewable. A
+company-level cash collection was rejected outright: it would break project
+isolation and, decisively, the one-currency-per-project guarantee (ADR-21).
+Future company-wide cash reporting is reachable by collection-group query with
+its own rule and index.
+
+**Embedded allocations, and NOTHING written onto invoices.** Allocations are an
+array on the receipt (`{ clientInvoiceId, invoiceNumber, allocatedAmount }`) per
+the ADR-6 idiom: few, always read and written with their parent, frozen once
+posted, no independent query need. **Received to Date, Remaining to Reconcile,
+and reconciliation state are derived at read time** and never stored (ADR-3/
+ADR-4). A stored `receivedToDate` rollup on the invoice was considered and
+**rejected**: it would make over-allocation transactionally safe, but it would
+require **widening the issued-invoice immutability rules — the app's only
+rules-enforced immutability and the intended standard for every other
+collection** — and the guarantee would still be partial, because rules cannot
+verify the rollup against sibling receipt documents. Read-time derivation also
+means **voiding a receipt restores every balance for free**, with no reversal
+document and no invoice write.
+
+**Cash is not revenue, and a receipt is not a taxable supply.** A receipt stores
+gross cash only — **no GST, no tax code, no net amount**. The tax was recorded on
+the invoice; recomputing it here would double-count it and disagree with the
+invoice on a partial payment. Receipts feed no budget figure, no forecast, and no
+margin figure. `receiptDate` is a `'YYYY-MM-DD'` string (the app's convention for
+every human-entered financial date) — a cash date is a calendar fact off a bank
+statement, not an instant, and the future Cash Flow module groups by month with
+`slice(0, 7)` without constructing a Date. **Cash Flow must consume
+`receiptDate`, never `createdAt`/`postedAt`.**
+
+**Why `clientId` is required and never null.** Every other counterparty link in
+the app tolerates `null` for pre-Contacts history (`supplierId`). A receipt has
+no history to accommodate — it is a new collection — and money received from
+nobody is not a record, so `clientId`/`clientName` are **required non-empty and
+rules-enforced**.
+
+**Unallocated money is permitted, and never auto-applied.** A receipt may be
+posted fully, partly, or entirely unallocated (the client pays early, overpays,
+or the allocation is not yet known). Unallocated cash **reduces no invoice
+balance** and is reported separately as money on account; an explicit
+"Allocate oldest first" action produces an editable proposal and runs only when
+pressed. Auto-applying cash to the oldest debt is an accounting policy Constrapp
+does not make on the user's behalf.
+
+**The one arithmetic guarantee, in whole cents.** Rules enforce
+`allocatedTotal + unallocatedAmount == amount` (both ≥ 0, `amount > 0`) so a
+receipt can never *claim* more allocation than the cash it holds. It is compared
+via `math.round(v * 100)` because rules numbers are IEEE-754 doubles and exact
+equality rejects real money (`0.10 + 0.20` is `0.30000000000000004`) — a
+**representation fix, not a loosened invariant**: a one-cent discrepancy still
+fails, and `lib/payments.js → toCents()` mirrors it so client and rules never
+disagree. Verified by emulator tests.
+
+**What remains client-enforced (never claim otherwise).** Rules cannot iterate an
+array, so allocation *element* shape, `allocatedTotal` matching the array sum,
+invoice existence/status/client-match, and the per-allocation `> 0` rule are all
+unverified. Rules have no list, query, or count, so **over-allocating an invoice
+is warned with an explicit acknowledgement, never blocked, and two users can
+allocate the same remaining balance concurrently** (Deferred Control 16). Posting
+a **future-dated** receipt is blocked in the client only — rules validate the date
+*shape* only. And no rule can verify that money was genuinely received
+(Deferred Control 17).
+
+**Shared foundation, deliberately mirrored.** `lib/payments.js` holds only the
+direction-agnostic primitives (lifecycle, methods, allocation arithmetic,
+reconciliation states, remaining balances, generic ageing, shared validators);
+`lib/clientReceipts.js` is the AR adapter. Supplier Payments reuse the former
+unchanged. **No unused supplier builders or dead abstractions were added ahead of
+that branch.**
+
+**Consequences.** The six budget figures, the Forecast tab, and Project Margin
+are **unchanged** — cash touches no accrual figure. **AR ageing is corrected** to
+age the remaining balance: fully reconciled invoices leave ageing, partially
+reconciled ones age only their remainder, over-reconciled ones are excluded into
+a signed callout, and the pre-Receipts disclaimer is replaced by the limits that
+genuinely remain. An invoice voided *after* a posted allocation is surfaced as an
+**exception**, never auto-reversed. Receipts join the currency-lock evidence and
+their creation is atomic with the counter and the ratchet. The Commercial tab
+gains a third sub-view (Margin · Client Invoices · Receipts) rather than a
+fifteenth project tab. **No migration** — additive only.
+
+**Supplier-invoice `paid`/`paidAt`: approved for deprecation, NOT yet changed.**
+Payment state will derive from allocations, so activating the reserved `paid`
+status would create a second, contradictory source of payment truth. The decision
+is to **deprecate in place** — keep the constant and the field, never write them,
+never transition into `paid`, and leave `SI_COUNTING_STATUSES` untouched (no
+document can hold that status, so it is inert). **That code and documentation
+change belongs to the Supplier Payments branch and has not been made here**; no
+supplier-invoice file was modified. The recorded sequence is now **Client
+Invoices / Accounts Receivable → Client Receipts (shipped) → Supplier Payments →
+Cash Flow**.

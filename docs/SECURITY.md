@@ -59,6 +59,7 @@ to financial roles.**
 | `…/projects/{id}/progressClaims/{id}` | company member | financial roles | blocked — reject via status |
 | `…/projects/{id}/supplierInvoices/{id}` | **financial roles only** | financial roles | blocked — cancel via status |
 | `…/projects/{id}/clientInvoices/{id}` | **financial roles only** | financial roles, **create draft-only; transitions and issued-immutability rules-enforced** | blocked — void via status |
+| `…/projects/{id}/clientReceipts/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability and the scalar amount invariant rules-enforced** | blocked — void via status |
 | `…/projects/{id}/variations/{id}` | **financial roles only** | financial roles | blocked — reject/withdraw via status |
 | `…/projects/{id}/forecastLines/{id}` | **financial roles only** | financial roles | blocked — clear via `null`, never deleted |
 | `…/projects/{id}/commercial/baseline` | **financial roles only** | financial roles | blocked — the single baseline doc is never deleted |
@@ -144,6 +145,69 @@ Adding company legal/tax identity requires new fields, a Company Settings
 section, and a rules change widening the company `hasOnly([...])` allow-list —
 which would be the **second** grant of client write access to the company
 document and needs its own security review.
+
+## Client Receipts — cash records, rules-enforced lifecycle
+
+**Reads are restricted to financial roles.** A receipt exposes the project's cash
+position, bank references, and unallocated balances, so `subcontractor` and
+`client` users must not read them. **A future client portal must never expose a
+receipt's `allocations`, `unallocatedAmount`, `bankReference`, or `notes`** — a
+client seeing which of their payments we left unallocated, or our internal
+allocation decisions, is a commercial exposure. That portal is separate, later
+work with its own scoping design (Deferred Control 10).
+
+**The lifecycle is rules-enforced**, following `clientInvoices` as the standard
+(ADR-22/ADR-23):
+
+- `create` only with `status: 'draft'`, `docType: 'receipt'`, **non-empty
+  `clientId` and `clientName`** (uniquely among counterparty links, these are
+  never null — a receipt with no client is not a record), a shape-valid
+  `currency` and `'YYYY-MM-DD'` `receiptDate`, a non-empty bounded
+  `paymentMethod`, `allocations` as a list of at most 100, `createdBy ==
+  request.auth.uid`, `createdAt == request.time`, and **null lifecycle stamps**.
+- **The scalar amount invariant**: `amount > 0`, `allocatedTotal >= 0`,
+  `unallocatedAmount >= 0`, and
+  `allocatedTotal + unallocatedAmount == amount`, compared in **whole cents** via
+  `math.round(v * 100)`. Exact float equality would reject legitimate money
+  (`0.10 + 0.20` is `0.30000000000000004`), so both sides are compared as
+  integers — a *representation fix, not a loosened invariant*: any discrepancy of
+  one cent or more still fails. This prevents a receipt **claiming** more
+  allocation than the cash it holds.
+- **Every** update must preserve `receiptNumber`, `currency`, `createdAt`,
+  `createdBy`, `docType`, and `revision`, and must stamp `updatedBy ==
+  request.auth.uid` and `updatedAt == request.time`.
+- **Draft edits** may change content (including allocations) but not the status,
+  must still satisfy the full shape and the scalar invariant, and may not forge a
+  lifecycle stamp.
+- **`draft → posted`** may affect **only** `status`, `postedAt`, `postedBy`,
+  `updatedAt`, `updatedBy`, with `postedBy == request.auth.uid` and
+  `postedAt == request.time`. Posting is therefore necessarily a **separate
+  operation** — the amount and allocations that were reviewed are the ones
+  committed.
+- **`draft|posted → void`** may affect **only** `status`, `voidedAt`, `voidedBy`,
+  `voidReason`, `updatedAt`, `updatedBy`, with a **non-whitespace** `voidReason`
+  (`voidReason.trim().size() > 0`).
+- **Posted-receipt immutability** falls out of the above: voiding is the only
+  permitted update.
+- **`void` is terminal**; `delete` is blocked for drafts and posted receipts
+  alike.
+
+*Client-enforced only (deferred — never describe these as enforced):*
+
+- **The shape of each `allocations[]` element** — rules cannot iterate or index
+  into an array, so `clientInvoiceId`, `invoiceNumber`, the per-allocation
+  `> 0` rule, and the no-duplicate-invoice rule are all unverified.
+- **`allocatedTotal` matching the sum of `allocations[]`** — same limitation.
+  Only the scalar invariant above is enforced.
+- **That an allocated invoice exists, is `issued` (not draft/void), and belongs
+  to the selected client** — each would need a `get()` per array element.
+- **Invoice remaining balance / over-allocation** — see Deferred Control 16.
+- **That `receiptDate` is not in the future.** Rules check only the
+  `'YYYY-MM-DD'` shape; the "cannot post a future-dated receipt" rule is client
+  -side, so a direct SDK call can post one.
+- **Payment-method membership** of the app's enum — validated by shape only, to
+  avoid the enum drift ADR-21 records for currency codes.
+- **Business truth** — that the money was genuinely received at all.
 
 **Forecast Lines reads are restricted to financial roles** — deliberately tighter
 than the company-member `budgetLines` read. The Forecast Cost to Complete data
@@ -345,6 +409,25 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     gap**, but it is recorded here because the remediation (new company fields)
     requires widening the company document's `hasOnly([...])` update allow-list —
     a change needing its own security review.
+16. **Client-receipt allocation integrity & concurrency** — Firestore rules
+    enforce the *scalar* invariant (`allocatedTotal + unallocatedAmount ==
+    amount`, in whole cents) but **cannot** verify the allocation array itself:
+    rules cannot iterate an array, and have no list, query, or count with which
+    to sum sibling receipt documents. Consequences, all accepted and never
+    presented otherwise: `allocatedTotal` may not match the array's sum; an
+    allocation may reference a non-existent, draft, void, or wrong-client
+    invoice; **an invoice can be over-allocated** (warned with an explicit
+    acknowledgement, never blocked); and **two users can allocate the same
+    remaining balance concurrently, with both writes succeeding**. Additionally,
+    posting a **future-dated** receipt is blocked in the client only. The receipt
+    *number* is still race-free (transactional counter). Directly analogous to
+    Deferred Control 14.
+17. **Falsified cash records** — a financial-role user can create and post a
+    receipt for any amount by direct SDK call. Rules validate shape, lifecycle,
+    and arithmetic; they cannot validate that money was received. Combined with
+    Deferred Control 8 (users can write their own `role`), **this foundation
+    widens the blast radius of that gap from reading data to fabricating cash
+    records.** Remediation is server-side enforcement plus audit logging.
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
@@ -390,6 +473,13 @@ the security-specific gate is:
       draft-edit / draft→issued / draft|issued→void, still require
       `issuedBy`/`voidedBy` to equal the caller and the stamps to equal
       `request.time`, and still reject `issued → draft` and `void → *`.
+- [ ] The `clientReceipts` lifecycle rules still permit exactly
+      draft-edit / draft→posted / draft|posted→void, still require
+      `postedBy`/`voidedBy` to equal the caller and the stamps to equal
+      `request.time`, still require a **non-whitespace** `voidReason`, and still
+      enforce non-empty `clientId`/`clientName` plus the whole-cent scalar
+      invariant (`allocatedTotal + unallocatedAmount == amount`, both ≥ 0,
+      `amount > 0`).
 - [ ] Company document writes stay scoped to the four currency fields
       (`affectedKeys().hasOnly`); create/delete remain blocked.
 - [ ] The `qs` project rule still affects `currencyLocked` **only**, and only

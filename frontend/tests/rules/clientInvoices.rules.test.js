@@ -142,6 +142,27 @@ const draftEdit = (user, extra = {}) => ({
   ...extra,
 })
 
+// Client-supplied clock values that must NEVER satisfy `== request.time`.
+//
+// ⚠️ DELIBERATELY SKEWED, NOT `Timestamp.now()`. A bare `Timestamp.now()` is the
+// client clock read microseconds before the write reaches the emulator, so it can
+// legitimately EQUAL `request.time` — in which case the rule correctly ACCEPTS it
+// and `assertFails` fails. That made these assertions non-deterministic (measured
+// on this file: 30/30 pass, then 3 failures, then 2 failures across three runs).
+// The offsets below are far enough from server time to be deterministic while
+// proving exactly the same thing: a client-authored stamp is rejected. Covers a
+// clock running ahead, a clock running behind, and a plainly forged value.
+const CLIENT_CLOCKS = [
+  () => Timestamp.fromDate(new Date(Date.now() + 60_000)),
+  () => Timestamp.fromDate(new Date(Date.now() - 60_000)),
+  () => Timestamp.fromDate(new Date('2020-01-01T00:00:00Z')),
+]
+
+// A single deterministic stand-in wherever the assertion only needs a value that
+// is NOT null and NOT the stored one (forged lifecycle stamps, rewritten
+// createdAt). Never `Timestamp.now()`, for the same reason as above.
+const FORGED_STAMP = () => Timestamp.fromDate(new Date('2020-01-01T00:00:00Z'))
+
 beforeAll(async () => {
   // Hard gate: never let this suite touch a real project.
   if (!process.env.FIRESTORE_EMULATOR_HOST) {
@@ -239,9 +260,9 @@ describe('MUST REJECT', () => {
 
   it('2. create with forged lifecycle stamps', async () => {
     const db = ctx(USERS.admin)
-    await assertFails(setDoc(invRef(db, 'x1'), draftPayload(USERS.admin, { issuedAt: Timestamp.now() })))
+    await assertFails(setDoc(invRef(db, 'x1'), draftPayload(USERS.admin, { issuedAt: FORGED_STAMP() })))
     await assertFails(setDoc(invRef(db, 'x2'), draftPayload(USERS.admin, { issuedBy: USERS.admin.uid })))
-    await assertFails(setDoc(invRef(db, 'x3'), draftPayload(USERS.admin, { voidedAt: Timestamp.now() })))
+    await assertFails(setDoc(invRef(db, 'x3'), draftPayload(USERS.admin, { voidedAt: FORGED_STAMP() })))
     await assertFails(setDoc(invRef(db, 'x4'), draftPayload(USERS.admin, { voidedBy: USERS.admin.uid })))
   })
 
@@ -267,7 +288,7 @@ describe('MUST REJECT', () => {
   it('5. draft edit changing createdAt / createdBy', async () => {
     await seed('inv1', 'draft')
     const db = ctx(USERS.admin)
-    await assertFails(updateDoc(invRef(db, 'inv1'), draftEdit(USERS.admin, { createdAt: Timestamp.now() })))
+    await assertFails(updateDoc(invRef(db, 'inv1'), draftEdit(USERS.admin, { createdAt: FORGED_STAMP() })))
     await assertFails(updateDoc(invRef(db, 'inv1'), draftEdit(USERS.admin, { createdBy: USERS.pm.uid })))
   })
 
@@ -281,9 +302,9 @@ describe('MUST REJECT', () => {
   it('7. draft edit forging issuedAt / issuedBy / voidedAt / voidedBy', async () => {
     await seed('inv1', 'draft')
     const db = ctx(USERS.admin)
-    await assertFails(updateDoc(invRef(db, 'inv1'), draftEdit(USERS.admin, { issuedAt: Timestamp.now() })))
+    await assertFails(updateDoc(invRef(db, 'inv1'), draftEdit(USERS.admin, { issuedAt: FORGED_STAMP() })))
     await assertFails(updateDoc(invRef(db, 'inv1'), draftEdit(USERS.admin, { issuedBy: USERS.admin.uid })))
-    await assertFails(updateDoc(invRef(db, 'inv1'), draftEdit(USERS.admin, { voidedAt: Timestamp.now() })))
+    await assertFails(updateDoc(invRef(db, 'inv1'), draftEdit(USERS.admin, { voidedAt: FORGED_STAMP() })))
     await assertFails(updateDoc(invRef(db, 'inv1'), draftEdit(USERS.admin, { voidedBy: USERS.admin.uid })))
   })
 
@@ -405,32 +426,36 @@ describe('serverTimestamp satisfies request.time', () => {
   it('create: serverTimestamp() is accepted; a client clock value is rejected', async () => {
     const db = ctx(USERS.admin)
     await assertSucceeds(setDoc(invRef(db, 'ok'), draftPayload(USERS.admin)))
-    await assertFails(setDoc(invRef(db, 'bad1'), draftPayload(USERS.admin, { createdAt: Timestamp.now() })))
-    await assertFails(setDoc(invRef(db, 'bad2'), draftPayload(USERS.admin, { updatedAt: Timestamp.now() })))
-    // A skewed clock must not pass either.
-    await assertFails(setDoc(invRef(db, 'bad3'), draftPayload(USERS.admin, {
-      createdAt: Timestamp.fromDate(new Date(Date.now() + 60_000)),
-    })))
+    // Every deterministic client clock — ahead, behind, and plainly forged —
+    // must be rejected for BOTH createdAt and updatedAt.
+    for (const [i, stamp] of CLIENT_CLOCKS.entries()) {
+      await assertFails(setDoc(invRef(db, `badc${i}`), draftPayload(USERS.admin, { createdAt: stamp() })))
+      await assertFails(setDoc(invRef(db, `badu${i}`), draftPayload(USERS.admin, { updatedAt: stamp() })))
+    }
   })
 
   it('issue: serverTimestamp() is accepted; a client clock value is rejected', async () => {
     await seed('inv1', 'draft')
-    await seed('inv2', 'draft')
-    await seed('inv3', 'draft')
     const db = ctx(USERS.admin)
     await assertSucceeds(updateDoc(invRef(db, 'inv1'), issueWrite(USERS.admin)))
-    await assertFails(updateDoc(invRef(db, 'inv2'), issueWrite(USERS.admin, { issuedAt: Timestamp.now() })))
-    await assertFails(updateDoc(invRef(db, 'inv3'), issueWrite(USERS.admin, { updatedAt: Timestamp.now() })))
+    for (const [i, stamp] of CLIENT_CLOCKS.entries()) {
+      await seed(`iss_at_${i}`, 'draft')
+      await seed(`iss_up_${i}`, 'draft')
+      await assertFails(updateDoc(invRef(db, `iss_at_${i}`), issueWrite(USERS.admin, { issuedAt: stamp() })))
+      await assertFails(updateDoc(invRef(db, `iss_up_${i}`), issueWrite(USERS.admin, { updatedAt: stamp() })))
+    }
   })
 
   it('void: serverTimestamp() is accepted; a client clock value is rejected', async () => {
     await seed('inv1', 'issued')
-    await seed('inv2', 'issued')
-    await seed('inv3', 'issued')
     const db = ctx(USERS.admin)
     await assertSucceeds(updateDoc(invRef(db, 'inv1'), voidWrite(USERS.admin)))
-    await assertFails(updateDoc(invRef(db, 'inv2'), voidWrite(USERS.admin, 'r', { voidedAt: Timestamp.now() })))
-    await assertFails(updateDoc(invRef(db, 'inv3'), voidWrite(USERS.admin, 'r', { updatedAt: Timestamp.now() })))
+    for (const [i, stamp] of CLIENT_CLOCKS.entries()) {
+      await seed(`vd_at_${i}`, 'issued')
+      await seed(`vd_up_${i}`, 'issued')
+      await assertFails(updateDoc(invRef(db, `vd_at_${i}`), voidWrite(USERS.admin, 'r', { voidedAt: stamp() })))
+      await assertFails(updateDoc(invRef(db, `vd_up_${i}`), voidWrite(USERS.admin, 'r', { updatedAt: stamp() })))
+    }
   })
 
   it('the full app write sequence succeeds end to end: create -> edit -> issue -> void', async () => {

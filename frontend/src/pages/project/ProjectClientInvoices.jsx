@@ -20,11 +20,20 @@ import {
 import {
   CI_STATUS, CI_STATUS_LABELS, CI_BADGE_VARIANTS,
   TAX_CODE, TAX_CODES, TAX_CODE_LABELS,
-  AGEING_BUCKETS, AR_LIMITATION_NOTICE,
-  gstForLine, invoiceTotals, suggestDueDate, paymentTermsLabel, isPastDue, daysPastDue,
+  AGEING_BUCKETS,
+  gstForLine, invoiceTotals, suggestDueDate, paymentTermsLabel, daysPastDue,
   contractControl, ageingByDueDate, variationInvoicingRows, invoiceableClientVariations,
   resolveVariationCostCode, contractOverInvoiceWarning, variationOverInvoiceWarnings,
 } from '../../lib/clientInvoices'
+import { useClientReceipts } from '../../hooks/useClientReceipts'
+import {
+  RECONCILIATION_LABELS, RECONCILIATION_BADGE_VARIANTS, paymentMethodLabel,
+} from '../../lib/payments'
+import {
+  AR_RECONCILIATION_NOTICE, ALLOCATION_EXCEPTION_REMEDY,
+  receivedByInvoice, receivablesSummary, receiptsForInvoice,
+  allocationExceptions, isPastDueUnreconciled,
+} from '../../lib/clientReceipts'
 
 const inputCls = 'w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
 const labelCls = 'block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1.5'
@@ -487,7 +496,7 @@ function DetailRow({ label, value }) {
   )
 }
 
-function DetailModal({ invoice, currencyCode, onClose }) {
+function DetailModal({ invoice, reconciliation, allocatedReceipts, currencyCode, onClose }) {
   const money = (n) => formatCurrency(n, currencyCode)
   const addr = invoice.clientAddress ?? {}
   const addrText = [addr.street, addr.suburb, addr.state, addr.postcode].filter(Boolean).join(', ')
@@ -545,6 +554,60 @@ function DetailModal({ invoice, currencyCode, onClose }) {
           <p className="m-0 font-bold">Invoice total (inc. GST) <span className="ml-2">{money(invoice.grossTotal)}</span></p>
         </div>
 
+        {/* Reconciliation — derived at read time from posted receipts. Nothing
+            below is stored on this invoice document. */}
+        {invoice.status === CI_STATUS.ISSUED && reconciliation && (
+          <div className="border-t border-brand-border pt-3">
+            <div className="flex flex-wrap items-baseline justify-between gap-2 mb-2.5">
+              <p className="text-[13px] font-bold text-brand-text m-0">Reconciliation</p>
+              <Badge
+                label={RECONCILIATION_LABELS[reconciliation.state]}
+                variant={RECONCILIATION_BADGE_VARIANTS[reconciliation.state]}
+                sm
+              />
+            </div>
+            <div className="grid grid-cols-3 gap-3.5">
+              <DetailRow label="Invoiced (inc. GST)" value={money(reconciliation.total)} />
+              <DetailRow label="Received to Date" value={money(reconciliation.settled)} />
+              <div>
+                <p className={labelCls}>Remaining to Reconcile</p>
+                <p className={`m-0 text-[13px] font-semibold ${reconciliation.remaining < 0 ? 'text-brand-red' : 'text-brand-text'}`}>
+                  {money(reconciliation.remaining)}
+                </p>
+              </div>
+            </div>
+
+            {allocatedReceipts.length > 0 ? (
+              <div className="overflow-x-auto mt-3">
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr className="bg-brand-card border-y border-brand-border">
+                      {['Receipt', 'Receipt Date', 'Method', 'Bank Ref', 'Allocated'].map(h => (
+                        <th key={h} className={thCls}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {allocatedReceipts.map((r, i) => (
+                      <tr key={i} className="border-b border-brand-border last:border-b-0">
+                        <td className="px-3.5 py-2.5 text-[13px] font-semibold text-brand-text whitespace-nowrap">{r.receiptNumber}</td>
+                        <td className="px-3.5 py-2.5 text-[12px] text-brand-muted whitespace-nowrap">{r.receiptDate || '—'}</td>
+                        <td className="px-3.5 py-2.5 text-[12px] text-brand-muted whitespace-nowrap">{paymentMethodLabel(r.paymentMethod, r.paymentMethodOther)}</td>
+                        <td className="px-3.5 py-2.5 text-[12px] text-brand-muted">{r.bankReference || '—'}</td>
+                        <td className="px-3.5 py-2.5 text-[13px] text-brand-text whitespace-nowrap">{money(r.allocatedAmount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="m-0 mt-2 text-[12px] text-brand-muted">
+                No posted receipts have been allocated to this invoice yet.
+              </p>
+            )}
+          </div>
+        )}
+
         {invoice.notes && <DetailRow label="Notes" value={invoice.notes} />}
         {invoice.status === CI_STATUS.VOID && <DetailRow label="Void Reason" value={invoice.voidReason} />}
 
@@ -578,6 +641,7 @@ export default function ProjectClientInvoices() {
     createClientInvoice, updateClientInvoice, issueClientInvoice, voidClientInvoice,
   } = useClientInvoices(mid)
   const { baseline, baselineLoading } = useProjectCommercial(mid)
+  const { clientReceipts } = useClientReceipts(mid)
   const { variations } = useVariations(mid)
   const { contacts } = useContacts()
 
@@ -609,7 +673,29 @@ export default function ProjectClientInvoices() {
     () => contractControl(clientInvoices, contractSum),
     [clientInvoices, contractSum],
   )
-  const ageing = useMemo(() => ageingByDueDate(clientInvoices), [clientInvoices])
+  // ── Reconciliation, all derived at read time from posted receipts ──────────
+  // Nothing here is written onto a client invoice document.
+  const received = useMemo(() => receivedByInvoice(clientReceipts), [clientReceipts])
+  const receivables = useMemo(
+    () => receivablesSummary(clientInvoices, clientReceipts),
+    [clientInvoices, clientReceipts],
+  )
+  const reconciliationById = useMemo(
+    () => new Map(receivables.rows.map(r => [r.id, r])),
+    [receivables.rows],
+  )
+  const exceptions = useMemo(
+    () => allocationExceptions(clientReceipts, clientInvoices),
+    [clientReceipts, clientInvoices],
+  )
+
+  // Ageing now ages the REMAINING balance after posted receipts — fully
+  // reconciled invoices drop out, partially reconciled invoices age only their
+  // remainder, and over-reconciled invoices are excluded into `overSettled`.
+  const ageing = useMemo(
+    () => ageingByDueDate(clientInvoices, received),
+    [clientInvoices, received],
+  )
   const variationRows = useMemo(
     () => variationInvoicingRows(variations, clientInvoices),
     [variations, clientInvoices],
@@ -624,7 +710,9 @@ export default function ProjectClientInvoices() {
   const filtered = clientInvoices.filter(inv => {
     if (statusFilter !== 'all' && inv.status !== statusFilter) return false
     if (clientFilter !== 'all' && inv.clientName !== clientFilter) return false
-    if (pastDueOnly && !isPastDue(inv)) return false
+    // Past due AND still owing — a fully reconciled invoice is not past due in
+    // any sense that matters, even when its due date has passed.
+    if (pastDueOnly && !isPastDueUnreconciled(inv, reconciliationById.get(inv.id)?.remaining ?? 0)) return false
     if (search.trim()) {
       const q = search.trim().toLowerCase()
       const hay = [
@@ -706,10 +794,11 @@ export default function ProjectClientInvoices() {
       <Card className="mb-3.5">
         <div className="flex flex-wrap items-baseline justify-between gap-2 mb-2.5">
           <p className="text-[13px] font-bold text-brand-text m-0">Accounts Receivable — ageing by due date</p>
-          <p className="m-0 text-[11px] text-brand-muted">Gross (inc. GST) · issued invoices only</p>
+          <p className="m-0 text-[11px] text-brand-muted">Gross (inc. GST) · remaining balance after posted receipts</p>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
-          <Metric label="Issued, not yet reconciled" value={money(ageing.total)} help="Every issued, non-void invoice" />
+          <Metric label="Received to Date" value={money(receivables.received)} help="Posted receipts allocated to invoices" />
+          <Metric label="Remaining to Reconcile" value={money(ageing.total)} help="Issued invoices still owing" />
           {AGEING_BUCKETS.map(b => (
             <Metric
               key={b.key}
@@ -720,8 +809,44 @@ export default function ProjectClientInvoices() {
             />
           ))}
         </div>
-        <p className="m-0 mt-3 text-[11px] text-brand-amber">⚠ {AR_LIMITATION_NOTICE}</p>
+
+        {ageing.overSettled.length > 0 && (
+          <div className="mt-3 pt-3 border-t border-brand-border">
+            <p className="m-0 text-[12px] font-bold text-brand-red">Over-reconciled invoices — excluded from ageing</p>
+            <p className="m-0 mt-1 text-[11px] text-brand-muted">
+              More has been received against these invoices than was billed. Their balances are shown signed and are
+              never clamped, and they are kept out of the buckets above so they cannot offset genuine arrears.
+            </p>
+            <div className="flex flex-wrap gap-3 mt-2">
+              {ageing.overSettled.map(inv => (
+                <span key={inv.id} className="text-[12px] text-brand-text">
+                  <span className="font-semibold">{inv.invoiceNumber}</span>{' '}
+                  <span className="text-brand-red font-semibold">
+                    {money(reconciliationById.get(inv.id)?.remaining ?? 0)}
+                  </span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <p className="m-0 mt-3 text-[11px] text-brand-muted">{AR_RECONCILIATION_NOTICE}</p>
       </Card>
+
+      {/* ── Allocation exceptions ──────────────────────────────────────────── */}
+      {exceptions.length > 0 && (
+        <Card className="mb-3.5">
+          <p className="text-[13px] font-bold text-brand-amber m-0">Allocation exceptions</p>
+          <p className="m-0 mt-1 text-[12px] text-brand-muted">{ALLOCATION_EXCEPTION_REMEDY}</p>
+          <div className="flex flex-col gap-1 mt-2.5">
+            {exceptions.map((x, i) => (
+              <p key={i} className="m-0 text-[12px] text-brand-text">
+                <span className="font-semibold">{x.receiptNumber}</span> → {x.invoiceNumber} ({money(x.allocatedAmount)}) — {x.reason}
+              </p>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {/* ── Variation invoicing ────────────────────────────────────────────── */}
       {variationRows.length > 0 && (
@@ -830,16 +955,16 @@ export default function ProjectClientInvoices() {
             <table className="w-full border-collapse">
               <thead>
                 <tr className="bg-brand-card border-b border-brand-border">
-                  {['CI #', 'Client', 'Client Ref', 'External Ref', 'Invoice Date', 'Due', 'Ex-GST', 'GST', 'Total', 'Variations', 'Status', ''].map((h, i) => (
+                  {['CI #', 'Client', 'Client Ref', 'Invoice Date', 'Due', 'Ex-GST', 'Total', 'Received', 'Remaining', 'Reconciliation', 'Status', ''].map((h, i) => (
                     <th key={i} className={thCls}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {filtered.map(inv => {
-                  const pastDue = isPastDue(inv)
+                  const recon = reconciliationById.get(inv.id) ?? null
+                  const pastDue = isPastDueUnreconciled(inv, recon?.remaining ?? 0)
                   const days = pastDue ? daysPastDue(inv.dueDate) : null
-                  const varCount = (inv.lineItems ?? []).filter(li => li.variationId).length
                   return (
                     <tr key={inv.id} className="border-b border-brand-border hover:bg-brand-card transition-colors">
                       <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">
@@ -853,7 +978,6 @@ export default function ProjectClientInvoices() {
                       </td>
                       <td className="px-3.5 py-3 text-[13px] text-brand-text">{inv.clientName || '—'}</td>
                       <td className="px-3.5 py-3 text-[12px] text-brand-muted">{inv.clientRef || '—'}</td>
-                      <td className="px-3.5 py-3 text-[12px] text-brand-muted">{inv.externalInvoiceReference || '—'}</td>
                       <td className="px-3.5 py-3 text-[12px] text-brand-muted whitespace-nowrap">{inv.invoiceDate || '—'}</td>
                       <td className="px-3.5 py-3 text-[12px] whitespace-nowrap">
                         {inv.dueDate
@@ -863,9 +987,26 @@ export default function ProjectClientInvoices() {
                           : <span className="text-brand-muted">—</span>}
                       </td>
                       <td className="px-3.5 py-3 text-[13px] text-brand-text whitespace-nowrap">{money(inv.subtotal)}</td>
-                      <td className="px-3.5 py-3 text-[13px] text-brand-muted whitespace-nowrap">{money(inv.gstTotal)}</td>
                       <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">{money(inv.grossTotal)}</td>
-                      <td className="px-3.5 py-3 text-[12px] text-brand-muted whitespace-nowrap">{varCount || '—'}</td>
+                      {/* Received / Remaining / Reconciliation are DERIVED from
+                          posted receipts on every render — never stored here. */}
+                      <td className="px-3.5 py-3 text-[13px] text-brand-muted whitespace-nowrap">
+                        {recon ? money(recon.received) : '—'}
+                      </td>
+                      <td className="px-3.5 py-3 text-[13px] font-semibold whitespace-nowrap">
+                        {recon
+                          ? <span className={recon.remaining < 0 ? 'text-brand-red' : 'text-brand-text'}>{money(recon.remaining)}</span>
+                          : <span className="text-brand-muted">—</span>}
+                      </td>
+                      <td className="px-3.5 py-3">
+                        {recon
+                          ? <Badge
+                              label={RECONCILIATION_LABELS[recon.state]}
+                              variant={RECONCILIATION_BADGE_VARIANTS[recon.state]}
+                              sm
+                            />
+                          : <span className="text-[12px] text-brand-muted">—</span>}
+                      </td>
                       <td className="px-3.5 py-3">
                         <Badge label={CI_STATUS_LABELS[inv.status] ?? inv.status} variant={CI_BADGE_VARIANTS[inv.status]} sm />
                       </td>
@@ -892,10 +1033,19 @@ export default function ProjectClientInvoices() {
       </Card>
 
       <p className="m-0 mt-3 text-[11px] text-brand-muted">
-        Constrapp records what has been invoiced. It does <span className="font-semibold">not</span> yet produce a
-        compliant Australian Tax Invoice — company legal name, ABN, and address are not captured — so issue the tax
-        invoice from your accounting system and record its reference on each invoice. GST is a flat Australian 10%
-        regardless of the project&apos;s currency.
+        Constrapp records what has been invoiced and what has been received against it. It does
+        {' '}<span className="font-semibold">not</span> yet produce a compliant Australian Tax Invoice — company legal
+        name, ABN, and address are not captured — so issue the tax invoice from your accounting system and record its
+        reference on each invoice. GST is a flat Australian 10% regardless of the project&apos;s currency. Received
+        and remaining balances come from posted receipts on the
+        {' '}<button
+          type="button"
+          onClick={() => navigate(`/projects/${projectId}/commercial/receipts`)}
+          className="text-brand-accent hover:underline cursor-pointer"
+        >
+          Receipts
+        </button>{' '}
+        view and are never written onto an invoice.
       </p>
 
       {editing && (
@@ -922,7 +1072,13 @@ export default function ProjectClientInvoices() {
       )}
 
       {detail && (
-        <DetailModal invoice={detail} currencyCode={currencyCode} onClose={() => setDetail(null)} />
+        <DetailModal
+          invoice={detail}
+          reconciliation={reconciliationById.get(detail.id) ?? null}
+          allocatedReceipts={receiptsForInvoice(clientReceipts, detail.id)}
+          currencyCode={currencyCode}
+          onClose={() => setDetail(null)}
+        />
       )}
     </div>
   )

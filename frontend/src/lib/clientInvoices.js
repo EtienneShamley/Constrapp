@@ -1,5 +1,6 @@
 import { GST_RATE, roundMoney } from './purchaseOrders'
 import { VARIATION_TYPE, VARIATION_APPROVED_STATUSES } from './variations'
+import { AGEING_BUCKETS, daysPastDue, ageBalances, remainingBalance } from './payments'
 
 // ── Client Invoices (accounts receivable) ────────────────────────────────────
 //
@@ -14,10 +15,12 @@ import { VARIATION_TYPE, VARIATION_APPROVED_STATUSES } from './variations'
 // is derived at READ TIME from the invoice documents — nothing is written back
 // to the baseline, to variations, or to Budget Lines.
 //
-// ⚠️ NO PAYMENT STATE. Constrapp has no Receipt records, so this module never
-// computes "paid", "unpaid", or "amount owing". An issued invoice is "issued,
-// not yet reconciled" until the Payments and Receipts foundation lands. Ageing
-// here is strictly AGEING BY DUE DATE, not a statement of what is owed.
+// ⚠️ NO PAYMENT STATE ON THE INVOICE DOCUMENT. Client Receipts now exist
+// (lib/clientReceipts.js), so real balances are available — but they are derived
+// at READ TIME from receipt allocations and are never written here. This module
+// still has no `paid` status, no `amountReceived` field, and no stored balance,
+// and the words "paid"/"unpaid" are never used as an invoice status (ADR-22).
+// Reconciliation state is a FUNCTION of posted receipts, computed per render.
 
 export const CI_STATUS = {
   DRAFT:  'draft',
@@ -156,19 +159,18 @@ export function paymentTermsLabel(paymentTerms) {
 // Date-only comparison in the VIEWER'S LOCAL TIMEZONE — there is no timezone
 // normalisation, so a due date can read past-due a few hours early or late for
 // a user in another timezone. A documented limitation, matching lib/supplierInvoices.
-export function daysPastDue(dueDate, now = new Date()) {
-  if (!dueDate) return null
-  const due = new Date(`${dueDate}T00:00:00`)
-  if (Number.isNaN(due.getTime())) return null
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  return Math.round((today - due) / 86400000)
-}
+//
+// Re-exported from lib/payments.js so the AR and (future) AP sides share one
+// implementation rather than drifting apart.
+export { daysPastDue }
 
 // An invoice is PAST ITS DUE DATE when it is issued (drafts are not
 // receivables, void invoices are nothing) and its due date has passed.
 //
-// ⚠️ This is NOT "overdue" in the money sense. Constrapp records no receipts,
-// so this says only that a due date has passed — never that a client owes money.
+// ⚠️ DATE ONLY — this says nothing about money. An invoice can be past its due
+// date and fully reconciled. Callers that mean "past due AND still owing" must
+// combine this with the remaining balance (lib/clientReceipts.js →
+// isPastDueUnreconciled).
 export function isPastDue(invoice, now = new Date()) {
   if (invoice?.status !== CI_STATUS.ISSUED) return false
   const days = daysPastDue(invoice.dueDate, now)
@@ -298,53 +300,41 @@ export function invoiceableClientVariations(variations, invoices) {
 
 // ── Read-time receivables ageing ─────────────────────────────────────────────
 //
-// ⚠️ HONEST LABELLING IS PART OF THIS FUNCTION'S CONTRACT. Because no Receipt
-// records exist, EVERY issued, non-void invoice appears here until it is
-// voided — regardless of whether the client has actually paid. The buckets age
-// invoices BY DUE DATE and are not a statement of what is owed. Callers must
-// render the accompanying limitation notice; see AR_LIMITATION_NOTICE.
-export const AR_LIMITATION_NOTICE =
-  'Payments are not yet recorded. Constrapp has no Receipt records, so every issued invoice ' +
-  'stays here until it is voided — whether or not the client has paid. These figures age ' +
-  'invoices by due date only; they are not a statement of what is owed. Receipts arrive in ' +
-  'the Payments and Receipts foundation.'
+// Ages the REMAINING BALANCE of each issued invoice after posted Client Receipt
+// allocations — not the invoice's original gross value. Before Receipts existed
+// this function aged every issued invoice at its full gross and carried a
+// standing disclaimer saying so; that disclaimer is now replaced by
+// AR_RECONCILIATION_NOTICE in lib/clientReceipts.js, which states the limits
+// that genuinely remain (over-allocation is warned not blocked; concurrent
+// allocation is unprotected; unallocated receipts reduce no balance).
+//
+// The bucket definitions live in lib/payments.js so the future accounts-payable
+// ageing reuses them rather than re-deriving them.
+export { AGEING_BUCKETS }
 
-export const AGEING_BUCKETS = [
-  { key: 'noDueDate', label: 'No due date' },
-  { key: 'notYetDue', label: 'Not yet due' },
-  { key: 'd1_30',     label: 'Past due 1–30 days' },
-  { key: 'd31_60',    label: 'Past due 31–60 days' },
-  { key: 'd61_90',    label: 'Past due 61–90 days' },
-  { key: 'd90plus',   label: 'Past due 90+ days' },
-]
-
-const bucketKeyFor = (days) => {
-  if (days === null) return 'noDueDate'
-  if (days <= 0)  return 'notYetDue'
-  if (days <= 30) return 'd1_30'
-  if (days <= 60) return 'd31_60'
-  if (days <= 90) return 'd61_90'
-  return 'd90plus'
-}
-
-// Gross (inc. GST) amounts bucketed by due date across ISSUED invoices — gross,
-// because that is the figure a client is billed. Returns { key: { amount, count } }
-// plus `total` and `pastDue` (everything past its due date).
-export function ageingByDueDate(invoices, now = new Date()) {
-  const buckets = {}
-  for (const b of AGEING_BUCKETS) buckets[b.key] = { amount: 0, count: 0 }
-
-  let total = 0
-  let pastDue = 0
-  for (const inv of issuedClientInvoices(invoices)) {
-    const gross = Number(inv.grossTotal) || 0
-    const key   = bucketKeyFor(daysPastDue(inv.dueDate, now))
-    buckets[key].amount = roundMoney(buckets[key].amount + gross)
-    buckets[key].count += 1
-    total = roundMoney(total + gross)
-    if (key !== 'noDueDate' && key !== 'notYetDue') pastDue = roundMoney(pastDue + gross)
-  }
-  return { buckets, total: roundMoney(total), pastDue: roundMoney(pastDue) }
+// `receivedByInvoice` is { invoiceId: amount } from lib/clientReceipts.js —
+// passed in rather than computed here, so this module keeps no dependency on the
+// receipts module and the caller supplies one consistent set of balances.
+//
+// Behaviour (all read-time, nothing stored):
+//   · fully reconciled invoices contribute zero and LEAVE ageing entirely;
+//   · partially reconciled invoices age ONLY their remainder;
+//   · over-reconciled invoices are EXCLUDED from the buckets and returned in
+//     `overSettled`, so a negative balance can never offset genuine arrears;
+//   · voiding a receipt restores the balance at the next render;
+//   · unallocated receipts reduce NO invoice balance and appear nowhere here.
+//
+// Balances are GROSS (inc. GST), because gross is what the client was billed and
+// therefore what they pay.
+export function ageingByDueDate(invoices, receivedByInvoice = {}, now = new Date()) {
+  return ageBalances(
+    issuedClientInvoices(invoices),
+    {
+      dueDateOf: (inv) => inv.dueDate,
+      balanceOf: (inv) => remainingBalance(inv.grossTotal, receivedByInvoice[inv.id] || 0),
+    },
+    now,
+  )
 }
 
 // ── Warnings (client-side, warn-only — never blocking) ───────────────────────

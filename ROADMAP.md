@@ -34,6 +34,8 @@
 
 - [x] **Client Invoices / Accounts Receivable (foundation)** — the revenue-side register, answering "what have we invoiced, what remains available to invoice, and when was it due?" Project-scoped `clientInvoices` (`CI-0001` from a company-wide counter), controlled against the **Current Contract Sum** and **approved client variations** — never against a PO, claim, or supplier. Lifecycle `draft → issued → void` (void terminal, non-empty reason required; `sent` reserved). Lines are amount-only, ex-GST, with the existing per-line tax codes; `costCodeId` is **optional** (contract revenue sits above the cost-code spine, ADR-22) and a variation line inherits a cost code only when its variation resolves to exactly one. Read-time derivation: **Issued Client Invoices**, **Available to Invoice**, per-variation invoiced/remaining, and **ageing by due date** — nothing written back to the baseline, variations, or Budget Lines. Client identity (name, legal name, ABN, email, phone, address) and payment terms are **snapshotted** at creation; the due date is suggested from the client contact's terms with the source **named in the UI**, blank when no terms exist. Over-invoicing (contract and per-variation) is **warned with an explicit acknowledgement, never blocked**. Pending client variations are not invoiceable; negative approved ones reduce the contract sum but cannot be invoiced. **First collection whose lifecycle and post-issue immutability are enforced by Firestore rules** — the intended future standard for the others. Invoice creation, number allocation, and the project-currency ratchet commit in **one transaction**. An optional authored `externalInvoiceReference` ties a record to the invoice actually issued from Xero/MYOB/QuickBooks. Lives under the **Commercial** tab (Margin | Client Invoices); the supplier tab is relabelled **Supplier Invoices**. Financial-role-only reads; deletes blocked. **No** payments, receipts, paid status, credit notes, retention, revenue recognition, printable/PDF/email output, or "Tax Invoice" labelling — company legal name and ABN do not exist, so Constrapp cannot produce a compliant Australian Tax Invoice. No migration
 
+- [x] **Client Receipts (foundation)** — the settlement half of accounts receivable and Constrapp's **first real cash record**. Project-scoped `clientReceipts` (`CR-0001` from a company-wide counter) storing **gross cash received** — `receiptDate`, `amount`, an explicitly-chosen `paymentMethod` (never defaulted; `other` requires a description), optional bank/external references — with **embedded `allocations[]`** (`clientInvoiceId` + frozen `invoiceNumber` + `allocatedAmount`) against issued Client Invoices. `clientId`/`clientName` are **required non-empty** (rules-enforced): unlike every other counterparty link, a receipt with no client is not a record. Lifecycle `draft → posted → void` (void terminal, non-whitespace reason), **rules-enforced** with posted receipts immutable — the second collection to meet the ADR-22 standard. **Read-time derivation:** Received to Date, Remaining to Reconcile, reconciliation state (*unreconciled / partly / fully / over-reconciled*), receipt summaries, and the corrected AR ageing — **nothing written onto a Client Invoice**, which gains no balance field, no payment status, and no back-reference, so voiding a receipt restores every balance with **no reversal record**. **AR ageing corrected** to age the *remaining* balance: fully reconciled invoices leave ageing, partially reconciled ones age only their remainder, over-reconciled ones are excluded into a signed callout, and the pre-Receipts disclaimer is replaced by the limits that genuinely remain. Unallocated receipts are permitted, reported separately as money on account, and **never auto-applied** (an explicit *Allocate oldest first* action yields an editable proposal). Over-allocating an **invoice** is warned with an acknowledgement, never blocked; over-allocating the **receipt** is hard-blocked and its scalar arithmetic (`allocatedTotal + unallocatedAmount == amount`, compared in **whole cents** via `math.round`, because IEEE-754 rejects `0.10 + 0.20 == 0.30`) is **rules-enforced**. An invoice voided *after* a posted allocation surfaces as an **exception**, never auto-reversed. Counter, receipt, and the project currency ratchet commit in **one transaction**. Shared, direction-agnostic `lib/payments.js` + AR adapter `lib/clientReceipts.js`; new **Receipts** sub-view on the Commercial tab (Margin · Client Invoices · Receipts). Financial-role-only reads; deletes blocked. **⚠️ Cash is not revenue** — no GST, no tax code, no net amount; the six budget figures, Forecast, and Margin are unchanged. **No** Supplier Payments, cash flow, refunds, bank reconciliation, accounting integration, attachments, or remittance output. **Supplier invoice `paid`/`paidAt` were NOT touched** — they stay reserved and unused. No migration
+
 Firestore security rules for all of the above are written in `frontend/firestore.rules` and published manually.
 
 ---
@@ -62,12 +64,17 @@ Bring documentation in line with the implemented system:
 - Client-invoice **Available to Invoice** and per-variation limits (rules cannot
   sum sibling documents, so over-invoicing is warned, never blocked, and
   concurrent invoicing of the same remaining value is possible)
+- Client-receipt **allocation integrity** — rules cannot iterate an array or sum
+  sibling documents, so `allocatedTotal` vs the array sum, invoice existence/
+  status/client-match, over-allocation, and concurrent allocation of the same
+  balance are all unverified server-side (the *scalar* amount invariant **is**
+  rules-enforced). Posting a future-dated receipt is blocked in the client only
 - Company legal name / ABN / address / tax number — absent, so Constrapp cannot
   produce a compliant Australian Tax Invoice
 
-*Note:* `clientInvoices` is the first collection whose lifecycle transitions and
-post-issue immutability **are** rules-enforced — the intended future standard for
-purchase orders, claims, supplier invoices, and variations.
+*Note:* `clientInvoices` and `clientReceipts` are the collections whose lifecycle
+transitions and post-commit immutability **are** rules-enforced — the intended
+future standard for purchase orders, claims, supplier invoices, and variations.
 
 **Other deferred foundations:** user management UI (invite, assign role/company), project edit/delete (currency is the only project field editable after creation), self-serve signup and password reset, Firebase CLI config (`firebase.json`/`.firebaserc`), Hosting, CI.
 
@@ -130,22 +137,35 @@ credit notes, client progress claims, revenue recognition, printable/PDF/email
 output, company legal & tax identity (the prerequisite for a compliant Australian
 Tax Invoice), and contract-level payment terms on the commercial baseline.
 
-**3b-ii. Payments and Receipts**
-The honest prerequisite for cash flow, and the reason no client-invoice figure may
-yet be called *paid*, *unpaid*, or *owing*. Record **client receipts** allocated
-against issued client invoices (turning "issued, not yet reconciled" into a real
-receivables balance) and **payments** against posted supplier invoices (the
-reserved `paid`/`paidAt`), so that "cash in" and "actual cash out" become real,
-not forecast. Balances will be **derived at read time** from receipt records —
-deliberately no payment field was reserved on the client invoice (ADR-22).
+**3b-ii. Client Receipts** — *foundation shipped (see Completed Foundations).*
+Cash received from clients, allocated against issued client invoices, turning
+"issued, not yet reconciled" into a real receivables balance. Balances are
+**derived at read time** from receipt records — no payment field was ever
+reserved on the client invoice (ADR-22), and none was added (ADR-23).
+
+**3b-iii. Supplier Payments** — *next.*
+The money-out mirror, reusing the shared `lib/payments.js` foundation unchanged:
+project-scoped `supplierPayments` (`SP-0001`), embedded allocations against
+**posted supplier invoices' `payableTotal`** (*not* `grossTotal` — retention is
+withheld and is not payable on that invoice), read-time **Paid to Date** and
+**Remaining Payable**, and AP ageing on the remaining balance.
+**⚠️ The reserved supplier-invoice `paid` status and `paidAt` field will be
+DEPRECATED IN PLACE, not activated** — payment state derives from allocations,
+and activating them would create a second, contradictory source of payment truth.
+That code and documentation change belongs to this branch; **as of the Client
+Receipts branch nothing about them has changed** — they remain reserved, never
+written, and still counted inertly in `SI_COUNTING_STATUSES` (no document can
+hold that status). Retention release remains unmodelled.
 
 **3c. Cash-flow Forecasting**
-Cash-flow curves close the current project-control loop: the system can then answer
-"when does cash enter and leave, and which months create a shortfall?" Built as a
-hybrid (client-invoice due dates and posted supplier-invoice due dates for known
-timing, time-phased future cost, and a clearly-labelled manual forecast) once items
-3a–3b exist so it never presents forecast timing — or an invoice due date — as
-actual cash.
+Cash-flow curves close the current project-control loop. **Actual Cash In now
+exists** (posted Client Receipts: amount, `receiptDate`, project, client,
+currency); **actual Cash Out does not** until Supplier Payments ship, so this
+item is blocked on 3b-iii — building it sooner would present forecast timing as
+actual cash, the exact dishonesty the receipts foundation removed. It must
+consume the **total transaction amount** on the **transaction date** (never
+`createdAt`/`postedAt`), keep the allocated/unallocated split available, and
+never sum across currencies.
 
 **4. BOQ and Estimating**
 Opens the preconstruction side: a Bill of Quantities against cost codes, with rates/margin/overheads producing an estimate that transfers to an approved budget.
@@ -156,8 +176,11 @@ Tender packages built from the BOQ, subcontractor invitations, and bid compariso
 **6. Manual QS Takeoff connected to BOQ quantities**
 Measured quantities populate BOQ quantity lines by cost code. Manual takeoff must exist before Quant™ AI — the AI accelerates an established pipeline rather than inventing one.
 
-**7. Payments and Credit Notes**
-Record payments against posted invoices (`paid`/`paidAt`, retention release) and supplier credits (`docType`/`adjustsInvoiceId`). Important for completeness, but less differentiating than Variations and Forecasting — hence sequenced after them despite the reserved fields already existing.
+**7. Credit Notes and Retention Release**
+Supplier credits (`docType`/`adjustsInvoiceId`) and retention release. Supplier
+payments themselves moved forward to item 3b-iii, alongside Client Receipts,
+because Cash Flow depends on them. **The reserved `paid`/`paidAt` fields are for
+deprecation, not activation** — see 3b-iii.
 
 **8. Final Account and Commercial Reporting**
 Reconcile approved budget, variations, and actual cost into final project margin; commercial reporting on margin, cost-to-complete, cash flow, and final account (not a generic export builder).

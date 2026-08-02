@@ -26,12 +26,31 @@ That script runs
   upgrade `firebase-tools`, you must also install JDK 21+.
 - Config: `frontend/firebase.json` (emulator + rules pointer only — no hosting,
   no functions, and **no `.firebaserc`**, so nothing can be deployed).
-- Tests: `frontend/tests/rules/clientInvoices.rules.test.js` — **30 tests**
-  covering every case in §15i-x below, for `company_admin`, `project_manager`,
-  `qs`, `subcontractor`, `client`, an unauthenticated caller, and a
-  financial-role user in a **second company**.
+- Tests:
+  - `frontend/tests/rules/clientInvoices.rules.test.js` — **30 tests** covering
+    every case in §15i-x below.
+  - `frontend/tests/rules/clientReceipts.rules.test.js` — **46 tests** covering
+    every case in §15j-x below, including the whole-cent scalar-invariant cases.
+  - Both run for `company_admin`, `project_manager`, `qs`, `subcontractor`,
+    `client`, an unauthenticated caller, and a financial-role user in a **second
+    company**.
 - **Run this before publishing any rules change** (see
   [DEPLOYMENT.md](DEPLOYMENT.md)).
+
+> **Timestamp assertions must use a deterministic client clock — never
+> `Timestamp.now()`.** Where the rules require a stamp to equal `request.time`, a
+> test proving that a *client-authored* value is rejected must supply a clock
+> value that cannot coincide with server time. A bare `Timestamp.now()` is read
+> microseconds before the write reaches the emulator and can legitimately equal
+> `request.time`, in which case the rule correctly **accepts** it and
+> `assertFails` fails — a non-deterministic test, not a rules defect. (This was
+> real: the Client Invoice suite previously failed intermittently for exactly
+> this reason — measured at 30/30, then 3 failures, then 2 failures across three
+> runs.) **Both suites now assert against deliberately skewed clocks** — a clock
+> 60s ahead, a clock 60s behind, and a fixed `2020-01-01` value — applied to
+> every timestamp field the rules constrain. Keep any new timestamp assertion to
+> that pattern. `Timestamp.now()` remains correct inside `seed()` helpers, which
+> write **stored state** with rules disabled and assert nothing.
 
 §15i-x below remains the human-readable specification of what those tests assert;
 the other manual sections are not automated.
@@ -729,6 +748,223 @@ these verify the rules, not the UI.
   variation table scroll horizontally **inside their cards**, the editor modal scrolls
   internally, all touch targets are ≥44px, and there is no horizontal page scroll.
 
+## 15j. Client Receipts (cash received) & AR reconciliation
+
+Sign in as a financial-role user (`company_admin`/`project_manager`/`qs`). Setup:
+a project with a commercial baseline, a **client**-type contact ("Acme"), a
+second client contact ("Other Co"), and three **issued** client invoices for
+Acme — `CI-0001` 1,100 gross (due 45 days ago), `CI-0002` 2,200 gross (due in 30
+days), `CI-0003` 550 gross (no due date) — plus one **draft** and one **void**
+invoice.
+
+### 15j-i. Navigation & gating
+
+- [ ] The **Commercial** tab shows sub-navigation **Margin · Client Invoices ·
+  Receipts**; Margin remains the default.
+- [ ] `/projects/{id}/commercial/receipts` loads directly and is shareable.
+- [ ] With no client-type contacts, creation is disabled with a link to Contacts.
+- [ ] Signed in as `subcontractor` or `client`, the Receipts view shows the
+  restricted card and **no** data.
+
+### 15j-ii. Numbering & atomicity
+
+- [ ] The first draft is `CR-0001`; the next is `CR-0002`.
+- [ ] Numbering is sequential **company-wide** — create a receipt on a second
+  project in the same company and confirm it continues the sequence.
+- [ ] Two simultaneous creators never receive the same number.
+- [ ] Void `CR-0002` and create another → it is `CR-0003`; the number is **not**
+  reused and the gap is intentional.
+- [ ] A create that fails (go offline mid-save) leaves **no** counter gap — the
+  next successful create takes the number that failed, and **no** receipt
+  document exists.
+- [ ] **Atomic currency lock:** on a fresh project with budget 0 and no records,
+  creating the first receipt locks the project currency **in the same step**; go
+  offline mid-save and confirm **neither** the receipt nor the lock is written.
+- [ ] Creating a second receipt on an already-locked project succeeds — verify
+  specifically as a **`qs`** user (whose rule permits only `false → true`).
+- [ ] Project Overview's currency card lists "N client receipts" among the lock
+  reasons, and a **draft** or **void** receipt alone is enough to lock.
+
+### 15j-iii. Draft creation, client selection & payment method
+
+- [ ] The client picker lists **client-type active contacts only**.
+- [ ] **Payment method is not pre-filled** — the select starts empty and Save is
+  blocked until a method is chosen.
+- [ ] Choosing **Other** reveals a required description; Save is blocked while it
+  is empty. Choosing any other method stores `paymentMethodOther` as `''`.
+- [ ] Bank Reference and External Reference are optional — a receipt saves with
+  both blank.
+- [ ] Amount must be greater than zero; `0` and negatives are rejected.
+- [ ] Editing a draft preserves the `CR-` number, currency, and created stamps.
+- [ ] A **posted** receipt offers **no** Edit action.
+
+### 15j-iv. Allocation
+
+- [ ] The allocation picker lists only **Acme's issued** invoices — the draft and
+  void invoices, and **Other Co's** invoices, never appear.
+- [ ] Each row shows the invoice total, received to date, and remaining.
+- [ ] **Allocate remaining** fills exactly that invoice's remaining balance,
+  capped by the cash still unallocated on the receipt.
+- [ ] **Allocate oldest first** runs **only** when pressed, fills oldest-invoice
+  first, and the proposal is editable and discardable afterwards. Nothing is ever
+  auto-allocated on open, on client change, or on amount change.
+- [ ] One receipt allocated across **two** invoices saves and posts correctly.
+- [ ] Two receipts allocated against **one** invoice both count.
+- [ ] The same invoice cannot be selected twice on one receipt (already-chosen
+  invoices drop out of the other rows' pickers; a duplicate is rejected).
+- [ ] Allocating **more than the receipt amount** is **hard-blocked** with a
+  message, and Save stays disabled.
+- [ ] Changing the client on a draft that has allocations **asks for
+  confirmation** and clears them; cancelling leaves both the client and the
+  allocations untouched.
+- [ ] Allocations are freely editable while draft and are **frozen** after
+  posting.
+
+### 15j-v. Unallocated amounts
+
+- [ ] A receipt with **no** allocations saves and posts; it appears under
+  **Unallocated — on account**.
+- [ ] A partly allocated receipt shows the correct Allocated / Unallocated split,
+  with an amber note before saving.
+- [ ] Unallocated money **reduces no invoice balance** — confirm ageing and every
+  invoice's Remaining are unchanged by an unallocated receipt.
+- [ ] The **Has unallocated** filter narrows the register to those receipts.
+
+### 15j-vi. Cent arithmetic (AUTOMATED — see §0)
+
+- [ ] Amount 0.30 allocated 0.10 → unallocated 0.20 saves.
+- [ ] Amount 10.01 allocated 3.33 → unallocated 6.68 saves.
+- [ ] Amount 1000.00 allocated 999.99 → unallocated 0.01 saves.
+- [ ] A one-cent discrepancy is rejected by **Firestore**, not just the UI.
+
+### 15j-vii. Posting & future dates
+
+- [ ] Post is a **separate confirmation** showing amount, allocated, unallocated,
+  date, and method; it warns that posting freezes everything.
+- [ ] A **future-dated** draft saves, shows an amber warning in the editor and a
+  "future" marker in the register, and **Post is blocked** with an explanation.
+- [ ] Correcting the date to today or earlier allows posting.
+- [ ] **Backdated** receipts post with no warning.
+- [ ] **Known deferred limitation (expected to be bypassable — do not report as
+  enforced):** a direct SDK call can post a future-dated receipt; rules validate
+  only the `YYYY-MM-DD` shape. See SECURITY.md → Deferred Control 16.
+
+### 15j-viii. Invoice balances & reconciliation state
+
+- [ ] Post a 1,100 receipt fully allocated to `CI-0001` → that invoice shows
+  Received 1,100, Remaining 0, badge **Fully reconciled**.
+- [ ] Post a 500 receipt allocated to `CI-0002` → Received 500, Remaining 1,700,
+  badge **Partly reconciled**.
+- [ ] An invoice with no receipts shows **Unreconciled**.
+- [ ] Over-allocate `CI-0003` (600 against 550) → amber warning **and** the
+  acknowledgement tick is required; after ticking it saves; the invoice shows
+  Remaining **−50 in red**, badge **Over-reconciled**.
+- [ ] The Client Invoice **detail** view lists the allocated receipts (CR #,
+  date, method, bank ref, allocated amount).
+- [ ] **Draft** receipts change no balance anywhere.
+
+### 15j-ix. Corrected AR ageing
+
+- [ ] The AR panel is titled **"Accounts Receivable — ageing by due date"** and
+  its subtitle reads **"remaining balance after posted receipts"**.
+- [ ] With `CI-0001` (45 days overdue) **fully reconciled**, it **disappears from
+  every ageing bucket** while staying in the register.
+- [ ] With `CI-0002` partly reconciled, *Not yet due* shows **only its
+  remainder** (1,700), not 2,200.
+- [ ] `CI-0003` (no due date) appears in **No due date** at its remaining balance.
+- [ ] The **over-reconciled** invoice is **excluded from the buckets** and listed
+  in the "Over-reconciled invoices — excluded from ageing" callout with its
+  signed negative balance in red.
+- [ ] **Void a posted receipt** → the invoice's balance is restored and it
+  **re-enters** the correct ageing bucket immediately, with no page reload and no
+  reversal record.
+- [ ] The **Past due date** filter matches only invoices past due **and still
+  owing** — a fully reconciled, long-overdue invoice is excluded.
+- [ ] The old disclaimer ("Payments are not yet recorded… every issued invoice
+  stays here until it is voided") is **gone**, replaced by the notice naming
+  over-allocation, concurrency, and unallocated receipts.
+- [ ] `grep -rniE "unpaid|amount owing|outstanding receivable|overdue receivable" frontend/src`
+  returns **no** matches.
+
+### 15j-x. Lifecycle — Rules-enforced (AUTOMATED — see §0)
+
+**Covered by `frontend/tests/rules/clientReceipts.rules.test.js` (46 tests).**
+Re-run the suite rather than performing these by hand, and always before
+publishing rules.
+
+**Must be ALLOWED:** create as draft (all three financial roles) · read · draft
+edit (amount, date, method, references, allocations) · `draft → posted` ·
+`draft → void` with a reason · `posted → void` with a reason · a fully
+unallocated receipt · exactly 100 allocations · a backdated receipt · the three
+cent-arithmetic combinations.
+
+**Must be REJECTED:** create as `posted`/`void` · forged `postedAt`/`postedBy`/
+`voidedAt`/`voidedBy` · `createdBy` = another uid · client-clock `createdAt`/
+`updatedAt` · `docType: 'refund'` · malformed `currency` (`AU`, `aud`, `1234`) ·
+**null or empty `clientId`/`clientName`** · malformed `receiptDate`
+(`01/08/2026`, `2026-8-1`, `''`, a Timestamp) · `amount` of 0, negative, or a
+string · negative `allocatedTotal`/`unallocatedAmount` · allocations claiming
+more than the amount · a one-cent invariant break in either direction ·
+`allocations` not a list · **101 allocations** · empty or over-long
+`paymentMethod` · draft edit changing `receiptNumber`/`currency`/`createdAt`/
+`createdBy`/`docType`/`revision` · draft edit breaking the invariant or the
+required shape · `draft → posted` also changing content · `postedBy`/`updatedBy`
+≠ caller · void with an empty **or whitespace-only** reason, or `voidedBy` ≠
+caller · **any** non-void update to a posted receipt · `posted → draft` ·
+`void → *` · fabricated statuses (`paid`, `reconciled`, `cleared`, …) ·
+**delete** of draft, posted, and void · subcontractor/client read or write ·
+unauthenticated read or write · cross-company read/write in both directions.
+
+### 15j-xi. Allocation exceptions
+
+- [ ] Post a receipt allocated to `CI-0002`, then **void that invoice** → an
+  **Allocation exceptions** panel appears on **both** the Receipts and Client
+  Invoices views naming the receipt, the invoice, and the amount.
+- [ ] The receipt keeps its amount and stays counted in **Receipts Recorded** —
+  the cash does **not** disappear.
+- [ ] The voided invoice stays **out** of ageing.
+- [ ] Nothing is deleted, reassigned, or reversed automatically; the documented
+  remedy (void the receipt and re-record it) is shown.
+
+### 15j-xii. Currency
+
+- [ ] On an NZD project every receipt figure renders `NZD …`; the stored receipt
+  `currency` is `NZD` and is **never** displayed as the authority.
+- [ ] No currency picker appears anywhere in the receipt UI.
+- [ ] Receipts show **no GST line, no net amount, and no tax code** — only gross
+  cash.
+
+### 15j-xiii. No mutation & no cost-side impact
+
+- [ ] Record every Budget figure, Forecast rollup, and Commercial margin figure
+  before and after this whole suite → **every number identical**. Cash is not
+  revenue and touches no accrual figure.
+- [ ] No Client Invoice document is modified by any receipt action — check
+  `status`, `subtotal`, `gstTotal`, `grossTotal`, `lineItems`, and confirm **no**
+  balance, payment-status, or receipt-reference field was added.
+- [ ] No Budget Line, PO, Progress Claim, Supplier Invoice, Variation, Forecast
+  Line, or Commercial Baseline document is modified.
+- [ ] **Supplier invoices are untouched by this branch** — `SI_STATUS.PAID` and
+  `paidAt` remain exactly as they were on `main` (reserved, never written).
+
+### 15j-xiv. Register, search & detail
+
+- [ ] Clicking a `CR-` number opens the read-only detail with the client
+  snapshot, date, amount, method, references, allocation table, and (when void)
+  the void reason.
+- [ ] Search matches CR number, client, bank reference, external reference,
+  notes, and allocated invoice numbers.
+- [ ] Status, client, and **Has unallocated** filters combine with search.
+- [ ] Editing the client contact afterwards (rename) does **not** change any
+  existing receipt's `clientName` snapshot.
+
+### 15j-xv. Responsive
+
+- [ ] At **375px / 768px / 1280px**: the Commercial sub-nav wraps, the register
+  and allocation tables scroll horizontally **inside their cards**, the editor
+  and post/void modals scroll internally, all touch targets are ≥44px, and there
+  is no horizontal page scroll.
+
 ## 16. Responsive Checks — 375px, 768px, 1280px
 
 - [ ] **375px:** sidebar hidden behind hamburger; drawer opens/closes (tap overlay); nav items ≥44px tall; project tab bar wraps; PO/claim tables scroll horizontally inside their card; modals fit with internal scrolling; all actions reachable by tap (no hover-only).
@@ -751,8 +987,8 @@ Firestore Security Rules are the only trust boundary — these checks confirm th
 ### 17b. Role-restricted reads (PII & financial collections)
 
 - [ ] Signed in as a `subcontractor` or `client` role user, **Contacts, Supplier
-  Invoices, Client Invoices, Variations, Forecast, and Commercial** all show no
-  data — reads are blocked by rules, not merely absent from the nav.
+  Invoices, Client Invoices, Receipts, Variations, Forecast, and Commercial** all
+  show no data — reads are blocked by rules, not merely absent from the nav.
 - [ ] The same user **can** still read company members' Projects, Cost Codes,
   Budget Lines, POs, and Progress Claims (the intended coarser read model).
 
@@ -775,12 +1011,21 @@ enforced.
 - [ ] Lifecycle-transition legality, post-submission/`posted`/`approved`
   immutability, one-open-claim / one-invoice-per-claim races, creator ≠ approver
   segregation, counter integrity, and uniqueness are all client-enforced only.
-  **Exception:** `clientInvoices` transitions and issued-invoice immutability
-  **are** rules-enforced — see §15i-x, which tests them as real rejections.
+  **Exception:** `clientInvoices` **and `clientReceipts`** transitions and
+  post-commit immutability **are** rules-enforced — see §15i-x and §15j-x, which
+  test them as real rejections.
 - [ ] Client-invoice **Available to Invoice** and **per-variation remaining**
   limits are client-side warnings only: two users invoicing the same remaining
   value concurrently both succeed. Expected — do not report as enforced
   (SECURITY.md → Deferred Control 14).
+- [ ] Client-receipt **allocation integrity** is client-side only: rules cannot
+  iterate the allocations array, so `allocatedTotal` may not match its sum, an
+  allocation may target a non-existent/draft/void/wrong-client invoice, an
+  invoice can be over-allocated, and two users can allocate the same balance
+  concurrently. Posting a **future-dated** receipt is likewise client-blocked
+  only. Expected — do not report as enforced (SECURITY.md → Deferred Control 16).
+  The **scalar** invariant (`allocatedTotal + unallocatedAmount == amount`, whole
+  cents) **is** rules-enforced.
 
 ### 17e. Secrets
 
