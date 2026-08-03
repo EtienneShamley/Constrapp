@@ -16,7 +16,20 @@ export const SI_STATUS = {
   APPROVED:     'approved',
   DISPUTED:     'disputed',      // reserved — no UI transition yet
   POSTED:       'posted',
-  PAID:         'paid',          // reserved — arrives with the Payments module
+  // ⚠️ DEPRECATED IN PLACE — NOT reserved, and never to be activated (ADR-24).
+  // Supplier Payments shipped and deliberately did NOT turn this on: payment
+  // state is DERIVED from posted Supplier Payment allocations
+  // (lib/supplierPayments.js), so authoring a `paid` status would create a
+  // second, contradictory source of payment truth with no way to reconcile the
+  // two. No supported application path writes this value, and SI_TRANSITIONS
+  // (below) contains no transition into it.
+  //
+  // It is retained — with its label and badge variant — so that a legacy or
+  // malformed document can still render. Supplier-invoice lifecycle legality is
+  // still client-enforced (docs/SECURITY.md → Deferred Control 1), so a
+  // direct-SDK caller CAN forge `status: 'paid'`; do not claim that no document
+  // can ever hold the value.
+  PAID:         'paid',
   CANCELLED:    'cancelled',
 }
 
@@ -44,7 +57,8 @@ export const SI_BADGE_VARIANTS = {
 }
 
 // Forward-only lifecycle. received/under_review/disputed are reserved (defined
-// but no UI transitions into them); paid is reserved for the Payments module.
+// but no UI transitions into them). `paid` is DEPRECATED IN PLACE, not reserved:
+// there is no transition into it and there never will be (ADR-24).
 // posted is terminal in this foundation — corrections are Credit Notes (future).
 export const SI_TRANSITIONS = {
   [SI_STATUS.DRAFT]:        [SI_STATUS.APPROVED, SI_STATUS.CANCELLED],
@@ -52,15 +66,29 @@ export const SI_TRANSITIONS = {
   [SI_STATUS.UNDER_REVIEW]: [],
   [SI_STATUS.APPROVED]:     [SI_STATUS.POSTED, SI_STATUS.CANCELLED],
   [SI_STATUS.DISPUTED]:     [],
-  [SI_STATUS.POSTED]:       [], // paid transition arrives with Payments — no UI yet
+  // TERMINAL. There is deliberately NO posted -> paid transition and there never
+  // will be — payment state is derived from Supplier Payment allocations, never
+  // authored onto the invoice (ADR-24).
+  [SI_STATUS.POSTED]:       [],
   [SI_STATUS.PAID]:         [],
   [SI_STATUS.CANCELLED]:    [],
 }
 
 export const canTransition = (from, to) => (SI_TRANSITIONS[from] ?? []).includes(to)
 
-// Statuses whose value counts toward the budget figures. paid is reserved but
-// kept here so it counts once the Payments module can set it — future-proof.
+// Statuses whose value counts toward the budget figures.
+//
+// `paid` is INERT: no supported application path writes it and SI_TRANSITIONS
+// reaches it from nowhere, so the app never produces such a document. It is
+// deliberately RETAINED in this list rather than removed, because supplier-
+// invoice lifecycle Rules are still deferred: if a direct-SDK caller forged
+// `status: 'paid'` on a real invoice, dropping it here would silently erase that
+// invoice from Invoiced and Actual. Counting it is the safe failure mode — the
+// cost stays visible in the budget figures.
+//
+// It is NOT used for payment reconciliation. Paid to Date and Remaining Payable
+// derive exclusively from posted Supplier Payment allocations
+// (lib/supplierPayments.js), which counts only `posted` invoices (ADR-24).
 export const SI_COUNTING_STATUSES = [SI_STATUS.POSTED, SI_STATUS.PAID]
 
 // A draft invoice is fully editable; everything from approved onward is frozen
@@ -274,6 +302,18 @@ export function suggestDueDate(invoiceDate, paymentTerms) {
 
 // An invoice is overdue when it has a due date in the past and is neither paid
 // nor cancelled. Uses a plain date comparison (dueDate is a 'YYYY-MM-DD' string).
+//
+// ⚠️ DATE-ONLY — NOT SUITABLE FOR PAYMENT-AWARE FIGURES OR BADGES. This function
+// has no knowledge of Supplier Payments, so it reports a fully-paid invoice as
+// overdue whenever its due date has passed. Its behaviour is deliberately
+// unchanged for backwards compatibility, and the `SI_STATUS.PAID` guard below is
+// vestigial (nothing writes that status — see ADR-24).
+//
+// Anything presenting a past-due amount, badge, or filter must use
+// `isPastDuePayable(invoice, remainingPayable, now)` in lib/supplierPayments.js,
+// which additionally requires the invoice to be POSTED and still payable. This
+// mirrors the deliberate `isPastDue` / `isPastDueUnreconciled` split already in
+// place on the accounts-receivable side.
 export function isOverdue(invoice, now = new Date()) {
   if (!invoice?.dueDate) return false
   if (invoice.status === SI_STATUS.PAID || invoice.status === SI_STATUS.CANCELLED) return false

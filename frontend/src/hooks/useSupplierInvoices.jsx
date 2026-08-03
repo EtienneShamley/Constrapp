@@ -147,7 +147,16 @@ export function useSupplierInvoices(projectId) {
         postedBy:    null,
         cancelledAt: null,
 
-        // Reserved for future modules (Payments, Credit Notes, Storage, accounting).
+        // ⚠️ paidAt is DEPRECATED IN PLACE (ADR-24), not reserved. It is written
+        // once as null at creation and is NEVER updated — Supplier Payments
+        // shipped without activating it, because payment state derives from
+        // posted Supplier Payment allocations (lib/supplierPayments.js) and
+        // setting a date here would create a second source of payment truth.
+        // The write is kept so new documents keep the same shape as historical
+        // ones; removing it would silently fork the schema for no benefit.
+        //
+        // adjustsInvoiceId / attachments / externalRefs remain genuinely
+        // reserved for Credit Notes, Storage, and accounting sync.
         paidAt:          null,
         adjustsInvoiceId: null,
         attachments:      [],

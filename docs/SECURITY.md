@@ -60,6 +60,7 @@ to financial roles.**
 | `…/projects/{id}/supplierInvoices/{id}` | **financial roles only** | financial roles | blocked — cancel via status |
 | `…/projects/{id}/clientInvoices/{id}` | **financial roles only** | financial roles, **create draft-only; transitions and issued-immutability rules-enforced** | blocked — void via status |
 | `…/projects/{id}/clientReceipts/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability and the scalar amount invariant rules-enforced** | blocked — void via status |
+| `…/projects/{id}/supplierPayments/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability and the scalar amount invariant rules-enforced** | blocked — void via status |
 | `…/projects/{id}/variations/{id}` | **financial roles only** | financial roles | blocked — reject/withdraw via status |
 | `…/projects/{id}/forecastLines/{id}` | **financial roles only** | financial roles | blocked — clear via `null`, never deleted |
 | `…/projects/{id}/commercial/baseline` | **financial roles only** | financial roles | blocked — the single baseline doc is never deleted |
@@ -209,6 +210,88 @@ work with its own scoping design (Deferred Control 10).
   avoid the enum drift ADR-21 records for currency codes.
 - **Business truth** — that the money was genuinely received at all.
 
+## Supplier Payments — cash records, rules-enforced lifecycle
+
+**Reads are restricted to financial roles.** A payment exposes the project's cash
+position, bank and remittance references, supplier pricing, and unallocated
+balances, so `subcontractor` and `client` users must not read them. **A future
+client or subcontractor portal must never expose Supplier Payments at all** —
+and specifically never a payment's `allocations`, `unallocatedAmount`,
+`bankReference`, `remittanceReference`, `notes`, or the supplier pricing they
+reveal. A subcontractor seeing what other trades were paid, or when, is a direct
+commercial exposure; a client seeing supplier costs exposes the project's margin.
+That portal is separate, later work with its own scoping design (Deferred
+Control 10).
+
+**The lifecycle is rules-enforced**, following `clientInvoices`/`clientReceipts`
+as the standard (ADR-22/ADR-23/ADR-24):
+
+- `create` only with `status: 'draft'`, `docType: 'payment'`, **non-empty
+  `supplierId` and `supplierName`** (never null — unlike supplier *invoices*,
+  which may carry a legacy `supplierId: null`, a new payment always carries a
+  real link), a shape-valid `currency` and `'YYYY-MM-DD'` `paymentDate`, a
+  non-empty bounded `paymentMethod`, `allocations` as a list of at most 100,
+  `createdBy == request.auth.uid`, `createdAt == request.time`, and **null
+  lifecycle stamps**.
+- **The scalar amount invariant**: `amount > 0`, `allocatedTotal >= 0`,
+  `unallocatedAmount >= 0`, and `allocatedTotal + unallocatedAmount == amount`,
+  compared in **whole cents** via `math.round(v * 100)` — identical to the
+  `clientReceipts` rule and mirrored by `lib/payments.js → toCents()`. A
+  representation fix, not a loosened invariant: a one-cent discrepancy still
+  fails. This prevents a payment **claiming** more allocation than the cash it
+  moved.
+- **Every** update must preserve `paymentNumber`, `currency`, `createdAt`,
+  `createdBy`, `docType`, and `revision`, and must stamp `updatedBy ==
+  request.auth.uid` and `updatedAt == request.time`.
+- **Draft edits** may change content (including the supplier and the
+  allocations) but not the status, must still satisfy the full shape and the
+  scalar invariant, and may not forge a lifecycle stamp.
+- **`draft → posted`** may affect **only** `status`, `postedAt`, `postedBy`,
+  `updatedAt`, `updatedBy`, with `postedBy == request.auth.uid` and
+  `postedAt == request.time`. Posting is therefore necessarily a **separate
+  operation** — the amount and allocations that were reviewed are the ones
+  committed.
+- **`draft|posted → void`** may affect **only** `status`, `voidedAt`, `voidedBy`,
+  `voidReason`, `updatedAt`, `updatedBy`, with a **non-whitespace** `voidReason`
+  (`voidReason.trim().size() > 0`).
+- **Posted-payment immutability** falls out of the above: voiding is the only
+  permitted update.
+- **`void` is terminal**; `delete` is blocked for drafts, posted, and void
+  payments alike.
+
+*Client-enforced only (deferred — never describe these as enforced):*
+
+- **The shape of each `allocations[]` element** — rules cannot iterate or index
+  into an array, so `supplierInvoiceId`, `invoiceNumber`,
+  `supplierInvoiceNumber`, the per-allocation `> 0` rule, and the
+  no-duplicate-invoice rule are all unverified.
+- **`allocatedTotal` matching the sum of `allocations[]`** — same limitation.
+  Only the scalar invariant above is enforced.
+- **That an allocated invoice exists, is `posted` (not draft/approved/cancelled),
+  belongs to this project, and belongs to the selected supplier** — each would
+  need a `get()` per array element. The **legacy `supplierId: null` name match**
+  is likewise unverified.
+- **That allocations use `payableTotal` rather than `grossTotal`, and that
+  retention is excluded** — rules cannot read the invoice at all, so the payable
+  basis and the retention exclusion are client-side facts.
+- **Invoice remaining payable / over-reconciliation** — see Deferred Control 18.
+- **That `paymentDate` is not in the future.** Rules check only the
+  `'YYYY-MM-DD'` shape; the "cannot post a future-dated payment" rule is
+  client-side, so a direct SDK call can post one.
+- **Payment-method membership** of the app's enum — validated by shape only, to
+  avoid the enum drift ADR-21 records for currency codes.
+- **Business truth** — that the money genuinely left the bank account.
+
+**⚠️ Deliberate asymmetry with `supplierInvoices`.** This block enforces
+lifecycle legality and post-`posted` immutability; the `supplierInvoices` block
+still enforces neither (Deferred Controls 1–2), and the Supplier Payments branch
+did **not** harden it. The consequence is real and accepted: a direct-SDK caller
+can cancel a posted supplier invoice that a payment has already settled, or forge
+`status: 'paid'` on one. Constrapp surfaces the first as an **allocation
+exception** on both views rather than auto-reversing, and deliberately keeps
+`paid` inside `SI_COUNTING_STATUSES` so the second cannot make a real cost vanish
+from Invoiced and Actual (ADR-24). Neither is prevented.
+
 **Forecast Lines reads are restricted to financial roles** — deliberately tighter
 than the company-member `budgetLines` read. The Forecast Cost to Complete data
 exposes expected project overruns and implied margin (Forecast Final Cost,
@@ -336,14 +419,18 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
    set any status directly. Applies equally to supplier invoices (including the
    "posted invoices cannot be cancelled/unposted" rule) and to variations
    (draft → submitted → approved/rejected/withdrawn legality).
-   **Exception: `clientInvoices` transitions ARE rules-enforced** — that is the
-   intended future standard for the collections above.
+   **Exception: `clientInvoices`, `clientReceipts` and `supplierPayments`
+   transitions ARE rules-enforced** — that is the intended future standard for
+   the collections above. Note the live consequence of the gap: a direct-SDK
+   caller can cancel a **posted** supplier invoice that a Supplier Payment has
+   already settled, or forge `status: 'paid'` on one (ADR-24).
 2. **Post-submission immutability** — freezing PO lines after `sent`, claim
    amounts after submission/approval, supplier invoices after `posted`, and
    variation content after `submitted` / approved amounts after `approved` is
    client-side only; rules allow full document updates.
-   **Exception: issued `clientInvoices` ARE immutable by rules** (voiding is the
-   only permitted update, and it may touch only the void audit fields).
+   **Exception: issued `clientInvoices`, posted `clientReceipts` and posted
+   `supplierPayments` ARE immutable by rules** (voiding is the only permitted
+   update, and it may touch only the void audit fields).
 3. **One-open-claim / one-invoice-per-claim race protection** — these checks
    read the local snapshot; two simultaneous creators can produce two open claims
    on one PO, or two supplier invoices against one approved claim.
@@ -369,7 +456,10 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
 10. **Scoped variation visibility** — variations are readable only by financial
     roles today; a future client portal (client sees their own head-contract
     variations) and subcontractor-scoped supplier-variation access are deferred
-    with the other scoping controls (item 5).
+    with the other scoping controls (item 5). **The same portal must never expose
+    Supplier Payments** — not the payments themselves, and not their
+    `allocations`, `unallocatedAmount`, `bankReference`, `remittanceReference`,
+    `notes`, or the supplier pricing they reveal.
 11. **Company currency validation** — rules validate the *shape* of
     `countryCode`/`baseCurrency` (`^[A-Z]{2}$` / `^[A-Z]{3}$`) but not that the
     code is a **known** country or currency; `XX`/`XXX` would be accepted. The
@@ -422,12 +512,31 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     posting a **future-dated** receipt is blocked in the client only. The receipt
     *number* is still race-free (transactional counter). Directly analogous to
     Deferred Control 14.
-17. **Falsified cash records** — a financial-role user can create and post a
-    receipt for any amount by direct SDK call. Rules validate shape, lifecycle,
-    and arithmetic; they cannot validate that money was received. Combined with
-    Deferred Control 8 (users can write their own `role`), **this foundation
-    widens the blast radius of that gap from reading data to fabricating cash
-    records.** Remediation is server-side enforcement plus audit logging.
+17. **Falsified cash records — both directions** — a financial-role user can
+    create and post a **receipt** (cash in) or a **supplier payment** (cash out)
+    for any amount by direct SDK call. Rules validate shape, lifecycle, and
+    arithmetic; they cannot validate that money was received or paid. Combined
+    with Deferred Control 8 (users can write their own `role`), **these
+    foundations widen the blast radius of that gap from reading data to
+    fabricating cash records in both directions** — and fabricated cash out is
+    the more damaging of the two, because it can be used to assert that a
+    supplier was paid when it was not. Remediation is server-side enforcement
+    plus audit logging.
+18. **Supplier-payment allocation integrity & concurrency** — the AP twin of
+    Deferred Control 16. Firestore rules enforce the *scalar* invariant
+    (`allocatedTotal + unallocatedAmount == amount`, in whole cents) but
+    **cannot** verify the allocation array itself: rules cannot iterate an array,
+    and have no list, query, or count with which to sum sibling payment
+    documents. Consequences, all accepted and never presented otherwise:
+    `allocatedTotal` may not match the array's sum; an allocation may reference a
+    non-existent, draft, approved, cancelled, wrong-project, or wrong-supplier
+    invoice; the **`payableTotal` basis and the retention exclusion are
+    client-side only**, so a direct SDK call could allocate against gross or
+    against retained money; **an invoice can be over-reconciled** (warned with an
+    explicit acknowledgement, never blocked); and **two users can allocate the
+    same remaining payable concurrently, with both writes succeeding**.
+    Additionally, posting a **future-dated** payment is blocked in the client
+    only. The payment *number* is still race-free (transactional counter).
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
@@ -466,9 +575,9 @@ the security-specific gate is:
 - [ ] Every path is scoped to the caller's `companyId` (rules `get()` the
       `users/{uid}` doc and compare `companyId` to the path).
 - [ ] Read/write role sets are correct; PII and commercially sensitive
-      collections (Contacts, Supplier Invoices, **Client Invoices**, Variations,
-      Forecast Lines, Commercial Baseline, Counters) restrict **reads** to
-      financial roles.
+      collections (Contacts, Supplier Invoices, **Client Invoices**, Client
+      Receipts, **Supplier Payments**, Variations, Forecast Lines, Commercial
+      Baseline, Counters) restrict **reads** to financial roles.
 - [ ] The `clientInvoices` lifecycle rules still permit exactly
       draft-edit / draft→issued / draft|issued→void, still require
       `issuedBy`/`voidedBy` to equal the caller and the stamps to equal
@@ -478,6 +587,13 @@ the security-specific gate is:
       `postedBy`/`voidedBy` to equal the caller and the stamps to equal
       `request.time`, still require a **non-whitespace** `voidReason`, and still
       enforce non-empty `clientId`/`clientName` plus the whole-cent scalar
+      invariant (`allocatedTotal + unallocatedAmount == amount`, both ≥ 0,
+      `amount > 0`).
+- [ ] The `supplierPayments` lifecycle rules still permit exactly
+      draft-edit / draft→posted / draft|posted→void, still require
+      `postedBy`/`voidedBy` to equal the caller and the stamps to equal
+      `request.time`, still require a **non-whitespace** `voidReason`, and still
+      enforce non-empty `supplierId`/`supplierName` plus the whole-cent scalar
       invariant (`allocatedTotal + unallocatedAmount == amount`, both ≥ 0,
       `amount > 0`).
 - [ ] Company document writes stay scoped to the four currency fields

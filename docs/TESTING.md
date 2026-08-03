@@ -26,12 +26,14 @@ That script runs
   upgrade `firebase-tools`, you must also install JDK 21+.
 - Config: `frontend/firebase.json` (emulator + rules pointer only — no hosting,
   no functions, and **no `.firebaserc`**, so nothing can be deployed).
-- Tests:
+- Tests — **123 in total across 3 files**:
   - `frontend/tests/rules/clientInvoices.rules.test.js` — **30 tests** covering
     every case in §15i-x below.
   - `frontend/tests/rules/clientReceipts.rules.test.js` — **46 tests** covering
     every case in §15j-x below, including the whole-cent scalar-invariant cases.
-  - Both run for `company_admin`, `project_manager`, `qs`, `subcontractor`,
+  - `frontend/tests/rules/supplierPayments.rules.test.js` — **47 tests** covering
+    every case in §15k-x below, including the whole-cent scalar-invariant cases.
+  - All three run for `company_admin`, `project_manager`, `qs`, `subcontractor`,
     `client`, an unauthenticated caller, and a financial-role user in a **second
     company**.
 - **Run this before publishing any rules change** (see
@@ -52,8 +54,8 @@ That script runs
 > that pattern. `Timestamp.now()` remains correct inside `seed()` helpers, which
 > write **stored state** with rules disabled and assert nothing.
 
-§15i-x below remains the human-readable specification of what those tests assert;
-the other manual sections are not automated.
+§15i-x, §15j-x, and §15k-x below remain the human-readable specification of what
+those tests assert; the other manual sections are not automated.
 
 Setup: two provisioned users in the same company (e.g. a `project_manager` and a
 `qs`), signed in via `/login`. Reset state between suites by using a fresh
@@ -944,8 +946,16 @@ unauthenticated read or write · cross-company read/write in both directions.
   balance, payment-status, or receipt-reference field was added.
 - [ ] No Budget Line, PO, Progress Claim, Supplier Invoice, Variation, Forecast
   Line, or Commercial Baseline document is modified.
-- [ ] **Supplier invoices are untouched by this branch** — `SI_STATUS.PAID` and
-  `paidAt` remain exactly as they were on `main` (reserved, never written).
+- [ ] **No Supplier Invoice document is modified by any Client Receipt action.**
+  Client Receipts are revenue-side settlement and never touch accounts payable —
+  that remains true and is worth re-confirming here.
+  *(Historical note: this checklist previously read "supplier invoices are
+  untouched by this branch — `SI_STATUS.PAID` and `paidAt` remain exactly as they
+  were on `main`". That was scoped to the Client Receipts branch and is no longer
+  a statement about the codebase: the **Supplier Payments** branch has since
+  changed the `paid`/`paidAt` **comments and documentation** — deprecating them
+  in place. No supplier-invoice document, stored value, constant, transition map,
+  counting status, or rules block changed. See §15k-xiii and ADR-24.)*
 
 ### 15j-xiv. Register, search & detail
 
@@ -964,6 +974,314 @@ unauthenticated read or write · cross-company read/write in both directions.
   and allocation tables scroll horizontally **inside their cards**, the editor
   and post/void modals scroll internally, all touch targets are ≥44px, and there
   is no horizontal page scroll.
+
+## 15k. Supplier Payments (cash paid) & AP reconciliation
+
+Sign in as a financial-role user (`company_admin`/`project_manager`/`qs`). Setup:
+a project with two **supplier** contacts ("BuildCo", "SteelCo"); four **posted**
+supplier invoices for BuildCo — `SI-0001` payable 1,100 (supplier ref `INV-4471`,
+due 45 days ago), `SI-0002` payable 2,200 (`INV-4488`, due in 30 days),
+`SI-0003` payable 550 (`INV-4501`, no due date), and `SI-0004` **with retention**
+(gross 1,100, retentionTotal 110, **payable 990**); one **draft**, one
+**approved**, and one **cancelled** invoice; one posted invoice for SteelCo; and
+one **legacy** posted invoice with `supplierId: null` and
+`supplierName: "BuildCo"` (seed directly).
+
+### 15k-i. Navigation & gating
+
+- [ ] The **Commercial** tab shows sub-navigation **Margin · Client Invoices ·
+  Client Receipts · Supplier Payments**; Margin remains the default.
+- [ ] The Receipts sub-view label now reads **Client Receipts**, and its route is
+  still `/projects/{id}/commercial/receipts` (unchanged and shareable).
+- [ ] `/projects/{id}/commercial/supplier-payments` loads directly and is
+  shareable.
+- [ ] With no supplier/subcontractor contacts, creation is disabled with a link
+  to Contacts.
+- [ ] Signed in as `subcontractor` or `client`, the Supplier Payments view shows
+  the restricted card and **no** data.
+
+### 15k-ii. Numbering & atomicity
+
+- [ ] The first draft is `SP-0001`; the next is `SP-0002`.
+- [ ] Numbering is sequential **company-wide** — create a payment on a second
+  project in the same company and confirm it continues the sequence.
+- [ ] Two simultaneous creators never receive the same number.
+- [ ] Void `SP-0002` and create another → it is `SP-0003`; the number is **not**
+  reused and the gap is intentional.
+- [ ] A create that fails (go offline mid-save) leaves **no** counter gap — the
+  next successful create takes the number that failed, and **no** payment
+  document exists.
+- [ ] **Atomic currency lock:** on a fresh project with budget 0 and no records,
+  creating the first payment locks the project currency **in the same step**; go
+  offline mid-save and confirm **neither** the payment nor the lock is written.
+- [ ] Creating a second payment on an already-locked project succeeds — verify
+  specifically as a **`qs`** user (whose rule permits only `false → true`).
+- [ ] Project Overview's currency card lists "N supplier payments" among the lock
+  reasons, and a **draft** or **void** payment alone is enough to lock.
+
+### 15k-iii. Draft creation, supplier selection & payment method
+
+- [ ] The supplier picker lists **active supplier and subcontractor contacts
+  only** — the same list the PO picker uses. Client-only contacts never appear.
+- [ ] **Payment method is not pre-filled** — the select starts empty and Save is
+  blocked until a method is chosen. It never defaults to bank transfer.
+- [ ] Choosing **Other** reveals a required description; Save is blocked while it
+  is empty. Choosing any other method stores `paymentMethodOther` as `''`.
+- [ ] Bank Reference, **Remittance Reference**, and External Reference are all
+  optional — a payment saves with all three blank.
+- [ ] Amount must be greater than zero; `0` and negatives are rejected.
+- [ ] Editing a draft preserves the `SP-` number, currency, and created stamps.
+- [ ] A **posted** payment offers **no** Edit action.
+
+### 15k-iv. Allocation & eligible invoices
+
+- [ ] The allocation picker lists only BuildCo's **posted** invoices. The
+  **draft**, **approved**, and **cancelled** invoices, and **SteelCo's**
+  invoices, never appear. *(Approved is not the financial commit point — posted
+  is.)*
+- [ ] Each row shows payable, paid to date, and remaining payable — and, for
+  `SI-0004` only, the gross and retention-withheld line.
+- [ ] The **legacy** `supplierId: null` invoice appears when BuildCo is selected
+  and is labelled **"Matched by supplier name — this invoice predates the
+  Contacts module."** Confirm afterwards that the invoice document was **not**
+  backfilled (`supplierId` is still `null`).
+- [ ] Both invoice references render and are searchable: `SI-0007 · INV-4471`.
+- [ ] **Allocate remaining** fills exactly that invoice's remaining payable,
+  capped by the cash still unallocated on the payment.
+- [ ] **Allocate oldest first** runs **only** when pressed, fills oldest first,
+  and the proposal is editable and discardable. Nothing is ever auto-allocated on
+  open, on supplier change, on amount change, on adding an invoice, or on
+  posting.
+- [ ] One payment allocated across **two** invoices saves and posts correctly.
+- [ ] Two payments allocated against **one** invoice both count.
+- [ ] The same invoice cannot be selected twice on one payment (already-chosen
+  invoices drop out of the other rows' pickers; a duplicate is rejected).
+- [ ] Allocating **more than the payment amount** is **hard-blocked** with a
+  message, and Save stays disabled.
+- [ ] Changing the supplier on a draft that has allocations **asks for
+  confirmation** and clears them; cancelling leaves both the supplier and the
+  allocations untouched.
+- [ ] Allocations are freely editable while draft and are **frozen** after
+  posting.
+
+### 15k-v. Payable basis & retention
+
+- [ ] `SI-0004` offers **990** as its payable, not its 1,100 gross.
+- [ ] Allocating 990 to `SI-0004` reads **Fully reconciled** with Remaining
+  Payable 0 — the 110 retention is **never** presented as payable.
+- [ ] The retention line is shown for `SI-0004` and **hidden** for invoices with
+  `retentionTotal` 0.
+- [ ] The permanent helper text beneath the allocation table reads: *"Payments
+  settle the net payable on each invoice, after retention withheld. Retention is
+  not payable on this invoice and is never reduced by a payment. Retention
+  release is not yet modelled in Constrapp."*
+- [ ] After the whole suite, every invoice's `retention`, `retentionGst`, and
+  `retentionTotal` are **byte-identical** to their pre-suite values.
+- [ ] Retention appears in **no** AP ageing bucket.
+- [ ] `grep -rniE "balance due|amount owing|outstanding payable|overdue payable" frontend/src`
+  returns **no** matches.
+
+### 15k-vi. Cent arithmetic (AUTOMATED — see §0)
+
+- [ ] Amount 0.30 allocated 0.10 → unallocated 0.20 saves.
+- [ ] Amount 10.01 allocated 3.33 → unallocated 6.68 saves.
+- [ ] Amount 1000.00 allocated 999.99 → unallocated 0.01 saves.
+- [ ] A one-cent discrepancy is rejected by **Firestore**, not just the UI.
+
+### 15k-vii. Posting & future dates
+
+- [ ] Post is a **separate confirmation** showing amount, allocated, unallocated,
+  date, and method; it warns that posting freezes everything.
+- [ ] A **future-dated** draft saves, shows an amber warning in the editor and a
+  "future" marker in the register, and **Post is blocked** with an explanation.
+- [ ] Correcting the date to today or earlier allows posting.
+- [ ] **Backdated** payments post with no warning.
+- [ ] **Known deferred limitation (expected to be bypassable — do not report as
+  enforced):** a direct SDK call can post a future-dated payment; rules validate
+  only the `YYYY-MM-DD` shape. See SECURITY.md → Deferred Control 18.
+
+### 15k-viii. Invoice balances & reconciliation state
+
+- [ ] Post a 1,100 payment fully allocated to `SI-0001` → that invoice shows Paid
+  to Date 1,100, Remaining Payable 0, badge **Fully reconciled**.
+- [ ] Post a 500 payment allocated to `SI-0002` → Paid 500, Remaining 1,700,
+  badge **Partly reconciled**.
+- [ ] An invoice with no payments shows **Unreconciled**.
+- [ ] Over-reconcile `SI-0003` (600 against 550) → amber warning **and** the
+  acknowledgement tick is required; after ticking it saves; the invoice shows
+  Remaining **−50 in red**, badge **Over-reconciled**.
+- [ ] The Supplier Invoice **detail** view (click the `SI-` number) lists the
+  allocated payments (SP #, date, method, bank ref, remittance ref, allocated).
+- [ ] **Draft** payments change no balance anywhere.
+- [ ] Only **posted** supplier invoices appear in the reconciliation table —
+  draft, approved, and cancelled invoices show `—` for Paid/Remaining.
+
+### 15k-ix. AP ageing
+
+- [ ] The AP panel is titled **"Accounts Payable — ageing by due date"** and its
+  subtitle reads **"Remaining payable after posted Supplier Payments."**
+- [ ] With `SI-0001` (45 days overdue) **fully reconciled**, it **disappears from
+  every ageing bucket** while staying in the register.
+- [ ] With `SI-0002` partly reconciled, *Not yet due* shows **only its
+  remainder** (1,700), not 2,200.
+- [ ] `SI-0003` (no due date) appears in **No due date** at its remaining
+  balance.
+- [ ] The **over-reconciled** invoice is **excluded from the buckets** and listed
+  in the "Over-reconciled invoices — excluded from ageing" callout with its
+  signed negative balance in red.
+- [ ] **Void a posted payment** → the invoice's balance is restored and it
+  **re-enters** the correct ageing bucket immediately, with no page reload and no
+  reversal record.
+- [ ] **Total Posted Supplier Invoices** sums `payableTotal` (not gross) across
+  posted invoices only.
+
+### 15k-x. Lifecycle — Rules-enforced (AUTOMATED — see §0)
+
+**Covered by `frontend/tests/rules/supplierPayments.rules.test.js` (47 tests).**
+Re-run the suite rather than performing these by hand, and always before
+publishing rules.
+
+**Must be ALLOWED:** create as draft (all three financial roles) · read · draft
+edit (supplier, amount, date, method, references, allocations) · `draft → posted`
+· `draft → void` with a reason · `posted → void` with a reason · a fully
+unallocated payment · exactly 100 allocations · a backdated payment · an
+allocation with an empty `supplierInvoiceNumber` · the cent-arithmetic
+combinations · the complete create → edit → post → failed posted edit → void
+sequence.
+
+**Must be REJECTED:** create as `posted`/`void` · forged `postedAt`/`postedBy`/
+`voidedAt`/`voidedBy` · `createdBy` = another uid · client-clock `createdAt`/
+`updatedAt` · `docType: 'refund'` or `'receipt'` · malformed `currency` (`AU`,
+`aud`, `1234`) · non-numeric `revision` · **null or empty `supplierId`/
+`supplierName`** · malformed `paymentDate` (`01/08/2026`, `2026-8-1`, `''`, a
+Timestamp) · `amount` of 0, negative, or a string · negative or non-numeric
+`allocatedTotal`/`unallocatedAmount` · allocations claiming more than the amount ·
+a one-cent invariant break in either direction · `allocations` not a list ·
+**101 allocations** · empty, null, or over-40-character `paymentMethod` · draft
+edit changing `paymentNumber`/`currency`/`createdAt`/`createdBy`/`docType`/
+`revision` · draft edit forging a lifecycle stamp · draft edit breaking the
+invariant or the required shape · `draft → posted` also changing content ·
+`postedBy`/`updatedBy` ≠ caller · void with an empty **or whitespace-only**
+reason, or `voidedBy` ≠ caller · **any** non-void update to a posted payment ·
+`posted → draft` · `void → *` · double void · fabricated statuses (`paid`,
+`partially_paid`, `reconciled`, `cleared`, `issued`, `approved`) · **delete** of
+draft, posted, and void · subcontractor/client read or write · unauthenticated
+read or write · cross-company read/write in both directions.
+
+### 15k-xi. Unallocated payments
+
+- [ ] A payment with **no** allocations saves and posts; it appears under
+  **Unallocated — on account** and is **not** styled as an error.
+- [ ] A partly allocated payment shows the correct Allocated / Unallocated split,
+  with an amber note before saving.
+- [ ] Unallocated money **reduces no invoice balance** — confirm AP ageing and
+  every invoice's Remaining Payable are unchanged by an unallocated payment.
+- [ ] **Payments Recorded** includes the unallocated payment in full — it is
+  actual cash out.
+- [ ] The **Has unallocated** filter narrows the register to those payments.
+
+### 15k-xii. Allocation exceptions
+
+- [ ] Post a payment allocated to `SI-0002`, then **cancel that invoice** (this
+  requires a direct SDK call — posted supplier-invoice lifecycle is not
+  rules-enforced) → an **Allocation exceptions** panel appears on **both** the
+  Supplier Payments and Supplier Invoices views, naming the payment, both invoice
+  references, and the amount, and stating that the cancellation may have happened
+  through a direct SDK call.
+- [ ] The payment keeps its amount and stays counted in **Payments Recorded** —
+  the cash does **not** disappear.
+- [ ] The cancelled invoice stays **out** of AP ageing.
+- [ ] A payment allocated to another supplier's invoice (seed directly) surfaces
+  as a **supplier mismatch** exception.
+- [ ] Nothing is deleted, reassigned, or reversed automatically; the documented
+  remedy is shown.
+
+### 15k-xiii. `paid` / `paidAt` deprecation
+
+- [ ] `grep -rn "SI_STATUS.PAID" frontend/src` returns **only** the deprecated
+  definition, its label, its badge variant, its empty transition entry, the
+  counting-statuses array, and the vestigial guard inside `isOverdue` — **no
+  write**.
+- [ ] No UI path anywhere transitions a supplier invoice to `paid`; a posted
+  invoice's only row action is **Record payment**.
+- [ ] After the whole suite, every supplier invoice's `paidAt` is still `null`
+  and its `status` is unchanged.
+- [ ] Seed a supplier invoice with `status: 'paid'` directly → it still counts
+  toward **Invoiced** and **Actual** on the Budget tab (the safe failure mode),
+  and it does **not** appear in AP reconciliation or ageing (only `posted` is
+  payable).
+- [ ] The Due column uses payment-aware past-due: a fully reconciled invoice
+  whose due date has passed is **not** marked past due, while an unpaid overdue
+  one reads **"Past due Nd"** in red.
+
+### 15k-xiv. Supplier Invoice integration
+
+- [ ] The Supplier Invoices header carries a **Supplier Payments** link.
+- [ ] A compact AP summary shows **Total Posted Supplier Invoices**, **Paid to
+  Date**, and **Remaining Payable**, with a link to Supplier Payments.
+- [ ] **Record payment** appears only on **posted** rows; it opens the Supplier
+  Payments editor with the supplier preselected and that invoice pre-added.
+- [ ] Navigating **back** afterwards does **not** reopen the editor (the
+  hand-off state is consumed once).
+- [ ] Record payment on an invoice whose supplier contact is missing, or whose
+  invoice is no longer posted, falls back safely to an empty/supplier-only
+  editor rather than erroring.
+- [ ] Clicking an `SI-` number opens the read-only invoice detail with lines,
+  totals, retention, payment reconciliation, and the allocated payments table.
+
+### 15k-xv. Currency
+
+- [ ] On an NZD project every payment figure renders `NZD …`; the stored payment
+  `currency` is `NZD` and is **never** displayed as the authority.
+- [ ] No currency picker appears anywhere in the payment UI.
+- [ ] Payments show **no GST line, no net amount, and no tax code** — only gross
+  cash.
+
+### 15k-xvi. No mutation & no accrual impact
+
+- [ ] Record every Budget figure (Budgeted, Committed, Claimed, Actual, Invoiced,
+  Remaining), every Forecast rollup (Cost to Complete, Forecast Final Cost,
+  Variance to Budget), and every Commercial margin figure before and after this
+  whole suite → **every number identical**. Cash out is not cost.
+- [ ] No Supplier Invoice document is modified by any payment action — check
+  `status`, `subtotal`, `gstTotal`, `grossTotal`, `payableTotal`, `retention*`,
+  `lineItems`, `paidAt`, and confirm **no** balance, payment-status, or
+  payment-reference field was added.
+- [ ] No Budget Line, PO, Progress Claim, Variation, Forecast Line, Commercial
+  Baseline, Client Invoice, or Client Receipt document is modified.
+- [ ] **Client Receipts behave exactly as before** — only their sub-navigation
+  label changed.
+
+### 15k-xvii. Register, search & detail
+
+- [ ] Clicking an `SP-` number opens the read-only detail with the supplier
+  snapshot, date, amount, method, all three references, allocation table with
+  both invoice references and live invoice status, audit stamps, and (when void)
+  the void reason.
+- [ ] Search matches SP number, supplier, bank reference, remittance reference,
+  external reference, notes, **SI number**, and **supplier invoice number**.
+- [ ] Status, supplier, and **Has unallocated** filters combine with search.
+- [ ] Editing the supplier contact afterwards (rename) does **not** change any
+  existing payment's `supplierName` snapshot.
+
+### 15k-xviii. Cash Flow readiness
+
+- [ ] A posted payment exposes amount, `paymentDate`, project, supplier identity,
+  currency, `allocatedTotal`, and `unallocatedAmount` via
+  `lib/supplierPayments.js → cashOutRows()`.
+- [ ] An **unallocated** payment's **full amount** is present as cash out — not
+  its `allocatedTotal`.
+- [ ] Draft and void payments are excluded.
+- [ ] **No Cash Flow route, page, chart, period, or aggregation exists in this
+  branch.**
+
+### 15k-xix. Responsive
+
+- [ ] At **375px / 768px / 1280px**: the Commercial sub-nav wraps to four items,
+  the register, reconciliation, AP-ageing, and allocation tables scroll
+  horizontally **inside their cards**, the editor and post/void/detail modals
+  scroll internally, all touch targets are ≥44px, and there is no horizontal
+  page scroll.
 
 ## 16. Responsive Checks — 375px, 768px, 1280px
 
@@ -987,8 +1305,9 @@ Firestore Security Rules are the only trust boundary — these checks confirm th
 ### 17b. Role-restricted reads (PII & financial collections)
 
 - [ ] Signed in as a `subcontractor` or `client` role user, **Contacts, Supplier
-  Invoices, Client Invoices, Receipts, Variations, Forecast, and Commercial** all
-  show no data — reads are blocked by rules, not merely absent from the nav.
+  Invoices, Client Invoices, Client Receipts, Supplier Payments, Variations,
+  Forecast, and Commercial** all show no data — reads are blocked by rules, not
+  merely absent from the nav.
 - [ ] The same user **can** still read company members' Projects, Cost Codes,
   Budget Lines, POs, and Progress Claims (the intended coarser read model).
 
@@ -1011,9 +1330,12 @@ enforced.
 - [ ] Lifecycle-transition legality, post-submission/`posted`/`approved`
   immutability, one-open-claim / one-invoice-per-claim races, creator ≠ approver
   segregation, counter integrity, and uniqueness are all client-enforced only.
-  **Exception:** `clientInvoices` **and `clientReceipts`** transitions and
-  post-commit immutability **are** rules-enforced — see §15i-x and §15j-x, which
-  test them as real rejections.
+  **Exception:** `clientInvoices`, `clientReceipts` **and `supplierPayments`**
+  transitions and post-commit immutability **are** rules-enforced — see §15i-x,
+  §15j-x and §15k-x, which test them as real rejections. Note the live
+  consequence of the remaining gap: a direct-SDK caller can cancel a **posted**
+  supplier invoice that a payment has settled (surfaced as an allocation
+  exception), or forge `status: 'paid'` on one (§15k-xiii).
 - [ ] Client-invoice **Available to Invoice** and **per-variation remaining**
   limits are client-side warnings only: two users invoicing the same remaining
   value concurrently both succeed. Expected — do not report as enforced
@@ -1026,6 +1348,14 @@ enforced.
   only. Expected — do not report as enforced (SECURITY.md → Deferred Control 16).
   The **scalar** invariant (`allocatedTotal + unallocatedAmount == amount`, whole
   cents) **is** rules-enforced.
+- [ ] Supplier-payment **allocation integrity** is client-side only, identically:
+  an allocation may target a non-existent/draft/approved/cancelled/wrong-project/
+  wrong-supplier invoice, an invoice can be over-reconciled, and two users can
+  allocate the same remaining payable concurrently. The **`payableTotal` basis
+  and the retention exclusion are also client-side** — rules cannot read the
+  invoice. Posting a **future-dated** payment is client-blocked only. Expected —
+  do not report as enforced (SECURITY.md → Deferred Control 18). The **scalar**
+  invariant **is** rules-enforced.
 
 ### 17e. Secrets
 

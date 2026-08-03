@@ -13,7 +13,7 @@ companies/{companyId}
   contacts/{contactId}
   counters/{counterId}                 (purchaseOrders, progressClaims, supplierInvoices,
                                         variationsClient, variationsSupplier, clientInvoices,
-                                        clientReceipts)
+                                        clientReceipts, supplierPayments)
   projects/{projectId}
     budgetLines/{lineId}
     purchaseOrders/{poId}
@@ -21,6 +21,7 @@ companies/{companyId}
     supplierInvoices/{invoiceId}
     clientInvoices/{invoiceId}
     clientReceipts/{receiptId}
+    supplierPayments/{paymentId}
     variations/{variationId}
     forecastLines/{costCodeId}           (deterministic id = costCodeId)
     commercial/baseline                  (single doc; deterministic id = "baseline")
@@ -137,14 +138,14 @@ next save. Embedding (not a `contactAssignments` subcollection) follows ADR-16.
 
 Company-wide sequential numbering. Documents: `purchaseOrders`, `progressClaims`,
 `supplierInvoices`, `variationsClient`, `variationsSupplier`, `clientInvoices`,
-`clientReceipts`.
+`clientReceipts`, `supplierPayments`.
 
 | Field | Type | Notes |
 |---|---|---|
 | `next` | number | The next number to assign. Read and incremented in the **same transaction** as the numbered document's creation, so concurrent users never share a number. Missing counter ⇒ starts at 1 |
 
 Numbers render as `PO-0001` / `PC-0001` / `SI-0001` / `CV-0001` / `SV-0001` /
-`CI-0001` / `CR-0001` (zero-padded to 4).
+`CI-0001` / `CR-0001` / `SP-0001` (zero-padded to 4).
 
 ## companies/{companyId}/projects/{projectId}
 
@@ -170,7 +171,8 @@ change can never relabel it.
 Currency **locks** as soon as the project holds any monetary value — a non-zero
 `budget`, any budget line, any purchase order (**including draft and
 cancelled**), any progress claim, supplier invoice, **client invoice (including
-draft and void)**, **client receipt (including draft and void)**, client or
+draft and void)**, **client receipt (including draft and void)**, **supplier
+payment (including draft and void)**, client or
 supplier variation, any forecast line with
 `uncommittedCostToComplete !== null`, or an established commercial baseline. Cost Codes and Contacts are company-wide and
 hold no money, so they **never** lock. Detecting that evidence is
@@ -278,7 +280,7 @@ GST is stored per line as `gstAmount`.
 |---|---|---|
 | `invoiceNumber` | string | `SI-0001` — from the company-wide `counters/supplierInvoices` |
 | `supplierInvoiceNumber` | string | The supplier's own invoice number — the duplicate-detection key |
-| `status` | string | `draft` \| `approved` \| `posted` \| `cancelled` (live); `received` \| `under_review` \| `disputed` \| `paid` reserved |
+| `status` | string | `draft` \| `approved` \| `posted` \| `cancelled` (live); `received` \| `under_review` \| `disputed` reserved. **`paid` is DEPRECATED IN PLACE, not reserved** — no supported path writes it and `SI_TRANSITIONS` reaches it from nowhere; payment state derives from Supplier Payment allocations (ADR-24). It is retained for legacy rendering, and because supplier-invoice lifecycle rules are still deferred a direct-SDK caller **can** still forge it |
 | `docType` | string | `invoice`; `credit_note` reserved (Credit Notes are future) |
 | `source` | string | `progress_claim` \| `direct_po` |
 | `supplierId` | string \| null | → contact, snapshotted from the PO/claim; null for pre-Contacts POs |
@@ -304,7 +306,7 @@ GST is stored per line as `gstAmount`.
 | `approvedAt`/`approvedBy` | timestamp / uid | Stamped on approve |
 | `postedAt`/`postedBy` | timestamp / uid | Stamped on post (the financial commit point) |
 | `cancelledAt` | timestamp \| null | Stamped on cancel |
-| `paidAt` | timestamp \| null | **Reserved** — set by the future Payments module |
+| `paidAt` | timestamp \| null | **DEPRECATED IN PLACE** — written once as `null` at creation and **never updated**. Supplier Payments shipped without activating it: payment state derives from posted Supplier Payment allocations, and setting a date here would create a second source of payment truth (ADR-24) |
 | `adjustsInvoiceId` | string \| null | **Reserved** — Credit Note target |
 | `attachments` | array | **Reserved** — always `[]`; no Storage uploads yet |
 | `externalRefs` | map | **Reserved** — accounting-system IDs (Xero/MYOB/QuickBooks) |
@@ -470,6 +472,89 @@ back — not onto this document, and above all **not onto Client Invoices**, whi
 gain no balance field, no payment status, and no receipt back-reference. Voiding
 a receipt therefore restores every invoice balance for free, with no reversal
 document. **No migration** — a project with no `clientReceipts` loads normally.
+
+## …/projects/{projectId}/supplierPayments/{paymentId}
+
+**Cash actually paid** to a supplier or subcontractor, with **embedded
+allocations** against **posted** Supplier Invoices — the settlement half of
+accounts payable and the money-out mirror of `clientReceipts`. Semantics,
+lifecycle, and the balance formulas:
+[FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md). Reads are restricted to
+internal financial roles (see [SECURITY.md](SECURITY.md)). Rationale: ADR-24.
+
+A payment records **gross cash**, not an accrual figure. It carries **no GST, no
+tax code, no net amount, and no cost meaning** — the tax and the cost were both
+recorded on the posted supplier invoice being settled. Numbers come from the
+company-wide `counters/supplierPayments` (`SP-0001`), incremented in the same
+transaction as the write. **`projectId` is deliberately not stored** — the
+collection path carries it, and a redundant copy would be a second source of
+truth.
+
+| Field | Type | Notes |
+|---|---|---|
+| `paymentNumber` | string | `SP-0001` — from the company-wide counter; immutable after creation |
+| `status` | string | `draft` \| `posted` \| `void`. **No `cleared`, no `reconciled`** — reconciliation is a derived state of an *invoice*, never a payment status |
+| `docType` | string | `payment`; `refund` **reserved** (money moving *back* from a supplier is a different event from voiding a mis-keyed payment) |
+| `supplierId` | string | **REQUIRED non-empty** → company contact (type `supplier` or `subcontractor`). **Never null** — unlike supplier *invoices*, which may carry a legacy `supplierId: null`, a new payment always carries a real link (rules-enforced) |
+| `supplierName` | string | **REQUIRED non-empty frozen snapshot** of the contact's `displayName` at creation |
+| `paymentDate` | string | `'YYYY-MM-DD'` — the date the money **left the account**. **This, never `createdAt`/`postedAt`, is the cash date the future Cash Flow module consumes** |
+| `amount` | number | **Gross cash paid**, `> 0` (rules-enforced), in the project currency |
+| `paymentMethod` | string | `bank_transfer` \| `card` \| `cash` \| `cheque` \| `direct_debit` \| `other`. **Required and never defaulted**. Rules validate *shape* only (ADR-21 anti-drift precedent) |
+| `paymentMethodOther` | string | Required non-empty when `paymentMethod` is `other`; `''` otherwise |
+| `bankReference` | string | Optional — our bank-statement reference; the key for future bank reconciliation |
+| `remittanceReference` | string | Optional — the reference communicated to the supplier. **Constrapp generates no remittance advice** (no PDF, no email) |
+| `externalReference` | string | Optional — the payment in Xero / MYOB / QuickBooks |
+| `notes` | string | Optional |
+| `allocations` | array | **Embedded** (ADR-6) — see below. Max 100 (rules-enforced) |
+| `allocatedTotal` | number | **Derived at write** — Σ `allocations[].allocatedAmount` |
+| `unallocatedAmount` | number | **Derived at write** — `amount − allocatedTotal`. Stored *specifically* so rules can enforce the scalar invariant below |
+| `currency` | string | **Audit snapshot** of the project currency at write time. **Never read for display** |
+| `revision` | number | 1 |
+| `postedAt` / `postedBy` | timestamp / uid | `null` until posted. Rules require `postedBy == request.auth.uid` and `postedAt == request.time` |
+| `voidedAt` / `voidedBy` | timestamp / uid | `null` unless void. Same constraints |
+| `voidReason` | string | **Required non-whitespace** on void (rules-enforced) |
+| `attachments` | array | **Reserved** — always `[]` |
+| `externalRefs` | map | **Reserved** — structured accounting-system IDs |
+| `createdAt` / `createdBy` | timestamp / uid | Set once; rules reject any later change |
+| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on **every** write path |
+
+Each allocation:
+
+```
+{ supplierInvoiceId,     // → a POSTED supplier invoice on THIS project
+  invoiceNumber,         // frozen snapshot 'SI-0007' — Constrapp's number
+  supplierInvoiceNumber, // frozen snapshot 'INV-4471' — the SUPPLIER'S own
+                         // reference, which is what AP staff reconcile against.
+                         // '' when the invoice carries none — never invented
+  allocatedAmount }      // > 0, against payableTotal, in the project currency
+```
+
+Both references are frozen so a register row renders without reading invoice
+documents, and both are searchable (`SI-0007 · INV-4471`).
+
+**The payable basis.** Allocations reconcile against
+**`supplierInvoice.payableTotal`** (`grossTotal − retentionTotal`), **never
+`grossTotal`**. `payableTotal` is already net of retention withheld and of
+retention's own GST; using gross would present retained money as currently
+payable. A payment **never** writes, clears, or reduces `retention`,
+`retentionGst`, or `retentionTotal` — retention release is not modelled.
+
+**The scalar invariant.** Rules enforce
+`allocatedTotal + unallocatedAmount == amount` (with both ≥ 0 and `amount > 0`),
+compared in **whole cents** via `math.round(v * 100)` — identical to the
+`clientReceipts` rule, and mirrored by `lib/payments.js → toCents()`. A
+representation fix, not a loosened invariant: a one-cent discrepancy still fails.
+
+**Stored vs derived.** Only the fields above are authored or snapshotted.
+**Paid to Date, Remaining Payable, reconciliation state, the AP ageing, and every
+project-level cash-out total are derived at read time**
+(`lib/supplierPayments.js` over `lib/payments.js`) and are **never** written
+back — not onto this document, and above all **not onto Supplier Invoices**,
+which gain no balance field, no payment status, and no payment back-reference,
+and whose `status` is **never** moved to `paid` and whose `paidAt` is **never**
+set (ADR-24). Voiding a payment therefore restores every invoice balance for
+free, with no reversal, refund, or bank-reversal document. **No migration** — a
+project with no `supplierPayments` loads normally.
 
 ## …/projects/{projectId}/variations/{variationId}
 
@@ -643,4 +728,5 @@ a design assessment, a hook, and (where a new collection is introduced) a manual
 - The commercial baseline → a client contact via `clientId` (with a frozen `clientName` snapshot); optional. It stores contract inputs only — every margin figure is derived at read time from the baseline, approved client variations, and Forecast Final Cost, and is never written back to the baseline or any other document.
 - Client invoices → a client contact via `clientId`, with the client's name, legal name, ABN, email, phone, and address **snapshotted at creation** so later contact edits never rewrite billing history; → approved **client** variations via an optional per-line `variationId` (+ frozen `variationNumber`/`variationDescription`). The linkage is **read-time only**: invoicing **never** mutates a variation (no stamp, no status change, no back-reference) and never touches the commercial baseline or Budget Lines. Line `costCodeId` is **optional** (ADR-22).
 - Client receipts → a client contact via a **required** `clientId` (with a frozen `clientName` snapshot); → issued client invoices via **embedded** `allocations[].clientInvoiceId` (+ a frozen `invoiceNumber` snapshot). The linkage is **read-time only**: a receipt **never** mutates an invoice (no balance field, no payment status, no back-reference), which is exactly why voiding a receipt restores every balance with no reversal record. Receipts touch no cost figure, no forecast, and no margin figure — cash is not revenue.
-- Counters are company-wide: PO/claim/invoice/receipt numbers are unique per **company**, not per project. Contacts, forecast lines, and the commercial baseline carry no sequential number.
+- Supplier payments → a supplier/subcontractor contact via a **required** `supplierId` (with a frozen `supplierName` snapshot); → **posted** supplier invoices via **embedded** `allocations[].supplierInvoiceId` (+ frozen `invoiceNumber` **and** `supplierInvoiceNumber` snapshots). A supplier invoice with a legacy `supplierId: null` is matched on its frozen `supplierName` instead and is **never backfilled**. The linkage is **read-time only**: a payment **never** mutates a supplier invoice (no balance field, no payment status, no back-reference, no `paid` status, no `paidAt`), which is exactly why voiding a payment restores every balance with no reversal record. Payments touch no cost figure, no forecast, and no margin figure — cash out is not cost.
+- Counters are company-wide: PO/claim/invoice/receipt/payment numbers are unique per **company**, not per project. Contacts, forecast lines, and the commercial baseline carry no sequential number.

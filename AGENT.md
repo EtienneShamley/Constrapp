@@ -64,18 +64,18 @@ frontend/
     components/     UI primitives: Card, Btn, Badge, Stat, ProgBar, PageHeader, ProtectedRoute
     layouts/        AppShell (Sidebar + TopBar), AuthLayout, ProjectDetailLayout,
                     ProjectCommercialLayout (Commercial sub-nav:
-                    Margin | Client Invoices | Receipts)
+                    Margin | Client Invoices | Client Receipts | Supplier Payments)
     pages/          Top-level routes; pages/project/ holds Project Detail tabs
     hooks/          useAuth, useProfile, useCompany, useProjects, useProject,
                     useCostCodes, useContacts, useBudgetLines, usePurchaseOrders,
                     useProgressClaims, useSupplierInvoices, useClientInvoices,
-                    useClientReceipts, useVariations, useForecastLines,
-                    useProjectCommercial
+                    useClientReceipts, useSupplierPayments, useVariations,
+                    useForecastLines, useProjectCommercial
     lib/            firebase.js, formatters.js, currency.js, nav.js, projectTabs.js,
                     purchaseOrders.js, progressClaims.js, supplierInvoices.js,
                     clientInvoices.js, payments.js (shared, direction-agnostic),
-                    clientReceipts.js, variations.js, forecast.js, margin.js,
-                    contacts.js (pure domain logic)
+                    clientReceipts.js, supplierPayments.js, variations.js,
+                    forecast.js, margin.js, contacts.js (pure domain logic)
 ```
 
 ## Design Tokens
@@ -120,7 +120,7 @@ companies/{companyId}/contacts/{contactId}   entityType, contactTypes[], names, 
                                              company-wide directory; reads restricted to financial roles
 companies/{companyId}/counters/{counterId}   next — sequential numbering (purchaseOrders, progressClaims,
                                              supplierInvoices, variationsClient, variationsSupplier,
-                                             clientInvoices, clientReceipts)
+                                             clientInvoices, clientReceipts, supplierPayments)
 companies/{companyId}/projects/{projectId}   name, status, budget, startDate, location, progress,
                                              currency (ISO 4217 — the display authority),
                                              currencyLocked (one-way ratchet)
@@ -147,6 +147,17 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
                                              accounts receivable; contract control + ageing derived read-time;
                                              LIFECYCLE + ISSUED IMMUTABILITY ARE RULES-ENFORCED (the only collection
                                              where they are); reads restricted to financial roles
+  …/supplierPayments/{paymentId}             paymentNumber (SP-####), status draft|posted|void, REQUIRED supplierId +
+                                             supplierName snapshot, paymentDate ('YYYY-MM-DD'), gross `amount` (> 0),
+                                             paymentMethod (never defaulted), bank/remittance/external refs, EMBEDDED
+                                             allocations[] {supplierInvoiceId, invoiceNumber, supplierInvoiceNumber,
+                                             allocatedAmount} against POSTED supplier invoices' payableTotal (NOT
+                                             grossTotal — retention is withheld and is not payable), allocatedTotal +
+                                             unallocatedAmount (scalar invariant rules-enforced in whole cents) —
+                                             CASH PAID; no GST, no tax code, no net amount; Paid to Date / Remaining
+                                             Payable / reconciliation state / AP ageing derived read-time and NEVER
+                                             written onto an invoice (no `paid` status, no `paidAt`); LIFECYCLE +
+                                             POSTED IMMUTABILITY ARE RULES-ENFORCED; reads restricted to financial roles
   …/variations/{variationId}                 variationNumber (CV-#### client / SV-#### supplier), variationType,
                                              status, client/supplier + poId snapshots, ex-GST lineItems[] w/ per-line
                                              taxCode (submitted/approved sides), costCodeId spine — commercial change
@@ -164,14 +175,15 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
 ## Financial Invariants (mandatory)
 
 - **Purchase Orders, Progress Claims, Supplier Invoices, Variations, and Forecast Lines never write financial values onto Budget Lines.** Committed, Claimed, Actual, Invoiced, the variation figures (Approved Supplier Variations / Commitment Exposure), and every forecast figure (Cost to Complete, Forecast Final Cost, Variance to Budget) are derived at read time from PO, claim, invoice, and variation documents (`lib/purchaseOrders.js`, `lib/progressClaims.js`, `lib/supplierInvoices.js`, `lib/variations.js`, `lib/forecast.js`) — never stored back. **Forecast Lines store only the manual `uncommittedCostToComplete` (number|null) + notes; supplier-variation exposure is shown separately and is never added into Forecast Final Cost.** Approved variations count only at read time and never mutate POs, claims, or invoices; **Commitment Exposure is separate from Committed** (variation commitment does not yet mature against claims/invoices). Committed now means *remaining open commitment* (PO line − posted/paid invoiced-to-date); Actual counts a posted invoice instead of its source claim (read-time exclusion — the claim is never mutated)
-- Document numbers (`PO-0001`, `PC-0001`, `SI-0001`, `CV-0001`, `SV-0001`, `CI-0001`, `CR-0001`) come from company-wide counters incremented in the same transaction as the document write
+- Document numbers (`PO-0001`, `PC-0001`, `SI-0001`, `CV-0001`, `SV-0001`, `CI-0001`, `CR-0001`, `SP-0001`) come from company-wide counters incremented in the same transaction as the document write
 - **Client Invoices are revenue-side and never touch a cost figure.** They never write onto Budget Lines, the Commercial Baseline, or Variations; `Issued Client Invoices`, `Available to Invoice`, per-variation invoiced/remaining, and receivables ageing are all derived at read time (`lib/clientInvoices.js`). Only **approved** client variations are invoiceable; **negative** approved ones reduce the Current Contract Sum but cannot be invoiced. Over-invoicing is **warned, never blocked** — the limit cannot be rules-enforced. **There is still no payment state ON THE INVOICE**: no `paid`/`partially_paid` status and no payment field. Since Client Receipts shipped, *Received to Date*, *Remaining to Reconcile*, and the reconciliation state (*unreconciled / partly / fully / over-reconciled*) are **derived at read time from posted receipt allocations** and are **never written onto an invoice** — which is why voiding a receipt restores balances with no reversal record. The words *paid* and *unpaid* must never be used as an invoice status. Constrapp does **not** produce a compliant Australian Tax Invoice (no company legal name/ABN) — never label output "Tax Invoice"
 - **Client Receipts are cash, not revenue.** A receipt stores gross cash received — **no GST, no tax code, no net amount** — and feeds **no** budget figure, forecast figure, or margin figure. Allocations are **embedded** on the receipt and **nothing is ever written onto a Client Invoice** (no balance, no payment status, no back-reference). Over-allocating the *receipt* is hard-blocked and its scalar arithmetic is rules-enforced (in whole cents); over-allocating an *invoice* is **warned, never blocked** — rules cannot sum sibling documents. Unallocated receipts are permitted, reported separately, and **never auto-applied**. Cash Flow must consume `receiptDate`, never `createdAt`/`postedAt`
+- **Supplier Payments are cash out, not cost.** A payment settles an Actual cost that a **posted** supplier invoice already recognised, so it feeds **no** budget figure, forecast figure, or margin figure. Allocations reconcile against `supplierInvoice.payableTotal` — **never `grossTotal`** — because retention withheld is not payable, and a payment never writes, clears, or reduces `retention`/`retentionGst`/`retentionTotal` (retention release is not modelled). Allocations are **embedded** on the payment and **nothing is ever written onto a Supplier Invoice** (no balance, no payment status, no back-reference). **`SI_STATUS.PAID` and `paidAt` are DEPRECATED IN PLACE, never activated** — no path writes them and `SI_TRANSITIONS` reaches `paid` from nowhere; `paid` stays in `SI_COUNTING_STATUSES` deliberately so a direct-SDK-forged document cannot vanish from Invoiced/Actual (ADR-24). Over-allocating the *payment* is hard-blocked and its scalar arithmetic is rules-enforced (whole cents); over-reconciling an *invoice* is **warned, never blocked**. Unallocated payments are permitted, reported separately, and **never auto-applied** — and their **full amount** is still actual Cash Out. Cash Flow must consume `paymentDate`, never `createdAt`/`postedAt`
 - PO line items freeze once a PO leaves `draft`; claim amounts freeze once submitted; approved amounts are frozen forever; supplier invoices freeze once `posted` (and posted invoices cannot be cancelled/unposted)
 - Lifecycles are forward-only; financial documents are never deleted — cancellation/rejection is a status change
 - One open Progress Claim per PO at a time; claims are cumulative (claimed-to-date per PO line)
 - POs snapshot `supplierName` from the chosen contact at write time (`supplierId` is the live link); contact edits or archiving never rewrite issued documents, and POs/claims with `supplierId: null` (pre-Contacts) render from the snapshot and are never backfilled
-- **One currency per project; a currency is a label, never a conversion.** There is **no FX conversion**, no exchange rates, and no mixed-currency transactions. Money is formatted **only** through `formatCurrency(amount, currencyCode)` in `lib/formatters.js` with the currency resolved by `lib/currency.js` (`project.currency` → `company.baseCurrency` → `AUD`) — never hard-code a currency code or a `$`. Project currency **locks** once the project holds any monetary value (non-zero `budget`, budget lines, POs incl. draft/cancelled, claims, invoices, variations, non-null forecast inputs, established baseline); Cost Codes and Contacts never lock. The lock *condition* is client-enforced (rules cannot enumerate subcollections); the *ratchet* is rules-enforced once set (ADR-21)
+- **One currency per project; a currency is a label, never a conversion.** There is **no FX conversion**, no exchange rates, and no mixed-currency transactions. Money is formatted **only** through `formatCurrency(amount, currencyCode)` in `lib/formatters.js` with the currency resolved by `lib/currency.js` (`project.currency` → `company.baseCurrency` → `AUD`) — never hard-code a currency code or a `$`. Project currency **locks** once the project holds any monetary value (non-zero `budget`, budget lines, POs incl. draft/cancelled, claims, invoices, receipts, **supplier payments (incl. draft/void)**, variations, non-null forecast inputs, established baseline); Cost Codes and Contacts never lock. The lock *condition* is client-enforced (rules cannot enumerate subcollections); the *ratchet* is rules-enforced once set (ADR-21)
 - **Currency is not tax.** `GST_RATE` remains a flat Australian 10% and every "GST 10%" label is Australian. Selecting another country changes the currency label only — never describe Constrapp as tax-compliant outside Australia
 - Exact definitions and formulas: [docs/FINANCIAL_WORKFLOWS.md](docs/FINANCIAL_WORKFLOWS.md); rationale: [docs/PROJECT_DECISIONS.md](docs/PROJECT_DECISIONS.md)
 

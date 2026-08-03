@@ -36,6 +36,8 @@
 
 - [x] **Client Receipts (foundation)** — the settlement half of accounts receivable and Constrapp's **first real cash record**. Project-scoped `clientReceipts` (`CR-0001` from a company-wide counter) storing **gross cash received** — `receiptDate`, `amount`, an explicitly-chosen `paymentMethod` (never defaulted; `other` requires a description), optional bank/external references — with **embedded `allocations[]`** (`clientInvoiceId` + frozen `invoiceNumber` + `allocatedAmount`) against issued Client Invoices. `clientId`/`clientName` are **required non-empty** (rules-enforced): unlike every other counterparty link, a receipt with no client is not a record. Lifecycle `draft → posted → void` (void terminal, non-whitespace reason), **rules-enforced** with posted receipts immutable — the second collection to meet the ADR-22 standard. **Read-time derivation:** Received to Date, Remaining to Reconcile, reconciliation state (*unreconciled / partly / fully / over-reconciled*), receipt summaries, and the corrected AR ageing — **nothing written onto a Client Invoice**, which gains no balance field, no payment status, and no back-reference, so voiding a receipt restores every balance with **no reversal record**. **AR ageing corrected** to age the *remaining* balance: fully reconciled invoices leave ageing, partially reconciled ones age only their remainder, over-reconciled ones are excluded into a signed callout, and the pre-Receipts disclaimer is replaced by the limits that genuinely remain. Unallocated receipts are permitted, reported separately as money on account, and **never auto-applied** (an explicit *Allocate oldest first* action yields an editable proposal). Over-allocating an **invoice** is warned with an acknowledgement, never blocked; over-allocating the **receipt** is hard-blocked and its scalar arithmetic (`allocatedTotal + unallocatedAmount == amount`, compared in **whole cents** via `math.round`, because IEEE-754 rejects `0.10 + 0.20 == 0.30`) is **rules-enforced**. An invoice voided *after* a posted allocation surfaces as an **exception**, never auto-reversed. Counter, receipt, and the project currency ratchet commit in **one transaction**. Shared, direction-agnostic `lib/payments.js` + AR adapter `lib/clientReceipts.js`; new **Receipts** sub-view on the Commercial tab (Margin · Client Invoices · Receipts). Financial-role-only reads; deletes blocked. **⚠️ Cash is not revenue** — no GST, no tax code, no net amount; the six budget figures, Forecast, and Margin are unchanged. **No** Supplier Payments, cash flow, refunds, bank reconciliation, accounting integration, attachments, or remittance output. **Supplier invoice `paid`/`paidAt` were NOT touched** — they stay reserved and unused. No migration
 
+- [x] **Supplier Payments (foundation)** — the money-out mirror of Client Receipts, closing the cash picture. Project-scoped `supplierPayments` (`SP-0001` from a company-wide counter) storing **gross cash paid** — `paymentDate`, `amount`, an explicitly-chosen `paymentMethod` (never defaulted; `other` requires a description), optional bank/remittance/external references — with **embedded `allocations[]`** freezing **both** invoice references (`supplierInvoiceId` + Constrapp's `invoiceNumber` + the supplier's own `supplierInvoiceNumber` + `allocatedAmount`) against **posted** Supplier Invoices. `supplierId`/`supplierName` are **required non-empty** (rules-enforced), while supplier *invoices* with a legacy `supplierId: null` are matched on their frozen `supplierName` and **never backfilled**. Lifecycle `draft → posted → void` (void terminal, non-whitespace reason), **rules-enforced** with posted payments immutable — the third collection to meet the ADR-22 standard. **Allocations reconcile against `payableTotal`, never `grossTotal`** — retention withheld is not payable, and no payment writes, clears, or reduces a retention field (retention release stays unmodelled). **Read-time derivation:** Paid to Date, Remaining Payable, reconciliation state (*unreconciled / partly / fully / over-reconciled*), payment summaries, and **AP ageing on the remaining payable** — **nothing written onto a Supplier Invoice**, which gains no balance field, no payment status, and no back-reference, so voiding a payment restores every balance with **no reversal, refund, or bank-reversal record**. Only **posted** invoices are payable (`approved` is not the financial commit point). Unallocated payments are permitted, reported separately as money on account, **never auto-applied** (an explicit *Allocate oldest first* action yields an editable proposal) — and their **full amount is still actual Cash Out**. Over-reconciling an **invoice** is warned with an acknowledgement, never blocked; over-allocating the **payment** is hard-blocked and its scalar arithmetic is **rules-enforced** in whole cents. A posted invoice cancelled *after* an allocation surfaces as an **exception**, never auto-reversed. Counter, payment, and the project currency ratchet commit in **one transaction**. Shared `lib/payments.js` reused **entirely unchanged** + AP adapter `lib/supplierPayments.js`; new **Supplier Payments** sub-view on the Commercial tab (Margin · Client Invoices · Client Receipts · Supplier Payments — the Receipts *label* widened, its route unchanged). Supplier Invoices gain read-time Paid to Date / Remaining Payable / reconciliation badge, an allocated-payments detail modal, a *Record payment* action, a compact AP summary, an exceptions panel, and **payment-aware past-due** (`isPastDuePayable`; the date-only `isOverdue` is retained unchanged with a warning JSDoc). **⚠️ `SI_STATUS.PAID` and `paidAt` are DEPRECATED IN PLACE, not activated** — comments and documentation only; no stored value, constant, transition map, counting status, document, or supplier-invoice rules block changed. `paid` deliberately stays in `SI_COUNTING_STATUSES` so a direct-SDK-forged document cannot vanish from Invoiced/Actual. Financial-role-only reads; deletes blocked. **⚠️ Cash out is not cost** — no GST, no tax code, no net amount; the six budget figures, Forecast, and Margin are unchanged. **No** cash-flow UI, retention release, supplier credit notes, refunds, reversals, payment runs, remittance output, email, attachments, bank reconciliation, or accounting integration. No migration
+
 Firestore security rules for all of the above are written in `frontend/firestore.rules` and published manually.
 
 ---
@@ -72,9 +74,21 @@ Bring documentation in line with the implemented system:
 - Company legal name / ABN / address / tax number — absent, so Constrapp cannot
   produce a compliant Australian Tax Invoice
 
-*Note:* `clientInvoices` and `clientReceipts` are the collections whose lifecycle
-transitions and post-commit immutability **are** rules-enforced — the intended
-future standard for purchase orders, claims, supplier invoices, and variations.
+- Supplier-payment **allocation integrity** — the AP twin of the client-receipt
+  item above: rules cannot iterate an array or sum sibling documents, so
+  `allocatedTotal` vs the array sum, invoice existence/status/project/supplier
+  match, the **`payableTotal` basis and the retention exclusion**,
+  over-reconciliation, and concurrent allocation of the same remaining payable
+  are all unverified server-side (the *scalar* amount invariant **is**
+  rules-enforced). Posting a future-dated payment is blocked in the client only
+
+*Note:* `clientInvoices`, `clientReceipts` and `supplierPayments` are the
+collections whose lifecycle transitions and post-commit immutability **are**
+rules-enforced — the intended future standard for purchase orders, claims,
+supplier invoices, and variations. The gap is not academic: because posted
+supplier invoices are **not** yet protected, a direct-SDK caller can cancel one a
+payment has already settled (surfaced as an allocation exception) or forge
+`status: 'paid'` on one (ADR-24).
 
 **Other deferred foundations:** user management UI (invite, assign role/company), project edit/delete (currency is the only project field editable after creation), self-serve signup and password reset, Firebase CLI config (`firebase.json`/`.firebaserc`), Hosting, CI.
 
@@ -143,29 +157,33 @@ Cash received from clients, allocated against issued client invoices, turning
 **derived at read time** from receipt records — no payment field was ever
 reserved on the client invoice (ADR-22), and none was added (ADR-23).
 
-**3b-iii. Supplier Payments** — *next.*
-The money-out mirror, reusing the shared `lib/payments.js` foundation unchanged:
-project-scoped `supplierPayments` (`SP-0001`), embedded allocations against
-**posted supplier invoices' `payableTotal`** (*not* `grossTotal` — retention is
-withheld and is not payable on that invoice), read-time **Paid to Date** and
-**Remaining Payable**, and AP ageing on the remaining balance.
-**⚠️ The reserved supplier-invoice `paid` status and `paidAt` field will be
-DEPRECATED IN PLACE, not activated** — payment state derives from allocations,
-and activating them would create a second, contradictory source of payment truth.
-That code and documentation change belongs to this branch; **as of the Client
-Receipts branch nothing about them has changed** — they remain reserved, never
-written, and still counted inertly in `SI_COUNTING_STATUSES` (no document can
-hold that status). Retention release remains unmodelled.
+**3b-iii. Supplier Payments** — *foundation shipped (see Completed Foundations).*
+The money-out mirror, reusing the shared `lib/payments.js` foundation entirely
+unchanged: project-scoped `supplierPayments` (`SP-0001`), embedded allocations
+against **posted supplier invoices' `payableTotal`** (*not* `grossTotal` —
+retention is withheld and is not payable on that invoice), read-time **Paid to
+Date** and **Remaining Payable**, and AP ageing on the remaining balance.
+**The reserved supplier-invoice `paid` status and `paidAt` field were DEPRECATED
+IN PLACE, not activated** (ADR-24) — payment state derives from allocations, and
+activating them would create a second, contradictory source of payment truth.
+Only comments and documentation changed; `paid` stays in `SI_COUNTING_STATUSES`
+deliberately, because supplier-invoice lifecycle rules remain deferred and a
+direct-SDK-forged `paid` document must not vanish from Invoiced/Actual.
+**Remaining (deferred):** retention release, supplier credit notes, refunds and
+payment reversals, payment runs/batches, remittance output, and bank
+reconciliation.
 
-**3c. Cash-flow Forecasting**
-Cash-flow curves close the current project-control loop. **Actual Cash In now
-exists** (posted Client Receipts: amount, `receiptDate`, project, client,
-currency); **actual Cash Out does not** until Supplier Payments ship, so this
-item is blocked on 3b-iii — building it sooner would present forecast timing as
-actual cash, the exact dishonesty the receipts foundation removed. It must
-consume the **total transaction amount** on the **transaction date** (never
-`createdAt`/`postedAt`), keep the allocated/unallocated split available, and
-never sum across currencies.
+**3c. Cash-flow Forecasting** — *unblocked; not built.*
+Cash-flow curves close the current project-control loop. **Both actual directions
+now exist**: Cash In from posted Client Receipts (amount, `receiptDate`, project,
+client, currency) and Cash Out from posted Supplier Payments (amount,
+`paymentDate`, project, supplier, currency, plus the allocated/unallocated
+split), exposed by `lib/supplierPayments.js → cashOutRows()`. It must consume the
+**total transaction amount** on the **transaction date** (never
+`createdAt`/`postedAt`, and never `allocatedTotal` — an unallocated supplier
+advance is still cash that left the bank), keep the allocated/unallocated split
+available, and never sum across currencies. No cash-flow route, page, chart,
+period, or aggregation exists yet.
 
 **4. BOQ and Estimating**
 Opens the preconstruction side: a Bill of Quantities against cost codes, with rates/margin/overheads producing an estimate that transfers to an approved budget.
@@ -179,8 +197,11 @@ Measured quantities populate BOQ quantity lines by cost code. Manual takeoff mus
 **7. Credit Notes and Retention Release**
 Supplier credits (`docType`/`adjustsInvoiceId`) and retention release. Supplier
 payments themselves moved forward to item 3b-iii, alongside Client Receipts,
-because Cash Flow depends on them. **The reserved `paid`/`paidAt` fields are for
-deprecation, not activation** — see 3b-iii.
+because Cash Flow depends on them, and **shipped there**. **The `paid`/`paidAt`
+fields were deprecated in place, not activated** — see 3b-iii and ADR-24.
+Retention release is the outstanding piece: a payment settles `payableTotal`,
+which is already net of retention, so retained money has no route to becoming
+payable until this lands.
 
 **8. Final Account and Commercial Reporting**
 Reconcile approved budget, variations, and actual cost into final project margin; commercial reporting on margin, cost-to-complete, cash flow, and final account (not a generic export builder).

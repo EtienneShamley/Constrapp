@@ -277,9 +277,11 @@ rewrite claims" and self-healing when an invoice is cancelled). Over-invoicing a
 duplicate `supplierInvoiceNumber`s warn but never block; server-side transition
 legality, post-`posted` immutability, one-invoice-per-claim races, and uniqueness
 are deferred (ADR-14). Existing `supplierId: null` POs remain invoiceable via
-their `supplierName` snapshot. **Reserved for later:** Payments (`paid`/`paidAt`),
+their `supplierName` snapshot. **Reserved for later:**
 Credit Notes (`docType`/`adjustsInvoiceId`), attachments (`attachments: []`),
-accounting sync (`externalRefs`).
+accounting sync (`externalRefs`). **`paid`/`paidAt` were reserved here for a
+future Payments module; Supplier Payments have since shipped and deliberately
+DEPRECATED them in place rather than activating them — see ADR-24.**
 
 ## ADR-18: Variations (one type-discriminated collection; approved-only; read-time)
 
@@ -768,9 +770,178 @@ fifteenth project tab. **No migration** — additive only.
 Payment state will derive from allocations, so activating the reserved `paid`
 status would create a second, contradictory source of payment truth. The decision
 is to **deprecate in place** — keep the constant and the field, never write them,
-never transition into `paid`, and leave `SI_COUNTING_STATUSES` untouched (no
-document can hold that status, so it is inert). **That code and documentation
-change belongs to the Supplier Payments branch and has not been made here**; no
-supplier-invoice file was modified. The recorded sequence is now **Client
-Invoices / Accounts Receivable → Client Receipts (shipped) → Supplier Payments →
-Cash Flow**.
+never transition into `paid`, and leave `SI_COUNTING_STATUSES` untouched.
+**That code and documentation change belongs to the Supplier Payments branch and
+has not been made here**; no supplier-invoice file was modified by the Client
+Receipts branch. *(It has since been made — see ADR-24, which also corrects the
+claim above that "no document can hold that status": supplier-invoice lifecycle
+rules remain deferred, so a direct-SDK caller can still forge it.)* The recorded
+sequence is now **Client Invoices / Accounts Receivable → Client Receipts
+(shipped) → Supplier Payments → Cash Flow**.
+
+## ADR-24: Supplier Payments (payableTotal basis; derived payment state; `paid`/`paidAt` deprecated in place)
+
+Supplier Payments live at
+`companies/{id}/projects/{id}/supplierPayments` — project-scoped, `SP-0001`
+numbered from a company-wide counter (ADR-5). They record **cash actually paid**
+to a supplier or subcontractor and allocate it against **posted** Supplier
+Invoices, closing the money-out half of the cash picture. Lifecycle
+`draft → posted → void` (void terminal), enforced by Firestore rules. Reads are
+restricted to internal financial roles. The shared, direction-agnostic
+`lib/payments.js` shipped with Client Receipts (ADR-23) is **reused entirely
+unchanged** — the AP adapter is `lib/supplierPayments.js`.
+
+**Project-scoped, not company-scoped.** ADR-23 already decided the split
+(`supplierPayments` as a separate sibling collection, never a shared
+`cashTransactions` with a direction field, because every rules clause would then
+branch on direction). Project scoping additionally preserves the
+**one-currency-per-project** guarantee (ADR-21): there is no FX, so a
+company-level cash collection could not sum. `projectId` is **deliberately not
+stored** on the document — the collection path already carries it, and a
+redundant copy would be a second, driftable source of truth. Future company-wide
+AP reporting is reachable by collection-group query with its own rule and index.
+
+**Allocations settle `payableTotal`, NEVER `grossTotal`.** `payableTotal =
+grossTotal − retentionTotal` and is already net of retention withheld *and of
+retention's own GST* (ADR-17). `grossTotal` is the full taxable supply — the face
+value of the supplier's tax invoice, not what is owed on it. Allocating against
+gross would present **retained money as currently payable** and leave a permanent
+phantom balance on every retained invoice that could never be settled. No payment
+ever writes, clears, or reduces `retention`, `retentionGst`, or `retentionTotal`;
+retention becomes payable through a future Retention Release document, which is
+**not modelled**. The UI states this on every retained invoice row and beneath
+every allocation table, and the user-facing label is **"Remaining Payable"** —
+never "Balance Due", "Amount Owing", "Outstanding Payable", or "Overdue Payable".
+
+**Only `posted` invoices are payable.** `approved` means internally certified;
+`posted` is the **financial commit point** (ADR-17). Allowing payment against an
+approved-but-unposted invoice would let cash leave before the Actual cost
+existed. Draft and cancelled invoices are excluded for the same reason.
+
+**`supplierId` is REQUIRED on a new payment; legacy invoices match by frozen
+name.** The asymmetry is deliberate and load-bearing. `supplierPayments` is a new
+collection with no history to accommodate, and money paid to nobody is not a
+record — so `supplierId`/`supplierName` are **required non-empty and
+rules-enforced**, exactly as `clientReceipts.clientId` is (ADR-23). Supplier
+**invoices**, by contrast, may legitimately carry `supplierId: null` from before
+the Contacts module and are **never backfilled** (ADR-15); those are matched on
+the normalised `supplierName` snapshot (trim → lower-case → collapse whitespace,
+the same shape `duplicateInvoiceWarnings` already uses) and are **labelled in the
+UI** as name-matched. Suppliers are chosen from `PO_SUPPLIER_TYPES` — the same
+list the PO picker uses; no parallel supplier-type list was invented. Changing
+the supplier on a draft clears its allocations after an explicit confirmation; a
+posted payment's supplier is immutable.
+
+**Both invoice references are frozen in each allocation.**
+`{ supplierInvoiceId, invoiceNumber, supplierInvoiceNumber, allocatedAmount }` —
+the ADR-6 embedded idiom. `invoiceNumber` is Constrapp's `SI-0007`;
+`supplierInvoiceNumber` is the supplier's own reference (`INV-4471`), which is
+what AP staff actually reconcile against and what a supplier quotes on the phone.
+Storing only the former would have forced a document read to render a register
+row. A historical invoice with no supplier reference snapshots `''` rather than
+an invented one.
+
+**Payment state is DERIVED, and nothing is written onto an invoice.**
+`Paid Against Invoice` = Σ allocations across **posted** payments;
+`Remaining Payable` = `payableTotal − Paid Against Invoice`, **signed and never
+clamped**. The reconciliation state (*unreconciled / partly / fully /
+over-reconciled*, compared in whole cents) is a **function of allocations**, never
+an authored invoice status. Supplier invoices gain no balance field, no payment
+status, and no payment back-reference (ADR-3/ADR-4) — which is exactly why
+**voiding a payment restores every balance for free**, at the next render, with
+no reversal document, no refund record, and no bank reversal.
+
+**`paid` and `paidAt` are DEPRECATED IN PLACE, not activated.** Activating
+`SI_STATUS.PAID` would create a second, contradictory source of payment truth
+with no way to reconcile the two and no server-side writer to keep them honest.
+So: the constant, its label, and its badge variant are **retained** for legacy
+rendering; `SI_TRANSITIONS` gains **no** transition into `paid` and never will;
+`paidAt` is still written once as `null` at creation (so new documents keep the
+historical shape) and is **never updated**; and `paid` is deliberately **left in
+`SI_COUNTING_STATUSES`**. That last point is the subtle one and the reason the
+Client Receipts branch's phrasing needed correcting: supplier-invoice lifecycle
+rules are still deferred (SECURITY.md Deferred Control 1), so a **direct-SDK
+caller can still forge `status: 'paid'`**. If that value were removed from the
+counting statuses, such an invoice would silently vanish from Invoiced and
+Actual. Counting it is the safe failure mode — the cost stays visible in the
+budget figures. It is **not** used for payment reconciliation, which reads only
+`posted` invoices. **No migration; no supplier-invoice document is rewritten; no
+supplier-invoice rules changed.**
+
+**Unallocated cash is real Cash Out.** A payment may be posted fully, partly, or
+entirely unallocated (a supplier advance, a deposit, a payment recorded before
+its invoice, an overpayment, or a bank line not yet matched). The whole amount
+left the bank, so **Cash Flow consumes the total `amount`, never
+`allocatedTotal`** — `cashOutRows()` exposes both, and the split travels
+alongside the cash figure rather than instead of it. Unallocated money reduces no
+invoice balance, appears nowhere in AP ageing, is reported separately as
+*"Unallocated — on account"*, is not styled as an error, and is **never
+auto-applied**: an explicit *Allocate oldest first* action produces an editable
+proposal and runs only when pressed.
+
+**Dates.** `paymentDate` is a `'YYYY-MM-DD'` string — the app's convention for
+every human-entered financial date, and a calendar fact off a bank statement
+rather than an instant. Backdating is always allowed; a **future-dated draft may
+be saved but not posted**, because posting asserts money has already left the
+account. Cash Flow must group by `paymentDate` (`slice(0, 7)`), never by
+`createdAt`/`postedAt`, and must never sum across currencies.
+
+**What is rules-enforced.** Tenant isolation; financial-role read/write; create
+draft-only with unforgeable lifecycle stamps; `docType: 'payment'`; non-empty
+`supplierId`/`supplierName`; currency and date **shape**; `amount > 0`;
+`allocations` a list of at most 100; non-negative totals; the **whole-cent scalar
+invariant** `allocatedTotal + unallocatedAmount == amount` (via
+`math.round(v * 100)` — a representation fix, not a loosened invariant: a
+one-cent discrepancy still fails, verified by emulator tests); identity
+preservation on every update; exact-key `draft → posted` and
+`draft|posted → void`; caller-owned audit stamps equal to `request.time`; a
+**non-whitespace** `voidReason`; posted immutability; terminal void; and delete
+blocked in every status.
+
+**What remains client-enforced (never claim otherwise).** Rules cannot iterate an
+array, so allocation *element* shape, `allocatedTotal` matching the array sum,
+the per-allocation `> 0` rule, and the no-duplicate-invoice rule are unverified.
+Rules cannot `get()` per element, so invoice existence, `posted` status, project
+match, supplier match, and the legacy name match are unverified — and rules
+cannot read the invoice at all, so the **`payableTotal` basis and the retention
+exclusion are client-side facts**. Rules have no list, query, or count, so
+**over-reconciling an invoice is warned with an explicit acknowledgement, never
+blocked, and two users can allocate the same remaining payable concurrently**.
+Posting a **future-dated** payment is blocked in the client only. Payment-method
+enum membership is validated by shape only (the ADR-21 anti-drift precedent). And
+no rule can verify that money genuinely left the bank.
+
+**Deliberate rules asymmetry with `supplierInvoices`.** This block enforces
+lifecycle and post-commit immutability; the `supplierInvoices` block above it
+still enforces neither (Deferred Controls 1–2), and this branch does **not**
+harden it. The consequence is real, accepted, and surfaced rather than hidden: a
+direct-SDK caller can cancel a posted supplier invoice that a payment has already
+settled, which Constrapp reports as an **allocation exception** on both the
+Supplier Payments and Supplier Invoices views — the cash stays recorded, the
+cancelled invoice stays out of ageing, and nothing is auto-reversed. This mirrors
+ADR-22/ADR-23's asymmetry for `clientInvoices`/`clientReceipts` and is the
+intended future standard for the older collections.
+
+**Consequences.** The six budget figures, Remaining Committed, the Forecast tab,
+and every margin figure are **completely unchanged** — a payment settles an
+Actual cost that a posted invoice already recognised; cash out is not cost.
+**AP ageing** ages the *remaining payable* of posted invoices: fully reconciled
+invoices contribute zero and leave ageing entirely, partially reconciled ones age
+only their remainder, over-reconciled ones are excluded into a signed callout,
+and retention is excluded throughout. The supplier-invoice register's due-date
+column moves from the date-only `isOverdue()` to the payment-aware
+`isPastDuePayable()` (`isOverdue` is kept unchanged, with a warning JSDoc, for
+backwards compatibility) — mirroring the `isPastDue`/`isPastDueUnreconciled`
+split already on the AR side. Payments join the currency-lock evidence, and
+creation is atomic with the counter and the ratchet. The Commercial tab gains a
+fourth sub-view (Margin · Client Invoices · Client Receipts · Supplier Payments)
+rather than a fifteenth project tab, and the existing *Receipts* label is
+widened to *Client Receipts* — **label only; the route is unchanged**.
+**No migration** — additive only.
+
+**Cash Flow is now unblocked.** Both directions exist: posted Client Receipts
+(amount, `receiptDate`, client, currency) and posted Supplier Payments (amount,
+`paymentDate`, supplier, currency). `cashOutRows()` is a thin data adapter only —
+this branch ships **no** Cash Flow UI, route, aggregation, period, or curve. The
+recorded sequence is **Client Invoices / Accounts Receivable → Client Receipts →
+Supplier Payments (shipped) → Cash Flow**.

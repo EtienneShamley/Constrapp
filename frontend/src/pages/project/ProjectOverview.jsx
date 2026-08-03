@@ -17,6 +17,7 @@ import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
 import { useClientInvoices } from '../../hooks/useClientInvoices'
 import { useClientReceipts } from '../../hooks/useClientReceipts'
+import { useSupplierPayments } from '../../hooks/useSupplierPayments'
 import { useVariations } from '../../hooks/useVariations'
 import { useForecastLines } from '../../hooks/useForecastLines'
 import {
@@ -151,8 +152,8 @@ function ProjectCurrencyCard({ project, projectId, currencyCode, sources }) {
               </div>
               <p className="m-0 mt-1.5 text-[11px] text-brand-muted max-w-[560px]">
                 Inherited from your company. Editable only until this project has a headline budget, budget lines,
-                orders, claims, invoices, receipts, variations, forecast inputs, or a commercial baseline — after that
-                it locks, because changing it would relabel existing amounts without converting them.
+                orders, claims, invoices, receipts, payments, variations, forecast inputs, or a commercial baseline —
+                after that it locks, because changing it would relabel existing amounts without converting them.
               </p>
               {error && <p className="m-0 mt-1.5 text-[12px] text-brand-red">{error}</p>}
             </>
@@ -180,18 +181,21 @@ function ProjectFinancialCards({ project, projectId, currencyCode, canEditCurren
   const { supplierInvoices } = useSupplierInvoices(projectId)
   const { clientInvoices }   = useClientInvoices(projectId)
   const { clientReceipts }   = useClientReceipts(projectId)
+  const { supplierPayments } = useSupplierPayments(projectId)
   const { variations }       = useVariations(projectId)
   const { forecastLines }    = useForecastLines(projectId)
   const { baseline, baselineLoading } = useProjectCommercial(projectId)
 
-  // Client invoices and client receipts are monetary data, so both are part of
-  // the currency-lock evidence (lib/currency.js → monetaryLockReasons) alongside
-  // every other financial record. Neither feeds margin — revenue recognition is
-  // not modelled and cash is not revenue — so both are deliberately absent from
-  // MarginCards below.
+  // Client invoices, client receipts and supplier payments are monetary data, so
+  // all three are part of the currency-lock evidence (lib/currency.js →
+  // monetaryLockReasons) alongside every other financial record. None of them
+  // feeds margin — revenue recognition is not modelled, cash in is not revenue,
+  // and cash out is not cost (a payment settles an Actual cost the posted
+  // supplier invoice already recognised) — so all three are deliberately absent
+  // from MarginCards below.
   const sources = useMemo(
-    () => ({ budgetLines, purchaseOrders, progressClaims, supplierInvoices, clientInvoices, clientReceipts, variations, forecastLines, baseline }),
-    [budgetLines, purchaseOrders, progressClaims, supplierInvoices, clientInvoices, clientReceipts, variations, forecastLines, baseline],
+    () => ({ budgetLines, purchaseOrders, progressClaims, supplierInvoices, clientInvoices, clientReceipts, supplierPayments, variations, forecastLines, baseline }),
+    [budgetLines, purchaseOrders, progressClaims, supplierInvoices, clientInvoices, clientReceipts, supplierPayments, variations, forecastLines, baseline],
   )
 
   return (

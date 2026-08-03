@@ -6,6 +6,7 @@ import Badge from '../../components/Badge'
 import { formatCurrency } from '../../lib/formatters'
 import { roundMoney } from '../../lib/purchaseOrders'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
+import { useSupplierPayments } from '../../hooks/useSupplierPayments'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { useContacts } from '../../hooks/useContacts'
@@ -13,10 +14,17 @@ import { CLAIM_STATUS } from '../../lib/progressClaims'
 import {
   SI_STATUS, SI_STATUS_LABELS, SI_BADGE_VARIANTS, SI_SOURCE,
   INVOICEABLE_PO_STATUSES, TAX_CODE, TAX_CODES, TAX_CODE_LABELS,
-  gstForLine, invoiceTotals, suggestDueDate, isOverdue,
+  gstForLine, invoiceTotals, suggestDueDate,
   duplicateInvoiceWarnings, claimHasActiveInvoice, postedInvoicedByPoLine,
   claimReconciliationError,
 } from '../../lib/supplierInvoices'
+import {
+  RECONCILIATION_LABELS, RECONCILIATION_BADGE_VARIANTS, paymentMethodLabel, daysPastDue,
+} from '../../lib/payments'
+import {
+  payablesSummary, paymentsForInvoice, allocationExceptions, isPastDuePayable,
+  allocationInvoiceLabel, ALLOCATION_EXCEPTION_REMEDY,
+} from '../../lib/supplierPayments'
 
 const inputCls = 'w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
 const labelCls = 'block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1.5'
@@ -399,7 +407,155 @@ function CreateInvoiceModal({ invoiceablePOs, invoiceableClaims, purchaseOrders,
   )
 }
 
-function RowActions({ invoice, onTransition }) {
+// ── Read-only supplier invoice detail ────────────────────────────────────────
+
+function DetailRow({ label, value }) {
+  return (
+    <div>
+      <p className={labelCls}>{label}</p>
+      <p className="m-0 text-[13px] text-brand-text break-words">{value || '—'}</p>
+    </div>
+  )
+}
+
+// Opened from the SI number. Everything below the header is DERIVED at read time
+// from posted Supplier Payments — no supplier invoice document is ever written
+// with a balance, a payment status, or a payment back-reference (ADR-24).
+function InvoiceDetailModal({ invoice, reconciliation, allocatedPayments, currencyCode, onClose }) {
+  const money = (n) => formatCurrency(n, currencyCode)
+  const hasRetention = (invoice.retentionTotal || 0) > 0
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-[900px] max-h-[90vh] overflow-y-auto bg-brand-surface border border-brand-border rounded-xl shadow-2xl">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-brand-border">
+          <h2 className="text-[15px] font-bold text-brand-text m-0">
+            {invoice.invoiceNumber} — {SI_STATUS_LABELS[invoice.status] ?? invoice.status}
+          </h2>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="text-brand-muted hover:text-brand-text text-xl leading-none cursor-pointer min-w-[44px] min-h-[44px] flex items-center justify-center"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="px-5 py-4 flex flex-col gap-3.5">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+            <DetailRow label="Supplier" value={invoice.supplierName} />
+            <DetailRow label="Supplier Invoice #" value={invoice.supplierInvoiceNumber} />
+            <DetailRow label="Source" value={invoice.source === SI_SOURCE.PROGRESS_CLAIM ? 'From approved claim' : 'Direct against PO'} />
+            <DetailRow label="Purchase Order" value={invoice.poNumber} />
+            <DetailRow label="Progress Claim" value={invoice.claimNumber} />
+            <DetailRow label="Invoice Date" value={invoice.invoiceDate} />
+            <DetailRow label="Received Date" value={invoice.receivedDate} />
+            <DetailRow label="Due Date" value={invoice.dueDate} />
+            <DetailRow label="Currency (audit snapshot)" value={invoice.currency} />
+          </div>
+
+          {/* Line items — ex-GST canonical, per-line tax code. */}
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="bg-brand-card border-y border-brand-border">
+                  {['Cost Code', 'Description', 'Amount (ex-GST)', 'Tax', 'GST'].map(h => (
+                    <th key={h} className={thCls}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {(invoice.lineItems ?? []).map((li, i) => (
+                  <tr key={i} className="border-b border-brand-border last:border-b-0">
+                    <td className="px-3.5 py-2.5 text-[12px] text-brand-text">{li.costCodeName || '—'}</td>
+                    <td className="px-3.5 py-2.5 text-[12px] text-brand-muted">{li.description || '—'}</td>
+                    <td className="px-3.5 py-2.5 text-[13px] text-brand-text whitespace-nowrap">{money(li.amount || 0)}</td>
+                    <td className="px-3.5 py-2.5 text-[12px] text-brand-muted whitespace-nowrap">{TAX_CODE_LABELS[li.taxCode] ?? li.taxCode}</td>
+                    <td className="px-3.5 py-2.5 text-[13px] text-brand-muted whitespace-nowrap">{money(li.gstAmount || 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <TotalsFooter totals={invoice} currencyCode={currencyCode} />
+
+          {/* ── Payment reconciliation (read-time) ─────────────────────────── */}
+          {reconciliation && (
+            <div className="border-t border-brand-border pt-3">
+              <div className="flex flex-wrap items-baseline justify-between gap-2 mb-2.5">
+                <p className="text-[13px] font-bold text-brand-text m-0">Payment reconciliation</p>
+                <Badge
+                  label={RECONCILIATION_LABELS[reconciliation.state]}
+                  variant={RECONCILIATION_BADGE_VARIANTS[reconciliation.state]}
+                  sm
+                />
+              </div>
+              <div className="grid grid-cols-3 gap-3.5">
+                <DetailRow label="Net Payable" value={money(reconciliation.payableTotal)} />
+                <DetailRow label="Paid to Date" value={money(reconciliation.paid)} />
+                <div>
+                  <p className={labelCls}>Remaining Payable</p>
+                  <p className={`m-0 text-[13px] font-semibold ${reconciliation.remaining < 0 ? 'text-brand-red' : 'text-brand-text'}`}>
+                    {money(reconciliation.remaining)}
+                  </p>
+                </div>
+              </div>
+              {hasRetention && (
+                <p className="m-0 mt-2 text-[11px] text-brand-muted">
+                  Retention of {money(invoice.retentionTotal)} is withheld and is <span className="font-semibold">not
+                  payable</span> on this invoice, so it is excluded from every figure above. Retention release is not
+                  yet modelled in Constrapp.
+                </p>
+              )}
+
+              {allocatedPayments.length > 0 ? (
+                <div className="overflow-x-auto mt-3">
+                  <table className="w-full border-collapse">
+                    <thead>
+                      <tr className="bg-brand-card border-y border-brand-border">
+                        {['Payment', 'Payment Date', 'Method', 'Bank Ref', 'Remittance Ref', 'Allocated'].map(h => (
+                          <th key={h} className={thCls}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {allocatedPayments.map((p, i) => (
+                        <tr key={i} className="border-b border-brand-border last:border-b-0">
+                          <td className="px-3.5 py-2.5 text-[13px] font-semibold text-brand-text whitespace-nowrap">{p.paymentNumber}</td>
+                          <td className="px-3.5 py-2.5 text-[12px] text-brand-muted whitespace-nowrap">{p.paymentDate || '—'}</td>
+                          <td className="px-3.5 py-2.5 text-[12px] text-brand-muted whitespace-nowrap">{paymentMethodLabel(p.paymentMethod, p.paymentMethodOther)}</td>
+                          <td className="px-3.5 py-2.5 text-[12px] text-brand-muted">{p.bankReference || '—'}</td>
+                          <td className="px-3.5 py-2.5 text-[12px] text-brand-muted">{p.remittanceReference || '—'}</td>
+                          <td className="px-3.5 py-2.5 text-[13px] text-brand-text whitespace-nowrap">{money(p.allocatedAmount)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="m-0 mt-2 text-[12px] text-brand-muted">
+                  No posted supplier payments have been allocated to this invoice yet.
+                </p>
+              )}
+            </div>
+          )}
+
+          {invoice.notes && <DetailRow label="Notes" value={invoice.notes} />}
+
+          <p className="m-0 text-[11px] text-brand-muted border-t border-brand-border pt-3">
+            Amounts are ex-GST plus per-line Australian GST, shown in this project&apos;s currency ({currencyCode}).
+            Paid to Date and Remaining Payable are derived at read time from posted Supplier Payments and are never
+            written onto this invoice — it carries no balance field, no payment status, and no payment reference.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function RowActions({ invoice, onTransition, onRecordPayment }) {
   const confirmThen = (label, nextStatus) => () => {
     if (window.confirm(`${label} ${invoice.invoiceNumber}?`)) onTransition(invoice, nextStatus)
   }
@@ -419,6 +575,14 @@ function RowActions({ invoice, onTransition }) {
       </div>
     )
   }
+  // Posted is the financial commit point — the only status a payment may settle.
+  if (invoice.status === SI_STATUS.POSTED) {
+    return (
+      <div className="flex gap-1.5 justify-end">
+        <Btn sm variant="ghost" onClick={() => onRecordPayment(invoice)}>Record payment</Btn>
+      </div>
+    )
+  }
   return null
 }
 
@@ -428,14 +592,42 @@ export default function ProjectInvoices() {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const { supplierInvoices, supplierInvoicesLoading, createSupplierInvoice, transitionStatus } = useSupplierInvoices(projectId)
+  const { supplierPayments } = useSupplierPayments(projectId)
   const { purchaseOrders, purchaseOrdersLoading } = usePurchaseOrders(projectId)
   const { progressClaims } = useProgressClaims(projectId)
   const { contacts } = useContacts()
   const [showCreate, setShowCreate]   = useState(false)
+  const [detail, setDetail]           = useState(null)
   const [actionError, setActionError] = useState(null)
   const [search, setSearch]           = useState('')
   const [statusFilter, setStatusFilter]   = useState('all')
   const [supplierFilter, setSupplierFilter] = useState('all')
+
+  // ── Payment reconciliation, all derived at read time ───────────────────────
+  // Nothing here is written onto a supplier invoice document.
+  const payables = useMemo(
+    () => payablesSummary(supplierInvoices, supplierPayments),
+    [supplierInvoices, supplierPayments],
+  )
+  const reconciliationById = useMemo(
+    () => new Map(payables.rows.map(r => [r.id, r])),
+    [payables.rows],
+  )
+  const exceptions = useMemo(
+    () => allocationExceptions(supplierPayments, supplierInvoices),
+    [supplierPayments, supplierInvoices],
+  )
+
+  const goToPayments = () => navigate(`/projects/${projectId}/commercial/supplier-payments`)
+
+  // "Record payment" hands off through ONE-SHOT route state, which the Supplier
+  // Payments page consumes once and then clears from history — so navigating
+  // back never reopens the editor.
+  const handleRecordPayment = (invoice) => {
+    navigate(`/projects/${projectId}/commercial/supplier-payments`, {
+      state: { recordPayment: { supplierId: invoice.supplierId, supplierInvoiceId: invoice.id } },
+    })
+  }
 
   const invoiceablePOs = purchaseOrders.filter(po => INVOICEABLE_PO_STATUSES.includes(po.status))
   const invoiceableClaims = progressClaims.filter(c =>
@@ -480,6 +672,7 @@ export default function ProjectInvoices() {
         </p>
         <div className="flex items-center gap-2">
           {noPOs && <Btn variant="ghost" sm onClick={goToPOs}>Go to Purchase Orders</Btn>}
+          <Btn variant="ghost" sm onClick={goToPayments}>Supplier Payments</Btn>
           <Btn sm onClick={() => setShowCreate(true)} disabled={purchaseOrdersLoading || !canCreate}>
             + New Supplier Invoice
           </Btn>
@@ -487,6 +680,53 @@ export default function ProjectInvoices() {
       </div>
 
       {actionError && <p className="text-[12px] text-brand-red mb-3">{actionError}</p>}
+
+      {/* ── Compact accounts-payable summary ───────────────────────────────── */}
+      {payables.count > 0 && (
+        <Card className="mb-3.5">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 flex-1">
+              <div>
+                <p className={labelCls}>Total Posted Supplier Invoices</p>
+                <p className="text-lg font-bold text-brand-text">{money(payables.postedPayable)}</p>
+                <p className="m-0 mt-0.5 text-[10.5px] text-brand-muted">{payables.count} posted · net payable after retention</p>
+              </div>
+              <div>
+                <p className={labelCls}>Paid to Date</p>
+                <p className="text-lg font-bold text-brand-text">{money(payables.paid)}</p>
+                <p className="m-0 mt-0.5 text-[10.5px] text-brand-muted">Posted Supplier Payments allocated here</p>
+              </div>
+              <div>
+                <p className={labelCls}>Remaining Payable</p>
+                <p className="text-lg font-bold text-brand-text">{money(payables.remaining)}</p>
+                <p className="m-0 mt-0.5 text-[10.5px] text-brand-muted">Still owing on posted invoices</p>
+              </div>
+            </div>
+            <Btn variant="ghost" sm onClick={goToPayments}>Open Supplier Payments</Btn>
+          </div>
+          <p className="m-0 mt-3 text-[11px] text-brand-muted">
+            Derived at read time from posted Supplier Payments — nothing is written onto an invoice, and no invoice
+            is ever marked <span className="font-semibold">paid</span>. Full AP ageing is on the Supplier Payments
+            view.
+          </p>
+        </Card>
+      )}
+
+      {/* ── Allocation exceptions ──────────────────────────────────────────── */}
+      {exceptions.length > 0 && (
+        <Card className="mb-3.5">
+          <p className="text-[13px] font-bold text-brand-amber m-0">Allocation exceptions</p>
+          <p className="m-0 mt-1 text-[12px] text-brand-muted">{ALLOCATION_EXCEPTION_REMEDY}</p>
+          <div className="flex flex-col gap-1 mt-2.5">
+            {exceptions.map((x, i) => (
+              <p key={i} className="m-0 text-[12px] text-brand-text">
+                <span className="font-semibold">{x.paymentNumber}</span> → {allocationInvoiceLabel(x)}
+                {' '}({money(x.allocatedAmount)}) — {x.reason}
+              </p>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {/* Filters */}
       {supplierInvoices.length > 0 && (
@@ -537,17 +777,30 @@ export default function ProjectInvoices() {
             <table className="w-full border-collapse">
               <thead>
                 <tr className="bg-brand-card border-b border-brand-border">
-                  {['SI #', 'Supplier Inv #', 'Supplier', 'PO', 'Claim', 'Invoice Date', 'Due', 'Subtotal', 'GST', 'Gross', 'Retention', 'Net Payable', 'Status', ''].map((h, i) => (
+                  {['SI #', 'Supplier Inv #', 'Supplier', 'PO', 'Claim', 'Invoice Date', 'Due', 'Subtotal', 'GST', 'Gross', 'Retention', 'Net Payable', 'Paid to Date', 'Remaining Payable', 'Reconciliation', 'Status', ''].map((h, i) => (
                     <th key={i} className={thCls}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {filtered.map(inv => {
-                  const overdue = isOverdue(inv)
+                  // Payment-aware past due: POSTED, past its due date, AND still
+                  // payable. The old date-only isOverdue() would mark a fully
+                  // paid invoice overdue (see lib/supplierInvoices.js).
+                  const recon = reconciliationById.get(inv.id) ?? null
+                  const pastDue = isPastDuePayable(inv, recon?.remaining ?? 0)
+                  const days = pastDue ? daysPastDue(inv.dueDate) : null
                   return (
                     <tr key={inv.id} className="border-b border-brand-border hover:bg-brand-card transition-colors">
-                      <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">{inv.invoiceNumber}</td>
+                      <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => setDetail(inv)}
+                          className="text-brand-accent hover:underline cursor-pointer"
+                        >
+                          {inv.invoiceNumber}
+                        </button>
+                      </td>
                       <td className="px-3.5 py-3 text-[12px] text-brand-muted whitespace-nowrap">{inv.supplierInvoiceNumber || '—'}</td>
                       <td className="px-3.5 py-3 text-[13px] text-brand-text">{inv.supplierName || '—'}</td>
                       <td className="px-3.5 py-3 text-[12px] text-brand-muted whitespace-nowrap">{inv.poNumber || '—'}</td>
@@ -555,7 +808,9 @@ export default function ProjectInvoices() {
                       <td className="px-3.5 py-3 text-[12px] text-brand-muted whitespace-nowrap">{inv.invoiceDate || '—'}</td>
                       <td className="px-3.5 py-3 text-[12px] whitespace-nowrap">
                         {inv.dueDate
-                          ? <span className={overdue ? 'text-brand-red font-semibold' : 'text-brand-muted'}>{inv.dueDate}{overdue ? ' • Overdue' : ''}</span>
+                          ? <span className={pastDue ? 'text-brand-red font-semibold' : 'text-brand-muted'}>
+                              {inv.dueDate}{pastDue ? ` • Past due ${days}d` : ''}
+                            </span>
                           : <span className="text-brand-muted">—</span>}
                       </td>
                       <td className="px-3.5 py-3 text-[13px] text-brand-text whitespace-nowrap">{money(inv.subtotal || 0)}</td>
@@ -563,11 +818,31 @@ export default function ProjectInvoices() {
                       <td className="px-3.5 py-3 text-[13px] text-brand-muted whitespace-nowrap">{money(inv.grossTotal || 0)}</td>
                       <td className="px-3.5 py-3 text-[13px] text-brand-muted whitespace-nowrap">{inv.retentionTotal ? `−${money(inv.retentionTotal)}` : '—'}</td>
                       <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">{money(inv.payableTotal || 0)}</td>
+                      {/* Paid to Date / Remaining Payable / Reconciliation are
+                          DERIVED from posted supplier payments on every render —
+                          never stored here. Only posted invoices are payable. */}
+                      <td className="px-3.5 py-3 text-[13px] text-brand-muted whitespace-nowrap">
+                        {recon ? money(recon.paid) : '—'}
+                      </td>
+                      <td className="px-3.5 py-3 text-[13px] font-semibold whitespace-nowrap">
+                        {recon
+                          ? <span className={recon.remaining < 0 ? 'text-brand-red' : 'text-brand-text'}>{money(recon.remaining)}</span>
+                          : <span className="text-brand-muted">—</span>}
+                      </td>
+                      <td className="px-3.5 py-3">
+                        {recon
+                          ? <Badge
+                              label={RECONCILIATION_LABELS[recon.state]}
+                              variant={RECONCILIATION_BADGE_VARIANTS[recon.state]}
+                              sm
+                            />
+                          : <span className="text-[12px] text-brand-muted">—</span>}
+                      </td>
                       <td className="px-3.5 py-3">
                         <Badge label={SI_STATUS_LABELS[inv.status] ?? inv.status} variant={SI_BADGE_VARIANTS[inv.status]} sm />
                       </td>
                       <td className="px-3.5 py-3">
-                        <RowActions invoice={inv} onTransition={handleTransition} />
+                        <RowActions invoice={inv} onTransition={handleTransition} onRecordPayment={handleRecordPayment} />
                       </td>
                     </tr>
                   )
@@ -588,6 +863,16 @@ export default function ProjectInvoices() {
           contacts={contacts}
           onClose={() => setShowCreate(false)}
           onSave={createSupplierInvoice}
+        />
+      )}
+
+      {detail && (
+        <InvoiceDetailModal
+          invoice={detail}
+          reconciliation={reconciliationById.get(detail.id) ?? null}
+          allocatedPayments={paymentsForInvoice(supplierPayments, detail.id)}
+          currencyCode={currencyCode}
+          onClose={() => setDetail(null)}
         />
       )}
     </div>

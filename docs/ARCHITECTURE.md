@@ -17,8 +17,8 @@ Preconstruction → Procurement → Delivery → Cost Control → Forecasting �
 | **Preconstruction** | Measure quantities, build the BOQ, estimate, transfer to an approved budget | Drawings/Takeoff, BOQ & Estimating *(planned)*; **Cost Codes**, **Budgets** *(implemented)* |
 | **Procurement** | Tender packages, subcontractor invitations, bid levelling, award, commitment | Tender & Award *(future)* → **Purchase Orders** *(implemented)* |
 | **Delivery** | Scope variations, cumulative progress claims against commitments | **Variations** *(implemented — foundation)*; **Progress Claims** *(implemented)* |
-| **Cost Control** | Supplier invoices, actual cost, payments/credit notes | **Supplier Invoices** *(implemented)*; Payments, Credit Notes *(future)* |
-| **Revenue Control** | Client invoices issued against the contract sum and approved client variations; receivables, and the cash received to settle them | **Client Invoices / Accounts Receivable**, **Client Receipts** *(implemented — foundation)*; Supplier Payments *(next)* |
+| **Cost Control** | Supplier invoices, actual cost, payments/credit notes | **Supplier Invoices**, **Supplier Payments** *(implemented)*; Credit Notes, Retention Release *(future)* |
+| **Revenue Control** | Client invoices issued against the contract sum and approved client variations; receivables, and the cash received to settle them | **Client Invoices / Accounts Receivable**, **Client Receipts** *(implemented — foundation)* |
 | **Forecasting** | Forecast cost to complete and project margin *(implemented — foundation)*; cash flow | **Forecast Cost to Complete**, **Project Margin** *(implemented)*; Cash Flow *(planned)* |
 | **Final Account** | Reconcile budget + variations + actual into final margin; commercial reporting | Final Account, Commercial Reporting *(future/planned)* |
 
@@ -89,7 +89,8 @@ frontend/                  The entire application (run all npm commands here)
     components/            Card, Btn, Badge, Stat, ProgBar, PageHeader, ProtectedRoute
     layouts/               AppShell, Sidebar, TopBar, AuthLayout, ProjectDetailLayout,
                            ProjectCommercialLayout (Commercial sub-nav:
-                           Margin | Client Invoices | Receipts)
+                           Margin | Client Invoices | Client Receipts |
+                           Supplier Payments)
     pages/                 Login, CreateAccount, ForgotPassword, Dashboard, Projects,
                            CompanySettings (country & base currency),
                            Contacts (company directory), Subcontractors (filtered
@@ -98,6 +99,7 @@ frontend/                  The entire application (run all npm commands here)
                            ProjectPurchaseOrders, ProjectProgressClaims,
                            ProjectInvoices (supplier/AP), ProjectClientInvoices (client/AR),
                            ProjectClientReceipts (cash received),
+                           ProjectSupplierPayments (cash paid),
                            ProjectVariations, ProjectForecast,
                            ProjectCommercial (margin), ProjectPlaceholder
     hooks/                 All Firestore access (see below); projectCurrencyLock.js
@@ -106,8 +108,8 @@ frontend/                  The entire application (run all npm commands here)
     lib/                   firebase.js, formatters.js, currency.js, nav.js, projectTabs.js,
                            purchaseOrders.js, progressClaims.js, supplierInvoices.js,
                            clientInvoices.js, payments.js (shared, direction-agnostic),
-                           clientReceipts.js, variations.js, forecast.js, margin.js,
-                           contacts.js
+                           clientReceipts.js, supplierPayments.js,
+                           variations.js, forecast.js, margin.js, contacts.js
 docs/                      This documentation + design-reference assets
                            (Constrapp_v5.jsx prototype, screenshots, Word doc — do not move)
 AGENT.md / CLAUDE.md / README.md / PRODUCT.md / ROADMAP.md   (canonical root docs)
@@ -132,7 +134,7 @@ Per-page hooks (not context providers): `useProject(projectId)` (lookup within
 ProjectsProvider), `useCostCodes()`, `useContacts()`, `useBudgetLines(projectId)`,
 `usePurchaseOrders(projectId)`, `useProgressClaims(projectId)`,
 `useSupplierInvoices(projectId)`, `useClientInvoices(projectId)`,
-`useClientReceipts(projectId)`,
+`useClientReceipts(projectId)`, `useSupplierPayments(projectId)`,
 `useVariations(projectId)`, `useForecastLines(projectId)`,
 `useProjectCommercial(projectId)`.
 
@@ -151,7 +153,9 @@ ProtectedRoute (redirects to /login when signed out)
    │       the `invoices` route renders SUPPLIER invoices (AP); the tab is labelled "Supplier Invoices".
    │       the `commercial` route is a nested layout — index = Project Margin,
    │       `commercial/client-invoices` = Client Invoices / Accounts Receivable (AR),
-   │       `commercial/receipts` = Client Receipts (cash received))
+   │       `commercial/receipts` = Client Receipts (cash received; the sub-nav
+   │        LABEL reads "Client Receipts" while the route stays `receipts`),
+   │       `commercial/supplier-payments` = Supplier Payments (cash paid))
    │    boq | documents | photos | timeline | reports  (ProjectPlaceholder)
    ├─ /settings/company        Company country & base currency (company_admin writes)
    ├─ /contacts                Company-wide contact directory
@@ -184,7 +188,8 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Progress Claims | Implemented |
 | Supplier Invoices (accounts payable) | Implemented (foundation) |
 | Client Invoices / Accounts Receivable | Implemented (foundation) — read-time contract control and read-time reconciliation against receipts; **no tax-invoice output** |
-| Client Receipts (cash received) | Implemented (foundation) — embedded allocations, read-time balances; **no supplier payments, no cash flow** |
+| Client Receipts (cash received) | Implemented (foundation) — embedded allocations, read-time balances |
+| Supplier Payments (cash paid) | Implemented (foundation) — embedded allocations against posted invoices' `payableTotal`, read-time Paid to Date / Remaining Payable / AP ageing; **no cash flow UI, no retention release** |
 | Variations (client + supplier) | Implemented (foundation) |
 | Forecast Cost to Complete | Implemented (foundation) — read-time, cost-side |
 | Project Margin (Commercial tab) | Implemented (foundation) — read-time, ex-GST; commercial baseline is the only stored input |
@@ -206,3 +211,10 @@ and the hooks themselves. Reads are live `onSnapshot` subscriptions; writes are
 `lib/forecast.js` so it is testable and shared between create/assess/invoice/
 forecast flows. `lib/forecast.js` **composes** the other modules' read-time
 helpers rather than duplicating them.
+
+The cash modules follow the same shape: `lib/payments.js` holds only the
+**direction-agnostic** primitives (lifecycle, payment methods, allocation
+arithmetic, the whole-cent invariant, reconciliation states, remaining balances,
+generic ageing, shared validators), with `lib/clientReceipts.js` as the money-in
+adapter and `lib/supplierPayments.js` as the money-out adapter. Supplier Payments
+reuse `lib/payments.js` **entirely unchanged**.

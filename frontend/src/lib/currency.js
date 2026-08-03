@@ -300,6 +300,7 @@ export function monetaryLockReasons({
   supplierInvoices = [],
   clientInvoices = [],
   clientReceipts = [],
+  supplierPayments = [],
   variations = [],
   forecastLines = [],
   baseline = null,
@@ -323,6 +324,10 @@ export function monetaryLockReasons({
   // an amount of money in this project's currency, and a voided receipt is a
   // retained audit record carrying that amount — exactly like a cancelled PO.
   if (clientReceipts.length)   reasons.push(plural(clientReceipts.length, 'client receipt', 'client receipts'))
+  // Every supplier payment counts, including drafts and voids: a payment records
+  // an amount of money in this project's currency, and a voided payment is a
+  // retained audit record carrying that amount — exactly like a cancelled PO.
+  if (supplierPayments.length) reasons.push(plural(supplierPayments.length, 'supplier payment', 'supplier payments'))
   if (variations.length)       reasons.push(plural(variations.length, 'variation', 'variations'))
 
   // A forecast row that exists with `null` is "not forecast" and carries no
