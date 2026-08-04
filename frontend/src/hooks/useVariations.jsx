@@ -27,6 +27,11 @@ export function useVariations(projectId) {
   const { project } = useProject(projectId)
   const [variations, setVariations]               = useState([])
   const [variationsLoading, setVariationsLoading] = useState(true)
+  // True when the live read failed (connection loss or a rules rejection).
+  // Consumers deriving financial figures must treat a failed read as
+  // UNAVAILABLE — never as a genuine zero. Set only from the async snapshot
+  // callbacks; existing consumers may ignore it.
+  const [variationsError, setVariationsError]     = useState(false)
 
   const companyId = company?.id ?? null
 
@@ -51,10 +56,12 @@ export function useVariations(projectId) {
       (snap) => {
         setVariations(snap.docs.map(d => ({ id: d.id, ...d.data() })))
         setVariationsLoading(false)
+        setVariationsError(false)
       },
       () => {
         setVariations([])
         setVariationsLoading(false)
+        setVariationsError(true)
       }
     )
     return unsubscribe
@@ -257,5 +264,5 @@ export function useVariations(projectId) {
     throw new Error(`Unsupported transition to ${nextStatus}`)
   }, [companyId, projectId, user])
 
-  return { variations, variationsLoading, createVariation, updateVariation, transitionStatus }
+  return { variations, variationsLoading, variationsError, createVariation, updateVariation, transitionStatus }
 }

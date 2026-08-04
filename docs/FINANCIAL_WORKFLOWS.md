@@ -1088,14 +1088,186 @@ Cumulative Position      = 0 + running Σ of Monthly Actual Net
 - **One currency** — everything displays in the project currency; there is no
   FX and nothing is ever summed across currencies.
 
-**Deferred (the next two branches — see [ROADMAP.md](../ROADMAP.md)):**
-**Forecast Cash Flow** — expected collections from issued client invoices and
-expected payments on posted supplier invoices by due date, the manual monthly
-timing model (`cashFlowLines`), untimed AR/AP, completeness indicators,
-projected closing position, and peak funding — then **Cash Flow
-visualisation** (charts, date-range filtering). Also not modelled: retention
-release (forecast cash out omits retained money), GST/BAS cash flows,
-opening-balance input, bank feeds/reconciliation, financing, exports.
+**Deferred (the next branch):** **Cash Flow visualisation** — charts and
+date-range filtering — and **invoice retiming** (see below). Also not modelled:
+retention release, GST/BAS cash flows, opening-balance input, bank
+feeds/reconciliation, financing, scenarios, exports.
+
+### Cash Flow — Forecast *(implemented — foundation)*
+
+Two further read-time layers project forward from the actual foundation. The
+only stored data is the authored `cashFlowLines` collection (see
+[DATA_MODEL.md](DATA_MODEL.md)); every projected figure is derived on render in
+`lib/cashFlow.js`. Rationale: ADR-25.
+
+> **⚠️ THE BOUNDARY RULE.** **Months strictly before the current month are
+> ACTUAL ONLY.** No forecast amount — automatic or manual — ever lands in a past
+> month. This is what makes actual-versus-forecast *provably* non-double-
+> counting: for any past month the forecast contribution is structurally zero,
+> so an actual and the forecast it fulfilled can never both be counted.
+
+**Layer 2 — automatic, near-term (open invoice balances by due date):**
+
+```
+Forecast Cash In (M)  += Σ remaining of ISSUED client invoices   (GROSS, inc. GST)
+                          where remaining > 0 and dueDate month = M ≥ current month
+Forecast Cash Out (M) += Σ remaining of POSTED supplier invoices (payableTotal,
+                          already net of retention)
+                          where remaining > 0 and dueDate month = M ≥ current month
+```
+
+Both reuse the existing reconciliation rows (`clientInvoiceReconciliationRows` /
+`supplierInvoiceReconciliationRows`) — no balance is re-derived. Classification:
+
+- **Fully reconciled** (zero remaining) contributes nothing and leaves the
+  forecast entirely; **partly reconciled** forecasts only its remainder.
+- **Over-reconciled** (negative remaining) is **excluded from every month** and
+  reported as a signed callout — a credit position must never offset a genuine
+  expected receipt or payment.
+- **Past due** (`due month < current month`) is **not timed into any month** —
+  past months are actual-only, and inventing a recovery date would be false
+  precision. It waits in *Past due — expected recovery/payment not retimed*.
+- **No due date** waits in *Untimed AR/AP — no due date*.
+- ⚠️ The test is **MONTH-level, not day-level**: an invoice due earlier in the
+  *current* month is still automatically timed into the current month.
+- Voiding a receipt or payment restores the balance at the next render, and it
+  re-enters the forecast — no reversal record.
+
+**Layer 3 — manual, longer-term (`cashFlowLines`):** authored monthly timing of
+what invoices cannot yet show. Each line stores an expected **gross** `amount`
+(the only cash figure) and, separately, the **ex-GST `sourceAmountExGst`** it
+represents (coverage only). Allowed sources:
+
+| Direction | Sources |
+|---|---|
+| **In** | `contract_revenue` (Remaining Uninvoiced Contract Value) · `manual` |
+| **Out** | `uninvoiced_claim` · `remaining_committed` · `uncommitted_ctc` · `manual` |
+
+**`client_invoice` and `supplier_invoice` are deliberately excluded** — those
+balances are already timed automatically, so a manual line would double-count
+them. Approved **client** variations are already inside the Current Contract Sum
+and are therefore never a separate source (a line may name one in `sourceRef` as
+a label only). Approved **supplier** variations are never in Forecast Final Cost
+(ADR-19), so their expected cost reaches Cash Flow only through Uncommitted Cost
+to Complete on the Forecast tab.
+
+**Monthly formulas (gross; every accumulation through `roundMoney`):**
+
+```
+Forecast Cash In (M)  = 0 for M < current month, else layer 2 + layer 3 in-lines
+Forecast Cash Out (M) = 0 for M < current month, else layer 2 + layer 3 out-lines
+Total Cash In (M)     = Actual Cash In (M)  + Forecast Cash In (M)
+Total Cash Out (M)    = Actual Cash Out (M) + Forecast Cash Out (M)
+Monthly Net (M)       = Total Cash In (M) − Total Cash Out (M)
+Cumulative Position   = 0 + running Σ Monthly Net        (zero opening position)
+Projected Closing Position = cumulative position of the last month in range
+```
+
+The month range is dense across the union of actual months, automatic forecast
+months, counted manual-line months, and the current month.
+
+**Source coverage and completeness (ex-GST — never a cash figure):**
+
+```
+Revenue coverage % = Σ contract_revenue coverage ÷ Remaining Uninvoiced Contract Value
+Cost coverage %    = ( remaining_committed + uninvoiced_claim + uncommitted_ctc coverage )
+                     ÷ D_cost
+D_cost             = Remaining Committed + Uncommitted Cost to Complete
+                   ( ≡ Cost to Complete — the figure the Forecast tab publishes )
+```
+
+> **⚠️ Approved-claim cost sits INSIDE Remaining Committed.** An approved claim
+> consumes PO commitment, and Remaining Committed subtracts only **posted
+> invoicing** — so `uninvoiced_claim` coverage counts against the **same
+> cost-code committed balance** as `remaining_committed`, and is **never** an
+> additive second denominator or an additional untimed cost total. It is shown
+> only as a labelled breakdown: *"Approved claim awaiting invoice — included
+> within Remaining Committed."*
+
+```
+Untimed Remaining Committed = max(0, Remaining Committed
+                                     − coverage('remaining_committed')
+                                     − coverage('uninvoiced_claim'))
+Untimed Uncommitted CTC     = max(0, Uncommitted CTC − coverage('uncommitted_ctc'))
+Untimed Uninvoiced Contract = max(0, max(0, Available to Invoice)
+                                     − coverage('contract_revenue'))
+```
+
+Disjointness from layer 2 is structural: Remaining Committed is already net of
+posted invoicing, `uninvoiced_claim` excludes claims superseded by a posted
+invoice, Uncommitted CTC is by definition outside Actual and Remaining
+Committed, and Available to Invoice is already net of issued invoices.
+
+Coverage percentages are **`null`** — displayed **"—"**, never a false 0% or
+100% — when the basis is unavailable: no commercial baseline, a fully or
+over-invoiced contract, no remaining cost, or a failed source read. When cost
+codes remain unforecast, the percentage is shown **with** an explicit
+*incomplete basis* warning. Completeness states: **Complete** (full coverage,
+no untimed AR/AP, complete basis) · **Partially timed** · **Incomplete
+forecast** · **Unavailable**.
+
+**Untimed reporting uses three separate bases and never sums them:**
+
+| Basis | Contents |
+|---|---|
+| **Gross cash** | AR/AP with no due date · past-due AR/AP not retimed · retention withheld |
+| **Ex-GST source value** | untimed uninvoiced contract value · untimed Remaining Committed (with the approved-claim breakdown *within* it) · untimed Uncommitted CTC |
+| **Exposure — context only** | approved/pending supplier variations · pending client variations |
+
+**Peak funding:**
+
+```
+Peak Funding Requirement = |lowest negative projected cumulative position|
+Month of Peak Funding    = the EARLIEST month achieving that trough
+```
+
+The **headline is suppressed** whenever significant amounts remain untimed or a
+basis is unavailable — untimed cost makes the trough shallower than reality, so
+an unqualified figure would **understate** the funding need. When suppressed,
+the computed value appears only as a labelled **lower bound** with the specific
+unmet conditions listed. Suppression triggers: untimed remaining revenue, untimed
+committed cost, untimed uncommitted CTC, AR/AP with no due date, past-due AR/AP
+not retimed, revenue basis unavailable, cost basis unavailable, cost basis
+incomplete.
+
+**Retention withheld and unallocated cash WARN prominently but never suppress.**
+Retention release is not modellable at all, so suppressing on it would disable
+peak funding permanently on any project that withholds retention; unallocated
+cash is already correctly counted in actuals and only creates a *risk* that
+invoice balances overstate future movement. The peak-funding presentation states
+explicitly that **retention release and GST/BAS cash movement are excluded**.
+Neither is ever silently netted — the remedy in both cases is an explicit manual
+timing line.
+
+**Stale lines and the no-past-month rule.** Creating a line in a past month, or
+editing/retiming one into the past, is **blocked in the client** (Firestore
+rules validate the `'YYYY-MM'` shape but have no calendar — see
+[SECURITY.md](SECURITY.md)). An existing line becomes **stale** naturally as the
+calendar advances past its month: it then contributes to no month, no cumulative
+figure, and no peak-funding calculation, and surfaces in a stale panel where it
+can be **retimed forward or voided with a reason**. Nothing is ever silently
+moved, replaced, or deleted — a line stranded in a past month is real signal.
+
+**Lifecycle.** `active → active` (edit) and `active → void` (terminal,
+non-whitespace reason), both **rules-enforced**; delete blocked. There is
+deliberately **no posted status, no approval, no period locking, and no
+immutable snapshot** — an active line remains editable after being reported,
+which SECURITY.md records as *not enforced*.
+
+**Over-coverage is warned with an explicit acknowledgement, never blocked** —
+Firestore rules cannot sum sibling lines, so several lines can together claim
+more coverage than a source holds and two users can time the same balance
+concurrently.
+
+**Currency.** A timing line is monetary data: creating one engages the project
+currency ratchet **in the same transaction** (ADR-21), and voided lines remain
+lock evidence. Amounts display in the project currency; there is no FX.
+
+**Deferred:** charts and date filtering · **invoice retiming** (reserved
+`client_invoice`/`supplier_invoice` source types, letting a past-due balance be
+moved to a future month) · scenarios · authored opening balance · financing ·
+retention-release modelling · GST/BAS forecasting · bank and accounting
+integrations · exports.
 
 ### Project Margin *(implemented — foundation)*
 

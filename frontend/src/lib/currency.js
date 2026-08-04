@@ -303,6 +303,7 @@ export function monetaryLockReasons({
   supplierPayments = [],
   variations = [],
   forecastLines = [],
+  cashFlowLines = [],
   baseline = null,
 } = {}) {
   const reasons = []
@@ -329,6 +330,11 @@ export function monetaryLockReasons({
   // retained audit record carrying that amount — exactly like a cancelled PO.
   if (supplierPayments.length) reasons.push(plural(supplierPayments.length, 'supplier payment', 'supplier payments'))
   if (variations.length)       reasons.push(plural(variations.length, 'variation', 'variations'))
+  // Every cash-flow timing line counts, including voided ones: a line records
+  // an expected gross cash amount in this project's currency, and a voided line
+  // is retained forecast history carrying that amount — exactly like a
+  // cancelled PO or a voided receipt.
+  if (cashFlowLines.length)    reasons.push(plural(cashFlowLines.length, 'cash-flow timing line', 'cash-flow timing lines'))
 
   // A forecast row that exists with `null` is "not forecast" and carries no
   // money — only an authored number (including 0) counts.

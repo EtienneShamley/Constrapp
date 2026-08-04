@@ -20,6 +20,11 @@ export function useProgressClaims(projectId) {
   const { project } = useProject(projectId)
   const [progressClaims, setProgressClaims]               = useState([])
   const [progressClaimsLoading, setProgressClaimsLoading] = useState(true)
+  // True when the live read failed (connection loss or a rules rejection).
+  // Consumers deriving financial figures must treat a failed read as
+  // UNAVAILABLE — never as a genuine zero. Set only from the async snapshot
+  // callbacks; existing consumers may ignore it.
+  const [progressClaimsError, setProgressClaimsError]     = useState(false)
 
   const companyId = company?.id ?? null
 
@@ -44,10 +49,12 @@ export function useProgressClaims(projectId) {
       (snap) => {
         setProgressClaims(snap.docs.map(d => ({ id: d.id, ...d.data() })))
         setProgressClaimsLoading(false)
+        setProgressClaimsError(false)
       },
       () => {
         setProgressClaims([])
         setProgressClaimsLoading(false)
+        setProgressClaimsError(true)
       }
     )
     return unsubscribe
@@ -177,5 +184,5 @@ export function useProgressClaims(projectId) {
     })
   }, [companyId, projectId, user])
 
-  return { progressClaims, progressClaimsLoading, createProgressClaim, updateProgressClaim, transitionStatus }
+  return { progressClaims, progressClaimsLoading, progressClaimsError, createProgressClaim, updateProgressClaim, transitionStatus }
 }

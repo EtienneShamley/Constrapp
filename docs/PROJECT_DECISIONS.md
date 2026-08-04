@@ -1015,19 +1015,90 @@ needs a new authored data model (a substantial, security-reviewed change of its
 own). Shipping actuals first also keeps the honest default visible: a page
 that reports only what happened cannot overstate what will.
 
-**Approved by design assessment but NOT yet implemented (branches 2–3):** the
-`cashFlowLines` collection (one document per authored forecast line; void-not-
-delete; rules-enforced lifecycle); gross manual forecast lines with an ex-GST
-`sourceAmountExGst` reference for completeness; invoice due-date near-term
-forecasting on remaining balances; the actual/forecast boundary rule (past
-months actuals-only, current and future months actual + forecast); completeness
-indicators; peak funding with suppression while untimed amounts remain; and
-charts. None of these exist in the codebase, and `cashFlowLines` must not be
-described as an implemented collection until branch 2 lands with its own rules
-block and emulator suite.
+**Implemented by the Forecast branch (3c-ii), amending this ADR:**
+
+- **Three layers, one boundary rule.** Layer 2 times **open invoice balances by
+  due month** (issued client invoices at gross; posted supplier invoices at
+  `payableTotal`, net of retention); layer 3 times **authored `cashFlowLines`**.
+  **Months before the current month are ACTUAL ONLY** — no forecast amount ever
+  lands in a past month, which makes actual-versus-forecast provably
+  non-double-counting without matching any actual to any forecast.
+- **`cashFlowLines`** at `companies/{id}/projects/{id}/cashFlowLines/{lineId}`:
+  random ids, **no counter** (a planning input is never quoted by a supplier or
+  client, so ADR-5's rationale does not apply), `active → active` / `active →
+  void` (terminal) **rules-enforced**, delete blocked, **no posted status and no
+  approval** — a forecast line has no financial commit point.
+- **Two amounts, two bases.** `amount` is expected **gross** cash (the only cash
+  figure; always `> 0`, with `direction` carrying the sign) and
+  `sourceAmountExGst` is the **ex-GST source value** it represents —
+  completeness coverage only, never a cash column. The two bases are never added
+  together, and the untimed panel keeps gross cash, ex-GST source value, and
+  informational exposure in three separate columns.
+- **Invoice source types are EXCLUDED.** `client_invoice` and
+  `supplier_invoice` are deliberately not offered: those balances are already
+  timed automatically, so a manual line would double-count them. **Invoice
+  retiming** — which would make them safe, because layer 2 provably never times
+  a past-due balance — is reserved for its own branch, since it needs per-invoice
+  coverage tracking, a past-due picker, and its own over-coverage arithmetic.
+  The accepted cost is that past-due balances stay untimed, which *understates*
+  future Cash In and therefore *overstates* funding need — the conservative
+  direction, and visible because it suppresses the peak-funding headline.
+- **`sourceId` is not stored.** Every coverage key is a `costCodeId` (cost side)
+  or nothing (revenue sits above the spine, ADR-20/ADR-22), so a polymorphic
+  source id would be null on every document Branch 2 can create. Adding it when
+  invoice retiming lands is purely additive — no dead field ahead of its branch
+  (the ADR-23 precedent).
+- **⚠️ CORRECTED COST MODEL.** Approved-claim cost awaiting a supplier invoice
+  sits **inside** Remaining Committed: an approved claim consumes PO commitment,
+  and `maturedCommittedByCostCode` subtracts only **posted invoicing**.
+  Therefore `D_cost = Remaining Committed + Uncommitted CTC` (≡ Cost to
+  Complete, the figure the Forecast tab already publishes — no new arithmetic),
+  and `uninvoiced_claim` coverage counts against the **same cost-code committed
+  balance** as `remaining_committed`. It is surfaced only as a labelled
+  breakdown *within* Remaining Committed, **never as an additive second
+  denominator or an extra untimed total**. This corrects the broad assessment,
+  which would have double-counted it.
+- **Completeness is null, never a false 0% or 100%,** whenever the basis is
+  unavailable (no baseline, over-invoiced contract, no remaining cost, or a
+  failed source read) — the `marginPercent` guard applied to coverage.
+- **Peak funding** takes the **earliest** month on a tie and its **headline is
+  suppressed** while significant amounts remain untimed or a basis is
+  unavailable, showing only a labelled lower bound: untimed cost makes the
+  trough shallower than reality, so an unqualified figure would *understate* the
+  funding need. **Retention withheld and unallocated cash warn but never
+  suppress** — retention release is unmodellable, so suppressing on it would
+  disable peak funding permanently on any project that withholds retention, and
+  unallocated cash is already correctly counted in actuals. Both exclusions are
+  stated beside the figure, and the remedy for each is an explicit manual line.
+- **No past-month timing; stale lines are surfaced, never moved.** Creating or
+  retiming a line into a past month is **client-blocked** (rules validate the
+  `'YYYY-MM'` shape but have no calendar — recorded as Deferred Control 19). A
+  line becomes stale naturally as the calendar advances, stops counting
+  everywhere, and is retimed forward or voided with a reason. Nothing is
+  silently deleted, replaced, or auto-matched to an actual.
+- **Over-coverage is warned with an acknowledgement, never blocked** — rules
+  cannot sum sibling lines (the Deferred Control 14/16/18 posture).
+- **Subscription-error hardening.** Six hooks (`useBudgetLines`,
+  `usePurchaseOrders`, `useProgressClaims`, `useSupplierInvoices`,
+  `useVariations`, `useForecastLines`) gained **additive** error flags, because
+  a silent degrade to `[]` would have rendered Forecast Cash Out as `$0` and
+  cost coverage as 100% — a confidently wrong forecast in the dangerous
+  direction. A failed read is now reported as **unavailable, never zero**.
+- **`direction` and `basis` are enum-checked in rules** — a deliberate exception
+  to ADR-21's anti-enum precedent, justified because they are two-value and
+  one-value closed sets that decide which cash column an amount lands in and
+  whether it is a cash figure at all. `sourceType` stays shape-only: that list
+  will grow.
+
+**Still approved but NOT implemented (branch 3c-iii and beyond):** charts and
+date-range filtering; **invoice retiming** (the reserved
+`client_invoice`/`supplier_invoice` source types); scenarios; an authored
+opening balance; financing; retention-release modelling; GST/BAS forecasting;
+period locking and immutable forecast snapshots; bank and accounting
+integrations; exports.
 
 **Consequences:** the recorded sequence is **Actual Cash Flow foundation
-(shipped) → Forecast Cash Flow → Cash Flow visualisation**. Forecast Cash In/
+(shipped) → Forecast Cash Flow (shipped) → Cash Flow visualisation**. Forecast Cash In/
 Out, expected collections and payments, manual monthly timing, untimed AR/AP,
 projected closing position, peak funding, retention-release cash, GST/BAS cash,
 opening-balance input, scenarios, company-wide cash flow, bank feeds/

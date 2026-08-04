@@ -762,6 +762,157 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Cash Flow timing lines — AUTHORED monthly forecast inputs for the Cash
+    // Flow view: an expected GROSS cash amount in a chosen month, optionally
+    // representing an ex-GST source value (completeness tracking only). They
+    // are planning records, not transactions: no counter, no number, no posted
+    // status. They never reference or mutate any other financial document —
+    // the cost-side link is the cost-code spine (costCodeId + frozen name).
+    //
+    // Reads: restricted to internal financial roles — timing lines expose the
+    // project's expected cash profile and funding position, so subcontractor
+    // and client users must NOT read them. A future portal must never expose
+    // Cash Flow at all.
+    // Delete: blocked — voiding is a status change; voided lines are retained
+    // forecast history (and currency-lock evidence).
+    //
+    // Lifecycle is RULES-ENFORCED, simpler than the cash collections (two
+    // states — a forecast line has no financial commit point):
+    //   · create only with status 'active', basis 'gross', null void stamps,
+    //     createdBy == caller, createdAt == server request time
+    //   · active edits may change content but not the status, must satisfy the
+    //     full shape, and may not forge a void stamp
+    //   · active -> void touches only status/voidedAt/voidedBy/voidReason/
+    //     updatedAt/updatedBy, with voidedBy == caller, voidedAt == server
+    //     request time, and a NON-WHITESPACE voidReason
+    //   · void is terminal; there is no void -> active and no void edit
+    //
+    // `direction` and `basis` are validated as literal closed sets — a
+    // deliberate exception to the no-enum-in-rules precedent (ADR-21):
+    // two-value and one-value sets that structurally determine which cash
+    // column an amount lands in, and whether it is a cash figure at all.
+    // `sourceType` is validated by SHAPE only (bounded non-empty string) —
+    // that list will grow, and an enum duplicated into this manually-published
+    // file would drift out of sync with lib/cashFlow.js.
+    //
+    // What is NOT enforced here (client-side only — NEVER describe as
+    // enforced):
+    //   · that monthKey is not a PAST month — rules validate the YYYY-MM shape
+    //     but have no calendar to compare against the caller's local date
+    //   · sourceType membership of the app's list, and the per-type
+    //     conditionals (costCodeId required for cost-side types, coverage
+    //     required for coverage types, null for manual)
+    //   · that costCodeId names a real cost code in this company
+    //   · any source REMAINING BALANCE or aggregate coverage — rules have no
+    //     list, query, or count, so several lines can together claim more
+    //     coverage than a source holds, and two users can time the same
+    //     balance concurrently (warned with acknowledgement, never blocked)
+    //   · duplicate source timing across sibling lines
+    //   · that `amount` is a correct GROSS of `sourceAmountExGst` — per-line
+    //     tax codes make a flat conversion unreliable, so gross is authored
+    //   · timing realism, forecast completeness, period locking, and business
+    //     truth — an active line is freely rewritable after being reported
+    match /companies/{companyId}/projects/{projectId}/cashFlowLines/{lineId} {
+      function financialMember() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // The document identity that no update of any kind may rewrite.
+      function corePreserved() {
+        return request.resource.data.currency  == resource.data.currency
+            && request.resource.data.createdAt == resource.data.createdAt
+            && request.resource.data.createdBy == resource.data.createdBy
+            && request.resource.data.basis     == resource.data.basis
+            && request.resource.data.revision  == resource.data.revision;
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // Shape required of every stored ACTIVE state (create and edit alike).
+      function shapeValid() {
+        return request.resource.data.basis == 'gross'
+            && request.resource.data.revision == 1
+            && request.resource.data.monthKey is string
+            && request.resource.data.monthKey.matches('^[0-9]{4}-(0[1-9]|1[0-2])$')
+            && request.resource.data.direction in ['in', 'out']
+            // Positive gross cash only — a reduction is a line in the opposite
+            // direction, never a negative amount.
+            && request.resource.data.amount is number
+            && request.resource.data.amount > 0
+            // Ex-GST source coverage: null (manual lines) or a non-negative
+            // number. Which types require which is client-enforced.
+            && (request.resource.data.sourceAmountExGst == null
+                || (request.resource.data.sourceAmountExGst is number
+                    && request.resource.data.sourceAmountExGst >= 0))
+            && request.resource.data.sourceType is string
+            && request.resource.data.sourceType.size() > 0
+            && request.resource.data.sourceType.size() <= 40
+            && request.resource.data.sourceRef is string
+            && request.resource.data.counterpartyName is string
+            // Cost-code spine: both null/'' together, or both real together.
+            && ((request.resource.data.costCodeId == null
+                 && request.resource.data.costCodeName == '')
+                || (request.resource.data.costCodeId is string
+                    && request.resource.data.costCodeId.size() > 0
+                    && request.resource.data.costCodeName is string
+                    && request.resource.data.costCodeName.size() > 0))
+            && request.resource.data.description is string
+            && request.resource.data.description.trim().size() > 0
+            && request.resource.data.notes is string
+            && request.resource.data.currency is string
+            && request.resource.data.currency.matches('^[A-Z]{3}$');
+      }
+
+      allow read: if financialMember();
+
+      allow create: if financialMember()
+                  && shapeValid()
+                  && request.resource.data.status == 'active'
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  // Void stamps cannot be forged at creation.
+                  && request.resource.data.voidedAt == null
+                  && request.resource.data.voidedBy == null;
+
+      allow update: if financialMember() && corePreserved() && updateStamped() && (
+                    // (a) ACTIVE EDIT — content (month, direction, source,
+                    //     amounts, cost code, description) is freely editable
+                    //     while active, but the status may not move and no
+                    //     void stamp may be forged.
+                    (
+                      resource.data.status == 'active'
+                      && request.resource.data.status == 'active'
+                      && shapeValid()
+                      && request.resource.data.voidedAt == resource.data.voidedAt
+                      && request.resource.data.voidedBy == resource.data.voidedBy
+                    )
+                    ||
+                    // (b) ACTIVE -> VOID (terminal). Voiding is the only exit:
+                    //     it may touch nothing but the void audit fields, so a
+                    //     voided line is immutable retained history.
+                    (
+                      resource.data.status == 'active'
+                      && request.resource.data.status == 'void'
+                      && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.voidedBy == request.auth.uid
+                      && request.resource.data.voidedAt == request.time
+                      && request.resource.data.voidReason is string
+                      && request.resource.data.voidReason.trim().size() > 0
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
     // Contacts — company-wide directory of suppliers, subcontractors,
     // consultants, and clients (third-party PII: names, phones, emails, ABNs,
     // payment terms).

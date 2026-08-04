@@ -24,6 +24,7 @@ companies/{companyId}
     supplierPayments/{paymentId}
     variations/{variationId}
     forecastLines/{costCodeId}           (deterministic id = costCodeId)
+    cashFlowLines/{lineId}               (authored Cash Flow timing inputs)
     commercial/baseline                  (single doc; deterministic id = "baseline")
 ```
 
@@ -689,24 +690,71 @@ any other document. **No migration** — a project with no baseline document loa
 normally and shows an empty "baseline not set" state; margin figures appear once an
 Original Contract Value is saved.
 
-## Cash Flow — no persisted data
+## …/projects/{projectId}/cashFlowLines/{lineId}
 
-**The Actual Cash Flow foundation introduces no collection, no document, and no
-field.** Every figure on the Cash Flow view — monthly Actual Cash In / Cash Out /
-Net, the cumulative-from-zero position, and the unallocated-cash totals — is
-**derived at read time** (`lib/cashFlow.js` over the `cashInRows()` /
-`cashOutRows()` adapters) from exactly two existing collections:
+**Authored monthly Cash Flow timing inputs** — the ONLY stored Cash Flow data.
+They time longer-term revenue and cost into months so a projected cash curve can
+be derived; every projected figure itself is derived at read time
+(`lib/cashFlow.js`) and never written back. Semantics and formulas:
+[FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md). Reads are restricted to
+internal financial roles (see [SECURITY.md](SECURITY.md)). Rationale: ADR-25.
 
-- `…/clientReceipts` — posted receipts only, total `amount`, grouped by
-  `receiptDate.slice(0, 7)`
-- `…/supplierPayments` — posted payments only, total `amount`, grouped by
-  `paymentDate.slice(0, 7)`
+A timing line is a **planning record, not a transaction**: there is no counter,
+no sequential number, and no posted status. Document ids are random.
 
-Nothing is written back to either collection (or to any other document), and no
-Firestore rules changed. The planned **Forecast Cash Flow** foundation will
-introduce an authored `cashFlowLines` collection — that is future work, decided
-in its own design assessment, and is **not modelled today** (see the table
-below).
+| Field | Type | Notes |
+|---|---|---|
+| `monthKey` | string | `'YYYY-MM'` — the month the cash is expected. Rules validate the shape; **that it is not a PAST month is client-enforced only** |
+| `direction` | string | `in` \| `out` — **rules-enforced membership**. Direction carries the sign |
+| `basis` | string | `'gross'` — rules-enforced. `'ex_gst'` is deliberately **not** defined; adding a basis requires a rules change and a security review |
+| `amount` | number | **Expected GROSS cash, `> 0`** (rules-enforced). The only cash figure. A reduction is a line in the opposite direction, never a negative amount |
+| `sourceAmountExGst` | number \| null | The **ex-GST source value** this line represents — **completeness COVERAGE only, never a cash column**. `null` on `manual` lines. Rules enforce `null` or `≥ 0`; the per-type requirement is client-enforced |
+| `sourceType` | string | `contract_revenue` (in) · `uninvoiced_claim` / `remaining_committed` / `uncommitted_ctc` (out) · `manual` (either). **`client_invoice` and `supplier_invoice` are deliberately EXCLUDED** — open invoice balances are timed automatically by due date, so a manual line would double-count them (reserved for a future invoice-retiming feature). Rules validate **shape only** (ADR-21 anti-drift) |
+| `costCodeId` | string \| null | The **coverage key and cost-code spine link** for cost-side types; `null` for `contract_revenue` and `manual` (revenue sits above the spine — ADR-20/ADR-22) |
+| `costCodeName` | string | **Frozen snapshot**; non-empty exactly when `costCodeId` is non-null (rules-enforced pairing) |
+| `sourceRef` | string | **Frozen human label** — `'CV-0003'`, `'PO-0012'`, `'PC-0007'`, `''`. A label only: it links nothing and changes no figure |
+| `counterpartyName` | string | **Frozen snapshot**, `''` when none |
+| `description` | string | **Required non-whitespace** (rules-enforced) |
+| `notes` | string | Optional |
+| `status` | string | `active` \| `void`. Create is `active`-only; **void is terminal** |
+| `voidReason` | string | **Required non-whitespace** on void (rules-enforced) |
+| `voidedAt` / `voidedBy` | timestamp / uid | `null` until void. Rules require `voidedBy == request.auth.uid` and `voidedAt == request.time` |
+| `currency` | string | **Audit snapshot** of the project currency at write time. **Never read for display** |
+| `revision` | number | `1` — rules-enforced on create, preserved on update |
+| `createdAt` / `createdBy` | timestamp / uid | Set once; rules reject any later change |
+| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on **every** write |
+
+**Deliberately NOT stored:** `projectId` (the collection path carries it — the
+ADR-24 precedent), `sourceId` (every coverage key is a `costCodeId` or nothing,
+so a polymorphic source id would always be null), any monthly total, cumulative
+total, projected closing position, peak funding, or completeness percentage.
+
+**Stored vs derived.** Only the fields above are authored. **Every monthly row,
+the projected cumulative and closing position, source coverage, completeness,
+the untimed buckets, and the peak-funding trough are derived at read time**
+(`lib/cashFlow.js`) and are **never** written back — not here, and above all not
+onto a client invoice, supplier invoice, PO, claim, variation, forecast line,
+budget line, or the commercial baseline. A timing line is monetary data, so
+creating one **locks the project currency in the same transaction** (ADR-21);
+voided lines are retained and remain lock evidence. **No migration** — a project
+with no `cashFlowLines` loads normally with an empty manual forecast.
+
+## Cash Flow — what is and is not persisted
+
+`cashFlowLines` above is the **only** Cash Flow collection. Everything else the
+Cash Flow view shows is derived at read time from collections that already
+existed:
+
+- **Actual cash** — `…/clientReceipts` and `…/supplierPayments` (posted only,
+  total `amount`, grouped by `receiptDate` / `paymentDate`)
+- **Automatic near-term forecast** — `…/clientInvoices` (issued, gross
+  remaining) and `…/supplierInvoices` (posted, `payableTotal` remaining),
+  timed by `dueDate` **month**
+- **Coverage denominators** — the existing Budget/Forecast/Margin derivations
+  over `budgetLines`, `purchaseOrders`, `progressClaims`, `supplierInvoices`,
+  `variations`, `forecastLines`, and `commercial/baseline`
+
+Nothing is written to any of them.
 
 ## Planned Commercial Entities (not yet modelled)
 
@@ -727,7 +775,6 @@ exactly as budget lines, PO lines, claim lines, and invoice lines already do.
 | **Awards** | The winning bid, transferred to commitment | Carries cost-coded amounts into POs/budget |
 | **Budget Adjustments** | Internal budget transfers/revisions (no external counterparty) — **a distinct future document type, not a variation** | Reallocate budget by cost code |
 | **Forecast period snapshots** | Immutable monthly cost-to-complete snapshots + prior-period comparison (the *current* per-cost-code forecast inputs are **implemented** above as `forecastLines`) | Aggregated by cost code |
-| **Cash-flow forecast lines** (`cashFlowLines`) | Manual monthly timing of remaining revenue and cost for **Forecast** Cash Flow (the *actual* Cash Flow view is implemented and stores nothing) | Cost-side lines intended to carry a `costCodeId`; revenue-side lines sit above the spine (the recorded ADR-20/ADR-22 exception) |
 | **Final account records** | Closing budget-vs-actual reconciliation | Reconciled per cost code |
 
 No collection paths or field lists are committed here; adding any of these requires

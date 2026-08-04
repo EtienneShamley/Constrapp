@@ -10,6 +10,11 @@ export function useBudgetLines(projectId) {
   const { company } = useCompany()
   const [budgetLines, setBudgetLines]             = useState([])
   const [budgetLinesLoading, setBudgetLinesLoading] = useState(true)
+  // True when the live read failed (connection loss or a rules rejection).
+  // Consumers deriving financial figures must treat a failed read as
+  // UNAVAILABLE — never as a genuine zero. Set only from the async snapshot
+  // callbacks; existing consumers may ignore it.
+  const [budgetLinesError, setBudgetLinesError]   = useState(false)
 
   const companyId = company?.id ?? null
 
@@ -29,10 +34,12 @@ export function useBudgetLines(projectId) {
       (snap) => {
         setBudgetLines(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })))
         setBudgetLinesLoading(false)
+        setBudgetLinesError(false)
       },
       () => {
         setBudgetLines([])
         setBudgetLinesLoading(false)
+        setBudgetLinesError(true)
       }
     )
     return unsubscribe
@@ -65,5 +72,5 @@ export function useBudgetLines(projectId) {
     })
   }, [companyId, projectId, user])
 
-  return { budgetLines, budgetLinesLoading, createBudgetLine }
+  return { budgetLines, budgetLinesLoading, budgetLinesError, createBudgetLine }
 }

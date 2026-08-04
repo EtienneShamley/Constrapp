@@ -20,6 +20,11 @@ export function useForecastLines(projectId) {
   const { company } = useCompany()
   const [forecastLines, setForecastLines]               = useState([])
   const [forecastLinesLoading, setForecastLinesLoading] = useState(true)
+  // True when the live read failed (connection loss or a rules rejection).
+  // Consumers deriving financial figures must treat a failed read as
+  // UNAVAILABLE — never as a genuine zero. Set only from the async snapshot
+  // callbacks; existing consumers may ignore it.
+  const [forecastLinesError, setForecastLinesError]     = useState(false)
 
   const companyId = company?.id ?? null
 
@@ -40,10 +45,12 @@ export function useForecastLines(projectId) {
       (snap) => {
         setForecastLines(snap.docs.map(d => ({ id: d.id, ...d.data() })))
         setForecastLinesLoading(false)
+        setForecastLinesError(false)
       },
       () => {
         setForecastLines([])
         setForecastLinesLoading(false)
+        setForecastLinesError(true)
       }
     )
     return unsubscribe
@@ -117,5 +124,5 @@ export function useForecastLines(projectId) {
     return ref.id
   }, [companyId, projectId, user])
 
-  return { forecastLines, forecastLinesLoading, upsertForecastLine }
+  return { forecastLines, forecastLinesLoading, forecastLinesError, upsertForecastLine }
 }

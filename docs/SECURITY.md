@@ -63,6 +63,7 @@ to financial roles.**
 | `…/projects/{id}/supplierPayments/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability and the scalar amount invariant rules-enforced** | blocked — void via status |
 | `…/projects/{id}/variations/{id}` | **financial roles only** | financial roles | blocked — reject/withdraw via status |
 | `…/projects/{id}/forecastLines/{id}` | **financial roles only** | financial roles | blocked — clear via `null`, never deleted |
+| `…/projects/{id}/cashFlowLines/{id}` | **financial roles only** | financial roles, **create active-only; transitions and post-void immutability rules-enforced** | blocked — void via status |
 | `…/projects/{id}/commercial/baseline` | **financial roles only** | financial roles | blocked — the single baseline doc is never deleted |
 | `…/counters/{id}` | financial roles | financial roles | blocked |
 
@@ -292,23 +293,74 @@ exception** on both views rather than auto-reversing, and deliberately keeps
 `paid` inside `SI_COUNTING_STATUSES` so the second cannot make a real cost vanish
 from Invoiced and Actual (ADR-24). Neither is prevented.
 
-## Cash Flow — a read-only view; no new rules, no new write surface
+## Cash Flow — one authored collection, rules-enforced lifecycle
 
-**The Actual Cash Flow view adds no collection, no field, no write path, and no
-Firestore rules.** It is a read-time derivation over two existing collections —
-`clientReceipts` and `supplierPayments` — whose existing rules blocks (above)
-already restrict reads to internal financial roles and already enforce their
-lifecycles. Those rules are the entire security boundary for this view: a role
-that cannot read receipts and payments sees no cash figure (the page's own role
-check is a UX mirror only). The page writes nothing — not to the cash
-collections, and not to any invoice, PO, claim, variation, forecast line,
-budget line, or the commercial baseline.
+**Reads are restricted to financial roles.** The Cash Flow view aggregates both
+cash directions into the project's cash position, funding profile, and — read
+beside the commercial-context panel — its implied margin standing, so
+`subcontractor` and `client` users must not read it. **A future client or
+subcontractor portal must never expose Cash Flow at all** (Deferred Control 10).
 
-**A future client or subcontractor portal must never expose Cash Flow.** The
-view reveals the project's cash position, its cumulative funding profile, and —
-read beside the commercial-context panel — its implied margin standing. This
-extends the existing portal exclusions for Client Receipts and Supplier
-Payments (Deferred Control 10).
+Cash Flow reads `clientReceipts`, `supplierPayments`, `clientInvoices`,
+`supplierInvoices`, and the Budget/Forecast/Margin sources — all already
+restricted by their own blocks — and **writes only `cashFlowLines`**. No other
+financial document is ever mutated by it.
+
+**The `cashFlowLines` lifecycle is rules-enforced**, following
+`clientInvoices`/`clientReceipts`/`supplierPayments` as the standard, but with
+**two states rather than three**: a forecast line is a planning record, not a
+transaction, so it has no financial commit point.
+
+- `create` only with `status: 'active'`, `basis: 'gross'`, `revision: 1`, a
+  valid `'YYYY-MM'` `monthKey`, `direction in ['in','out']`, `amount > 0`,
+  `sourceAmountExGst` null-or-non-negative, a bounded non-empty `sourceType`, a
+  **non-whitespace `description`**, a shape-valid `currency`, `createdBy ==
+  request.auth.uid`, `createdAt == request.time`, and **null void stamps**.
+- **The cost-code pairing**: `costCodeId` and `costCodeName` must be null/`''`
+  together or both non-empty together.
+- **Every** update must preserve `currency`, `createdAt`, `createdBy`, `basis`,
+  and `revision`, and must stamp `updatedBy == request.auth.uid` and
+  `updatedAt == request.time`.
+- **Active edits** may change content (month, direction, source, amounts, cost
+  code, description) but not the status, must satisfy the full shape, and may
+  not forge a void stamp.
+- **`active → void`** may affect **only** `status`, `voidedAt`, `voidedBy`,
+  `voidReason`, `updatedAt`, `updatedBy`, with `voidedBy == request.auth.uid`,
+  `voidedAt == request.time`, and a **non-whitespace** `voidReason`.
+- **`void` is terminal**; `delete` is blocked for active and void lines alike.
+
+`direction` and `basis` are validated as **literal closed sets** — a deliberate
+exception to the ADR-21 no-enum-in-rules precedent, because they are two-value
+and one-value sets that structurally determine which cash column an amount lands
+in and whether it is a cash figure at all. Adding a `basis` therefore *requires*
+a rules change and a security review, which is the intended friction.
+
+*Client-enforced only (deferred — never describe these as enforced):*
+
+- **That `monthKey` is not a PAST month.** Rules validate the `'YYYY-MM'` shape
+  and have no calendar to compare against the caller's local date, so a direct
+  SDK call can create or retime a line into a past month. In the app this is
+  blocked (`lib/cashFlow.js → validateCashFlowLineDraft`), and a line that
+  becomes stale as the calendar advances is excluded from every total and
+  surfaced for retiming or voiding.
+- **`sourceType` membership** of the app's list, and every per-type conditional
+  — that cost-side types carry a cost code, that coverage types carry a
+  `sourceAmountExGst`, and that `manual` lines carry none. Validated by shape
+  only, to avoid the enum drift ADR-21 records.
+- **That `costCodeId` names a real cost code** in this company.
+- **Any source remaining balance, and therefore aggregate over-coverage** —
+  rules have no list, query, or count, so several lines can together claim more
+  ex-GST coverage than a source holds, and **two users can time the same
+  balance concurrently**. Over-coverage is warned with an explicit
+  acknowledgement, never blocked (Deferred Control 19).
+- **Duplicate source timing** across sibling lines.
+- **That `amount` is a correct gross of `sourceAmountExGst`** — per-line tax
+  codes make a flat conversion unreliable, so the gross figure is authored and
+  the "+ GST 10%" button is an explicit suggestion only.
+- **Timing realism, forecast completeness, period locking, and business truth.**
+  An active line remains **freely rewritable after being reported**: there is no
+  period lock, no immutable snapshot, and no history beyond last-write
+  `updatedAt`/`updatedBy` (Deferred Control 7 territory).
 
 **Forecast Lines reads are restricted to financial roles** — deliberately tighter
 than the company-member `budgetLines` read. The Forecast Cost to Complete data
@@ -558,6 +610,20 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     Additionally, posting a **future-dated** payment is blocked in the client
     only. The payment *number* is still race-free (transactional counter).
 
+19. **Cash-flow timing-line integrity, past-month timing & post-reporting
+    mutability** — Firestore rules enforce the `cashFlowLines` shape and
+    lifecycle but **cannot** verify the forecast itself. Consequences, all
+    accepted and never presented otherwise: a **past-month** line can be created
+    or retimed by a direct SDK call (rules validate the `'YYYY-MM'` shape and
+    have no calendar); `sourceType` membership and every per-type conditional
+    are unverified; `costCodeId` may not name a real cost code; **aggregate
+    over-coverage cannot be blocked** because rules cannot sum sibling lines,
+    so two users can time the same source balance concurrently and both writes
+    succeed; and an **active line stays editable after being reported** — there
+    is no period locking, no immutable snapshot, and no change history beyond
+    last-write stamps. Fabricated timing lines are a lower-severity analogue of
+    Deferred Control 17: a line asserts an expectation, not a bank movement.
+
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
 is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.
@@ -616,6 +682,13 @@ the security-specific gate is:
       enforce non-empty `supplierId`/`supplierName` plus the whole-cent scalar
       invariant (`allocatedTotal + unallocatedAmount == amount`, both ≥ 0,
       `amount > 0`).
+- [ ] The `cashFlowLines` lifecycle rules still permit exactly
+      active-edit / active→void, still require `voidedBy` to equal the caller
+      and the stamps to equal `request.time`, still require a **non-whitespace**
+      `voidReason` and `description`, still enforce `basis == 'gross'`,
+      `direction in ['in','out']`, `amount > 0`, `revision == 1`, the
+      `'YYYY-MM'` `monthKey` shape, and the costCodeId/costCodeName pairing,
+      and still reject `void → *`.
 - [ ] Company document writes stay scoped to the four currency fields
       (`affectedKeys().hasOnly`); create/delete remain blocked.
 - [ ] The `qs` project rule still affects `currencyLocked` **only**, and only

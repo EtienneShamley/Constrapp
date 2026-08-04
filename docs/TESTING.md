@@ -31,13 +31,17 @@ That script runs
   upgrade `firebase-tools`, you must also install JDK 21+.
 - Config: `frontend/firebase.json` (emulator + rules pointer only — no hosting,
   no functions, and **no `.firebaserc`**, so nothing can be deployed).
-- Tests — **123 in total across 3 files**:
+- Tests — **181 in total across 4 files**:
   - `frontend/tests/rules/clientInvoices.rules.test.js` — **30 tests** covering
     every case in §15i-x below.
   - `frontend/tests/rules/clientReceipts.rules.test.js` — **46 tests** covering
     every case in §15j-x below, including the whole-cent scalar-invariant cases.
   - `frontend/tests/rules/supplierPayments.rules.test.js` — **47 tests** covering
     every case in §15k-x below, including the whole-cent scalar-invariant cases.
+  - `frontend/tests/rules/cashFlowLines.rules.test.js` — **58 tests** covering
+    every case in §15m-x below. It also asserts the two documented
+    **client-only** gaps: a PAST `monthKey` and an unknown `sourceType` of valid
+    shape are both ACCEPTED by rules.
   - All three run for `company_admin`, `project_manager`, `qs`, `subcontractor`,
     `client`, an unauthenticated caller, and a financial-role user in a **second
     company**.
@@ -74,7 +78,7 @@ cd frontend
 npm run test:unit
 ```
 
-- `frontend/tests/unit/cashFlow.test.js` — **51 tests** over `lib/cashFlow.js`
+- `frontend/tests/unit/cashFlow.test.js` — **130 tests** over `lib/cashFlow.js`
   and the cash-row adapters (`lib/clientReceipts.js → cashInRows()`,
   `lib/supplierPayments.js → cashOutRows()`): month-key validation and labels,
   lexicographic ordering, dense ranges across the December–January boundary,
@@ -84,6 +88,14 @@ npm run test:unit
   figure), zero-filled gap months, cumulative-from-zero arithmetic including
   negative and recovery sequences, whole-cent rounding (`0.10 + 0.20 = 0.30`;
   100 × `0.01` = `1.00`), and input purity (frozen inputs never mutated).
+  Since the Forecast branch it additionally covers the source-type vocabulary,
+  automatic AR/AP classification (due-month timing, month-level past-due,
+  no-due-date, partial and over-reconciliation), manual lines, stale-line
+  behaviour as the month advances, the actual/forecast boundary, combined
+  monthly rows and projected cumulative/closing position, source coverage and
+  the **corrected** committed/claim model, untimed values, completeness states,
+  peak funding and each suppression trigger, the GST suggestion, draft
+  validation including the **no-past-month rule**, and forecast rounding.
 
 Setup: two provisioned users in the same company (e.g. a `project_manager` and a
 `qs`), signed in via `/login`. Reset state between suites by using a fresh
@@ -1419,6 +1431,156 @@ amounts, ordering, cumulative totals, rounding) is asserted by
   wrapping, full labels, ≥44px touch targets; at **768px+** they wrap
   normally. The monthly table scrolls **inside its card**; there is no
   page-level horizontal scroll at 375px / 768px / 1280px.
+
+## 15m. Forecast Cash Flow
+
+Unit-automated coverage: the arithmetic (classification, coverage, completeness,
+cumulative, peak funding, the boundary and no-past-month rules) is asserted by
+`tests/unit/cashFlow.test.js` (§0b). Rules coverage is
+`tests/rules/cashFlowLines.rules.test.js` (§0). These steps verify the live page.
+
+### 15m-i. Automatic AR forecast
+
+- [ ] An **issued** client invoice with a future due date appears in Forecast
+  Cash In in its **due month**, at its **remaining gross** balance.
+- [ ] A **partly reconciled** invoice forecasts only its remainder; a **fully
+  reconciled** one disappears from the forecast entirely.
+- [ ] An **over-reconciled** invoice appears in no month and is reported in the
+  signed callout — it never offsets another invoice.
+- [ ] Voiding a receipt restores the balance and it re-enters the forecast.
+
+### 15m-ii. Automatic AP forecast
+
+- [ ] A **posted** supplier invoice with a future due date appears in Forecast
+  Cash Out at its **remaining payable** (`payableTotal`, not gross).
+- [ ] Retention withheld is **excluded** from the forecast and reported in the
+  untimed panel with the "release is not modelled" wording.
+- [ ] Draft, approved, and cancelled supplier invoices contribute nothing.
+
+### 15m-iii. Past-due and no-due-date
+
+- [ ] An invoice whose due month is **before** the current month appears in
+  **no** month and is reported under *Past due — expected recovery/payment not
+  retimed*.
+- [ ] An invoice due **earlier in the current month** is still timed into the
+  current month (month-level, not day-level).
+- [ ] An invoice with a **blank due date** is reported under *no due date* and
+  is never guessed into a month.
+
+### 15m-iv. Manual timing lines
+
+- [ ] *Add timing line* offers exactly `contract_revenue` + `manual` for Cash In
+  and `uninvoiced_claim` / `remaining_committed` / `uncommitted_ctc` + `manual`
+  for Cash Out. **No invoice source type is offered anywhere.**
+- [ ] A cost-side source requires a cost code; the picker shows each code's
+  remaining ex-GST balance.
+- [ ] The ex-GST coverage field **pre-fills a visible, editable suggestion**;
+  *Use remaining* refills it. A `manual` line takes no coverage.
+- [ ] **"+ GST 10%"** fills the gross amount only when pressed — never on
+  changing the source, cost code, month, or coverage.
+- [ ] The line appears in its month, in the register, and in the month
+  drill-down.
+
+### 15m-v. Splitting and coverage
+
+- [ ] Two lines against one cost code split a balance across months; coverage
+  sums and the untimed remainder falls accordingly.
+- [ ] Coverage above the remaining balance shows the amber warning and
+  **requires the acknowledgement tick** before saving — it is never blocked.
+- [ ] An `uninvoiced_claim` line and a `remaining_committed` line on the **same
+  cost code** both reduce the **same** untimed Remaining Committed figure.
+
+### 15m-vi. No past-month timing
+
+- [ ] Creating a line with a month **before** the current month is **blocked**
+  with an explanatory message.
+- [ ] Editing an active line **into** a past month is blocked.
+- [ ] The month picker's minimum is the current month.
+
+### 15m-vii. Stale lines
+
+- [ ] A line whose month has passed is listed in the **stale panel**, excluded
+  from every monthly total, the cumulative position, and peak funding.
+- [ ] **Retime** moves it to the current month or later and it re-enters the
+  forecast; **Void** requires a reason and removes it from the panel.
+- [ ] Nothing is ever moved or deleted silently.
+
+### 15m-viii. Boundary, cumulative and closing position
+
+- [ ] Past months show **"—"** in both forecast columns — never `$0`.
+- [ ] The current month combines actual and forecast.
+- [ ] The cumulative column matches a hand calculation from **zero**, and the
+  projected closing position equals the final month's cumulative value.
+- [ ] Gap months render as zero rows.
+
+### 15m-ix. Completeness
+
+- [ ] Revenue and cost coverage percentages match a hand calculation.
+- [ ] With **no baseline**, revenue coverage shows **"—"** — never 0% or 100%.
+- [ ] On an **over-invoiced** contract, revenue coverage shows "—" with the
+  over-invoiced explanation.
+- [ ] With unforecast cost codes, cost coverage shows the *incomplete basis*
+  warning.
+- [ ] The state badge reads Complete / Partially timed / Incomplete forecast /
+  Unavailable correctly.
+
+### 15m-x. Peak funding
+
+- [ ] With everything timed and both bases available, the headline peak funding
+  and its month are shown; the **earliest** month wins a tie.
+- [ ] With any untimed amount, the headline is **suppressed**, the specific
+  reasons are listed, and only a **lower bound** is shown.
+- [ ] When the position never goes negative it reads **"No funding shortfall
+  projected"** — never `$0`.
+- [ ] The panel always states that **retention release and GST/BAS cash movement
+  are excluded**.
+- [ ] Retention withheld and unallocated cash produce warnings but do **not**
+  suppress.
+
+### 15m-xi. Untimed panel — three bases
+
+- [ ] The three columns are headed *Gross cash* · *Ex-GST source value* ·
+  *Exposure — context only*, and **no total spans two bases**.
+- [ ] Approved claim awaiting invoice is shown **indented within** Remaining
+  Committed with the "included within Remaining Committed" wording — never as an
+  additive line.
+
+### 15m-xii. Lifecycle & register
+
+- [ ] A voided line is hidden by default, shown by *Show voided*, struck
+  through with its reason, and contributes nothing.
+- [ ] A voided line cannot be edited or re-voided.
+- [ ] No delete action exists anywhere.
+
+### 15m-xiii. Subscription errors (never a genuine zero)
+
+- [ ] Simulate a failed **Supplier Invoices** read (e.g. sign in as a role
+  without access, or block the request): Forecast Cash Out and AP figures show
+  **"—"** with a named error banner — never `$0`.
+- [ ] The same for **Forecast Lines** (Cost to Complete and cost completeness),
+  **Budget Lines**, **Purchase Orders**, **Progress Claims**.
+- [ ] A **Variations** failure marks variation exposure and revenue coverage
+  unavailable but leaves the cash layers working.
+- [ ] A **Client Receipts** or **Supplier Payments** failure blocks the whole
+  page with the existing error card.
+
+### 15m-xiv. Currency & no mutation
+
+- [ ] Every figure renders in the project currency; the first timing line
+  **locks** the project currency; a voided line keeps it locked.
+- [ ] After exercising the whole feature, receipts, payments, client invoices,
+  supplier invoices, POs, claims, variations, forecast lines, budget lines, and
+  the commercial baseline are **byte-identical**, and the six budget figures,
+  Forecast Final Cost, Variance to Budget, and every margin figure are unchanged.
+
+### 15m-xv. Roles & responsive
+
+- [ ] `company_admin` / `project_manager` / `qs` can read and author lines;
+  `subcontractor` and `client` see the restricted card.
+- [ ] At **375px / 768px / 1280px**: the monthly table, register, and
+  drill-downs scroll **inside their cards**, the editor and void modals scroll
+  internally, touch targets are ≥44px, and there is no page-level horizontal
+  scroll.
 
 ## 16. Responsive Checks — 375px, 768px, 1280px
 

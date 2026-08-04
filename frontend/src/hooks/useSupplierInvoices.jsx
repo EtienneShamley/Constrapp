@@ -21,6 +21,11 @@ export function useSupplierInvoices(projectId) {
   const { project } = useProject(projectId)
   const [supplierInvoices, setSupplierInvoices]               = useState([])
   const [supplierInvoicesLoading, setSupplierInvoicesLoading] = useState(true)
+  // True when the live read failed (connection loss or a rules rejection).
+  // Consumers deriving financial figures must treat a failed read as
+  // UNAVAILABLE — never as a genuine zero. Set only from the async snapshot
+  // callbacks; existing consumers may ignore it.
+  const [supplierInvoicesError, setSupplierInvoicesError]     = useState(false)
 
   const companyId = company?.id ?? null
 
@@ -45,10 +50,12 @@ export function useSupplierInvoices(projectId) {
       (snap) => {
         setSupplierInvoices(snap.docs.map(d => ({ id: d.id, ...d.data() })))
         setSupplierInvoicesLoading(false)
+        setSupplierInvoicesError(false)
       },
       () => {
         setSupplierInvoices([])
         setSupplierInvoicesLoading(false)
+        setSupplierInvoicesError(true)
       }
     )
     return unsubscribe
@@ -214,5 +221,5 @@ export function useSupplierInvoices(projectId) {
     await updateDoc(ref, { status: nextStatus, ...extra })
   }, [companyId, projectId, user])
 
-  return { supplierInvoices, supplierInvoicesLoading, createSupplierInvoice, updateSupplierInvoice, transitionStatus }
+  return { supplierInvoices, supplierInvoicesLoading, supplierInvoicesError, createSupplierInvoice, updateSupplierInvoice, transitionStatus }
 }

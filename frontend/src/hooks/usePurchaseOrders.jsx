@@ -17,6 +17,11 @@ export function usePurchaseOrders(projectId) {
   const { project } = useProject(projectId)
   const [purchaseOrders, setPurchaseOrders]               = useState([])
   const [purchaseOrdersLoading, setPurchaseOrdersLoading] = useState(true)
+  // True when the live read failed (connection loss or a rules rejection).
+  // Consumers deriving financial figures must treat a failed read as
+  // UNAVAILABLE — never as a genuine zero. Set only from the async snapshot
+  // callbacks; existing consumers may ignore it.
+  const [purchaseOrdersError, setPurchaseOrdersError]     = useState(false)
 
   const companyId = company?.id ?? null
 
@@ -36,10 +41,12 @@ export function usePurchaseOrders(projectId) {
       (snap) => {
         setPurchaseOrders(snap.docs.map(d => ({ id: d.id, ...d.data() })))
         setPurchaseOrdersLoading(false)
+        setPurchaseOrdersError(false)
       },
       () => {
         setPurchaseOrders([])
         setPurchaseOrdersLoading(false)
+        setPurchaseOrdersError(true)
       }
     )
     return unsubscribe
@@ -133,5 +140,5 @@ export function usePurchaseOrders(projectId) {
     })
   }, [companyId, projectId, user])
 
-  return { purchaseOrders, purchaseOrdersLoading, createPurchaseOrder, updatePurchaseOrder, transitionStatus }
+  return { purchaseOrders, purchaseOrdersLoading, purchaseOrdersError, createPurchaseOrder, updatePurchaseOrder, transitionStatus }
 }

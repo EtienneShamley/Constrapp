@@ -3,6 +3,17 @@ import {
   isMonthKey, monthKeyFromDate, monthLabel, compareMonthKeys, monthKeyRange,
   currentMonthKey, cashInByMonth, cashOutByMonth, cashMonthSpan,
   totalActualCashIn, totalActualCashOut, actualNetCash, buildMonthlyActualRows,
+  // Forecast (Branch 2)
+  CFL_SOURCE_TYPE, CFL_IN_SOURCE_TYPES, CFL_OUT_SOURCE_TYPES,
+  sourceTypesForDirection, isCoverageSourceType, isCostCodedSourceType,
+  activeCashFlowLines, voidCashFlowLines, staleCashFlowLines,
+  manualForecastByMonth, classifyInvoiceBalances, sumRetentionWithheld,
+  buildMonthlyCombinedRows, projectedClosingPosition,
+  coverageByType, committedCoverageByCostCode, ctcCoverageByCostCode,
+  untimedForecastRevenue, untimedRemainingCommitted, untimedUncommittedCtc,
+  revenueCoverage, costCoverage, COMPLETENESS_STATE, completenessState,
+  peakFunding, peakFundingSuppression,
+  gstSuggestedGross, coverageOverWarning, validateCashFlowLineDraft,
 } from '../../src/lib/cashFlow'
 import { cashInRows } from '../../src/lib/clientReceipts'
 import { cashOutRows } from '../../src/lib/supplierPayments'
@@ -516,5 +527,741 @@ describe('purity — inputs are never mutated', () => {
     // The frozen sources are untouched.
     expect(receipts[0].amount).toBe(100)
     expect(payments[0].amount).toBe(100)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FORECAST CASH FLOW (Branch 2)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Fixtures for the forecast layers. `NOW` is a fixed current month so every
+// boundary assertion is deterministic. AR/AP rows mirror the shape of
+// clientInvoiceReconciliationRows / supplierInvoiceReconciliationRows (only the
+// fields the forecast reads); cashFlowLines mirror the stored document shape.
+
+const NOW = '2026-08'
+
+function arRow(overrides = {}) {
+  return { id: id(), invoiceNumber: 'CI-0001', dueDate: '2026-09-15', remaining: 1100, ...overrides }
+}
+
+function apRow(overrides = {}) {
+  return { id: id(), invoiceNumber: 'SI-0001', dueDate: '2026-09-20', remaining: 990, retentionTotal: 0, ...overrides }
+}
+
+function line(overrides = {}) {
+  return {
+    id: id(),
+    monthKey: '2026-10',
+    direction: 'in',
+    basis: 'gross',
+    amount: 1100,
+    sourceAmountExGst: 1000,
+    sourceType: 'contract_revenue',
+    sourceRef: '',
+    counterpartyName: '',
+    costCodeId: null,
+    costCodeName: '',
+    description: 'Timed remaining contract value',
+    notes: '',
+    status: 'active',
+    voidReason: '',
+    ...overrides,
+  }
+}
+
+const outLine = (overrides = {}) => line({
+  direction: 'out',
+  sourceType: 'remaining_committed',
+  costCodeId: 'cc1',
+  costCodeName: '03-100 — Concrete Slab',
+  amount: 990,
+  sourceAmountExGst: 900,
+  description: 'Timed remaining commitment',
+  ...overrides,
+})
+
+// ── Source-type vocabulary ───────────────────────────────────────────────────
+
+describe('source types', () => {
+  it('allows exactly contract_revenue and manual for cash in', () => {
+    expect(CFL_IN_SOURCE_TYPES).toEqual(['contract_revenue', 'manual'])
+    expect(sourceTypesForDirection('in')).toEqual(CFL_IN_SOURCE_TYPES)
+  })
+
+  it('allows exactly the three cost sources plus manual for cash out', () => {
+    expect(CFL_OUT_SOURCE_TYPES).toEqual(['uninvoiced_claim', 'remaining_committed', 'uncommitted_ctc', 'manual'])
+    expect(sourceTypesForDirection('out')).toEqual(CFL_OUT_SOURCE_TYPES)
+  })
+
+  it('reserves no invoice source types — invoices are timed automatically', () => {
+    expect(Object.values(CFL_SOURCE_TYPE)).not.toContain('client_invoice')
+    expect(Object.values(CFL_SOURCE_TYPE)).not.toContain('supplier_invoice')
+  })
+
+  it('classifies coverage and cost-coded types', () => {
+    expect(isCoverageSourceType('contract_revenue')).toBe(true)
+    expect(isCoverageSourceType('manual')).toBe(false)
+    expect(isCostCodedSourceType('remaining_committed')).toBe(true)
+    expect(isCostCodedSourceType('uninvoiced_claim')).toBe(true)
+    expect(isCostCodedSourceType('uncommitted_ctc')).toBe(true)
+    expect(isCostCodedSourceType('contract_revenue')).toBe(false)
+    expect(isCostCodedSourceType('manual')).toBe(false)
+  })
+})
+
+// ── Invoice-based forecast (layer 2) ─────────────────────────────────────────
+
+describe('automatic AR forecast — issued client invoice balances', () => {
+  it('times a positive remaining balance to its due month', () => {
+    const r = classifyInvoiceBalances([arRow({ dueDate: '2026-09-15', remaining: 1100 })], NOW)
+    expect(r.byMonth).toEqual({ '2026-09': 1100 })
+    expect(r.pastDue).toBe(0)
+    expect(r.noDueDate).toBe(0)
+  })
+
+  it('sums two invoices due in one month', () => {
+    const r = classifyInvoiceBalances([
+      arRow({ dueDate: '2026-09-01', remaining: 100 }),
+      arRow({ dueDate: '2026-09-28', remaining: 200 }),
+    ], NOW)
+    expect(r.byMonth).toEqual({ '2026-09': 300 })
+  })
+
+  it('excludes a fully reconciled (zero-remaining) invoice entirely', () => {
+    const r = classifyInvoiceBalances([arRow({ remaining: 0 })], NOW)
+    expect(r.byMonth).toEqual({})
+    expect(r.pastDue).toBe(0)
+    expect(r.noDueDate).toBe(0)
+    expect(r.overReconciled).toBe(0)
+  })
+
+  it('forecasts only the remainder of a partly reconciled invoice', () => {
+    // grossTotal 1100, received 400 → remaining 700 is what the caller passes.
+    const r = classifyInvoiceBalances([arRow({ remaining: 700 })], NOW)
+    expect(r.byMonth).toEqual({ '2026-09': 700 })
+  })
+
+  it('excludes over-reconciled balances from every month into a signed total', () => {
+    const r = classifyInvoiceBalances([
+      arRow({ dueDate: '2026-09-15', remaining: -50 }),
+      arRow({ dueDate: '2026-10-15', remaining: 500 }),
+    ], NOW)
+    expect(r.byMonth).toEqual({ '2026-10': 500 })
+    expect(r.overReconciled).toBe(-50)
+  })
+
+  it('a negative balance never offsets another invoice in the same month', () => {
+    const r = classifyInvoiceBalances([
+      arRow({ dueDate: '2026-09-15', remaining: 500 }),
+      arRow({ dueDate: '2026-09-20', remaining: -200 }),
+    ], NOW)
+    expect(r.byMonth).toEqual({ '2026-09': 500 })
+    expect(r.overReconciled).toBe(-200)
+  })
+})
+
+describe('automatic AP forecast — posted supplier invoice payable balances', () => {
+  it('times a positive remaining payable to its due month', () => {
+    const r = classifyInvoiceBalances([apRow({ dueDate: '2026-10-05', remaining: 990 })], NOW)
+    expect(r.byMonth).toEqual({ '2026-10': 990 })
+  })
+
+  it('uses the payable remainder supplied by the caller — retention already excluded', () => {
+    // payableTotal 990 (gross 1100 − retention 110), paid 490 → remaining 500.
+    const r = classifyInvoiceBalances([apRow({ remaining: 500, retentionTotal: 110 })], NOW)
+    expect(r.byMonth).toEqual({ '2026-09': 500 })
+  })
+
+  it('sums retention withheld across AP rows for the standing warning', () => {
+    expect(sumRetentionWithheld([
+      apRow({ retentionTotal: 110 }),
+      apRow({ retentionTotal: 55 }),
+      apRow({ retentionTotal: 0 }),
+    ])).toBe(165)
+    expect(sumRetentionWithheld([])).toBe(0)
+  })
+})
+
+describe('due-date grouping', () => {
+  it('derives the due month with slice(0,7)', () => {
+    const r = classifyInvoiceBalances([
+      arRow({ dueDate: '2026-09-01', remaining: 10 }),
+      arRow({ dueDate: '2026-09-30', remaining: 20 }),
+    ], NOW)
+    expect(r.byMonth).toEqual({ '2026-09': 30 })
+  })
+
+  it('separates December from January across a year boundary', () => {
+    const r = classifyInvoiceBalances([
+      arRow({ dueDate: '2026-12-31', remaining: 1 }),
+      arRow({ dueDate: '2027-01-01', remaining: 2 }),
+    ], NOW)
+    expect(r.byMonth).toEqual({ '2026-12': 1, '2027-01': 2 })
+  })
+})
+
+describe('past-due and no-due-date treatment', () => {
+  it('routes a past-due balance to the pastDue bucket, never a month', () => {
+    const r = classifyInvoiceBalances([arRow({ dueDate: '2026-07-15', remaining: 800 })], NOW)
+    expect(r.byMonth).toEqual({})
+    expect(r.pastDue).toBe(800)
+  })
+
+  it('is MONTH-level, not day-level: due earlier in the current month is still timed', () => {
+    // 2026-08-01 is "past due" day-level by mid-August, but its MONTH is the
+    // current month, so it is automatically timed — not stranded.
+    const r = classifyInvoiceBalances([arRow({ dueDate: '2026-08-01', remaining: 300 })], NOW)
+    expect(r.byMonth).toEqual({ '2026-08': 300 })
+    expect(r.pastDue).toBe(0)
+  })
+
+  it('routes a blank due date to the noDueDate bucket', () => {
+    const r = classifyInvoiceBalances([arRow({ dueDate: '', remaining: 400 })], NOW)
+    expect(r.byMonth).toEqual({})
+    expect(r.noDueDate).toBe(400)
+  })
+
+  it('treats a malformed due date as no due date', () => {
+    const r = classifyInvoiceBalances([arRow({ dueDate: '15/09/2026', remaining: 400 })], NOW)
+    expect(r.noDueDate).toBe(400)
+  })
+})
+
+// ── Manual lines (layer 3) ───────────────────────────────────────────────────
+
+describe('manual timing lines', () => {
+  it('lands an active in-line in its monthKey', () => {
+    expect(manualForecastByMonth([line({ monthKey: '2026-10', amount: 1100 })], 'in', NOW))
+      .toEqual({ '2026-10': 1100 })
+  })
+
+  it('lands an active out-line in its monthKey', () => {
+    expect(manualForecastByMonth([outLine({ monthKey: '2026-11', amount: 990 })], 'out', NOW))
+      .toEqual({ '2026-11': 990 })
+  })
+
+  it('sums several lines in one month and separates directions', () => {
+    const lines = [
+      line({ monthKey: '2026-10', amount: 100 }),
+      line({ monthKey: '2026-10', amount: 200, sourceType: 'manual', sourceAmountExGst: null }),
+      outLine({ monthKey: '2026-10', amount: 50 }),
+    ]
+    expect(manualForecastByMonth(lines, 'in', NOW)).toEqual({ '2026-10': 300 })
+    expect(manualForecastByMonth(lines, 'out', NOW)).toEqual({ '2026-10': 50 })
+  })
+
+  it('a current-month line counts', () => {
+    expect(manualForecastByMonth([line({ monthKey: NOW, amount: 10 })], 'in', NOW))
+      .toEqual({ [NOW]: 10 })
+  })
+
+  it('excludes void lines from months and coverage', () => {
+    const voided = line({ status: 'void', voidReason: 'superseded' })
+    expect(manualForecastByMonth([voided], 'in', NOW)).toEqual({})
+    expect(coverageByType([voided], 'contract_revenue')).toBe(0)
+    expect(activeCashFlowLines([voided])).toEqual([])
+    expect(voidCashFlowLines([voided])).toHaveLength(1)
+  })
+})
+
+// ── Stale lines & the actual/forecast boundary ───────────────────────────────
+
+describe('stale lines and the boundary rule', () => {
+  it('an active line in a past month is stale and contributes to no month', () => {
+    const stale = line({ monthKey: '2026-07', amount: 500 })
+    expect(manualForecastByMonth([stale], 'in', NOW)).toEqual({})
+    expect(staleCashFlowLines([stale], NOW)).toHaveLength(1)
+  })
+
+  it('a line becomes stale as the current month advances', () => {
+    const l = line({ monthKey: '2026-09' })
+    expect(staleCashFlowLines([l], '2026-08')).toHaveLength(0)  // future: counts
+    expect(staleCashFlowLines([l], '2026-09')).toHaveLength(0)  // current: counts
+    expect(staleCashFlowLines([l], '2026-10')).toHaveLength(1)  // past: stale
+    expect(manualForecastByMonth([l], 'in', '2026-10')).toEqual({})
+  })
+
+  it('a stale line is excluded from projected totals but never deleted from the list', () => {
+    const stale = line({ monthKey: '2026-06', amount: 999 })
+    const rows = buildMonthlyCombinedRows({
+      inRows: inRows([receipt({ receiptDate: '2026-06-10', amount: 100 })]),
+      manualInByMonth: manualForecastByMonth([stale], 'in', NOW),
+      nowMonth: NOW,
+    })
+    const june = rows.find(r => r.monthKey === '2026-06')
+    expect(june.forecastCashIn).toBe(0)          // boundary: past months actual-only
+    expect(june.actualCashIn).toBe(100)
+    expect(activeCashFlowLines([stale])).toHaveLength(1) // still present, just stale
+  })
+
+  it('a voided stale line leaves the stale panel', () => {
+    const voided = line({ monthKey: '2026-06', status: 'void', voidReason: 'no longer expected' })
+    expect(staleCashFlowLines([voided], NOW)).toHaveLength(0)
+  })
+
+  it('a retimed stale line re-enters the forecast in its new month', () => {
+    const retimed = line({ monthKey: '2026-10' }) // was 2026-06, edited forward
+    expect(staleCashFlowLines([retimed], NOW)).toHaveLength(0)
+    expect(manualForecastByMonth([retimed], 'in', NOW)).toEqual({ '2026-10': 1100 })
+  })
+})
+
+// ── Combined monthly rows ────────────────────────────────────────────────────
+
+describe('combined monthly rows (actual + forecast)', () => {
+  const actualJunIn = () => inRows([receipt({ receiptDate: '2026-06-10', amount: 1000 })])
+
+  it('past months are actual-only even when forecast maps carry past keys', () => {
+    const rows = buildMonthlyCombinedRows({
+      inRows: actualJunIn(),
+      arForecastByMonth: { '2026-06': 500 }, // defensive: classify never emits past keys
+      nowMonth: NOW,
+    })
+    const june = rows.find(r => r.monthKey === '2026-06')
+    expect(june.isPast).toBe(true)
+    expect(june.forecastCashIn).toBe(0)
+    expect(june.totalCashIn).toBe(1000)
+  })
+
+  it('the current month combines actual and forecast', () => {
+    const rows = buildMonthlyCombinedRows({
+      inRows: inRows([receipt({ receiptDate: '2026-08-02', amount: 100 })]),
+      arForecastByMonth: { '2026-08': 400 },
+      manualInByMonth: { '2026-08': 50 },
+      nowMonth: NOW,
+    })
+    const current = rows.find(r => r.monthKey === NOW)
+    expect(current.isCurrent).toBe(true)
+    expect(current.actualCashIn).toBe(100)
+    expect(current.forecastCashIn).toBe(450)
+    expect(current.totalCashIn).toBe(550)
+  })
+
+  it('future months combine automatic and manual forecast', () => {
+    const rows = buildMonthlyCombinedRows({
+      apForecastByMonth: { '2026-10': 990 },
+      manualOutByMonth: { '2026-10': 10 },
+      nowMonth: NOW,
+    })
+    const oct = rows.find(r => r.monthKey === '2026-10')
+    expect(oct.forecastCashOut).toBe(1000)
+    expect(oct.net).toBe(-1000)
+  })
+
+  it('spans densely from earliest actual to latest forecast with zero gap rows', () => {
+    const rows = buildMonthlyCombinedRows({
+      inRows: actualJunIn(),
+      arForecastByMonth: { '2026-11': 700 },
+      nowMonth: NOW,
+    })
+    expect(rows.map(r => r.monthKey)).toEqual(['2026-06', '2026-07', '2026-08', '2026-09', '2026-10', '2026-11'])
+    const sep = rows.find(r => r.monthKey === '2026-09')
+    expect(sep.totalCashIn).toBe(0)
+    expect(sep.totalCashOut).toBe(0)
+    expect(sep.cumulativePosition).toBe(1000) // gap month leaves cumulative unchanged
+  })
+
+  it('always includes the current month when any data exists', () => {
+    const rows = buildMonthlyCombinedRows({ inRows: actualJunIn(), nowMonth: NOW })
+    expect(rows.map(r => r.monthKey)).toContain(NOW)
+  })
+
+  it('returns empty with no data at all', () => {
+    expect(buildMonthlyCombinedRows({ nowMonth: NOW })).toEqual([])
+    expect(projectedClosingPosition([])).toBe(null)
+  })
+
+  it('accumulates the projected cumulative position from zero across the boundary', () => {
+    const rows = buildMonthlyCombinedRows({
+      inRows: actualJunIn(),                                   // +1000 Jun (actual)
+      outRows: outRows([payment({ paymentDate: '2026-07-10', amount: 1500 })]), // −1500 Jul
+      arForecastByMonth: { '2026-09': 2000 },                  // +2000 Sep (forecast)
+      manualOutByMonth: { '2026-10': 700 },                    // −700 Oct (manual)
+      nowMonth: NOW,
+    })
+    expect(rows.map(r => r.cumulativePosition)).toEqual([1000, -500, -500, 1500, 800])
+  })
+
+  it('projected closing position equals the final cumulative value', () => {
+    const rows = buildMonthlyCombinedRows({
+      inRows: actualJunIn(),
+      manualOutByMonth: { '2026-09': 250 },
+      nowMonth: NOW,
+    })
+    expect(projectedClosingPosition(rows)).toBe(750)
+    expect(rows[rows.length - 1].cumulativePosition).toBe(750)
+  })
+})
+
+// ── No double counting ───────────────────────────────────────────────────────
+
+describe('no double counting', () => {
+  it('an invoice balance appears exactly once — in its due month', () => {
+    const ar = classifyInvoiceBalances([arRow({ dueDate: '2026-09-15', remaining: 1100 })], NOW)
+    const total = Object.values(ar.byMonth).reduce((s, v) => s + v, 0)
+      + ar.pastDue + ar.noDueDate
+    expect(total).toBe(1100)
+  })
+
+  it('uninvoiced_claim coverage counts against the SAME committed balance (corrected model)', () => {
+    const lines = [
+      outLine({ sourceType: 'remaining_committed', costCodeId: 'cc1', sourceAmountExGst: 600 }),
+      outLine({ sourceType: 'uninvoiced_claim', costCodeId: 'cc1', sourceAmountExGst: 300 }),
+    ]
+    expect(committedCoverageByCostCode(lines)).toEqual({ cc1: 900 })
+    // Untimed committed subtracts BOTH coverages from ONE denominator.
+    expect(untimedRemainingCommitted({ remainingCommittedTotal: 1000, lines })).toBe(100)
+  })
+
+  it('uninvoiced-claim cost is never an additive second denominator', () => {
+    // D_cost = remainingCommitted + uncommittedCtc — nothing else.
+    const r = costCoverage({ remainingCommittedTotal: 1000, uncommittedCtcTotal: 500, lines: [] })
+    expect(r.pct).toBe(0)
+    const covered = costCoverage({
+      remainingCommittedTotal: 1000, uncommittedCtcTotal: 500,
+      lines: [
+        outLine({ sourceType: 'uninvoiced_claim', costCodeId: 'cc1', sourceAmountExGst: 750 }),
+        outLine({ sourceType: 'uncommitted_ctc', costCodeId: 'cc2', sourceAmountExGst: 375 }),
+      ],
+    })
+    expect(covered.pct).toBe(75) // (750 + 375) / 1500
+  })
+
+  it('client variations never add a second revenue source — coverage keys on contract_revenue only', () => {
+    // A CV-linked line is STILL sourceType contract_revenue (CV is a sourceRef
+    // label only), so its coverage counts once against availableToInvoice.
+    const lines = [
+      line({ sourceAmountExGst: 400, sourceRef: 'CV-0003' }),
+      line({ sourceAmountExGst: 600 }),
+    ]
+    expect(coverageByType(lines, 'contract_revenue')).toBe(1000)
+    expect(untimedForecastRevenue({ availableToInvoice: 1000, lines })).toBe(0)
+  })
+})
+
+// ── Source coverage & untimed values ─────────────────────────────────────────
+
+describe('source coverage', () => {
+  it('sums coverage per type across active lines only', () => {
+    const lines = [
+      line({ sourceAmountExGst: 300 }),
+      line({ sourceAmountExGst: 200 }),
+      line({ sourceAmountExGst: 999, status: 'void', voidReason: 'x' }),
+      line({ sourceType: 'manual', sourceAmountExGst: null }),
+    ]
+    expect(coverageByType(lines, 'contract_revenue')).toBe(500)
+  })
+
+  it('splits one cost code across months while coverage still sums', () => {
+    const lines = [
+      outLine({ monthKey: '2026-09', sourceAmountExGst: 400 }),
+      outLine({ monthKey: '2026-11', sourceAmountExGst: 350 }),
+    ]
+    expect(committedCoverageByCostCode(lines)).toEqual({ cc1: 750 })
+  })
+
+  it('separates ctc coverage from committed coverage', () => {
+    const lines = [
+      outLine({ sourceType: 'uncommitted_ctc', costCodeId: 'cc9', sourceAmountExGst: 120 }),
+      outLine({ costCodeId: 'cc9', sourceAmountExGst: 80 }),
+    ]
+    expect(ctcCoverageByCostCode(lines)).toEqual({ cc9: 120 })
+    expect(committedCoverageByCostCode(lines)).toEqual({ cc9: 80 })
+    expect(untimedUncommittedCtc({ uncommittedCtcTotal: 200, lines })).toBe(80)
+  })
+
+  it('untimed values floor at zero when coverage exceeds the balance', () => {
+    const lines = [line({ sourceAmountExGst: 5000 })]
+    expect(untimedForecastRevenue({ availableToInvoice: 1000, lines })).toBe(0)
+  })
+
+  it('an over-invoiced contract has no revenue left to time', () => {
+    expect(untimedForecastRevenue({ availableToInvoice: -500, lines: [] })).toBe(0)
+  })
+})
+
+describe('over-coverage warning (warned, never blocked)', () => {
+  const balances = {
+    availableToInvoice: 1000,
+    remainingCommittedByCostCode: { cc1: 800 },
+    uncommittedCtcByCostCode: { cc1: 200 },
+  }
+
+  it('warns when combined committed + claim coverage exceeds the shared balance', () => {
+    const existing = [outLine({ sourceType: 'uninvoiced_claim', costCodeId: 'cc1', sourceAmountExGst: 500 })]
+    const w = coverageOverWarning({
+      sourceType: 'remaining_committed', costCodeId: 'cc1',
+      sourceAmountExGst: 400, lines: existing, balances,
+    })
+    expect(w).not.toBe(null)
+    expect(w.excess).toBe(100) // 500 + 400 − 800
+  })
+
+  it('does not warn within the balance, and excludes the line being edited', () => {
+    const existing = [outLine({ id: 'editing', costCodeId: 'cc1', sourceAmountExGst: 800 })]
+    const w = coverageOverWarning({
+      sourceType: 'remaining_committed', costCodeId: 'cc1',
+      sourceAmountExGst: 800, lines: existing, excludeLineId: 'editing', balances,
+    })
+    expect(w).toBe(null)
+  })
+
+  it('warns on contract-revenue over-coverage against availableToInvoice', () => {
+    const w = coverageOverWarning({
+      sourceType: 'contract_revenue', costCodeId: null,
+      sourceAmountExGst: 1200, lines: [], balances,
+    })
+    expect(w.excess).toBe(200)
+  })
+
+  it('never warns for manual lines', () => {
+    expect(coverageOverWarning({ sourceType: 'manual', sourceAmountExGst: null, lines: [], balances })).toBe(null)
+  })
+})
+
+// ── Completeness ─────────────────────────────────────────────────────────────
+
+describe('completeness', () => {
+  it('revenue coverage is null — never 0% or 100% — without a baseline', () => {
+    const r = revenueCoverage({ baselineEstablished: false, availableToInvoice: 1000, lines: [] })
+    expect(r.pct).toBe(null)
+    expect(r.state).toBe('no_baseline')
+  })
+
+  it('revenue coverage is null when the contract is fully or over-invoiced', () => {
+    expect(revenueCoverage({ baselineEstablished: true, availableToInvoice: 0, lines: [] }).state).toBe('over_invoiced')
+    expect(revenueCoverage({ baselineEstablished: true, availableToInvoice: -100, lines: [] }).pct).toBe(null)
+  })
+
+  it('computes revenue coverage percentage', () => {
+    const r = revenueCoverage({
+      baselineEstablished: true, availableToInvoice: 1000,
+      lines: [line({ sourceAmountExGst: 250 })],
+    })
+    expect(r.pct).toBe(25)
+    expect(r.state).toBe('ok')
+  })
+
+  it('cost coverage is null with no cost basis', () => {
+    const r = costCoverage({ remainingCommittedTotal: 0, uncommittedCtcTotal: 0, lines: [] })
+    expect(r.pct).toBe(null)
+    expect(r.state).toBe('no_cost_basis')
+  })
+
+  it('flags an incomplete cost basis when cost codes remain unforecast', () => {
+    const r = costCoverage({ remainingCommittedTotal: 1000, uncommittedCtcTotal: 0, unforecastedCount: 3, lines: [] })
+    expect(r.incompleteBasis).toBe(true)
+    expect(r.pct).toBe(0)
+  })
+
+  it('reports COMPLETE only at full coverage with no untimed invoices and a complete basis', () => {
+    const revenue = { pct: 100, state: 'ok' }
+    const cost = { pct: 100, state: 'ok', incompleteBasis: false }
+    expect(completenessState({ revenue, cost })).toBe(COMPLETENESS_STATE.COMPLETE)
+    expect(completenessState({ revenue, cost, untimedAR: 10 })).toBe(COMPLETENESS_STATE.PARTIAL)
+    expect(completenessState({ revenue, cost, pastDueAP: 5 })).toBe(COMPLETENESS_STATE.PARTIAL)
+    expect(completenessState({ revenue, cost: { ...cost, incompleteBasis: true } })).toBe(COMPLETENESS_STATE.PARTIAL)
+  })
+
+  it('reports INCOMPLETE at zero coverage and UNAVAILABLE without a basis', () => {
+    const cost = { pct: 0, state: 'ok', incompleteBasis: false }
+    expect(completenessState({ revenue: { pct: 0, state: 'ok' }, cost })).toBe(COMPLETENESS_STATE.INCOMPLETE)
+    expect(completenessState({ revenue: { pct: null, state: 'no_baseline' }, cost })).toBe(COMPLETENESS_STATE.UNAVAILABLE)
+    expect(completenessState({ revenue: { pct: 50, state: 'ok' }, cost: { pct: null, state: 'no_cost_basis' } })).toBe(COMPLETENESS_STATE.UNAVAILABLE)
+  })
+})
+
+// ── Peak funding ─────────────────────────────────────────────────────────────
+
+describe('peak funding', () => {
+  const rowsFrom = (positions) => positions.map((p, i) => ({
+    monthKey: `2026-${String(i + 1).padStart(2, '0')}`, cumulativePosition: p,
+  }))
+
+  it('finds the trough and its month', () => {
+    const r = peakFunding(rowsFrom([100, -400, -250, 300]))
+    expect(r.requirement).toBe(400)
+    expect(r.monthKey).toBe('2026-02')
+    expect(r.negative).toBe(true)
+  })
+
+  it('the earliest month wins a tie', () => {
+    const r = peakFunding(rowsFrom([-300, 50, -300, 100]))
+    expect(r.monthKey).toBe('2026-01')
+  })
+
+  it('reports no shortfall — not $0 — when never negative', () => {
+    const r = peakFunding(rowsFrom([100, 50, 300]))
+    expect(r.requirement).toBe(0)
+    expect(r.negative).toBe(false)
+    expect(r.monthKey).toBe(null)
+    expect(r.lowestPosition).toBe(50)
+    expect(r.lowestMonthKey).toBe('2026-02')
+  })
+
+  it('handles the empty range', () => {
+    expect(peakFunding([]).negative).toBe(false)
+    expect(peakFunding([]).lowestPosition).toBe(null)
+  })
+})
+
+describe('peak-funding suppression', () => {
+  it('is unsuppressed when everything is timed and both bases exist', () => {
+    expect(peakFundingSuppression({}).suppressed).toBe(false)
+  })
+
+  it('each untimed or unavailable condition suppresses independently', () => {
+    expect(peakFundingSuppression({ untimedRevenue: 1 }).suppressed).toBe(true)
+    expect(peakFundingSuppression({ untimedCommitted: 1 }).suppressed).toBe(true)
+    expect(peakFundingSuppression({ untimedCtc: 1 }).suppressed).toBe(true)
+    expect(peakFundingSuppression({ untimedAR: 1 }).suppressed).toBe(true)
+    expect(peakFundingSuppression({ pastDueAR: 1 }).suppressed).toBe(true)
+    expect(peakFundingSuppression({ untimedAP: 1 }).suppressed).toBe(true)
+    expect(peakFundingSuppression({ pastDueAP: 1 }).suppressed).toBe(true)
+    expect(peakFundingSuppression({ revenueBasisUnavailable: true }).suppressed).toBe(true)
+    expect(peakFundingSuppression({ costBasisUnavailable: true }).suppressed).toBe(true)
+    expect(peakFundingSuppression({ costBasisIncomplete: true }).suppressed).toBe(true)
+  })
+
+  it('unallocated cash and retention are deliberately NOT suppression inputs', () => {
+    // They warn but never suppress — the function accepts no such parameters.
+    const r = peakFundingSuppression({ unallocatedCashIn: 999, retentionWithheld: 999 })
+    expect(r.suppressed).toBe(false)
+  })
+
+  it('names every reason', () => {
+    const r = peakFundingSuppression({ untimedRevenue: 1, pastDueAP: 1 })
+    expect(r.reasons).toHaveLength(2)
+  })
+})
+
+// ── GST suggestion ───────────────────────────────────────────────────────────
+
+describe('GST suggestion (explicit action only)', () => {
+  it('suggests gross = ex-GST × 1.1, rounded', () => {
+    expect(gstSuggestedGross(1000)).toBe(1100)
+    expect(gstSuggestedGross(1234.56)).toBe(1358.02)
+    expect(gstSuggestedGross(null)).toBe(0)
+  })
+})
+
+// ── Draft validation (client-enforced) ───────────────────────────────────────
+
+describe('validateCashFlowLineDraft', () => {
+  const valid = () => ({
+    direction: 'in', sourceType: 'contract_revenue', monthKey: '2026-10',
+    amount: 1100, sourceAmountExGst: 1000,
+    costCodeId: null, costCodeName: '', description: 'Final claim',
+  })
+
+  it('accepts a valid draft', () => {
+    expect(validateCashFlowLineDraft(valid(), NOW)).toBe(null)
+  })
+
+  it('blocks a NEW line in a past month', () => {
+    expect(validateCashFlowLineDraft({ ...valid(), monthKey: '2026-07' }, NOW)).toMatch(/past/)
+  })
+
+  it('blocks editing/retiming into a past month, allows current and future', () => {
+    expect(validateCashFlowLineDraft({ ...valid(), monthKey: '2026-07' }, NOW)).not.toBe(null)
+    expect(validateCashFlowLineDraft({ ...valid(), monthKey: NOW }, NOW)).toBe(null)
+    expect(validateCashFlowLineDraft({ ...valid(), monthKey: '2027-01' }, NOW)).toBe(null)
+  })
+
+  it('rejects invalid month keys and directions', () => {
+    expect(validateCashFlowLineDraft({ ...valid(), monthKey: '2026-13' }, NOW)).not.toBe(null)
+    expect(validateCashFlowLineDraft({ ...valid(), monthKey: '202610' }, NOW)).not.toBe(null)
+    expect(validateCashFlowLineDraft({ ...valid(), direction: 'x' }, NOW)).not.toBe(null)
+  })
+
+  it('rejects a source type from the wrong direction', () => {
+    expect(validateCashFlowLineDraft({ ...valid(), sourceType: 'remaining_committed' }, NOW)).not.toBe(null)
+    expect(validateCashFlowLineDraft({
+      ...valid(), direction: 'out', sourceType: 'contract_revenue',
+    }, NOW)).not.toBe(null)
+  })
+
+  it('requires a positive amount — reductions use the opposite direction', () => {
+    expect(validateCashFlowLineDraft({ ...valid(), amount: 0 }, NOW)).not.toBe(null)
+    expect(validateCashFlowLineDraft({ ...valid(), amount: -50 }, NOW)).toMatch(/opposite direction/)
+  })
+
+  it('requires coverage for coverage types and forbids it for manual', () => {
+    expect(validateCashFlowLineDraft({ ...valid(), sourceAmountExGst: null }, NOW)).not.toBe(null)
+    expect(validateCashFlowLineDraft({ ...valid(), sourceAmountExGst: -1 }, NOW)).not.toBe(null)
+    expect(validateCashFlowLineDraft({
+      ...valid(), sourceType: 'manual', sourceAmountExGst: null,
+    }, NOW)).toBe(null)
+    expect(validateCashFlowLineDraft({
+      ...valid(), sourceType: 'manual', sourceAmountExGst: 100,
+    }, NOW)).not.toBe(null)
+  })
+
+  it('requires a cost code exactly for the cost-coded types', () => {
+    expect(validateCashFlowLineDraft({
+      ...valid(), direction: 'out', sourceType: 'remaining_committed',
+      costCodeId: null,
+    }, NOW)).not.toBe(null)
+    expect(validateCashFlowLineDraft({
+      ...valid(), direction: 'out', sourceType: 'remaining_committed',
+      costCodeId: 'cc1', costCodeName: '03-100 — Concrete Slab',
+    }, NOW)).toBe(null)
+    expect(validateCashFlowLineDraft({ ...valid(), costCodeId: 'cc1', costCodeName: 'X' }, NOW)).not.toBe(null)
+  })
+
+  it('requires a description', () => {
+    expect(validateCashFlowLineDraft({ ...valid(), description: '  ' }, NOW)).not.toBe(null)
+  })
+})
+
+// ── Forecast rounding & purity ───────────────────────────────────────────────
+
+describe('forecast cent arithmetic', () => {
+  it('0.10 + 0.20 equals 0.30 through the forecast chain', () => {
+    const ar = classifyInvoiceBalances([
+      arRow({ dueDate: '2026-09-01', remaining: 0.10 }),
+      arRow({ dueDate: '2026-09-02', remaining: 0.20 }),
+    ], NOW)
+    expect(ar.byMonth).toEqual({ '2026-09': 0.30 })
+  })
+
+  it('coverage sums stay cent-correct over many small lines', () => {
+    const lines = Array.from({ length: 100 }, () => line({ sourceAmountExGst: 0.01 }))
+    expect(coverageByType(lines, 'contract_revenue')).toBe(1)
+  })
+
+  it('the combined cumulative chain stays cent-correct', () => {
+    const rows = buildMonthlyCombinedRows({
+      arForecastByMonth: { '2026-09': 0.1, '2026-10': 0.2 },
+      manualOutByMonth: { '2026-10': 0.05 },
+      nowMonth: NOW,
+    })
+    expect(rows.find(r => r.monthKey === '2026-10').net).toBe(0.15)
+    expect(rows[rows.length - 1].cumulativePosition).toBe(0.25)
+  })
+})
+
+describe('forecast purity — inputs never mutated', () => {
+  it('classification, combination, and coverage leave frozen inputs untouched', () => {
+    const ar = [arRow(), arRow({ dueDate: '', remaining: 50 })]
+    const ap = [apRow({ retentionTotal: 110 })]
+    const lines = [line(), outLine(), line({ status: 'void', voidReason: 'x' })]
+    ar.forEach(Object.freeze); ap.forEach(Object.freeze); lines.forEach(Object.freeze)
+    Object.freeze(ar); Object.freeze(ap); Object.freeze(lines)
+
+    const arC = classifyInvoiceBalances(ar, NOW)
+    const apC = classifyInvoiceBalances(ap, NOW)
+    expect(() => buildMonthlyCombinedRows({
+      arForecastByMonth: arC.byMonth,
+      apForecastByMonth: apC.byMonth,
+      manualInByMonth: manualForecastByMonth(lines, 'in', NOW),
+      manualOutByMonth: manualForecastByMonth(lines, 'out', NOW),
+      nowMonth: NOW,
+    })).not.toThrow()
+    expect(() => coverageByType(lines, 'contract_revenue')).not.toThrow()
+    expect(() => sumRetentionWithheld(ap)).not.toThrow()
+    expect(ar[0].remaining).toBe(1100)
+    expect(lines[0].amount).toBe(1100)
   })
 })
