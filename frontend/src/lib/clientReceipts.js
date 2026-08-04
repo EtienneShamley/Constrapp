@@ -425,5 +425,36 @@ export function buildAllocations(rows, invoices) {
     })
 }
 
+// ── Cash Flow rows (data only) ───────────────────────────────────────────────
+//
+// One row per POSTED, non-void receipt — the money-IN mirror of
+// lib/supplierPayments.js → cashOutRows(). `projectId` is supplied by the
+// caller because it is NOT stored on the document — the collection path already
+// carries it (adding a redundant copy would create a second, driftable source
+// of truth).
+//
+// ⚠️ CASH IN IS THE TOTAL `amount`, NEVER `allocatedTotal`. The whole amount
+// was banked; an unallocated receipt is real cash in even though it settles no
+// invoice yet. The allocated/unallocated split travels alongside for analysis,
+// never instead of the cash figure.
+//
+// ⚠️ Cash Flow must group by `receiptDate` (e.g. `receiptDate.slice(0, 7)`) and
+// NEVER by `createdAt`/`postedAt`, and must never sum across currencies — one
+// currency per project, and there is no FX.
+export function cashInRows(receipts, { projectId } = {}) {
+  return postedClientReceipts(receipts).map(r => ({
+    receiptId:         r.id,
+    receiptNumber:     r.receiptNumber,
+    amount:            roundMoney(safeAmount(r.amount)),
+    receiptDate:       r.receiptDate || '',
+    projectId:         projectId ?? null,
+    clientId:          r.clientId ?? null,
+    clientName:        r.clientName || '',
+    currency:          r.currency || '',
+    allocatedTotal:    roundMoney(safeAmount(r.allocatedTotal)),
+    unallocatedAmount: roundMoney(safeAmount(r.unallocatedAmount)),
+  }))
+}
+
 // Re-exported so pages import ONE module for receipt behaviour.
 export { allocatedTotal, allocationTotals, MAX_ALLOCATIONS }

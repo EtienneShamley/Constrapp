@@ -594,7 +594,8 @@ Refunds and reversal records (`docType: 'refund'` reserved) · client credit
 notes · bank reconciliation and bank feeds · accounting integrations ·
 attachments · printable remittance · email · automatic allocation policies ·
 financial periods and period locking. (**Supplier Payments have since shipped** —
-see below; **Cash Flow reporting** is now unblocked but not built.)
+see below; the **Actual Cash Flow foundation** now consumes posted receipts —
+see *Cash Flow — Actual*.)
 
 ## Supplier Payments (cash paid — accounts payable settlement)
 
@@ -810,7 +811,8 @@ Forecast Final Cost, and every margin figure are **completely unchanged**.
 
 ### Deferred (Supplier Payments)
 
-**Cash Flow reporting** (now unblocked — both directions exist) · retention
+**Forecast Cash Flow** (the *Actual* Cash Flow foundation has since shipped —
+see *Cash Flow — Actual*) · retention
 release · supplier credit notes · refunds and payment reversals
 (`docType: 'refund'` reserved) · payment batches and payment runs · remittance
 advice PDF · email · attachments · bank reconciliation and bank feeds ·
@@ -1028,22 +1030,72 @@ override, and — strictly out of this cost-side branch — Forecast Revenue, Ca
 Flow, Project Margin, Final Account, and PULSE. `variations.forecastAmount` is
 **not** used here.
 
-### Cash Flow *(planned — now unblocked)*
+### Cash Flow — Actual *(implemented — foundation)*
 
-Time-phased projection of cost and income across the project. **Both actual cash
-directions now exist:** Cash In from posted Client Receipts (amount,
-`receiptDate`, project, client, currency) and Cash Out from posted Supplier
-Payments (amount, `paymentDate`, project, supplier, currency, plus the
-allocated/unallocated split) — exposed by
-`lib/supplierPayments.js → cashOutRows()`. **No Cash Flow UI, route,
-aggregation, period, or curve is built.**
+The first Cash Flow output, deliberately **actual-only**: recorded cash
+movement, derived at read time on the Commercial tab's **Cash Flow** sub-view
+(`…/commercial/cash-flow`). It stores **nothing** and writes **nothing** — no
+new collection, no rules change; the two cash collections it reads are the
+security boundary. Pure aggregation lives in `lib/cashFlow.js`, over the two
+cash-row adapters (`lib/clientReceipts.js → cashInRows()` and
+`lib/supplierPayments.js → cashOutRows()`), and is covered by the unit suite
+(`npm run test:unit`).
 
-When it lands it must consume the **total transaction amount** (that is what
-moved through the bank — **never** `allocatedTotal`, or a supplier advance would
-vanish from cash out), on the **transaction date** (`receiptDate`/`paymentDate`,
-never `createdAt`/`postedAt`), with the allocated/unallocated split available
-alongside, and must never sum across currencies — a project reports in one
-currency and there is no FX.
+> **⚠️ Not a bank balance.** The cumulative position starts at **zero** and is
+> the project's net recorded cash movement. Constrapp models no bank account,
+> no opening cash position, no financing, and no GST/BAS remittance — the page
+> states this permanently.
+
+**Formulas (all gross, inc. GST; every accumulation through `roundMoney`):**
+
+```
+Actual Cash In           = Σ amount of Client Receipts   with status 'posted'
+Actual Cash Out          = Σ amount of Supplier Payments with status 'posted'
+Actual Net Cash          = Actual Cash In − Actual Cash Out
+
+Monthly Actual Cash In   = Σ posted receipt amounts where receiptDate.slice(0, 7) = month key
+Monthly Actual Cash Out  = Σ posted payment amounts where paymentDate.slice(0, 7) = month key
+Monthly Actual Net       = Monthly Actual Cash In − Monthly Actual Cash Out
+Cumulative Position      = 0 + running Σ of Monthly Actual Net
+```
+
+**Rules of the derivation:**
+
+- **Total transaction `amount`, never `allocatedTotal`** — that is what moved
+  through the bank; a fully or partly unallocated receipt or payment counts its
+  **full** amount (a supplier advance is real cash out, an overpayment is real
+  cash in).
+- **Transaction dates only** — `receiptDate` drives Cash In, `paymentDate`
+  drives Cash Out; `createdAt`/`postedAt` are entry/commit facts and are never
+  consulted. Month keys are `'YYYY-MM'` via `date.slice(0, 7)` — no Date
+  construction, lexicographic order is chronological order, month labels come
+  from a fixed lookup (no locale).
+- **Drafts and voids count nothing** — `posted` is the single counting status,
+  so voiding a posted transaction removes it from cash flow at the next render
+  with no reversal record.
+- **Dense months** — the table runs from the earliest to the latest
+  posted-cash month; a gap month renders as a zero row (a cumulative curve
+  with holes would misstate timing).
+- **Unallocated cash is reported, never netted** — *Unallocated Cash In/Out —
+  on account* reuse the existing `receiptSummary()`/`paymentSummary()`
+  derivations; unallocated money reduces no invoice balance and is never
+  auto-applied.
+- **Gross stays separate from ex-GST** — the page's *Commercial context* panel
+  (Current Contract Sum, Forecast Revenue, Forecast Final Cost, Forecast Gross
+  Profit, Forecast Margin %, via the same shared `lib/margin.js` composition)
+  is labelled **accrual, ex-GST** and is never added to, plotted against, or
+  netted with a cash figure.
+- **One currency** — everything displays in the project currency; there is no
+  FX and nothing is ever summed across currencies.
+
+**Deferred (the next two branches — see [ROADMAP.md](../ROADMAP.md)):**
+**Forecast Cash Flow** — expected collections from issued client invoices and
+expected payments on posted supplier invoices by due date, the manual monthly
+timing model (`cashFlowLines`), untimed AR/AP, completeness indicators,
+projected closing position, and peak funding — then **Cash Flow
+visualisation** (charts, date-range filtering). Also not modelled: retention
+release (forecast cash out omits retained money), GST/BAS cash flows,
+opening-balance input, bank feeds/reconciliation, financing, exports.
 
 ### Project Margin *(implemented — foundation)*
 

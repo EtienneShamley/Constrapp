@@ -944,4 +944,93 @@ widened to *Client Receipts* — **label only; the route is unchanged**.
 `paymentDate`, supplier, currency). `cashOutRows()` is a thin data adapter only —
 this branch ships **no** Cash Flow UI, route, aggregation, period, or curve. The
 recorded sequence is **Client Invoices / Accounts Receivable → Client Receipts →
-Supplier Payments (shipped) → Cash Flow**.
+Supplier Payments (shipped) → Cash Flow**. *(The Actual Cash Flow foundation has
+since shipped — see ADR-25.)*
+
+## ADR-25: Cash Flow (project-level; actual-only foundation; three-branch delivery; zero opening position; gross cash)
+
+Cash Flow is delivered as **three sequential branches** — (1) the **Actual Cash
+Flow foundation** *(shipped)*, (2) Forecast Cash Flow, (3) Cash Flow
+visualisation — rather than one branch, so the security-relevant part (branch 2
+introduces the only new collection and rules block) is reviewed on its own.
+This ADR records the decisions the shipped first branch **implements**, and the
+approved decisions it deliberately **defers**.
+
+**Implemented (Actual Cash Flow foundation):**
+
+- **Project-level, read-only, derived.** Cash Flow is a fifth sub-view on the
+  Commercial tab (`…/commercial/cash-flow`) that **stores nothing and writes
+  nothing** — no new collection, no field, no Firestore rules change. Every
+  figure is derived at read time (ADR-3/ADR-4) by a pure module
+  (`lib/cashFlow.js`) over the two cash-row adapters:
+  `lib/clientReceipts.js → cashInRows()` (added by this branch as the exact
+  money-in mirror) and `lib/supplierPayments.js → cashOutRows()` (unchanged).
+  The existing financial-role rules on `clientReceipts`/`supplierPayments`
+  are the entire security boundary.
+- **Actual cash derives only from POSTED receipts and payments.** `posted` is
+  the single counting status; drafts and voids count nothing, so voiding a
+  posted transaction removes it from cash flow at the next render with no
+  reversal record.
+- **The total transaction `amount` is the cash figure — `allocatedTotal` never
+  is.** The whole amount moved through the bank; a fully or partly unallocated
+  transaction counts in full (a supplier advance is real cash out, an
+  overpayment is real cash in). The allocated/unallocated split travels
+  alongside for analysis only.
+- **`receiptDate` and `paymentDate` are the cash dates.** Grouping is
+  `date.slice(0, 7)` into `'YYYY-MM'` keys — no Date construction, no
+  timezone; `createdAt`/`postedAt` are entry/commit facts and are never
+  consulted. Monthly rows are **dense** (gap months render as zero rows) and
+  month labels come from a fixed lookup, not a locale.
+- **Unallocated transactions remain actual cash, reported and never netted.**
+  *Unallocated Cash In/Out — on account* reuse the existing
+  `receiptSummary()`/`paymentSummary()` derivations; auto-netting unallocated
+  cash out of any figure would be the same accounting-policy decision ADR-23
+  refused to make when it declined auto-allocation.
+- **Zero opening position; cumulative movement is NOT a bank balance.** The
+  cumulative column starts at 0 and is the project's net recorded cash
+  movement. Constrapp models no bank account, opening balance, financing, or
+  GST/BAS remittance, and the page says so permanently. No `openingBalance`,
+  `bankBalance`, `financingBalance`, or `projectAccountBalance` field exists.
+- **Gross cash is separated from ex-GST accrual context.** Cash figures are
+  gross (inc. GST). The *Commercial context* panel (Current Contract Sum,
+  Forecast Revenue, Forecast Final Cost, Forecast Gross Profit, Forecast
+  Margin % — via the same shared `lib/margin.js` composition, never
+  re-derived) is labelled **accrual, ex-GST**, kept visually separate, and is
+  never added to, netted with, or plotted against a cash figure. With no
+  baseline, revenue-side context shows "—", never zero.
+- **No source-document mutation.** The view never writes to receipts,
+  payments, invoices, POs, claims, variations, forecast lines, budget lines,
+  or the commercial baseline. The six budget figures, Forecast Final Cost,
+  and every margin figure are unchanged by this module.
+- **Unit testing for arithmetic-heavy pure financial logic.** A second,
+  separate Vitest suite (`npm run test:unit`, `frontend/vitest.config.js`,
+  `tests/unit/` only — the emulator rules suite is untouched) covers the
+  month-key, grouping, status, unallocated, cumulative, and cent-rounding
+  behaviour. `lib/` unit coverage was the recorded "natural next target" in
+  TESTING.md; the most arithmetic-dense pure module is where it starts.
+
+**Why:** cash truth must not wait for forecast timing — the actual half is
+derivable today from records that already exist, while a truthful forecast
+needs a new authored data model (a substantial, security-reviewed change of its
+own). Shipping actuals first also keeps the honest default visible: a page
+that reports only what happened cannot overstate what will.
+
+**Approved by design assessment but NOT yet implemented (branches 2–3):** the
+`cashFlowLines` collection (one document per authored forecast line; void-not-
+delete; rules-enforced lifecycle); gross manual forecast lines with an ex-GST
+`sourceAmountExGst` reference for completeness; invoice due-date near-term
+forecasting on remaining balances; the actual/forecast boundary rule (past
+months actuals-only, current and future months actual + forecast); completeness
+indicators; peak funding with suppression while untimed amounts remain; and
+charts. None of these exist in the codebase, and `cashFlowLines` must not be
+described as an implemented collection until branch 2 lands with its own rules
+block and emulator suite.
+
+**Consequences:** the recorded sequence is **Actual Cash Flow foundation
+(shipped) → Forecast Cash Flow → Cash Flow visualisation**. Forecast Cash In/
+Out, expected collections and payments, manual monthly timing, untimed AR/AP,
+projected closing position, peak funding, retention-release cash, GST/BAS cash,
+opening-balance input, scenarios, company-wide cash flow, bank feeds/
+reconciliation, financing, exports, PDF, and email are all absent by design in
+this foundation — the page's Limitations card states the material ones. No
+migration — a project with no posted cash shows an empty state.

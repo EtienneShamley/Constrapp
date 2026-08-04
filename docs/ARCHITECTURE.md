@@ -19,7 +19,7 @@ Preconstruction → Procurement → Delivery → Cost Control → Forecasting �
 | **Delivery** | Scope variations, cumulative progress claims against commitments | **Variations** *(implemented — foundation)*; **Progress Claims** *(implemented)* |
 | **Cost Control** | Supplier invoices, actual cost, payments/credit notes | **Supplier Invoices**, **Supplier Payments** *(implemented)*; Credit Notes, Retention Release *(future)* |
 | **Revenue Control** | Client invoices issued against the contract sum and approved client variations; receivables, and the cash received to settle them | **Client Invoices / Accounts Receivable**, **Client Receipts** *(implemented — foundation)* |
-| **Forecasting** | Forecast cost to complete and project margin *(implemented — foundation)*; cash flow | **Forecast Cost to Complete**, **Project Margin** *(implemented)*; Cash Flow *(planned)* |
+| **Forecasting** | Forecast cost to complete and project margin *(implemented — foundation)*; cash flow | **Forecast Cost to Complete**, **Project Margin** *(implemented)*; Cash Flow *(partial — Actual foundation implemented; forecast/charts planned)* |
 | **Final Account** | Reconcile budget + variations + actual into final margin; commercial reporting | Final Account, Commercial Reporting *(future/planned)* |
 
 **Cost Codes are the spine** across all six phases: a cost code links a BOQ line
@@ -50,7 +50,8 @@ modules** (screens exist, no functionality) are listed in the module-status tabl
 | Charts | Recharts 3 | Dashboard only |
 | Backend | Firebase JS SDK 12 — Auth, Firestore, Storage | **Client SDK only** |
 | Lint | ESLint 10 (flat config) | `npm run lint` |
-| Rules tests | Vitest 4 + `@firebase/rules-unit-testing` + `firebase-tools` 13 (emulator) | `npm run test:rules` — **dev-only**; the only automated suite. Requires JDK 17 |
+| Rules tests | Vitest 4 + `@firebase/rules-unit-testing` + `firebase-tools` 13 (emulator) | `npm run test:rules` — **dev-only**. Requires JDK 17 |
+| Unit tests | Vitest 4 (Node, no emulator) | `npm run test:unit` — pure `lib/` domain logic (`tests/unit/`); separate config (`vitest.config.js`) |
 
 ## Client-SDK-Only Backend
 
@@ -80,7 +81,9 @@ frontend/                  The entire application (run all npm commands here)
   firebase.json            Firestore EMULATOR + rules path only (no hosting/functions,
                            no .firebaserc) — backs `npm run test:rules`
   vitest.rules.config.js   Vitest config for the rules suite (Node, no app plugins)
-  tests/rules/             Firestore Security Rules tests (the only automated suite)
+  vitest.config.js         Vitest config for the UNIT suite (tests/unit/ only)
+  tests/rules/             Firestore Security Rules tests (emulator)
+  tests/unit/              Unit tests for pure lib/ domain logic (no emulator)
   .env.example             Vite env vars (Firebase web config)
   src/
     main.jsx               Entry — StrictMode + App
@@ -90,7 +93,7 @@ frontend/                  The entire application (run all npm commands here)
     layouts/               AppShell, Sidebar, TopBar, AuthLayout, ProjectDetailLayout,
                            ProjectCommercialLayout (Commercial sub-nav:
                            Margin | Client Invoices | Client Receipts |
-                           Supplier Payments)
+                           Supplier Payments | Cash Flow)
     pages/                 Login, CreateAccount, ForgotPassword, Dashboard, Projects,
                            CompanySettings (country & base currency),
                            Contacts (company directory), Subcontractors (filtered
@@ -100,6 +103,7 @@ frontend/                  The entire application (run all npm commands here)
                            ProjectInvoices (supplier/AP), ProjectClientInvoices (client/AR),
                            ProjectClientReceipts (cash received),
                            ProjectSupplierPayments (cash paid),
+                           ProjectCashFlow (actual cash movement),
                            ProjectVariations, ProjectForecast,
                            ProjectCommercial (margin), ProjectPlaceholder
     hooks/                 All Firestore access (see below); projectCurrencyLock.js
@@ -108,8 +112,9 @@ frontend/                  The entire application (run all npm commands here)
     lib/                   firebase.js, formatters.js, currency.js, nav.js, projectTabs.js,
                            purchaseOrders.js, progressClaims.js, supplierInvoices.js,
                            clientInvoices.js, payments.js (shared, direction-agnostic),
-                           clientReceipts.js, supplierPayments.js,
-                           variations.js, forecast.js, margin.js, contacts.js
+                           clientReceipts.js, supplierPayments.js, cashFlow.js
+                           (pure monthly cash aggregation), variations.js,
+                           forecast.js, margin.js, contacts.js
 docs/                      This documentation + design-reference assets
                            (Constrapp_v5.jsx prototype, screenshots, Word doc — do not move)
 AGENT.md / CLAUDE.md / README.md / PRODUCT.md / ROADMAP.md   (canonical root docs)
@@ -155,7 +160,9 @@ ProtectedRoute (redirects to /login when signed out)
    │       `commercial/client-invoices` = Client Invoices / Accounts Receivable (AR),
    │       `commercial/receipts` = Client Receipts (cash received; the sub-nav
    │        LABEL reads "Client Receipts" while the route stays `receipts`),
-   │       `commercial/supplier-payments` = Supplier Payments (cash paid))
+   │       `commercial/supplier-payments` = Supplier Payments (cash paid),
+   │       `commercial/cash-flow` = Cash Flow (ACTUAL recorded cash movement —
+   │        read-only; forecast and charts are later branches))
    │    boq | documents | photos | timeline | reports  (ProjectPlaceholder)
    ├─ /settings/company        Company country & base currency (company_admin writes)
    ├─ /contacts                Company-wide contact directory
@@ -189,7 +196,8 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Supplier Invoices (accounts payable) | Implemented (foundation) |
 | Client Invoices / Accounts Receivable | Implemented (foundation) — read-time contract control and read-time reconciliation against receipts; **no tax-invoice output** |
 | Client Receipts (cash received) | Implemented (foundation) — embedded allocations, read-time balances |
-| Supplier Payments (cash paid) | Implemented (foundation) — embedded allocations against posted invoices' `payableTotal`, read-time Paid to Date / Remaining Payable / AP ageing; **no cash flow UI, no retention release** |
+| Supplier Payments (cash paid) | Implemented (foundation) — embedded allocations against posted invoices' `payableTotal`, read-time Paid to Date / Remaining Payable / AP ageing; **no retention release** |
+| Cash Flow (actual) | Implemented (foundation) — read-time monthly actual cash in/out/net + cumulative-from-zero over posted receipts/payments; **no stored data, no rules change, no forecast, no charts, not a bank balance** |
 | Variations (client + supplier) | Implemented (foundation) |
 | Forecast Cost to Complete | Implemented (foundation) — read-time, cost-side |
 | Project Margin (Commercial tab) | Implemented (foundation) — read-time, ex-GST; commercial baseline is the only stored input |
@@ -217,4 +225,8 @@ The cash modules follow the same shape: `lib/payments.js` holds only the
 arithmetic, the whole-cent invariant, reconciliation states, remaining balances,
 generic ageing, shared validators), with `lib/clientReceipts.js` as the money-in
 adapter and `lib/supplierPayments.js` as the money-out adapter. Supplier Payments
-reuse `lib/payments.js` **entirely unchanged**.
+reuse `lib/payments.js` **entirely unchanged**. `lib/cashFlow.js` sits on top as
+a pure consumer: it aggregates the adapters' cash rows (`cashInRows()` /
+`cashOutRows()`) into monthly actuals and a cumulative-from-zero position, holds
+no document shapes of its own, and is covered by the unit suite
+(`npm run test:unit`).

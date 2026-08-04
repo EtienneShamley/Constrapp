@@ -292,6 +292,24 @@ exception** on both views rather than auto-reversing, and deliberately keeps
 `paid` inside `SI_COUNTING_STATUSES` so the second cannot make a real cost vanish
 from Invoiced and Actual (ADR-24). Neither is prevented.
 
+## Cash Flow — a read-only view; no new rules, no new write surface
+
+**The Actual Cash Flow view adds no collection, no field, no write path, and no
+Firestore rules.** It is a read-time derivation over two existing collections —
+`clientReceipts` and `supplierPayments` — whose existing rules blocks (above)
+already restrict reads to internal financial roles and already enforce their
+lifecycles. Those rules are the entire security boundary for this view: a role
+that cannot read receipts and payments sees no cash figure (the page's own role
+check is a UX mirror only). The page writes nothing — not to the cash
+collections, and not to any invoice, PO, claim, variation, forecast line,
+budget line, or the commercial baseline.
+
+**A future client or subcontractor portal must never expose Cash Flow.** The
+view reveals the project's cash position, its cumulative funding profile, and —
+read beside the commercial-context panel — its implied margin standing. This
+extends the existing portal exclusions for Client Receipts and Supplier
+Payments (Deferred Control 10).
+
 **Forecast Lines reads are restricted to financial roles** — deliberately tighter
 than the company-member `budgetLines` read. The Forecast Cost to Complete data
 exposes expected project overruns and implied margin (Forecast Final Cost,
@@ -459,7 +477,9 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     with the other scoping controls (item 5). **The same portal must never expose
     Supplier Payments** — not the payments themselves, and not their
     `allocations`, `unallocatedAmount`, `bankReference`, `remittanceReference`,
-    `notes`, or the supplier pricing they reveal.
+    `notes`, or the supplier pricing they reveal — **and must never expose the
+    Cash Flow view**, which aggregates both cash directions into the project's
+    cash position and funding profile.
 11. **Company currency validation** — rules validate the *shape* of
     `countryCode`/`baseCurrency` (`^[A-Z]{2}$` / `^[A-Z]{3}$`) but not that the
     code is a **known** country or currency; `XX`/`XXX` would be accepted. The

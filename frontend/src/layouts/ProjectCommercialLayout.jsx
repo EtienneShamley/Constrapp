@@ -2,9 +2,10 @@ import { NavLink, Outlet, useOutletContext } from 'react-router-dom'
 
 // The Commercial tab is the project's REVENUE-AND-CASH workspace. It hosts the
 // Project Margin view (index), the Client Invoices / Accounts Receivable
-// register, the Client Receipts register (money actually received), and the
-// Supplier Payments register (money actually paid). BOTH cash directions belong
-// on one tab because Cash Flow — the remaining branch — must read them together.
+// register, the Client Receipts register (money actually received), the
+// Supplier Payments register (money actually paid), and Cash Flow — which
+// reads BOTH cash directions together. That shared read is exactly why both
+// directions live on one tab.
 //
 // Sub-navigation rather than a new project tab: the tab bar already carries
 // fourteen tabs and wraps on mobile, and these views share one audience
@@ -23,6 +24,7 @@ const SUB_TABS = [
   { to: 'client-invoices',   label: 'Client Invoices',   end: false },
   { to: 'receipts',          label: 'Client Receipts',   end: false },
   { to: 'supplier-payments', label: 'Supplier Payments', end: false },
+  { to: 'cash-flow',         label: 'Cash Flow',         end: false },
 ]
 
 export default function ProjectCommercialLayout() {
@@ -30,14 +32,17 @@ export default function ProjectCommercialLayout() {
 
   return (
     <div>
-      <nav className="flex flex-wrap gap-1.5 mb-4">
+      {/* Five sub-tabs: below sm: a horizontally-scrolling strip (no wrapping,
+          full labels, links never shrink); from sm: up, normal wrapping. Touch
+          targets stay ≥44px in both modes. */}
+      <nav className="flex gap-1.5 mb-4 overflow-x-auto sm:overflow-x-visible sm:flex-wrap">
         {SUB_TABS.map(({ to, label, end }) => (
           <NavLink
             key={label}
             to={to}
             end={end}
             className={({ isActive }) =>
-              `px-3 py-2 min-h-[44px] flex items-center text-[12.5px] font-semibold rounded-lg border transition-colors
+              `px-3 py-2 min-h-[44px] flex items-center shrink-0 whitespace-nowrap text-[12.5px] font-semibold rounded-lg border transition-colors
                ${isActive
                  ? 'bg-brand-accent/15 text-brand-accent border-brand-accent/25'
                  : 'text-brand-muted border-brand-border hover:text-brand-text'}`

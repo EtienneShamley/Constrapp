@@ -38,6 +38,8 @@
 
 - [x] **Supplier Payments (foundation)** — the money-out mirror of Client Receipts, closing the cash picture. Project-scoped `supplierPayments` (`SP-0001` from a company-wide counter) storing **gross cash paid** — `paymentDate`, `amount`, an explicitly-chosen `paymentMethod` (never defaulted; `other` requires a description), optional bank/remittance/external references — with **embedded `allocations[]`** freezing **both** invoice references (`supplierInvoiceId` + Constrapp's `invoiceNumber` + the supplier's own `supplierInvoiceNumber` + `allocatedAmount`) against **posted** Supplier Invoices. `supplierId`/`supplierName` are **required non-empty** (rules-enforced), while supplier *invoices* with a legacy `supplierId: null` are matched on their frozen `supplierName` and **never backfilled**. Lifecycle `draft → posted → void` (void terminal, non-whitespace reason), **rules-enforced** with posted payments immutable — the third collection to meet the ADR-22 standard. **Allocations reconcile against `payableTotal`, never `grossTotal`** — retention withheld is not payable, and no payment writes, clears, or reduces a retention field (retention release stays unmodelled). **Read-time derivation:** Paid to Date, Remaining Payable, reconciliation state (*unreconciled / partly / fully / over-reconciled*), payment summaries, and **AP ageing on the remaining payable** — **nothing written onto a Supplier Invoice**, which gains no balance field, no payment status, and no back-reference, so voiding a payment restores every balance with **no reversal, refund, or bank-reversal record**. Only **posted** invoices are payable (`approved` is not the financial commit point). Unallocated payments are permitted, reported separately as money on account, **never auto-applied** (an explicit *Allocate oldest first* action yields an editable proposal) — and their **full amount is still actual Cash Out**. Over-reconciling an **invoice** is warned with an acknowledgement, never blocked; over-allocating the **payment** is hard-blocked and its scalar arithmetic is **rules-enforced** in whole cents. A posted invoice cancelled *after* an allocation surfaces as an **exception**, never auto-reversed. Counter, payment, and the project currency ratchet commit in **one transaction**. Shared `lib/payments.js` reused **entirely unchanged** + AP adapter `lib/supplierPayments.js`; new **Supplier Payments** sub-view on the Commercial tab (Margin · Client Invoices · Client Receipts · Supplier Payments — the Receipts *label* widened, its route unchanged). Supplier Invoices gain read-time Paid to Date / Remaining Payable / reconciliation badge, an allocated-payments detail modal, a *Record payment* action, a compact AP summary, an exceptions panel, and **payment-aware past-due** (`isPastDuePayable`; the date-only `isOverdue` is retained unchanged with a warning JSDoc). **⚠️ `SI_STATUS.PAID` and `paidAt` are DEPRECATED IN PLACE, not activated** — comments and documentation only; no stored value, constant, transition map, counting status, document, or supplier-invoice rules block changed. `paid` deliberately stays in `SI_COUNTING_STATUSES` so a direct-SDK-forged document cannot vanish from Invoiced/Actual. Financial-role-only reads; deletes blocked. **⚠️ Cash out is not cost** — no GST, no tax code, no net amount; the six budget figures, Forecast, and Margin are unchanged. **No** cash-flow UI, retention release, supplier credit notes, refunds, reversals, payment runs, remittance output, email, attachments, bank reconciliation, or accounting integration. No migration
 
+- [x] **Actual Cash Flow (foundation)** — the first Cash Flow output, and deliberately **actual-only**: recorded cash movement, no forecast. A new **Cash Flow** sub-view on the Commercial tab (`…/commercial/cash-flow` — the fifth sub-tab; no new project tab, no new collection, **no Firestore rules change**) reads posted Client Receipts (Cash In, by `receiptDate`) and posted Supplier Payments (Cash Out, by `paymentDate`) through the existing hooks and derives everything at read time in a new pure module (`lib/cashFlow.js`): **Actual Cash In / Cash Out / Net Cash** (total transaction `amount`, **never `allocatedTotal`** — an unallocated advance is still cash that moved), monthly rows grouped by `date.slice(0, 7)` (`'YYYY-MM'` keys, lexicographic order, **no Date construction**), a **dense** month range with zero rows for gap months, and a **cumulative position starting from ZERO** — net project cash movement, explicitly **not a bank balance** (no bank account, opening balance, or financing is modelled, and the page says so permanently). Drafts and voids count nothing. Unallocated cash in/out is reported separately as *on account* via the existing `receiptSummary`/`paymentSummary` derivations, never netted. A separate **Commercial context (accrual, ex-GST)** panel shows Current Contract Sum / Forecast Revenue / Forecast Final Cost / Forecast Gross Profit / Forecast Margin % through the same shared `lib/margin.js` composition — clearly labelled, never added to any cash figure. `lib/clientReceipts.js` gains **`cashInRows()`**, the money-in mirror of `cashOutRows()`. First **unit-test suite** added for pure domain logic (`npm run test:unit`, Vitest, `tests/unit/` — separate from the emulator rules suite): 51 tests over month keys, grouping, statuses, unallocated amounts, date discipline, dense ranges, cumulative arithmetic, cent rounding, and purity. Financial-role-only (existing rules on the collections read are the boundary — this branch adds **no write surface**). **⚠️ Not included (deferred to the next branches):** Forecast Cash In/Out, invoice due-date collections, manual monthly timing (`cashFlowLines`), untimed AR/AP, completeness, peak funding, projected closing position, charts, date filtering, scenarios, opening-balance input, GST/BAS modelling, retention-release forecasting, exports. No migration
+
 Firestore security rules for all of the above are written in `frontend/firestore.rules` and published manually.
 
 ---
@@ -173,17 +175,25 @@ direct-SDK-forged `paid` document must not vanish from Invoiced/Actual.
 payment reversals, payment runs/batches, remittance output, and bank
 reconciliation.
 
-**3c. Cash-flow Forecasting** — *unblocked; not built.*
-Cash-flow curves close the current project-control loop. **Both actual directions
-now exist**: Cash In from posted Client Receipts (amount, `receiptDate`, project,
-client, currency) and Cash Out from posted Supplier Payments (amount,
-`paymentDate`, project, supplier, currency, plus the allocated/unallocated
-split), exposed by `lib/supplierPayments.js → cashOutRows()`. It must consume the
-**total transaction amount** on the **transaction date** (never
-`createdAt`/`postedAt`, and never `allocatedTotal` — an unallocated supplier
-advance is still cash that left the bank), keep the allocated/unallocated split
-available, and never sum across currencies. No cash-flow route, page, chart,
-period, or aggregation exists yet.
+**3c. Cash Flow** — *Actual foundation shipped (see Completed Foundations);
+forecast and visualisation remain.* The approved three-branch sequence is:
+
+- **3c-i. Actual Cash Flow foundation** — *shipped.* Route, monthly actual
+  table, cumulative-from-zero position, unallocated-cash reporting, commercial
+  context panel, `cashInRows()`, `lib/cashFlow.js`, and the first unit-test
+  suite. Consumes the **total transaction amount** on the **transaction date**
+  (`receiptDate`/`paymentDate` — never `createdAt`/`postedAt`, never
+  `allocatedTotal`), and never sums across currencies.
+- **3c-ii. Forecast Cash Flow** — *next.* Invoice due-date collections and
+  payments, the manual monthly timing model (`cashFlowLines` — a new authored
+  collection with its own rules block and emulator suite), untimed AR/AP,
+  completeness indicators, projected closing position, and peak funding with
+  its untimed-suppression rule.
+- **3c-iii. Cash Flow visualisation** — *after forecast.* Charts (Recharts is
+  already a dependency) and optional date-range filtering.
+
+The recorded sequence is **Actual Cash Flow foundation shipped → Forecast Cash
+Flow next → Cash Flow visualisation after forecast.**
 
 **4. BOQ and Estimating**
 Opens the preconstruction side: a Bill of Quantities against cost codes, with rates/margin/overheads producing an estimate that transfers to an approved budget.

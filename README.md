@@ -24,7 +24,7 @@ Today the delivery-and-cost-control middle of this lifecycle is implemented (bud
 - Email/password sign-in (account creation and password reset screens are stubs — users are provisioned manually)
 - Multi-tenant company/user foundation (`users/{uid}` → `companies/{companyId}`)
 - Company Country & Currency: a company sets its country (which suggests a currency) and confirms a base currency; new projects inherit it, each project reports in one currency, and that currency locks once the project holds monetary data. **No FX conversion.** *Currency display is configurable; tax calculation is not — GST remains a flat Australian 10%*
-- Projects: create and list, with a Project Detail area (Overview, Budget, Cost Codes, Purchase Orders, Progress Claims, Supplier Invoices, Variations, Forecast, and Commercial tabs live — Commercial holds Margin, Client Invoices, Client Receipts and Supplier Payments; other tabs are placeholders)
+- Projects: create and list, with a Project Detail area (Overview, Budget, Cost Codes, Purchase Orders, Progress Claims, Supplier Invoices, Variations, Forecast, and Commercial tabs live — Commercial holds Margin, Client Invoices, Client Receipts, Supplier Payments and Cash Flow; other tabs are placeholders)
 - Company-wide Cost Codes
 - Company-wide Contacts: suppliers, subcontractors, consultants, and clients with ABN validation, contact people, duplicate warnings, and archive/reactivate (reads restricted to internal financial roles)
 - Budget Lines per project, with Committed / Claimed / Actual derived live from POs and claims
@@ -37,6 +37,7 @@ Today the delivery-and-cost-control middle of this lifecycle is implemented (bud
 - Client Receipts (foundation): cash actually received from clients (`CR-####`), with embedded allocations against issued client invoices; `draft → posted → void` with posted-receipt immutability **enforced by Firestore rules**. **Received to Date**, **Remaining to Reconcile**, reconciliation state, and AR ageing on the *remaining* balance are all derived at read time — nothing is written onto an invoice, so voiding a receipt restores balances with no reversal record. Unallocated receipts are permitted, shown separately, and never auto-applied. *Cash is not revenue — receipts carry no GST and feed no budget, forecast, or margin figure. Supplier payments and cash flow are not built yet*
 - Supplier Payments (foundation): cash actually paid to suppliers and subcontractors (`SP-####`), with embedded allocations against **posted** supplier invoices; `draft → posted → void` with posted-payment immutability **enforced by Firestore rules**. **Paid to Date**, **Remaining Payable**, reconciliation state, and AP ageing on the *remaining* balance are all derived at read time — nothing is written onto a supplier invoice, so voiding a payment restores balances with no reversal record. Allocations reconcile against each invoice's **`payableTotal`** (net of retention withheld), never its gross. Unallocated payments are permitted, shown separately, and never auto-applied. *Cash out is not cost — a payment settles an Actual cost the posted invoice already recognised, and feeds no budget, forecast, or margin figure. The supplier-invoice `paid` status and `paidAt` field are **deprecated in place, never activated**. Retention release, supplier credit notes, refunds, remittance output, bank reconciliation, and cash-flow reporting are not built*
 - Project Margin (foundation): a per-project Commercial Baseline (Original Contract Value + Original Approved Budget + contract dates + client) drives read-time Current Contract Sum, Forecast Revenue, Forecast Gross Profit, Forecast Margin %, and Margin Movement (all ex-GST) on a new Commercial tab; reads restricted to financial roles
+- Actual Cash Flow (foundation): a **Cash Flow** sub-view on the Commercial tab showing recorded cash movement only — Actual Cash In from posted Client Receipts (by `receiptDate`), Actual Cash Out from posted Supplier Payments (by `paymentDate`), monthly actual net, and a cumulative position starting from zero, with gap months shown as zero rows and unallocated cash reported separately. Uses the full transaction amount (never the allocated portion). Everything is derived at read time — no Cash Flow data is stored and no Firestore rules changed. *Not a bank balance: no bank account, opening balance, financing, or GST/BAS remittance is modelled. Forecast Cash Flow, peak funding, and charts are not built yet*
 
 Dashboard KPIs and charts are partly placeholder data. PULSE™ and SHIELD™ are
 placeholder screens; Subcontractors lists live contacts but its IQ™ scoring is
@@ -67,11 +68,21 @@ cd frontend
 npm run build
 ```
 
+### Unit tests (pure domain logic)
+
+Vitest over the pure `lib/` modules — no Firebase, no emulator. Currently covers
+the Actual Cash Flow arithmetic (`lib/cashFlow.js` + the cash-row adapters).
+
+```bash
+cd frontend
+npm run test:unit
+```
+
 ### Firestore Security Rules tests
 
-The only automated suite. Runs `frontend/firestore.rules` against the **Firestore
-emulator** — never a real project. Requires a JDK (17 is fine; `firebase-tools` is
-pinned to v13 for that reason). Run it before publishing any rules change.
+Runs `frontend/firestore.rules` against the **Firestore emulator** — never a real
+project. Requires a JDK (17 is fine; `firebase-tools` is pinned to v13 for that
+reason). Run it before publishing any rules change. Separate from the unit suite.
 
 ```bash
 cd frontend

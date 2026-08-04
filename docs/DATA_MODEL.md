@@ -427,7 +427,7 @@ incremented in the same transaction as the write.
 | `docType` | string | `receipt`; `refund` **reserved** (money moving *back* to a client is a different event from voiding a mis-keyed receipt) |
 | `clientId` | string | **REQUIRED non-empty** → company contact (type `client`). Unlike every other counterparty link in the app this is **never null**: a receipt with no client is not a record (rules-enforced) |
 | `clientName` | string | **REQUIRED non-empty frozen snapshot** of the contact's `displayName` at creation |
-| `receiptDate` | string | `'YYYY-MM-DD'` — the date the money was **received**. **This, never `createdAt`/`postedAt`, is the cash date the future Cash Flow module consumes** |
+| `receiptDate` | string | `'YYYY-MM-DD'` — the date the money was **received**. **This, never `createdAt`/`postedAt`, is the cash date the Cash Flow view consumes** |
 | `amount` | number | **Gross cash received**, `> 0` (rules-enforced), in the project currency |
 | `paymentMethod` | string | `bank_transfer` \| `card` \| `cash` \| `cheque` \| `direct_debit` \| `other`. **Required and never defaulted** — an unselected method is an unanswered question. Rules validate *shape* only (ADR-21 anti-drift precedent) |
 | `paymentMethodOther` | string | Required non-empty when `paymentMethod` is `other`; `''` otherwise |
@@ -497,7 +497,7 @@ truth.
 | `docType` | string | `payment`; `refund` **reserved** (money moving *back* from a supplier is a different event from voiding a mis-keyed payment) |
 | `supplierId` | string | **REQUIRED non-empty** → company contact (type `supplier` or `subcontractor`). **Never null** — unlike supplier *invoices*, which may carry a legacy `supplierId: null`, a new payment always carries a real link (rules-enforced) |
 | `supplierName` | string | **REQUIRED non-empty frozen snapshot** of the contact's `displayName` at creation |
-| `paymentDate` | string | `'YYYY-MM-DD'` — the date the money **left the account**. **This, never `createdAt`/`postedAt`, is the cash date the future Cash Flow module consumes** |
+| `paymentDate` | string | `'YYYY-MM-DD'` — the date the money **left the account**. **This, never `createdAt`/`postedAt`, is the cash date the Cash Flow view consumes** |
 | `amount` | number | **Gross cash paid**, `> 0` (rules-enforced), in the project currency |
 | `paymentMethod` | string | `bank_transfer` \| `card` \| `cash` \| `cheque` \| `direct_debit` \| `other`. **Required and never defaulted**. Rules validate *shape* only (ADR-21 anti-drift precedent) |
 | `paymentMethodOther` | string | Required non-empty when `paymentMethod` is `other`; `''` otherwise |
@@ -689,6 +689,25 @@ any other document. **No migration** — a project with no baseline document loa
 normally and shows an empty "baseline not set" state; margin figures appear once an
 Original Contract Value is saved.
 
+## Cash Flow — no persisted data
+
+**The Actual Cash Flow foundation introduces no collection, no document, and no
+field.** Every figure on the Cash Flow view — monthly Actual Cash In / Cash Out /
+Net, the cumulative-from-zero position, and the unallocated-cash totals — is
+**derived at read time** (`lib/cashFlow.js` over the `cashInRows()` /
+`cashOutRows()` adapters) from exactly two existing collections:
+
+- `…/clientReceipts` — posted receipts only, total `amount`, grouped by
+  `receiptDate.slice(0, 7)`
+- `…/supplierPayments` — posted payments only, total `amount`, grouped by
+  `paymentDate.slice(0, 7)`
+
+Nothing is written back to either collection (or to any other document), and no
+Firestore rules changed. The planned **Forecast Cash Flow** foundation will
+introduce an authored `cashFlowLines` collection — that is future work, decided
+in its own design assessment, and is **not modelled today** (see the table
+below).
+
 ## Planned Commercial Entities (not yet modelled)
 
 The schema above is **implemented**. The commercial lifecycle will introduce
@@ -708,6 +727,7 @@ exactly as budget lines, PO lines, claim lines, and invoice lines already do.
 | **Awards** | The winning bid, transferred to commitment | Carries cost-coded amounts into POs/budget |
 | **Budget Adjustments** | Internal budget transfers/revisions (no external counterparty) — **a distinct future document type, not a variation** | Reallocate budget by cost code |
 | **Forecast period snapshots** | Immutable monthly cost-to-complete snapshots + prior-period comparison (the *current* per-cost-code forecast inputs are **implemented** above as `forecastLines`) | Aggregated by cost code |
+| **Cash-flow forecast lines** (`cashFlowLines`) | Manual monthly timing of remaining revenue and cost for **Forecast** Cash Flow (the *actual* Cash Flow view is implemented and stores nothing) | Cost-side lines intended to carry a `costCodeId`; revenue-side lines sit above the spine (the recorded ADR-20/ADR-22 exception) |
 | **Final account records** | Closing budget-vs-actual reconciliation | Reconciled per cost code |
 
 No collection paths or field lists are committed here; adding any of these requires

@@ -1,11 +1,16 @@
 # Testing
 
-**One automated suite exists: the Firestore Security Rules tests (§0).**
-Everything else is manual. There is no application/unit test suite and no CI. The
-`lib/` domain modules (`purchaseOrders.js`, `progressClaims.js`,
-`clientInvoices.js`) are pure functions and are the natural next target. Verify
-application changes with the manual acceptance tests below, run against a dev
-Firebase project with the current rules published.
+**Two automated suites exist and are deliberately separate:**
+
+- **§0 — Firestore Security Rules tests** (`npm run test:rules`) — emulator-only.
+- **§0b — Unit tests for pure `lib/` domain logic** (`npm run test:unit`) — plain
+  Node, no Firebase, no emulator. Currently covers the Actual Cash Flow
+  arithmetic; the remaining pure `lib/` modules (`purchaseOrders.js`,
+  `progressClaims.js`, `clientInvoices.js`, …) are the natural next targets.
+
+Everything else is manual, and there is no CI. Verify application changes with
+the manual acceptance tests below, run against a dev Firebase project with the
+current rules published.
 
 ## 0. Firestore Security Rules — automated (emulator)
 
@@ -56,6 +61,29 @@ That script runs
 
 §15i-x, §15j-x, and §15k-x below remain the human-readable specification of what
 those tests assert; the other manual sections are not automated.
+
+## 0b. Unit tests — pure `lib/` domain logic (no emulator)
+
+The second automated suite. Plain Node — no React, no Firebase, no emulator, no
+JDK. Discovered only from `frontend/tests/unit/` via a dedicated config
+(`frontend/vitest.config.js`), so it can never bleed into the rules suite (and
+vice versa — `vitest.rules.config.js` discovers only `tests/rules/`).
+
+```bash
+cd frontend
+npm run test:unit
+```
+
+- `frontend/tests/unit/cashFlow.test.js` — **51 tests** over `lib/cashFlow.js`
+  and the cash-row adapters (`lib/clientReceipts.js → cashInRows()`,
+  `lib/supplierPayments.js → cashOutRows()`): month-key validation and labels,
+  lexicographic ordering, dense ranges across the December–January boundary,
+  receiptDate/paymentDate grouping (never `createdAt`/`postedAt`), posted-only
+  counting (drafts and voids excluded, including a posted-then-voided payment),
+  full-amount counting of unallocated cash (`allocatedTotal` never the cash
+  figure), zero-filled gap months, cumulative-from-zero arithmetic including
+  negative and recovery sequences, whole-cent rounding (`0.10 + 0.20 = 0.30`;
+  100 × `0.01` = `1.00`), and input purity (frozen inputs never mutated).
 
 Setup: two provisioned users in the same company (e.g. a `project_manager` and a
 `qs`), signed in via `/login`. Reset state between suites by using a fresh
@@ -1282,6 +1310,115 @@ read or write · cross-company read/write in both directions.
   horizontally **inside their cards**, the editor and post/void/detail modals
   scroll internally, all touch targets are ≥44px, and there is no horizontal
   page scroll.
+  *(Since the Actual Cash Flow foundation the sub-nav carries five items and
+  scrolls horizontally below `sm:` instead of wrapping — see §15l-xii.)*
+
+## 15l. Actual Cash Flow
+
+Unit-automated coverage: the arithmetic below (grouping, statuses, unallocated
+amounts, ordering, cumulative totals, rounding) is asserted by
+`tests/unit/cashFlow.test.js` (§0b). These manual steps verify the live page.
+
+### 15l-i. Navigation & gating
+
+- [ ] The Commercial sub-nav shows **Margin · Client Invoices · Client Receipts
+  · Supplier Payments · Cash Flow**; the fifth tab routes to
+  `/projects/:projectId/commercial/cash-flow`.
+- [ ] There is **no** new top-level project tab.
+- [ ] A `company_admin`, `project_manager`, and `qs` see the page; a
+  `subcontractor` or `client` sees the restricted-access card and triggers no
+  commercially-sensitive reads.
+- [ ] The header links to Client Receipts and Supplier Payments work, and the
+  page never describes itself as a bank statement or bank balance.
+
+### 15l-ii. Monthly grouping by transaction date
+
+- [ ] A posted receipt appears in the month of its **receiptDate**; a posted
+  payment in the month of its **paymentDate**.
+- [ ] A **backdated** receipt (entered today, dated last month) appears in
+  **last** month — entry date and posting date change nothing.
+- [ ] Two transactions in one month sum into one row.
+
+### 15l-iii. Statuses
+
+- [ ] A **draft** receipt or payment contributes nothing anywhere on the page.
+- [ ] **Voiding** a posted payment removes it from Actual Cash Out, its month,
+  and the cumulative position at the next render — with no reversal record.
+
+### 15l-iv. Unallocated cash
+
+- [ ] A posted, fully **unallocated receipt** counts its **full amount** in
+  Actual Cash In and appears in *Unallocated Cash In — on account* with the
+  advance/overpayment/awaiting-allocation wording. It is not styled as an
+  error and is not netted against anything.
+- [ ] The same for a fully unallocated **payment** on the Cash Out side.
+- [ ] A **partly** allocated transaction still counts its full amount in the
+  cash totals.
+
+### 15l-v. Months, gaps & ordering
+
+- [ ] With cash only in (say) August and October, September renders as a
+  **zero row** and the cumulative position carries through it unchanged.
+- [ ] Cash in December and the following January orders correctly across the
+  year boundary.
+- [ ] The current month is marked.
+
+### 15l-vi. Cumulative position
+
+- [ ] The cumulative column equals a hand-calculated running sum of the monthly
+  nets, **starting from zero**.
+- [ ] Negative monthly net and negative cumulative values use the red semantic
+  styling.
+- [ ] The zero-opening wording is present under the table: *"Cumulative net
+  cash movement on this project. Not a bank balance. …"* — and no
+  opening-balance input exists anywhere.
+
+### 15l-vii. Wording & limitations
+
+- [ ] The grouping explanation is present: *"Cash is grouped by the date money
+  moved. Receipt Date drives Cash In and Payment Date drives Cash Out."*
+- [ ] The Limitations card carries all four statements: not a bank balance /
+  gross vs ex-GST / GST-BAS not modelled / forecast not included.
+
+### 15l-viii. Commercial context panel
+
+- [ ] The panel is visually separate, headed **"Commercial context — accrual,
+  ex-GST"**, and shows the same Current Contract Sum, Forecast Revenue,
+  Forecast Final Cost, Forecast Gross Profit, and Forecast Margin % as the
+  Margin view (same shared derivation — compare values side by side).
+- [ ] With **no commercial baseline**, revenue-side figures show **"—"** (never
+  zero) with a prompt to the Margin view.
+- [ ] No context figure appears in any cash total or the cumulative column.
+
+### 15l-ix. Currency
+
+- [ ] All figures display in the **project** currency; a project in another
+  currency shows that currency; nothing is summed across projects.
+
+### 15l-x. Loading, errors & empty state
+
+- [ ] While the receipt/payment subscriptions resolve, the page shows a
+  loading state — never zero totals.
+- [ ] A failed receipt or payment subscription shows the error card naming the
+  failed direction — never zero Cash In/Out.
+- [ ] With **no posted cash** (drafts/voids may exist), the empty state shows
+  *"No recorded cash movement yet"* with working links to Client Receipts and
+  Supplier Payments.
+
+### 15l-xi. No mutation & no accrual impact
+
+- [ ] Using the Cash Flow page writes **no** document: receipts, payments,
+  invoices, POs, claims, variations, forecast lines, budget lines, and the
+  commercial baseline are all byte-identical afterwards.
+- [ ] The six budget figures, Forecast Final Cost, Variance to Budget, and
+  every margin figure are unchanged before vs after.
+
+### 15l-xii. Responsive
+
+- [ ] At **375px** the five sub-tabs form a horizontally scrolling strip — no
+  wrapping, full labels, ≥44px touch targets; at **768px+** they wrap
+  normally. The monthly table scrolls **inside its card**; there is no
+  page-level horizontal scroll at 375px / 768px / 1280px.
 
 ## 16. Responsive Checks — 375px, 768px, 1280px
 
