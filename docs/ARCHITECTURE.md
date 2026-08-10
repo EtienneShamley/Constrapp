@@ -19,7 +19,7 @@ Preconstruction → Procurement → Delivery → Cost Control → Forecasting �
 | **Delivery** | Scope variations, cumulative progress claims against commitments | **Variations** *(implemented — foundation)*; **Progress Claims** *(implemented)* |
 | **Cost Control** | Supplier invoices, actual cost, payments/credit notes | **Supplier Invoices**, **Supplier Payments** *(implemented)*; Credit Notes, Retention Release *(future)* |
 | **Revenue Control** | Client invoices issued against the contract sum and approved client variations; receivables, and the cash received to settle them | **Client Invoices / Accounts Receivable**, **Client Receipts** *(implemented — foundation)* |
-| **Forecasting** | Forecast cost to complete and project margin *(implemented — foundation)*; cash flow | **Forecast Cost to Complete**, **Project Margin**, **Cash Flow** (actual + forecast) *(implemented — foundation)*; Cash Flow charts *(planned)* |
+| **Forecasting** | Forecast cost to complete and project margin *(implemented — foundation)*; cash flow | **Forecast Cost to Complete**, **Project Margin**, **Cash Flow** (actual + forecast, with visualisation) *(implemented — foundation)*; Cash Flow date filtering *(planned)* |
 | **Final Account** | Reconcile budget + variations + actual into final margin; commercial reporting | Final Account, Commercial Reporting *(future/planned)* |
 
 **Cost Codes are the spine** across all six phases: a cost code links a BOQ line
@@ -104,7 +104,7 @@ frontend/                  The entire application (run all npm commands here)
                            ProjectClientReceipts (cash received),
                            ProjectSupplierPayments (cash paid),
                            ProjectCashFlow (actual + forecast cash),
-                           project/cashFlow/ (CombinedMonthlyTable,
+                           project/cashFlow/ (CashFlowChart, CombinedMonthlyTable,
                            LineEditorModal, LineVoidModal — page-local),
                            ProjectVariations, ProjectForecast,
                            ProjectCommercial (margin), ProjectPlaceholder
@@ -115,8 +115,9 @@ frontend/                  The entire application (run all npm commands here)
                            purchaseOrders.js, progressClaims.js, supplierInvoices.js,
                            clientInvoices.js, payments.js (shared, direction-agnostic),
                            clientReceipts.js, supplierPayments.js, cashFlow.js
-                           (pure monthly cash aggregation), variations.js,
-                           forecast.js, margin.js, contacts.js
+                           (pure monthly cash aggregation), cashFlowChart.js
+                           (chart presentation transform — no arithmetic),
+                           variations.js, forecast.js, margin.js, contacts.js
 docs/                      This documentation + design-reference assets
                            (Constrapp_v5.jsx prototype, screenshots, Word doc — do not move)
 AGENT.md / CLAUDE.md / README.md / PRODUCT.md / ROADMAP.md   (canonical root docs)
@@ -199,7 +200,7 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Client Invoices / Accounts Receivable | Implemented (foundation) — read-time contract control and read-time reconciliation against receipts; **no tax-invoice output** |
 | Client Receipts (cash received) | Implemented (foundation) — embedded allocations, read-time balances |
 | Supplier Payments (cash paid) | Implemented (foundation) — embedded allocations against posted invoices' `payableTotal`, read-time Paid to Date / Remaining Payable / AP ageing; **no retention release** |
-| Cash Flow (actual + forecast) | Implemented (foundation) — read-time monthly actual, automatic invoice due-date forecast, manual `cashFlowLines` timing, projected cumulative/closing position, completeness, untimed reporting, peak funding with suppression; **no charts, no date filtering, not a bank balance** |
+| Cash Flow (actual + forecast) | Implemented (foundation) — read-time monthly actual, automatic invoice due-date forecast, manual `cashFlowLines` timing, projected cumulative/closing position, completeness, untimed reporting, peak funding with suppression, and a two-panel chart that consumes those derived rows without re-deriving them (ADR-26); **no date filtering, not a bank balance** |
 | Variations (client + supplier) | Implemented (foundation) |
 | Forecast Cost to Complete | Implemented (foundation) — read-time, cost-side |
 | Project Margin (Commercial tab) | Implemented (foundation) — read-time, ex-GST; commercial baseline is the only stored input |

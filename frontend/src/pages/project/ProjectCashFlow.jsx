@@ -42,6 +42,7 @@ import {
   revenueCoverage, costCoverage, COMPLETENESS_STATE, completenessState,
   peakFunding, peakFundingSuppression,
 } from '../../lib/cashFlow'
+import CashFlowChart from './cashFlow/CashFlowChart'
 import CombinedMonthlyTable from './cashFlow/CombinedMonthlyTable'
 import LineEditorModal from './cashFlow/LineEditorModal'
 import LineVoidModal from './cashFlow/LineVoidModal'
@@ -421,6 +422,18 @@ export default function ProjectCashFlow() {
             </Card>
           </div>
 
+          {/* ── Chart (extracted — presentation only) ─────────────────────── */}
+          {/* Overview: the shape of the cash movement. Every figure is the one
+              already derived above — the chart re-derives nothing (ADR-26). */}
+          <CashFlowChart
+            combinedRows={combinedRows}
+            nowMonth={nowMonth}
+            pf={pf}
+            suppression={suppression}
+            forecastUnavailable={forecastUnavailable}
+            currencyCode={currencyCode}
+          />
+
           {/* ── Monthly table (extracted — presentation only) ─────────────── */}
           <CombinedMonthlyTable
             combinedRows={combinedRows}
@@ -767,7 +780,8 @@ export default function ProjectCashFlow() {
           </li>
           <li className="text-[11.5px] text-brand-muted">
             Forecast timing is authored, not enforced: an active line can be edited after being reported, and
-            Constrapp keeps no period locks or immutable snapshots. Charts and date filtering are a later branch.
+            Constrapp keeps no period locks or immutable snapshots. Date filtering is a later branch — the
+            chart and table always show the project&apos;s full month range.
           </li>
         </ul>
       </Card>

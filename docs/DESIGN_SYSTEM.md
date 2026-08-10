@@ -106,3 +106,37 @@ touching these files:
 Recharts requires JS colour values for fills, so chart code may read tokens via
 CSS variables rather than Tailwind classes — but the values should still come
 from the token set.
+
+## Chart Convention
+
+Established by the Cash Flow chart (`pages/project/cashFlow/CashFlowChart.jsx`,
+ADR-26) and the pattern to follow for future charts. **No token value changes —
+this records how existing tokens are used.**
+
+- **Reference tokens as `var(--color-brand-*)`**, never a hard-coded hex. SVG
+  `fill`/`stroke` resolve CSS custom properties directly, so this needs no
+  `getComputedStyle` plumbing. Do not copy the `Dashboard.jsx` debt above.
+- **Hue encodes the dimension; texture encodes state.** Cash In is
+  `brand-accent`, Cash Out is `brand-purple`; actual is a solid fill and
+  forecast a 45° hatch. **Never rely on colour alone** — texture keeps the
+  distinction legible in greyscale, print and forced-colors, and every series
+  also carries a text label in the legend.
+- **`brand-red` and `brand-amber` stay reserved** for their status meanings
+  (negative values, warnings/suppression) and are not used as series hues. Using
+  red for an ordinary series would alarm on healthy data and collide with the
+  genuine negative signal.
+- **Text wears text tokens** (`brand-text` / `brand-text-soft` / `brand-muted`),
+  never the series colour; a coloured swatch beside a label carries identity.
+- **Never a dual Y axis.** Two measures of different magnitude become two panels
+  sharing one X domain (ADR-26).
+- **SVG pattern/gradient ids must be namespaced with React `useId()`**, not
+  global constants, so a second mount cannot collide. Strip non-id-safe
+  characters before use in `url(#…)`.
+- Chart tooltips are ordinary Tailwind-classed elements (`bg-brand-surface`,
+  `border-brand-border`) — not inline style objects.
+
+⚠️ Known deviation, recorded honestly: `brand-accent` (`#00C9A7`) sits above the
+lightness band a validator recommends for series fills on the dark chart surface
+(`brand-surface`), so it reads slightly hot. Colourblind separation and contrast
+both pass comfortably. Changing the token is an app-wide design decision and was
+deliberately **not** made as part of a chart branch.

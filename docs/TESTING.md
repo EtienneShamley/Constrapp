@@ -4,9 +4,11 @@
 
 - **§0 — Firestore Security Rules tests** (`npm run test:rules`) — emulator-only.
 - **§0b — Unit tests for pure `lib/` domain logic** (`npm run test:unit`) — plain
-  Node, no Firebase, no emulator. Currently covers the Actual Cash Flow
-  arithmetic; the remaining pure `lib/` modules (`purchaseOrders.js`,
-  `progressClaims.js`, `clientInvoices.js`, …) are the natural next targets.
+  Node, no Firebase, no emulator. Currently covers the Cash Flow arithmetic
+  (`lib/cashFlow.js`) and the Cash Flow chart presentation transform
+  (`lib/cashFlowChart.js`); the remaining pure `lib/` modules
+  (`purchaseOrders.js`, `progressClaims.js`, `clientInvoices.js`, …) are the
+  natural next targets.
 
 Everything else is manual, and there is no CI. Verify application changes with
 the manual acceptance tests below, run against a dev Firebase project with the
@@ -96,6 +98,31 @@ npm run test:unit
   the **corrected** committed/claim model, untimed values, completeness states,
   peak funding and each suppression trigger, the GST suggestion, draft
   validation including the **no-past-month rule**, and forecast rounding.
+
+- `frontend/tests/unit/cashFlowChart.test.js` — **43 tests** over
+  `lib/cashFlowChart.js`, the Cash Flow chart's **presentation transform**.
+  Covers the display-only cash-out negation (and that zero never becomes
+  IEEE-754 `-0`), cash out reading **positive** in the tooltip while plotting
+  negative, the **unavailable-vs-zero rule** (a past month's forecast and any
+  figure a failed source made unavailable become `null`, never `0` — Recharts
+  skips a null and draws a zero), `forecastUnavailable` leaving historical
+  actuals intact while nulling unpublishable forecast, total, net and cumulative
+  values, actual/forecast boundary location (all-past, all-future, and a dataset
+  with **no** current-month row), **peak-marker eligibility** (authoritative
+  negative → marker; suppressed, non-negative, or forecast-unavailable → **no**
+  marker, and no lower-bound marker), layout width, input **purity** (the
+  financial rows are never mutated), and the textual summary degrading honestly
+  in each state.
+
+  ⚠️ It deliberately does **not** retest Cash Flow arithmetic — cumulative
+  position, peak-funding maths, reconciliation, completeness and the
+  month-boundary rules have exactly one home, `cashFlow.test.js` above.
+  The chart component itself is **not** unit-tested: that would require jsdom
+  and testing-library, and the transform boundary above is what makes the
+  honesty rules testable without them (ADR-26). Chart *rendering* is verified
+  manually in §15n.
+
+  Combined unit total: **173 tests** across both files.
 
 Setup: two provisioned users in the same company (e.g. a `project_manager` and a
 `qs`), signed in via `/login`. Reset state between suites by using a fresh
@@ -1581,6 +1608,88 @@ cumulative, peak funding, the boundary and no-past-month rules) is asserted by
   drill-downs scroll **inside their cards**, the editor and void modals scroll
   internally, touch targets are ≥44px, and there is no page-level horizontal
   scroll.
+
+## 15n. Cash Flow visualisation (chart)
+
+Unit-automated coverage: the presentation transform (sign, unavailability
+nulling, boundary, peak-marker eligibility, summary) is asserted by
+`tests/unit/cashFlowChart.test.js` (§0b). The chart component is not
+unit-tested — these steps verify the rendered chart. **The chart must never
+disagree with the monthly table directly beneath it**; when in doubt, the table
+is the record.
+
+### 15n-i. Placement, structure and agreement
+
+- [ ] The chart renders **between** the projected-position / peak-funding cards
+  and the monthly table, inside a `Card` matching the page's surrounding style.
+- [ ] **Two stacked panels** — monthly bars above, cumulative line below. There
+  is **no dual Y axis**.
+- [ ] Every value in a chart tooltip **matches the same month's row** in the
+  monthly table exactly.
+- [ ] Hovering a month shows all eight figures: Actual In/Out, Forecast In/Out,
+  Total In/Out, Net, Cumulative.
+
+### 15n-ii. Direction, state and the zero baseline
+
+- [ ] Cash In plots **above** zero, Cash Out **below** it.
+- [ ] Cash Out reads as a **positive** amount in the tooltip despite plotting
+  downward. No user-visible figure is negative merely because it is cash out.
+- [ ] Actual bars are **solid**; forecast bars are **hatched**. In a greyscale
+  screenshot the two remain distinguishable.
+- [ ] The legend names all four series with matching swatches.
+- [ ] Panel B has a clear zero line; the region below zero is shaded and a
+  negative position is immediately obvious.
+
+### 15n-iii. The actual/forecast boundary
+
+- [ ] The current month is marked on **both** panels and the marks line up
+  vertically.
+- [ ] Months before the current month show **no** forecast segment — and the
+  tooltip shows their forecast as **"—", never "$0"**.
+- [ ] A current month holding both posted cash and forecast shows a **mixed**
+  stacked bar.
+
+### 15n-iv. Peak funding (honesty-critical)
+
+- [ ] With a complete forecast and a negative trough: a peak-funding marker
+  appears on Panel B at the same month the peak-funding card names.
+- [ ] With peak funding **suppressed** (e.g. leave cost to complete untimed):
+  **no marker of any kind appears on the chart** — not even a lower-bound
+  marker — and an amber caption explains why. The lower bound remains visible
+  only in the card above.
+- [ ] With a position that never goes negative: no marker, and the caption reads
+  "No funding shortfall projected."
+
+### 15n-v. Unavailable and empty states
+
+- [ ] Break the Client Invoices or Supplier Invoices subscription (e.g. sign in
+  as a role without access, or go offline after load): forecast bars
+  **disappear rather than dropping to zero**, the cumulative line **stops** at
+  the last recorded month instead of bridging, the forecast region shading is
+  **not** drawn, no peak marker appears, and an amber in-card note says only
+  recorded cash is charted.
+- [ ] Historical actual bars remain fully intact in that state.
+- [ ] On a project with **no** cash-flow data the chart does **not** render at
+  all — the existing page empty state stands, with no empty chart frame above
+  it.
+- [ ] With **only** actual data: bars render, no forecast is fabricated.
+- [ ] With **only** current/future forecast: renders with no recorded history,
+  and the summary does not claim recorded cash.
+
+### 15n-vi. Summary, responsive and accessibility
+
+- [ ] The textual summary beneath the chart states the month span and the
+  recorded/projected boundary, and quotes a lowest projected position **only**
+  when the peak marker is shown.
+- [ ] At **375px / 768px / 1280px**: both panels scroll **together** in one
+  horizontal container inside the card; bars stay readable on a multi-year
+  project rather than compressing; there is no page-level horizontal scroll.
+- [ ] Keyboard: focus the chart and use arrow keys — the tooltip traverses
+  months (Recharts `accessibilityLayer`).
+- [ ] The monthly table below remains the complete numeric equivalent, so no
+  information is available only via the chart.
+- [ ] Using the chart writes **no** document — it is read-only, with no
+  clickable edit path.
 
 ## 16. Responsive Checks — 375px, 768px, 1280px
 

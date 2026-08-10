@@ -1105,3 +1105,107 @@ opening-balance input, scenarios, company-wide cash flow, bank feeds/
 reconciliation, financing, exports, PDF, and email are all absent by design in
 this foundation — the page's Limitations card states the material ones. No
 migration — a project with no posted cash shows an empty state.
+
+## ADR-26: Cash Flow visualisation (consumes derived rows; two panels, never a dual axis; no peak marker when suppressed)
+
+**Status:** Accepted — shipped with the Cash Flow visualisation branch (3c-iii),
+the third and final Cash Flow branch on top of ADR-25.
+
+**Context.** Cash Flow already derived everything a chart needs: dense monthly
+rows carrying actual, forecast, total, net and cumulative figures, plus peak
+funding and its suppression state. The risk in adding a visualisation was never
+drawing the picture — it was that a chart quietly becomes a **second
+calculation engine**, re-deriving totals or a cumulative curve that then
+disagrees with the table beside it.
+
+### Decision 1 — the chart consumes derived rows and re-derives nothing
+
+`CashFlowChart` receives `combinedRows`, `nowMonth`, `pf`, `suppression` and
+`forecastUnavailable` from `ProjectCashFlow.jsx` and treats every one as
+authoritative. It does not regroup, re-sort, re-round, re-sum, or recompute a
+cumulative position, peak-funding trough, invoice balance or completeness
+figure. **`lib/cashFlow.js` remains the only Cash Flow engine.**
+
+The chart does need a few genuine *display* decisions — negating Cash Out so it
+plots below the baseline, turning unavailable figures into `null`, locating the
+actual/forecast boundary, deciding whether a peak marker is permitted, and
+composing the textual summary. Those live in a separate pure module,
+**`lib/cashFlowChart.js`, which contains zero financial arithmetic**.
+
+Splitting it out is not decoration. The unit suite runs in plain Node
+(`environment: 'node'`, no jsdom), so logic inside the `.jsx` would be
+**untestable**; in a `.js` module it is covered by the existing runner with no
+config change, no jsdom and no testing-library. The module boundary is what
+makes the honesty rules below *provable* rather than merely intended — and it
+is why component tests were judged unnecessary rather than merely skipped.
+
+The chart also **never calls `currentMonthKey()`**. It keys off the `isPast`
+flag `lib/cashFlow.js` already stamped from the page's single `nowMonth`, so
+the app keeps exactly one timezone-sensitive clock (ADR-25).
+
+### Decision 2 — two panels sharing one X domain, never a dual axis
+
+Monthly flow and cumulative position differ in magnitude — the cumulative curve
+compounds while monthly bars do not. Plotting both against two Y scales in one
+frame would let a reader infer crossings and relationships that are pure
+artefacts of independent scaling. **Rejected.**
+
+Instead: **Panel A** (diverging stacked bars, Cash In above zero and Cash Out
+below) and **Panel B** (the cumulative line from a zero opening position) are
+separate panels sharing one chronological X domain, identical margins and a
+fixed Y-axis width so their plot areas stay in register. Both live in one
+horizontal scroll container and scroll together, with each month given a fixed
+slot so a multi-year project scrolls rather than compressing into unreadable
+bars.
+
+Cash Out is negated **for plotting only**. It is an amount of money, never
+presented to the reader as negative — the tooltip shows it positive. Zero is
+guarded explicitly against IEEE-754 `-0`.
+
+**Hue encodes direction; texture encodes state.** Cash In is `brand-accent`,
+Cash Out is `brand-purple`, actual is solid and forecast is a 45° hatch — so
+actual-vs-forecast survives greyscale, print and forced-colors, and never
+depends on colour alone. `brand-red` and `brand-amber` were deliberately **not**
+used for direction: they are reserved status colours (negative figures and
+warnings respectively), and painting every cash-out bar red would both alarm on
+healthy projects and collide with the genuine negative-position signal.
+
+### Decision 3 — no peak-funding marker when the figure is suppressed
+
+ADR-25 suppresses the headline peak-funding figure whenever significant amounts
+remain untimed, because untimed cost makes the trough shallower than reality and
+an unqualified number would **understate** the funding need — the dangerous
+direction.
+
+A charted point inherits none of that hedging: **a mark on a chart reads as a
+confirmed figure regardless of the caption beside it.** So the marker is plotted
+only when the figure is fully authoritative. When peak funding is suppressed,
+when the position never goes negative, or when a forecast source failed, the
+chart plots **no marker at all**.
+
+Plotting the computed value as a labelled "lower bound" marker was considered
+and **rejected**: it would strip the qualification while doubling the
+prominence. The qualified lower bound already appears, properly hedged, in the
+peak-funding card above the chart.
+
+The same asymmetry governs unavailability generally, mirroring
+`CombinedMonthlyTable` exactly: a past month's forecast and any figure a failed
+source made unavailable become **`null`, never `0`**. This is not cosmetic —
+Recharts *skips* a null and *draws* a zero, so the distinction is the entire
+honesty contract. The cumulative line uses `connectNulls={false}` so an
+unavailable stretch **breaks the line** rather than bridging it with an invented
+trajectory, and the forecast region shading is not drawn at all when a forecast
+source failed, since that shading would itself assert that forecast data loaded.
+
+**Consequences.** The chart adds no formula, collection, document, write, route,
+hook, dependency or rules change; Recharts was already a dependency and already
+in use. Colours are existing tokens referenced as `var(--color-brand-*)` — **no
+token value was changed and no hex hard-coded**, deliberately not repeating the
+`Dashboard.jsx` styling debt recorded in DESIGN_SYSTEM.md. SVG pattern ids are
+namespaced with React `useId()` rather than global constants, introducing no
+effects and no state. The monthly table remains the exact numeric record and the
+accessible equivalent, so the chart is never the only path to the data, and it
+is not rendered at all when there is no cash-flow data — the page's existing
+empty state stands rather than being covered by an empty chart frame. **Date
+filtering, chart export, chart-based editing and drag-to-retime are out of scope
+and remain unbuilt.**
