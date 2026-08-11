@@ -74,6 +74,9 @@ to financial roles.**
 | `…/projects/{id}/forecastLines/{id}` | **financial roles only** | financial roles | blocked — clear via `null`, never deleted |
 | `…/projects/{id}/cashFlowLines/{id}` | **financial roles only** | financial roles, **create active-only; transitions and post-void immutability rules-enforced** | blocked — void via status |
 | `…/projects/{id}/commercial/baseline` | **financial roles only** | financial roles | blocked — the single baseline doc is never deleted |
+| `…/projects/{id}/drawings/{id}` | **any company member** — including `subcontractor` and `client` | **`company_admin`, `project_manager` only — QS excluded**; born-empty create, four `hasOnly` update shapes, +1 revision count, non-whitespace withdraw reason | blocked — withdraw via status |
+| `…/projects/{id}/drawings/{id}/revisions/{id}` | **any company member** | same drawing writers; **file and authored identity immutable**, exact `storagePath` required, legal transitions only | blocked — a revision is never deleted |
+| `…/projects/{id}/documents/{id}` | `internal` → financial roles; `project` → **any company member** | financial roles; **file identity immutable**, three `hasOnly` update shapes, non-whitespace withdraw reason | blocked — withdraw via status |
 | `…/counters/{id}` | financial roles | financial roles | blocked |
 
 Contacts reads are deliberately tighter than the shared pattern: the directory
@@ -473,6 +476,123 @@ Constrapp tax-compliant there; Company Settings states this explicitly whenever
 the chosen country is not `AU`. Country-specific tax configuration is a separate
 future foundation.
 
+## Drawings — deliberately the BROADEST read in the app
+
+Every other project-scoped collection either gates reads on the three financial
+roles or on company membership for figures that are not commercially sensitive.
+Drawings go further: `allow read: if companyMember()` with **no role list**, so
+`subcontractor` and `client` users read drawing masters and revisions.
+
+**This is intentional, and it is the opposite of the financial reasoning.** A
+drawing is operational site information. The failure mode of withholding it —
+someone building from a sheet they were never given, or from a superseded one
+they still have — is worse than the failure mode of over-sharing it. Commercial
+sensitivity lives in the financial collections, which remain closed.
+
+**Writes stay narrow.** `company_admin` and `project_manager` only. **QS is
+deliberately excluded**: a QS measures from drawings but does not control what
+the site builds from. QS *does* have general-document write, because a QS owns
+contracts, subcontracts and specifications.
+
+**What the rules enforce (automated, proven by `tests/rules/drawings.rules.test.js`):**
+
+- a master is **born empty** — no pointer, no mirrored code/date, no count, no
+  forged withdrawal stamps
+- exactly four master update shapes, each `hasOnly`-restricted: identity edit,
+  promotion, reinstatement, withdrawal
+- promotion moves `revisionCount` by **exactly +1**; reinstatement may not touch
+  it and requires an existing current revision
+- withdrawal is terminal, clears the pointer, stamps the caller and server time,
+  and requires a **non-whitespace** reason
+- a revision is born `current`, with a positive integer `revisionSequence`, an
+  allowed content type that **agrees with `fileExt`**, a size within the 50 MB
+  ceiling, and `pageCount: null` / `sheetSize: ''`
+- a revision's `storagePath` must equal the **exact path derived from the
+  company/project/drawing/revision IDs** — so a revision can never reference
+  another tenant's bytes, another drawing's bytes, or a caller-chosen filename
+- a revision's file identity **and** authored identity are immutable: every
+  update branch is restricted to its own lifecycle stamps
+- legal transitions only (`current→superseded`, `current→withdrawn`,
+  `superseded→current`, `superseded→withdrawn`); `withdrawn` is terminal
+- `delete: if false` on masters and revisions alike
+
+**What the rules CANNOT enforce — never describe these as enforced:**
+
+- **drawingNumber and revisionCode uniqueness.** Rules cannot query siblings.
+  Both are warned in the UI and both can be defeated by concurrent creates
+- **exactly one current revision.** The promotion transaction supersedes the
+  previous current in the same commit, but a direct SDK caller with a writer
+  role can create a second `current` sibling
+- **that `currentRevisionId` names a revision that exists.** It is created in the
+  same transaction, so a rules `exists()` would evaluate pre-transaction state
+  and reject every legitimate promotion
+- **that a reinstatement is not a promotion.** The two differ only in whether the
+  target revision is newly created, which rules cannot see
+- **that the mirrored `currentRevisionCode`/`IssuedDate` match the revision**
+- **that the bytes at `storagePath` exist, or match the declared type and size**
+
+## Cloud Storage — the SECOND trust boundary
+
+`frontend/storage.rules` is a trust boundary in exactly the sense
+`firestore.rules` is. The client-side checks in `lib/files.js` are a convenience
+mirror and are **never** a control.
+
+**THE PATH IS THE AUTHORITY.** Objects live at deterministic,
+company-namespaced paths built from Firestore document IDs, and every object is
+named `original.{ext}`:
+
+```
+companies/{companyId}/projects/{projectId}/drawings/{drawingId}/{revisionId}/original.{ext}
+companies/{companyId}/projects/{projectId}/documents/{documentId}/original.{ext}
+```
+
+The uploaded filename is metadata only. **`customMetadata` is never consulted
+for authorisation** — it is caller-supplied and therefore worthless as a
+control.
+
+**AUTOMATED / ENFORCED** (proven by `tests/rules/storage.rules.test.js`, 46
+tests, run by `npm run test:rules` alongside the Firestore suites):
+
+- **tenant and path isolation** — membership is resolved from `users/{uid}` via
+  `firestore.get()` and compared against the `companyId` **in the object path**
+- **writer roles** — drawings: `company_admin`/`project_manager`; documents:
+  `company_admin`/`project_manager`/`qs`
+- **allowed content type** — `application/pdf`, `image/png`, `image/jpeg` only
+- **allowed object name** — must be exactly `original.{ext}` for its content
+  type, so name and bytes cannot disagree
+- **byte-size ceiling** — 50 MB drawings, 25 MB documents, enforced server-side
+- **non-zero size** — a zero-byte upload is rejected
+- **create-only immutability** — `update` and `delete` are denied on every path,
+  so an object can be written once and never overwritten, re-pointed or removed
+- **document visibility** — a non-internal role may read a document object only
+  once its Firestore metadata **exists** and says `visibility: 'project'`
+- **catch-all deny** — every other location in the bucket, including a drawing
+  object nested one folder too deep, is denied
+- reads grant `get` only, never `list`: nothing in the app enumerates Storage
+
+**The upload window fails CLOSED.** Uploads are Storage-first, so a document
+object exists briefly with no Firestore metadata. During that window a
+non-internal role is **denied**, because visibility is not yet knowable.
+
+**DEFERRED — not enforced, and must never be described as enforced:**
+
+- **Malware / antivirus scanning.** Impossible client-SDK-only; needs a trusted
+  backend. Rules see upload metadata, never bytes.
+- **Real byte semantics.** `contentType` and `size` are declared by the uploader.
+  The ceiling is enforced; the honesty of the type label is not. A caller can
+  send arbitrary bytes labelled `application/pdf`.
+- **Backend orphan cleanup.** Because uploads are Storage-first and delete is
+  denied, an object whose Firestore write failed remains unreferenced forever.
+  This is accepted: a delete permission able to tidy orphans would also let a
+  client destroy an issued drawing revision.
+- **Project-specific membership.** See Deferred Control 20.
+- **Per-trade drawing distribution.** Every company member sees every drawing;
+  there is no "issued to" list.
+- **Revocation of already-issued download URLs.** A Firebase download URL is a
+  bearer link. The app never persists one, but a user who copies a URL keeps
+  working access until the object's token is rotated out of band — including
+  after a revision is superseded or withdrawn, or a document is made internal.
+
 ## Documented Roles vs Enforced Roles
 
 [PRODUCT.md](../PRODUCT.md) documents six product roles. The rules enforce a much
@@ -664,6 +784,32 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     is no period locking, no immutable snapshot, and no change history beyond
     last-write stamps. Fabricated timing lines are a lower-severity analogue of
     Deferred Control 17: a line asserts an expectation, not a bank movement.
+20. **Project-specific membership does not exist.** Membership is
+    **company-wide**: `users/{uid}.companyId` grants access to every project in
+    that company. With Documents & Drawings this becomes visible rather than
+    theoretical — a `subcontractor` provisioned for one job reads the drawings
+    and `project` documents of **every** project in the company, in Firestore
+    and in Storage alike. Rules cannot narrow this without a membership model
+    (per-project member documents or custom claims), which is a redesign
+    deliberately out of scope. A rules test asserts the limitation rather than
+    leaving it implicit. Until it lands, provision `subcontractor` and `client`
+    accounts only for companies whose whole drawing set they may see.
+21. **File bytes are never inspected.** Storage Rules enforce content type,
+    object name and size from **upload metadata**; they cannot verify that the
+    bytes are what the metadata claims, and there is **no antivirus scanning**
+    (see Trusted-Backend Activation Requirement 8). Firestore likewise stores
+    `fileSize`/`contentType` as declared values. Treat every stored file as
+    untrusted input: the app renders images and hands PDFs to the browser's own
+    viewer, and never executes or parses uploaded content.
+22. **Orphaned Storage objects accumulate, and issued download URLs cannot be
+    revoked.** Uploads are Storage-first and objects are create-only, so a file
+    whose Firestore write failed stays in the bucket unreferenced forever —
+    accepted, because a delete permission able to clean it up could also destroy
+    an issued drawing revision. Separately, a Firebase download URL is a **bearer
+    link**: the app never persists one, but a user who copies a URL retains
+    access after the revision is superseded or withdrawn, or after a document is
+    switched to `internal`. Revoking requires rotating the object's download
+    token out of band.
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
@@ -778,9 +924,13 @@ place before any non-hand-provisioned (external) users are onboarded — see
    bundle; **privileged provider calls run server-side only.**
 7. **Webhook security** — signature verification plus replay/idempotency
    protection on every inbound webhook (payments, email events, etc.).
-8. **File-upload controls** — Firebase Storage Security Rules **before** the
-   first upload feature ships, plus server-side size/type/content validation and
-   antivirus scanning; scoped, company-namespaced storage paths.
+8. **File-upload controls** — *partially satisfied.* Firebase Storage Security
+   Rules **shipped with the first upload feature** (`frontend/storage.rules`,
+   ADR-28), with scoped company-namespaced paths, role gates, content-type and
+   object-name checks, size ceilings and create-only immutability, all covered by
+   an automated emulator suite. **Still deferred to a trusted backend:**
+   antivirus scanning, server-side inspection of actual file **content** (rules
+   see declared metadata only), and orphan cleanup.
 9. **Audit logging** — who performed each transition/edit, when, and from what
    prior state, beyond the current `createdBy`/`approvedBy` stamps.
 10. **Cost & budget caps** — per-provider spend caps and alerting on metered

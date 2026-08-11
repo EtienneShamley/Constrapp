@@ -70,20 +70,24 @@ npm run build
 
 ### Unit tests (pure domain logic)
 
-Vitest over the pure `lib/` modules — no Firebase, no emulator. Currently covers
-the Cash Flow arithmetic (`lib/cashFlow.js` + the cash-row adapters): actual
-grouping, invoice-based forecasting, coverage, completeness, and peak funding.
+Vitest over the pure `lib/` modules — no Firebase, no emulator. Covers the Cash
+Flow arithmetic (`lib/cashFlow.js` + the cash-row adapters): actual grouping,
+invoice-based forecasting, coverage, completeness, and peak funding; the chart
+presentation transform (`lib/cashFlowChart.js`); and the Documents & Drawings
+domain (`lib/files.js`, `lib/drawings.js`, `lib/projectDocuments.js`).
 
 ```bash
 cd frontend
 npm run test:unit
 ```
 
-### Firestore Security Rules tests
+### Security Rules tests (Firestore + Storage)
 
-Runs `frontend/firestore.rules` against the **Firestore emulator** — never a real
-project. Requires a JDK (17 is fine; `firebase-tools` is pinned to v13 for that
-reason). Run it before publishing any rules change. Separate from the unit suite.
+Runs `frontend/firestore.rules` and `frontend/storage.rules` against the
+**Firestore and Storage emulators** — never a real project. Requires a JDK (17 is
+fine; `firebase-tools` is pinned to v13 for that reason). One command covers both
+trust boundaries. Run it before publishing **either** rules file. Separate from
+the unit suite.
 
 ```bash
 cd frontend
@@ -95,18 +99,23 @@ npm run test:rules
 1. Create a project at [console.firebase.google.com](https://console.firebase.google.com)
 2. Enable **Authentication** (Email/Password provider)
 3. Enable **Firestore** (production mode)
-4. Copy the web app config values into `frontend/.env.local`
-5. Publish the Firestore rules **manually**: paste the contents of
+4. Enable **Cloud Storage** (production mode — **not** test mode) and publish
+   `frontend/storage.rules` in the same sitting; the starter ruleset Google
+   installs is far more permissive. Full steps: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
+5. Copy the web app config values into `frontend/.env.local`
+6. Publish the Firestore rules **manually**: paste the contents of
    `frontend/firestore.rules` into Firebase console → Firestore → Rules → Publish
 
-There is no `firebase.json` or `.firebaserc` yet — Firebase CLI configuration,
-Hosting, and automated deployment are future work (see
-[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
+`frontend/firebase.json` exists **only** to point the Firestore and Storage
+emulators at the two rules files for the automated suites. There is no
+`.firebaserc` — Firebase CLI deployment, Hosting, and automated deployment are
+future work (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
 
 ## Repository Layout
 
 ```
-frontend/         The entire application (Vite root); firestore.rules lives here
+frontend/         The entire application (Vite root); firestore.rules and
+                  storage.rules live here
 docs/             Detailed documentation + design-reference assets
 AGENT.md          Conventions and guardrails for contributors and AI agents
 CLAUDE.md         Task routing for AI agents

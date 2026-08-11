@@ -64,6 +64,31 @@ Domain mappings live beside the status machines — **reuse them, don't restyle*
 - `PO_BADGE_VARIANTS` (`lib/purchaseOrders.js`): draft→soon, pending_approval→pending, sent→info, closed→completed, cancelled→danger
 - `CLAIM_BADGE_VARIANTS` (`lib/progressClaims.js`): draft→soon, submitted→info, under_review→pending, approved→active, rejected→danger, invoiced→completed
 
+Documents & Drawings reuse the existing semantic variants without adding any new
+Badge style: revisions map current→`active`, superseded→`soon`,
+withdrawn→`danger`; documents map active→`active`, superseded→`soon`,
+withdrawn→`danger`; a drawing with no revision yet reads "No revision"→`soon`.
+
+### Status warnings — never colour alone
+
+⚠️ **A badge is not sufficient where using the wrong file is dangerous.** Opening
+a superseded or withdrawn drawing revision renders a **non-dismissible** banner
+(`role="alert"`, 2px border, `brand-amber` for superseded / `brand-red` for
+withdrawn) whose **text carries the whole meaning**:
+
+```
+SUPERSEDED — Revision B
+Do not build from this drawing. Current revision is C.
+```
+
+Colour only reinforces what the words already say, so the warning survives
+greyscale printing, a colour-blind reader and a low-contrast phone screen in
+sunlight. The same rule governs document visibility: `internal` is labelled with
+the **word "Internal"** plus a lock glyph, never by colour. Build the text first;
+add the colour second. The warning strings themselves live in
+`lib/drawings.js → revisionWarning()` so they are unit-tested rather than
+scattered through JSX.
+
 ## UI Conventions
 
 **Modals** — fixed inset-0 overlay (`bg-black/60`, click to close) + centred

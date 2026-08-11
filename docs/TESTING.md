@@ -2,23 +2,26 @@
 
 **Two automated suites exist and are deliberately separate:**
 
-- **§0 — Firestore Security Rules tests** (`npm run test:rules`) — emulator-only.
+- **§0 — Security Rules tests** (`npm run test:rules`) — emulator-only, covering
+  **both trust boundaries**: `firestore.rules` and `storage.rules`. One command
+  starts both emulators.
 - **§0b — Unit tests for pure `lib/` domain logic** (`npm run test:unit`) — plain
-  Node, no Firebase, no emulator. Currently covers the Cash Flow arithmetic
-  (`lib/cashFlow.js`) and the Cash Flow chart presentation transform
-  (`lib/cashFlowChart.js`); the remaining pure `lib/` modules
-  (`purchaseOrders.js`, `progressClaims.js`, `clientInvoices.js`, …) are the
-  natural next targets.
+  Node, no Firebase, no emulator. Covers the Cash Flow arithmetic
+  (`lib/cashFlow.js`), the Cash Flow chart presentation transform
+  (`lib/cashFlowChart.js`), and the Documents & Drawings domain (`lib/files.js`,
+  `lib/drawings.js`, `lib/projectDocuments.js`); the remaining pure `lib/`
+  modules (`purchaseOrders.js`, `progressClaims.js`, `clientInvoices.js`, …) are
+  the natural next targets.
 
 Everything else is manual, and there is no CI. Verify application changes with
 the manual acceptance tests below, run against a dev Firebase project with the
 current rules published.
 
-## 0. Firestore Security Rules — automated (emulator)
+## 0. Security Rules — automated (emulators)
 
-The only automated tests in the repo. They load `frontend/firestore.rules`
-verbatim and exercise it against the **Firestore emulator** — never a real
-project (the suite throws if `FIRESTORE_EMULATOR_HOST` is unset).
+They load `frontend/firestore.rules` and `frontend/storage.rules` verbatim and
+exercise them against the **Firestore and Storage emulators** — never a real
+project (each suite throws if its emulator host variable is unset).
 
 ```bash
 cd frontend
@@ -26,14 +29,17 @@ npm run test:rules
 ```
 
 That script runs
-`firebase emulators:exec --only firestore --project constrapp-rules-test "vitest run --config vitest.rules.config.js"`.
+`firebase emulators:exec --only firestore,storage --project constrapp-rules-test "vitest run --config vitest.rules.config.js"`.
 
 - **Requires a JDK.** `firebase-tools` is pinned to `^13` because v14+ requires
   **JDK 21**, while the Firestore emulator under v13 runs on **JDK 17**. If you
   upgrade `firebase-tools`, you must also install JDK 21+.
-- Config: `frontend/firebase.json` (emulator + rules pointer only — no hosting,
-  no functions, and **no `.firebaserc`**, so nothing can be deployed).
-- Tests — **207 in total across 5 files**:
+- Config: `frontend/firebase.json` (both emulators + both rules pointers only —
+  no hosting, no functions, and **no `.firebaserc`**, so nothing can be
+  deployed). The Storage emulator runs on port 9199.
+- **Both boundaries are proven by the same command on purpose.** A separate
+  command for Storage Rules is a command that eventually stops being run.
+- Tests — **390 in total across 8 files: 344 Firestore + 46 Storage**:
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -62,10 +68,54 @@ That script runs
     every case in §15m-x below. It also asserts the two documented
     **client-only** gaps: a PAST `monthKey` and an unknown `sourceType` of valid
     shape are both ACCEPTED by rules.
-  - All five run for `company_admin`, `project_manager`, `qs`, `subcontractor`,
+  - `frontend/tests/rules/drawings.rules.test.js` — **86 tests** over the drawing
+    master and its `revisions` subcollection: the **broad read** (all six Company
+    A roles read masters and revisions, cross-company and unauthenticated denied),
+    the writer matrix (**QS denied**, subcontractor/client/super_admin denied),
+    the **born-empty** create shape, all four `hasOnly` master update shapes,
+    the **+1 revision count**, reinstatement requiring an existing current
+    revision, terminal withdrawal with a non-whitespace reason, revision creation
+    shape (status `current`, positive integer sequence, contentType/fileExt
+    agreement, 50 MB ceiling, zero-byte rejection, `pageCount: null`,
+    `sheetSize: ''`), the **exact `storagePath`** (another revision's folder,
+    another drawing's folder, another tenant's path and a non-`original.{ext}`
+    name are all rejected), **file and authored immutability**, every legal and
+    illegal lifecycle transition, and blocked deletes. It also asserts the
+    **documented gaps** honestly: duplicate drawing numbers and revision codes
+    are accepted, a second `current` sibling can be forged, `currentRevisionId`
+    existence is unchecked, a count-bumping reinstatement is indistinguishable
+    from a promotion, `fileSize` is unverifiable metadata, and membership is
+    **company-wide** (a subcontractor reads a project they were never assigned).
+  - `frontend/tests/rules/projectDocuments.rules.test.js` — **51 tests** over the
+    general document register: visibility-gated reads, the writer matrix (QS
+    **included** here), **list-query behaviour** — an unfiltered query by a
+    subcontractor fails entirely while the same query with
+    `where('visibility','==','project')` succeeds — create shape, the 25 MB
+    ceiling, exact `storagePath`, **file-identity immutability**, supersession
+    and withdrawal legality, terminal states, blocked deletes, and the documented
+    gaps (unchecked `supersededByDocumentId`, non-unique names, unverifiable
+    `fileSize`, and visibility flips that cannot un-read what was already read).
+  - `frontend/tests/rules/storage.rules.test.js` — **46 tests**, the **Storage**
+    boundary. Requires **both** emulator hosts, because the document read rule
+    performs a `firestore.get()`. Covers: drawing files readable by every
+    provisioned company member and denied cross-company/unauthenticated/no-
+    membership; the drawing writer set (**QS, subcontractor, client and
+    super_admin all denied**); **create-only semantics** (overwrite, metadata
+    update and delete all denied for every role); zero-byte, unsupported content
+    type, content-type/object-name mismatch, non-`original.{ext}` names, and the
+    **50 MB** ceiling with an at-ceiling success; the document writer set (QS
+    allowed), the **25 MB** ceiling, and document overwrite/delete denial;
+    visibility-gated document reads including the **pre-metadata upload window
+    failing closed** for non-internal roles while internal roles read through it,
+    a visibility flip removing access, and metadata in another company failing to
+    unlock a path; and the **catch-all deny** for arbitrary paths, a
+    company-shaped but unapproved collection, and drawing objects nested one
+    folder too deep or too shallow.
+  - All eight run for `company_admin`, `project_manager`, `qs`, `subcontractor`,
     `client`, an unauthenticated caller, and a financial-role user in a **second
-    company**. The users suite adds a sixth identity: an authenticated caller
-    with **no** `users/{uid}` document at all (the orphan case).
+    company**. The users, drawings, documents and storage suites add further
+    identities: an authenticated caller with **no** `users/{uid}` document at all
+    (the orphan case) and a `super_admin`, which carries **no** special power.
 - **Run this before publishing any rules change** (see
   [DEPLOYMENT.md](DEPLOYMENT.md)).
 
@@ -138,12 +188,41 @@ npm run test:unit
   ⚠️ It deliberately does **not** retest Cash Flow arithmetic — cumulative
   position, peak-funding maths, reconciliation, completeness and the
   month-boundary rules have exactly one home, `cashFlow.test.js` above.
+
+- `frontend/tests/unit/files.test.js` — **43 tests** over `lib/files.js`. The
+  **storage-path** tests matter most: those exact strings are what
+  `firestore.rules` and `storage.rules` independently recompute, so a change
+  here that is not mirrored in both rules files breaks every upload. Also covers
+  extension parsing, the content-type → single-extension mapping (JPEG always
+  stores as `.jpg`), `original.{ext}` naming, upload validation (unsupported
+  extension, unsupported MIME, extension/MIME **disagreement**, zero-byte, the
+  ceilings **at** and one byte **over**, and the smaller document ceiling applied
+  independently), size formatting, filename capping, and the upload-error
+  mapping (a rules rejection reads as a permission problem, a missing bucket
+  names itself rather than blaming the connection).
+
+- `frontend/tests/unit/drawings.test.js` — **55 tests** over `lib/drawings.js`:
+  the discipline and status vocabularies, the write-role matrix (**QS excluded**),
+  every legal and illegal revision/master transition with `withdrawn` terminal,
+  drawing-number and revision-code normalisation, duplicate detection (warning
+  only), **ordering by `revisionSequence` and never by `revisionCode`** — proven
+  with codes that sort lexically into the wrong order — next-sequence derivation,
+  current-revision resolution and its fallbacks, reinstatement candidates
+  (withdrawn revisions never offered), draft and reason validation, register
+  filtering with withdrawn hidden by default, and the **warning text** for
+  superseded/withdrawn revisions and withdrawn masters.
+
+- `frontend/tests/unit/projectDocuments.test.js` — **30 tests** over
+  `lib/projectDocuments.js`: the ten flat categories, two visibilities and three
+  statuses, `project` as the safe default, the write and internal-read role
+  matrices (**QS included**), document transitions, draft validation including an
+  optional-but-well-formed date, and register sorting/filtering.
   The chart component itself is **not** unit-tested: that would require jsdom
   and testing-library, and the transform boundary above is what makes the
   honesty rules testable without them (ADR-26). Chart *rendering* is verified
   manually in §15n.
 
-  Combined unit total: **173 tests** across both files.
+  Combined unit total: **301 tests** across five files (130 + 43 + 43 + 55 + 30).
 
 Setup: two provisioned users in the same company (e.g. a `project_manager` and a
 `qs`), signed in via `/login`. Reset state between suites by using a fresh
@@ -1711,6 +1790,114 @@ is the record.
   information is available only via the chart.
 - [ ] Using the chart writes **no** document — it is read-only, with no
   clickable edit path.
+
+## 15o. Documents & Drawings
+
+⚠️ **These tests require Cloud Storage to be enabled and `storage.rules`
+published** — see [DEPLOYMENT.md](DEPLOYMENT.md) → *Enabling Cloud Storage*.
+Before that, every upload correctly fails with *"File storage is not set up for
+this Firebase project yet."*
+
+### 15o-i. Drawings register
+
+- [ ] Project → **Documents** shows a sub-nav with **Drawings** and **General
+  Documents**; Drawings is the index and there is **no new top-level tab**.
+- [ ] As `company_admin` or `project_manager`, **+ New Drawing** creates a
+  master. You land on the drawing detail route
+  (`/projects/:projectId/documents/drawings/:drawingId`) and it honestly shows
+  **no current revision** — not an error, not a blank file.
+- [ ] The register shows drawing number, title, discipline, current revision,
+  issued date and status. Withdrawn drawings are **hidden by default**; "Show
+  withdrawn" reveals them.
+- [ ] Search matches number, title, discipline and current revision code; the
+  discipline filter narrows correctly.
+- [ ] Creating a second drawing with an existing number **warns and still
+  allows it** (uniqueness is not enforced — see SECURITY.md).
+- [ ] As `qs`, `subcontractor` or `client`: the register is **readable** but
+  **+ New Drawing**, Edit, New Revision and Withdraw are absent.
+
+### 15o-ii. Issuing revisions
+
+- [ ] Upload Revision A (PDF): a progress bar runs, then the drawing shows
+  **Rev A / Current** and the history has one row.
+- [ ] Upload Revision B: B becomes current; **A becomes Superseded** in the same
+  action; `revisionCount` reaches 2 and history is ordered **B then A**.
+- [ ] Issue a revision coded **"10"** on a drawing that already has **"2"**:
+  history still orders by issue sequence, **not** alphabetically.
+- [ ] Cancel mid-upload: the upload stops, nothing appears in the register, and
+  the dialog says *Upload cancelled.*
+- [ ] Reject cases: a `.dwg` file, a `.docx`, a 0-byte file, and a file over
+  **50 MB** are all refused **before** any upload starts.
+- [ ] Duplicate revision code on the same drawing **warns, never blocks**.
+- [ ] ⚠️ **Concurrency:** open the same drawing in two browsers, start an upload
+  in both, and let the first finish first. The second fails with *"Another user
+  issued a revision while you were uploading. Review the drawing before
+  re-issuing."*, **nothing is promoted**, and the register still shows the first
+  user's revision as current. (The second user's bytes are an accepted orphan.)
+- [ ] After any failure, **Try Again** re-uploads under a **new** revision ID —
+  it never overwrites the previous path.
+
+### 15o-iii. Viewing, superseded and withdrawn warnings
+
+- [ ] Open the current revision: file name, size, type and sequence show; the
+  PDF opens in the browser's own viewer via **Open**; **Download** saves it.
+- [ ] A PNG/JPEG revision renders inline; a PDF shows an iframe preview at
+  desktop width only.
+- [ ] Select a **superseded** revision from the history: a non-dismissible
+  banner reads **SUPERSEDED — Revision B / Do not build from this drawing.
+  Current revision is C.** It cannot be closed.
+- [ ] Select a **withdrawn** revision: the banner reads **WITHDRAWN / Do not use
+  this drawing.**
+- [ ] Both warnings are legible with colour removed (print to greyscale or use a
+  colour-blind simulator) — the **words** carry the meaning.
+
+### 15o-iv. Withdrawal and succession
+
+- [ ] Withdraw a **non-current** revision: it becomes Withdrawn; the current
+  revision and the master pointer are **untouched**.
+- [ ] Withdraw the **current** revision: the dialog **requires** an explicit
+  choice and offers no default — either reinstate a named earlier revision or
+  "No replacement". A whitespace-only reason is rejected.
+- [ ] Choosing an earlier revision: it becomes **Current** again, the master
+  shows its code and issue date, and `revisionCount` does **not** change.
+- [ ] Choosing "No replacement": the drawing becomes **WITHDRAWN** with no
+  current revision, a banner explains it, and no further revisions can be
+  issued.
+- [ ] Withdrawn revisions are never offered for reinstatement.
+- [ ] **Nothing is ever deleted** — every withdrawn revision remains in the
+  history with its reason.
+- [ ] A drawing created but never uploaded to can be withdrawn from its detail
+  page (**Withdraw Drawing**), with a reason.
+
+### 15o-v. General documents
+
+- [ ] As `qs`, upload a document with category, visibility, version and date.
+  The register lists it and **Internal is shown with the word "Internal"** plus a
+  lock glyph, not by colour alone.
+- [ ] Reject cases: unsupported type, 0 bytes, and a file over **25 MB** (note
+  this ceiling is **lower** than a drawing's).
+- [ ] **Replace** a document: the new record is active, the old one shows
+  **Superseded**, and **both files remain openable**.
+- [ ] Withdraw a document with a reason; a whitespace-only reason is rejected.
+- [ ] As `subcontractor` or `client`: `project` documents are listed and
+  openable; **`internal` documents do not appear at all**, and the page says
+  internal documents are not listed rather than implying the register is empty.
+- [ ] Flip a document from `project` to `internal` while a subcontractor has the
+  page open: it disappears from their register on the next read. ⚠️ A download
+  URL they already opened keeps working (SECURITY.md → Deferred Control 22).
+
+### 15o-vi. Failure honesty and responsive
+
+- [ ] Go offline or sign in as a role whose read is denied: the registers say
+  **"Drawings are unavailable"** / **"Documents are unavailable"** — never "No
+  drawings" or "No documents".
+- [ ] At **375px**: both registers render as **cards, not squeezed tables**; the
+  drawing number and title are large; the whole card is tappable; every action
+  is ≥44px; there is no page-level horizontal scroll.
+- [ ] At **768px / 1280px**: the register tables render; modals fit with internal
+  scrolling.
+- [ ] No financial figure anywhere in the app changes as a result of any action
+  in this section.
 
 ## 16. Responsive Checks — 375px, 768px, 1280px
 

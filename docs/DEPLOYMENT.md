@@ -1,10 +1,11 @@
 # Deployment
 
-What exists today: a Vite static build and manually published Firestore rules,
-plus a **`frontend/firebase.json` scoped to the Firestore emulator and the rules
-file** (added for the Security Rules test suite — see [TESTING.md](TESTING.md)).
-**Not implemented:** `.firebaserc`, Firebase Hosting configuration, Cloud
-Functions, and CI deployment — all future work.
+What exists today: a Vite static build and **two manually published rules files**
+— `frontend/firestore.rules` and `frontend/storage.rules` — plus a
+**`frontend/firebase.json` scoped to the Firestore and Storage emulators and
+those two rules paths** (for the Security Rules test suites — see
+[TESTING.md](TESTING.md)). **Not implemented:** `.firebaserc`, Firebase Hosting
+configuration, Cloud Functions, and CI deployment — all future work.
 
 **Do not run `firebase deploy`.** No `.firebaserc` exists, so no Firebase project
 is targeted, and `firebase.json` declares no hosting or functions target. Rules
@@ -14,8 +15,11 @@ publishing remains **manual** (below); `firebase.json` exists so
 ## Prerequisites
 
 - Node.js 20+
-- A Firebase project with **Authentication** (Email/Password) and **Firestore**
-  enabled. (Storage is initialised in code but unused; Hosting is not set up.)
+- A Firebase project with **Authentication** (Email/Password), **Firestore**, and
+  — since the Documents & Drawings foundation — **Cloud Storage** enabled.
+  (Hosting is not set up.) See *Enabling Cloud Storage* below: enabling it in the
+  console installs a permissive starter ruleset that **must** be replaced with
+  `frontend/storage.rules` in the same sitting.
 - Users provisioned manually: an Auth user plus a matching `users/{uid}`
   document — see [SECURITY.md](SECURITY.md).
 
@@ -68,10 +72,53 @@ manual:
 Keep the console and the repo file identical — the repo copy is the reviewed
 artifact; the console copy is what actually enforces.
 
+## Enabling Cloud Storage — Manual Process (one time)
+
+Documents & Drawings stores file bytes in Cloud Storage. Until Storage is
+enabled **and** `frontend/storage.rules` is published, every upload fails and the
+app reports *"File storage is not set up for this Firebase project yet."*
+
+⚠️ **The order matters.** Enabling Storage installs Google's starter ruleset,
+which is far more permissive than this app's. Do not upload anything — not even
+a test file — between enabling Storage and publishing `storage.rules`.
+
+1. Firebase console → **Build → Storage → Get started**.
+2. When prompted for a rules mode, choose **production mode** (deny-all) rather
+   than test mode. Test mode grants open read/write for 30 days.
+3. Accept the **default bucket** (`<projectId>.appspot.com` or
+   `<projectId>.firebasestorage.app`, depending on project vintage) and pick a
+   location **in the same region as Firestore**. ⚠️ The bucket location is
+   **permanent** and cannot be changed afterwards.
+4. Confirm the bucket name matches `VITE_FIREBASE_STORAGE_BUCKET` in
+   `frontend/.env.local` (Console → Project settings → Your apps → SDK setup →
+   `storageBucket`). If they differ, update `.env.local` and rebuild — the app
+   resolves its bucket from that variable.
+5. Storage → **Rules** → replace the entire editor contents with
+   `frontend/storage.rules` → **Publish**.
+6. Confirm the published rules contain `service firebase.storage` and the
+   `match /{allPaths=**} { allow read, write: if false; }` catch-all, and contain
+   **no** `allow read, write: if true` and no `request.time <` date clause.
+
+Run `npm run test:rules` before publishing: the emulator suite loads this exact
+file and covers tenant isolation, writer roles, content types, size ceilings and
+create-only immutability.
+
+## Publishing Storage Rules — Manual Process (every change)
+
+Identical discipline to Firestore rules:
+
+1. Edit `frontend/storage.rules` (review against [SECURITY.md](SECURITY.md) →
+   *Cloud Storage — the SECOND trust boundary*).
+2. **Run `npm run test:rules`** — one command runs both the Firestore and the
+   Storage suites against both emulators.
+3. Firebase console → **Storage → Rules**.
+4. Paste the full file contents over the editor content.
+5. **Publish.**
+
 ## Future Work (not current functionality)
 
 - `.firebaserc` (and a hosting/functions section in `firebase.json`) so rules
-  deploy via `firebase deploy --only firestore:rules`
+  deploy via `firebase deploy --only firestore:rules,storage`
 - Firebase Hosting configuration for the built frontend
 - Cloud Functions (server-side enforcement — see
   [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) ADR-14)

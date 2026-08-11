@@ -26,6 +26,18 @@ companies/{companyId}
     forecastLines/{costCodeId}           (deterministic id = costCodeId)
     cashFlowLines/{lineId}               (authored Cash Flow timing inputs)
     commercial/baseline                  (single doc; deterministic id = "baseline")
+    drawings/{drawingId}                 (drawing master — random id)
+      revisions/{revisionId}             (IMMUTABLE issues — random id)
+    documents/{documentId}               (flat general document register — random id)
+```
+
+**Cloud Storage** (a separate service with its own rules file — see
+[SECURITY.md](SECURITY.md)) holds the file bytes for the last two collections, at
+deterministic paths built from these same IDs:
+
+```
+companies/{companyId}/projects/{projectId}/drawings/{drawingId}/{revisionId}/original.{ext}
+companies/{companyId}/projects/{projectId}/documents/{documentId}/original.{ext}
 ```
 
 `users/` is the only top-level collection besides `companies/`. Everything else
@@ -750,6 +762,114 @@ creating one **locks the project currency in the same transaction** (ADR-21);
 voided lines are retained and remain lock evidence. **No migration** — a project
 with no `cashFlowLines` loads normally with an empty manual forecast.
 
+## …/projects/{projectId}/drawings/{drawingId}
+
+The **drawing master** — the stable identity of a sheet ("A-101 Ground Floor
+Plan"). Random Firestore ID: `drawingId` is the immutable identity a future
+takeoff will reference, so it must survive the drawing number being corrected.
+`companyId`/`projectId` are **not** duplicated into the document — the path
+already carries ownership.
+
+Reads are open to **every provisioned company member** (including subcontractor
+and client); writes are `company_admin`/`project_manager` only — QS is excluded
+in this branch. See [SECURITY.md](SECURITY.md) and ADR-28.
+
+| Field | Type | Notes |
+|---|---|---|
+| `drawingNumber` | string | Normalised: trimmed, whitespace collapsed, upper-cased. **Not unique** — rules cannot query siblings; the UI warns |
+| `title` | string | Required, non-whitespace |
+| `discipline` | string | `architectural` \| `structural` \| `civil` \| `mechanical` \| `electrical` \| `hydraulic` \| `landscape` \| `other` |
+| `description` | string | Optional |
+| `status` | string | `active` \| `withdrawn`. Withdrawal is **terminal** — there is no reactivation |
+| `currentRevisionId` | string \| **null** | Pointer to the authored current revision. `null` on a newly created master and after withdrawal with no replacement |
+| `currentRevisionCode` | string | Mirrored for register display; `''` when there is no current revision |
+| `currentRevisionIssuedDate` | string \| null | `'YYYY-MM-DD'`, mirrored for register display |
+| `revisionCount` | int | High-water mark. Rules force **+1 exactly** on promotion, which is what makes `revisionSequence` dense and monotonic |
+| `revisionSchemaVersion` | int | `1`. Immutable — lets a future migration tell old revisions from new ones |
+| `withdrawnAt` / `withdrawnBy` | timestamp / uid \| null | Set only on withdrawal, stamped by rules |
+| `withdrawReason` | string | **Required non-whitespace** on withdrawal (rules-enforced); `''` otherwise |
+| `createdAt` / `createdBy` | timestamp / uid | Immutable after creation |
+| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on every write |
+
+**A master is BORN EMPTY** — rules reject a creation carrying a pointer, a
+mirrored code/date, a revision count, or any withdrawal stamp. The first revision
+is promoted afterwards, so a failed upload can never leave a drawing advertising
+a revision whose bytes do not exist.
+
+## …/projects/{projectId}/drawings/{drawingId}/revisions/{revisionId}
+
+One **immutable issue** of a drawing. Random Firestore ID. Never deleted, never
+overwritten, never repointed at different bytes.
+
+| Field | Type | Notes |
+|---|---|---|
+| `revisionCode` | string | Author's code ("A", "B", "P1"), normalised (whitespace stripped, upper-cased), ≤ 12 chars. **Not unique** within a drawing — the UI warns |
+| `revisionSequence` | int | **The ordering key.** `master.revisionCount + 1` at promotion. ⚠️ Revisions are ordered by this, **never** by `revisionCode` |
+| `revisionDate` | string | `'YYYY-MM-DD'` — the date the revision was issued |
+| `status` | string | `current` \| `superseded` \| `withdrawn`. Always born `current`; `withdrawn` is terminal |
+| `notes` | string | What changed in this revision |
+| `fileName` | string | The **user's original filename — metadata only, never identity** |
+| `fileExt` | string | `pdf` \| `png` \| `jpg`. Must agree with `contentType` (rules-enforced) |
+| `fileSize` | int | Bytes; `> 0` and `≤ 52428800` (50 MB), rules-enforced. ⚠️ Declared metadata — rules never see the bytes |
+| `contentType` | string | `application/pdf` \| `image/png` \| `image/jpeg` |
+| `storagePath` | string | **Must equal the exact path derived from the company/project/drawing/revision IDs** (rules-enforced), so a revision can never point at another tenant's bytes |
+| `pageCount` | **null** | Reserved for a future takeoff module. Rules reject any other value — never fabricated |
+| `sheetSize` | `''` | Reserved likewise |
+| `supersededAt` / `supersededBy` | timestamp / uid \| null | Stamped when a newer revision is issued |
+| `supersededByRevisionId` | string \| null | The revision that replaced this one; cleared on reinstatement |
+| `withdrawnAt` / `withdrawnBy` | timestamp / uid \| null | Stamped on withdrawal |
+| `withdrawReason` | string | **Required non-whitespace** on withdrawal |
+| `revision` | int | `1` — document schema version |
+| `createdAt` / `createdBy` | timestamp / uid | Immutable |
+| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on every lifecycle write |
+
+**Immutable in practice, not just by convention.** Every update branch in
+`firestore.rules` is `hasOnly`-restricted to its own lifecycle stamps, so
+`revisionCode`, `revisionSequence`, `revisionDate`, `notes`, `fileName`,
+`fileExt`, `fileSize`, `contentType` and `storagePath` are unwritable after
+creation.
+
+**Lifecycle.** `current → superseded` (a newer revision was issued) ·
+`current → withdrawn` · `superseded → current` (explicit reinstatement) ·
+`superseded → withdrawn`. `withdrawn` is terminal. Promotion, supersession and
+the master pointer move in **one transaction** with a concurrency check — see
+[FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md)'s sibling document ADR-28.
+
+## …/projects/{projectId}/documents/{documentId}
+
+The **flat general document register**: specifications, contracts, subcontracts,
+reports, certificates, safety documents, programmes, manuals, correspondence.
+Random Firestore ID. **No folders and no revision subcollection** — a
+replacement is a new record.
+
+Writes are `company_admin`/`project_manager`/`qs` (QS **is** included here,
+unlike drawings). Reads depend on `visibility`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | Required, non-whitespace |
+| `category` | string | `specification` \| `contract` \| `subcontract` \| `report` \| `certificate` \| `safety` \| `schedule` \| `manual` \| `correspondence` \| `other` |
+| `visibility` | string | `project` (every provisioned company member) \| `internal` (company_admin/project_manager/qs). Defaults to `project` |
+| `versionLabel` | string | Free text ("Rev 2", "Issue C") — **not** a revision spine |
+| `documentDate` | string \| null | `'YYYY-MM-DD'` or null; plenty of documents are undated |
+| `status` | string | `active` \| `superseded` \| `withdrawn`. Withdrawn is terminal |
+| `supersededByDocumentId` | string \| null | Forward link to the replacement record. ⚠️ **Existence is not rules-checked** |
+| `notes` | string | Optional |
+| `fileName` | string | The user's original filename — **metadata only** |
+| `fileExt` / `contentType` | string | Must agree; `pdf`/`png`/`jpg` |
+| `fileSize` | int | `> 0` and `≤ 26214400` (**25 MB** — smaller than a drawing's ceiling) |
+| `storagePath` | string | Must equal the exact derived path (rules-enforced) |
+| `withdrawnAt` / `withdrawnBy` / `withdrawReason` | timestamp / uid / string | Withdrawal audit; reason **required non-whitespace** |
+| `revision` | int | `1` — document schema version |
+| `createdAt` / `createdBy` / `updatedAt` / `updatedBy` | timestamp / uid | Creation stamps immutable |
+
+**⚠️ Rules are not filters.** Firestore evaluates the read rule against every
+document a query returns, so one `internal` document fails an UNFILTERED query
+for a subcontractor or client. `hooks/useProjectDocuments.jsx` subscribes with
+`where('visibility','==','project')` for those roles — a **query requirement**,
+not a security control. Ordering is applied client-side, so no composite index
+is needed.
+
 ## Cash Flow — what is and is not persisted
 
 `cashFlowLines` above is the **only** Cash Flow collection. Everything else the
@@ -807,4 +927,6 @@ a design assessment, a hook, and (where a new collection is introduced) a manual
 - Client invoices → a client contact via `clientId`, with the client's name, legal name, ABN, email, phone, and address **snapshotted at creation** so later contact edits never rewrite billing history; → approved **client** variations via an optional per-line `variationId` (+ frozen `variationNumber`/`variationDescription`). The linkage is **read-time only**: invoicing **never** mutates a variation (no stamp, no status change, no back-reference) and never touches the commercial baseline or Budget Lines. Line `costCodeId` is **optional** (ADR-22).
 - Client receipts → a client contact via a **required** `clientId` (with a frozen `clientName` snapshot); → issued client invoices via **embedded** `allocations[].clientInvoiceId` (+ a frozen `invoiceNumber` snapshot). The linkage is **read-time only**: a receipt **never** mutates an invoice (no balance field, no payment status, no back-reference), which is exactly why voiding a receipt restores every balance with no reversal record. Receipts touch no cost figure, no forecast, and no margin figure — cash is not revenue.
 - Supplier payments → a supplier/subcontractor contact via a **required** `supplierId` (with a frozen `supplierName` snapshot); → **posted** supplier invoices via **embedded** `allocations[].supplierInvoiceId` (+ frozen `invoiceNumber` **and** `supplierInvoiceNumber` snapshots). A supplier invoice with a legacy `supplierId: null` is matched on its frozen `supplierName` instead and is **never backfilled**. The linkage is **read-time only**: a payment **never** mutates a supplier invoice (no balance field, no payment status, no back-reference, no `paid` status, no `paidAt`), which is exactly why voiding a payment restores every balance with no reversal record. Payments touch no cost figure, no forecast, and no margin figure — cash out is not cost.
-- Counters are company-wide: PO/claim/invoice/receipt/payment numbers are unique per **company**, not per project. Contacts, forecast lines, and the commercial baseline carry no sequential number.
+- Drawing revisions → their master via the **path** (`drawings/{drawingId}/revisions/{revisionId}`); the master → its current revision via `currentRevisionId` plus mirrored `currentRevisionCode`/`currentRevisionIssuedDate` for register display. A revision → its Storage object via `storagePath`, which rules require to equal the exact path derived from the IDs. ⚠️ The **immutable takeoff identity is `{ drawingId, revisionId }`** — never `drawingNumber` (correctable), never `master.currentRevisionId` (moves by design), never the filename (user text). Drawings link to no cost code, no contact and no financial document: the commercial linkage arrives with the future takeoff/BOQ module.
+- General documents → their replacement via `supersededByDocumentId` (forward only; existence not rules-checked) and → their Storage object via `storagePath`. They carry no cost code, no contact and no counter — a `versionLabel` is free text, not a sequence.
+- Counters are company-wide: PO/claim/invoice/receipt/payment numbers are unique per **company**, not per project. Drawings, revisions and general documents use **random Firestore IDs and no counter** — a drawing number is authored, not allocated. Contacts, forecast lines, and the commercial baseline carry no sequential number.

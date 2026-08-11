@@ -48,7 +48,7 @@ particular:
 | Routing | React Router 7 (`react-router-dom`) |
 | State | React Context + hooks (no Redux) |
 | Charts | Recharts 3 |
-| Backend | Firebase **client SDK only** (Auth, Firestore, Storage). No Cloud Functions, no server code, no `firebase.json`/`.firebaserc` yet |
+| Backend | Firebase **client SDK only** (Auth, Firestore, Cloud Storage). No Cloud Functions and no server code. `frontend/firebase.json` **does exist** — it points the Firestore **and Storage** emulators at `firestore.rules` / `storage.rules` for the automated rules suites. There is still **no `.firebaserc`**, no hosting config, and no deploy pipeline: both rules files are published manually |
 | Font | Sora (Google Fonts), fallback DM Sans |
 
 ## Repository Structure
@@ -60,25 +60,37 @@ that must not be moved or renamed.
 ```
 frontend/
   firestore.rules   Firestore security rules (published manually — see docs/DEPLOYMENT.md)
+  storage.rules     Cloud Storage security rules — the SECOND trust boundary
+                    (published manually; see docs/DEPLOYMENT.md)
   src/
     components/     UI primitives: Card, Btn, Badge, Stat, ProgBar, PageHeader, ProtectedRoute
     layouts/        AppShell (Sidebar + TopBar), AuthLayout, ProjectDetailLayout,
                     ProjectCommercialLayout (Commercial sub-nav:
                     Margin | Client Invoices | Client Receipts | Supplier Payments
-                    | Cash Flow)
-    pages/          Top-level routes; pages/project/ holds Project Detail tabs
+                    | Cash Flow),
+                    ProjectDocumentsLayout (Documents sub-nav:
+                    Drawings | General Documents)
+    pages/          Top-level routes; pages/project/ holds Project Detail tabs;
+                    pages/project/documents/ holds the Documents & Drawings
+                    modals, viewer and shared class strings
     hooks/          useAuth, useProfile, useCompany, useProjects, useProject,
                     useCostCodes, useContacts, useBudgetLines, usePurchaseOrders,
                     useProgressClaims, useSupplierInvoices, useClientInvoices,
                     useClientReceipts, useSupplierPayments, useVariations,
-                    useForecastLines, useProjectCommercial, useCashFlowLines
+                    useForecastLines, useProjectCommercial, useCashFlowLines,
+                    useStorageUpload (the ONLY place file bytes are written),
+                    useDrawings, useDrawingRevisions, useProjectDocuments
     lib/            firebase.js, formatters.js, currency.js, nav.js, projectTabs.js,
                     purchaseOrders.js, progressClaims.js, supplierInvoices.js,
                     clientInvoices.js, payments.js (shared, direction-agnostic),
                     clientReceipts.js, supplierPayments.js, variations.js,
                     forecast.js, margin.js, cashFlow.js (pure monthly cash
-                    aggregation + forecast layers), contacts.js (pure domain logic)
+                    aggregation + forecast layers), contacts.js,
+                    files.js (file types, size ceilings, deterministic storage
+                    paths), drawings.js, projectDocuments.js (pure domain logic)
   tests/unit/       Unit tests for pure lib/ logic (npm run test:unit — no emulator)
+  tests/rules/      Firestore AND Storage security-rules suites
+                    (npm run test:rules — starts both emulators)
 ```
 
 ## Design Tokens
@@ -105,8 +117,17 @@ debt, not licence to add more) are in [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM
 - Membership and role come from the `users/{uid}` Firestore document (`companyId`, `role`); security rules `get()` that document to authorize access. **Firebase Auth custom claims are not implemented** — do not reference them in rules or UI guards
 - **`users/{uid}` is CLIENT-READ-ONLY (ADR-27).** A user may read their own profile; `create`, `update` and `delete` are all blocked by rules. No app code writes it — the only `users/` reference in `frontend/src` is the read in `hooks/useProfile.jsx`. Do not add a profile-write path, a "harmless field" allow-list, or admin user management: membership is **provisioned out of band**, and signup/invites/user administration require a trusted backend (Admin SDK), never the browser
 - Check `frontend/firestore.rules` before adding any new collection or field; rules are published manually via the Firebase console (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md))
-- `frontend/firebase.json` exists **only** to point the Firestore emulator at `firestore.rules` for the automated Security Rules suite (`npm run test:rules`). There is **no `.firebaserc`**, no hosting, and no functions config — do not claim or assume Firebase CLI/Hosting deployment, and never run `firebase deploy`. Rules are still published manually
-- **Run `npm run test:rules` before any `firestore.rules` change is published** (see [docs/TESTING.md](docs/TESTING.md) §0)
+- `frontend/firebase.json` exists **only** to point the Firestore and Storage emulators at `firestore.rules` / `storage.rules` for the automated Security Rules suites (`npm run test:rules`). There is **no `.firebaserc`**, no hosting, and no functions config — do not claim or assume Firebase CLI/Hosting deployment, and never run `firebase deploy`. Both rules files are still published manually
+- **Run `npm run test:rules` before any `firestore.rules` OR `storage.rules` change is published** (see [docs/TESTING.md](docs/TESTING.md) §0). One command starts both emulators and runs both suites
+
+## Cloud Storage Conventions
+
+- **`frontend/storage.rules` is a trust boundary, exactly like `firestore.rules`.** Client-side file validation in `lib/files.js` is a convenience mirror and never a control
+- All Storage access goes through `hooks/useStorageUpload.jsx` — never call `firebase/storage` directly from a page
+- **The path is the authority.** Object paths are deterministic and company-namespaced, built by `lib/files.js` from Firestore document IDs; every object is named `original.{ext}`. The uploaded filename is metadata only, and `customMetadata` is never consulted for authorisation
+- **Upload order is Storage FIRST, Firestore SECOND.** An orphaned object is preferable to a register row pointing at bytes that never arrived
+- **Objects are create-only.** `update` and `delete` are denied on every path, so a retry must mint a new document ID and a new path. Orphans are accepted and documented; there is no cleanup path without a trusted backend
+- **Never persist `getDownloadURL()` output.** A download URL is a bearer link; mint it on demand and discard it
 
 ## Firestore Data Model (summary)
 

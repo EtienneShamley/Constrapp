@@ -1,0 +1,164 @@
+rules_version = '2';
+
+// ── Constrapp — Firebase Cloud Storage Security Rules ────────────────────────
+//
+// The SECOND trust boundary in Constrapp, alongside firestore.rules. Everything
+// the app does with files runs through the client SDK, so these rules — not the
+// upload code — are what actually stops a caller doing something else.
+//
+// THE PATH IS THE AUTHORITY. Every object lives at a company-namespaced,
+// deterministic path built from Firestore document IDs:
+//
+//   companies/{companyId}/projects/{projectId}/drawings/{drawingId}/{revisionId}/original.{ext}
+//   companies/{companyId}/projects/{projectId}/documents/{documentId}/original.{ext}
+//
+// The uploaded filename is NEVER object identity — it is kept in Firestore
+// metadata only. `customMetadata` is NEVER consulted for authorisation: it is
+// caller-supplied and therefore worthless as a control.
+//
+// UPLOAD ORDER IS STORAGE FIRST, FIRESTORE SECOND. An orphaned object is
+// preferable to a visible register row pointing at bytes that never arrived.
+// Two consequences are deliberate:
+//   · `create` must NOT require the Firestore metadata document to exist — it
+//     does not exist yet.
+//   · a general document is therefore unreadable to non-internal roles during
+//     the upload window, because its visibility is not yet knowable. It fails
+//     CLOSED, which is the correct direction.
+//
+// CREATE-ONLY, FOREVER. `update` and `delete` are denied on every path. An
+// object can be written exactly once and can never be overwritten, re-pointed,
+// or removed by any client. That is what makes a drawing revision genuinely
+// immutable: the Firestore revision document freezes `storagePath`, and these
+// rules freeze the bytes at that path.
+//
+// ⚠️ WHAT THESE RULES CANNOT DO — never describe these as enforced:
+//   · they do not inspect BYTES. `contentType` and `size` are upload metadata.
+//     A caller can send arbitrary bytes labelled `application/pdf`; the size
+//     ceiling is enforced, the honesty of the label is not.
+//   · they do not scan for malware. AV scanning needs a trusted backend and is
+//     deferred (docs/SECURITY.md).
+//   · they do not know about PROJECT membership. Membership is company-wide, so
+//     any provisioned member of a company can read that company's drawings
+//     across every project.
+//   · they cannot clean up orphaned objects — with no delete and no backend,
+//     an object whose Firestore write failed simply remains, unreferenced.
+//   · they cannot revoke a Firebase download-token URL that has already been
+//     generated and shared. The app never persists those URLs, but a user who
+//     copies one holds a bearer link until the token is rotated out of band.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ── Identity ─────────────────────────────────────────────────────────────
+    //
+    // Membership is resolved from Firestore, from the same `users/{uid}`
+    // document firestore.rules authorises against — one source of truth for who
+    // someone is. That document is client-read-only (ADR-27), so a caller
+    // cannot promote themselves into these rules.
+    function profile() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Any provisioned member of THIS company. Checked before any role lookup,
+    // so `profile()` is only dereferenced once the document is known to exist.
+    function memberOf(companyId) {
+      return request.auth != null
+          && firestore.exists(/databases/(default)/documents/users/$(request.auth.uid))
+          && profile().companyId == companyId;
+    }
+
+    function hasRole(roles) {
+      return profile().role in roles;
+    }
+
+    // ── Object shape ─────────────────────────────────────────────────────────
+
+    // The ONE object name each content type may be stored under. Deriving the
+    // name from the content type is what stops the two disagreeing — the same
+    // pairing firestore.rules enforces on `fileExt`/`contentType`.
+    function expectedName(contentType) {
+      return contentType == 'application/pdf' ? 'original.pdf'
+           : contentType == 'image/png'       ? 'original.png'
+           : contentType == 'image/jpeg'      ? 'original.jpg'
+           : '';
+    }
+
+    // A legal first-and-only write of an object.
+    //   · `resource == null` — CREATE semantics, stated explicitly. An
+    //     overwrite arrives as `update` and is denied outright below.
+    //   · zero-byte files are rejected: an empty drawing is not a drawing.
+    //   · the size ceiling is the real one, enforced server-side.
+    //   · the object name must be exactly `original.{ext}` for its content type,
+    //     so a caller cannot smuggle in a name of their own choosing.
+    function validUpload(fileName, maxBytes) {
+      return resource == null
+          && request.resource.size > 0
+          && request.resource.size <= maxBytes
+          && request.resource.contentType in ['application/pdf', 'image/png', 'image/jpeg']
+          && fileName == expectedName(request.resource.contentType);
+    }
+
+    // ── Drawing revisions ────────────────────────────────────────────────────
+    //
+    // READ: any provisioned member of the company, INCLUDING subcontractor and
+    // client. A drawing is operational site information; withholding the current
+    // sheet is the real safety risk. This mirrors the Firestore drawings block.
+    //
+    // WRITE: company_admin / project_manager only. QS is excluded — a QS
+    // measures from drawings but does not control what the site builds from.
+    //
+    // Only `get` is granted, never `list`: the register lives in Firestore, and
+    // nothing in the app enumerates Storage. 50 MB ceiling.
+    match /companies/{companyId}/projects/{projectId}/drawings/{drawingId}/{revisionId}/{fileName} {
+      allow get: if memberOf(companyId);
+
+      allow create: if memberOf(companyId)
+                    && hasRole(['company_admin', 'project_manager'])
+                    && validUpload(fileName, 52428800);
+
+      // No overwrite, no re-point, no removal — ever.
+      allow update, delete: if false;
+    }
+
+    // ── General project documents ────────────────────────────────────────────
+    //
+    // READ is gated on the Firestore metadata's `visibility`:
+    //   · internal roles (company_admin / project_manager / qs) read everything;
+    //   · everyone else reads an object only once its metadata document EXISTS
+    //     and says `visibility == 'project'`.
+    //
+    // The existence check is what closes the upload window: between the Storage
+    // write and the Firestore write there is no metadata, so a non-internal
+    // caller is denied. Fails closed.
+    //
+    // WRITE: company_admin / project_manager / qs. 25 MB ceiling.
+    match /companies/{companyId}/projects/{projectId}/documents/{documentId}/{fileName} {
+      function metadataRef() {
+        return /databases/(default)/documents/companies/$(companyId)/projects/$(projectId)/documents/$(documentId);
+      }
+
+      allow get: if memberOf(companyId)
+                 && (
+                      hasRole(['company_admin', 'project_manager', 'qs'])
+                      || (firestore.exists(metadataRef())
+                          && firestore.get(metadataRef()).data.visibility == 'project')
+                    );
+
+      allow create: if memberOf(companyId)
+                    && hasRole(['company_admin', 'project_manager', 'qs'])
+                    && validUpload(fileName, 26214400);
+
+      allow update, delete: if false;
+    }
+
+    // ── Catch-all deny ───────────────────────────────────────────────────────
+    //
+    // Storage rules grant access if ANY matching rule allows, so this never
+    // overrides the paths above — it is the explicit statement that every other
+    // location in the bucket (including a drawing object nested one folder too
+    // deep, or anything outside `companies/`) is denied to every client.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

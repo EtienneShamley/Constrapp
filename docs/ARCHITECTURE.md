@@ -57,13 +57,14 @@ modules** (screens exist, no functionality) are listed in the module-status tabl
 
 There is **no backend code**: no Cloud Functions, no server, no `functions/`
 directory, and no `.firebaserc`. (`frontend/firebase.json` exists, but declares
-only the Firestore emulator and the rules-file path for the automated Security
-Rules suite — no hosting and no functions target, and with no `.firebaserc` there
-is no project to deploy to.) The browser talks directly to
-Firebase Auth and Firestore; Storage is initialised in `lib/firebase.js` but not
-yet used by any feature. All business rules run client-side, backed only by
-Firestore security rules (see [SECURITY.md](SECURITY.md) for what that does and
-does not enforce). Cloud Functions and server-side enforcement are deliberate
+only the Firestore and Storage emulators and the two rules-file paths for the
+automated Security Rules suites — no hosting and no functions target, and with no
+`.firebaserc` there is no project to deploy to.) The browser talks directly to
+Firebase Auth, Firestore **and Cloud Storage**, which since the Documents &
+Drawings foundation carries real file bytes. All business rules run client-side,
+backed by **two** rules files — `firestore.rules` and `storage.rules` — which are
+the only trust boundaries (see [SECURITY.md](SECURITY.md) for what they do and do
+not enforce). Cloud Functions and server-side enforcement are deliberate
 deferrals — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md).
 
 A root-level `backend/` directory exists but is a **reserved, intentionally empty
@@ -77,12 +78,14 @@ that must be activated when that backend arrives are listed in
 
 ```
 frontend/                  The entire application (run all npm commands here)
-  firestore.rules          Security rules — published manually (see DEPLOYMENT.md)
-  firebase.json            Firestore EMULATOR + rules path only (no hosting/functions,
-                           no .firebaserc) — backs `npm run test:rules`
+  firestore.rules          Firestore security rules — published manually (see DEPLOYMENT.md)
+  storage.rules            Cloud Storage security rules — the SECOND trust boundary,
+                           also published manually
+  firebase.json            Firestore + Storage EMULATORS and both rules paths only
+                           (no hosting/functions, no .firebaserc) — backs `npm run test:rules`
   vitest.rules.config.js   Vitest config for the rules suite (Node, no app plugins)
   vitest.config.js         Vitest config for the UNIT suite (tests/unit/ only)
-  tests/rules/             Firestore Security Rules tests (emulator)
+  tests/rules/             Firestore AND Storage Security Rules tests (both emulators)
   tests/unit/              Unit tests for pure lib/ domain logic (no emulator)
   .env.example             Vite env vars (Firebase web config)
   src/
@@ -93,7 +96,9 @@ frontend/                  The entire application (run all npm commands here)
     layouts/               AppShell, Sidebar, TopBar, AuthLayout, ProjectDetailLayout,
                            ProjectCommercialLayout (Commercial sub-nav:
                            Margin | Client Invoices | Client Receipts |
-                           Supplier Payments | Cash Flow)
+                           Supplier Payments | Cash Flow),
+                           ProjectDocumentsLayout (Documents sub-nav:
+                           Drawings | General Documents)
     pages/                 Login, CreateAccount, ForgotPassword, Dashboard, Projects,
                            CompanySettings (country & base currency),
                            Contacts (company directory), Subcontractors (filtered
@@ -107,7 +112,14 @@ frontend/                  The entire application (run all npm commands here)
                            project/cashFlow/ (CashFlowChart, CombinedMonthlyTable,
                            LineEditorModal, LineVoidModal — page-local),
                            ProjectVariations, ProjectForecast,
-                           ProjectCommercial (margin), ProjectPlaceholder
+                           ProjectCommercial (margin),
+                           ProjectDrawings (register), ProjectDrawingDetail (route),
+                           ProjectGeneralDocuments,
+                           project/documents/ (DrawingViewer, RevisionUploadModal,
+                           RevisionHistoryTable, RevisionWithdrawModal,
+                           DrawingEditorModal, DocumentUploadModal,
+                           DocumentWithdrawModal, styles.js — page-local),
+                           ProjectPlaceholder
     hooks/                 All Firestore access (see below); projectCurrencyLock.js
                            stages the project currency ratchet inside a caller's
                            transaction so monetary writes and the lock are atomic
@@ -117,7 +129,9 @@ frontend/                  The entire application (run all npm commands here)
                            clientReceipts.js, supplierPayments.js, cashFlow.js
                            (pure monthly cash aggregation), cashFlowChart.js
                            (chart presentation transform — no arithmetic),
-                           variations.js, forecast.js, margin.js, contacts.js
+                           variations.js, forecast.js, margin.js, contacts.js,
+                           files.js (file types, size ceilings, deterministic
+                           Storage paths), drawings.js, projectDocuments.js
 docs/                      This documentation + design-reference assets
                            (Constrapp_v5.jsx prototype, screenshots, Word doc — do not move)
 AGENT.md / CLAUDE.md / README.md / PRODUCT.md / ROADMAP.md   (canonical root docs)
@@ -166,7 +180,12 @@ ProtectedRoute (redirects to /login when signed out)
    │       `commercial/supplier-payments` = Supplier Payments (cash paid),
    │       `commercial/cash-flow` = Cash Flow (ACTUAL recorded cash movement —
    │        read-only; forecast and charts are later branches))
-   │    boq | documents | photos | timeline | reports  (ProjectPlaceholder)
+   │    documents  (live)
+   │      (the `documents` route is a nested layout — index = the Drawings register,
+   │       `documents/drawings/:drawingId` = the drawing detail ROUTE (not a modal:
+   │        a drawing is linked to, shared and bookmarked),
+   │       `documents/general` = the General Documents register)
+   │    boq | photos | timeline | reports  (ProjectPlaceholder)
    ├─ /settings/company        Company country & base currency (company_admin writes)
    ├─ /contacts                Company-wide contact directory
    ├─ /subcontractors          Filtered contacts view (+ IQ™ placeholder card)
@@ -207,8 +226,9 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Dashboard | Partial — live project list; static KPI/chart data |
 | Contacts | Implemented (foundation) — company-wide directory; supplier picker on POs |
 | Subcontractors | Partial — filtered contacts view; IQ™ scoring is a placeholder |
+| Documents & Drawings | Implemented (foundation) — drawing masters + **immutable** revisions with a transactional current-revision pointer, revision history, current/superseded/withdrawn lifecycle, explicit succession on withdrawal, and a flat general-document register with project/internal visibility. Bytes in Cloud Storage, metadata in Firestore, **uploads Storage-first**; **no photos, DWG, markup, OCR, AI or takeoff** |
 | PULSE™, SHIELD™ | Placeholder screens |
-| BOQ, Documents, Photos, Timeline, Reports tabs | Placeholder (`ProjectPlaceholder`) |
+| BOQ, Photos, Timeline, Reports tabs | Placeholder (`ProjectPlaceholder`) |
 
 ## Hooks-Only Firestore Access
 
@@ -235,3 +255,14 @@ a pure consumer: it aggregates the adapters' cash rows (`cashInRows()` /
 position, source coverage, completeness, and the peak-funding trough. It holds
 no document shapes of its own beyond the timing-line vocabulary and is covered
 by the unit suite (`npm run test:unit`).
+
+**Cloud Storage follows the same discipline.** `hooks/useStorageUpload.jsx` is
+the only place the app writes file bytes or mints a download URL; pages never
+import `firebase/storage`. `lib/files.js` holds the pure half — allowed types,
+size ceilings, and the **deterministic storage paths** that Firestore Rules and
+Storage Rules each independently recompute — with `lib/drawings.js` and
+`lib/projectDocuments.js` holding the register vocabulary, lifecycle legality,
+validation and filtering. `hooks/useDrawings.jsx` owns drawing masters,
+`hooks/useDrawingRevisions.jsx` owns every write that moves a current-revision
+pointer (because each is one transaction spanning master and revisions), and
+`hooks/useProjectDocuments.jsx` owns the flat document register.

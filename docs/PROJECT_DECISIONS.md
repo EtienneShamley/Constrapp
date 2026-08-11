@@ -1286,3 +1286,240 @@ document-only read is the real contract, not an accident.
   role can still fabricate cash records by direct SDK call. What changed is that
   a user can no longer **grant themselves** that role, so the blast radius is
   now bounded by who is provisioned.
+
+## ADR-28: Documents & Drawings (master + immutable revisions; Storage-first uploads; path-is-authority Storage Rules; broad drawing reads)
+
+**Context.** Constrapp had no file storage at all. Every module before this one
+stored numbers and text; `attachments` arrays existed on two financial
+collections purely as reserved empty arrays. Drawings — the head of the
+commercial lifecycle (Drawing → Quantity → BOQ → …) — could not be held at all,
+and the Documents project tab was a placeholder.
+
+Two things made this branch different from every previous one:
+
+1. **It introduces a second trust boundary.** `firestore.rules` was the only
+   thing standing between a client and the data. Files live in Cloud Storage,
+   which has its own rules engine, its own semantics, and no knowledge of
+   Firestore documents unless explicitly asked.
+2. **It is the foundation a future takeoff module depends on.** Whatever
+   identity this branch establishes for "a specific issue of a specific sheet"
+   is the identity quantities will hang off for years.
+
+### Decision 1 — Master + immutable revisions, not a versioned document
+
+A drawing master (`…/projects/{projectId}/drawings/{drawingId}`) holds the
+stable identity of a sheet. Each issue is a separate, immutable document in a
+`revisions` subcollection. The master carries a POINTER to the authored current
+revision plus mirrored display fields (`currentRevisionCode`,
+`currentRevisionIssuedDate`) so a register row renders without reading the
+subcollection.
+
+**Why not one document with a version field.** Because a revision is not a
+newer state of the same thing — it is a different drawing that happens to share
+a number. A superseded revision must remain readable, downloadable and
+referenceable forever, precisely so that "what did we build from in March?" has
+an answer. Overwriting is exactly the failure mode a drawing register exists to
+prevent.
+
+**Immutability is enforced structurally, not by convention.** Every revision
+update branch in `firestore.rules` is restricted with
+`changedKeys().hasOnly([...])` to its own lifecycle stamps. `revisionCode`,
+`revisionSequence`, `revisionDate`, `notes`, `fileName`, `fileExt`, `fileSize`,
+`contentType` and `storagePath` are therefore unwritable after creation — not
+because no code writes them, but because no write can.
+
+**`revisionSequence` orders revisions; `revisionCode` never does.** Real-world
+codes ("A", "B", "P1", "C2", "1", "10") do not sort lexically into issue order,
+and a revision history in the wrong order actively misleads. The integer is
+assigned by the promotion transaction and rules force `revisionCount` to move by
+exactly +1, which is what keeps sequences dense and monotonic.
+
+### Decision 2 — A master is BORN EMPTY
+
+A newly created drawing has `currentRevisionId: null`, `currentRevisionCode: ''`
+and `revisionCount: 0`, and rules reject any other creation shape. The first
+revision is promoted afterwards by the same transaction that creates it.
+
+**Why.** Uploads fail. If creation could pre-declare a revision, a failed upload
+would leave a drawing advertising a revision whose bytes do not exist — and the
+register would lie in the one direction that matters. An honest "No revision"
+row costs nothing; a phantom current revision is a site-safety problem.
+
+### Decision 3 — Storage FIRST, Firestore SECOND, and orphans are accepted
+
+Bytes are uploaded before the Firestore record is written. The record is only
+created once the upload has genuinely succeeded, inside one transaction.
+
+**Why this order.** The two failure modes are not symmetrical. An orphaned
+Storage object is invisible, harmless and costs a few cents. A Firestore
+revision pointing at bytes that never arrived is a register entry that lies —
+and it lies while claiming to be the current issue.
+
+**Why orphans are not cleaned up.** Cleanup needs delete permission. A delete
+permission broad enough to remove an orphan is broad enough to destroy an issued
+drawing revision, and there is no trusted backend to hold a narrower one. So
+`update` and `delete` are denied on every Storage path, objects are
+**create-only**, and orphans simply remain. This is stated in the UI: a retry
+mints a NEW revision ID and uploads afresh, because the previous path can never
+be written twice.
+
+### Decision 4 — Concurrency ABORTS; it is never resolved automatically
+
+The promotion transaction re-reads the master and compares its
+`currentRevisionId` against `expectedCurrentRevisionId` — the pointer the UI was
+showing when the upload began. If they differ, the transaction throws
+*"Another user issued a revision while you were uploading. Review the drawing
+before re-issuing."* and promotes nothing.
+
+**Why not retry.** A retry would promote these bytes over a revision this user
+has never seen, silently superseding someone else's issue. Two revisions of a
+drawing are not interchangeable work items; the correct resolution requires a
+human to look at what the other person issued. The uploaded bytes are orphaned,
+which is the cheap half of the trade.
+
+### Decision 5 — Withdrawal forces an explicit succession decision
+
+Withdrawing a non-current revision touches only that revision. Withdrawing the
+**current** revision requires the user to either nominate an earlier
+non-withdrawn revision to reinstate, or state that there is no replacement —
+which withdraws the master and leaves it with no current revision. Both paths
+require a non-whitespace reason (rules-enforced). Nothing is ever hard-deleted.
+
+**Why the app never picks.** "The next one down" is an ordering, not a decision.
+Automatically reinstating Revision B because C was withdrawn asserts that B is
+safe to build from, which the software cannot know. Making the user say so is
+the entire point of a controlled register.
+
+**Withdrawal is terminal for masters.** There is no reactivation path: a
+recalled drawing cannot quietly return. Reissuing means a new drawing.
+
+### Decision 6 — Drawing reads are open to every provisioned company member
+
+`allow read: if companyMember()` — no role list. Subcontractor and client users
+read drawings and revisions. This is the **first project-scoped collection in
+the app with a membership-only read**; every financial collection gates on the
+three internal roles.
+
+**Why.** A drawing is operational site information. The failure mode of
+withholding it — someone building from a sheet they were not given, or from an
+old one they still have — is worse than the failure mode of over-sharing it. The
+asymmetry is deliberate and is the opposite of the financial collections'
+reasoning, where exposure is the risk.
+
+**Writes stay narrow.** Drawing writes are `company_admin` / `project_manager`
+only. **QS is deliberately excluded in this branch**: a QS measures from
+drawings but does not control which revision the site builds from. QS *does*
+have general-document write, because a QS owns contracts, subcontracts and
+specifications.
+
+**⚠️ The honest limit.** Membership is COMPANY-WIDE, not project-specific. A
+provisioned member reads the drawings of every project in their company. Per-
+project membership is a membership redesign and is deferred — see SECURITY.md →
+Deferred Control 18. A rules test asserts this limitation rather than leaving it
+implicit.
+
+### Decision 7 — The path is the authority in Storage Rules
+
+Object paths are deterministic and company-namespaced, built from Firestore
+document IDs:
+
+```
+companies/{companyId}/projects/{projectId}/drawings/{drawingId}/{revisionId}/original.{ext}
+companies/{companyId}/projects/{projectId}/documents/{documentId}/original.{ext}
+```
+
+The uploaded filename is **never** object identity — it is kept in Firestore
+metadata only. `customMetadata` is **never** consulted for authorisation: it is
+caller-supplied and therefore worthless as a control.
+
+**Why the filename cannot be identity.** A user-supplied name is not unique, not
+stable, not safe to interpolate into a rules path, and would let a caller choose
+where their object lands. Naming every object `original.{ext}` inside an
+ID-derived folder makes the path fully predictable from both sides — which is
+what lets `firestore.rules` require an EXACT `storagePath` string and
+`storage.rules` recompute the same expectation independently. A revision can
+therefore never point at another tenant's bytes, another drawing's bytes, or a
+name of the caller's choosing.
+
+**Download URLs are never persisted.** `getDownloadURL()` returns a bearer link;
+writing one into Firestore would turn a rules-protected drawing into a public
+link the moment that document is read. URLs are minted on demand and discarded.
+
+### Decision 8 — General documents are flat, with no revision spine
+
+`…/projects/{projectId}/documents/{documentId}`: ten flat categories, no
+folders, no revision subcollection. A replacement is a NEW record; the old one
+becomes `superseded` with a `supersededByDocumentId` forward link, committed in
+the same transaction. Both files are preserved.
+
+**Why not reuse the drawing model.** Drawings need a revision spine because the
+site builds from a specific issue and getting it wrong is dangerous. A
+specification does not carry that risk, and the extra structure would buy
+complexity rather than safety.
+
+**Why no folders.** A folder tree invites per-folder permissions, which is a
+membership redesign this branch explicitly excludes. Visibility is a two-value
+field (`project` / `internal`) instead, defaulting to `project` — a wrongly
+hidden safety document is the more dangerous mistake.
+
+**⚠️ Rules are not filters.** Firestore evaluates a read rule against every
+document a query returns and fails the whole query if any document is denied.
+One `internal` document therefore breaks an UNFILTERED collection query for a
+subcontractor. `useProjectDocuments.jsx` subscribes with
+`where('visibility','==','project')` for non-internal roles — a **query
+requirement, not a security control**. Ordering is applied client-side so the
+filter needs no composite index. A rules test asserts both halves.
+
+### Decision 9 — Reserved takeoff fields stay empty, and rules keep them empty
+
+`pageCount` is `null` and `sheetSize` is `''` on every revision, and rules
+reject any other value at create and at update.
+
+**Why store them at all.** They mark the shape a future takeoff module will
+need. **Why refuse to populate them.** Nothing in this branch counts pages or
+reads a sheet size, so any value would be fabricated metadata in a permanent
+record. Populating them later is a deliberate rules change — which is the point.
+
+**The future takeoff identity is `{ drawingId, revisionId, page }`** — never
+`drawingNumber` (correctable), never `master.currentRevisionId` (moves by
+design), never the filename (user text). Both IDs are random Firestore IDs and
+immutable.
+
+### Decision 10 — One test command, both trust boundaries
+
+`firebase.json` gains a `storage` rules pointer and a storage emulator (port
+9199), and `npm run test:rules` now runs `--only firestore,storage`. No new
+dependency: `@firebase/rules-unit-testing` and `firebase-tools` were already
+devDependencies.
+
+**Why one command.** A separate command for Storage Rules is a command that
+eventually stops being run. Both boundaries are now proven by the same gate:
+Firestore 344 tests, Storage 46, **390 combined** (from 207).
+
+**Consequences.**
+
+- **Two trust boundaries now exist, and both are tested.** Storage Rules enforce
+  tenant/path isolation, membership, writer role, allowed content type, the
+  exact `original.{ext}` object name, the size ceiling (50 MB drawings / 25 MB
+  documents), non-zero size, create-only semantics, a `firestore.get()`
+  visibility check for documents, and a catch-all deny.
+- **The document read window fails CLOSED.** Because uploads are Storage-first,
+  a document object exists briefly with no metadata. Non-internal roles are
+  denied for that window, since visibility is not yet knowable.
+- **No financial file was touched.** No financial collection, hook, lib, page or
+  rules block changed. The `attachments` arrays on `clientReceipts` and
+  `supplierPayments` remain reserved and empty.
+- **Lint held at its accepted 17 errors / 0 warnings**; unit tests 173 → 301.
+- **Known limits that rules cannot close** (client/business-only, never to be
+  described as enforced): drawingNumber and revisionCode uniqueness;
+  exactly-one-current-revision against a direct SDK sibling write;
+  `currentRevisionId` existence, since it is created in the same transaction
+  where a rules `exists()` would evaluate pre-transaction state; whether real
+  bytes match the declared content type and size; a reinstatement that also
+  increments `revisionCount`, which is indistinguishable from a promotion;
+  project-specific membership; and malware/AV scanning. Each has a test in
+  `tests/rules/` asserting the gap, so closing one later fails loudly.
+- **Cloud Storage must be enabled in the Firebase console before any of this
+  works in production**, and `storage.rules` must be published in the same pass
+  — the default template Google offers is far more permissive than this file.
+  See docs/DEPLOYMENT.md.
