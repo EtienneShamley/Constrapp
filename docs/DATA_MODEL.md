@@ -39,6 +39,17 @@ label for amounts entered in it, never a conversion instruction.
 
 Document ID = Firebase Auth UID. Created manually today (no signup/invite flow).
 
+**Client-read-only (ADR-27).** A user may read their own profile; `create`,
+`update` and `delete` are **all blocked by rules**. No field below is writable
+from the browser — not even `name` or `avatarInitials` — because no application
+code writes this document (the only `users/` reference in `frontend/src` is the
+read in `hooks/useProfile.jsx`). Profiles are **provisioned out of band**
+(Firebase console / admin tooling, whose admin credentials bypass rules).
+`role` and `companyId` are the fields every other rule in the file `get()`s to
+authorise a request, which is why the whole document is closed rather than
+partially allow-listed. Any future signup, invitation, or user-administration
+flow must issue membership from a **trusted backend**, never from the client.
+
 | Field | Type | Notes |
 |---|---|---|
 | `name` | string | Preferred over Auth displayName in the UI |

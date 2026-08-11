@@ -1209,3 +1209,80 @@ is not rendered at all when there is no cash-flow data — the page's existing
 empty state stands rather than being covered by an empty chart frame. **Date
 filtering, chart export, chart-based editing and drag-to-retime are out of scope
 and remain unbuilt.**
+
+## ADR-27: `users/{uid}` is client-read-only (membership provisioned out of band)
+
+**Context.** The membership document carried the only rule that granted a client
+write access to its own authorisation data:
+
+```
+match /users/{uid} {
+  allow read, write: if request.auth != null && request.auth.uid == uid;
+}
+```
+
+`write` expands to `create` + `update` + `delete`, and the rule constrained no
+field. Every other block in `firestore.rules` authorises by `get()`-ing this
+document and reading `companyId` (the multi-tenancy anchor) and `role` (every
+write gate), so one direct SDK call allowed **self-promotion** to
+`company_admin` — granting every financial write and every financial-role read —
+and **tenant escape** by rewriting `companyId` to another company. It also
+allowed a bare Auth account to **mint its own membership** with any company and
+role, **self-deletion** (orphaning the user against every rule), and the
+pre-seeding of **arbitrary privilege-bearing fields**. This capped every other
+control in the system: no role restriction is stronger than the ability to
+assign yourself a role.
+
+**Decision.** `users/{uid}` becomes **client-read-only**. A user may read their
+own profile; `create`, `update` and `delete` are all blocked outright.
+Provisioning stays **out of band** — Firebase console or admin tooling using
+admin credentials, which bypass rules entirely.
+
+**Why no harmless-field allow-list.** A `hasOnly(['name', 'avatarInitials'])`
+update grant was considered and rejected. Repository evidence is unambiguous:
+the only `users/` reference in `frontend/src` is the **read** in
+`hooks/useProfile.jsx`; there is no profile route, no profile form, no
+`updateProfile` call, and the Create Account and Forgot Password screens are
+static stubs. An allow-list would authorise a caller that does not exist and
+require a test asserting a capability with no user. `hasOnly` is the right tool
+where a genuine editable surface exists — which is exactly why it guards the
+company document's four currency fields, written by a real `saveCompanyCurrency`
+caller. Blocking writes outright is also **structurally** complete: an
+allow-list must be maintained as fields are added and fails open when someone
+forgets, whereas `if false` cannot drift.
+
+**Why `create` is blocked too.** Nothing in the client creates a profile, so
+blocking create removes no behaviour. Permitting it would make a Firebase Auth
+account alone sufficient to choose one's own company and role — the Firestore
+document would be self-service rather than a second gate.
+
+**Why the read scope was not widened.** The app never reads another user's
+profile: `ProjectForecast.jsx` and `ProjectCommercial.jsx` deliberately render
+the literal string `'Another user'` for any uid that is not the caller. Own-
+document-only read is the real contract, not an accident.
+
+**Consequences.**
+
+- **Zero application-code change.** No file under `frontend/src` was touched;
+  the diff is one rules block, one new test suite, and documentation. Lint
+  stayed at its accepted 17 errors / 0 warnings and the unit suite at 173.
+- **The other ~40 `get(/…/users/$(request.auth.uid))` lookups are unaffected.**
+  Rules-internal `get()`/`exists()` **bypass** Security Rules and are not
+  subject to the `users/{uid}` match block. Three non-regression tests prove
+  this rather than assuming it.
+- **`users/{uid}` gains its first rules suite** — 26 tests, previously the only
+  collection in the file with none, despite being the most security-critical.
+- **Signup, invitations, and user administration now require a trusted
+  backend.** Membership must be issued via the Admin SDK, never from the
+  browser. This is the intended outcome, not a regression — see SECURITY.md →
+  Trusted-Backend Activation Requirement 3 and ADR-14.
+- **Admin management of other users was deliberately not introduced.**
+  `company_admin` has no special power over this collection; a rules test
+  asserts it.
+- **This prevents future tampering; it does not revert past tampering.** Any
+  `role`/`companyId` already stored remains authoritative and must be reviewed
+  directly in the Firebase console before the rules are published.
+- **Deferred Control 17 is not solved.** A user *provisioned into* a financial
+  role can still fabricate cash records by direct SDK call. What changed is that
+  a user can no longer **grant themselves** that role, so the blast radius is
+  now bounded by who is provisioned.

@@ -2,9 +2,48 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Each user may read and write their own profile document only
+    // Membership documents — a user may READ THEIR OWN PROFILE AND NOTHING ELSE.
+    //
+    // ⚠️ ALL CLIENT WRITES ARE BLOCKED. This is the most security-critical
+    // document in the database: every other block in this file authorises by
+    // `get()`-ing it and reading `companyId` (the multi-tenancy anchor) and
+    // `role` (every write gate). A client-writable profile therefore means
+    // SELF-PROMOTION (`role: 'company_admin'` grants every write and every
+    // financial-role read) and TENANT ESCAPE (`companyId` grants access to
+    // another company's entire dataset). `write` also expands to `delete`,
+    // which would let a user orphan themselves against every rule here.
+    //
+    // Blocking writes removes attack surface WITHOUT removing behaviour: no
+    // hook, page, or component writes this document. The only `users/`
+    // reference in frontend/src is the READ in hooks/useProfile.jsx, and the
+    // app never reads another user's profile (ProjectForecast.jsx and
+    // ProjectCommercial.jsx render the literal 'Another user' instead).
+    //
+    // CREATE is blocked too. Profiles are provisioned OUT OF BAND (Firebase
+    // console / admin tooling using admin credentials, which bypass rules
+    // entirely). Opening `create` would make a Firebase Auth account alone
+    // sufficient to mint a membership with any company and any role — the
+    // Firestore document would be self-service rather than a second gate.
+    //
+    // There is deliberately NO harmless-field allow-list
+    // (`hasOnly(['name', 'avatarInitials'])`). That pattern belongs where a
+    // genuine editable surface exists — as on the company document below,
+    // where saveCompanyCurrency really does write four fields. No
+    // profile-editing feature exists, so an allow-list would authorise a
+    // caller that does not exist. If profile editing is built later, adding a
+    // narrowly-scoped `update` is a small change with its own security review.
+    //
+    // Admin management of OTHER users is deliberately NOT introduced here:
+    // `company_admin` has no special power over this collection. That needs
+    // invites/user management and a trusted backend (docs/SECURITY.md →
+    // Trusted-Backend Activation Requirements 3).
+    //
+    // What this does NOT do: it prevents FUTURE tampering, it does not revert
+    // PAST tampering. Any role/companyId already stored stays authoritative.
+    // See docs/SECURITY.md → Deferred Control 8 and ADR-27.
     match /users/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow create, update, delete: if false;
     }
 
     // Users may read the company they belong to.

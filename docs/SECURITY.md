@@ -31,10 +31,19 @@ the data is the rules file.
   by `get()`-ing that document and comparing its `companyId` to the path.
 - **Firebase Auth custom claims are NOT implemented.** No rule or UI guard reads
   `request.auth.token.role`/`companyId`. Any doc that says otherwise is stale.
-- Users can read **and write** their own `users/{uid}` document. Since rules
-  trust that document's `role` and `companyId`, a user can currently edit their
-  own role/company — acceptable only while users are provisioned by hand
-  (see Deferred Controls).
+- Users can read their own `users/{uid}` document and **nothing else**. **Every
+  client write to `users/{uid}` is blocked — `create`, `update` and `delete`
+  alike.** Because rules trust that document's `role` and `companyId`, a
+  client-writable profile meant self-promotion and cross-tenant access; the
+  document is now **client-read-only** (ADR-27). Profiles are **provisioned out
+  of band** — Firebase console or admin tooling, using admin credentials, which
+  bypass rules entirely. There is deliberately **no harmless-field allow-list**
+  (no profile-editing feature exists to need one) and **no admin management of
+  other users** (`company_admin` has no special power over this collection).
+  Automated coverage: `frontend/tests/rules/users.rules.test.js`.
+- **This prevents future tampering; it does not revert past tampering.** Any
+  `role`/`companyId` already stored remains authoritative — see Deferred
+  Control 8.
 - Client route protection: `ProtectedRoute` redirects signed-out users to
   `/login`; `AuthLayout` redirects signed-in users into the app. There is no
   per-role UI gating yet.
@@ -49,7 +58,7 @@ to financial roles.**
 
 | Path | Read | Create/Update | Delete |
 |---|---|---|---|
-| `users/{uid}` | own doc only | own doc only | own doc (write includes delete) |
+| `users/{uid}` | own doc only | **blocked** — client-read-only; provisioned out of band | **blocked** |
 | `companies/{companyId}` | company member | **`company_admin`, four currency fields only** (`countryCode`, `baseCurrency`, `currencyUpdatedAt`, `currencyUpdatedBy`); create blocked | blocked |
 | `…/projects/{id}` | company member | `company_admin`, `project_manager`; **`qs`: `currencyLocked` false→true only** | blocked |
 | `…/costCodes/{id}` | company member | financial roles | blocked — deactivate via `isActive` |
@@ -479,6 +488,11 @@ coarser model:
 The fine-grained per-module access matrix in PRODUCT.md is product intent, not
 implementation.
 
+Since ADR-27 the enforced `role` in that table is **settable only out of band**:
+`users/{uid}` is client-read-only, so no user can move themselves between the
+rows above. That is what makes the table meaningful — previously any user could
+place themselves in any row with a single write.
+
 ## Deferred Controls
 
 These are known gaps, deliberately deferred (client-side checks exist in the
@@ -515,8 +529,27 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
    Contacts additionally carry `updatedAt`/`updatedBy`, but last-write only —
    no field-level change history (contacts feed payment flows later, so this
    joins the audit-logging remediation).
-8. **Self-managed profile** — as above, users can write their own `role`/
-   `companyId`; needs locking down once invites/user management exist.
+8. **Profile provisioning depends on out-of-band trust** — ⚠️ **The
+   self-modification half of this control is CLOSED (ADR-27).** `users/{uid}`
+   is now **client-read-only**: `create`, `update` and `delete` are all
+   blocked by rules, so a user can no longer promote their own `role`, move
+   their own `companyId` to another tenant, mint their own membership, add a
+   privilege-bearing field, or delete their membership document. Proven by
+   `frontend/tests/rules/users.rules.test.js`.
+   **What remains deferred** is the provisioning path itself: membership
+   documents are created **by hand** (Firebase console / admin tooling, using
+   admin credentials that bypass rules), so the security of every `role` and
+   `companyId` rests on whoever performs that step. There is no invite flow,
+   no user-management UI, and no self-serve signup — and **none of them can be
+   built on client-side membership creation.** Any future signup, invitation,
+   or user administration must issue membership from a **trusted backend**
+   (Admin SDK), never from the browser; see Trusted-Backend Activation
+   Requirement 3 and ADR-14.
+   **Two limits to state plainly:** the rule prevents *future* tampering and
+   does **not** revert *past* tampering — any `role`/`companyId` already stored
+   stays authoritative and should be reviewed directly in the console; and a
+   user *provisioned into* a financial role retains every capability that role
+   confers (see Deferred Control 17, which this does **not** solve).
 9. **Contact, supplier-invoice & variation uniqueness** — duplicate detection
    (contacts: ABN/email/name; supplier invoices: `supplierId`/`supplierName` +
    `supplierInvoiceNumber`; variations: counterparty + external reference) is a
@@ -587,13 +620,21 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
 17. **Falsified cash records — both directions** — a financial-role user can
     create and post a **receipt** (cash in) or a **supplier payment** (cash out)
     for any amount by direct SDK call. Rules validate shape, lifecycle, and
-    arithmetic; they cannot validate that money was received or paid. Combined
-    with Deferred Control 8 (users can write their own `role`), **these
-    foundations widen the blast radius of that gap from reading data to
-    fabricating cash records in both directions** — and fabricated cash out is
-    the more damaging of the two, because it can be used to assert that a
-    supplier was paid when it was not. Remediation is server-side enforcement
-    plus audit logging.
+    arithmetic; they cannot validate that money was received or paid.
+    Fabricated cash out is the more damaging of the two, because it can be used
+    to assert that a supplier was paid when it was not. Remediation is
+    server-side enforcement plus audit logging.
+    **⚠️ This control is NOT solved by ADR-27, and the escalation path it used
+    to describe has narrowed rather than closed.** This entry previously read
+    that, combined with Deferred Control 8, any user could *write their own
+    `role`* and so escalate from reading data to fabricating cash records.
+    That specific escalation is now blocked: `users/{uid}` is client-read-only,
+    so **a user can no longer grant themselves a financial role.** What remains
+    is the original gap — a user **provisioned into** `company_admin`,
+    `project_manager`, or `qs` can still create and post fabricated receipts
+    and payments by direct SDK call, because no rule can verify that money
+    moved. The blast radius is now bounded by who is provisioned, which is
+    itself an out-of-band trust decision (Deferred Control 8).
 18. **Supplier-payment allocation integrity & concurrency** — the AP twin of
     Deferred Control 16. Firestore rules enforce the *scalar* invariant
     (`allocatedTotal + unallocatedAmount == amount`, in whole cents) but
@@ -722,8 +763,13 @@ place before any non-hand-provisioned (external) users are onboarded — see
    records (plus known-code validation of country/currency)** — all moved
    server-side (the Deferred Controls above, promoted to hard gates).
 3. **Authentication hardening** — Firebase Auth custom claims for role/company,
-   invites and user management, self-serve signup and password reset, and
-   locking down self-managed `role`/`companyId`.
+   invites and user management, and self-serve signup and password reset.
+   ✅ **Locking down self-managed `role`/`companyId` is DONE** — `users/{uid}`
+   is client-read-only as of ADR-27. The rest of this item stands, and note the
+   dependency it creates: because client-side membership creation is now
+   blocked, **signup, invitations, and user administration cannot be built
+   without this trusted backend** — membership must be issued via the Admin
+   SDK, never from the browser.
 4. **Rate limiting** on all write/mutating endpoints and auth flows.
 5. **Server-side input validation and explicit API schemas** — the client
    validation is convenience only; the server is authoritative.

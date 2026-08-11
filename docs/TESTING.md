@@ -33,7 +33,25 @@ That script runs
   upgrade `firebase-tools`, you must also install JDK 21+.
 - Config: `frontend/firebase.json` (emulator + rules pointer only — no hosting,
   no functions, and **no `.firebaserc`**, so nothing can be deployed).
-- Tests — **181 in total across 4 files**:
+- Tests — **207 in total across 5 files**:
+  - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
+    `users/{uid}` membership document (ADR-27): own-profile read succeeds;
+    same-company, cross-company, unauthenticated and `company_admin` reads of
+    **another** profile are denied; every update is denied (`role`
+    self-promotion, any role-to-role change, `companyId` change, the two
+    combined, a role change smuggled alongside a harmless field, `name`-only,
+    `avatarInitials`-only, `email`-only, an arbitrary `isSuperAdmin` field, a
+    `companyIds` field, an identical-data rewrite, and another user's
+    document); every create is denied (own missing profile, elevated role,
+    cross-company, another user's document); both deletes are denied. Three
+    **non-regression** tests prove membership authorisation still works — a
+    seeded `company_admin` still passes a role-authorised financial write, a
+    seeded `subcontractor` still fails it, and an authenticated user with **no**
+    membership document is denied company-scoped access. That trio is what
+    demonstrates rules-internal `get()` **bypasses** Security Rules, so
+    tightening this block cannot break the other ~40 lookups.
+    Unlike the suites below it constrains **no timestamp field**, so the
+    skewed-clock rule in the note further down does not apply to it.
   - `frontend/tests/rules/clientInvoices.rules.test.js` — **30 tests** covering
     every case in §15i-x below.
   - `frontend/tests/rules/clientReceipts.rules.test.js` — **46 tests** covering
@@ -44,9 +62,10 @@ That script runs
     every case in §15m-x below. It also asserts the two documented
     **client-only** gaps: a PAST `monthKey` and an unknown `sourceType` of valid
     shape are both ACCEPTED by rules.
-  - All three run for `company_admin`, `project_manager`, `qs`, `subcontractor`,
+  - All five run for `company_admin`, `project_manager`, `qs`, `subcontractor`,
     `client`, an unauthenticated caller, and a financial-role user in a **second
-    company**.
+    company**. The users suite adds a sixth identity: an authenticated caller
+    with **no** `users/{uid}` document at all (the orphan case).
 - **Run this before publishing any rules change** (see
   [DEPLOYMENT.md](DEPLOYMENT.md)).
 
@@ -66,7 +85,9 @@ That script runs
 > write **stored state** with rules disabled and assert nothing.
 
 §15i-x, §15j-x, and §15k-x below remain the human-readable specification of what
-those tests assert; the other manual sections are not automated.
+those tests assert; the other manual sections are not automated. The users suite
+is self-describing and has no manual counterpart — `users/{uid}` has no UI, so
+there is nothing to click through: the rules ARE the feature.
 
 ## 0b. Unit tests — pure `lib/` domain logic (no emulator)
 
@@ -1727,6 +1748,10 @@ Firestore Security Rules are the only trust boundary — these checks confirm th
   invoices, variations, budget lines, cost codes, contacts, counters, forecast
   lines, commercial baseline) — cancellation/rejection/archive is always a
   status/`isActive` change (the baseline is edited in place).
+- [ ] **`users/{uid}` cannot be written at all** — no client can change its own
+  `role` or `companyId` (nor `name`/`avatarInitials`/`email`), create a
+  membership document, or delete one. **AUTOMATED — see §0**; the users suite
+  proves every case, so this needs no manual pass.
 
 ### 17d. Client-only controls are *not* a security boundary (known gaps)
 
