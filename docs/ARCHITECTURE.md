@@ -107,7 +107,12 @@ frontend/                  The entire application (run all npm commands here)
                            project/cashFlow/ (CashFlowChart, CombinedMonthlyTable,
                            LineEditorModal, LineVoidModal — page-local),
                            ProjectVariations, ProjectForecast,
-                           ProjectCommercial (margin), ProjectPlaceholder
+                           ProjectCommercial (margin),
+                           ProjectTimeline (project programme),
+                           project/timeline/ (TimelineGantt, ActivityTable,
+                           ActivityCards, ActivityEditorModal,
+                           ActivityCancelModal — page-local),
+                           ProjectPlaceholder
     hooks/                 All Firestore access (see below); projectCurrencyLock.js
                            stages the project currency ratchet inside a caller's
                            transaction so monetary writes and the lock are atomic
@@ -117,7 +122,9 @@ frontend/                  The entire application (run all npm commands here)
                            clientReceipts.js, supplierPayments.js, cashFlow.js
                            (pure monthly cash aggregation), cashFlowChart.js
                            (chart presentation transform — no arithmetic),
-                           variations.js, forecast.js, margin.js, contacts.js
+                           variations.js, forecast.js, margin.js, contacts.js,
+                           projectTimeline.js (programme domain logic — NON-financial),
+                           timelineGantt.js (Gantt geometry — no arithmetic)
 docs/                      This documentation + design-reference assets
                            (Constrapp_v5.jsx prototype, screenshots, Word doc — do not move)
 AGENT.md / CLAUDE.md / README.md / PRODUCT.md / ROADMAP.md   (canonical root docs)
@@ -144,7 +151,7 @@ ProjectsProvider), `useCostCodes()`, `useContacts()`, `useBudgetLines(projectId)
 `useSupplierInvoices(projectId)`, `useClientInvoices(projectId)`,
 `useClientReceipts(projectId)`, `useSupplierPayments(projectId)`,
 `useVariations(projectId)`, `useForecastLines(projectId)`,
-`useProjectCommercial(projectId)`.
+`useProjectCommercial(projectId)`, `useProjectActivities(projectId)`.
 
 ## Routing Structure
 
@@ -166,7 +173,11 @@ ProtectedRoute (redirects to /login when signed out)
    │       `commercial/supplier-payments` = Supplier Payments (cash paid),
    │       `commercial/cash-flow` = Cash Flow (ACTUAL recorded cash movement —
    │        read-only; forecast and charts are later branches))
-   │    boq | documents | photos | timeline | reports  (ProjectPlaceholder)
+   │    timeline  (live — the project PROGRAMME: activities, milestones,
+   │      responsibility, manually entered progress, read-only Gantt.
+   │      Read: company_admin/project_manager/qs; write: company_admin/
+   │      project_manager only. Writes no financial document.)
+   │    boq | documents | photos | reports  (ProjectPlaceholder)
    ├─ /settings/company        Company country & base currency (company_admin writes)
    ├─ /contacts                Company-wide contact directory
    ├─ /subcontractors          Filtered contacts view (+ IQ™ placeholder card)
@@ -208,7 +219,8 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Contacts | Implemented (foundation) — company-wide directory; supplier picker on POs |
 | Subcontractors | Partial — filtered contacts view; IQ™ scoring is a placeholder |
 | PULSE™, SHIELD™ | Placeholder screens |
-| BOQ, Documents, Photos, Timeline, Reports tabs | Placeholder (`ProjectPlaceholder`) |
+| Project Timeline (programme) | Implemented (foundation) — activities + milestones, date-only planned/actual dates, manual progress, read-time overdue/horizon derivation, read-only CSS/SVG Gantt (no new dependency), cancel-not-delete; **`qs` is read-only**, subcontractor/client denied; **no baseline, no dependencies, no financial effect** |
+| BOQ, Documents, Photos, Reports tabs | Placeholder (`ProjectPlaceholder`) |
 
 ## Hooks-Only Firestore Access
 

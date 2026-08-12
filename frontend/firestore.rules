@@ -952,6 +952,233 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Project Timeline activities — the project programme (ADR-29).
+    //
+    // An activity is a PLANNING record, not a financial document: it holds no
+    // money, no currency, no counter and no sequential number, and it writes
+    // NOTHING to Forecast, Cash Flow, Margin, Progress Claims, Budget Lines, or
+    // projects/{projectId}.progress. The optional costCodeId + frozen
+    // costCodeName are the commercial spine link ONLY — a join key a future
+    // read-time "delay → forecast impact" derivation can use. No figure here
+    // ever reaches a financial figure.
+    //
+    // Reads: company_admin, project_manager AND qs — the QS needs the programme
+    // for commercial context.
+    // Create/update: company_admin and project_manager ONLY. Programme
+    // authorship is operational PM/admin responsibility, so QS IS READ-ONLY
+    // here — the one place its access is narrower than the other financial
+    // roles.
+    // subcontractor and client are DENIED entirely: those roles are not scoped
+    // to their own projects (docs/SECURITY.md → Deferred Control 5/10), so a
+    // read grant would expose EVERY programme in the company. Sharing a
+    // programme externally is a client-portal feature with its own scoping
+    // design, not a flag on this document.
+    // Delete: blocked — cancelling is a status change; a cancelled activity is
+    // retained programme history.
+    //
+    // ⚠️ LIFECYCLE IS DELIBERATELY NOT FORWARD-ONLY — an explicit departure
+    // from ADR-11. Financial lifecycles are forward-only because those
+    // documents are an audit record; a programme is a PLAN, so an activity
+    // ticked complete by mistake, or reopened for a defect, must be
+    // correctable. Any non-cancelled status may move to any other
+    // non-cancelled status, INCLUDING BACKWARDS. Only `cancelled` is terminal,
+    // and it is reachable only through its own branch below (reason + audit
+    // stamps required), never through an ordinary edit.
+    //
+    // `status` is validated as a closed literal set — the same justified
+    // exception as `direction`/`basis` on cashFlowLines: five values that
+    // structurally determine whether an activity counts as outstanding work.
+    //
+    // What is NOT enforced here (CLIENT-SIDE ONLY — never describe as
+    // enforced; docs/SECURITY.md → Deferred Control 20):
+    //   · that responsibleContactId names a real contact in this company, or
+    //     that responsibleName matches it — rules have no list/query and the
+    //     name is a frozen snapshot by design
+    //   · that costCodeId names a real cost code in this company
+    //   · that percentComplete reflects physical progress — it is a manually
+    //     authored, unverifiable assertion
+    //   · that actual dates reflect what happened on site, or are plausible
+    //     against the planned dates
+    //   · that a date is a REAL calendar date — the regex accepts 2026-02-30
+    //     and 2026-04-31 (rules have no calendar); the client rejects them
+    //   · sortOrder uniqueness — rules have no query or count, and concurrent
+    //     creation can tie (the app breaks ties deterministically instead)
+    //   · that a BACKWARDS status transition is legitimate rather than a
+    //     cover-up — permitting correction is the deliberate design
+    //   · freedom from dependency cycles — no dependency model exists in V1
+    //   · concurrent edits: this collection is LAST-WRITE-WINS. Two users
+    //     editing one activity will overwrite each other, including fields the
+    //     second never looked at. There is no revision compare-and-set.
+    match /companies/{companyId}/projects/{projectId}/activities/{activityId} {
+      function memberRole() {
+        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+      }
+      function sameCompany() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
+      }
+      // Read audience — includes qs.
+      function programmeReader() {
+        return sameCompany() && memberRole() in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Write audience — deliberately EXCLUDES qs.
+      function programmeWriter() {
+        return sameCompany() && memberRole() in ['company_admin', 'project_manager'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // The document identity that no update of any kind may rewrite.
+      function corePreserved() {
+        return request.resource.data.createdAt == resource.data.createdAt
+            && request.resource.data.createdBy == resource.data.createdBy
+            && request.resource.data.revision  == resource.data.revision;
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // EXACT shape — hasOnly + hasAll together mean no field may be added,
+      // renamed, or omitted. Pre-seeding an arbitrary privilege-bearing field
+      // is the lesson of ADR-27.
+      function exactKeys() {
+        return request.resource.data.keys().hasOnly([
+                 'name', 'description', 'isMilestone', 'status',
+                 'plannedStart', 'plannedFinish', 'actualStart', 'actualFinish',
+                 'percentComplete', 'responsibleContactId', 'responsibleName',
+                 'costCodeId', 'costCodeName', 'sortOrder', 'notes',
+                 'cancelReason', 'cancelledAt', 'cancelledBy',
+                 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+               ])
+            && request.resource.data.keys().hasAll([
+                 'name', 'description', 'isMilestone', 'status',
+                 'plannedStart', 'plannedFinish', 'actualStart', 'actualFinish',
+                 'percentComplete', 'responsibleContactId', 'responsibleName',
+                 'costCodeId', 'costCodeName', 'sortOrder', 'notes',
+                 'cancelReason', 'cancelledAt', 'cancelledBy',
+                 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+               ]);
+      }
+      function isIsoDate(v) {
+        return v is string
+            && v.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$');
+      }
+      // Shape required of every stored NON-CANCELLED state (create and edit).
+      function shapeValid() {
+        return exactKeys()
+            && request.resource.data.revision == 1
+            && request.resource.data.name is string
+            && request.resource.data.name.trim().size() > 0
+            && request.resource.data.name.size() <= 120
+            && request.resource.data.description is string
+            && request.resource.data.description.size() <= 500
+            && request.resource.data.notes is string
+            && request.resource.data.notes.size() <= 500
+            && request.resource.data.isMilestone is bool
+            // Closed status set; `cancelled` is reachable only via the branch
+            // below, so it is excluded from every ordinary write.
+            && request.resource.data.status in ['not_started', 'in_progress', 'on_hold', 'completed']
+            // Programme dates are DATE-ONLY strings. The finish is INCLUSIVE,
+            // and string comparison is exact for zero-padded ISO.
+            && isIsoDate(request.resource.data.plannedStart)
+            && isIsoDate(request.resource.data.plannedFinish)
+            && request.resource.data.plannedFinish >= request.resource.data.plannedStart
+            // A milestone is a point in time, not a one-day activity.
+            && (!request.resource.data.isMilestone
+                || request.resource.data.plannedFinish == request.resource.data.plannedStart)
+            && (request.resource.data.actualStart == null
+                || isIsoDate(request.resource.data.actualStart))
+            && (request.resource.data.actualFinish == null
+                || isIsoDate(request.resource.data.actualFinish))
+            && (request.resource.data.actualStart == null
+                || request.resource.data.actualFinish == null
+                || request.resource.data.actualFinish >= request.resource.data.actualStart)
+            // Manually authored progress — bounded whole percent.
+            && request.resource.data.percentComplete is int
+            && request.resource.data.percentComplete >= 0
+            && request.resource.data.percentComplete <= 100
+            && (!request.resource.data.isMilestone
+                || request.resource.data.percentComplete == 0
+                || request.resource.data.percentComplete == 100)
+            // Status invariants — status, progress and actual dates may not
+            // contradict each other.
+            && (request.resource.data.status != 'not_started'
+                || (request.resource.data.percentComplete == 0
+                    && request.resource.data.actualStart == null
+                    && request.resource.data.actualFinish == null))
+            && (request.resource.data.status != 'in_progress'
+                || request.resource.data.actualStart != null)
+            && (request.resource.data.status != 'completed'
+                || (request.resource.data.percentComplete == 100
+                    && request.resource.data.actualFinish != null))
+            // Responsible party: a Contacts link with a FROZEN name snapshot —
+            // both null/'' together, or both real together. Never a user
+            // account: users/{uid} is client-read-only (ADR-27), so no client
+            // can resolve another user.
+            && ((request.resource.data.responsibleContactId == null
+                 && request.resource.data.responsibleName == '')
+                || (request.resource.data.responsibleContactId is string
+                    && request.resource.data.responsibleContactId.size() > 0
+                    && request.resource.data.responsibleName is string
+                    && request.resource.data.responsibleName.trim().size() > 0
+                    && request.resource.data.responsibleName.size() <= 120))
+            // Cost-code spine: the same both-or-neither idiom.
+            && ((request.resource.data.costCodeId == null
+                 && request.resource.data.costCodeName == '')
+                || (request.resource.data.costCodeId is string
+                    && request.resource.data.costCodeId.size() > 0
+                    && request.resource.data.costCodeName is string
+                    && request.resource.data.costCodeName.trim().size() > 0
+                    && request.resource.data.costCodeName.size() <= 120))
+            && request.resource.data.sortOrder is number;
+      }
+
+      allow read: if programmeReader();
+
+      allow create: if programmeWriter()
+                  && shapeValid()
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  // Cancellation cannot be forged at creation.
+                  && request.resource.data.cancelReason == ''
+                  && request.resource.data.cancelledAt == null
+                  && request.resource.data.cancelledBy == null;
+
+      allow update: if programmeWriter() && corePreserved() && updateStamped() && (
+                    // (a) ORDINARY EDIT — content and status are freely
+                    //     editable, INCLUDING BACKWARDS, while the activity is
+                    //     not cancelled. No cancellation stamp may be forged.
+                    (
+                      resource.data.status != 'cancelled'
+                      && shapeValid()
+                      && request.resource.data.cancelReason == resource.data.cancelReason
+                      && request.resource.data.cancelledAt == resource.data.cancelledAt
+                      && request.resource.data.cancelledBy == resource.data.cancelledBy
+                    )
+                    ||
+                    // (b) CANCELLATION (terminal). The only exit, and it may
+                    //     touch nothing but the cancellation audit fields — so
+                    //     a cancelled activity is immutable retained history
+                    //     and cancelling can never smuggle in a content edit.
+                    (
+                      resource.data.status != 'cancelled'
+                      && request.resource.data.status == 'cancelled'
+                      && changedKeys().hasOnly(['status', 'cancelReason', 'cancelledAt', 'cancelledBy', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.cancelledBy == request.auth.uid
+                      && request.resource.data.cancelledAt == request.time
+                      && request.resource.data.cancelReason is string
+                      && request.resource.data.cancelReason.trim().size() > 0
+                      && request.resource.data.cancelReason.size() <= 500
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
     // Contacts — company-wide directory of suppliers, subcontractors,
     // consultants, and clients (third-party PII: names, phones, emails, ABNs,
     // payment terms).
