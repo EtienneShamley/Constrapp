@@ -9,6 +9,8 @@ import { useProfile } from '../../hooks/useProfile'
 import { useSupplierPayments } from '../../hooks/useSupplierPayments'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
 import { useContacts } from '../../hooks/useContacts'
+import { useRetentionReleases } from '../../hooks/useRetentionReleases'
+import { releasedByInvoiceId } from '../../lib/retention'
 import { PO_SUPPLIER_TYPES } from '../../lib/contacts'
 import { isFinancialRole } from '../../lib/margin'
 import {
@@ -66,7 +68,7 @@ function ModalShell({ title, onClose, children, wide }) {
 const blankRow = () => ({ supplierInvoiceId: '', allocatedAmount: '' })
 
 function PaymentEditorModal({
-  payment, supplierContacts, supplierInvoices, supplierPayments,
+  payment, supplierContacts, supplierInvoices, supplierPayments, releasedByInvoiceId,
   preselect, currencyCode, onClose, onSave,
 }) {
   const money = (n) => formatCurrency(n, currencyCode)
@@ -106,9 +108,15 @@ function PaymentEditorModal({
   // The POSTED supplier invoices of the SELECTED SUPPLIER on this project, with
   // their live remaining payable. Excludes this payment's own allocations so an
   // edit never double-counts itself. Sorted oldest first.
+  //
+  // `releasedByInvoiceId` raises each invoice's payable basis by the retention
+  // RELEASED against it (ADR-30), which is what makes released retention
+  // allocatable at all. An empty map reproduces the pre-ADR-30 targets exactly.
   const targets = useMemo(
-    () => allocatableSupplierInvoices(supplierInvoices, supplierId, supplierName, supplierPayments, { excludePaymentId: payment?.id ?? null }),
-    [supplierInvoices, supplierId, supplierName, supplierPayments, payment?.id],
+    () => allocatableSupplierInvoices(supplierInvoices, supplierId, supplierName, supplierPayments, {
+      excludePaymentId: payment?.id ?? null, releasedByInvoiceId,
+    }),
+    [supplierInvoices, supplierId, supplierName, supplierPayments, payment?.id, releasedByInvoiceId],
   )
   const targetById = useMemo(() => new Map(targets.map(t => [t.id, t])), [targets])
 
@@ -176,8 +184,10 @@ function PaymentEditorModal({
   // Over-reconciling an INVOICE is warned with an acknowledgement, never
   // blocked: it cannot be enforced anywhere (rules cannot sum sibling documents).
   const warnings = useMemo(
-    () => invoiceOverPaymentWarnings(builtAllocations, supplierInvoices, supplierPayments, { excludePaymentId: payment?.id ?? null }),
-    [builtAllocations, supplierInvoices, supplierPayments, payment?.id],
+    () => invoiceOverPaymentWarnings(builtAllocations, supplierInvoices, supplierPayments, {
+      excludePaymentId: payment?.id ?? null, releasedByInvoiceId,
+    }),
+    [builtAllocations, supplierInvoices, supplierPayments, payment?.id, releasedByInvoiceId],
   )
   const needsAck = warnings.length > 0
 
@@ -379,10 +389,15 @@ function PaymentEditorModal({
                         <p className="m-0 text-[11px] text-brand-muted">
                           {/* The retention line appears ONLY when something is
                               actually withheld — a zero retention line would be
-                              noise on the direct-PO invoices that are the norm. */}
+                              noise on the direct-PO invoices that are the norm.
+                              ⚠️ It reports retention still HELD, never
+                              retentionTotal: retention that has been RELEASED is
+                              already inside `payable` below, so calling it
+                              "withheld" here would show the same money twice. */}
                           {target.retentionTotal > 0 && (
                             <>
-                              invoiced {money(target.grossTotal)} (inc. GST) · retention withheld −{money(target.retentionTotal)} ·{' '}
+                              invoiced {money(target.grossTotal)} (inc. GST) · retention held −{money(target.retentionHeld)}
+                              {target.releasedTotal > 0 && <> · retention released +{money(target.releasedTotal)}</>} ·{' '}
                             </>
                           )}
                           payable {money(target.payableTotal)} · paid to date {money(target.paid)} ·
@@ -663,7 +678,8 @@ function DetailModal({ payment, supplierInvoices, currencyCode, onClose }) {
         <p className="m-0 text-[11px] text-brand-muted border-t border-brand-border pt-3">
           A payment records gross cash paid in this project&apos;s currency ({currencyCode}). It carries no GST, no
           net amount, and no cost meaning — the tax and the cost were recorded on the supplier invoice being
-          settled. Allocations reconcile against each invoice&apos;s net payable after retention withheld. Invoice
+          settled. Allocations reconcile against each invoice&apos;s payable — net of retention still held, and
+          including any retention released. Invoice
           balances are derived at read time and are never written onto invoice documents.
         </p>
       </div>
@@ -692,6 +708,15 @@ export default function ProjectSupplierPayments() {
   } = useSupplierPayments(mid)
   const { supplierInvoices, supplierInvoicesLoading } = useSupplierInvoices(mid)
   const { contacts } = useContacts()
+  // Retention releases raise each invoice's payable basis (ADR-30). A FAILED
+  // read is never treated as "nothing released": that would understate every
+  // payable and silently hide money the supplier is owed.
+  const { retentionReleases, retentionReleasesLoading, retentionReleasesError } = useRetentionReleases(mid)
+
+  const releasedMap = useMemo(
+    () => (retentionReleasesError ? {} : releasedByInvoiceId(retentionReleases)),
+    [retentionReleasesError, retentionReleases],
+  )
 
   // ── "Record payment" hand-off from a posted Supplier Invoice ──────────────
   //
@@ -743,12 +768,12 @@ export default function ProjectSupplierPayments() {
 
   const summary = useMemo(() => paymentSummary(supplierPayments), [supplierPayments])
   const payables = useMemo(
-    () => payablesSummary(supplierInvoices, supplierPayments),
-    [supplierInvoices, supplierPayments],
+    () => payablesSummary(supplierInvoices, supplierPayments, releasedMap),
+    [supplierInvoices, supplierPayments, releasedMap],
   )
   const ageing = useMemo(
-    () => apAgeing(supplierInvoices, supplierPayments),
-    [supplierInvoices, supplierPayments],
+    () => apAgeing(supplierInvoices, supplierPayments, releasedMap),
+    [supplierInvoices, supplierPayments, releasedMap],
   )
   const exceptions = useMemo(
     () => allocationExceptions(supplierPayments, supplierInvoices),
@@ -793,7 +818,10 @@ export default function ProjectSupplierPayments() {
       </Card>
     )
   }
-  if (supplierPaymentsLoading || supplierInvoicesLoading) {
+  // Retention releases are part of the PAYABLE BASIS, so the page must not
+  // render balances before they have settled — a momentary empty map would flash
+  // understated payables.
+  if (supplierPaymentsLoading || supplierInvoicesLoading || retentionReleasesLoading) {
     return <div className="text-[13px] text-brand-muted">Loading supplier payments…</div>
   }
 
@@ -1013,15 +1041,17 @@ export default function ProjectSupplierPayments() {
           <div className="px-5 pt-4 pb-2">
             <p className="text-[13px] font-bold text-brand-text m-0">Posted supplier invoices — reconciliation</p>
             <p className="m-0 mt-1 text-[11px] text-brand-muted">
-              Derived at read time from posted payments. Nothing is written onto a supplier invoice: no balance
-              field, no payment status, no payment back-reference. Payable is net of retention withheld.
+              Derived at read time from posted payments and posted retention releases. Nothing is written onto a
+              supplier invoice: no balance field, no payment status, no payment back-reference, and no retention
+              field is ever reduced. Payable is net of retention still <span className="font-semibold">held</span>,
+              and includes retention that has been <span className="font-semibold">released</span>.
             </p>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full border-collapse">
               <thead>
                 <tr className="bg-brand-card border-y border-brand-border">
-                  {['SI #', 'Supplier Invoice #', 'Supplier', 'Due', 'Gross', 'Retention', 'Payable', 'Paid to Date', 'Remaining Payable', 'Reconciliation'].map(h => (
+                  {['SI #', 'Supplier Invoice #', 'Supplier', 'Due', 'Gross', 'Retention Held', 'Released', 'Payable', 'Paid to Date', 'Remaining Payable', 'Reconciliation'].map(h => (
                     <th key={h} className={thCls}>{h}</th>
                   ))}
                 </tr>
@@ -1034,7 +1064,8 @@ export default function ProjectSupplierPayments() {
                     <td className="px-3.5 py-2.5 text-[13px] text-brand-text">{r.supplierName || '—'}</td>
                     <td className="px-3.5 py-2.5 text-[12px] text-brand-muted whitespace-nowrap">{r.dueDate || '—'}</td>
                     <td className="px-3.5 py-2.5 text-[13px] text-brand-muted whitespace-nowrap">{money(r.grossTotal)}</td>
-                    <td className="px-3.5 py-2.5 text-[13px] text-brand-muted whitespace-nowrap">{r.retentionTotal ? `−${money(r.retentionTotal)}` : '—'}</td>
+                    <td className="px-3.5 py-2.5 text-[13px] text-brand-muted whitespace-nowrap">{r.retentionHeld ? `−${money(r.retentionHeld)}` : '—'}</td>
+                    <td className="px-3.5 py-2.5 text-[13px] text-brand-muted whitespace-nowrap">{r.releasedTotal ? `+${money(r.releasedTotal)}` : '—'}</td>
                     <td className="px-3.5 py-2.5 text-[13px] text-brand-text whitespace-nowrap">{money(r.payableTotal)}</td>
                     <td className="px-3.5 py-2.5 text-[13px] text-brand-muted whitespace-nowrap">{money(r.paid)}</td>
                     <td className={`px-3.5 py-2.5 text-[13px] font-semibold whitespace-nowrap ${r.remaining < 0 ? 'text-brand-red' : 'text-brand-text'}`}>
@@ -1051,11 +1082,24 @@ export default function ProjectSupplierPayments() {
         </Card>
       )}
 
+      {retentionReleasesError && (
+        <Card className="mt-3.5">
+          <p className="m-0 text-[12.5px] font-bold text-brand-red">Retention releases could not be read</p>
+          <p className="m-0 mt-1.5 text-[11.5px] text-brand-muted">
+            The payable figures above exclude any retention that has been released, so they may UNDERSTATE what is
+            owed. They are not a genuine zero — reload before recording or posting a payment.
+          </p>
+        </Card>
+      )}
+
       <p className="m-0 mt-3 text-[11px] text-brand-muted">
         Constrapp records cash movements and their allocations. It cannot verify that money genuinely left your
         bank account, cannot block over-reconciliation, and cannot prevent two users allocating the same remaining
-        payable concurrently — Firestore rules cannot sum sibling documents. Supplier credit notes, refunds,
-        retention release, remittance output, bank reconciliation, and accounting integrations are future work.
+        payable concurrently — Firestore rules cannot sum sibling documents. Retention release is now modelled
+        (Commercial → Retention): released retention becomes payable here and is settled by an ordinary payment,
+        while retention still held is not payable. Which part of a balance a payment settled is not identified,
+        so retention paid is not reported. Supplier credit notes, refunds, remittance output, bank reconciliation,
+        and accounting integrations are future work.
       </p>
 
       {editing && (
@@ -1065,6 +1109,7 @@ export default function ProjectSupplierPayments() {
           supplierContacts={supplierContacts}
           supplierInvoices={supplierInvoices}
           supplierPayments={supplierPayments}
+          releasedByInvoiceId={releasedMap}
           preselect={editing === 'new' ? resolvedPreselect : null}
           currencyCode={currencyCode}
           onClose={() => { setEditing(null); setPreselect(null) }}

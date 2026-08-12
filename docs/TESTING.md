@@ -1712,6 +1712,132 @@ is the record.
 - [ ] Using the chart writes **no** document — it is read-only, with no
   clickable edit path.
 
+## 15q. Supplier Retention register & Retention Release
+
+> **Section-numbering note.** **§15o** is reserved for the parked Documents &
+> Drawings branch and **§15p** for the parked Project Timeline branch. Neither is
+> on `main`, so those letters are held rather than reused.
+
+Automated coverage: `tests/unit/retention.test.js` (pure domain, GST telescoping,
+supplier-payments regression, cash-flow double-count proof) and
+`tests/rules/retentionReleases.rules.test.js` (the trust boundary). The checks
+below are the **manual** acceptance pass.
+
+### 15q-i. The register
+
+- [ ] Commercial now shows **six** sub-tabs, ending in **Retention**; below `sm:`
+  the strip scrolls horizontally rather than wrapping, and every link stays ≥44px.
+- [ ] `…/commercial/retention` shows **Retention Held**, **Released to Date**,
+  **Total Withheld to Date**, and a **supplier count**. There is **no**
+  "released but unpaid" figure anywhere.
+- [ ] Suppliers are grouped with Invoices / Total Withheld / Released / Held, and
+  expand to per-invoice rows showing retention ex-GST + GST, total, released, held.
+- [ ] A project with no retention shows the empty state, not zeroes-as-facts.
+- [ ] A pre-Contacts invoice (`supplierId: null`) groups by its frozen supplier
+  name and is labelled as a name match.
+- [ ] **Non-financial roles** (subcontractor, client) see the restricted message
+  and trigger no reads.
+
+### 15q-ii. Releasing (the hard block)
+
+- [ ] **Release** on an invoice row opens the modal showing retention withheld
+  (ex-GST, GST, total), already released, and **available to release**.
+- [ ] **Release all remaining** fills the exact remaining ex-GST amount; it is
+  never pre-filled automatically.
+- [ ] GST and the resulting payable total are **derived and read-only**, and
+  update live as the amount changes.
+- [ ] Entering **more than the remaining retention is HARD-BLOCKED** — Save is
+  disabled and the message names what remains. **There is no acknowledgement
+  override.**
+- [ ] Over by exactly **one cent** is still blocked.
+- [ ] A blank/whitespace reason, a missing date, and a zero/negative amount are
+  each blocked.
+- [ ] Saving creates **RR-0001** as a **draft**, and the first release on a fresh
+  project sets `project.currencyLocked` — both in one transaction.
+- [ ] A draft release changes **no** payable figure anywhere.
+
+### 15q-iii. Posting and the payable basis
+
+- [ ] Posting a draft moves it to **Posted** with server-stamped `postedAt`/`postedBy`.
+- [ ] On **Supplier Invoices**, that invoice's **Retention Held** falls by the
+  released amount, **Currently Payable** rises by the same amount, and
+  **Remaining Payable** rises correspondingly. `Gross` is unchanged.
+- [ ] Open the invoice detail: the retention callout now states how much has been
+  released (included in the payable figures) and how much is still held, and says
+  retention **paid** is not reported.
+- [ ] On **Supplier Payments**, the invoice appears as an allocation target with
+  the released amount available; the target line reads **retention held**, and
+  shows **retention released** separately — never the same money twice.
+- [ ] The AP reconciliation table shows separate **Retention Held** and
+  **Released** columns.
+- [ ] AP **ageing** now includes the released balance. ⚠️ Confirm it ages from the
+  **original invoice due date** (usually the oldest bucket) — expected in V1.
+- [ ] Record and post a Supplier Payment for the released amount: Remaining
+  Payable returns to zero and the invoice reads fully reconciled.
+- [ ] Confirm **no** supplier-invoice field changed at any point — `retention`,
+  `retentionGst`, `retentionTotal`, `payableTotal`, and `status` are identical
+  before and after (inspect in the Firebase console).
+
+### 15q-iv. Partial releases and GST
+
+- [ ] Release retention in **two or three parts** that together equal the full
+  retention. The **sum of the GST amounts equals the invoice's `retentionGst`
+  exactly**, and the sum of the release totals equals `retentionTotal` exactly.
+- [ ] Use a drift-prone retention (e.g. **100.05**, whose GST is 10.01) split
+  three ways: the final release carries the **remainder**, not its own rounding,
+  and the totals still reconcile to the cent.
+- [ ] After full release, Retention Held for that invoice is **0**, the Release
+  button is disabled, and Currently Payable equals the invoice's **gross**.
+
+### 15q-v. Void and concurrency
+
+- [ ] Voiding a **posted** release requires a non-whitespace reason and states
+  that the amount returns to retention held.
+- [ ] After voiding, **every** figure returns to its pre-release value — payable,
+  remaining, ageing, retention held — with **no** reversal or credit-note document.
+- [ ] Void is **terminal**: a void release offers no Post, Edit, or Void action.
+- [ ] Releases are **never deleted** — the voided RR row remains in the register.
+- [ ] Prepare a draft, post a *different* release on the same invoice from another
+  session, then try to post the first: it is **blocked** with a message to re-open
+  and save the draft (the stale-snapshot guard).
+- [ ] Cancel a posted supplier invoice that has a posted release (direct SDK):
+  the release surfaces in the **exceptions** panel, is **not** auto-reversed, and
+  the invoice is not modified.
+
+### 15q-vi. Failed-subscription honesty (mandatory)
+
+Simulate a `retentionReleases` read failure (e.g. temporarily deny the collection
+in rules, or go offline before first load).
+
+- [ ] **Retention** page: every figure renders **“—”**, the reason is named, and
+  release actions are disabled. **No figure shows as 0.**
+- [ ] **Supplier Payments**: a red notice states the payable figures may
+  understate what is owed; the page does not silently show pre-release balances
+  as if correct.
+- [ ] **Supplier Invoices**: the same notice appears above the register.
+- [ ] **Cash Flow**: "Retention Releases" is listed among the unavailable
+  forecast sources; Retention held, AP no-due-date, and AP past-due render “—”,
+  and Forecast Cash Out is unavailable rather than understated.
+
+### 15q-vii. Cash Flow — no double count
+
+- [ ] With retention held and **nothing** released, "Retention held (not released
+  — not payable)" equals the full retention withheld, exactly as before ADR-30.
+- [ ] Release part of it and post: the held figure **falls** by that amount, and
+  the released amount appears **once** in the open-AP classification (normally
+  "past due — expected payment not retimed"). It is **not** also counted as
+  retention held.
+- [ ] Held + released reconciles to the total retention withheld.
+- [ ] Fully release: retention held reads **0**.
+- [ ] Peak funding is **suppressed** while the released balance sits past-due —
+  expected, and the reason is named.
+
+### 15q-viii. Responsive
+
+- [ ] At **375px / 768px / 1280px**: both register tables scroll horizontally
+  **inside their card** with no page-level horizontal scroll; the release modal
+  fits with internal scrolling; every action stays ≥44px.
+
 ## 16. Responsive Checks — 375px, 768px, 1280px
 
 - [ ] **375px:** sidebar hidden behind hamburger; drawer opens/closes (tap overlay); nav items ≥44px tall; project tab bar wraps; PO/claim tables scroll horizontally inside their card; modals fit with internal scrolling; all actions reachable by tap (no hover-only).

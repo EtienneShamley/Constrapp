@@ -31,6 +31,7 @@ import ProjectClientInvoices from './pages/project/ProjectClientInvoices'
 import ProjectClientReceipts from './pages/project/ProjectClientReceipts'
 import ProjectSupplierPayments from './pages/project/ProjectSupplierPayments'
 import ProjectCashFlow from './pages/project/ProjectCashFlow'
+import ProjectRetention from './pages/project/ProjectRetention'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
 
 export default function App() {
@@ -85,6 +86,7 @@ export default function App() {
                         <Route path="receipts" element={<ProjectClientReceipts />} />
                         <Route path="supplier-payments" element={<ProjectSupplierPayments />} />
                         <Route path="cash-flow" element={<ProjectCashFlow />} />
+                        <Route path="retention" element={<ProjectRetention />} />
                       </Route>
                       <Route path="documents" element={
                         <ProjectPlaceholder

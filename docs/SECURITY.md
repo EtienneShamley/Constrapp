@@ -665,6 +665,41 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     last-write stamps. Fabricated timing lines are a lower-severity analogue of
     Deferred Control 17: a line asserts an expectation, not a bank movement.
 
+> **Numbering note.** Deferred Controls **20–22** are reserved for the parked
+> Documents & Drawings branch and **23** for the parked Project Timeline branch.
+> Neither is on `main` yet, so those numbers are held rather than reused.
+> Retention therefore takes **24**.
+
+24. **Retention-release aggregate cap & concurrency** — the `retentionReleases`
+    block enforces materially **more** than the allocation blocks can, because
+    `supplierInvoiceId` is a **scalar** field rather than an array element: rules
+    `get()` the target invoice and verify it **exists** and is **`posted`**, that
+    `amount > 0`, that the **per-document cap** holds
+    (`previouslyReleasedAmount + amount <= invoice.retention`, in whole cents),
+    that `gstAmount` **exactly** equals the cumulative rounding delta
+    `round((prev + amount) × 10%) − round(prev × 10%)`, that
+    `releaseTotal == amount + gstAmount`, plus the full lifecycle, role, and
+    audit-stamp rules (posted content immutable, void terminal with a
+    non-whitespace reason, delete blocked).
+    **What they still cannot do:** rules have no `list`, query, or `count`, so
+    they **cannot sum sibling releases** and therefore **cannot verify that
+    `previouslyReleasedAmount` is truthful**. The consequences, all accepted and
+    never presented otherwise: two documents can each claim
+    `previouslyReleasedAmount: 0`, each pass the per-document cap, and
+    **together over-release an invoice**; the cumulative snapshots may be
+    **non-contiguous**, which breaks the GST telescoping to
+    `invoice.retentionGst`; **two users can release the same retention
+    concurrently** and both writes succeed; and no rule can evidence that the
+    release was **genuinely agreed** with the supplier (the Deferred Control 17
+    posture — a release asserts a commercial authorisation, not a bank
+    movement). The normal UI **hard-blocks** an over-release against the
+    currently-loaded posted releases and disables every release action when the
+    release subscription fails — that is a correctness guard, **never** a
+    security boundary. The register reports any resulting over-release rather
+    than hiding it. Creator ≠ poster segregation is not enforced (Deferred
+    Control 7). Both accepted gaps are proven as passing tests in
+    `tests/rules/retentionReleases.rules.test.js` → *"accepted limitations"*.
+
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
 is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.

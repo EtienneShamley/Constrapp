@@ -10,6 +10,8 @@ import { useSupplierPayments } from '../../hooks/useSupplierPayments'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { useContacts } from '../../hooks/useContacts'
+import { useRetentionReleases } from '../../hooks/useRetentionReleases'
+import { releasedByInvoiceId } from '../../lib/retention'
 import { CLAIM_STATUS } from '../../lib/progressClaims'
 import {
   SI_STATUS, SI_STATUS_LABELS, SI_BADGE_VARIANTS, SI_SOURCE,
@@ -424,6 +426,9 @@ function DetailRow({ label, value }) {
 function InvoiceDetailModal({ invoice, reconciliation, allocatedPayments, currencyCode, onClose }) {
   const money = (n) => formatCurrency(n, currencyCode)
   const hasRetention = (invoice.retentionTotal || 0) > 0
+  // From the reconciliation row (derived), never from the invoice document —
+  // no release total is ever stored on an invoice.
+  const released = reconciliation?.releasedTotal ?? 0
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -493,7 +498,7 @@ function InvoiceDetailModal({ invoice, reconciliation, allocatedPayments, curren
                 />
               </div>
               <div className="grid grid-cols-3 gap-3.5">
-                <DetailRow label="Net Payable" value={money(reconciliation.payableTotal)} />
+                <DetailRow label="Currently Payable" value={money(reconciliation.payableTotal)} />
                 <DetailRow label="Paid to Date" value={money(reconciliation.paid)} />
                 <div>
                   <p className={labelCls}>Remaining Payable</p>
@@ -504,9 +509,22 @@ function InvoiceDetailModal({ invoice, reconciliation, allocatedPayments, curren
               </div>
               {hasRetention && (
                 <p className="m-0 mt-2 text-[11px] text-brand-muted">
-                  Retention of {money(invoice.retentionTotal)} is withheld and is <span className="font-semibold">not
-                  payable</span> on this invoice, so it is excluded from every figure above. Retention release is not
-                  yet modelled in Constrapp.
+                  Retention of {money(invoice.retentionTotal)} was withheld when this invoice posted, and that figure
+                  never changes.{' '}
+                  {released > 0 ? (
+                    <>
+                      <span className="font-semibold">{money(released)}</span> has since been released and IS
+                      included in the payable figures above; the remaining{' '}
+                      <span className="font-semibold">{money(reconciliation.retentionHeld)}</span> is still held and
+                      is excluded.
+                    </>
+                  ) : (
+                    <>
+                      None of it has been released, so it is <span className="font-semibold">not payable</span> and
+                      is excluded from every figure above. Release it from Commercial → Retention.
+                    </>
+                  )}{' '}
+                  Which part of a payment settled retention is not identified, so retention paid is not reported.
                 </p>
               )}
 
@@ -593,6 +611,10 @@ export default function ProjectInvoices() {
 
   const { supplierInvoices, supplierInvoicesLoading, createSupplierInvoice, transitionStatus } = useSupplierInvoices(projectId)
   const { supplierPayments } = useSupplierPayments(projectId)
+  // Retention releases raise an invoice's payable basis (ADR-30). A FAILED read
+  // must never be treated as "nothing released" — that would understate every
+  // Remaining Payable on this register.
+  const { retentionReleases, retentionReleasesError } = useRetentionReleases(projectId)
   const { purchaseOrders, purchaseOrdersLoading } = usePurchaseOrders(projectId)
   const { progressClaims } = useProgressClaims(projectId)
   const { contacts } = useContacts()
@@ -604,10 +626,15 @@ export default function ProjectInvoices() {
   const [supplierFilter, setSupplierFilter] = useState('all')
 
   // ── Payment reconciliation, all derived at read time ───────────────────────
-  // Nothing here is written onto a supplier invoice document.
+  // Nothing here is written onto a supplier invoice document — no balance, no
+  // payment status, no back-reference, and no retention field is ever reduced.
+  const releasedMap = useMemo(
+    () => (retentionReleasesError ? {} : releasedByInvoiceId(retentionReleases)),
+    [retentionReleasesError, retentionReleases],
+  )
   const payables = useMemo(
-    () => payablesSummary(supplierInvoices, supplierPayments),
-    [supplierInvoices, supplierPayments],
+    () => payablesSummary(supplierInvoices, supplierPayments, releasedMap),
+    [supplierInvoices, supplierPayments, releasedMap],
   )
   const reconciliationById = useMemo(
     () => new Map(payables.rows.map(r => [r.id, r])),
@@ -681,6 +708,18 @@ export default function ProjectInvoices() {
 
       {actionError && <p className="text-[12px] text-brand-red mb-3">{actionError}</p>}
 
+      {/* ⚠️ Missing release data is never silently a zero — it would understate
+          every payable figure on this register. */}
+      {retentionReleasesError && (
+        <Card className="mb-3.5">
+          <p className="m-0 text-[12.5px] font-bold text-brand-red">Retention releases could not be read</p>
+          <p className="m-0 mt-1.5 text-[11.5px] text-brand-muted">
+            Retention Held, Currently Payable, and Remaining Payable below exclude any retention that has been
+            released, so they may UNDERSTATE what is owed. Reload before acting on these figures.
+          </p>
+        </Card>
+      )}
+
       {/* ── Compact accounts-payable summary ───────────────────────────────── */}
       {payables.count > 0 && (
         <Card className="mb-3.5">
@@ -689,7 +728,7 @@ export default function ProjectInvoices() {
               <div>
                 <p className={labelCls}>Total Posted Supplier Invoices</p>
                 <p className="text-lg font-bold text-brand-text">{money(payables.postedPayable)}</p>
-                <p className="m-0 mt-0.5 text-[10.5px] text-brand-muted">{payables.count} posted · net payable after retention</p>
+                <p className="m-0 mt-0.5 text-[10.5px] text-brand-muted">{payables.count} posted · net of retention held, including retention released</p>
               </div>
               <div>
                 <p className={labelCls}>Paid to Date</p>
@@ -777,7 +816,7 @@ export default function ProjectInvoices() {
             <table className="w-full border-collapse">
               <thead>
                 <tr className="bg-brand-card border-b border-brand-border">
-                  {['SI #', 'Supplier Inv #', 'Supplier', 'PO', 'Claim', 'Invoice Date', 'Due', 'Subtotal', 'GST', 'Gross', 'Retention', 'Net Payable', 'Paid to Date', 'Remaining Payable', 'Reconciliation', 'Status', ''].map((h, i) => (
+                  {['SI #', 'Supplier Inv #', 'Supplier', 'PO', 'Claim', 'Invoice Date', 'Due', 'Subtotal', 'GST', 'Gross', 'Retention Held', 'Currently Payable', 'Paid to Date', 'Remaining Payable', 'Reconciliation', 'Status', ''].map((h, i) => (
                     <th key={i} className={thCls}>{h}</th>
                   ))}
                 </tr>
@@ -816,8 +855,21 @@ export default function ProjectInvoices() {
                       <td className="px-3.5 py-3 text-[13px] text-brand-text whitespace-nowrap">{money(inv.subtotal || 0)}</td>
                       <td className="px-3.5 py-3 text-[13px] text-brand-muted whitespace-nowrap">{money(inv.gstTotal || 0)}</td>
                       <td className="px-3.5 py-3 text-[13px] text-brand-muted whitespace-nowrap">{money(inv.grossTotal || 0)}</td>
-                      <td className="px-3.5 py-3 text-[13px] text-brand-muted whitespace-nowrap">{inv.retentionTotal ? `−${money(inv.retentionTotal)}` : '—'}</td>
-                      <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">{money(inv.payableTotal || 0)}</td>
+                      {/* Retention HELD and Currently Payable both come from the
+                          DERIVED reconciliation row, not the stored document.
+                          Rendering the invoice's stored payableTotal here while
+                          Remaining Payable below is release-aware would show two
+                          contradictory payables in the same row. Unposted
+                          invoices have no row, so they fall back to the stored
+                          figures, which are correct for them by construction. */}
+                      <td className="px-3.5 py-3 text-[13px] text-brand-muted whitespace-nowrap">
+                        {recon
+                          ? (recon.retentionHeld ? `−${money(recon.retentionHeld)}` : '—')
+                          : (inv.retentionTotal ? `−${money(inv.retentionTotal)}` : '—')}
+                      </td>
+                      <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">
+                        {money(recon ? recon.payableTotal : (inv.payableTotal || 0))}
+                      </td>
                       {/* Paid to Date / Remaining Payable / Reconciliation are
                           DERIVED from posted supplier payments on every render —
                           never stored here. Only posted invoices are payable. */}

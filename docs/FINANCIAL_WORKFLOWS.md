@@ -152,7 +152,8 @@ total     = net + gst          ← "Total payable" (inc. GST)
 ```
 
 - PO totals are simpler: `gst = subtotal × 0.10`, `total = subtotal + gst`.
-- Retention release is not yet modelled (future work alongside invoices).
+- Retention **release** is modelled from ADR-30 — see *Retention Release* below.
+  It never alters a claim or an invoice's retention figures.
 
 ## Supplier Invoice Lifecycle
 
@@ -245,8 +246,10 @@ invoices** use retention 0, so `retentionGst`/`retentionTotal` are 0 and
 - Worked example (direct path): subtotal 1,000, retention 0 → gstTotal 100,
   **grossTotal = payableTotal 1,100**.
 - Contact `gstStatus` is **advisory only** (may warn; never auto-selects a tax
-  code; never blocks). Retention **release** is not yet modelled (future work
-  alongside Payments/Retentions).
+  code; never blocks). Retention **release** is modelled from ADR-30 (see
+  *Retention Release* below) and **never** changes any figure in this section:
+  `retention`, `retentionGst`, `retentionTotal`, and `payableTotal` are immutable
+  for the life of the invoice.
 
 ### Claim reconciliation guard
 
@@ -647,13 +650,27 @@ what is owed on it. Allocating against gross would present **retained money as
 currently payable** and leave a permanent phantom balance on every retained
 invoice that could never be settled.
 
-- **Retention withheld is not currently payable** and is excluded from every
-  payment figure and every AP ageing bucket.
-- **Retention release is not modelled.** A payment **never** writes, clears, or
-  reduces `retention`, `retentionGst`, or `retentionTotal`.
-- Invoices with `retentionTotal > 0` display gross invoiced, retention withheld,
-  payable, Paid to Date, and Remaining Payable; the retention line is hidden when
-  nothing is withheld.
+- **Retention still HELD is not payable** and is excluded from every payment
+  figure and every AP ageing bucket.
+- **Retention RELEASED is payable.** From ADR-30 the basis is derived:
+
+  ```
+  derived payable basis = invoice.payableTotal + Σ posted releaseTotal
+  ```
+
+  A posted Retention Release raises Remaining Payable and is settled by an
+  ordinary Supplier Payment. Nothing else about payments changed — the
+  allocations array, its shape, and `lib/payments.js` are untouched.
+- **Neither a payment nor a release ever writes, clears, or reduces
+  `retention`, `retentionGst`, or `retentionTotal`.** They are immutable, and
+  nothing is ever written onto a supplier invoice.
+- **Retention *paid* is not reported.** An allocation settles an invoice balance
+  as one balance; nothing identifies whether it settled the original payable or
+  released retention, so no "retention paid" or "released but unpaid" figure
+  exists.
+- Invoices with `retentionTotal > 0` display gross invoiced, retention **held**,
+  retention **released**, payable, Paid to Date, and Remaining Payable; the
+  retention line is hidden when nothing is withheld.
 - The user-facing label is **"Remaining Payable"** — never *Balance Due*, *Amount
   Owing*, *Outstanding Payable*, or *Overdue Payable*.
 
@@ -769,7 +786,13 @@ payment allocations**: *No due date* · *Not yet due* · *Past due 1–30* · *3
 - **Voiding a payment restores the balance immediately** at the next render.
 - **Unallocated payments reduce no invoice balance** and appear nowhere in
   ageing.
-- **Retention is excluded throughout** — the basis is `payableTotal`.
+- **Retention still HELD is excluded throughout** — the basis is the derived
+  payable, which is net of it.
+- **Retention RELEASED is included**, because it is payable. ⚠️ It ages from the
+  **original invoice due date** — a release carries no due date of its own in V1 —
+  so it typically lands straight in the oldest bucket. This **overstates its age**,
+  is stated wherever it is shown, and is resolved by the deferred
+  release-due-date work (ADR-30).
 - *Past due* means past the due date **and still payable**. The supplier-invoice
   register therefore uses the payment-aware `isPastDuePayable()`, not the
   date-only `isOverdue()` (which is retained unchanged for backwards
@@ -812,12 +835,105 @@ Forecast Final Cost, and every margin figure are **completely unchanged**.
 ### Deferred (Supplier Payments)
 
 **Forecast Cash Flow** (the *Actual* Cash Flow foundation has since shipped —
-see *Cash Flow — Actual*) · retention
-release · supplier credit notes · refunds and payment reversals
+see *Cash Flow — Actual*; **retention release** has since shipped — see
+*Retention Release* below) · supplier credit notes · refunds and payment reversals
 (`docType: 'refund'` reserved) · payment batches and payment runs · remittance
 advice PDF · email · attachments · bank reconciliation and bank feeds ·
 accounting integrations · payment approval workflow and creator ≠ approver
 segregation · financial periods and period locking.
+
+## Retention Release (supplier retention becoming payable)
+
+Retention withheld on a posted Supplier Invoice is **not payable** on that
+invoice. Before ADR-30 it had no route to ever becoming payable — a payment could
+only allocate against `payableTotal`, which is permanently net of retention. A
+**Retention Release** is the authored event that closes that trapdoor.
+
+> ⚠️ **A retention release is NOT a supplier invoice, a tax invoice, a credit
+> note, or a payment.** It is an **internal commercial authorisation**. It
+> creates no taxable supply, no cost, and no cash movement. Cost was fully
+> recognised when the invoice posted; cash moves only when a Supplier Payment is
+> posted.
+
+### The hybrid source of truth
+
+| Fact | Source |
+|---|---|
+| **Held** | Derived from posted supplier invoices (`retentionTotal`) |
+| **Released** | Derived from **posted** `retentionReleases` |
+| **Paid** | Derived from posted Supplier Payment allocations (unchanged) |
+
+`retentionHeld + releasedTotal == retentionTotal`, always — so the two are
+disjoint and can never double-count.
+
+### The payable basis
+
+```
+stored invoice.payableTotal = grossTotal − retentionTotal      (immutable)
+derived payable basis       = invoice.payableTotal + Σ posted releaseTotal
+```
+
+The derived basis is what Remaining Payable, allocations, AP reconciliation, AP
+ageing, the payment editor, and Cash Flow layer 2 all use. With no releases it is
+identical to the stored value, so every pre-ADR-30 figure is unchanged.
+
+### GST — the cumulative-snapshot model
+
+Retention carries its own GST on the invoice (`retentionGst = retention × 10%`),
+withheld **with** the retention, so releasing all of it releases exactly
+`retentionTotal` — no new arithmetic. A **partial** release cannot round its own
+share (independent roundings drift and the last release would not reconcile), so
+each release stores a derived `previouslyReleasedAmount` snapshot and:
+
+```
+newCumulative = previouslyReleasedAmount + amount
+gstAmount     = roundMoney(newCumulative × 10%)
+              − roundMoney(previouslyReleasedAmount × 10%)
+releaseTotal  = amount + gstAmount
+```
+
+This **telescopes**: across contiguous releases
+`Σ gstAmount == invoice.retentionGst` and
+`Σ releaseTotal == invoice.retentionTotal`, **exactly**, for any split.
+
+> ⚠️ **Firestore Rules and JavaScript disagree on `math.round` — proven in the
+> emulator.** Rules integer `/` truncates (`10005 / 10` → `1000`) where JS
+> `Math.round(1000.5)` → `1001`. The rules use
+> `math.floor((exGstCents + 5) / 10)`, which is round-half-up and correct under
+> either division semantics. **Do not "simplify" it** — parity tests fail if
+> either side moves.
+
+### Lifecycle
+
+`draft → posted → void` (void also reachable from draft; void terminal,
+non-whitespace reason required), **rules-enforced**. Posted content is immutable;
+voiding is the only permitted update and needs **no** reversal, credit note, or
+adjustment document — the released amount is derived, so every balance restores
+at the next render. There is deliberately **no `paid` status**. Releases are
+never deleted (ADR-12).
+
+### What never changes
+
+`retention`, `retentionGst`, `retentionTotal`, and `payableTotal` on the supplier
+invoice are **immutable for the life of the document**. No release is stamped
+onto an invoice, no `released` status joins `SI_STATUS`, and **no budget,
+forecast, or margin figure changes** — a release moves cash, not cost.
+
+### Honest limits, shown in the UI
+
+- The **cumulative cap is hard-blocked in the app** (no acknowledgement
+  override) but **cannot be enforced by rules**, which cannot sum sibling
+  releases — see SECURITY.md → **Deferred Control 24**.
+- **Retention paid is not reported** — attribution is unknowable.
+- **Released retention ages from the original invoice due date** (no release due
+  date in V1), so it usually shows as very old.
+- A **failed release subscription** marks every dependent figure unavailable and
+  disables release actions — never a silent zero.
+
+**Not included:** client retention · retention due dates and defects-liability
+dates · contract-level retention % / caps · first-half / second-half semantics as
+a first-class concept · retention credit notes · retention-paid attribution ·
+final-account linkage · release-due-date cash-flow timing.
 
 ## The Six Budget Figures — Exact Definitions
 
