@@ -26,9 +26,37 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const FRONTEND = resolve(HERE, '..')
 
 // ── The identity this seed is built for ──────────────────────────────────────
-const UID        = 'igCEJR3XzdTd5JEIJSC5QyP5eBB3'
-const COMPANY_ID = '2Vf3CVuYE8wWzg8hLjR5'
-const ROLE       = 'company_admin'
+// Firestore is emulated but AUTH IS NOT: testers sign in against the REAL
+// Firebase Auth project, so each membership document must be keyed by that
+// person's real Auth UID. Etienne's UID is always seeded; any other tester
+// supplies theirs via TEST_USER_UID and receives an identical membership, so a
+// single seed serves both people without re-running.
+const DEFAULT_UID = 'igCEJR3XzdTd5JEIJSC5QyP5eBB3'   // Etienne
+const COMPANY_ID  = '2Vf3CVuYE8wWzg8hLjR5'
+const ROLE        = 'company_admin'
+
+// A UID becomes a document id, so it must not contain a path separator (which
+// would silently write into a subcollection) nor the relative segments
+// Firestore rejects.
+const isUsableUid = (uid) =>
+  typeof uid === 'string' && uid.length > 0 && uid.length <= 128
+  && !uid.includes('/') && uid !== '.' && uid !== '..'
+
+const TESTER_UID = (process.env.TEST_USER_UID ?? '').trim()
+if (TESTER_UID && !isUsableUid(TESTER_UID)) {
+  console.error(
+    `\n✖ REFUSING TO RUN: TEST_USER_UID ("${TESTER_UID}") is not a usable Firebase Auth UID.\n` +
+    '  It must be non-empty, 128 characters or fewer, and contain no "/".\n',
+  )
+  process.exit(1)
+}
+
+// De-duplicated, so passing Etienne's own UID does not write the document twice.
+const SEEDED_UIDS = [...new Set([DEFAULT_UID, ...(TESTER_UID ? [TESTER_UID] : [])])]
+
+// Authorship stamps on the seeded business documents. Deliberately the default
+// UID, so the fixture reads identically no matter who is testing.
+const UID = DEFAULT_UID
 
 // Deterministic ids so re-running is an upsert, never a duplicate.
 const PROJECT_ID   = 'seedProjectCreditNotes'
@@ -156,14 +184,15 @@ const invoiceBase = {
 
 // ── Documents ────────────────────────────────────────────────────────────────
 const DOCS = [
-  // Membership — the document every rules block get()s to authorise a request.
-  [`users/${UID}`, {
-    name: 'Etienne Shamley (emulator seed)',
-    email: 'etienneshamley@gmail.com',
+  // Memberships — the document every rules block get()s to authorise a request.
+  // One per seeded UID, all identical apart from the display name.
+  ...SEEDED_UIDS.map(uid => [`users/${uid}`, {
+    name: uid === DEFAULT_UID ? 'Etienne Shamley (emulator seed)' : 'Constrapp tester (emulator seed)',
+    email: uid === DEFAULT_UID ? 'etienneshamley@gmail.com' : '',
     role: ROLE,
     companyId: COMPANY_ID,
-    avatarInitials: 'ES',
-  }],
+    avatarInitials: uid === DEFAULT_UID ? 'ES' : 'CT',
+  }]),
 
   [`companies/${COMPANY_ID}`, {
     name: 'Constrapp Demo Construction',
@@ -310,7 +339,8 @@ await testEnv.cleanup()
 console.log(`
 ✔ Seeded the LOCAL Firestore emulator (${EMULATOR_HOST}, project "${GCP_PROJECT_ID}").
 
-  Membership   users/${UID}  (${ROLE})
+  Membership   ${SEEDED_UIDS.map(u => `users/${u}${u === DEFAULT_UID ? '  (Etienne)' : '  (TEST_USER_UID)'}`).join('\n               ')}
+               all seeded as ${ROLE} in company ${COMPANY_ID}
   Company      ${COMPANY_ID}
   Project      "Credit Notes Test Project"  (${PROJECT_ID})
   Supplier     BuildCo Concreting Pty Ltd
@@ -322,9 +352,13 @@ console.log(`
   SI-0002      POSTED · retention 275 withheld · payable 5,225  →  credit notes BLOCKED
 
   Next credit note will be numbered SCN-0001.
+${TESTER_UID ? '' : `
+  ℹ Only Etienne's UID was seeded. Another tester signs in with their OWN
+    Firebase Auth account, so they must seed their own UID:
 
-  Now run:  npm run dev     (with VITE_USE_FIREBASE_EMULATOR=true in .env.local)
-  Then open the project → Supplier Invoices tab.
+        TEST_USER_UID=<their-uid> npm run test:credit-notes
 
+    Find the UID in the Firebase console → Authentication → Users → User UID.
+`}
   Emulator data is in-memory and is discarded when the emulator stops.
 `)
