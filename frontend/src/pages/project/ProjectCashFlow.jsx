@@ -15,6 +15,7 @@ import { useCostCodes } from '../../hooks/useCostCodes'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
+import { useSupplierCreditNotes } from '../../hooks/useSupplierCreditNotes'
 import { useVariations } from '../../hooks/useVariations'
 import { useForecastLines } from '../../hooks/useForecastLines'
 import {
@@ -106,6 +107,7 @@ export default function ProjectCashFlow() {
   const { purchaseOrders, purchaseOrdersError }     = usePurchaseOrders(mid)
   const { progressClaims, progressClaimsError }     = useProgressClaims(mid)
   const { supplierInvoices, supplierInvoicesError } = useSupplierInvoices(mid)
+  const { supplierCreditNotes, supplierCreditNotesError } = useSupplierCreditNotes(mid)
   const { variations, variationsError }             = useVariations(mid)
   const { forecastLines, forecastLinesError }       = useForecastLines(mid)
 
@@ -126,8 +128,8 @@ export default function ProjectCashFlow() {
     [clientInvoices, clientReceipts],
   )
   const apRows = useMemo(
-    () => supplierInvoiceReconciliationRows(supplierInvoices, supplierPayments),
-    [supplierInvoices, supplierPayments],
+    () => supplierInvoiceReconciliationRows(supplierInvoices, supplierPayments, supplierCreditNotes),
+    [supplierInvoices, supplierPayments, supplierCreditNotes],
   )
   const arClass = useMemo(() => classifyInvoiceBalances(arRows, nowMonth), [arRows, nowMonth])
   const apClass = useMemo(() => classifyInvoiceBalances(apRows, nowMonth), [apRows, nowMonth])
@@ -153,8 +155,8 @@ export default function ProjectCashFlow() {
 
   // ── Commercial composition (shared derivations — never duplicated) ─────────
   const forecastTotals = useMemo(
-    () => projectForecastTotals({ costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines }),
-    [costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines],
+    () => projectForecastTotals({ costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines }),
+    [costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines],
   )
   const m = useMemo(
     () => computeMargin({ baseline, variations, forecastFinalCost: forecastTotals.forecastFinalCost }),
@@ -168,8 +170,8 @@ export default function ProjectCashFlow() {
 
   // Per-cost-code balances for the editor pickers and the claim breakdown.
   const forecastRows = useMemo(
-    () => buildForecastRows({ costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines }),
-    [costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines],
+    () => buildForecastRows({ costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines }),
+    [costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines],
   )
   const uninvoicedClaimByCostCode = useMemo(
     () => actualClaimsByCostCode(progressClaims, invoicedClaimIds(supplierInvoices)),
@@ -206,7 +208,7 @@ export default function ProjectCashFlow() {
   }, [variationsError, baselineError, established, availableToInvoice, cashFlowLines])
 
   const costBasisSourceError = budgetLinesError || purchaseOrdersError || progressClaimsError
-    || supplierInvoicesError || forecastLinesError
+    || supplierInvoicesError || supplierCreditNotesError || forecastLinesError
   const cstCov = useMemo(() => {
     if (costBasisSourceError) return { pct: null, state: 'source_error', incompleteBasis: false }
     return costCoverage({
@@ -290,6 +292,7 @@ export default function ProjectCashFlow() {
   const forecastSourceErrors = [
     clientInvoicesError && 'Client Invoices — Forecast Cash In and open AR are unavailable',
     supplierInvoicesError && 'Supplier Invoices — Forecast Cash Out and open AP are unavailable',
+    supplierCreditNotesError && 'Supplier Credit Notes — open AP balances may be overstated, so Forecast Cash Out is unavailable',
     cashFlowLinesError && 'Cash Flow timing lines — the manual forecast is unavailable',
   ].filter(Boolean)
   const costBasisErrors = [

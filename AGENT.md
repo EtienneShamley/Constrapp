@@ -69,12 +69,15 @@ frontend/
     pages/          Top-level routes; pages/project/ holds Project Detail tabs
     hooks/          useAuth, useProfile, useCompany, useProjects, useProject,
                     useCostCodes, useContacts, useBudgetLines, usePurchaseOrders,
-                    useProgressClaims, useSupplierInvoices, useClientInvoices,
+                    useProgressClaims, useSupplierInvoices, useSupplierCreditNotes,
+                    useClientInvoices,
                     useClientReceipts, useSupplierPayments, useVariations,
                     useForecastLines, useProjectCommercial, useCashFlowLines
     lib/            firebase.js, formatters.js, currency.js, nav.js, projectTabs.js,
                     purchaseOrders.js, progressClaims.js, supplierInvoices.js,
-                    clientInvoices.js, payments.js (shared, direction-agnostic),
+                    supplierCreditNotes.js (reduction records vs posted supplier
+                    invoices), clientInvoices.js,
+                    payments.js (shared, direction-agnostic),
                     clientReceipts.js, supplierPayments.js, variations.js,
                     forecast.js, margin.js, cashFlow.js (pure monthly cash
                     aggregation + forecast layers), contacts.js (pure domain logic)
@@ -124,7 +127,8 @@ companies/{companyId}/contacts/{contactId}   entityType, contactTypes[], names, 
                                              company-wide directory; reads restricted to financial roles
 companies/{companyId}/counters/{counterId}   next — sequential numbering (purchaseOrders, progressClaims,
                                              supplierInvoices, variationsClient, variationsSupplier,
-                                             clientInvoices, clientReceipts, supplierPayments)
+                                             clientInvoices, clientReceipts, supplierPayments,
+                                             supplierCreditNotes)
 companies/{companyId}/projects/{projectId}   name, status, budget, startDate, location, progress,
                                              currency (ISO 4217 — the display authority),
                                              currencyLocked (one-way ratchet)
@@ -135,6 +139,21 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
   …/supplierInvoices/{invoiceId}             invoiceNumber (SI-####), status, source, poId, progressClaimId,
                                              ex-GST lineItems[] w/ per-line taxCode, retention, subtotal-gst-net-total —
                                              accounts payable; reads restricted to financial roles
+  …/supplierCreditNotes/{creditNoteId}       creditNumber (SCN-####), status draft|posted|void, FROZEN target
+                                             (supplierInvoiceId + invoiceNumber/supplierInvoiceNumber/
+                                             supplierId/supplierName/currency snapshots — core-preserved),
+                                             supplierCreditReference, creditDate ('YYYY-MM-DD'), REQUIRED
+                                             non-whitespace reason, ex-GST lineItems[] w/ per-line taxCode +
+                                             REQUIRED costCodeId (from the target invoice's lines; NO
+                                             poLineIndex), subtotal/gstTotal/grossTotal (whole-cent header
+                                             invariant rules-enforced) — REDUCTION records against exactly
+                                             ONE posted, ZERO-RETENTION supplier invoice; LIFECYCLE + POSTED
+                                             IMMUTABILITY RULES-ENFORCED, and rules GET() THE TARGET (exists,
+                                             posted, zero retention, supplier+currency match, grossTotal ≤
+                                             payableTotal); cumulative cap app-enforced only (DC25); posted
+                                             valid-target credits reduce Invoiced/Actual by cost code and the
+                                             invoice's remaining payable AT READ TIME — the invoice is NEVER
+                                             written; reads restricted to financial roles
   …/clientReceipts/{receiptId}               receiptNumber (CR-####), status draft|posted|void, REQUIRED clientId +
                                              clientName snapshot, receiptDate ('YYYY-MM-DD'), gross `amount` (> 0),
                                              paymentMethod (never defaulted), bank/external refs, EMBEDDED
@@ -192,7 +211,8 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
 ## Financial Invariants (mandatory)
 
 - **Purchase Orders, Progress Claims, Supplier Invoices, Variations, and Forecast Lines never write financial values onto Budget Lines.** Committed, Claimed, Actual, Invoiced, the variation figures (Approved Supplier Variations / Commitment Exposure), and every forecast figure (Cost to Complete, Forecast Final Cost, Variance to Budget) are derived at read time from PO, claim, invoice, and variation documents (`lib/purchaseOrders.js`, `lib/progressClaims.js`, `lib/supplierInvoices.js`, `lib/variations.js`, `lib/forecast.js`) — never stored back. **Forecast Lines store only the manual `uncommittedCostToComplete` (number|null) + notes; supplier-variation exposure is shown separately and is never added into Forecast Final Cost.** Approved variations count only at read time and never mutate POs, claims, or invoices; **Commitment Exposure is separate from Committed** (variation commitment does not yet mature against claims/invoices). Committed now means *remaining open commitment* (PO line − posted/paid invoiced-to-date); Actual counts a posted invoice instead of its source claim (read-time exclusion — the claim is never mutated)
-- Document numbers (`PO-0001`, `PC-0001`, `SI-0001`, `CV-0001`, `SV-0001`, `CI-0001`, `CR-0001`, `SP-0001`) come from company-wide counters incremented in the same transaction as the document write
+- Document numbers (`PO-0001`, `PC-0001`, `SI-0001`, `CV-0001`, `SV-0001`, `CI-0001`, `CR-0001`, `SP-0001`, `SCN-0001`) come from company-wide counters incremented in the same transaction as the document write
+- **Supplier Credit Notes are the reduction fact — never a mutation of the invoice and never cash.** A credit note targets exactly **one posted, zero-retention** supplier invoice (target frozen at creation; both enforced by rules via a `get()` on the target) and **nothing is ever written onto that invoice** — no credited total, no status change, no back-reference. Posted **valid-target** credits reduce Invoiced/Actual by cost-coded ex-GST lines (signed, never clamped) and the invoice's Remaining Payable by `grossTotal` — all at read time (`lib/supplierCreditNotes.js`), so voiding restores everything with no reversal document. **Actual Cash Out stays payment-only**, and **Remaining Committed is never re-opened by a credit** (no `poLineIndex` on credit lines). Over-crediting beyond the target's `payableTotal` is **HARD-BLOCKED** in the app (cumulative; rules enforce only the single-document cap — Deferred Control 25). A posted credit counts **only while it passes the central read-time validity gate** (`creditTargetException`): target still valid AND stored headers reconciling to its own `lineItems` with correct per-line GST, positive amounts, and cost codes present on the target — rules cannot iterate an array, so this is the only thing standing between a rules-valid forged document and an unbounded silent cost reduction. Anything failing counts **zero** on BOTH the payable and cost sides, is **never clamped**, and surfaces as an exception — cost stays visible (ADR-31). A failed credit-note subscription is **unknown, never zero**: payable figures render unavailable and payment actions are disabled
 - **Client Invoices are revenue-side and never touch a cost figure.** They never write onto Budget Lines, the Commercial Baseline, or Variations; `Issued Client Invoices`, `Available to Invoice`, per-variation invoiced/remaining, and receivables ageing are all derived at read time (`lib/clientInvoices.js`). Only **approved** client variations are invoiceable; **negative** approved ones reduce the Current Contract Sum but cannot be invoiced. Over-invoicing is **warned, never blocked** — the limit cannot be rules-enforced. **There is still no payment state ON THE INVOICE**: no `paid`/`partially_paid` status and no payment field. Since Client Receipts shipped, *Received to Date*, *Remaining to Reconcile*, and the reconciliation state (*unreconciled / partly / fully / over-reconciled*) are **derived at read time from posted receipt allocations** and are **never written onto an invoice** — which is why voiding a receipt restores balances with no reversal record. The words *paid* and *unpaid* must never be used as an invoice status. Constrapp does **not** produce a compliant Australian Tax Invoice (no company legal name/ABN) — never label output "Tax Invoice"
 - **Client Receipts are cash, not revenue.** A receipt stores gross cash received — **no GST, no tax code, no net amount** — and feeds **no** budget figure, forecast figure, or margin figure. Allocations are **embedded** on the receipt and **nothing is ever written onto a Client Invoice** (no balance, no payment status, no back-reference). Over-allocating the *receipt* is hard-blocked and its scalar arithmetic is rules-enforced (in whole cents); over-allocating an *invoice* is **warned, never blocked** — rules cannot sum sibling documents. Unallocated receipts are permitted, reported separately, and **never auto-applied**. Cash Flow must consume `receiptDate`, never `createdAt`/`postedAt`
 - **Supplier Payments are cash out, not cost.** A payment settles an Actual cost that a **posted** supplier invoice already recognised, so it feeds **no** budget figure, forecast figure, or margin figure. Allocations reconcile against `supplierInvoice.payableTotal` — **never `grossTotal`** — because retention withheld is not payable, and a payment never writes, clears, or reduces `retention`/`retentionGst`/`retentionTotal` (retention release is not modelled). Allocations are **embedded** on the payment and **nothing is ever written onto a Supplier Invoice** (no balance, no payment status, no back-reference). **`SI_STATUS.PAID` and `paidAt` are DEPRECATED IN PLACE, never activated** — no path writes them and `SI_TRANSITIONS` reaches `paid` from nowhere; `paid` stays in `SI_COUNTING_STATUSES` deliberately so a direct-SDK-forged document cannot vanish from Invoiced/Actual (ADR-24). Over-allocating the *payment* is hard-blocked and its scalar arithmetic is rules-enforced (whole cents); over-reconciling an *invoice* is **warned, never blocked**. Unallocated payments are permitted, reported separately, and **never auto-applied** — and their **full amount** is still actual Cash Out. Cash Flow must consume `paymentDate`, never `createdAt`/`postedAt`

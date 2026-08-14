@@ -150,14 +150,14 @@ next save. Embedding (not a `contactAssignments` subcollection) follows ADR-16.
 
 Company-wide sequential numbering. Documents: `purchaseOrders`, `progressClaims`,
 `supplierInvoices`, `variationsClient`, `variationsSupplier`, `clientInvoices`,
-`clientReceipts`, `supplierPayments`.
+`clientReceipts`, `supplierPayments`, `supplierCreditNotes`.
 
 | Field | Type | Notes |
 |---|---|---|
 | `next` | number | The next number to assign. Read and incremented in the **same transaction** as the numbered document's creation, so concurrent users never share a number. Missing counter ⇒ starts at 1 |
 
 Numbers render as `PO-0001` / `PC-0001` / `SI-0001` / `CV-0001` / `SV-0001` /
-`CI-0001` / `CR-0001` / `SP-0001` (zero-padded to 4).
+`CI-0001` / `CR-0001` / `SP-0001` / `SCN-0001` (zero-padded to 4).
 
 ## companies/{companyId}/projects/{projectId}
 
@@ -293,7 +293,7 @@ GST is stored per line as `gstAmount`.
 | `invoiceNumber` | string | `SI-0001` — from the company-wide `counters/supplierInvoices` |
 | `supplierInvoiceNumber` | string | The supplier's own invoice number — the duplicate-detection key |
 | `status` | string | `draft` \| `approved` \| `posted` \| `cancelled` (live); `received` \| `under_review` \| `disputed` reserved. **`paid` is DEPRECATED IN PLACE, not reserved** — no supported path writes it and `SI_TRANSITIONS` reaches it from nowhere; payment state derives from Supplier Payment allocations (ADR-24). It is retained for legacy rendering, and because supplier-invoice lifecycle rules are still deferred a direct-SDK caller **can** still forge it |
-| `docType` | string | `invoice`; `credit_note` reserved (Credit Notes are future) |
+| `docType` | string | `invoice`; the reserved `credit_note` value is **SUPERSEDED, never activated** — Supplier Credit Notes live in their own `supplierCreditNotes` collection (ADR-31) |
 | `source` | string | `progress_claim` \| `direct_po` |
 | `supplierId` | string \| null | → contact, snapshotted from the PO/claim; null for pre-Contacts POs |
 | `supplierName` | string | Snapshot from the PO/claim — never re-read |
@@ -319,7 +319,7 @@ GST is stored per line as `gstAmount`.
 | `postedAt`/`postedBy` | timestamp / uid | Stamped on post (the financial commit point) |
 | `cancelledAt` | timestamp \| null | Stamped on cancel |
 | `paidAt` | timestamp \| null | **DEPRECATED IN PLACE** — written once as `null` at creation and **never updated**. Supplier Payments shipped without activating it: payment state derives from posted Supplier Payment allocations, and setting a date here would create a second source of payment truth (ADR-24) |
-| `adjustsInvoiceId` | string \| null | **Reserved** — Credit Note target |
+| `adjustsInvoiceId` | string \| null | **SUPERSEDED, never activated** — the target reference lives on the Supplier Credit Note document (`supplierCreditNotes.supplierInvoiceId`, ADR-31), pointing the correct direction so nothing is ever written onto an invoice. Still written as `null` for shape stability |
 | `attachments` | array | **Reserved** — always `[]`; no Storage uploads yet |
 | `externalRefs` | map | **Reserved** — accounting-system IDs (Xero/MYOB/QuickBooks) |
 | `createdAt` / `createdBy` | timestamp / uid | |
@@ -568,6 +568,74 @@ set (ADR-24). Voiding a payment therefore restores every invoice balance for
 free, with no reversal, refund, or bank-reversal document. **No migration** — a
 project with no `supplierPayments` loads normally.
 
+## …/projects/{projectId}/supplierCreditNotes/{creditNoteId}
+
+Project-scoped **reduction records** against exactly one **posted** Supplier
+Invoice (ADR-31): supplier credits for over-claimed quantities, rejected work,
+back-charges, or negotiated reductions. The third payable-side document kind —
+the invoice holds the cost/payable fact, the payment holds the cash fact, the
+credit note holds the reduction fact — and none is ever mutated to reflect
+another. All canonical line amounts are **ex-GST** with per-line
+`taxCode`/`gstAmount`, exactly like the supplier-invoice lines they reverse.
+
+| Field | Type | Notes |
+|---|---|---|
+| `creditNumber` | string | `SCN-0001` from `counters/supplierCreditNotes`; immutable (rules-enforced) |
+| `status` | string | `draft` \| `posted` \| `void` — lifecycle **rules-enforced** to the ADR-22 standard; `posted` is the counting point; void terminal |
+| `docType` | string | `credit_note` (rules-enforced literal, frozen) |
+| `supplierInvoiceId` | string | **The one target** — a posted, zero-retention supplier invoice in this project. **Frozen at creation and core-preserved by rules**: retargeting is a void plus a new credit note |
+| `invoiceNumber` | string | Frozen `SI-####` snapshot of the target |
+| `supplierInvoiceNumber` | string | Frozen supplier's-own-reference snapshot (`''` when none) |
+| `supplierId` | string \| null | Frozen from the target invoice — null allowed only because legacy invoices may carry null (rules require equality with the target) |
+| `supplierName` | string | Frozen display-name snapshot, required non-empty |
+| `supplierCreditReference` | string | The supplier's own credit-note number (e.g. `CN-1042`); `''` when none; duplicate-warned, never blocked |
+| `creditDate` | string | `'YYYY-MM-DD'` (shape rules-enforced) |
+| `reason` | string | **Required non-whitespace (rules-enforced)** — a credit without a stated cause is an audit hole |
+| `lineItems[]` | array | 1–100 entries (size rules-enforced; element shape client-side) |
+| `subtotal` | number | Σ line `amount` (ex-GST), `> 0` |
+| `gstTotal` | number | Σ line `gstAmount`, `≥ 0` |
+| `grossTotal` | number | `subtotal + gstTotal` — **whole-cent header invariant rules-enforced**, and `grossTotal ≤ target payableTotal` enforced via the rules `get()` |
+| `currency` | string | Audit snapshot **frozen from the target invoice** (rules require the match); never read for rendering |
+| `revision` | number | `1`; frozen |
+| `notes` | string | Optional |
+| `postedAt` / `postedBy` | Timestamp/string \| null | Rules: `== request.time` / caller on the post transition, null before |
+| `voidedAt` / `voidedBy` / `voidReason` | — | Void audit; reason non-whitespace (rules-enforced) |
+| `attachments` | array | **Reserved** — always `[]` (no Storage) |
+| `externalRefs` | map | **Reserved** — accounting sync |
+| `createdAt/By`, `updatedAt/By` | — | Unforgeable stamps (rules-enforced) |
+
+Line item: `{ costCodeId, costCodeName, description, amount (ex-GST > 0),
+taxCode ('gst'|'gst_free'|'input_taxed'), gstAmount }`. Every line **requires a
+cost code drawn from the target invoice's lines** (client-enforced) — a
+header-only credit would reduce AP cash but leave cost-code Actual/Invoiced
+overstated. There is **no `poLineIndex`**: commitment maturing deliberately
+ignores credits (ADR-31).
+
+**The target checks (first cross-document `get()` in a financial rules
+block).** On create, on every draft edit, and on the `draft → posted`
+transition, rules verify the target exists, is
+`posted`, matches `supplierId` and `currency`, carries **`retentionTotal` of
+zero** (retained invoices cannot be credited while retention release is
+unmodelled), and that this credit's `grossTotal` does not exceed its
+`payableTotal` (whole cents). The **cumulative** cap across sibling credit
+notes is app-enforced only — a HARD BLOCK, Deferred Control 25.
+
+**Stored vs derived.** Only the fields above are authored or snapshotted.
+**Credited-by-invoice, credited-by-cost-code, the net Invoiced/Actual figures,
+the net Remaining Payable, and the exceptions list are derived at read time**
+(`lib/supplierCreditNotes.js` and its consumers) and are **never** written back
+— above all **not onto the Supplier Invoice**, which gains no credited total,
+no status change, and no back-reference. A posted credit counts **only while it
+passes the read-time validity gate** (`creditTargetException`): target still
+resolving to a counting invoice with matching supplier, currency and zero
+retention and a payable covering the credit's gross, **and** stored headers
+reconciling to its own `lineItems` with per-line GST, positive amounts, and
+cost codes present on the target. Otherwise it contributes zero to **both** the
+payable and cost derivations and is surfaced as an exception — never clamped
+(safe failure: cost stays visible). Voiding a credit note restores every figure
+at the next render with no reversal document. **No migration** — a project with
+no `supplierCreditNotes` loads normally.
+
 ## …/projects/{projectId}/variations/{variationId}
 
 Project-scoped commercial change control. **One type-discriminated collection**
@@ -807,4 +875,5 @@ a design assessment, a hook, and (where a new collection is introduced) a manual
 - Client invoices → a client contact via `clientId`, with the client's name, legal name, ABN, email, phone, and address **snapshotted at creation** so later contact edits never rewrite billing history; → approved **client** variations via an optional per-line `variationId` (+ frozen `variationNumber`/`variationDescription`). The linkage is **read-time only**: invoicing **never** mutates a variation (no stamp, no status change, no back-reference) and never touches the commercial baseline or Budget Lines. Line `costCodeId` is **optional** (ADR-22).
 - Client receipts → a client contact via a **required** `clientId` (with a frozen `clientName` snapshot); → issued client invoices via **embedded** `allocations[].clientInvoiceId` (+ a frozen `invoiceNumber` snapshot). The linkage is **read-time only**: a receipt **never** mutates an invoice (no balance field, no payment status, no back-reference), which is exactly why voiding a receipt restores every balance with no reversal record. Receipts touch no cost figure, no forecast, and no margin figure — cash is not revenue.
 - Supplier payments → a supplier/subcontractor contact via a **required** `supplierId` (with a frozen `supplierName` snapshot); → **posted** supplier invoices via **embedded** `allocations[].supplierInvoiceId` (+ frozen `invoiceNumber` **and** `supplierInvoiceNumber` snapshots). A supplier invoice with a legacy `supplierId: null` is matched on its frozen `supplierName` instead and is **never backfilled**. The linkage is **read-time only**: a payment **never** mutates a supplier invoice (no balance field, no payment status, no back-reference, no `paid` status, no `paidAt`), which is exactly why voiding a payment restores every balance with no reversal record. Payments touch no cost figure, no forecast, and no margin figure — cash out is not cost.
-- Counters are company-wide: PO/claim/invoice/receipt/payment numbers are unique per **company**, not per project. Contacts, forecast lines, and the commercial baseline carry no sequential number.
+- Supplier credit notes → exactly **one posted** supplier invoice via a **frozen** `supplierInvoiceId` (+ frozen `invoiceNumber`/`supplierInvoiceNumber`/`supplierId`/`supplierName`/`currency` snapshots — all core-preserved by rules). The target must be posted with **zero retention** at create/edit time (rules `get()`). The linkage is **read-time only**: a credit note **never** mutates the invoice; posted valid-target credits subtract from Invoiced/Actual by line `costCodeId` (ex-GST) and from the invoice's Remaining Payable by `grossTotal`. Credit lines carry cost codes drawn from the target invoice's lines and **no `poLineIndex`** — Remaining Committed is never restored by a credit (ADR-31).
+- Counters are company-wide: PO/claim/invoice/receipt/payment/credit-note numbers are unique per **company**, not per project. Contacts, forecast lines, and the commercial baseline carry no sequential number.

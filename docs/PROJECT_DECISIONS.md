@@ -1286,3 +1286,135 @@ document-only read is the real contract, not an accident.
   role can still fabricate cash records by direct SDK call. What changed is that
   a user can no longer **grant themselves** that role, so the blast radius is
   now bounded by who is provisioned.
+
+<!-- ADR-28 (Documents & Drawings), ADR-29 (Project Timeline), and ADR-30
+     (Supplier Retention) are RESERVED for parked feature branches and are
+     deliberately absent here. Do not reuse those numbers. -->
+
+## ADR-31: Supplier Credit Notes (separate collection; read-time reduction; target-validated by rules)
+
+**Context.** A posted supplier invoice is terminal and immutable — no void, no
+cancel, no un-post (ADR-17: "corrections are future Credit Notes"). When a
+supplier over-bills, work is rejected, or a back-charge is agreed *after*
+posting, the overstated figures were permanent: cost-code Invoiced and Actual
+(and through them Forecast Final Cost and Margin) stayed high, and the invoice's
+Remaining Payable aged forever as money that would never be paid. The AP
+over-payment warning even told users to "check for a supplier credit still to be
+raised" — with nowhere to raise one. Client-side corrections have a
+rules-enforced path (`issued → void` + reissue, ADR-22), so the supplier side
+was the acute gap.
+
+**Decision.** A new project-scoped collection
+`companies/{companyId}/projects/{projectId}/supplierCreditNotes` holds
+**authored Supplier Credit Note documents**: `SCN-####` from a company-wide
+counter (ADR-5, currency ratchet in the create transaction per ADR-21),
+lifecycle `draft → posted → void` **rules-enforced to the ADR-22 standard**,
+and exactly **one posted supplier invoice per credit note**, referenced by a
+`supplierInvoiceId` that is **frozen at creation** together with the supplier
+snapshot. Lines mirror supplier-invoice lines (ex-GST `amount` + per-line
+`taxCode`/`gstAmount`) and **every line requires a cost code drawn from the
+target invoice's lines**. Headers store `subtotal`/`gstTotal`/`grossTotal`
+only — no retention, no payable/gross split.
+
+The three payable-side document kinds each hold exactly one truth, and none is
+ever mutated to reflect another:
+
+- **supplier invoice** — the original cost / payable fact;
+- **supplier payment** — the cash fact;
+- **supplier credit note** — the reduction fact.
+
+All net figures are derived at read time (ADR-3/ADR-4): posted, **valid-target**
+credits subtract from Invoiced and Actual by cost code (ex-GST, signed, never
+clamped) and from the target's Remaining Payable by `grossTotal`, flowing from
+there into AP ageing, the payment-allocation picker, Forecast Cash Out, FFC and
+Margin. **Actual Cash Out remains payment-only** — a credit moves no money.
+
+**Rejected alternatives.** *Negative invoices in `supplierInvoices`* — every
+existing derivation sums positive lines, the codebase's explicit rule is that a
+reduction is never a negative amount, and that collection still has no lifecycle
+rules (DC 1/2), which is the worst possible home for the one document whose
+forgery **erases** cost. *Mutating the posted invoice* — violates ADR-11/12/17
+outright. *A stored credited-total rollup* — the rejected `receivedToDate`
+precedent (ADR-23) governs. The `docType: 'credit_note'` / `adjustsInvoiceId`
+fields reserved on both invoice collections are **superseded and remain
+reserved, never activated**: the target reference lives on the credit-note
+document, pointing the correct direction, so nothing is ever written onto an
+invoice.
+
+**The first cross-document `get()` in a financial rules block.** Every earlier
+financial collection validates only its own document. A credit note inverts the
+app's safe-failure direction — every prior payable module failed safe by
+*keeping cost visible*, but a forged credit *understates* cost and flatters
+margin — and its target is a single scalar reference, so one `get()` can
+validate it. On create, on every draft edit, **and on the `draft → posted`
+transition** (the financial commit point — a stale draft must never post
+against a target that changed underneath it) the rules verify: the target exists
+in this project, is `posted`, matches the credit's `supplierId` and `currency`,
+carries **`retentionTotal` of zero**, and its `payableTotal` covers this
+credit's `grossTotal` (whole-cent comparison). The **cumulative** cap across
+sibling credit notes cannot be rules-enforced (no list/query/count); the app
+**hard-blocks** it — deliberately stricter than the warn-and-acknowledge posture
+of over-payment, because crediting more than a debt is not a judgement call —
+and Deferred Control 25 records what remains client-side.
+
+**Read-time validity gating (the safe failure mode).** `creditTargetException`
+is the single central gate every derivation funnels through, and a posted credit
+counts toward **no** figure unless it passes all of it. Two classes of check:
+
+- *Target* — still resolves to a counting supplier invoice, same supplier, same
+  currency, **zero retention**, and a `payableTotal` covering the credit's
+  gross. Rules check these at create, draft edit and post, but **never fire
+  again afterwards**, so a target cancelled or altered by a later direct SDK
+  call (supplier-invoice lifecycle is still client-enforced, DC 1/2) is caught
+  here.
+- *Document integrity* — the stored `subtotal`/`gstTotal`/`grossTotal` reconcile
+  to the credit's own `lineItems` in whole cents, each line's GST matches its
+  amount and tax code, each amount is positive, and every line's cost code
+  appears on the target invoice. **Rules cannot check any of this**: they cannot
+  iterate an array, so only the scalar header invariant is enforced server-side.
+  Without this gate a rules-valid document could store `grossTotal: 100` while
+  its lines claimed 50,000, reducing the payable by 100 and Actual by 50,000 at
+  once — an unbounded, silent understatement of cost in exactly the direction
+  this module must never fail toward.
+
+Anything failing is excluded **whole and never clamped** (a clamped forgery
+still lies) and surfaces in an exceptions panel: cost stays visible, which is
+the safe direction. The target-status check uses the counting statuses
+(`posted` + the deprecated forgeable `paid`), not `posted` alone, so a credit
+and its invoice can never disagree about whether the invoice's cost exists.
+
+⚠️ This gate protects **the figures this app renders**; it is not enforcement
+and does not repair the stored document. The cumulative sibling cap and
+concurrency remain unenforceable anywhere on the client (DC 25).
+
+**Retained invoices cannot be credited.** Crediting an invoice that withheld
+retention is ambiguous — does the credit come out of the payable slice or the
+retained slice? — and retention release is unmodelled. The target must carry
+`retentionTotal == 0`, enforced in the UI, in domain validation, **and by the
+rules `get()`**. This forecloses nothing: a future retention module can widen
+the rule with its own review.
+
+**Consequences.**
+
+- **Remaining Committed is deliberately NOT restored by a credit.** Credit lines
+  carry no `poLineIndex`, so commitment maturing still reads invoices only.
+  Between a credit and any corrected re-invoice, FFC is briefly understated by
+  the credited amount; the QS adjusts Uncommitted CTC if re-invoicing is
+  expected. Re-opening commitment is a possible future enhancement.
+- **Credit after full payment goes over-reconciled, honestly.** The invoice's
+  remaining payable goes negative, is excluded from ageing (never netted against
+  arrears), and is surfaced as *money recoverable from the supplier*. No refund
+  transaction is invented — `SP_DOC_TYPE.REFUND` stays reserved.
+- **A fully-credited unpaid invoice reads fully reconciled** — settlement by
+  credit is settlement; the paid and credited components stay separate columns.
+- **Voiding restores everything at the next render** with no reversal document
+  (the void reason is required, rules-enforced non-whitespace).
+- **Retargeting a draft is a void plus a new credit note** — the SCN sequence
+  gains an intentional gap, matching ADR-12's no-deletion posture.
+- **Client credit notes remain deferred.** When built, they must be a separate
+  collection (the ADR-23 split doctrine) and must never subtract from revenue a
+  second time — negative approved client variations already reduce the Current
+  Contract Sum.
+- Deferred: attachments (no Storage), an approval stage before posting,
+  line-index-level matching, free-standing credits, applying a credit as
+  payment against a future invoice, refunds, final-account linkage.

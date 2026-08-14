@@ -15,6 +15,7 @@ import { useCostCodes } from '../../hooks/useCostCodes'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
+import { useSupplierCreditNotes } from '../../hooks/useSupplierCreditNotes'
 import { useClientInvoices } from '../../hooks/useClientInvoices'
 import { useClientReceipts } from '../../hooks/useClientReceipts'
 import { useSupplierPayments } from '../../hooks/useSupplierPayments'
@@ -23,6 +24,7 @@ import { useForecastLines } from '../../hooks/useForecastLines'
 import {
   isFinancialRole, isBaselineEstablished, projectForecastTotals, computeMargin,
 } from '../../lib/margin'
+import { CREDIT_READ_ERROR_NOTICE } from '../../lib/supplierCreditNotes'
 
 const pct   = (n) => (n === null || n === undefined ? '—' : percent(n))
 
@@ -30,12 +32,12 @@ const pct   = (n) => (n === null || n === undefined ? '—' : percent(n))
 // no duplicated business logic. Shown only to financial roles (commercially
 // sensitive); the commercially-scoped reads are disabled for other roles so
 // they never trigger a rules-denied fetch. Firestore rules are the boundary.
-function MarginCards({ currencyCode, costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines, baseline, baselineLoading }) {
+function MarginCards({ currencyCode, costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, supplierCreditNotesError, variations, forecastLines, baseline, baselineLoading }) {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const forecastTotals = useMemo(
-    () => projectForecastTotals({ costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines }),
-    [costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines],
+    () => projectForecastTotals({ costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines }),
+    [costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines],
   )
   const m = useMemo(
     () => computeMargin({ baseline, variations, forecastFinalCost: forecastTotals.forecastFinalCost }),
@@ -62,7 +64,11 @@ function MarginCards({ currencyCode, costCodes, budgetLines, purchaseOrders, pro
           </div>
         ))}
       </div>
-      <p className="m-0 mt-3 text-[11px] text-brand-muted">Ex-GST, derived at read time. Full detail on the Commercial tab.</p>
+      <p className="m-0 mt-3 text-[11px] text-brand-muted">
+        {supplierCreditNotesError
+          ? `⚠ ${CREDIT_READ_ERROR_NOTICE}`
+          : 'Ex-GST, derived at read time. Full detail on the Commercial tab.'}
+      </p>
     </Card>
   )
 }
@@ -179,6 +185,7 @@ function ProjectFinancialCards({ project, projectId, currencyCode, canEditCurren
   const { purchaseOrders }   = usePurchaseOrders(projectId)
   const { progressClaims }   = useProgressClaims(projectId)
   const { supplierInvoices } = useSupplierInvoices(projectId)
+  const { supplierCreditNotes, supplierCreditNotesError } = useSupplierCreditNotes(projectId)
   const { clientInvoices }   = useClientInvoices(projectId)
   const { clientReceipts }   = useClientReceipts(projectId)
   const { supplierPayments } = useSupplierPayments(projectId)
@@ -215,6 +222,8 @@ function ProjectFinancialCards({ project, projectId, currencyCode, canEditCurren
         purchaseOrders={purchaseOrders}
         progressClaims={progressClaims}
         supplierInvoices={supplierInvoices}
+        supplierCreditNotes={supplierCreditNotes}
+        supplierCreditNotesError={supplierCreditNotesError}
         variations={variations}
         forecastLines={forecastLines}
         baseline={baseline}
