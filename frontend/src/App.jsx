@@ -19,6 +19,7 @@ import Subcontractors from './pages/Subcontractors'
 import Pulse          from './pages/Pulse'
 import Shield         from './pages/Shield'
 import ProjectOverview   from './pages/project/ProjectOverview'
+import ProjectBoq        from './pages/project/ProjectBoq'
 import ProjectBudget     from './pages/project/ProjectBudget'
 import ProjectCostCodes  from './pages/project/ProjectCostCodes'
 import ProjectPurchaseOrders from './pages/project/ProjectPurchaseOrders'
@@ -58,14 +59,10 @@ export default function App() {
                     <Route path="projects/:projectId" element={<ProjectDetailLayout />}>
                       <Route index element={<Navigate to="overview" replace />} />
                       <Route path="overview" element={<ProjectOverview />} />
-                      <Route path="boq" element={
-                        <ProjectPlaceholder
-                          icon="📋"
-                          title="BOQ & Tender Tool"
-                          description="Build a Bill of Quantities, set margin & overheads, and transfer to this project's budget in one click."
-                          badge="Coming in Sprint 3"
-                        />
-                      } />
+                      {/* BOQ — the measured Bill of Quantities (ADR-32 Part 1).
+                          Estimating (margin/overheads), BOQ → Budget transfer,
+                          and Tenders are later branches. */}
+                      <Route path="boq" element={<ProjectBoq />} />
                       <Route path="budget"      element={<ProjectBudget />} />
                       <Route path="cost-codes"  element={<ProjectCostCodes />} />
                       <Route path="purchase-orders" element={<ProjectPurchaseOrders />} />

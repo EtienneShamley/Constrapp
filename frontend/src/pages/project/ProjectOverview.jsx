@@ -20,6 +20,7 @@ import { useClientReceipts } from '../../hooks/useClientReceipts'
 import { useSupplierPayments } from '../../hooks/useSupplierPayments'
 import { useVariations } from '../../hooks/useVariations'
 import { useForecastLines } from '../../hooks/useForecastLines'
+import { useBoqItems } from '../../hooks/useBoqItems'
 import {
   isFinancialRole, isBaselineEstablished, projectForecastTotals, computeMargin,
 } from '../../lib/margin'
@@ -152,8 +153,9 @@ function ProjectCurrencyCard({ project, projectId, currencyCode, sources }) {
               </div>
               <p className="m-0 mt-1.5 text-[11px] text-brand-muted max-w-[560px]">
                 Inherited from your company. Editable only until this project has a headline budget, budget lines,
-                orders, claims, invoices, receipts, payments, variations, forecast inputs, or a commercial baseline —
-                after that it locks, because changing it would relabel existing amounts without converting them.
+                orders, claims, invoices, receipts, payments, variations, forecast inputs, priced BOQ items, or a
+                commercial baseline — after that it locks, because changing it would relabel existing amounts
+                without converting them.
               </p>
               {error && <p className="m-0 mt-1.5 text-[12px] text-brand-red">{error}</p>}
             </>
@@ -184,6 +186,7 @@ function ProjectFinancialCards({ project, projectId, currencyCode, canEditCurren
   const { supplierPayments } = useSupplierPayments(projectId)
   const { variations }       = useVariations(projectId)
   const { forecastLines }    = useForecastLines(projectId)
+  const { boqItems }         = useBoqItems(projectId)
   const { baseline, baselineLoading } = useProjectCommercial(projectId)
 
   // Client invoices, client receipts and supplier payments are monetary data, so
@@ -192,10 +195,13 @@ function ProjectFinancialCards({ project, projectId, currencyCode, canEditCurren
   // feeds margin — revenue recognition is not modelled, cash in is not revenue,
   // and cash out is not cost (a payment settles an Actual cost the posted
   // supplier invoice already recognised) — so all three are deliberately absent
-  // from MarginCards below.
+  // from MarginCards below. BOQ items join the lock evidence too (a PRICED item
+  // is an amount in the project currency — lib/currency.js counts only priced
+  // ones) while feeding no margin figure: the BOQ is measurement provenance,
+  // never a financial input (ADR-32).
   const sources = useMemo(
-    () => ({ budgetLines, purchaseOrders, progressClaims, supplierInvoices, clientInvoices, clientReceipts, supplierPayments, variations, forecastLines, baseline }),
-    [budgetLines, purchaseOrders, progressClaims, supplierInvoices, clientInvoices, clientReceipts, supplierPayments, variations, forecastLines, baseline],
+    () => ({ budgetLines, purchaseOrders, progressClaims, supplierInvoices, clientInvoices, clientReceipts, supplierPayments, variations, forecastLines, boqItems, baseline }),
+    [budgetLines, purchaseOrders, progressClaims, supplierInvoices, clientInvoices, clientReceipts, supplierPayments, variations, forecastLines, boqItems, baseline],
   )
 
   return (

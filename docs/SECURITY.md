@@ -64,6 +64,7 @@ to financial roles.**
 | `…/costCodes/{id}` | company member | financial roles | blocked — deactivate via `isActive` |
 | `…/contacts/{id}` | **financial roles only** | financial roles | blocked — archive via `isActive` |
 | `…/projects/{id}/budgetLines/{id}` | company member | financial roles | blocked |
+| `…/projects/{id}/boqItems/{id}` | **financial roles only** | financial roles, **create active-only; transitions, post-void immutability and the `amount == quantity × rate` invariant rules-enforced** | blocked — void via status |
 | `…/projects/{id}/purchaseOrders/{id}` | company member | financial roles | blocked — cancel via status |
 | `…/projects/{id}/progressClaims/{id}` | company member | financial roles | blocked — reject via status |
 | `…/projects/{id}/supplierInvoices/{id}` | **financial roles only** | financial roles | blocked — cancel via status |
@@ -405,6 +406,59 @@ variations) is future work alongside the deferred scoping controls below.
 Note the asymmetry: `qs` can write cost codes, budget lines, POs, and claims but
 **not** projects — with one deliberate, narrowly-scoped exception described below.
 
+## Bill of Quantities — the internal estimate, rules-enforced lifecycle
+
+**Reads are restricted to financial roles.** The BOQ is the project's internal
+estimate — measured quantities and the rates the contractor expects to pay —
+so `subcontractor` and `client` users must not read it: a bidder who can read
+the estimate prices against it. This is the tightest-audience posture in the
+app to date, and **any future tender or bidder-facing surface must never expose
+BOQ rates at all.**
+
+BOQ items feed **no financial figure**. The hook writes only `boqItems` (plus
+the currency ratchet inside the create transaction); Budgeted, Committed,
+Actual, Invoiced, Forecast, Margin, and Cash Flow are untouched, and the
+BOQ-vs-budget comparison is derived at read time in `lib/boq.js`, never stored
+(ADR-32 Part 1).
+
+**The `boqItems` lifecycle is rules-enforced** — the two-state `cashFlowLines`
+shape (a BOQ item is a preconstruction record with no financial commit point):
+
+- `create` only with `status: 'active'`, `revision: 1`, a non-whitespace
+  `description`, a bounded non-empty `unit`, `quantity >= 0`, a **mandatory**
+  `costCodeId` + non-empty `costCodeName` snapshot, a shape-valid `currency`,
+  `createdBy == request.auth.uid`, `createdAt == request.time`, and **null
+  void stamps**.
+- **The pricing invariant** — the one arithmetic guarantee rules can give
+  here: `rate` and `amount` are **both null** (unpriced) or **both
+  non-negative numbers** with `cents(quantity × rate) == cents(amount)`
+  (whole-cent comparison, the `clientReceipts` idiom — exactly equivalent to a
+  half-cent tolerance). A priced item can never carry an amount that disagrees
+  with its own quantity × rate, and `0` can never be smuggled in to mean
+  "unpriced".
+- **Every** update must preserve `currency`, `createdAt`, `createdBy`, and
+  `revision`, and must stamp `updatedBy == request.auth.uid` and
+  `updatedAt == request.time`.
+- **Active edits** may change content (measurement, pricing, cost code,
+  labels) but not the status, must satisfy the full shape, and may not forge a
+  void stamp.
+- **`active → void`** may affect **only** `status`, `voidedAt`, `voidedBy`,
+  `voidReason`, `updatedAt`, `updatedBy`, with `voidedBy == request.auth.uid`,
+  `voidedAt == request.time`, and a **non-whitespace** `voidReason`.
+- **`void` is terminal**; `delete` is blocked for active and void items alike.
+
+*Client-enforced only (deferred — never describe these as enforced; Deferred
+Control 26):*
+
+- **That `costCodeId` names a real, active cost code** in this company —
+  validated by shape only (the ADR-21 no-enum reasoning).
+- **That `unit` matches the cost code's unit**, or any unit convention at all.
+- **Duplicate items** (same code/section/item number) across siblings — rules
+  have no list, query, or count.
+- **BOQ ↔ Budget consistency — deliberately none.** The BOQ and the Approved
+  Budget are independent records compared only at read time; neither validates
+  the other, and no reconciliation is stored.
+
 ## Company Country & Currency
 
 **Company document — four fields, not the document.** The company document was
@@ -664,6 +718,28 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     is no period locking, no immutable snapshot, and no change history beyond
     last-write stamps. Fabricated timing lines are a lower-severity analogue of
     Deferred Control 17: a line asserts an expectation, not a bank movement.
+
+*(20–25 are reserved for the parked Documents, Timeline, Retention, and Credit
+Notes branches and are deliberately not defined here.)*
+
+26. **BOQ integrity** — Firestore rules enforce the `boqItems` shape, lifecycle,
+    and the `amount == quantity × rate` whole-cent invariant for priced items,
+    but **cannot** verify the estimate itself. Consequences, all accepted and
+    never presented otherwise: `costCodeId` is validated by **shape only** and
+    may name no real (or an inactive) cost code; the `unit` is any bounded
+    non-empty string — nothing ties it to the cost code's unit; **duplicate
+    items cannot be blocked** (rules have no list, query, or count), so two
+    users can measure the same scope concurrently and both writes succeed; an
+    **active item stays freely editable** — there is no issue/freeze point, no
+    period locking, and no change history beyond last-write stamps; and
+    **nothing reconciles the BOQ against the Approved Budget** — deliberately,
+    because the two are independent records compared only at read time.
+    Fabricated BOQ items are the lowest-severity entry in this list: an item
+    feeds **no** financial figure, so a forged one distorts only the BOQ page's
+    own totals and its read-time budget comparison. *(Tender-side controls —
+    bid integrity, package freezing, award gating — are NOT implemented and are
+    NOT covered by this entry; they will extend it when the Tender foundation
+    lands.)*
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
