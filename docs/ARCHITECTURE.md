@@ -160,7 +160,7 @@ ProtectedRoute (redirects to /login when signed out)
    ├─ /                        Dashboard
    ├─ /projects                Projects list
    ├─ /projects/:projectId     ProjectDetailLayout (tab bar; index → overview)
-   │    overview | budget | cost-codes | purchase-orders | progress-claims | invoices | variations | forecasting | commercial  (live)
+   │    overview | boq | tenders | budget | cost-codes | purchase-orders | progress-claims | invoices | variations | forecasting | commercial  (live)
    │      (the `forecasting` route renders the Forecast Cost to Complete page; the tab is labelled "Forecast".
    │       the `invoices` route renders SUPPLIER invoices (AP); the tab is labelled "Supplier Invoices".
    │       the `commercial` route is a nested layout — index = Project Margin,
@@ -169,10 +169,12 @@ ProtectedRoute (redirects to /login when signed out)
    │        LABEL reads "Client Receipts" while the route stays `receipts`),
    │       `commercial/supplier-payments` = Supplier Payments (cash paid),
    │       `commercial/cash-flow` = Cash Flow (ACTUAL recorded cash movement —
-   │        read-only; forecast and charts are later branches))
+   │        read-only; forecast and charts are later branches).
+   │       the `tenders` route renders the Tender register — packages, bids,
+   │        Tender Comparison, and the award decision record; financial roles only)
    │    boq                  Bill of Quantities (ProjectBoq — measured items,
    │                          derived amounts, read-time BOQ-vs-budget comparison;
-   │                          tab label stays "BOQ"; no Tender navigation)
+   │                          tab label stays "BOQ"; the Tenders tab follows it)
    │    documents | photos | timeline | reports  (ProjectPlaceholder)
    ├─ /settings/company        Company country & base currency (company_admin writes)
    ├─ /contacts                Company-wide contact directory
@@ -209,6 +211,7 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Supplier Payments (cash paid) | Implemented (foundation) — embedded allocations against posted invoices' `payableTotal`, read-time Paid to Date / Remaining Payable / AP ageing; **no retention release** |
 | Cash Flow (actual + forecast) | Implemented (foundation) — read-time monthly actual, automatic invoice due-date forecast, manual `cashFlowLines` timing, projected cumulative/closing position, completeness, untimed reporting, peak funding with suppression, and a two-panel chart that consumes those derived rows without re-deriving them (ADR-26); **no date filtering, not a bank balance** |
 | Variations (client + supplier) | Implemented (foundation) |
+| Tenders (packages, bids, comparison, award) | Implemented (foundation) — cost-code + free-text scope (BOQ-independent), manual bids, read-time comparison, award as a decision record; **no stored totals, no PO creation, closing date informational** |
 | Forecast Cost to Complete | Implemented (foundation) — read-time, cost-side |
 | Project Margin (Commercial tab) | Implemented (foundation) — read-time, ex-GST; commercial baseline is the only stored input |
 | Dashboard | Partial — live project list; static KPI/chart data |

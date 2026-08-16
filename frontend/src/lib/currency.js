@@ -302,6 +302,7 @@ export function monetaryLockReasons({
   clientReceipts = [],
   supplierPayments = [],
   variations = [],
+  tenderBids = [],
   forecastLines = [],
   cashFlowLines = [],
   boqItems = [],
@@ -331,6 +332,11 @@ export function monetaryLockReasons({
   // retained audit record carrying that amount — exactly like a cancelled PO.
   if (supplierPayments.length) reasons.push(plural(supplierPayments.length, 'supplier payment', 'supplier payments'))
   if (variations.length)       reasons.push(plural(variations.length, 'variation', 'variations'))
+  // Every tender bid counts, including voided ones: a bid records ex-GST
+  // amounts in this project's currency, and a voided bid is a retained audit
+  // record carrying those amounts — exactly like a cancelled PO. Tender
+  // PACKAGES never count: they hold scope and dates, no amounts.
+  if (tenderBids.length)       reasons.push(plural(tenderBids.length, 'tender bid', 'tender bids'))
   // Every cash-flow timing line counts, including voided ones: a line records
   // an expected gross cash amount in this project's currency, and a voided line
   // is retained forecast history carrying that amount — exactly like a

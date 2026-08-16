@@ -32,6 +32,7 @@ import ProjectClientInvoices from './pages/project/ProjectClientInvoices'
 import ProjectClientReceipts from './pages/project/ProjectClientReceipts'
 import ProjectSupplierPayments from './pages/project/ProjectSupplierPayments'
 import ProjectCashFlow from './pages/project/ProjectCashFlow'
+import ProjectTenders from './pages/project/ProjectTenders'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
 
 export default function App() {
@@ -60,9 +61,13 @@ export default function App() {
                       <Route index element={<Navigate to="overview" replace />} />
                       <Route path="overview" element={<ProjectOverview />} />
                       {/* BOQ — the measured Bill of Quantities (ADR-32 Part 1).
-                          Estimating (margin/overheads), BOQ → Budget transfer,
-                          and Tenders are later branches. */}
+                          Estimating (margin/overheads) and BOQ → Budget transfer
+                          are later branches. */}
                       <Route path="boq" element={<ProjectBoq />} />
+                      {/* Tenders — packages, bids, Tender Comparison, and the
+                          award decision record (ADR-32 Part 2). Deliberately
+                          BOQ-independent: cost-code + free-text scope. */}
+                      <Route path="tenders"     element={<ProjectTenders />} />
                       <Route path="budget"      element={<ProjectBudget />} />
                       <Route path="cost-codes"  element={<ProjectCostCodes />} />
                       <Route path="purchase-orders" element={<ProjectPurchaseOrders />} />

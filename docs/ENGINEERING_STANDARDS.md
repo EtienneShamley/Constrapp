@@ -162,7 +162,9 @@ today's client-enforced-only items promoted to mandatory server-side enforcement
 server-enforced lifecycle-transition legality; post-submission / post-`posted` /
 post-`approved` immutability; one-open-claim and one-invoice-per-claim race guards;
 creator ≠ approver segregation; counter integrity (+1 only, no arbitrary set);
-server-enforced uniqueness (contacts / supplier invoices / variations); locking down
+server-enforced uniqueness (contacts / supplier invoices / variations / one active
+tender bid per bidder per package) and embedded-line integrity (tender bid
+lineItems, allocation arrays); locking down
 self-managed `role`/`companyId`; full audit logging; and moving every privileged
 provider call server-side. The authoritative list and rationale live in
 [SECURITY.md](SECURITY.md) → Deferred Controls / Trusted-Backend Activation

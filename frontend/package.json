@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "test:boq": "node scripts/boq-dev.mjs",
     "test:unit": "vitest run --config vitest.config.js",
-    "test:rules": "firebase emulators:exec --only firestore --project constrapp-rules-test \"vitest run --config vitest.rules.config.js\""
+    "test:rules": "firebase emulators:exec --only firestore --project constrapp-rules-test \"vitest run --config vitest.rules.config.js\"",
+    "test:tender": "node scripts/tender-dev.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.1",
