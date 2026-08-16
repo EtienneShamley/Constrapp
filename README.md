@@ -17,7 +17,7 @@ Drawing → Quantity → BOQ → Estimate → Tender → Award → Approved Budg
   → Final Project Margin → Final Account
 ```
 
-Today the delivery-and-cost-control middle of this lifecycle is implemented (budgets → POs → claims → supplier invoices); the preconstruction front (BOQ, tender, takeoff), variations, and forecasting are planned. See [PRODUCT.md](PRODUCT.md) and [ROADMAP.md](ROADMAP.md) for module-by-module status, and [PRODUCT.md](PRODUCT.md) → "What Constrapp Is Not" for the strategic boundaries.
+Today the delivery-and-cost-control middle of this lifecycle is implemented (budgets → POs → variations → claims → supplier invoices → forecasting → margin → cash flow), and the preconstruction front has begun with the **BOQ foundation** (measured quantities by cost code; the BOQ feeds no financial figure). Estimating, tender & award, and takeoff remain planned. See [PRODUCT.md](PRODUCT.md) and [ROADMAP.md](ROADMAP.md) for module-by-module status, and [PRODUCT.md](PRODUCT.md) → "What Constrapp Is Not" for the strategic boundaries.
 
 ## What Works Today
 
