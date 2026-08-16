@@ -33,7 +33,7 @@ That script runs
   upgrade `firebase-tools`, you must also install JDK 21+.
 - Config: `frontend/firebase.json` (emulator + rules pointer only — no hosting,
   no functions, and **no `.firebaserc`**, so nothing can be deployed).
-- Tests — **207 in total across 5 files**:
+- Tests — **257 in total across 6 files**:
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -62,7 +62,15 @@ That script runs
     every case in §15m-x below. It also asserts the two documented
     **client-only** gaps: a PAST `monthKey` and an unknown `sourceType` of valid
     shape are both ACCEPTED by rules.
-  - All five run for `company_admin`, `project_manager`, `qs`, `subcontractor`,
+  - `frontend/tests/rules/boqItems.rules.test.js` — **50 tests** covering every
+    case in §15s-v below: the two-state lifecycle (active edit / active → void
+    terminal, reasoned), the whole-cent `amount == quantity × rate` invariant
+    for priced items, the `rate: null ⟺ amount: null` unpriced pairing (0 can
+    never mean unpriced), the mandatory cost-code spine, delete-blocking, and
+    forged-stamp rejection. It also asserts the two documented **client-only**
+    gaps (Deferred Control 26): a `costCodeId` of valid shape naming NO real
+    cost code and a duplicate of an existing item are both ACCEPTED by rules.
+  - All six run for `company_admin`, `project_manager`, `qs`, `subcontractor`,
     `client`, an unauthenticated caller, and a financial-role user in a **second
     company**. The users suite adds a sixth identity: an authenticated caller
     with **no** `users/{uid}` document at all (the orphan case).
@@ -84,8 +92,8 @@ That script runs
 > that pattern. `Timestamp.now()` remains correct inside `seed()` helpers, which
 > write **stored state** with rules disabled and assert nothing.
 
-§15i-x, §15j-x, and §15k-x below remain the human-readable specification of what
-those tests assert; the other manual sections are not automated. The users suite
+§15i-x, §15j-x, §15k-x, and §15s-v below remain the human-readable specification
+of what those tests assert; the other manual sections are not automated. The users suite
 is self-describing and has no manual counterpart — `users/{uid}` has no UI, so
 there is nothing to click through: the rules ARE the feature.
 
@@ -143,7 +151,22 @@ npm run test:unit
   honesty rules testable without them (ADR-26). Chart *rendering* is verified
   manually in §15n.
 
-  Combined unit total: **173 tests** across both files.
+- `frontend/tests/unit/boq.test.js` — **46 tests** over `lib/boq.js`, the BOQ's
+  pure domain logic: the two-state lifecycle map, `normalizeRate` (blank form
+  input → `null`, never 0), `isPriced` (0 IS a price; only null/undefined is
+  unpriced), `boqLineAmount` (quantity × rate to the cent, **null while
+  unpriced**, rounding that mirrors the rules' `cents()` exactly — including
+  the `1 × 1.005 → 1.00` half-cent float boundary roundMoney would get wrong),
+  active/void filters, `boqTotals` (priced active items only; unpriced
+  contributes nothing), `budgetedTotal`, `boqVarianceToBudget` (**null** —
+  never 0 or a partial figure — for an empty BOQ or while any item is
+  unpriced), `boqByCostCode`, `boqVsBudgetRows` (the buildForecastRows union
+  discipline: codes never disappear; live-name resolution with snapshot
+  fallbacks; per-row variance suppressed for partial pricing), natural-order
+  register sorting (`2.9` before `2.10`), `formatQuantity`, draft validation,
+  and input purity.
+
+  Combined unit total: **219 tests** across the three files.
 
 Setup: two provisioned users in the same company (e.g. a `project_manager` and a
 `qs`), signed in via `/login`. Reset state between suites by using a fresh
@@ -165,7 +188,7 @@ project.
 - [ ] Project name is required; budget/progress inputs reject negatives (progress clamps 0–100).
 - [ ] Open a project → lands on `/projects/{id}/overview` showing budget, start date, progress bar.
 - [ ] Unknown project ID shows "Project not found."; unmatched routes redirect to `/projects`.
-- [ ] BOQ/Documents/Photos/Timeline/Reports tabs show placeholder cards, no data wiring (Variations — see §14 — Forecast — see §15 — and Commercial — see §15g — are now live).
+- [ ] Documents/Photos/Timeline/Reports tabs show placeholder cards, no data wiring (Variations — see §14 — Forecast — see §15 — Commercial — see §15g — and BOQ — see §15s — are now live).
 
 ## 3. Cost Codes
 
@@ -1712,6 +1735,97 @@ is the record.
 - [ ] Using the chart writes **no** document — it is read-only, with no
   clickable edit path.
 
+## 15s. Bill of Quantities (BOQ)
+
+The measured schedule on the project's BOQ tab (ADR-32 Part 1). Setup: a
+project with cost codes (at least one carrying a `unit`) and a few budget
+lines. Estimating (margin/overheads), BOQ → Budget transfer, and Tenders are
+NOT part of this foundation — nothing in these steps should offer them.
+
+### 15s-i. Navigation & gating
+
+- [ ] The **BOQ** project tab (label unchanged) opens the live Bill of
+  Quantities — the old placeholder card is gone. There is **no** Tender
+  navigation anywhere.
+- [ ] As `company_admin`, `project_manager`, and `qs`: the register, summary
+  cards, and comparison render; Add/Edit/Void all work.
+- [ ] As `subcontractor` or `client`: the page shows the "BOQ is restricted"
+  card and triggers **no** boqItems read (no console rules error). A direct
+  SDK read/write as either role is denied by rules (AUTOMATED — see §0).
+- [ ] With no cost codes in the company: the empty state points to Cost Codes
+  and the Add button is disabled — every BOQ item requires a cost code.
+
+### 15s-ii. Item creation & editing
+
+- [ ] Add an item: cost code (required), item number and section (optional
+  labels), description (required), quantity (required, ≥ 0), unit (required),
+  rate (optional). Save → appears immediately, ordered by section, then item
+  number in **natural** order (`2.9` before `2.10`), then entry order.
+- [ ] Choosing a cost code **prefills the unit** from the code's `unit` when
+  the unit field is empty — and never overwrites a unit already typed. The
+  prefilled unit remains editable.
+- [ ] The cost-code name is snapshotted at write time (`costCodeName`);
+  renaming the code later does not rewrite existing items (register shows the
+  live name in the comparison, the stored snapshot survives on the document).
+- [ ] Whitespace-only description is rejected; negative quantity is rejected;
+  a quantity of 0 is accepted (a real measurement).
+- [ ] Editing an active item works for any field, including changing the cost
+  code; the derived amount updates live in the modal preview.
+
+### 15s-iii. Unpriced items & the derived amount
+
+- [ ] Leaving the rate **blank** saves `rate: null` and `amount: null` — the
+  register shows an amber "Unpriced" in the Rate column and "—" for Amount,
+  **never $0**.
+- [ ] Entering a rate of **0** is different: the item is PRICED at $0.00 and
+  shows a real zero amount — it is not counted as unpriced.
+- [ ] The amount is **derived, never typed**: quantity × rate, rounded to the
+  cent (12.5 × $310.40 = $3,880.00; fractional quantities like 3.333 × $14.99
+  round to $49.96). A forged amount is rejected by rules (AUTOMATED — §0).
+- [ ] Pricing an unpriced item later (edit, enter a rate) works; clearing the
+  rate un-prices it again and the amount returns to "—".
+- [ ] The **Unpriced Items** summary card counts active unpriced items and
+  shows amber while non-zero; the BOQ Total card is labelled "(priced)" and
+  reads "N of M items priced".
+
+### 15s-iv. BOQ vs Approved Budget (read-time only)
+
+- [ ] The summary Variance card = Approved Budget − BOQ Total, positive when
+  the BOQ is under budget, red when negative — and shows **"—"** (suppressed,
+  with the reason) while the BOQ is empty OR any active item is unpriced. It
+  never shows a partial figure as if complete.
+- [ ] The per-cost-code table unions codes from the BOQ **and** the budget: a
+  budget-only code shows BOQ "—" (never "under budget by everything"); a
+  BOQ-only code shows Budgeted "—"; a code with any unpriced item shows its
+  priced sum but a suppressed variance with "N unpriced" noted; inactive and
+  unknown codes stay visible, flagged.
+- [ ] **No financial effect:** record every figure on Budget, Forecast,
+  Commercial/Margin, and Cash Flow, then add, price, edit, and void BOQ items —
+  every one of those figures is **unchanged**. The BOQ writes only `boqItems`.
+- [ ] Voiding an item removes it from the BOQ total and the comparison
+  immediately (read-time derivation, nothing to "recalculate").
+
+### 15s-v. Lifecycle — Rules-enforced (AUTOMATED — see §0), currency & responsive
+
+- [ ] Void requires a non-whitespace reason; voided items are hidden behind a
+  "Show N voided items" toggle, render dimmed with a Void badge, and have no
+  Edit/Void actions. There is **no delete** anywhere.
+- [ ] Rules enforce (automated): create only as `active` with null void stamps
+  and true caller/server stamps; active edits re-validate the full shape and
+  cannot forge void stamps; `active → void` touches only the void audit keys
+  with a non-whitespace reason; void is terminal; delete is blocked for every
+  role; core identity (currency, revision, creation stamps) is immutable.
+- [ ] **Currency lock:** on a fresh project, saving the first **priced** BOQ
+  item engages the currency ratchet in the same transaction (Overview shows
+  the currency locked, citing "N priced BOQ item(s)"). Purely **unpriced**
+  items do NOT lock — a quantity is a measurement, not money (the
+  forecast-input precedent). Rates display through `formatCurrency` in the
+  project currency — never a hard-coded symbol.
+- [ ] At **375px / 768px / 1280px**: the register and comparison tables scroll
+  horizontally inside their cards (no page-level scroll); the editor modal
+  fits with internal scrolling; all touch targets ≥ 44px; Add/Edit/Void all
+  reachable by tap.
+
 ## 16. Responsive Checks — 375px, 768px, 1280px
 
 - [ ] **375px:** sidebar hidden behind hamburger; drawer opens/closes (tap overlay); nav items ≥44px tall; project tab bar wraps; PO/claim tables scroll horizontally inside their card; modals fit with internal scrolling; all actions reachable by tap (no hover-only).
@@ -1735,19 +1849,21 @@ Firestore Security Rules are the only trust boundary — these checks confirm th
 
 - [ ] Signed in as a `subcontractor` or `client` role user, **Contacts, Supplier
   Invoices, Client Invoices, Client Receipts, Supplier Payments, Variations,
-  Forecast, and Commercial** all show no data — reads are blocked by rules, not
-  merely absent from the nav.
+  Forecast, Commercial, and BOQ** all show no data — reads are blocked by rules,
+  not merely absent from the nav.
 - [ ] The same user **can** still read company members' Projects, Cost Codes,
   Budget Lines, POs, and Progress Claims (the intended coarser read model).
 
 ### 17c. Write authorisation & delete-blocking
 
 - [ ] A `subcontractor`/`client` role user cannot create or update POs, claims,
-  invoices, variations, budget lines, or cost codes (rules reject the write).
+  invoices, variations, budget lines, BOQ items, or cost codes (rules reject
+  the write).
 - [ ] No client path can delete a financial/audit document (POs, claims,
-  invoices, variations, budget lines, cost codes, contacts, counters, forecast
-  lines, commercial baseline) — cancellation/rejection/archive is always a
-  status/`isActive` change (the baseline is edited in place).
+  invoices, variations, budget lines, BOQ items, cost codes, contacts,
+  counters, forecast lines, commercial baseline) — cancellation/rejection/
+  archive is always a status/`isActive` change (the baseline is edited in
+  place).
 - [ ] **`users/{uid}` cannot be written at all** — no client can change its own
   `role` or `companyId` (nor `name`/`avatarInitials`/`email`), create a
   membership document, or delete one. **AUTOMATED — see §0**; the users suite

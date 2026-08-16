@@ -14,7 +14,7 @@ Preconstruction → Procurement → Delivery → Cost Control → Forecasting �
 
 | Phase | What happens | Modules (status) |
 |---|---|---|
-| **Preconstruction** | Measure quantities, build the BOQ, estimate, transfer to an approved budget | Drawings/Takeoff, BOQ & Estimating *(planned)*; **Cost Codes**, **Budgets** *(implemented)* |
+| **Preconstruction** | Measure quantities, build the BOQ, estimate, transfer to an approved budget | Drawings/Takeoff *(planned)*; **BOQ** *(implemented — foundation)*; Estimating incl. BOQ → Budget transfer *(planned)*; **Cost Codes**, **Budgets** *(implemented)* |
 | **Procurement** | Tender packages, subcontractor invitations, bid levelling, award, commitment | Tender & Award *(future)* → **Purchase Orders** *(implemented)* |
 | **Delivery** | Scope variations, cumulative progress claims against commitments | **Variations** *(implemented — foundation)*; **Progress Claims** *(implemented)* |
 | **Cost Control** | Supplier invoices, actual cost, payments/credit notes | **Supplier Invoices**, **Supplier Payments** *(implemented)*; Credit Notes, Retention Release *(future)* |
@@ -107,6 +107,9 @@ frontend/                  The entire application (run all npm commands here)
                            project/cashFlow/ (CashFlowChart, CombinedMonthlyTable,
                            LineEditorModal, LineVoidModal — page-local),
                            ProjectVariations, ProjectForecast,
+                           ProjectBoq (Bill of Quantities),
+                           project/boq/ (BoqItemEditorModal, BoqItemVoidModal —
+                           page-local),
                            ProjectCommercial (margin), ProjectPlaceholder
     hooks/                 All Firestore access (see below); projectCurrencyLock.js
                            stages the project currency ratchet inside a caller's
@@ -117,7 +120,8 @@ frontend/                  The entire application (run all npm commands here)
                            clientReceipts.js, supplierPayments.js, cashFlow.js
                            (pure monthly cash aggregation), cashFlowChart.js
                            (chart presentation transform — no arithmetic),
-                           variations.js, forecast.js, margin.js, contacts.js
+                           variations.js, forecast.js, margin.js, contacts.js,
+                           boq.js (pure BOQ arithmetic + read-time budget comparison)
 docs/                      This documentation + design-reference assets
                            (Constrapp_v5.jsx prototype, screenshots, Word doc — do not move)
 AGENT.md / CLAUDE.md / README.md / PRODUCT.md / ROADMAP.md   (canonical root docs)
@@ -166,7 +170,10 @@ ProtectedRoute (redirects to /login when signed out)
    │       `commercial/supplier-payments` = Supplier Payments (cash paid),
    │       `commercial/cash-flow` = Cash Flow (ACTUAL recorded cash movement —
    │        read-only; forecast and charts are later branches))
-   │    boq | documents | photos | timeline | reports  (ProjectPlaceholder)
+   │    boq                  Bill of Quantities (ProjectBoq — measured items,
+   │                          derived amounts, read-time BOQ-vs-budget comparison;
+   │                          tab label stays "BOQ"; no Tender navigation)
+   │    documents | photos | timeline | reports  (ProjectPlaceholder)
    ├─ /settings/company        Company country & base currency (company_admin writes)
    ├─ /contacts                Company-wide contact directory
    ├─ /subcontractors          Filtered contacts view (+ IQ™ placeholder card)
@@ -208,7 +215,8 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Contacts | Implemented (foundation) — company-wide directory; supplier picker on POs |
 | Subcontractors | Partial — filtered contacts view; IQ™ scoring is a placeholder |
 | PULSE™, SHIELD™ | Placeholder screens |
-| BOQ, Documents, Photos, Timeline, Reports tabs | Placeholder (`ProjectPlaceholder`) |
+| BOQ (Bill of Quantities) | Implemented (foundation) — measured items with optional rates, rules-enforced derived amounts, read-time budget comparison; **feeds no financial figure**; Estimating and BOQ → Budget transfer are later branches |
+| Documents, Photos, Timeline, Reports tabs | Placeholder (`ProjectPlaceholder`) |
 
 ## Hooks-Only Firestore Access
 

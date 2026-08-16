@@ -1286,3 +1286,87 @@ document-only read is the real contract, not an accident.
   role can still fabricate cash records by direct SDK call. What changed is that
   a user can no longer **grant themselves** that role, so the blast radius is
   now bounded by who is provisioned.
+
+## ADR-32: BOQ & Tender Foundation — Part 1: BOQ (measured schedule; null-rate unpriced; read-time budget comparison)
+
+*(ADR-28 Documents, ADR-29 Timeline, ADR-30 Retention, and ADR-31 Credit Notes
+are reserved for the parked branches and deliberately not written here. Part 2
+of this ADR — Tender Packages, Bids, and Award — is a separate future branch
+and nothing of it is implemented by Part 1.)*
+
+**Context.** Constrapp's commercial spine began at a number someone typed: a
+budget line is `costCodeId` + a lump-sum `budgeted`, with no record of the
+measured quantity, unit, or rate that produced it. The cost-code `unit` field
+sat unused by any financial document — a fossil of the missing measurement
+layer. The BOQ tab was a placeholder.
+
+**Decision.** One BOQ per project, represented as project-scoped
+`companies/{id}/projects/{id}/boqItems` — a flat register of measured items
+with **no header document** (mirroring `budgetLines`), random ids and **no
+counter** (a BOQ item is never quoted to a supplier or client, so ADR-5's
+rationale does not apply; `itemNumber` is a user-authored label like "2.1",
+`section` a free-text grouping). Each item: `description` (required),
+`quantity` (required, ≥ 0), `unit` (required; prefilled from the cost code's
+`unit`, editable), `rate` (**number ≥ 0 or null**), `amount` (**derived**
+quantity × rate; **null when rate is null**), mandatory `costCodeId` + frozen
+`costCodeName` snapshot (ADR-0a), currency audit snapshot, `revision: 1`,
+reserved `attachments: []`/`externalRefs: {}`, and full audit stamps.
+Lifecycle `active → void` (terminal, reasoned), **rules-enforced**, delete
+blocked — the two-state `cashFlowLines` shape, because a BOQ item has no
+financial commit point. Ex-GST throughout; GST enters at the PO.
+
+**Null means unpriced — never 0.** A BOQ is measured before it is priced.
+`rate: null` pairs with `amount: null` (the pairing is rules-enforced both
+ways); an unpriced item contributes nothing to any total, is counted in an
+explicit unpriced indicator, and **suppresses** the BOQ-vs-budget variance —
+headline and per-code — because a partial estimate must never manufacture a
+comparison. Zero is a *price* ("reviewed, nothing against this item"), exactly
+as a zero forecast input is a forecast (ADR-19).
+
+**The amount is derived and rules-enforced.** `amount == quantity × rate`
+compared in whole cents (`cents(v) = math.round(v * 100)`, the clientReceipts
+idiom — equivalent to a half-cent tolerance, so fractional quantities are
+fine). `lib/boq.js → boqLineAmount()` rounds through `lib/payments.js →
+toCents()`, which mirrors the rules exactly; **deliberately not `roundMoney`**,
+whose `Number.EPSILON` nudge diverges from `math.round` at exact half-cent
+float boundaries (1 × 1.005 → rules 1.00, roundMoney 1.01) and would make a
+client-valid write fail. A direct-SDK caller cannot store a priced amount that
+disagrees with its own quantity × rate.
+
+**The BOQ feeds no financial figure.** Budgeted, Committed, Actual, Invoiced,
+Forecast, Margin, and Cash Flow are all computed exactly as before, from the
+same sources as before (ADR-3/ADR-4 upheld). The only derived output is the
+read-time **BOQ vs Approved Budget** comparison on the BOQ page
+(`lib/boq.js → boqVsBudgetRows`), built with the `buildForecastRows` union
+discipline (codes never disappear; live names with snapshot fallbacks;
+inactive/unknown flagged, never hidden). Variance = Budgeted − BOQ (positive ⇒
+BOQ under budget, the ADR-19 sign). Nothing is stored, reconciled, or written
+back — the BOQ is not a second budget, and neither side validates the other.
+
+**Reads are restricted to financial roles** — the BOQ is the internal
+estimate; a subcontractor or client who can read rates prices against them.
+`super_admin` has no special powers (unchanged). Writes: `company_admin`,
+`project_manager`, `qs`.
+
+**Currency.** A **priced** item (including rate 0, including voided priced
+items — retained records carrying amounts, like a cancelled PO) is
+currency-lock evidence; a purely unpriced item is a measurement carrying no
+money and does not lock — the forecast-input precedent (ADR-21). The create
+transaction stages the ratchet atomically.
+
+**Deliberately deferred:** BOQ → Budget transfer (the placeholder's "one
+click" promise — it would be the first client transaction creating financial
+documents in another module, and budget lines cannot be deleted, so a
+double-transfer is unrecoverable without an idempotence design); estimating
+margin/overheads; multiple named/versioned BOQs (one BOQ per project in V1 —
+no header document to disagree with); manual takeoff linkage; attachments
+(Storage has no Security Rules); and everything tender-side. Server-side
+enforcement of cost-code reference validity, unit conventions, and duplicate
+detection is Deferred Control 26.
+
+**Consequences.** New `lib/boq.js` (pure), `hooks/useBoqItems.jsx`,
+`pages/project/ProjectBoq.jsx` (+ two page-local modals), one additive rules
+block, `monetaryLockReasons` gains priced-BOQ-item evidence, and the BOQ tab
+replaces its placeholder — label unchanged, no Tender navigation. Unit suite
+173 → 219; rules suite 207 → 257. No migration — purely additive; no existing
+collection, hook, or derivation changed behaviour.

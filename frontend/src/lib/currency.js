@@ -304,6 +304,7 @@ export function monetaryLockReasons({
   variations = [],
   forecastLines = [],
   cashFlowLines = [],
+  boqItems = [],
   baseline = null,
 } = {}) {
   const reasons = []
@@ -342,6 +343,16 @@ export function monetaryLockReasons({
     (l) => l?.uncommittedCostToComplete !== null && l?.uncommittedCostToComplete !== undefined,
   ).length
   if (forecastInputs) reasons.push(plural(forecastInputs, 'forecast input', 'forecast inputs'))
+
+  // A BOQ item with `rate: null` is measured but UNPRICED and carries no money
+  // (a quantity is a measurement, not an amount) — only an authored rate
+  // (including 0) counts, exactly the forecast-input reasoning above. Voided
+  // priced items still count: a voided item is a retained record carrying an
+  // amount, exactly like a cancelled PO.
+  const pricedBoqItems = boqItems.filter(
+    (i) => i?.rate !== null && i?.rate !== undefined,
+  ).length
+  if (pricedBoqItems) reasons.push(plural(pricedBoqItems, 'priced BOQ item', 'priced BOQ items'))
 
   // An absent or empty baseline carries no money; an established one does.
   if (typeof baseline?.originalContractValue === 'number') reasons.push('a commercial baseline')

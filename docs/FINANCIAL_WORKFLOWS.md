@@ -877,12 +877,28 @@ feature's design sprint (order: [ROADMAP.md](../ROADMAP.md)). Nothing below is a
 shipped guarantee; all commercial figures will follow the read-time-derivation and
 cost-code-spine invariants when built.
 
-### BOQ and Estimating *(planned)*
+### BOQ *(implemented — foundation)* and Estimating *(planned)*
 
-A Bill of Quantities captures measured quantities against **cost codes**; applying
-rates plus margin/overheads produces an **estimate**, which transfers into an
-**approved budget** (budget lines). The cost code is the join from measurement all
-the way to budget. Manual quantity entry precedes any AI takeoff.
+The **BOQ foundation is implemented** (ADR-32 Part 1): a per-project measured
+schedule at `…/projects/{id}/boqItems` — description, quantity, unit, a
+**mandatory** cost code (frozen name snapshot), and, once priced, an ex-GST
+`rate` with a **derived** `amount = quantity × rate` (whole-cent,
+rules-enforced). **`rate: null` means unpriced** — an unpriced item contributes
+nothing to any total and suppresses the budget variance; 0 is a price.
+Lifecycle `active → void` (terminal, reasoned), rules-enforced; delete blocked.
+
+**The BOQ feeds no financial figure.** It never writes onto Budget Lines and
+never enters Committed, Actual, Invoiced, Forecast, Margin, or Cash Flow. Its
+only derived output is the read-time **BOQ vs Approved Budget** comparison on
+the BOQ page (`lib/boq.js`): per cost code over the union of both sides,
+`variance = Budgeted − BOQ` (positive ⇒ BOQ under budget), with the variance
+**null — never 0 or a partial figure** — wherever either side is missing or
+any contributing item is unpriced.
+
+**Still planned (Estimating):** applying margin/overheads to produce an
+estimate, and the **BOQ → Budget transfer** into budget lines. The cost code
+remains the join from measurement all the way to budget. Manual quantity entry
+precedes any AI takeoff.
 
 ### Tender and Award *(planned)*
 

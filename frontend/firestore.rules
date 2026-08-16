@@ -172,6 +172,165 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // BOQ items — the project's measured Bill of Quantities: description,
+    // quantity, unit, cost code (mandatory spine, frozen name snapshot), and —
+    // once priced — a rate with a DERIVED amount (ADR-32 Part 1).
+    //
+    // They are preconstruction records, not transactions: no counter, no
+    // sequential number, no posted status (`itemNumber` is a user-authored
+    // label, never a sequence). They feed NO financial figure — Budgeted,
+    // Committed, Actual, Invoiced, Forecast, Margin, and Cash Flow are all
+    // unreadable from and unwritable by a BOQ item, and the BOQ-vs-budget
+    // comparison is derived at read time in lib/boq.js, never stored.
+    //
+    // ⚠️ NULL MEANS UNPRICED. `rate: null` pairs with `amount: null` — a BOQ
+    // is measured before it is priced, and 0 would silently mean "priced at
+    // nothing". The pairing is enforced both ways below.
+    //
+    // THE ONE ARITHMETIC GUARANTEE rules CAN give: a priced item may never
+    // carry an amount that disagrees with its own quantity × rate. Compared in
+    // whole cents via math.round (the clientReceipts cents() idiom — exactly
+    // equivalent to a half-cent tolerance, so fractional quantities like
+    // 12.5 m³ are fine while any discrepancy of one cent or more fails).
+    // lib/boq.js → boqLineAmount() rounds through lib/payments.js → toCents(),
+    // which mirrors this precisely, so a write the client considers valid is
+    // never rejected here (or vice versa).
+    //
+    // Reads: restricted to internal financial roles — a BOQ is the project's
+    // internal estimate, so subcontractor and client users must NOT read it
+    // (a bidder who can read the estimate prices against it). A future tender
+    // or bidder-facing surface must never expose BOQ rates at all.
+    // Delete: blocked — voiding is a status change; voided items are retained
+    // BOQ history (and currency-lock evidence when priced).
+    //
+    // Lifecycle is RULES-ENFORCED, the two-state cashFlowLines shape (a BOQ
+    // item has no financial commit point):
+    //   · create only with status 'active', null void stamps,
+    //     createdBy == caller, createdAt == server request time
+    //   · active edits may change content (including pricing an unpriced item
+    //     and un-pricing a priced one) but not the status, must satisfy the
+    //     full shape, and may not forge a void stamp
+    //   · active -> void touches only status/voidedAt/voidedBy/voidReason/
+    //     updatedAt/updatedBy, with voidedBy == caller, voidedAt == server
+    //     request time, and a NON-WHITESPACE voidReason
+    //   · void is terminal; there is no void -> active and no void edit
+    //
+    // What is NOT enforced here (client-side only — NEVER describe as
+    // enforced; see docs/SECURITY.md → Deferred Control 26):
+    //   · that costCodeId names a real, active cost code in this company —
+    //     validated by SHAPE only (bounded non-empty string)
+    //   · that unit matches the cost code's unit, or any unit convention
+    //   · duplicate items (same code/section/itemNumber) across siblings —
+    //     rules have no list, query, or count
+    //   · that the BOQ agrees with the Approved Budget — deliberately none:
+    //     the two are independent by design and only COMPARED at read time
+    match /companies/{companyId}/projects/{projectId}/boqItems/{itemId} {
+      function financialMember() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // The document identity that no update of any kind may rewrite.
+      function corePreserved() {
+        return request.resource.data.currency  == resource.data.currency
+            && request.resource.data.createdAt == resource.data.createdAt
+            && request.resource.data.createdBy == resource.data.createdBy
+            && request.resource.data.revision  == resource.data.revision;
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // Whole-cent comparison (see block comment).
+      function cents(v) {
+        return math.round(v * 100);
+      }
+      // rate and amount travel together: both null (unpriced), or both
+      // non-negative numbers with amount == quantity × rate to the cent.
+      function pricingValid() {
+        return (request.resource.data.rate == null
+                && request.resource.data.amount == null)
+            || (request.resource.data.rate is number
+                && request.resource.data.rate >= 0
+                && request.resource.data.amount is number
+                && request.resource.data.amount >= 0
+                && cents(request.resource.data.quantity * request.resource.data.rate)
+                   == cents(request.resource.data.amount));
+      }
+      // Shape required of every stored ACTIVE state (create and edit alike).
+      function shapeValid() {
+        return request.resource.data.revision == 1
+            && request.resource.data.itemNumber is string
+            && request.resource.data.itemNumber.size() <= 40
+            && request.resource.data.section is string
+            && request.resource.data.description is string
+            && request.resource.data.description.trim().size() > 0
+            && request.resource.data.unit is string
+            && request.resource.data.unit.size() > 0
+            && request.resource.data.unit.size() <= 40
+            // A measurement, not money — non-negative; zero is a real
+            // measured quantity.
+            && request.resource.data.quantity is number
+            && request.resource.data.quantity >= 0
+            && pricingValid()
+            // Cost-code spine: MANDATORY on every item (frozen name snapshot).
+            && request.resource.data.costCodeId is string
+            && request.resource.data.costCodeId.size() > 0
+            && request.resource.data.costCodeName is string
+            && request.resource.data.costCodeName.size() > 0
+            && request.resource.data.notes is string
+            && request.resource.data.currency is string
+            && request.resource.data.currency.matches('^[A-Z]{3}$');
+      }
+
+      allow read: if financialMember();
+
+      allow create: if financialMember()
+                  && shapeValid()
+                  && request.resource.data.status == 'active'
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  // Void stamps cannot be forged at creation.
+                  && request.resource.data.voidedAt == null
+                  && request.resource.data.voidedBy == null;
+
+      allow update: if financialMember() && corePreserved() && updateStamped() && (
+                    // (a) ACTIVE EDIT — content (measurement, pricing, cost
+                    //     code, labels) is freely editable while active, but
+                    //     the status may not move and no void stamp may be
+                    //     forged.
+                    (
+                      resource.data.status == 'active'
+                      && request.resource.data.status == 'active'
+                      && shapeValid()
+                      && request.resource.data.voidedAt == resource.data.voidedAt
+                      && request.resource.data.voidedBy == resource.data.voidedBy
+                    )
+                    ||
+                    // (b) ACTIVE -> VOID (terminal). Voiding is the only exit:
+                    //     it may touch nothing but the void audit fields, so a
+                    //     voided item is immutable retained history.
+                    (
+                      resource.data.status == 'active'
+                      && request.resource.data.status == 'void'
+                      && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.voidedBy == request.auth.uid
+                      && request.resource.data.voidedAt == request.time
+                      && request.resource.data.voidReason is string
+                      && request.resource.data.voidReason.trim().size() > 0
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
     // Purchase Orders — project-scoped supplier commitments against company cost codes.
     // Reads: any authenticated user belonging to this company (subcontractors have PO read access).
     // Create/update: company_admin, project_manager, or qs.

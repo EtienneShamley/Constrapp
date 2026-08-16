@@ -71,13 +71,15 @@ frontend/
                     useCostCodes, useContacts, useBudgetLines, usePurchaseOrders,
                     useProgressClaims, useSupplierInvoices, useClientInvoices,
                     useClientReceipts, useSupplierPayments, useVariations,
-                    useForecastLines, useProjectCommercial, useCashFlowLines
+                    useForecastLines, useProjectCommercial, useCashFlowLines,
+                    useBoqItems
     lib/            firebase.js, formatters.js, currency.js, nav.js, projectTabs.js,
                     purchaseOrders.js, progressClaims.js, supplierInvoices.js,
                     clientInvoices.js, payments.js (shared, direction-agnostic),
                     clientReceipts.js, supplierPayments.js, variations.js,
                     forecast.js, margin.js, cashFlow.js (pure monthly cash
-                    aggregation + forecast layers), contacts.js (pure domain logic)
+                    aggregation + forecast layers), contacts.js, boq.js (pure
+                    BOQ arithmetic + read-time budget comparison)
   tests/unit/       Unit tests for pure lib/ logic (npm run test:unit — no emulator)
 ```
 
@@ -129,6 +131,16 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
                                              currency (ISO 4217 — the display authority),
                                              currencyLocked (one-way ratchet)
   …/budgetLines/{lineId}                     costCodeId, costCodeName, budgeted, notes
+  …/boqItems/{itemId}                        measured Bill of Quantities: itemNumber (user label, NO counter),
+                                             section, description, quantity (≥ 0), unit (prefilled from the
+                                             cost code, editable), rate (number ≥ 0 | null — NULL MEANS
+                                             UNPRICED, never 0), amount (DERIVED quantity × rate, null while
+                                             rate is null — the whole-cent invariant is RULES-ENFORCED),
+                                             REQUIRED costCodeId + costCodeName snapshot, status active|void
+                                             (LIFECYCLE RULES-ENFORCED; void terminal, reasoned), currency,
+                                             revision 1 — feeds NO financial figure; BOQ-vs-budget comparison
+                                             derived read-time on the BOQ page only (lib/boq.js, ADR-32);
+                                             reads restricted to financial roles
   …/purchaseOrders/{poId}                    poNumber, status, supplierName, lineItems[], subtotal, gst, total
   …/progressClaims/{claimId}                 claimNumber, status, poId, cumulative lineItems[], retention,
                                              claimed/approved subtotal-gst-total
@@ -191,7 +203,7 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
 
 ## Financial Invariants (mandatory)
 
-- **Purchase Orders, Progress Claims, Supplier Invoices, Variations, and Forecast Lines never write financial values onto Budget Lines.** Committed, Claimed, Actual, Invoiced, the variation figures (Approved Supplier Variations / Commitment Exposure), and every forecast figure (Cost to Complete, Forecast Final Cost, Variance to Budget) are derived at read time from PO, claim, invoice, and variation documents (`lib/purchaseOrders.js`, `lib/progressClaims.js`, `lib/supplierInvoices.js`, `lib/variations.js`, `lib/forecast.js`) — never stored back. **Forecast Lines store only the manual `uncommittedCostToComplete` (number|null) + notes; supplier-variation exposure is shown separately and is never added into Forecast Final Cost.** Approved variations count only at read time and never mutate POs, claims, or invoices; **Commitment Exposure is separate from Committed** (variation commitment does not yet mature against claims/invoices). Committed now means *remaining open commitment* (PO line − posted/paid invoiced-to-date); Actual counts a posted invoice instead of its source claim (read-time exclusion — the claim is never mutated)
+- **Purchase Orders, Progress Claims, Supplier Invoices, Variations, and Forecast Lines never write financial values onto Budget Lines.** Committed, Claimed, Actual, Invoiced, the variation figures (Approved Supplier Variations / Commitment Exposure), and every forecast figure (Cost to Complete, Forecast Final Cost, Variance to Budget) are derived at read time from PO, claim, invoice, and variation documents (`lib/purchaseOrders.js`, `lib/progressClaims.js`, `lib/supplierInvoices.js`, `lib/variations.js`, `lib/forecast.js`) — never stored back. **Forecast Lines store only the manual `uncommittedCostToComplete` (number|null) + notes; supplier-variation exposure is shown separately and is never added into Forecast Final Cost.** Approved variations count only at read time and never mutate POs, claims, or invoices; **Commitment Exposure is separate from Committed** (variation commitment does not yet mature against claims/invoices). Committed now means *remaining open commitment* (PO line − posted/paid invoiced-to-date); Actual counts a posted invoice instead of its source claim (read-time exclusion — the claim is never mutated). **BOQ items feed no financial figure at all** — the BOQ is measurement provenance; its only derived output is the read-time BOQ-vs-budget comparison on the BOQ page, never stored (ADR-32); a BOQ `rate: null` means UNPRICED (never 0) and its `amount` is derived quantity × rate (whole-cent, rules-enforced), null while unpriced
 - Document numbers (`PO-0001`, `PC-0001`, `SI-0001`, `CV-0001`, `SV-0001`, `CI-0001`, `CR-0001`, `SP-0001`) come from company-wide counters incremented in the same transaction as the document write
 - **Client Invoices are revenue-side and never touch a cost figure.** They never write onto Budget Lines, the Commercial Baseline, or Variations; `Issued Client Invoices`, `Available to Invoice`, per-variation invoiced/remaining, and receivables ageing are all derived at read time (`lib/clientInvoices.js`). Only **approved** client variations are invoiceable; **negative** approved ones reduce the Current Contract Sum but cannot be invoiced. Over-invoicing is **warned, never blocked** — the limit cannot be rules-enforced. **There is still no payment state ON THE INVOICE**: no `paid`/`partially_paid` status and no payment field. Since Client Receipts shipped, *Received to Date*, *Remaining to Reconcile*, and the reconciliation state (*unreconciled / partly / fully / over-reconciled*) are **derived at read time from posted receipt allocations** and are **never written onto an invoice** — which is why voiding a receipt restores balances with no reversal record. The words *paid* and *unpaid* must never be used as an invoice status. Constrapp does **not** produce a compliant Australian Tax Invoice (no company legal name/ABN) — never label output "Tax Invoice"
 - **Client Receipts are cash, not revenue.** A receipt stores gross cash received — **no GST, no tax code, no net amount** — and feeds **no** budget figure, forecast figure, or margin figure. Allocations are **embedded** on the receipt and **nothing is ever written onto a Client Invoice** (no balance, no payment status, no back-reference). Over-allocating the *receipt* is hard-blocked and its scalar arithmetic is rules-enforced (in whole cents); over-allocating an *invoice* is **warned, never blocked** — rules cannot sum sibling documents. Unallocated receipts are permitted, reported separately, and **never auto-applied**. Cash Flow must consume `receiptDate`, never `createdAt`/`postedAt`

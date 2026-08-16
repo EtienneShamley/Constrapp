@@ -15,6 +15,7 @@ companies/{companyId}
                                         variationsClient, variationsSupplier, clientInvoices,
                                         clientReceipts, supplierPayments)
   projects/{projectId}
+    boqItems/{itemId}                    (measured Bill of Quantities)
     budgetLines/{lineId}
     purchaseOrders/{poId}
     progressClaims/{claimId}
@@ -186,11 +187,52 @@ cancelled**), any progress claim, supplier invoice, **client invoice (including
 draft and void)**, **client receipt (including draft and void)**, **supplier
 payment (including draft and void)**, client or
 supplier variation, any forecast line with
-`uncommittedCostToComplete !== null`, or an established commercial baseline. Cost Codes and Contacts are company-wide and
+`uncommittedCostToComplete !== null`, any **priced** BOQ item (`rate !== null`,
+including rate 0 and voided priced items — an unpriced item is a measurement,
+not money, and never locks), or an established commercial baseline. Cost Codes and Contacts are company-wide and
 hold no money, so they **never** lock. Detecting that evidence is
 **client-enforced** (`lib/currency.js` → `monetaryLockReasons`); Firestore rules
 cannot enumerate random-id subcollections. What rules **do** enforce is the
 one-way ratchet once the flag is set. See [SECURITY.md](SECURITY.md).
+
+## …/projects/{projectId}/boqItems/{itemId}
+
+One measured line in the project's Bill of Quantities (ADR-32 Part 1). One BOQ
+per project — a flat register with **no header document** (mirroring
+`budgetLines`); random ids, **no counter** (a BOQ item is never quoted to a
+supplier or client, so ADR-5 does not apply). **Reads restricted to financial
+roles** — the BOQ is the internal estimate.
+
+| Field | Type | Notes |
+|---|---|---|
+| `itemNumber` | string | User-authored label (`"2.1"`), NOT a sequence; may be `''` |
+| `section` | string | Free-text grouping; may be `''` |
+| `description` | string | Required, non-whitespace |
+| `quantity` | number | Required, ≥ 0 — a measurement, not money |
+| `unit` | string | Required; prefilled from the cost code's `unit`, editable |
+| `rate` | number \| null | Ex-GST rate. **`null` = not yet priced** — never 0-as-unpriced; 0 is a price |
+| `amount` | number \| null | **Derived** `quantity × rate` (whole-cent, rules-enforced); **`null` whenever `rate` is `null`** |
+| `costCodeId` | string | **Required** — the cost-code spine |
+| `costCodeName` | string | Frozen display snapshot at write time |
+| `status` | string | `active` \| `void` — lifecycle **rules-enforced**; void terminal, reasoned |
+| `voidedAt` / `voidedBy` / `voidReason` | | Null / `''` until voided |
+| `currency` | string | Audit snapshot; the project currency remains the display authority |
+| `revision` | number | Always `1` (reserved) |
+| `notes` | string | |
+| `attachments` | array | Reserved `[]` — no uploads (no Storage rules exist) |
+| `externalRefs` | map | Reserved `{}` |
+| `createdAt/By`, `updatedAt/By` | | Rules-verified stamps |
+
+### Stored vs derived
+
+Only the measurement and pricing inputs are stored. The BOQ total, the unpriced
+count, and the **BOQ vs Approved Budget** comparison (per cost code, union of
+both sides, variance suppressed while any contributing item is unpriced) are
+derived at read time in `lib/boq.js` and never written anywhere. **BOQ items
+feed no financial figure** — Budgeted, Committed, Actual, Invoiced, Forecast,
+Margin, and Cash Flow are untouched. Estimating (margin/overheads), BOQ →
+Budget transfer, and Tender entities are NOT modelled (see Planned Commercial
+Entities below).
 
 ## …/projects/{projectId}/budgetLines/{lineId}
 
@@ -779,8 +821,8 @@ exactly as budget lines, PO lines, claim lines, and invoice lines already do.
 
 | Planned entity | Role in the lifecycle | Cost-code relationship (intended) |
 |---|---|---|
-| **BOQ lines** | Measured quantities in the Bill of Quantities | Each line carries a `costCodeId` |
-| **Estimates** | Rates + margin/overheads applied to BOQ lines → estimate | Priced per cost code |
+| ~~**BOQ lines**~~ | **Implemented** as `boqItems` above (ADR-32 Part 1) | Each item carries a mandatory `costCodeId` |
+| **Estimates** | Rates + margin/overheads applied to BOQ items → estimate; BOQ → Budget transfer | Priced per cost code |
 | **Tender packages** | BOQ items grouped for tender | Scoped by cost code / trade |
 | **Tender bids** | Subcontractor responses, compared and levelled | Levelled per cost code against the estimate |
 | **Awards** | The winning bid, transferred to commitment | Carries cost-coded amounts into POs/budget |
@@ -796,6 +838,7 @@ a design assessment, a hook, and (where a new collection is introduced) a manual
 ## Relationships & Denormalisation Summary
 
 - Budget lines, PO lines, claim lines → cost codes via `costCodeId`; each carries a `costCodeName` snapshot.
+- BOQ items → cost codes via a **required** `costCodeId` (with a `costCodeName` snapshot). BOQ items reference **nothing else** and are referenced **by nothing**: no budget line, PO, claim, invoice, variation, forecast line, or cash figure reads or writes them, and the BOQ-vs-budget comparison is derived at read time (`lib/boq.js`) — never stored.
 - Contacts → projects via `projectAssignments[].projectId` (with derived `projectIds`) — administrative preference only; no name snapshot, and financial documents never read it. The PO supplier picker groups project-assigned contacts first but any active supplier remains selectable.
 - POs → contacts via `supplierId`, with `supplierName` snapshotted at write time (same pattern as `costCodeName`). Null `supplierId` = pre-Contacts PO; render from the snapshot.
 - Claims → POs via `poId`, with `poNumber`/`supplierName`/`supplierId`/`poLineTotal` snapshotted. Claims inherit supplier identity from the PO — they never reference contacts directly.
