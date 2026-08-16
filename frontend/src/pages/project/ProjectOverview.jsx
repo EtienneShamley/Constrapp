@@ -19,6 +19,7 @@ import { useClientInvoices } from '../../hooks/useClientInvoices'
 import { useClientReceipts } from '../../hooks/useClientReceipts'
 import { useSupplierPayments } from '../../hooks/useSupplierPayments'
 import { useVariations } from '../../hooks/useVariations'
+import { useTenderBids } from '../../hooks/useTenderBids'
 import { useForecastLines } from '../../hooks/useForecastLines'
 import {
   isFinancialRole, isBaselineEstablished, projectForecastTotals, computeMargin,
@@ -128,7 +129,14 @@ function ProjectCurrencyCard({ project, projectId, currencyCode, sources }) {
                 <span className="ml-2 text-[13px]" aria-label="Locked">🔒</span>
               </p>
               <p className="m-0 mt-1 text-[11px] text-brand-muted max-w-[560px]">
-                Locked because this project already has {reasons.join(', ')}. Changing currency now would relabel
+                {/* `locked` can be true from the rules-enforced flag alone while the
+                    evidence list is empty (a subscription still loading or denied, or a
+                    record written by direct SDK — Deferred Control 12). Never render
+                    "already has ." — say the flag is set and name no evidence. */}
+                {reasons.length > 0
+                  ? <>Locked because this project already has {reasons.join(', ')}. </>
+                  : <>Locked — the currency ratchet is set on this project (its monetary records may still be loading or unavailable). </>}
+                Changing currency now would relabel
                 those amounts without converting them — Constrapp never converts. If the currency is wrong, raise a
                 new project in the correct currency.
               </p>
@@ -183,19 +191,22 @@ function ProjectFinancialCards({ project, projectId, currencyCode, canEditCurren
   const { clientReceipts }   = useClientReceipts(projectId)
   const { supplierPayments } = useSupplierPayments(projectId)
   const { variations }       = useVariations(projectId)
+  const { tenderBids }       = useTenderBids(projectId)
   const { forecastLines }    = useForecastLines(projectId)
   const { baseline, baselineLoading } = useProjectCommercial(projectId)
 
-  // Client invoices, client receipts and supplier payments are monetary data, so
-  // all three are part of the currency-lock evidence (lib/currency.js →
-  // monetaryLockReasons) alongside every other financial record. None of them
-  // feeds margin — revenue recognition is not modelled, cash in is not revenue,
-  // and cash out is not cost (a payment settles an Actual cost the posted
-  // supplier invoice already recognised) — so all three are deliberately absent
-  // from MarginCards below.
+  // Client invoices, client receipts, supplier payments and tender bids are
+  // monetary data, so all four are part of the currency-lock evidence
+  // (lib/currency.js → monetaryLockReasons) alongside every other financial
+  // record. None of them feeds margin — revenue recognition is not modelled,
+  // cash in is not revenue, cash out is not cost (a payment settles an Actual
+  // cost the posted supplier invoice already recognised), and a tender bid is
+  // a decision-trail price that commits nothing — so all four are deliberately
+  // absent from MarginCards below. Tender PACKAGES are not subscribed here at
+  // all: they hold scope and dates, never amounts, and are not lock evidence.
   const sources = useMemo(
-    () => ({ budgetLines, purchaseOrders, progressClaims, supplierInvoices, clientInvoices, clientReceipts, supplierPayments, variations, forecastLines, baseline }),
-    [budgetLines, purchaseOrders, progressClaims, supplierInvoices, clientInvoices, clientReceipts, supplierPayments, variations, forecastLines, baseline],
+    () => ({ budgetLines, purchaseOrders, progressClaims, supplierInvoices, clientInvoices, clientReceipts, supplierPayments, variations, tenderBids, forecastLines, baseline }),
+    [budgetLines, purchaseOrders, progressClaims, supplierInvoices, clientInvoices, clientReceipts, supplierPayments, variations, tenderBids, forecastLines, baseline],
   )
 
   return (

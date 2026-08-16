@@ -212,7 +212,16 @@ Flow shipped → Cash Flow visualisation shipped.** Remaining Cash Flow work is
 Opens the preconstruction side: a Bill of Quantities against cost codes, with rates/margin/overheads producing an estimate that transfers to an approved budget.
 
 **5. Tender Packages, Subcontractor Invitations, and Bid Levelling**
-Tender packages built from the BOQ, subcontractor invitations, and bid comparison/levelling by cost code, feeding award → commitment.
+**Tender Foundation V1 shipped** (ADR-32 Part 2): tender packages (`TP-0001`,
+cost-code scope + free text — deliberately BOQ-independent), manual bid capture
+per cost code from supplier/subcontractor contacts, read-time **Tender
+Comparison** (Approved Budget − Bid; no stored totals — the `assessBid`
+validity gate makes malformed bids fail safely), and the **award decision
+record** (rules-verified, single-award, creates **no PO** and changes no
+financial figure). Remaining in this item: packages built **from the BOQ**
+(optional frozen scope schedule at issue, once BOQ merges), subcontractor
+invitations, item-level bid **levelling** against the estimate, and **"Raise
+PO from Award"** — the explicit award → commitment transfer.
 
 **6. Manual QS Takeoff connected to BOQ quantities**
 Measured quantities populate BOQ quantity lines by cost code. Manual takeoff must exist before Quant™ AI — the AI accelerates an established pipeline rather than inventing one.

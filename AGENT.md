@@ -71,11 +71,13 @@ frontend/
                     useCostCodes, useContacts, useBudgetLines, usePurchaseOrders,
                     useProgressClaims, useSupplierInvoices, useClientInvoices,
                     useClientReceipts, useSupplierPayments, useVariations,
+                    useTenderPackages, useTenderBids,
                     useForecastLines, useProjectCommercial, useCashFlowLines
     lib/            firebase.js, formatters.js, currency.js, nav.js, projectTabs.js,
                     purchaseOrders.js, progressClaims.js, supplierInvoices.js,
                     clientInvoices.js, payments.js (shared, direction-agnostic),
                     clientReceipts.js, supplierPayments.js, variations.js,
+                    tenders.js (packages, bids, validity gate, comparison, award),
                     forecast.js, margin.js, cashFlow.js (pure monthly cash
                     aggregation + forecast layers), contacts.js (pure domain logic)
   tests/unit/       Unit tests for pure lib/ logic (npm run test:unit — no emulator)
@@ -124,7 +126,8 @@ companies/{companyId}/contacts/{contactId}   entityType, contactTypes[], names, 
                                              company-wide directory; reads restricted to financial roles
 companies/{companyId}/counters/{counterId}   next — sequential numbering (purchaseOrders, progressClaims,
                                              supplierInvoices, variationsClient, variationsSupplier,
-                                             clientInvoices, clientReceipts, supplierPayments)
+                                             clientInvoices, clientReceipts, supplierPayments,
+                                             tenderPackages)
 companies/{companyId}/projects/{projectId}   name, status, budget, startDate, location, progress,
                                              currency (ISO 4217 — the display authority),
                                              currencyLocked (one-way ratchet)
@@ -166,6 +169,23 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
                                              status, client/supplier + poId snapshots, ex-GST lineItems[] w/ per-line
                                              taxCode (submitted/approved sides), costCodeId spine — commercial change
                                              control; approved-only read-time; reads restricted to financial roles
+  …/tenderPackages/{packageId}               tenderNumber (TP-####), status draft|issued|awarded|cancelled, name,
+                                             scope (free text), costCodes[] {costCodeId, costCodeName} (≥1),
+                                             closingDate (INFORMATIONAL ONLY — never blocks a bid), awardedBidId +
+                                             awardedBidderName snapshot, awardNotes, cancelReason — NO amounts, NO
+                                             currency, NO awardTotal; LIFECYCLE + ISSUED-SCOPE FREEZE + AWARD
+                                             INTEGRITY (bid exists · same package · received · name snapshot ·
+                                             single award, via get()) ARE RULES-ENFORCED; award creates NO PO and
+                                             changes NO financial figure; reads restricted to financial roles
+  …/tenderBids/{bidId}                       tenderPackageId + frozen tenderNumber, status received|void (no draft —
+                                             a bid is a transcription), bidderContactId + frozen bidderName
+                                             (contact existence/type rules-verified via get()), bidDate, bidderRef,
+                                             ex-GST lineItems[] {costCodeId, costCodeName, description, amount}
+                                             (NO GST fields, NO stored bidTotal — totals derive through the
+                                             assessBid validity gate; malformed bids fail safely), exclusions,
+                                             notes — bid writes permitted ONLY while the package is issued (bids
+                                             freeze on award/cancel, rules-enforced); a bid is currency-lock
+                                             evidence; reads restricted to financial roles (competitor pricing)
   …/forecastLines/{costCodeId}               costCodeId (= doc id), costCodeName, uncommittedCostToComplete (number|null),
                                              notes — the ONLY stored Forecast Cost to Complete input; all other forecast
                                              figures derived at read time; reads restricted to financial roles
@@ -197,6 +217,7 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
 - **Client Receipts are cash, not revenue.** A receipt stores gross cash received — **no GST, no tax code, no net amount** — and feeds **no** budget figure, forecast figure, or margin figure. Allocations are **embedded** on the receipt and **nothing is ever written onto a Client Invoice** (no balance, no payment status, no back-reference). Over-allocating the *receipt* is hard-blocked and its scalar arithmetic is rules-enforced (in whole cents); over-allocating an *invoice* is **warned, never blocked** — rules cannot sum sibling documents. Unallocated receipts are permitted, reported separately, and **never auto-applied**. Cash Flow must consume `receiptDate`, never `createdAt`/`postedAt`
 - **Supplier Payments are cash out, not cost.** A payment settles an Actual cost that a **posted** supplier invoice already recognised, so it feeds **no** budget figure, forecast figure, or margin figure. Allocations reconcile against `supplierInvoice.payableTotal` — **never `grossTotal`** — because retention withheld is not payable, and a payment never writes, clears, or reduces `retention`/`retentionGst`/`retentionTotal` (retention release is not modelled). Allocations are **embedded** on the payment and **nothing is ever written onto a Supplier Invoice** (no balance, no payment status, no back-reference). **`SI_STATUS.PAID` and `paidAt` are DEPRECATED IN PLACE, never activated** — no path writes them and `SI_TRANSITIONS` reaches `paid` from nowhere; `paid` stays in `SI_COUNTING_STATUSES` deliberately so a direct-SDK-forged document cannot vanish from Invoiced/Actual (ADR-24). Over-allocating the *payment* is hard-blocked and its scalar arithmetic is rules-enforced (whole cents); over-reconciling an *invoice* is **warned, never blocked**. Unallocated payments are permitted, reported separately, and **never auto-applied** — and their **full amount** is still actual Cash Out. Cash Flow must consume `paymentDate`, never `createdAt`/`postedAt`
 - **Cash Flow consumes cash records and writes only its own timing lines — gross cash only.** Every figure is derived at read time in `lib/cashFlow.js` across three layers: **actual** (posted Client Receipts / Supplier Payments via `cashInRows()`/`cashOutRows()`), **automatic near-term forecast** (positive remaining on issued Client Invoices at gross, and on posted Supplier Invoices at `payableTotal`, timed by `dueDate` **month**), and **manual longer-term timing** (`cashFlowLines`). It consumes the **total transaction `amount`** (never `allocatedTotal`) on the **transaction date** (`receiptDate`/`paymentDate`, never `createdAt`/`postedAt`) and groups by `date.slice(0, 7)`. **THE BOUNDARY RULE: months before the current month are ACTUAL ONLY** — no forecast amount, automatic or manual, ever lands in a past month, which is what makes actual-vs-forecast provably non-double-counting. Past-due and undated invoice balances are **never guessed into a month**; they are reported untimed. Cash Flow **writes only `cashFlowLines`** — no receipt, payment, invoice, PO, claim, variation, forecast line, budget line, or baseline is ever mutated. A timing line stores an expected **gross** `amount` plus, separately, the **ex-GST `sourceAmountExGst`** it represents (completeness only — the two bases are never added together); invoice source types are **excluded** so an invoice balance can never be timed twice; approved-claim cost sits **inside** Remaining Committed and is never an additive second denominator. The cumulative position starts at **zero** and is net project cash movement, **never presented as a bank balance** (no bank account, opening balance, financing, retention release, or GST/BAS remittance is modelled — each is warned about, never silently adjusted). **A failed subscription is reported as unavailable, never as a genuine zero.**
+- **Tenders are a decision trail, not a financial document set.** Tender packages hold scope (≥1 cost codes + free text) and **no amounts**; bids hold ex-GST per-cost-code lines with **NO stored `bidTotal`** and packages store **NO `awardTotal`** — rules cannot sum an array, so a stored header total would be forgeable (the Credit Notes header-vs-lines lesson). Every figure derives through the `lib/tenders.js → assessBid` **validity gate**: a bid with any malformed line is invalid whole — total `null`, never a partial sum, never $0 — and is excluded from comparison and award. **An award creates NO Purchase Order and changes NO financial figure** (no budget, committed, claimed, actual, invoiced, forecast, margin, or cash-flow effect); the Awarded Bid Value derives from the rules-frozen awarded bid and is **never netted against POs** (no Award → PO linkage exists). Comparison variance uses **Approved Budget − Bid** (positive = under budget) and shows *no budget* rather than comparing against zero. The **closing date is informational only** — nothing blocks a late bid, anywhere. Tender bids (incl. void) are currency-lock evidence; packages never lock
 - PO line items freeze once a PO leaves `draft`; claim amounts freeze once submitted; approved amounts are frozen forever; supplier invoices freeze once `posted` (and posted invoices cannot be cancelled/unposted)
 - Lifecycles are forward-only; financial documents are never deleted — cancellation/rejection is a status change
 - One open Progress Claim per PO at a time; claims are cumulative (claimed-to-date per PO line)

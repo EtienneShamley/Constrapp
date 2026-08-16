@@ -31,6 +31,7 @@ import ProjectClientInvoices from './pages/project/ProjectClientInvoices'
 import ProjectClientReceipts from './pages/project/ProjectClientReceipts'
 import ProjectSupplierPayments from './pages/project/ProjectSupplierPayments'
 import ProjectCashFlow from './pages/project/ProjectCashFlow'
+import ProjectTenders from './pages/project/ProjectTenders'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
 
 export default function App() {
@@ -66,6 +67,7 @@ export default function App() {
                           badge="Coming in Sprint 3"
                         />
                       } />
+                      <Route path="tenders"     element={<ProjectTenders />} />
                       <Route path="budget"      element={<ProjectBudget />} />
                       <Route path="cost-codes"  element={<ProjectCostCodes />} />
                       <Route path="purchase-orders" element={<ProjectPurchaseOrders />} />

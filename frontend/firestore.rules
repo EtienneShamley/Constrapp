@@ -952,6 +952,389 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Tender Packages — project-scoped tender scope records: a named package of
+    // selected cost codes + free-text scope put to market, numbered TP-#### from
+    // the company-wide counters/tenderPackages document (covered by the counters
+    // block below — no separate rule needed). A package holds NO amounts and NO
+    // currency field — the money lives on Tender Bids.
+    //
+    // Reads: restricted to internal financial roles — a package reveals what is
+    // out to tender and, beside its bids, competitor pricing context, so
+    // subcontractor and client users must NOT read it. A bidder portal is
+    // separate, future work (Deferred Control 10 posture).
+    // Delete: blocked — cancellation is a status change; packages are the audit
+    // trail of the award decision.
+    //
+    // Lifecycle is RULES-ENFORCED (the clientInvoices standard, ADR-22):
+    //   · create only with status 'draft', revision 1, ≥1 cost code, null
+    //     lifecycle stamps and award/cancel fields, createdBy == caller,
+    //     createdAt == server request time
+    //   · draft edits may change commercial content but not the status, and may
+    //     not forge stamps or award/cancel fields
+    //   · draft -> issued is a SEPARATE stamp-only operation — issuing FREEZES
+    //     name/description/scope/costCodes
+    //   · issued edits may touch ONLY closingDate and notes (the deliberate
+    //     carve-out: extending an informational closing date is routine and must
+    //     not force cancel-and-recreate)
+    //   · issued -> awarded may touch only the award fields, requires
+    //     awardedBy == caller and awardedAt == server request time, and — via
+    //     get() on the bid document — that the awarded bid EXISTS in THIS
+    //     project, BELONGS to this package, is RECEIVED (not void), and that
+    //     awardedBidderName equals the bid's own bidderName snapshot. Because
+    //     this branch requires resource.data.status == 'issued', a SECOND award
+    //     is rejected: Firestore serialises writes per document, so the loser of
+    //     a concurrent-award race evaluates against the already-awarded state
+    //   · draft|issued -> cancelled touches only the cancel fields, with a
+    //     NON-WHITESPACE cancelReason
+    //   · awarded and cancelled are terminal
+    //
+    // ⚠️ NO STORED TOTALS. There is deliberately NO awardTotal (and bids store
+    // no bidTotal): rules cannot iterate or sum an embedded array, so a stored
+    // header total would be an unverifiable second copy of the lines (the
+    // Credit Notes header-vs-lines problem). The award display value is derived
+    // at read time from the awarded bid's lineItems, which THIS block freezes by
+    // ending the parent's 'issued' state (see tenderBids below).
+    //
+    // What is NOT enforced here (client-only — never describe as enforced; see
+    // docs/SECURITY.md → Deferred Control 26):
+    //   · the SHAPE OF EACH costCodes[] ELEMENT — rules cannot iterate an
+    //     array, so costCodeId/costCodeName pairs are unverified beyond the
+    //     list's existence and size
+    //   · that each costCodeId names a REAL, ACTIVE company cost code
+    //   · that closingDate has passed or not — INFORMATIONAL ONLY by design;
+    //     nothing anywhere blocks a bid after the closing date
+    //   · that the awarded bid's line items are WELL-FORMED — the award rule
+    //     verifies package/status/identity via get(), but cannot iterate the
+    //     bid's lineItems; the client refuses to award a malformed bid and the
+    //     read-time validity gate (lib/tenders.js → assessBid) makes a forged
+    //     one fail safely rather than be trusted
+    match /companies/{companyId}/projects/{projectId}/tenderPackages/{packageId} {
+      function financialMember() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // The document identity that no update of any kind may rewrite.
+      function corePreserved() {
+        return request.resource.data.tenderNumber == resource.data.tenderNumber
+            && request.resource.data.createdAt    == resource.data.createdAt
+            && request.resource.data.createdBy    == resource.data.createdBy
+            && request.resource.data.revision     == resource.data.revision;
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // '' (no closing date) or a YYYY-MM-DD shape. That the date is future,
+      // past, or sane is NOT checked — it is informational only.
+      function closingDateValid() {
+        return request.resource.data.closingDate == ''
+            || (request.resource.data.closingDate is string
+                && request.resource.data.closingDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'));
+      }
+      // Shape required of every stored draft state (create and draft edit).
+      function shapeValid() {
+        return request.resource.data.tenderNumber is string
+            && request.resource.data.tenderNumber.size() > 0
+            && request.resource.data.revision == 1
+            && request.resource.data.name is string
+            && request.resource.data.name.trim().size() > 0
+            && request.resource.data.description is string
+            && request.resource.data.scope is string
+            && request.resource.data.notes is string
+            // ≥1 cost code — the cost-code spine; element shape is client-only.
+            && request.resource.data.costCodes is list
+            && request.resource.data.costCodes.size() >= 1
+            && request.resource.data.costCodes.size() <= 100
+            && closingDateValid();
+      }
+      // The awarded bid this award update points at.
+      function awardedBid() {
+        return get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/tenderBids/$(request.resource.data.awardedBidId)).data;
+      }
+
+      allow read: if financialMember();
+
+      allow create: if financialMember()
+                  && shapeValid()
+                  && request.resource.data.status == 'draft'
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  // Lifecycle stamps and award/cancel fields cannot be forged
+                  // at creation.
+                  && request.resource.data.issuedAt == null
+                  && request.resource.data.issuedBy == null
+                  && request.resource.data.awardedAt == null
+                  && request.resource.data.awardedBy == null
+                  && request.resource.data.cancelledAt == null
+                  && request.resource.data.cancelledBy == null
+                  && request.resource.data.awardedBidId == null
+                  && request.resource.data.awardedBidderName == null
+                  && request.resource.data.awardNotes == ''
+                  && request.resource.data.cancelReason == '';
+
+      allow update: if financialMember() && corePreserved() && updateStamped() && (
+                    // (a) DRAFT EDIT — commercial content (name, description,
+                    //     scope, costCodes, closingDate, notes) is freely
+                    //     editable while draft, but the status may not move and
+                    //     no stamp or award/cancel field may be forged.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'draft'
+                      && shapeValid()
+                      && request.resource.data.issuedAt == resource.data.issuedAt
+                      && request.resource.data.issuedBy == resource.data.issuedBy
+                      && request.resource.data.awardedAt == resource.data.awardedAt
+                      && request.resource.data.awardedBy == resource.data.awardedBy
+                      && request.resource.data.cancelledAt == resource.data.cancelledAt
+                      && request.resource.data.cancelledBy == resource.data.cancelledBy
+                      && request.resource.data.awardedBidId == resource.data.awardedBidId
+                      && request.resource.data.awardedBidderName == resource.data.awardedBidderName
+                      && request.resource.data.awardNotes == resource.data.awardNotes
+                      && request.resource.data.cancelReason == resource.data.cancelReason
+                    )
+                    ||
+                    // (b) DRAFT -> ISSUED. A separate stamp-only operation
+                    //     carrying no content change whatsoever — the scope that
+                    //     was reviewed is the scope that goes to market, and it
+                    //     freezes here.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'issued'
+                      && changedKeys().hasOnly(['status', 'issuedAt', 'issuedBy', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.issuedBy == request.auth.uid
+                      && request.resource.data.issuedAt == request.time
+                    )
+                    ||
+                    // (c) ISSUED EDIT — the closingDate/notes carve-out ONLY.
+                    //     Commercial scope (name, description, scope, costCodes)
+                    //     stays frozen; extending an informational closing date
+                    //     must not force cancel-and-recreate.
+                    (
+                      resource.data.status == 'issued'
+                      && request.resource.data.status == 'issued'
+                      && changedKeys().hasOnly(['closingDate', 'notes', 'updatedAt', 'updatedBy'])
+                      && closingDateValid()
+                      && request.resource.data.notes is string
+                    )
+                    ||
+                    // (d) ISSUED -> AWARDED (terminal). The decision record:
+                    //     which received bid on THIS package won. The bid get()
+                    //     is what stops awarding a nonexistent bid, another
+                    //     package's bid, a void bid, or a forged bidder-name
+                    //     snapshot; requiring the CURRENT status to be 'issued'
+                    //     is what stops a second award.
+                    (
+                      resource.data.status == 'issued'
+                      && request.resource.data.status == 'awarded'
+                      && changedKeys().hasOnly(['status', 'awardedBidId', 'awardedBidderName', 'awardNotes', 'awardedAt', 'awardedBy', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.awardedBy == request.auth.uid
+                      && request.resource.data.awardedAt == request.time
+                      && request.resource.data.awardNotes is string
+                      && request.resource.data.awardedBidId is string
+                      && request.resource.data.awardedBidId.size() > 0
+                      && awardedBid().tenderPackageId == packageId
+                      && awardedBid().status == 'received'
+                      && request.resource.data.awardedBidderName == awardedBid().bidderName
+                    )
+                    ||
+                    // (e) DRAFT|ISSUED -> CANCELLED (terminal). Touches only the
+                    //     cancel audit fields, with a real reason.
+                    (
+                      (resource.data.status == 'draft' || resource.data.status == 'issued')
+                      && request.resource.data.status == 'cancelled'
+                      && changedKeys().hasOnly(['status', 'cancelledAt', 'cancelledBy', 'cancelReason', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.cancelledBy == request.auth.uid
+                      && request.resource.data.cancelledAt == request.time
+                      && request.resource.data.cancelReason is string
+                      && request.resource.data.cancelReason.trim().size() > 0
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
+    // Tender Bids — project-scoped manual transcriptions of bids received
+    // against an ISSUED Tender Package, priced PER COST CODE (ex-GST, no GST
+    // fields — comparison is ex-GST; tax is a commitment-time concern). Random
+    // document ids, NO sequential number and NO counter: a bid is identified by
+    // its bidder and package. Project-level with a tenderPackageId reference —
+    // the progressClaims→PO idiom — NOT a subcollection, so one subscription
+    // serves the register and rules still verify containment via get().
+    //
+    // Reads: restricted to internal financial roles — a bid IS competitor
+    // pricing, so subcontractor and client users must NOT read any bid, least
+    // of all a competitor's. Delete: blocked — voiding is a status change; bids
+    // are the audit trail behind the award decision.
+    //
+    // Lifecycle is RULES-ENFORCED, two states (received → void): a bid is a
+    // TRANSCRIPTION of an external document, not an authored document with a
+    // commit point, so it is created directly as 'received' — a deliberate,
+    // documented deviation from the create-draft-only standard, analogous to
+    // cashFlowLines' two-state simplification.
+    //   · create only with status 'received', revision 1, null void stamps,
+    //     createdBy == caller, createdAt == server request time, AND — via
+    //     get() — a parent package IN THIS PROJECT whose status is 'issued', a
+    //     tenderNumber equal to that package's own (snapshot cannot be forged),
+    //     and a bidderContactId naming a REAL contact in this company whose
+    //     contactTypes include supplier or subcontractor, with bidderName equal
+    //     to that contact's displayName (snapshot cannot be forged). This
+    //     deliberately exceeds the supplierPayments precedent (which leaves
+    //     supplierId existence unverified): a fabricated bidder in a
+    //     competitive record is worth the extra get().
+    //   · received edits (transcription corrections: bidDate, bidderRef,
+    //     lineItems, exclusions, notes) are allowed ONLY while the parent
+    //     package is still 'issued'; bidder identity, package linkage, and the
+    //     tenderNumber snapshot are immutable
+    //   · received -> void touches only the void audit fields, with a
+    //     NON-WHITESPACE voidReason, ONLY while the parent package is 'issued'
+    //   · once the package is awarded or cancelled, EVERY bid write is rejected
+    //     — bids freeze, which is exactly what makes the awarded bid's derived
+    //     total trustworthy without a stored copy
+    //   · void is terminal
+    //
+    // What is NOT enforced here (client-only — never describe as enforced; see
+    // docs/SECURITY.md → Deferred Control 26):
+    //   · the SHAPE OF EACH lineItems[] ELEMENT — rules cannot iterate or index
+    //     into an array, so costCodeId / costCodeName / description / amount
+    //     are unverified per line, including finite-number and ≥ 0 checks. A
+    //     malicious direct-SDK caller CAN store malformed embedded line data;
+    //     the read-time validity gate (lib/tenders.js → assessBid) is what
+    //     makes such a bid fail safely — flagged invalid, excluded from totals,
+    //     comparison, and award — rather than silently influence a figure
+    //   · line cost-code CONTAINMENT within the package's costCodes, and that
+    //     any costCodeId names a real, active cost code
+    //   · ONE ACTIVE BID PER BIDDER PER PACKAGE — bid ids are random and rules
+    //     have no queries, so uniqueness is a client-side check; two
+    //     simultaneous creators can duplicate (the Deferred Control 9 posture)
+    //   · that bidDate is realistic, or before the package's closingDate — the
+    //     closing date is INFORMATIONAL ONLY and blocks nothing anywhere
+    //   · BUSINESS TRUTH — that the transcribed prices match the paper bid
+    match /companies/{companyId}/projects/{projectId}/tenderBids/{bidId} {
+      function financialMember() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // The document identity that no update of any kind may rewrite: package
+      // linkage, both frozen snapshots, bidder identity, currency, creation.
+      function corePreserved() {
+        return request.resource.data.tenderPackageId == resource.data.tenderPackageId
+            && request.resource.data.tenderNumber    == resource.data.tenderNumber
+            && request.resource.data.bidderContactId == resource.data.bidderContactId
+            && request.resource.data.bidderName      == resource.data.bidderName
+            && request.resource.data.currency        == resource.data.currency
+            && request.resource.data.createdAt       == resource.data.createdAt
+            && request.resource.data.createdBy       == resource.data.createdBy
+            && request.resource.data.revision        == resource.data.revision;
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // The parent package, from the SAME project path as this bid — so a bid
+      // can never graft onto another project's (or company's) package.
+      function parentPackage(pkgId) {
+        return get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/tenderPackages/$(pkgId)).data;
+      }
+      // The bidder contact named on a create.
+      function bidderContact() {
+        return get(/databases/$(database)/documents/companies/$(companyId)/contacts/$(request.resource.data.bidderContactId)).data;
+      }
+      // Shape required of every stored received state (create and edit alike).
+      function shapeValid() {
+        return request.resource.data.tenderPackageId is string
+            && request.resource.data.tenderPackageId.size() > 0
+            && request.resource.data.tenderNumber is string
+            && request.resource.data.tenderNumber.size() > 0
+            && request.resource.data.bidderContactId is string
+            && request.resource.data.bidderContactId.size() > 0
+            && request.resource.data.bidderName is string
+            && request.resource.data.bidderName.size() > 0
+            && request.resource.data.bidDate is string
+            && request.resource.data.bidDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+            && request.resource.data.bidderRef is string
+            && request.resource.data.exclusions is string
+            && request.resource.data.notes is string
+            // ≥1 priced line; element shape is client-only (see block note).
+            && request.resource.data.lineItems is list
+            && request.resource.data.lineItems.size() >= 1
+            && request.resource.data.lineItems.size() <= 100
+            && request.resource.data.currency is string
+            && request.resource.data.currency.matches('^[A-Z]{3}$')
+            && request.resource.data.revision == 1;
+      }
+
+      allow read: if financialMember();
+
+      allow create: if financialMember()
+                  && shapeValid()
+                  && request.resource.data.status == 'received'
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  // Void stamps cannot be forged at creation.
+                  && request.resource.data.voidedAt == null
+                  && request.resource.data.voidedBy == null
+                  && request.resource.data.voidReason == ''
+                  // Parent package must exist IN THIS PROJECT and be issued —
+                  // no bids on draft, awarded, or cancelled packages.
+                  && parentPackage(request.resource.data.tenderPackageId).status == 'issued'
+                  // The tenderNumber snapshot cannot be forged.
+                  && request.resource.data.tenderNumber == parentPackage(request.resource.data.tenderPackageId).tenderNumber
+                  // The bidder must be a real supplier/subcontractor contact in
+                  // this company, and the name snapshot must match it.
+                  && bidderContact().contactTypes.hasAny(['supplier', 'subcontractor'])
+                  && request.resource.data.bidderName == bidderContact().displayName;
+
+      allow update: if financialMember() && corePreserved() && updateStamped() && (
+                    // (a) RECEIVED EDIT — transcription corrections (bidDate,
+                    //     bidderRef, lineItems, exclusions, notes) while the
+                    //     parent package is STILL ISSUED. The status may not
+                    //     move and no void stamp may be forged. Once the
+                    //     package is awarded or cancelled this branch (and the
+                    //     void branch) stop matching — bids freeze.
+                    (
+                      resource.data.status == 'received'
+                      && request.resource.data.status == 'received'
+                      && shapeValid()
+                      && request.resource.data.voidedAt == resource.data.voidedAt
+                      && request.resource.data.voidedBy == resource.data.voidedBy
+                      && request.resource.data.voidReason == resource.data.voidReason
+                      && parentPackage(resource.data.tenderPackageId).status == 'issued'
+                    )
+                    ||
+                    // (b) RECEIVED -> VOID (terminal), only while the parent
+                    //     package is still issued. Touches only the void audit
+                    //     fields, with a real reason.
+                    (
+                      resource.data.status == 'received'
+                      && request.resource.data.status == 'void'
+                      && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.voidedBy == request.auth.uid
+                      && request.resource.data.voidedAt == request.time
+                      && request.resource.data.voidReason is string
+                      && request.resource.data.voidReason.trim().size() > 0
+                      && parentPackage(resource.data.tenderPackageId).status == 'issued'
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
     // Contacts — company-wide directory of suppliers, subcontractors,
     // consultants, and clients (third-party PII: names, phones, emails, ABNs,
     // payment terms).
@@ -969,7 +1352,7 @@ service cloud.firestore {
 
     // Counters — sequential document numbering (purchaseOrders, progressClaims,
     // supplierInvoices, variationsClient, variationsSupplier, clientInvoices,
-    // clientReceipts, supplierPayments).
+    // clientReceipts, supplierPayments, tenderPackages).
     // Read/write restricted to the roles that create numbered documents;
     // the create transaction must read and increment the counter.
     // Counter integrity (+1 only, no arbitrary set) is NOT enforced here — see
