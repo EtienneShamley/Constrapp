@@ -960,6 +960,274 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Supplier Credit Notes — project-scoped REDUCTION records against exactly
+    // one POSTED Supplier Invoice (over-claimed quantities, rejected work,
+    // back-charges, negotiated reductions). SCN-#### from the company-wide
+    // counters/supplierCreditNotes document (covered by the counters block
+    // below — no separate rule needed).
+    //
+    // Reads: restricted to internal financial roles — credit notes expose
+    // supplier pricing and the project's cost corrections, so subcontractor and
+    // client users must NOT read them.
+    // Delete: blocked — voiding is a status change; credit notes are audit
+    // records (ADR-12).
+    //
+    // Lifecycle is RULES-ENFORCED, following clientInvoices/clientReceipts/
+    // supplierPayments (the ADR-22 standard):
+    //   · create only with status 'draft', docType 'credit_note', null
+    //     lifecycle stamps, createdBy == caller, createdAt == server request
+    //     time
+    //   · draft edits may change content but not the status, must satisfy the
+    //     full shape AND the target checks, and may not forge a lifecycle stamp
+    //   · the TARGET IS FROZEN AT CREATION: supplierInvoiceId and its snapshot
+    //     fields (invoiceNumber, supplierInvoiceNumber, supplierId,
+    //     supplierName) are core-preserved on every update — retargeting is a
+    //     void plus a new credit note
+    //   · posting is a SEPARATE operation touching only
+    //     status/postedAt/postedBy/updatedAt/updatedBy, with postedBy == caller
+    //     and postedAt == server request time
+    //   · voiding (from draft or posted) touches only
+    //     status/voidedAt/voidedBy/voidReason/updatedAt/updatedBy, with
+    //     voidedBy == caller, voidedAt == server request time, and a voidReason
+    //     containing NON-WHITESPACE text
+    //   · posted credit-note content is consequently immutable — voiding is the
+    //     only permitted update
+    //   · void is terminal; there is no posted -> draft and no void -> anything
+    //
+    // ⚠️ FIRST CROSS-DOCUMENT get() IN A FINANCIAL BLOCK. Every earlier
+    // financial collection validates only its own document (the deliberate
+    // posture recorded on supplierPayments). A credit note is different: a
+    // forged credit ERASES cost and flatters margin — the one direction the
+    // payable modules must never fail toward — and its target is a SINGLE
+    // scalar reference, not an array, so ONE get() can validate it. What the
+    // target get() enforces on create, on every draft edit, AND on the
+    // draft -> posted transition (the financial commit point — a stale draft
+    // must never post against a target that has since changed):
+    //   · the target supplier invoice EXISTS in this project
+    //   · its status is 'posted' (the financial commit point — not draft,
+    //     approved, cancelled, or the deprecated forgeable 'paid')
+    //   · its supplierId equals the credit note's frozen supplierId
+    //   · its currency equals the credit note's currency
+    //   · its retentionTotal is ZERO — retained invoices cannot be credited in
+    //     this foundation (crediting them is ambiguous while retention release
+    //     is unmodelled)
+    //   · THIS credit note's grossTotal does not exceed the target's
+    //     payableTotal (whole-cent comparison)
+    //
+    // What is NOT enforced here (client-side only — NEVER describe as
+    // enforced; see docs/SECURITY.md → Deferred Control 25):
+    //   · the SHAPE OF EACH lineItems[] ELEMENT — rules cannot iterate or index
+    //     into an array, so costCodeId / costCodeName / description / amount /
+    //     taxCode / gstAmount are unverified, as are the > 0 rule on each
+    //     amount and the cost-codes-must-appear-on-the-target-invoice rule
+    //   · subtotal/gstTotal MATCHING the sum of lineItems[] — same limitation.
+    //     What IS enforced is the SCALAR header invariant below. A document
+    //     whose headers and lines disagree is therefore WRITEABLE; the app
+    //     excludes it from every figure at READ TIME and reports it as an
+    //     exception (lib/supplierCreditNotes.js → creditTargetException). That
+    //     read-time gate is an additional correctness guard for what this app
+    //     renders — it is NOT a substitute for these rules and protects nothing
+    //     outside the app
+    //   · the CUMULATIVE credit cap: rules have no list, query, or count, so no
+    //     rule can sum SIBLING credit notes against the same invoice. The
+    //     app HARD-BLOCKS a cumulative total above payableTotal, but two users
+    //     can post credits against the same invoice concurrently and both
+    //     writes succeed — only the single-document cap above is guaranteed
+    //   · the target staying valid AFTER posting — supplier-invoice lifecycle
+    //     is still client-enforced (Deferred Controls 1 and 2), so a direct SDK
+    //     call can cancel or mutate the target after this credit is posted and
+    //     no rule will fire again. The app answers that at read time by
+    //     excluding the credit from every figure and surfacing it as an
+    //     exception (safe failure: cost stays visible)
+    //   · GST correctness per line (per-line tax codes make a flat check
+    //     unreliable — the ADR-21 no-enum precedent)
+    //   · company-wide SCN-number uniqueness independently of the client
+    //     transaction (the counter is client-writable — Deferred Control 6)
+    //   · creator != poster segregation (Deferred Control 4)
+    //   · BUSINESS TRUTH — that the supplier genuinely issued the credit
+    match /companies/{companyId}/projects/{projectId}/supplierCreditNotes/{creditNoteId} {
+      function financialMember() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // The document identity that no update of any kind may rewrite. Wider
+      // than the cash collections: the TARGET REFERENCE and its supplier
+      // snapshots are frozen from creation, so the get()-validated link can
+      // never be silently repointed at a different invoice or supplier.
+      function corePreserved() {
+        return request.resource.data.creditNumber          == resource.data.creditNumber
+            && request.resource.data.currency              == resource.data.currency
+            && request.resource.data.createdAt             == resource.data.createdAt
+            && request.resource.data.createdBy             == resource.data.createdBy
+            && request.resource.data.docType               == resource.data.docType
+            && request.resource.data.revision              == resource.data.revision
+            && request.resource.data.supplierInvoiceId     == resource.data.supplierInvoiceId
+            && request.resource.data.invoiceNumber         == resource.data.invoiceNumber
+            && request.resource.data.supplierInvoiceNumber == resource.data.supplierInvoiceNumber
+            && request.resource.data.supplierId            == resource.data.supplierId
+            && request.resource.data.supplierName          == resource.data.supplierName;
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // MONEY IS DECIMAL; IEEE-754 IS NOT. Rules numbers are doubles, so an
+      // exact `subtotal + gstTotal == grossTotal` REJECTS legitimate cent
+      // values: 0.10 + 0.20 evaluates to 0.30000000000000004, which is not
+      // 0.30. Both sides are therefore compared as WHOLE CENTS via math.round().
+      //
+      // This is a REPRESENTATION FIX, NOT A WEAKENED INVARIANT: it is exactly
+      // equivalent to a half-cent tolerance, so any discrepancy of one cent or
+      // more still fails. lib/payments.js → toCents() mirrors this precisely, so
+      // a write the client considers valid is never rejected here (or vice versa).
+      function cents(v) {
+        return math.round(v * 100);
+      }
+      // The header arithmetic guarantee rules CAN give: the stored totals must
+      // agree with each other (the lines themselves are unverifiable).
+      function headerInvariant() {
+        return request.resource.data.subtotal is number
+            && request.resource.data.subtotal > 0
+            && request.resource.data.gstTotal is number
+            && request.resource.data.gstTotal >= 0
+            && request.resource.data.grossTotal is number
+            && request.resource.data.grossTotal > 0
+            && cents(request.resource.data.subtotal + request.resource.data.gstTotal)
+               == cents(request.resource.data.grossTotal);
+      }
+      // The target supplier invoice this credit note reduces. Repeated access
+      // to the same document within one evaluation is a single billed read.
+      function targetInvoice() {
+        return get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/supplierInvoices/$(request.resource.data.supplierInvoiceId)).data;
+      }
+      // The single-document target checks (see the block comment above).
+      function targetValid() {
+        return exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/supplierInvoices/$(request.resource.data.supplierInvoiceId))
+            && targetInvoice().status == 'posted'
+            && targetInvoice().supplierId == request.resource.data.supplierId
+            && targetInvoice().currency == request.resource.data.currency
+            && targetInvoice().retentionTotal is number
+            && cents(targetInvoice().retentionTotal) == 0
+            && targetInvoice().payableTotal is number
+            && cents(request.resource.data.grossTotal) <= cents(targetInvoice().payableTotal);
+      }
+      // Shape required of every stored state (create and draft edit alike).
+      function shapeValid() {
+        return request.resource.data.docType == 'credit_note'
+            && request.resource.data.creditNumber is string
+            && request.resource.data.revision is number
+            && request.resource.data.supplierInvoiceId is string
+            && request.resource.data.supplierInvoiceId.size() > 0
+            && request.resource.data.invoiceNumber is string
+            && request.resource.data.supplierInvoiceNumber is string
+            // supplierId is frozen FROM THE TARGET INVOICE, which may
+            // legitimately carry null from before the Contacts module — so
+            // null is allowed here (unlike supplierPayments), but the get()
+            // equality in targetValid() still holds: null must match null.
+            && (request.resource.data.supplierId == null
+                || (request.resource.data.supplierId is string
+                    && request.resource.data.supplierId.size() > 0))
+            && request.resource.data.supplierName is string
+            && request.resource.data.supplierName.size() > 0
+            && request.resource.data.supplierCreditReference is string
+            && request.resource.data.creditDate is string
+            && request.resource.data.creditDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+            // A credit without a stated cause is an audit hole — the reason is
+            // authored content, required NON-WHITESPACE at every stored state.
+            && request.resource.data.reason is string
+            && request.resource.data.reason.trim().size() > 0
+            && request.resource.data.notes is string
+            && request.resource.data.currency is string
+            && request.resource.data.currency.matches('^[A-Z]{3}$')
+            && request.resource.data.lineItems is list
+            && request.resource.data.lineItems.size() >= 1
+            && request.resource.data.lineItems.size() <= 100
+            && headerInvariant();
+      }
+
+      allow read: if financialMember();
+
+      allow create: if financialMember()
+                  && shapeValid()
+                  && targetValid()
+                  && request.resource.data.status == 'draft'
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  // Lifecycle stamps cannot be forged at creation.
+                  && request.resource.data.postedAt == null
+                  && request.resource.data.postedBy == null
+                  && request.resource.data.voidedAt == null
+                  && request.resource.data.voidedBy == null;
+
+      allow update: if financialMember() && corePreserved() && updateStamped() && (
+                    // (a) DRAFT EDIT — content (date, reason, reference, lines,
+                    //     totals, notes) is freely editable while draft, but
+                    //     the frozen target must still validate (the amounts
+                    //     changed, so the payable cap is re-checked), the
+                    //     status may not move, and no lifecycle stamp may be
+                    //     forged.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'draft'
+                      && shapeValid()
+                      && targetValid()
+                      && request.resource.data.postedAt == resource.data.postedAt
+                      && request.resource.data.postedBy == resource.data.postedBy
+                      && request.resource.data.voidedAt == resource.data.voidedAt
+                      && request.resource.data.voidedBy == resource.data.voidedBy
+                    )
+                    ||
+                    // (b) DRAFT -> POSTED. A separate operation carrying no
+                    //     content change whatsoever — the target and totals
+                    //     that were validated are the ones committed.
+                    //
+                    //     ⚠️ THE TARGET IS RE-VALIDATED HERE. Posting is the
+                    //     FINANCIAL COMMIT POINT: it is the moment this document
+                    //     starts reducing Invoiced, Actual and the invoice's
+                    //     remaining payable. Validating the target only at
+                    //     create/draft-edit would leave a window in which the
+                    //     target is cancelled, has retention added, or has its
+                    //     payableTotal reduced by a direct SDK call (supplier-
+                    //     invoice lifecycle is still client-enforced — Deferred
+                    //     Controls 1 and 2) and the stale draft then posts into
+                    //     financial activity unchecked. Costs one extra document
+                    //     read per post.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'posted'
+                      && changedKeys().hasOnly(['status', 'postedAt', 'postedBy', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.postedBy == request.auth.uid
+                      && request.resource.data.postedAt == request.time
+                      && targetValid()
+                    )
+                    ||
+                    // (c) DRAFT|POSTED -> VOID (terminal). This branch is what
+                    //     makes a POSTED credit note immutable: voiding is the
+                    //     only permitted update, and it may touch nothing else.
+                    //     Voiding needs no reversal document — every net figure
+                    //     is derived at read time, so it restores immediately.
+                    (
+                      (resource.data.status == 'draft' || resource.data.status == 'posted')
+                      && request.resource.data.status == 'void'
+                      && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.voidedBy == request.auth.uid
+                      && request.resource.data.voidedAt == request.time
+                      && request.resource.data.voidReason is string
+                      && request.resource.data.voidReason.trim().size() > 0
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
     // Cash Flow timing lines — AUTHORED monthly forecast inputs for the Cash
     // Flow view: an expected GROSS cash amount in a chosen month, optionally
     // representing an ex-GST source value (completeness tracking only). They
@@ -1511,7 +1779,7 @@ service cloud.firestore {
 
     // Counters — sequential document numbering (purchaseOrders, progressClaims,
     // supplierInvoices, variationsClient, variationsSupplier, clientInvoices,
-    // clientReceipts, supplierPayments, tenderPackages).
+    // clientReceipts, supplierPayments, supplierCreditNotes, tenderPackages).
     // Read/write restricted to the roles that create numbered documents;
     // the create transaction must read and increment the counter.
     // Counter integrity (+1 only, no arbitrary set) is NOT enforced here — see

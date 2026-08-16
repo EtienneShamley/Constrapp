@@ -23,8 +23,9 @@ export const storage = getStorage(app)
 // Points ONLY Firestore at a local emulator, so unpublished
 // `frontend/firestore.rules` changes and seeded acceptance fixtures can be
 // exercised before anything is published. Started ONLY by the one-command
-// launchers — `npm run test:boq` (scripts/boq-dev.mjs) and `npm run test:tender`
-// (scripts/tender-dev.mjs) — never by `npm run dev`. Emulator data is
+// launchers — `npm run test:boq` (scripts/boq-dev.mjs), `npm run test:tender`
+// (scripts/tender-dev.mjs) and `npm run test:credit-notes`
+// (scripts/credit-notes-dev.mjs) — never by `npm run dev`. Emulator data is
 // disposable and discarded on exit.
 //
 // ⚠️ AUTH AND STORAGE ARE DELIBERATELY NOT EMULATED. The tester signs in with

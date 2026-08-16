@@ -71,6 +71,7 @@ to financial roles.**
 | `…/projects/{id}/clientInvoices/{id}` | **financial roles only** | financial roles, **create draft-only; transitions and issued-immutability rules-enforced** | blocked — void via status |
 | `…/projects/{id}/clientReceipts/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability and the scalar amount invariant rules-enforced** | blocked — void via status |
 | `…/projects/{id}/supplierPayments/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability and the scalar amount invariant rules-enforced** | blocked — void via status |
+| `…/projects/{id}/supplierCreditNotes/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability, the header cent invariant, AND the target-invoice checks (exists, posted, zero retention, supplier/currency match, grossTotal ≤ payableTotal) rules-enforced via a `get()` on the target at create, draft edit, and posting** | blocked — void via status |
 | `…/projects/{id}/variations/{id}` | **financial roles only** | financial roles | blocked — reject/withdraw via status |
 | `…/projects/{id}/tenderPackages/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, issued-scope freeze, the closingDate/notes carve-out, and award integrity (bid exists · same package · received · name snapshot · once) rules-enforced** | blocked — cancel via status |
 | `…/projects/{id}/tenderBids/{id}` | **financial roles only** | financial roles, **create received-only against an issued same-project package with a real supplier/subcontractor contact; edits/voids only while the package stays issued; bids freeze on award/cancel** | blocked — void via status |
@@ -810,9 +811,58 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     last-write stamps. Fabricated timing lines are a lower-severity analogue of
     Deferred Control 17: a line asserts an expectation, not a bank movement.
 
-*(Deferred Controls 20–25 are reserved for the still-unmerged Documents,
-Timeline, Retention, and Credit Notes branches and are deliberately not
-defined here.)*
+<!-- Deferred Controls 20–22 (Documents & Drawings), 23 (Project Timeline), and
+     24 (Supplier Retention) are RESERVED for parked feature branches and are
+     deliberately absent here. Do not reuse those numbers. -->
+
+25. **Supplier-credit-note cumulative cap & concurrency** — the
+    `supplierCreditNotes` rules are the strongest financial block in the file:
+    the first to `get()` another document, validating on **create, on every
+    draft edit, AND on the `draft → posted` transition** that the target invoice
+    exists, is `posted`, carries zero retention, matches the credit's supplier
+    and currency, and has a `payableTotal` covering **this** credit's
+    `grossTotal`. What they still **cannot** do is anything requiring
+    aggregation, array iteration, or re-checking after the write:
+
+    - **The CUMULATIVE cap is app-enforced only.** Total posted credits against
+      one invoice never exceeding its `payableTotal` is a HARD BLOCK in the
+      UI/hook (deliberately stricter than the warn-and-acknowledge over-payment
+      posture), but rules have no list, query, or count with which to sum
+      sibling credit notes, so **two users can post credits against the same
+      invoice concurrently and both writes succeed**. This is the irreducible
+      residue of this control.
+    - **Rules cannot inspect `lineItems`.** `subtotal`/`gstTotal` may not match
+      the array's sum, and per-line shape (positive amounts, valid tax codes,
+      cost codes drawn from the target invoice) is unverified. Only the SCALAR
+      header invariant is rules-enforced. A document whose headers and lines
+      disagree is therefore **writeable**.
+    - **Rules never fire again after a write.** Supplier-invoice lifecycle is
+      itself client-enforced (Deferred Controls 1 and 2), so a direct SDK call
+      can cancel or alter a target *after* its credit posted, and no rule
+      re-runs.
+
+    **What the app does about the last two.** `lib/supplierCreditNotes.js →
+    creditTargetException` is a single central **read-time validity gate**: a
+    posted credit contributes to **no** figure — neither the payable side
+    (`grossTotal`) nor the cost side (`lineItems`) — unless the target still
+    exists, is posted, matches supplier and currency, carries zero retention,
+    covers the credit's gross, **and** the document's stored headers reconcile
+    to its own lines in whole cents, each line's GST matches its tax code, each
+    amount is positive, and every line's cost code appears on the target
+    invoice. Anything failing is excluded whole (never clamped) and listed in
+    the Credit-note exceptions panel. This closes the otherwise-unbounded
+    divergence in which a document could reduce AP by its header while reducing
+    Actual by its lines.
+
+    ⚠️ **That gate is an additional correctness guard for what this app
+    renders — it is NOT a substitute for Firestore rules and protects nothing
+    that reads the data by another route** (an export, a future backend, a
+    direct SDK reader). The malformed document still exists in Firestore; only
+    Constrapp's own figures are protected from it. Do not describe read-time
+    validation as enforcement.
+
+    Also not enforced: creator ≠ poster (Deferred Control 4), and company-wide
+    SCN-number uniqueness (shares Deferred Control 6).
 
 26. **BOQ & Tender integrity gaps (the shared ADR-32 control)** — one entry
     for the two preconstruction foundations, because both hit the same
