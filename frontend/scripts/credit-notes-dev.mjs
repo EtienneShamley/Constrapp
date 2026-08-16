@@ -15,7 +15,8 @@
 //   · VITE_USE_FIREBASE_EMULATOR is set for the CHILD PROCESS ONLY. No file is
 //     written, so `npm run dev` keeps whatever behaviour .env.local gives it.
 //   · The app's own guard (src/lib/firebase.js) additionally requires
-//     import.meta.env.DEV, so no production build can ever connect to it.
+//     import.meta.env.DEV AND `--mode emulator` (passed to Vite below), so no
+//     production build — and no plain `npm run dev` — can ever connect to it.
 //
 // Uses only what is already installed: firebase-tools (devDependency) and Vite.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -79,7 +80,10 @@ if (!useLocalBin && !existsSync(resolve(FRONTEND, 'node_modules'))) {
 // `emulators:exec` runs this command with FIRESTORE_EMULATOR_HOST already set,
 // then shuts the emulator down when the command exits — which is what makes
 // Ctrl+C clean up both processes.
-const inner = `node scripts/seed-emulator.mjs && vite --port ${VITE_PORT}`
+// `--mode emulator` is the tamper-proof half of the gate in src/lib/firebase.js:
+// a `.env` file can set VITE_USE_FIREBASE_EMULATOR but can never set MODE, so
+// only a launcher can satisfy all three conditions.
+const inner = `node scripts/seed-emulator.mjs && vite --mode emulator --port ${VITE_PORT}`
 
 const TESTER_UID = (process.env.TEST_USER_UID ?? '').trim()
 

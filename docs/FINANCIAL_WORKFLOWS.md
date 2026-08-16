@@ -975,6 +975,56 @@ applying a credit as payment against a future invoice · refunds · an approval
 stage before posting · attachments (no Storage) · accounting sync ·
 final-account linkage.
 
+## Tenders (packages, bids, comparison, award — financially inert)
+
+The step between Estimate and Commitment, implemented as a **decision trail,
+not a financial document set** (ADR-32 Part 2). A **Tender Package**
+(`TP-0001`) names a scope — free text plus **≥1 selected cost codes** — and is
+issued to market (issuing freezes the scope; only the informational closing
+date and notes stay editable). **Tender Bids** are manual transcriptions of
+received bids from supplier/subcontractor contacts, priced **per cost code**
+within the package scope, **ex-GST with no GST fields** — GST enters the
+lifecycle at commitment (PO), not at tender.
+
+**No stored totals.** A bid stores only its lines; there is no `bidTotal` and
+no `awardTotal` anywhere. Every displayed figure passes through the read-time
+validity gate (`lib/tenders.js → assessBid`): a bid with any malformed line —
+or whose finite lines total beyond representable range — is invalid as a whole,
+total `null`, never a partial sum, never $0, and is excluded from ranking,
+budget comparison, the cost-code matrix, and the Awarded Bid Value while
+remaining visible and flagged. The app also refuses to award such a bid,
+though that refusal is client-side only — see [SECURITY.md](SECURITY.md) →
+Tenders for the direct-SDK case and why its consequence is bounded.
+
+**Tender Comparison** (never "bid levelling") derives at read time:
+
+```
+Bid Total (ex-GST)        = Σ valid lineItems.amount            (assessBid)
+Approved Budget (package) = Σ budgetLines.budgeted over the package's cost codes
+Variance to Budget        = Approved Budget − Bid Total          (positive = under budget)
+Variance to Lowest        = Bid Total − lowest valid bid total
+```
+
+When no budget line exists for any package cost code, the comparison reports
+**no budget** — it never compares against zero. Void and invalid bids are
+excluded from every calculation.
+
+**Award changes no financial figure.** `issued → awarded` records
+`awardedBidId`, the bidder-name snapshot, and notes. It creates **no PO** and
+touches none of the six budget figures, no forecast, no margin, and no cash
+flow; the **Awarded Bid Value** shown on the Tender pages is derived from the
+rules-frozen awarded bid's lines and is a tender decision value only — it is
+**never netted against Purchase Orders** (V1 has no Award → PO linkage, and
+such netting is wrong whenever packages share cost codes or POs span
+packages). Raising the PO remains a separate, deliberate act ("Raise PO from
+Award" is future work). Tender reads: the comparison **reads** budget lines;
+tender writes: packages, bids, the counter, and the currency-lock flag —
+nothing else, ever.
+
+**Currency.** A package holds no amounts and never locks the project currency;
+recording the first **bid** locks it in the same transaction (a voided bid
+remains lock evidence).
+
 ## The Six Budget Figures — Exact Definitions
 
 All derived figures group PO/claim **line items by `costCodeId`** and are ex-GST.
@@ -1033,20 +1083,39 @@ feature's design sprint (order: [ROADMAP.md](../ROADMAP.md)). Nothing below is a
 shipped guarantee; all commercial figures will follow the read-time-derivation and
 cost-code-spine invariants when built.
 
-### BOQ and Estimating *(planned)*
+### BOQ *(implemented — foundation)* and Estimating *(planned)*
 
-A Bill of Quantities captures measured quantities against **cost codes**; applying
-rates plus margin/overheads produces an **estimate**, which transfers into an
-**approved budget** (budget lines). The cost code is the join from measurement all
-the way to budget. Manual quantity entry precedes any AI takeoff.
+The **BOQ foundation is implemented** (ADR-32 Part 1): a per-project measured
+schedule at `…/projects/{id}/boqItems` — description, quantity, unit, a
+**mandatory** cost code (frozen name snapshot), and, once priced, an ex-GST
+`rate` with a **derived** `amount = quantity × rate` (whole-cent,
+rules-enforced). **`rate: null` means unpriced** — an unpriced item contributes
+nothing to any total and suppresses the budget variance; 0 is a price.
+Lifecycle `active → void` (terminal, reasoned), rules-enforced; delete blocked.
 
-### Tender and Award *(planned)*
+**The BOQ feeds no financial figure.** It never writes onto Budget Lines and
+never enters Committed, Actual, Invoiced, Forecast, Margin, or Cash Flow. Its
+only derived output is the read-time **BOQ vs Approved Budget** comparison on
+the BOQ page (`lib/boq.js`): per cost code over the union of both sides,
+`variance = Budgeted − BOQ` (positive ⇒ BOQ under budget), with the variance
+**null — never 0 or a partial figure** — wherever either side is missing or
+any contributing item is unpriced.
 
-Tender packages are assembled from BOQ items grouped by trade/cost code;
-subcontractors are invited; bids are compared and levelled **by cost code** against
-the estimate. The winning bid is **awarded**, becoming a commitment (a purchase
-order). Award snapshots values at the transfer point, mirroring the existing
-snapshot idiom.
+**Still planned (Estimating):** applying margin/overheads to produce an
+estimate, and the **BOQ → Budget transfer** into budget lines. The cost code
+remains the join from measurement all the way to budget. Manual quantity entry
+precedes any AI takeoff.
+
+### Tender and Award *(implemented — foundation; see the Tenders section above)*
+
+Tender packages, manual bid capture, read-time Tender Comparison, and the award
+decision record are **implemented** (ADR-32 Part 2), scoped by **cost codes +
+free-text scope** and financially inert. Still planned: assembling packages
+from **BOQ items** (an optional frozen scope schedule at issue — a separate
+follow-up now that both foundations coexist), subcontractor invitations, item-level **bid levelling**
+against the estimate, and **"Raise PO from Award"** — the explicit transfer of
+the awarded bid into a commitment. Award-to-PO transfer will snapshot values at
+the transfer point, mirroring the existing snapshot idiom.
 
 ### Variations *(implemented — foundation)*
 

@@ -18,47 +18,55 @@ export const auth    = getAuth(app)
 export const db      = getFirestore(app)
 export const storage = getStorage(app)
 
-// ── Local Firestore emulator (DEVELOPMENT ONLY, OPT-IN) ──────────────────────
+// ── Local manual-acceptance emulator (FIRESTORE ONLY) — LAUNCHER-ONLY ─────────
 //
-// Points Firestore — and ONLY Firestore — at the local emulator so a developer
-// can exercise the app against throwaway data and the local `firestore.rules`
-// (the manual acceptance tests in docs/TESTING.md, e.g. §15r, need exactly
-// this). PRODUCTION BEHAVIOUR IS UNCHANGED: this block is inert unless BOTH
-// guards pass, and the default with no environment variable set is the real
-// production Firestore.
+// Points ONLY Firestore at a local emulator, so unpublished
+// `frontend/firestore.rules` changes and seeded acceptance fixtures can be
+// exercised before anything is published. Started ONLY by the one-command
+// launchers — `npm run test:boq` (scripts/boq-dev.mjs), `npm run test:tender`
+// (scripts/tender-dev.mjs) and `npm run test:credit-notes`
+// (scripts/credit-notes-dev.mjs) — never by `npm run dev`. Emulator data is
+// disposable and discarded on exit.
 //
-// TWO guards, deliberately:
-//   · `import.meta.env.DEV` — true only under `vite dev`. `VITE_*` values are
-//     baked into the bundle at BUILD time, so without this a stray
-//     VITE_USE_FIREBASE_EMULATOR=true in a build environment would ship a
-//     production bundle pointed at localhost — broken for every user. This
-//     makes that structurally impossible. (It also means `npm run preview`,
-//     which serves a production build, always uses production Firestore.)
-//   · the explicit opt-in flag below. Vite exposes env values as STRINGS, so
-//     this compares against the string 'true' — an unset variable is
-//     `undefined` and fails closed.
+// ⚠️ AUTH AND STORAGE ARE DELIBERATELY NOT EMULATED. The tester signs in with
+// their REAL Constrapp account, so the real Firebase Auth uid is what the
+// emulated Firestore rules authorise against — which is why both seed scripts
+// write `users/{uid}` membership documents for REAL uids.
 //
-// Host/port mirror `frontend/firebase.json` → emulators.firestore.port (8080).
-// 127.0.0.1 is used rather than `localhost` because on macOS `localhost` can
-// resolve to IPv6 ::1 while the emulator listens on IPv4, which fails to
-// connect for no visible reason.
+// CONDITIONS — ALL THREE REQUIRED:
+//   · import.meta.env.DEV                    — never in a production build
+//   · import.meta.env.MODE === 'emulator'    — set ONLY by `vite --mode emulator`
+//   · VITE_USE_FIREBASE_EMULATOR === 'true'  — the explicit opt-in, injected into
+//                                              the launcher's CHILD PROCESS env
 //
-// ⚠️ AUTH IS NOT EMULATED — only Firestore is. You still sign in against the
-// real Firebase Auth project, but your `users/{uid}` membership document lives
-// in the EMULATOR, which starts empty. Every rules check `get()`s that document,
-// so until you seed it (plus the company and project documents) the app will
-// correctly deny everything. That is the rules working, not a misconfiguration.
+// ⚠️ WHY THE MODE CHECK IS LOAD-BEARING, NOT BELT-AND-BRACES.
+// `.env.local` is git-ignored and long-lived, and a stale
+// `VITE_USE_FIREBASE_EMULATOR=true` really can survive in it from an earlier
+// local testing session (measured: a `.env.local` value DOES reach the bundle).
+// On its own, the opt-in flag would therefore let a plain `npm run dev` point
+// silently at an empty emulator while the developer believed they were on
+// production data — during financial acceptance, the worst possible ambiguity.
+// A `.env` file CANNOT set Vite's `MODE`; only the CLI can. So the mode check
+// is the one condition a leftover file can never satisfy, and it is what keeps
+// `npm run dev` provably unchanged. Removing any one of the three sends the
+// app straight back to the real project.
 //
-// ⚠️ Emulator data is in-memory and discarded when the emulator stops.
-const USE_EMULATOR = import.meta.env.DEV
-  && import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true'
+// Host/port default to the emulator in `frontend/firebase.json` (the same one
+// the automated rules suite uses); a launcher may override them via
+// VITE_FIRESTORE_EMULATOR_HOST / VITE_FIRESTORE_EMULATOR_PORT in its child env.
+const useFirestoreEmulator =
+  import.meta.env.DEV &&
+  import.meta.env.MODE === 'emulator' &&
+  import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true'
 
-if (USE_EMULATOR) {
-  connectFirestoreEmulator(db, '127.0.0.1', 8080)
-  // Stated loudly: it must never be ambiguous whether the data on screen is
-  // real. This logs no secret and no PII.
-  console.info(
-    '[Constrapp] Firestore is connected to the LOCAL EMULATOR at 127.0.0.1:8080 — ' +
-    'data is throwaway and is NOT production. Auth is still the real project.',
+if (useFirestoreEmulator) {
+  const host = import.meta.env.VITE_FIRESTORE_EMULATOR_HOST || '127.0.0.1'
+  const port = Number(import.meta.env.VITE_FIRESTORE_EMULATOR_PORT || 8080)
+  connectFirestoreEmulator(db, host, port)
+  // Loud on purpose — nobody should ever be unsure which datastore they are
+  // looking at while doing manual financial acceptance.
+  console.warn(
+    `%c[Constrapp] FIRESTORE → LOCAL EMULATOR ${host}:${port} (project "${firebaseConfig.projectId}") — data is disposable and NOT production. Auth is real.`,
+    'background:#F5A623;color:#000;font-weight:bold;padding:2px 6px;border-radius:3px',
   )
 }

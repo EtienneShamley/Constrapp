@@ -5,10 +5,11 @@
 - **§0 — Firestore Security Rules tests** (`npm run test:rules`) — emulator-only.
 - **§0b — Unit tests for pure `lib/` domain logic** (`npm run test:unit`) — plain
   Node, no Firebase, no emulator. Currently covers the Cash Flow arithmetic
-  (`lib/cashFlow.js`) and the Cash Flow chart presentation transform
-  (`lib/cashFlowChart.js`); the remaining pure `lib/` modules
-  (`purchaseOrders.js`, `progressClaims.js`, `clientInvoices.js`, …) are the
-  natural next targets.
+  (`lib/cashFlow.js`), the Cash Flow chart presentation transform
+  (`lib/cashFlowChart.js`), the BOQ derivations (`lib/boq.js`), and the Tender
+  validity gate, comparison, and award helpers (`lib/tenders.js`); the
+  remaining pure `lib/` modules (`purchaseOrders.js`, `progressClaims.js`,
+  `clientInvoices.js`, …) are the natural next targets.
 
 Everything else is manual, and there is no CI. Verify application changes with
 the manual acceptance tests below, run against a dev Firebase project with the
@@ -33,7 +34,7 @@ That script runs
   upgrade `firebase-tools`, you must also install JDK 21+.
 - Config: `frontend/firebase.json` (emulator + rules pointer only — no hosting,
   no functions, and **no `.firebaserc`**, so nothing can be deployed).
-- Tests — **264 in total across 6 files**:
+- Tests — **384 in total across 9 files**:
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -76,9 +77,40 @@ That script runs
     It also asserts the one documented **client-only** gap honestly: a second
     credit whose CUMULATIVE total exceeds the target's payable is ACCEPTED by
     rules (Deferred Control 25 — the app hard-blocks it).
-  - All six run for `company_admin`, `project_manager`, `qs`, `subcontractor`,
+  - `frontend/tests/rules/boqItems.rules.test.js` — **50 tests** covering every
+    case in §15s-v below: the two-state lifecycle (active edit / active → void
+    terminal, reasoned), the whole-cent `amount == quantity × rate` invariant
+    for priced items, the `rate: null ⟺ amount: null` unpriced pairing (0 can
+    never mean unpriced), the mandatory cost-code spine, delete-blocking, and
+    forged-stamp rejection. It also asserts the two documented **client-only**
+    gaps (Deferred Control 26): a `costCodeId` of valid shape naming NO real
+    cost code and a duplicate of an existing item are both ACCEPTED by rules.
+  - `frontend/tests/rules/tenderPackages.rules.test.js` — **38 tests** covering
+    the Tender Package cases in §15s below: draft create/edit for every
+    financial role, the stamp-only issue, the issued **closingDate/notes
+    carve-out** (and its inability to smuggle content), the award `get()`
+    integrity set (nonexistent bid, another package's bid, void bid, forged
+    bidder-name snapshot, non-issued package, **second award**, smuggled
+    changes, wrong actor), cancel-reason enforcement, terminal
+    awarded/cancelled, delete-blocking in every status, subcontractor/client/
+    **super_admin**/unauthenticated/cross-company denial, and the skewed-clock
+    timestamp assertions on create/issue/award/cancel.
+  - `frontend/tests/rules/tenderBids.rules.test.js` — **32 tests** covering the
+    Tender Bid cases in §15s below: received create for every financial role,
+    subcontractor-type bidders, **late bids accepted (closing date is
+    informational)**, the parent-issued gate (draft/awarded/cancelled/
+    nonexistent packages all rejected), the contact `get()` set (nonexistent
+    contact, wrong type, forged name snapshot), the forged tenderNumber
+    snapshot, immutable-core enforcement, the **bid freeze after package
+    award/cancel**, void-reason and terminal-void enforcement,
+    delete-blocking, role/tenant denial, and the skewed clocks. It also
+    asserts the documented **client-only** gap: malformed `lineItems`
+    **elements** (non-numeric amounts, out-of-scope codes, non-object lines)
+    are ACCEPTED by rules — the read-time validity gate is the mitigation.
+  - All nine run for `company_admin`, `project_manager`, `qs`, `subcontractor`,
     `client`, an unauthenticated caller, and a financial-role user in a **second
-    company**. The users suite adds a sixth identity: an authenticated caller
+    company**; the tender suites add `super_admin` (proving it has no special
+    power). The users suite adds a further identity: an authenticated caller
     with **no** `users/{uid}` document at all (the orphan case).
 - **Run this before publishing any rules change** (see
   [DEPLOYMENT.md](DEPLOYMENT.md)).
@@ -98,10 +130,11 @@ That script runs
 > that pattern. `Timestamp.now()` remains correct inside `seed()` helpers, which
 > write **stored state** with rules disabled and assert nothing.
 
-§15i-x, §15j-x, §15k-x, and §15r-x below remain the human-readable specification
-of what those tests assert; the other manual sections are not automated. The
-users suite is self-describing and has no manual counterpart — `users/{uid}` has
-no UI, so there is nothing to click through: the rules ARE the feature.
+§15i-x, §15j-x, §15k-x, §15r-x, and §15s-v below remain the human-readable
+specification of what those tests assert; the other manual sections are not
+automated. The users suite is self-describing and has no manual counterpart —
+`users/{uid}` has no UI, so there is nothing to click through: the rules ARE the
+feature.
 
 ## 0b. Unit tests — pure `lib/` domain logic (no emulator)
 
@@ -149,6 +182,31 @@ npm run test:unit
   financial rows are never mutated), and the textual summary degrading honestly
   in each state.
 
+- `frontend/tests/unit/tenders.test.js` — **65 tests** over `lib/tenders.js`
+  (plus the `monetaryLockReasons` tender-bid evidence in `lib/currency.js`):
+  `TP-0001` numbering, both lifecycle transition maps (terminal states,
+  unknown statuses), package and bid draft validation (≥1 cost code,
+  duplicates, closing-date shape, contact-type checks, one-active-bid-per-
+  bidder including the void-then-rebid and self-exclusion cases), and — the
+  centre of gravity — the **bid validity gate** (`assessBid`): zero amounts
+  valid, cents summing exactly, and every malformed shape (no lines,
+  non-array, non-object line, missing/out-of-scope cost code, non-string
+  snapshot/description, `NaN`/`Infinity`/string/negative amounts) invalidating
+  the WHOLE bid with a `null` total — **never a partial sum, never $0, never
+  clamped** — including the **finite-lines-that-overflow** case (`1e308`), where
+  a non-finite *total* invalidates the bid instead of passing as valid, with its
+  exclusion from ranking, variance, the matrix, award, and the Awarded Bid Value
+  asserted end to end. Comparison tests pin the sign convention (**Variance to Budget =
+  Approved Budget − Bid**, positive = under budget), variance-to-lowest,
+  lowest-bid **ties** (whole-cent), void/invalid exclusion from ranking while
+  staying visible, the **no-budget → unavailable (never zero)** rule, row
+  ordering, the awarded flag, the per-cost-code matrix (multi-line sums,
+  `null` for unpriced codes, invalid/void bids excluded), award gating
+  (each blocked reason, including malformed bids), the derived Awarded Bid
+  Value (unavailable when missing/malformed), input **purity** (frozen
+  inputs), and that tender bids (including void) are currency-lock evidence
+  while packages alone are not.
+
   ⚠️ It deliberately does **not** retest Cash Flow arithmetic — cumulative
   position, peak-funding maths, reconciliation, completeness and the
   month-boundary rules have exactly one home, `cashFlow.test.js` above.
@@ -157,7 +215,22 @@ npm run test:unit
   honesty rules testable without them (ADR-26). Chart *rendering* is verified
   manually in §15n.
 
-- `frontend/tests/unit/supplierCreditNotes.test.js` — **91 tests** over
+- `frontend/tests/unit/boq.test.js` — **46 tests** over `lib/boq.js`, the BOQ's
+  pure domain logic: the two-state lifecycle map, `normalizeRate` (blank form
+  input → `null`, never 0), `isPriced` (0 IS a price; only null/undefined is
+  unpriced), `boqLineAmount` (quantity × rate to the cent, **null while
+  unpriced**, rounding that mirrors the rules' `cents()` exactly — including
+  the `1 × 1.005 → 1.00` half-cent float boundary roundMoney would get wrong),
+  active/void filters, `boqTotals` (priced active items only; unpriced
+  contributes nothing), `budgetedTotal`, `boqVarianceToBudget` (**null** —
+  never 0 or a partial figure — for an empty BOQ or while any item is
+  unpriced), `boqByCostCode`, `boqVsBudgetRows` (the buildForecastRows union
+  discipline: codes never disappear; live-name resolution with snapshot
+  fallbacks; per-row variance suppressed for partial pricing), natural-order
+  register sorting (`2.9` before `2.10`), `formatQuantity`, draft validation,
+  and input purity.
+
+- `frontend/tests/unit/supplierCreditNotes.test.js` — **97 tests** over
   `lib/supplierCreditNotes.js` and its read-time consumers (the first unit
   suite for a financial-document lib): the forward-only lifecycle and
   posted-only counting; header cent arithmetic; eligibility (posted + zero
@@ -191,7 +264,7 @@ npm run test:unit
   default** (it overstates remaining payable, the picker figure, and AP ageing)
   — the lib fact behind the page-level unavailable handling in §15r-xv.
 
-  Combined unit total: **173 tests** across both files.
+  Combined unit total: **381 tests** across the five files.
 
 Setup: two provisioned users in the same company (e.g. a `project_manager` and a
 `qs`), signed in via `/login`. Reset state between suites by using a fresh
@@ -213,7 +286,7 @@ project.
 - [ ] Project name is required; budget/progress inputs reject negatives (progress clamps 0–100).
 - [ ] Open a project → lands on `/projects/{id}/overview` showing budget, start date, progress bar.
 - [ ] Unknown project ID shows "Project not found."; unmatched routes redirect to `/projects`.
-- [ ] BOQ/Documents/Photos/Timeline/Reports tabs show placeholder cards, no data wiring (Variations — see §14 — Forecast — see §15 — and Commercial — see §15g — are now live).
+- [ ] Documents/Photos/Timeline/Reports tabs show placeholder cards, no data wiring (Variations — see §14 — Forecast — see §15 — Commercial — see §15g — and BOQ — see §15s — are now live).
 
 ## 3. Cost Codes
 
@@ -1994,6 +2067,235 @@ in rules, or go offline after load and force a re-subscribe).
   detail credit table scroll horizontally inside their cards; the editor modal
   fits with internal scrolling; all actions reachable by tap.
 
+## 15s. BOQ & Tender Foundation
+
+> **§15s-i – §15s-v cover the Bill of Quantities (ADR-32 Part 1); §15s-vi
+> onward cover Tenders (ADR-32 Part 2).** §15o–§15q remain reserved for
+> parked feature branches (Documents, Timeline, Retention) — the gap is
+> intentional; §15r (Supplier Credit Notes) is above.
+
+### Bill of Quantities (BOQ) — §15s-i to §15s-v
+
+The measured schedule on the project's BOQ tab (ADR-32 Part 1). Setup: a
+project with cost codes (at least one carrying a `unit`) and a few budget
+lines. Estimating (margin/overheads) and BOQ → Budget transfer are NOT part of
+this foundation — nothing in these steps should offer them. Tenders are a
+separate, BOQ-independent foundation (§15s-vi onward); the BOQ tab does not
+link to them.
+
+### 15s-i. Navigation & gating
+
+- [ ] The **BOQ** project tab (label unchanged) opens the live Bill of
+  Quantities — the old placeholder card is gone. There is **no** Tender
+  navigation anywhere.
+- [ ] As `company_admin`, `project_manager`, and `qs`: the register, summary
+  cards, and comparison render; Add/Edit/Void all work.
+- [ ] As `subcontractor` or `client`: the page shows the "BOQ is restricted"
+  card and triggers **no** boqItems read (no console rules error). A direct
+  SDK read/write as either role is denied by rules (AUTOMATED — see §0).
+- [ ] With no cost codes in the company: the empty state points to Cost Codes
+  and the Add button is disabled — every BOQ item requires a cost code.
+
+### 15s-ii. Item creation & editing
+
+- [ ] Add an item: cost code (required), item number and section (optional
+  labels), description (required), quantity (required, ≥ 0), unit (required),
+  rate (optional). Save → appears immediately, ordered by section, then item
+  number in **natural** order (`2.9` before `2.10`), then entry order.
+- [ ] Choosing a cost code **prefills the unit** from the code's `unit` when
+  the unit field is empty — and never overwrites a unit already typed. The
+  prefilled unit remains editable.
+- [ ] The cost-code name is snapshotted at write time (`costCodeName`);
+  renaming the code later does not rewrite existing items (register shows the
+  live name in the comparison, the stored snapshot survives on the document).
+- [ ] Whitespace-only description is rejected; negative quantity is rejected;
+  a quantity of 0 is accepted (a real measurement).
+- [ ] Editing an active item works for any field, including changing the cost
+  code; the derived amount updates live in the modal preview.
+
+### 15s-iii. Unpriced items & the derived amount
+
+- [ ] Leaving the rate **blank** saves `rate: null` and `amount: null` — the
+  register shows an amber "Unpriced" in the Rate column and "—" for Amount,
+  **never $0**.
+- [ ] Entering a rate of **0** is different: the item is PRICED at $0.00 and
+  shows a real zero amount — it is not counted as unpriced.
+- [ ] The amount is **derived, never typed**: quantity × rate, rounded to the
+  cent (12.5 × $310.40 = $3,880.00; fractional quantities like 3.333 × $14.99
+  round to $49.96). A forged amount is rejected by rules (AUTOMATED — §0).
+- [ ] Pricing an unpriced item later (edit, enter a rate) works; clearing the
+  rate un-prices it again and the amount returns to "—".
+- [ ] The **Unpriced Items** summary card counts active unpriced items and
+  shows amber while non-zero; the BOQ Total card is labelled "(priced)" and
+  reads "N of M items priced".
+
+### 15s-iv. BOQ vs Approved Budget (read-time only)
+
+- [ ] The summary Variance card = Approved Budget − BOQ Total, positive when
+  the BOQ is under budget, red when negative — and shows **"—"** (suppressed,
+  with the reason) while the BOQ is empty OR any active item is unpriced. It
+  never shows a partial figure as if complete.
+- [ ] The per-cost-code table unions codes from the BOQ **and** the budget: a
+  budget-only code shows BOQ "—" (never "under budget by everything"); a
+  BOQ-only code shows Budgeted "—"; a code with any unpriced item shows its
+  priced sum but a suppressed variance with "N unpriced" noted; inactive and
+  unknown codes stay visible, flagged.
+- [ ] **No financial effect:** record every figure on Budget, Forecast,
+  Commercial/Margin, and Cash Flow, then add, price, edit, and void BOQ items —
+  every one of those figures is **unchanged**. The BOQ writes only `boqItems`.
+- [ ] Voiding an item removes it from the BOQ total and the comparison
+  immediately (read-time derivation, nothing to "recalculate").
+
+### 15s-v. Lifecycle — Rules-enforced (AUTOMATED — see §0), currency & responsive
+
+- [ ] Void requires a non-whitespace reason; voided items are hidden behind a
+  "Show N voided items" toggle, render dimmed with a Void badge, and have no
+  Edit/Void actions. There is **no delete** anywhere.
+- [ ] Rules enforce (automated): create only as `active` with null void stamps
+  and true caller/server stamps; active edits re-validate the full shape and
+  cannot forge void stamps; `active → void` touches only the void audit keys
+  with a non-whitespace reason; void is terminal; delete is blocked for every
+  role; core identity (currency, revision, creation stamps) is immutable.
+- [ ] **Currency lock:** on a fresh project, saving the first **priced** BOQ
+  item engages the currency ratchet in the same transaction (Overview shows
+  the currency locked, citing "N priced BOQ item(s)"). Purely **unpriced**
+  items do NOT lock — a quantity is a measurement, not money (the
+  forecast-input precedent). Rates display through `formatCurrency` in the
+  project currency — never a hard-coded symbol.
+- [ ] At **375px / 768px / 1280px**: the register and comparison tables scroll
+  horizontally inside their cards (no page-level scroll); the editor modal
+  fits with internal scrolling; all touch targets ≥ 44px; Add/Edit/Void all
+  reachable by tap.
+
+### Tenders — §15s-vi onward
+
+### 15s-vi. Navigation, gating & empty state
+
+- [ ] A **Tenders** tab appears on Project Detail immediately after BOQ and
+  routes to the Tender register. The BOQ placeholder itself is unchanged.
+- [ ] As `company_admin`, `project_manager`, or `qs`: the register loads, shows
+  an empty state with a "create your first tender package" action, and the
+  page states that awards create **no purchase order**.
+- [ ] As `subcontractor` or `client`: the page shows the restricted-access
+  card; no tender data is fetched (and rules would deny it — §17b).
+- [ ] With connectivity broken, the register shows the "couldn't load" warning
+  rather than rendering an empty register as truth.
+
+### 15s-vii. Package lifecycle
+
+- [ ] Creating a package requires a name and **at least one cost code**;
+  numbers assign sequentially (`TP-0001`, `TP-0002`, …) even when two users
+  create simultaneously (transactional counter).
+- [ ] A draft package's name, description, scope, cost codes, closing date,
+  and notes are all editable; Issue and Cancel are offered.
+- [ ] Issuing freezes name/description/scope/cost codes: the UI stops offering
+  the edit, and only **Closing date / notes** remains editable (the
+  carve-out modal), plus Record bid / Award / Cancel.
+- [ ] Cancelling (from draft or issued) demands a reason, is terminal, and the
+  package keeps its number — a visible gap in the register is expected.
+- [ ] No delete action exists in any status.
+
+### 15s-viii. Closing date is informational
+
+- [ ] Everywhere the closing date is entered or shown, the UI states that bids
+  are **not** automatically blocked after it.
+- [ ] Recording a bid against an issued package whose closing date has passed
+  **succeeds** — deliberately (there is no trusted clock; see
+  SECURITY.md → Deferred Control 26). **AUTOMATED at the rules layer — see §0.**
+
+### 15s-ix. Bid entry & bidder selection
+
+- [ ] The bidder picker offers **active supplier/subcontractor contacts only**;
+  the chosen name is snapshotted onto the bid and later contact renames never
+  rewrite it.
+- [ ] Bid lines are priced per cost code, restricted to the **package's own
+  cost codes**; amounts are ex-GST with **no GST fields**; a `0` amount saves.
+- [ ] The derived total updates live and the editor states that **no total is
+  stored**.
+- [ ] A second bid for a bidder who already has an active bid on the package is
+  blocked with a "void it first" message; after voiding, a replacement bid
+  saves. (Client-side only — Deferred Control 26.)
+- [ ] A received bid can be **corrected** (date, ref, lines, exclusions, notes
+  — not the bidder) and **voided** (reason required) while the package is
+  issued; once the package is awarded or cancelled, both actions disappear.
+
+### 15s-x. Lifecycle — Rules-enforced (AUTOMATED — see §0)
+
+Direct-SDK negative paths for both collections: create-state enforcement,
+forged stamps, immutable cores, the issued-scope freeze and carve-out, the
+parent-issued bid gate and post-award/cancel bid freeze, award integrity
+(nonexistent / wrong-package / void bid, forged bidder-name snapshot, second
+award), contact existence/type at bid create, terminal states, and
+delete-blocking. The two tender suites in §0 prove every case as a real
+rejection.
+
+### 15s-xi. Bid validity gate & derived totals
+
+- [ ] Seed (via console/SDK) a bid whose lines include a non-numeric amount:
+  the register and detail show it as **Invalid / Malformed** — never $0,
+  never a partial total — it is excluded from the comparison ranking, and
+  the Award dialog refuses it.
+- [ ] A bid with a line whose cost code is outside the package scope behaves
+  the same way.
+- [ ] Correcting the bid's lines in the app restores it to the comparison.
+
+### 15s-xii. Tender Comparison
+
+- [ ] The section is titled **"Tender Comparison"** (never "Bid Levelling") and
+  shows bidder, bid date, derived total ex-GST, **vs Budget**, **vs Lowest**,
+  exclusions, and status, with the awarded badge after award.
+- [ ] **Sign convention:** with Approved Budget 100k, a 90k bid shows
+  **10k under** (positive variance) and a 110k bid shows **10k over** —
+  Variance to Budget = Approved Budget − Bid.
+- [ ] With **no budget lines** on the package's cost codes, the budget line
+  reads *unavailable / no budget* and no bid shows a variance — never a
+  comparison against zero.
+- [ ] Two bids with the same total are **both** flagged LOWEST with zero
+  variance-to-lowest.
+- [ ] Void bids stay visible (dimmed, excluded from every calculation); the
+  lowest-bid figure ignores them.
+- [ ] The per-cost-code matrix shows each valid bid's sum per package cost
+  code, with *not priced* (never $0) for unpriced codes.
+
+### 15s-xiii. Award
+
+- [ ] Award is offered only on an issued package with ≥1 active bid; the dialog
+  states it records a decision only — **no PO, no budget/commitment/actual/
+  forecast/cash-flow change** — and that it is permanent and freezes bids.
+- [ ] Malformed bids appear disabled in the winner picker.
+- [ ] After award: the package shows **Awarded to …** with the **Awarded Bid
+  Value derived from the frozen bid's lines**, labelled as a tender decision
+  value that is never netted against Purchase Orders; every bid's
+  Correct/Void action is gone; the package offers no further transitions.
+- [ ] Award notes are displayed on the detail view.
+
+### 15s-xiv. Financial isolation
+
+- [ ] Record packages, bids, and an award, then compare Budget, Forecast,
+  Margin (Commercial), and Cash Flow before/after: **every figure is
+  identical**. Committed, Claimed, Actual, Invoiced, Available to Invoice,
+  Forecast Final Cost, margin values, and both cash directions are untouched.
+- [ ] No PO exists that the award created; the PO register is unchanged.
+
+### 15s-xv. Currency
+
+- [ ] Creating a tender **package** on a fresh project does **not** lock the
+  project currency (Company Settings still allows changing it / Overview
+  shows unlocked).
+- [ ] Recording the first **bid** locks it in the same transaction, and the
+  lock reasons include "1 tender bid"; a voided bid still counts as
+  evidence.
+- [ ] All tender amounts render in the project currency via the shared
+  formatter; the bid's stored `currency` is an audit snapshot only.
+
+### 15s-xvi. Roles & responsive
+
+- [ ] `qs` can create, issue, record bids, **award**, cancel, and void — the
+  full workflow (rules-proven in §0; confirm the UI offers it).
+- [ ] `super_admin` sees the restricted card like any non-financial role.
+- [ ] 375px: register and comparison tables scroll horizontally inside their
+  cards; modals fit with internal scrolling; all touch targets ≥44px.
+
 ## 16. Responsive Checks — 375px, 768px, 1280px
 
 - [ ] **375px:** sidebar hidden behind hamburger; drawer opens/closes (tap overlay); nav items ≥44px tall; project tab bar wraps; PO/claim tables scroll horizontally inside their card; modals fit with internal scrolling; all actions reachable by tap (no hover-only).
@@ -2017,19 +2319,22 @@ Firestore Security Rules are the only trust boundary — these checks confirm th
 
 - [ ] Signed in as a `subcontractor` or `client` role user, **Contacts, Supplier
   Invoices, Client Invoices, Client Receipts, Supplier Payments, Variations,
-  Forecast, and Commercial** all show no data — reads are blocked by rules, not
-  merely absent from the nav.
+  Tenders (packages AND bids — competitor pricing), Forecast, Commercial, and
+  BOQ** all show no data — reads are blocked by rules, not merely absent from
+  the nav.
 - [ ] The same user **can** still read company members' Projects, Cost Codes,
   Budget Lines, POs, and Progress Claims (the intended coarser read model).
 
 ### 17c. Write authorisation & delete-blocking
 
 - [ ] A `subcontractor`/`client` role user cannot create or update POs, claims,
-  invoices, variations, budget lines, or cost codes (rules reject the write).
+  invoices, variations, budget lines, BOQ items, or cost codes (rules reject
+  the write).
 - [ ] No client path can delete a financial/audit document (POs, claims,
-  invoices, variations, budget lines, cost codes, contacts, counters, forecast
-  lines, commercial baseline) — cancellation/rejection/archive is always a
-  status/`isActive` change (the baseline is edited in place).
+  invoices, variations, budget lines, BOQ items, cost codes, contacts,
+  counters, forecast lines, tender packages, tender bids, commercial baseline)
+  — cancellation/rejection/archive is always a status/`isActive` change (the
+  baseline is edited in place).
 - [ ] **`users/{uid}` cannot be written at all** — no client can change its own
   `role` or `companyId` (nor `name`/`avatarInitials`/`email`), create a
   membership document, or delete one. **AUTOMATED — see §0**; the users suite
@@ -2063,6 +2368,16 @@ enforced.
   only. Expected — do not report as enforced (SECURITY.md → Deferred Control 16).
   The **scalar** invariant (`allocatedTotal + unallocatedAmount == amount`, whole
   cents) **is** rules-enforced.
+- [ ] Tender **line-item integrity** is client-side only: rules cannot iterate
+  `lineItems` (or a package's `costCodes`), so a direct SDK call can store
+  malformed embedded line data, out-of-scope cost codes, or a duplicate
+  bidder's bid. Expected — do not report as enforced (SECURITY.md → Deferred
+  Control 26). The mitigation is **read-time**: the `assessBid` validity gate
+  invalidates the whole bid (flagged, excluded, never $0), and **no stored
+  `bidTotal`/`awardTotal` exists to forge**. The **closing date blocks
+  nothing** anywhere, by design. What **is** rules-enforced: both lifecycles,
+  the issued-scope freeze, the bid-write windows, and the award/contact
+  `get()` checks — see §0.
 - [ ] Supplier-payment **allocation integrity** is client-side only, identically:
   an allocation may target a non-existent/draft/approved/cancelled/wrong-project/
   wrong-supplier invoice, an invoice can be over-reconciled, and two users can

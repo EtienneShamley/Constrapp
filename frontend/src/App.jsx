@@ -19,6 +19,7 @@ import Subcontractors from './pages/Subcontractors'
 import Pulse          from './pages/Pulse'
 import Shield         from './pages/Shield'
 import ProjectOverview   from './pages/project/ProjectOverview'
+import ProjectBoq        from './pages/project/ProjectBoq'
 import ProjectBudget     from './pages/project/ProjectBudget'
 import ProjectCostCodes  from './pages/project/ProjectCostCodes'
 import ProjectPurchaseOrders from './pages/project/ProjectPurchaseOrders'
@@ -31,6 +32,7 @@ import ProjectClientInvoices from './pages/project/ProjectClientInvoices'
 import ProjectClientReceipts from './pages/project/ProjectClientReceipts'
 import ProjectSupplierPayments from './pages/project/ProjectSupplierPayments'
 import ProjectCashFlow from './pages/project/ProjectCashFlow'
+import ProjectTenders from './pages/project/ProjectTenders'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
 
 export default function App() {
@@ -58,14 +60,14 @@ export default function App() {
                     <Route path="projects/:projectId" element={<ProjectDetailLayout />}>
                       <Route index element={<Navigate to="overview" replace />} />
                       <Route path="overview" element={<ProjectOverview />} />
-                      <Route path="boq" element={
-                        <ProjectPlaceholder
-                          icon="📋"
-                          title="BOQ & Tender Tool"
-                          description="Build a Bill of Quantities, set margin & overheads, and transfer to this project's budget in one click."
-                          badge="Coming in Sprint 3"
-                        />
-                      } />
+                      {/* BOQ — the measured Bill of Quantities (ADR-32 Part 1).
+                          Estimating (margin/overheads) and BOQ → Budget transfer
+                          are later branches. */}
+                      <Route path="boq" element={<ProjectBoq />} />
+                      {/* Tenders — packages, bids, Tender Comparison, and the
+                          award decision record (ADR-32 Part 2). Deliberately
+                          BOQ-independent: cost-code + free-text scope. */}
+                      <Route path="tenders"     element={<ProjectTenders />} />
                       <Route path="budget"      element={<ProjectBudget />} />
                       <Route path="cost-codes"  element={<ProjectCostCodes />} />
                       <Route path="purchase-orders" element={<ProjectPurchaseOrders />} />

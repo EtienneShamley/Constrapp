@@ -1418,3 +1418,217 @@ the rule with its own review.
 - Deferred: attachments (no Storage), an approval stage before posting,
   line-index-level matching, free-standing credits, applying a credit as
   payment against a future invoice, refunds, final-account linkage.
+
+## ADR-32: BOQ & Tender Foundation — Part 1: BOQ (measured schedule; null-rate unpriced; read-time budget comparison)
+
+*(ADR-28 Documents, ADR-29 Timeline, and ADR-30 Retention remain reserved for
+parked feature branches and are deliberately not written here — no stubs.
+ADR-31 Supplier Credit Notes is above. Part 2 of this ADR — Tender Packages, Bids, Comparison, and
+Award — follows below; the two parts are deliberately independent, and nothing
+of Part 2 is implemented by Part 1.)*
+
+**Context.** Constrapp's commercial spine began at a number someone typed: a
+budget line is `costCodeId` + a lump-sum `budgeted`, with no record of the
+measured quantity, unit, or rate that produced it. The cost-code `unit` field
+sat unused by any financial document — a fossil of the missing measurement
+layer. The BOQ tab was a placeholder.
+
+**Decision.** One BOQ per project, represented as project-scoped
+`companies/{id}/projects/{id}/boqItems` — a flat register of measured items
+with **no header document** (mirroring `budgetLines`), random ids and **no
+counter** (a BOQ item is never quoted to a supplier or client, so ADR-5's
+rationale does not apply; `itemNumber` is a user-authored label like "2.1",
+`section` a free-text grouping). Each item: `description` (required),
+`quantity` (required, ≥ 0), `unit` (required; prefilled from the cost code's
+`unit`, editable), `rate` (**number ≥ 0 or null**), `amount` (**derived**
+quantity × rate; **null when rate is null**), mandatory `costCodeId` + frozen
+`costCodeName` snapshot (ADR-0a), currency audit snapshot, `revision: 1`,
+reserved `attachments: []`/`externalRefs: {}`, and full audit stamps.
+Lifecycle `active → void` (terminal, reasoned), **rules-enforced**, delete
+blocked — the two-state `cashFlowLines` shape, because a BOQ item has no
+financial commit point. Ex-GST throughout; GST enters at the PO.
+
+**Null means unpriced — never 0.** A BOQ is measured before it is priced.
+`rate: null` pairs with `amount: null` (the pairing is rules-enforced both
+ways); an unpriced item contributes nothing to any total, is counted in an
+explicit unpriced indicator, and **suppresses** the BOQ-vs-budget variance —
+headline and per-code — because a partial estimate must never manufacture a
+comparison. Zero is a *price* ("reviewed, nothing against this item"), exactly
+as a zero forecast input is a forecast (ADR-19).
+
+**The amount is derived and rules-enforced.** `amount == quantity × rate`
+compared in whole cents (`cents(v) = math.round(v * 100)`, the clientReceipts
+idiom — equivalent to a half-cent tolerance, so fractional quantities are
+fine). `lib/boq.js → boqLineAmount()` rounds through `lib/payments.js →
+toCents()`, which mirrors the rules exactly; **deliberately not `roundMoney`**,
+whose `Number.EPSILON` nudge diverges from `math.round` at exact half-cent
+float boundaries (1 × 1.005 → rules 1.00, roundMoney 1.01) and would make a
+client-valid write fail. A direct-SDK caller cannot store a priced amount that
+disagrees with its own quantity × rate.
+
+**The BOQ feeds no financial figure.** Budgeted, Committed, Actual, Invoiced,
+Forecast, Margin, and Cash Flow are all computed exactly as before, from the
+same sources as before (ADR-3/ADR-4 upheld). The only derived output is the
+read-time **BOQ vs Approved Budget** comparison on the BOQ page
+(`lib/boq.js → boqVsBudgetRows`), built with the `buildForecastRows` union
+discipline (codes never disappear; live names with snapshot fallbacks;
+inactive/unknown flagged, never hidden). Variance = Budgeted − BOQ (positive ⇒
+BOQ under budget, the ADR-19 sign). Nothing is stored, reconciled, or written
+back — the BOQ is not a second budget, and neither side validates the other.
+
+**Reads are restricted to financial roles** — the BOQ is the internal
+estimate; a subcontractor or client who can read rates prices against them.
+`super_admin` has no special powers (unchanged). Writes: `company_admin`,
+`project_manager`, `qs`.
+
+**Currency.** A **priced** item (including rate 0, including voided priced
+items — retained records carrying amounts, like a cancelled PO) is
+currency-lock evidence; a purely unpriced item is a measurement carrying no
+money and does not lock — the forecast-input precedent (ADR-21). The create
+transaction stages the ratchet atomically.
+
+**Deliberately deferred:** BOQ → Budget transfer (the placeholder's "one
+click" promise — it would be the first client transaction creating financial
+documents in another module, and budget lines cannot be deleted, so a
+double-transfer is unrecoverable without an idempotence design); estimating
+margin/overheads; multiple named/versioned BOQs (one BOQ per project in V1 —
+no header document to disagree with); manual takeoff linkage; attachments
+(Storage has no Security Rules); and everything tender-side. Server-side
+enforcement of cost-code reference validity, unit conventions, and duplicate
+detection is Deferred Control 26.
+
+**Consequences.** New `lib/boq.js` (pure), `hooks/useBoqItems.jsx`,
+`pages/project/ProjectBoq.jsx` (+ two page-local modals), one additive rules
+block, `monetaryLockReasons` gains priced-BOQ-item evidence, and the BOQ tab
+replaces its placeholder — label unchanged (the Tenders tab, added by Part 2,
+sits immediately after it). Unit suite
+173 → 219; rules suite 207 → 257. No migration — purely additive; no existing
+collection, hook, or derivation changed behaviour.
+
+## ADR-32: BOQ & Tender Foundation — Part 2: Tender (packages · manual bids · read-time comparison · award as a decision record; no stored totals)
+
+> **Numbering note.** ADR-28–30 remain reserved for parked feature branches
+> (Documents & Drawings, Project Timeline, Retention) — the gap is intentional
+> and no stubs are written. ADR-31 (Supplier Credit Notes) and Part 1 of this
+> ADR (BOQ) are above. Part 2 is deliberately independent of Part 1: Tender V1 was designed
+> and built to work **without** BOQ (cost-code + free-text scope), and the
+> optional BOQ scope schedule remains a separate future step (see "Independence
+> & future BOQ integration" below).
+
+**Context.** The connected lifecycle (Drawing → … → Estimate → **Tender →
+Award** → Approved Budget → Commitment → …) had a hole between Estimate and
+Commitment: no record of what scope was put to market, who priced it, what
+they priced, or why the winner won. The award decision — the most consequential
+commercial decision on a cost code — lived in email. BOQ was implemented on a
+separate branch at the time, so Tender V1 was designed to work without
+`boqItems`.
+
+**Decision.** Two new project-scoped collections and one counter:
+
+- **`tenderPackages`** (`TP-0001` from `counters/tenderPackages`) — a named
+  scope of **≥1 selected cost codes + free-text scope**, lifecycle
+  `draft → issued → awarded`, with `draft|issued → cancelled`. Issuing
+  **freezes** name/description/scope/costCodes; while issued, only
+  `closingDate` and `notes` stay editable (a deliberate `hasOnly` carve-out —
+  extending an informational closing date must not force cancel-and-recreate).
+  Awarded and cancelled are **terminal**: no un-award/rescind flow in V1.
+- **`tenderBids`** — manual transcriptions of received bids, priced **per cost
+  code** within the package scope (ex-GST, **no GST fields** — tax is a
+  commitment-time concern), from **supplier/subcontractor contacts** with a
+  frozen `bidderName` snapshot. Two states, `received → void` — **no draft**:
+  a bid is a transcription of an external document, not an authored document
+  with a commit point (the cashFlowLines two-state precedent). Random ids, no
+  number, no counter. Project-level with a `tenderPackageId` reference (the
+  progressClaims→PO idiom), never a subcollection — one subscription serves
+  the register while rules still verify containment by `get()`.
+
+**The header-vs-lines decision (load-bearing): NO STORED TOTALS.** Bids store
+no `bidTotal`; packages store no `awardTotal`. Firestore rules cannot iterate
+or sum an array, so any stored header total would be an unverifiable second
+copy of the lines — the exact integrity defect previously identified in the
+Credit Notes design. Instead every figure passes through one **read-time
+validity gate** (`lib/tenders.js → assessBid`): a bid is valid only when every
+line has a real object shape, a non-empty in-scope `costCodeId`, string
+snapshot/description, and a finite numeric `amount ≥ 0` (zero is a legitimate
+price) — **and the resulting total is itself finite**, because finite lines can
+still sum beyond representable range and a non-finite total would otherwise
+pass as valid while rendering as "—". One malformed line invalidates the
+**whole bid** — total `null`, never a partial sum, never $0, never clamped —
+excluding it from the lowest-bid ranking, the budget comparison, the
+per-cost-code matrix, and the Awarded Bid Value while it stays visible and
+flagged. A direct-SDK caller can store malformed embedded lines **and can
+award such a bid** (rules verify the bid's identity and status but cannot read
+its lines, so the app's refusal to award it is UX only); the gate makes the
+resulting record **fail safely instead of being trusted** — the award value
+reads *unavailable*, and since an award writes no PO and no financial value,
+nothing downstream moves (Deferred Control 26).
+
+**Tender Comparison — read-time, and never "Bid Levelling".** Derived rows per
+package: derived total ex-GST, **Variance to Budget = Approved Budget − Bid**
+(positive = under budget — the app-wide sign convention), variance to lowest,
+whole-cent lowest ties, exclusions/notes, awarded flag, plus a per-cost-code
+matrix. When the package's cost codes have **no** budget lines the comparison
+reports *no budget* — it never compares against zero. Nothing is stored
+(ADR-3); void and invalid bids are excluded from every calculation.
+
+**Award is a commercial decision record ONLY.** `issued → awarded` stores
+`awardedBidId`, a rules-matched `awardedBidderName` snapshot, `awardNotes`, and
+stamps — nothing else. It creates **no Purchase Order** and writes **no
+budget, commitment, actual, invoiced, forecast, margin, or cash-flow figure**.
+Rules `get()` the bid and enforce: exists in this project, belongs to this
+package, is `received`, name snapshot matches — and the branch's
+`resource.data.status == 'issued'` requirement makes a **second award
+impossible** (Firestore serialises writes per document). Ending the package's
+issued state is also what **freezes every bid** (all bid writes require the
+parent to be `issued`), which is why the displayed **Awarded Bid Value** can be
+derived from the frozen bid's lines with no stored copy. **No inferred
+"awarded but not committed" arithmetic exists**: V1 has no Award → PO linkage,
+and netting awards against POs by cost code is wrong whenever packages share
+cost codes or POs span packages — the value is labelled a tender decision
+value only. "Raise PO from Award" is a separate future feature.
+
+**Closing date is INFORMATIONAL ONLY.** No trusted backend or server clock
+exists, so nothing blocks a late bid — in the app or by direct SDK — and the
+UI says so wherever the date appears. Rules validate shape only.
+
+**Privacy & roles.** Both collections are readable and writable by
+`company_admin` / `project_manager` / `qs` only — a bid **is competitor
+pricing**, so `subcontractor`/`client` read nothing, and `super_admin` has no
+special power (rules-tested). **QS may award** (product decision). Bidder
+contacts are rules-verified at create — existence, supplier/subcontractor
+type, and name snapshot via one `get()` — deliberately exceeding the
+supplierPayments precedent because a fabricated bidder in a competitive record
+is worth the extra read.
+
+**Currency.** Packages carry no amounts and no `currency` field and never lock
+the project currency; a **bid** is monetary evidence (including void — a
+retained audit record), so `createTenderBid` stages the ratchet in the same
+transaction (ADR-21) and `monetaryLockReasons` gains `tenderBids`. Award adds
+no lock logic: it stores no amount, and an awarded package already has a bid.
+
+**Independence & future BOQ integration.** V1 uses no Firebase Storage, no
+Cloud Functions, no new dependencies, no migration, and nothing from the BOQ
+foundation. Now that BOQ has merged, the intended extension is an **optional
+frozen scope schedule at issue** (`scopeSchedule` snapshotted from BOQ items)
+as a separate follow-up feature with its own design and security review —
+additive, absent-field-tolerant, and never required for a cost-code/free-text
+package. Tender records must remain valid without it.
+
+**Alternatives rejected.** Storing `bidTotal`/`awardTotal` (unverifiable —
+the Credit Notes lesson); bids as a package subcollection (collection-group
+rules weaken tenant scoping; the claims idiom already fits); a bid draft state
+(a transcription has no commit point); lump-sum-only bids (breaks the
+cost-code spine) and BOQ-item bids (no BOQ on main); deterministic
+bidder-keyed bid ids for uniqueness (blocks legitimate re-bids after void);
+automatic PO creation on award (award is a decision, commitment is a separate
+deliberate act); an inferred awarded-vs-committed exposure (wrong under
+shared cost codes); enforcing closure of tenders at the closing date (no
+trusted clock — pretending would overclaim).
+
+**Consequences.** The tender trail (scope → bidders → prices → decision) is
+durable, auditable, and financially inert; comparison honesty degrades safely
+under malformed data; and the award's derived value is exactly as trustworthy
+as the rules-frozen bid behind it. The costs are accepted and documented:
+per-line integrity, containment, bidder uniqueness, and closing behaviour are
+client-side only (Deferred Control 26), and a mistaken award has no in-app
+remedy in V1 (rescission is future work with its own audit design).
