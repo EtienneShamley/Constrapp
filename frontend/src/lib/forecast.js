@@ -9,6 +9,7 @@ import {
   postedInvoicedByPoLine,
   invoicedClaimIds,
 } from './supplierInvoices'
+import { creditedByCostCode } from './supplierCreditNotes'
 import {
   approvedSupplierVariationsByCostCode,
   pendingSupplierVariationExposureByCostCode,
@@ -99,8 +100,10 @@ export function isOverBudget(varianceValue) {
 // exact Budget-page read-time calculations (imported, not duplicated):
 //   • Budget Lines
 //   • sent/closed Purchase Order lines (Remaining Committed)
-//   • Actual (approved claims not superseded by a posted/paid invoice + posted/paid invoices)
+//   • Actual (approved claims not superseded by a posted/paid invoice + posted/paid invoices
+//     − posted valid-target Supplier Credit Notes)
 //   • posted/paid Supplier Invoices (folded into Actual)
+//   • posted Supplier Credit Notes (subtracted from Actual, ex-GST by cost code)
 //   • Approved + Pending Supplier Variations (exposure context)
 //   • existing Forecast Lines
 //
@@ -118,6 +121,7 @@ export function buildForecastRows({
   purchaseOrders = [],
   progressClaims = [],
   supplierInvoices = [],
+  supplierCreditNotes = [],
   variations = [],
   forecastLines = [],
 }) {
@@ -132,12 +136,21 @@ export function buildForecastRows({
   const closedResidualMap = maturedCommittedByCostCode(closedPurchaseOrders, invByPoLine)
 
   // Actual — approved claims not superseded by a posted/paid invoice + posted/paid
-  // invoice lines (the Budget-page composition, no double-count).
+  // invoice lines − posted valid-target credit notes (the Budget-page
+  // composition, no double-count). The credit subtraction is SIGNED and never
+  // clamped: an over-credited cost code goes negative and stays visible.
+  // Remaining Committed is deliberately NOT restored by a credit (ADR-31) —
+  // credit lines carry no poLineIndex, so between a credit and any corrected
+  // re-invoice, FFC is briefly understated by the credited amount; the QS
+  // adjusts Uncommitted CTC if re-invoicing is expected.
   const invoicedMap = invoicedByCostCode(supplierInvoices)
+  const creditedMap = creditedByCostCode(supplierCreditNotes, supplierInvoices)
   const claimActualMap = actualClaimsByCostCode(progressClaims, invoicedClaimIds(supplierInvoices))
   const actualMap = {}
-  for (const cc of new Set([...Object.keys(claimActualMap), ...Object.keys(invoicedMap)])) {
-    actualMap[cc] = roundMoney((claimActualMap[cc] || 0) + (invoicedMap[cc] || 0))
+  for (const cc of new Set([
+    ...Object.keys(claimActualMap), ...Object.keys(invoicedMap), ...Object.keys(creditedMap),
+  ])) {
+    actualMap[cc] = roundMoney((claimActualMap[cc] || 0) + (invoicedMap[cc] || 0) - (creditedMap[cc] || 0))
   }
 
   // Supplier variation exposure — separate context, never added to any total.

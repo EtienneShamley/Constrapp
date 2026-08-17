@@ -8,7 +8,10 @@ import { roundMoney } from '../../lib/purchaseOrders'
 import { useProfile } from '../../hooks/useProfile'
 import { useSupplierPayments } from '../../hooks/useSupplierPayments'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
+import { useSupplierCreditNotes } from '../../hooks/useSupplierCreditNotes'
 import { useContacts } from '../../hooks/useContacts'
+import { useRetentionReleases } from '../../hooks/useRetentionReleases'
+import { releasedByInvoiceId } from '../../lib/retention'
 import { PO_SUPPLIER_TYPES } from '../../lib/contacts'
 import { isFinancialRole } from '../../lib/margin'
 import {
@@ -66,7 +69,7 @@ function ModalShell({ title, onClose, children, wide }) {
 const blankRow = () => ({ supplierInvoiceId: '', allocatedAmount: '' })
 
 function PaymentEditorModal({
-  payment, supplierContacts, supplierInvoices, supplierPayments,
+  payment, supplierContacts, supplierInvoices, supplierPayments, supplierCreditNotes, releasedByInvoiceId,
   preselect, currencyCode, onClose, onSave,
 }) {
   const money = (n) => formatCurrency(n, currencyCode)
@@ -104,11 +107,19 @@ function PaymentEditorModal({
   const cash = roundMoney(Number(amount) || 0)
 
   // The POSTED supplier invoices of the SELECTED SUPPLIER on this project, with
-  // their live remaining payable. Excludes this payment's own allocations so an
-  // edit never double-counts itself. Sorted oldest first.
+  // their live remaining payable — net of posted supplier credit notes, so a
+  // credited slice is never offered as payable. Excludes this payment's own
+  // allocations so an edit never double-counts itself. Sorted oldest first.
+  //
+  // `releasedByInvoiceId` raises each invoice's payable basis by the retention
+  // RELEASED against it (ADR-30), which is what makes released retention
+  // allocatable at all; `creditNotes` lowers it by posted valid credits
+  // (ADR-31). Empty values reproduce the pre-ADR-30/31 targets exactly.
   const targets = useMemo(
-    () => allocatableSupplierInvoices(supplierInvoices, supplierId, supplierName, supplierPayments, { excludePaymentId: payment?.id ?? null }),
-    [supplierInvoices, supplierId, supplierName, supplierPayments, payment?.id],
+    () => allocatableSupplierInvoices(supplierInvoices, supplierId, supplierName, supplierPayments, {
+      excludePaymentId: payment?.id ?? null, creditNotes: supplierCreditNotes, releasedByInvoiceId,
+    }),
+    [supplierInvoices, supplierId, supplierName, supplierPayments, supplierCreditNotes, payment?.id, releasedByInvoiceId],
   )
   const targetById = useMemo(() => new Map(targets.map(t => [t.id, t])), [targets])
 
@@ -176,8 +187,10 @@ function PaymentEditorModal({
   // Over-reconciling an INVOICE is warned with an acknowledgement, never
   // blocked: it cannot be enforced anywhere (rules cannot sum sibling documents).
   const warnings = useMemo(
-    () => invoiceOverPaymentWarnings(builtAllocations, supplierInvoices, supplierPayments, { excludePaymentId: payment?.id ?? null }),
-    [builtAllocations, supplierInvoices, supplierPayments, payment?.id],
+    () => invoiceOverPaymentWarnings(builtAllocations, supplierInvoices, supplierPayments, {
+      excludePaymentId: payment?.id ?? null, creditNotes: supplierCreditNotes, releasedByInvoiceId,
+    }),
+    [builtAllocations, supplierInvoices, supplierPayments, supplierCreditNotes, payment?.id, releasedByInvoiceId],
   )
   const needsAck = warnings.length > 0
 
@@ -379,10 +392,15 @@ function PaymentEditorModal({
                         <p className="m-0 text-[11px] text-brand-muted">
                           {/* The retention line appears ONLY when something is
                               actually withheld — a zero retention line would be
-                              noise on the direct-PO invoices that are the norm. */}
+                              noise on the direct-PO invoices that are the norm.
+                              ⚠️ It reports retention still HELD, never
+                              retentionTotal: retention that has been RELEASED is
+                              already inside `payable` below, so calling it
+                              "withheld" here would show the same money twice. */}
                           {target.retentionTotal > 0 && (
                             <>
-                              invoiced {money(target.grossTotal)} (inc. GST) · retention withheld −{money(target.retentionTotal)} ·{' '}
+                              invoiced {money(target.grossTotal)} (inc. GST) · retention held −{money(target.retentionHeld)}
+                              {target.releasedTotal > 0 && <> · retention released +{money(target.releasedTotal)}</>} ·{' '}
                             </>
                           )}
                           payable {money(target.payableTotal)} · paid to date {money(target.paid)} ·
@@ -663,7 +681,8 @@ function DetailModal({ payment, supplierInvoices, currencyCode, onClose }) {
         <p className="m-0 text-[11px] text-brand-muted border-t border-brand-border pt-3">
           A payment records gross cash paid in this project&apos;s currency ({currencyCode}). It carries no GST, no
           net amount, and no cost meaning — the tax and the cost were recorded on the supplier invoice being
-          settled. Allocations reconcile against each invoice&apos;s net payable after retention withheld. Invoice
+          settled. Allocations reconcile against each invoice&apos;s payable — net of retention still held, and
+          including any retention released. Invoice
           balances are derived at read time and are never written onto invoice documents.
         </p>
       </div>
@@ -691,7 +710,46 @@ export default function ProjectSupplierPayments() {
     createSupplierPayment, updateSupplierPayment, postSupplierPayment, voidSupplierPayment,
   } = useSupplierPayments(mid)
   const { supplierInvoices, supplierInvoicesLoading } = useSupplierInvoices(mid)
+  const {
+    supplierCreditNotes, supplierCreditNotesLoading, supplierCreditNotesError,
+  } = useSupplierCreditNotes(mid)
   const { contacts } = useContacts()
+  // Retention releases raise each invoice's payable basis (ADR-30). A FAILED
+  // read is never treated as "nothing released": that would understate every
+  // payable and silently hide money the supplier is owed.
+  const { retentionReleases, retentionReleasesLoading, retentionReleasesError } = useRetentionReleases(mid)
+
+  const releasedMap = useMemo(
+    () => (retentionReleasesError ? {} : releasedByInvoiceId(retentionReleases)),
+    [retentionReleasesError, retentionReleases],
+  )
+
+  // ⚠️ A FAILED CREDIT-NOTE READ IS UNKNOWN, NEVER ZERO. Posted credit notes
+  // REDUCE each invoice's remaining payable. If they cannot be read, treating
+  // them as an empty list would OVERSTATE what is still owed and could invite a
+  // payment against money the supplier has already credited — the one
+  // materially unsafe direction on this page. Every credit-dependent figure is
+  // therefore rendered unavailable and every action that consumes a remaining
+  // payable is disabled until the read succeeds. (Loading is covered by the
+  // page gate below, so nothing is briefly rendered overstated either.)
+  const creditStateUnknown = supplierCreditNotesError
+
+  // ⚠️ THE SAME FAIL-SAFE APPLIES TO RETENTION RELEASE STATE, IN THE OPPOSITE
+  // DIRECTION. A failed release read is never "nothing released": `releasedMap`
+  // falls back to {}, which UNDERSTATES every payable basis (released retention
+  // is missing from it). Allocating against an understated payable produces a
+  // wrong allocation just as surely as an overstated one does, so an unreadable
+  // release list must not permit a payable-dependent action either.
+  //
+  // `payableStateUnknown` therefore gates EVERY create/edit/post path — the two
+  // register buttons, the per-row Edit and Post actions, AND the editor/post
+  // modals themselves, which the "Record payment" hand-off from a posted
+  // Supplier Invoice can otherwise open on mount without passing a button.
+  // VOIDING IS DELIBERATELY NOT GATED: it only withdraws an existing record, it
+  // consumes no payable figure, and trapping a payment in the posted state when
+  // a subscription fails is the one outcome worse than the failure itself (the
+  // same reasoning the retentionReleases rules apply to voiding a release).
+  const payableStateUnknown = creditStateUnknown || retentionReleasesError
 
   // ── "Record payment" hand-off from a posted Supplier Invoice ──────────────
   //
@@ -743,12 +801,12 @@ export default function ProjectSupplierPayments() {
 
   const summary = useMemo(() => paymentSummary(supplierPayments), [supplierPayments])
   const payables = useMemo(
-    () => payablesSummary(supplierInvoices, supplierPayments),
-    [supplierInvoices, supplierPayments],
+    () => payablesSummary(supplierInvoices, supplierPayments, supplierCreditNotes, releasedMap),
+    [supplierInvoices, supplierPayments, supplierCreditNotes, releasedMap],
   )
   const ageing = useMemo(
-    () => apAgeing(supplierInvoices, supplierPayments),
-    [supplierInvoices, supplierPayments],
+    () => apAgeing(supplierInvoices, supplierPayments, supplierCreditNotes, releasedMap),
+    [supplierInvoices, supplierPayments, supplierCreditNotes, releasedMap],
   )
   const exceptions = useMemo(
     () => allocationExceptions(supplierPayments, supplierInvoices),
@@ -793,12 +851,37 @@ export default function ProjectSupplierPayments() {
       </Card>
     )
   }
-  if (supplierPaymentsLoading || supplierInvoicesLoading) {
+  // BOTH adjustment sets are part of the PAYABLE BASIS, so the page must not
+  // render balances before they have settled: a momentary empty release map
+  // would flash understated payables, and missing credit notes would flash an
+  // overstated remaining payable.
+  if (supplierPaymentsLoading || supplierInvoicesLoading
+      || supplierCreditNotesLoading || retentionReleasesLoading) {
     return <div className="text-[13px] text-brand-muted">Loading supplier payments…</div>
   }
 
+  // Credit-dependent money: rendered "—" (unavailable) rather than an
+  // overstated figure whenever credit-note state could not be read.
+  const apMoney = (n) => (creditStateUnknown ? '—' : money(n))
+
   return (
     <div>
+      {creditStateUnknown && (
+        <Card className="mb-3.5">
+          <p className="text-[13px] font-bold text-brand-amber m-0">
+            Supplier Credit Notes could not be loaded — payable figures are unavailable
+          </p>
+          <p className="m-0 mt-1 text-[12px] text-brand-muted">
+            Posted credit notes reduce what is still owed on each supplier invoice. Because they cannot be read,
+            Constrapp does <span className="font-semibold">not</span> know the true remaining payable and will not
+            show it as though no credits exist. Recording, editing, and posting payments are disabled until the
+            read succeeds, so a payment cannot be made against money that has already been credited. Voiding an
+            existing payment is still permitted. Reload the page; if this persists, check your connection and
+            permissions.
+          </p>
+        </Card>
+      )}
+
       {/* ── Cash paid ──────────────────────────────────────────────────────── */}
       <Card className="mb-3.5">
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
@@ -809,8 +892,10 @@ export default function ProjectSupplierPayments() {
           <Metric label="Paid to Date" value={money(payables.paid)} help="Against posted supplier invoices" />
           <Metric
             label="Remaining Payable"
-            value={money(payables.remaining)}
-            help="Posted invoices, after posted payments"
+            value={apMoney(payables.remaining)}
+            help={creditStateUnknown
+              ? 'Unavailable — credit notes could not be read'
+              : 'Posted invoices, after posted payments and credit notes'}
           />
         </div>
         <p className="m-0 mt-3 text-[11px] text-brand-muted">
@@ -829,19 +914,21 @@ export default function ProjectSupplierPayments() {
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
           <Metric label="Total Posted Supplier Invoices" value={money(payables.postedPayable)} help={`${payables.count} posted · net payable`} />
           <Metric label="Paid to Date" value={money(payables.paid)} help="Posted payments allocated to invoices" />
-          <Metric label="Remaining Payable" value={money(ageing.total)} help="Posted invoices still payable" />
+          <Metric label="Remaining Payable" value={apMoney(ageing.total)} help="Posted invoices still payable" />
           {AGEING_BUCKETS.map(b => (
             <Metric
               key={b.key}
               label={b.label}
-              value={money(ageing.buckets[b.key].amount)}
-              help={`${ageing.buckets[b.key].count} invoice${ageing.buckets[b.key].count === 1 ? '' : 's'}`}
-              danger={b.key === 'd61_90' || b.key === 'd90plus'}
+              value={apMoney(ageing.buckets[b.key].amount)}
+              help={creditStateUnknown
+                ? 'Unavailable'
+                : `${ageing.buckets[b.key].count} invoice${ageing.buckets[b.key].count === 1 ? '' : 's'}`}
+              danger={!creditStateUnknown && (b.key === 'd61_90' || b.key === 'd90plus')}
             />
           ))}
         </div>
 
-        {ageing.overSettled.length > 0 && (
+        {!creditStateUnknown && ageing.overSettled.length > 0 && (
           <div className="mt-3 pt-3 border-t border-brand-border">
             <p className="m-0 text-[12px] font-bold text-brand-red">Over-reconciled invoices — excluded from ageing</p>
             <p className="m-0 mt-1 text-[11px] text-brand-muted">
@@ -888,7 +975,7 @@ export default function ProjectSupplierPayments() {
           {supplierContacts.length === 0 && (
             <Btn variant="ghost" sm onClick={() => navigate('/contacts')}>Add a supplier contact</Btn>
           )}
-          <Btn sm onClick={openNew} disabled={supplierContacts.length === 0}>+ New Payment</Btn>
+          <Btn sm onClick={openNew} disabled={supplierContacts.length === 0 || payableStateUnknown}>+ New Payment</Btn>
         </div>
       </div>
 
@@ -934,7 +1021,7 @@ export default function ProjectSupplierPayments() {
             </p>
             {supplierContacts.length === 0
               ? <Btn variant="ghost" onClick={() => navigate('/contacts')}>Go to Contacts</Btn>
-              : <Btn onClick={openNew}>+ Record your first payment</Btn>}
+              : <Btn onClick={openNew} disabled={payableStateUnknown}>+ Record your first payment</Btn>}
           </div>
         ) : filtered.length === 0 ? (
           <div className="px-5 py-12 text-center text-[13px] text-brand-muted">No payments match your filters.</div>
@@ -989,8 +1076,12 @@ export default function ProjectSupplierPayments() {
                         <div className="flex gap-1.5 justify-end">
                           {p.status === PAYMENT_STATUS.DRAFT && (
                             <>
-                              <Btn sm variant="ghost" onClick={() => { setPreselect(null); setEditing(p) }}>Edit</Btn>
-                              <Btn sm variant="success" onClick={() => setPosting(p)}>Post</Btn>
+                              {/* Editing re-opens the allocation picker and
+                                  posting commits cash against a remaining
+                                  payable — both need trustworthy credit state.
+                                  Void stays available: it only removes money. */}
+                              <Btn sm variant="ghost" disabled={payableStateUnknown} onClick={() => { setPreselect(null); setEditing(p) }}>Edit</Btn>
+                              <Btn sm variant="success" disabled={payableStateUnknown} onClick={() => setPosting(p)}>Post</Btn>
                             </>
                           )}
                           {(p.status === PAYMENT_STATUS.DRAFT || p.status === PAYMENT_STATUS.POSTED) && (
@@ -1013,15 +1104,19 @@ export default function ProjectSupplierPayments() {
           <div className="px-5 pt-4 pb-2">
             <p className="text-[13px] font-bold text-brand-text m-0">Posted supplier invoices — reconciliation</p>
             <p className="m-0 mt-1 text-[11px] text-brand-muted">
-              Derived at read time from posted payments. Nothing is written onto a supplier invoice: no balance
-              field, no payment status, no payment back-reference. Payable is net of retention withheld.
+              Derived at read time from posted payments, posted supplier credit notes, and posted retention
+              releases. Nothing is written onto a supplier invoice: no balance field, no payment status, no
+              back-reference, and no retention field is ever reduced. Payable is net of retention still
+              <span className="font-semibold"> held</span>, and includes retention that has been
+              <span className="font-semibold"> released</span>; a negative remaining payable that includes a
+              credit note is money recoverable from the supplier (no refund is recorded automatically).
             </p>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full border-collapse">
               <thead>
                 <tr className="bg-brand-card border-y border-brand-border">
-                  {['SI #', 'Supplier Invoice #', 'Supplier', 'Due', 'Gross', 'Retention', 'Payable', 'Paid to Date', 'Remaining Payable', 'Reconciliation'].map(h => (
+                  {['SI #', 'Supplier Invoice #', 'Supplier', 'Due', 'Gross', 'Retention Held', 'Released', 'Payable', 'Paid to Date', 'Credited', 'Remaining Payable', 'Reconciliation'].map(h => (
                     <th key={h} className={thCls}>{h}</th>
                   ))}
                 </tr>
@@ -1034,14 +1129,20 @@ export default function ProjectSupplierPayments() {
                     <td className="px-3.5 py-2.5 text-[13px] text-brand-text">{r.supplierName || '—'}</td>
                     <td className="px-3.5 py-2.5 text-[12px] text-brand-muted whitespace-nowrap">{r.dueDate || '—'}</td>
                     <td className="px-3.5 py-2.5 text-[13px] text-brand-muted whitespace-nowrap">{money(r.grossTotal)}</td>
-                    <td className="px-3.5 py-2.5 text-[13px] text-brand-muted whitespace-nowrap">{r.retentionTotal ? `−${money(r.retentionTotal)}` : '—'}</td>
+                    <td className="px-3.5 py-2.5 text-[13px] text-brand-muted whitespace-nowrap">{r.retentionHeld ? `−${money(r.retentionHeld)}` : '—'}</td>
+                    <td className="px-3.5 py-2.5 text-[13px] text-brand-muted whitespace-nowrap">{r.releasedTotal ? `+${money(r.releasedTotal)}` : '—'}</td>
                     <td className="px-3.5 py-2.5 text-[13px] text-brand-text whitespace-nowrap">{money(r.payableTotal)}</td>
                     <td className="px-3.5 py-2.5 text-[13px] text-brand-muted whitespace-nowrap">{money(r.paid)}</td>
-                    <td className={`px-3.5 py-2.5 text-[13px] font-semibold whitespace-nowrap ${r.remaining < 0 ? 'text-brand-red' : 'text-brand-text'}`}>
-                      {money(r.remaining)}
+                    <td className="px-3.5 py-2.5 text-[13px] text-brand-muted whitespace-nowrap">
+                      {creditStateUnknown ? '—' : (r.credited ? `−${money(r.credited)}` : '—')}
+                    </td>
+                    <td className={`px-3.5 py-2.5 text-[13px] font-semibold whitespace-nowrap ${!creditStateUnknown && r.remaining < 0 ? 'text-brand-red' : 'text-brand-text'}`}>
+                      {apMoney(r.remaining)}
                     </td>
                     <td className="px-3.5 py-2.5">
-                      <Badge label={RECONCILIATION_LABELS[r.state]} variant={RECONCILIATION_BADGE_VARIANTS[r.state]} sm />
+                      {creditStateUnknown
+                        ? <span className="text-[12px] text-brand-muted">—</span>
+                        : <Badge label={RECONCILIATION_LABELS[r.state]} variant={RECONCILIATION_BADGE_VARIANTS[r.state]} sm />}
                     </td>
                   </tr>
                 ))}
@@ -1051,20 +1152,38 @@ export default function ProjectSupplierPayments() {
         </Card>
       )}
 
+      {retentionReleasesError && (
+        <Card className="mt-3.5">
+          <p className="m-0 text-[12.5px] font-bold text-brand-red">Retention releases could not be read</p>
+          <p className="m-0 mt-1.5 text-[11.5px] text-brand-muted">
+            The payable figures above exclude any retention that has been released, so they may UNDERSTATE what is
+            owed. They are not a genuine zero. Recording, editing and posting payments are disabled until the
+            release list can be read — reload the page; if this persists, check your connection and permissions.
+            Voiding an existing payment is still available.
+          </p>
+        </Card>
+      )}
+
       <p className="m-0 mt-3 text-[11px] text-brand-muted">
         Constrapp records cash movements and their allocations. It cannot verify that money genuinely left your
         bank account, cannot block over-reconciliation, and cannot prevent two users allocating the same remaining
-        payable concurrently — Firestore rules cannot sum sibling documents. Supplier credit notes, refunds,
-        retention release, remittance output, bank reconciliation, and accounting integrations are future work.
+        payable concurrently — Firestore rules cannot sum sibling documents. Supplier Credit Notes are recorded on
+        the Supplier Invoices view and reduce each invoice&apos;s remaining payable here. Retention release is
+        modelled (Commercial → Retention): released retention becomes payable here and is settled by an ordinary
+        payment, while retention still held is not payable. Which part of a balance a payment settled is not
+        identified, so retention paid is not reported. Refunds, remittance output, bank reconciliation, and
+        accounting integrations are future work.
       </p>
 
-      {editing && (
+      {editing && !payableStateUnknown && (
         <PaymentEditorModal
           key={editing === 'new' ? `new_${resolvedPreselect?.supplierInvoiceId ?? resolvedPreselect?.supplierId ?? 'blank'}` : editing.id}
           payment={editing === 'new' ? null : editing}
           supplierContacts={supplierContacts}
           supplierInvoices={supplierInvoices}
           supplierPayments={supplierPayments}
+          supplierCreditNotes={supplierCreditNotes}
+          releasedByInvoiceId={releasedMap}
           preselect={editing === 'new' ? resolvedPreselect : null}
           currencyCode={currencyCode}
           onClose={() => { setEditing(null); setPreselect(null) }}
@@ -1074,7 +1193,7 @@ export default function ProjectSupplierPayments() {
         />
       )}
 
-      {posting && (
+      {posting && !payableStateUnknown && (
         <PostModal
           payment={posting}
           currencyCode={currencyCode}

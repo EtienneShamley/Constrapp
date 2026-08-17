@@ -3,9 +3,13 @@ import { NavLink, Outlet, useOutletContext } from 'react-router-dom'
 // The Commercial tab is the project's REVENUE-AND-CASH workspace. It hosts the
 // Project Margin view (index), the Client Invoices / Accounts Receivable
 // register, the Client Receipts register (money actually received), the
-// Supplier Payments register (money actually paid), and Cash Flow — which
-// reads BOTH cash directions together. That shared read is exactly why both
-// directions live on one tab.
+// Supplier Payments register (money actually paid), Cash Flow — which reads
+// BOTH cash directions together — and the Supplier Retention register. That
+// shared read is exactly why both directions live on one tab.
+//
+// Retention belongs here rather than beside Supplier Invoices because a
+// Retention Release changes what is PAYABLE (and therefore the cash picture),
+// never what was invoiced or what anything cost.
 //
 // Sub-navigation rather than a new project tab: the tab bar already carries
 // fourteen tabs and wraps on mobile, and these views share one audience
@@ -25,6 +29,7 @@ const SUB_TABS = [
   { to: 'receipts',          label: 'Client Receipts',   end: false },
   { to: 'supplier-payments', label: 'Supplier Payments', end: false },
   { to: 'cash-flow',         label: 'Cash Flow',         end: false },
+  { to: 'retention',         label: 'Retention',         end: false },
 ]
 
 export default function ProjectCommercialLayout() {

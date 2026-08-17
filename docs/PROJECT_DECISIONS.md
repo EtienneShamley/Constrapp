@@ -1523,3 +1523,654 @@ Firestore 344 tests, Storage 46, **390 combined** (from 207).
   works in production**, and `storage.rules` must be published in the same pass
   — the default template Google offers is far more permissive than this file.
   See docs/DEPLOYMENT.md.
+
+## ADR-29: Project Timeline (current-plan programme; date-only strings; manual progress; no scheduling engine)
+
+**Context.** The Timeline tab had been a `ProjectPlaceholder` since Sprint 1.
+The pain it addresses is not "we lack Primavera" — it is that the programme
+lives in an MS Project or Excel file that was built once and stopped being true,
+so nobody can answer *what is late, who owns it, and what is due next fortnight*
+without opening a file nobody has touched in a month. Everything that makes
+scheduling software expensive (CPM, resource levelling, working calendars,
+drag-rescheduling) exists to **re-plan automatically**, which is precisely the
+capability a contractor with forty activities will not maintain.
+
+**Roadmap order.** [ROADMAP.md](../ROADMAP.md) places Timeline in item 10
+("Commercially linked field modules"), behind six lifecycle items. It was
+brought forward **deliberately and with product-owner approval** because
+Documents & Drawings — the branch that would otherwise have been next — was
+then parked pending Firebase Storage production setup, and Timeline is
+**completely independent of Storage**: no upload, no file, no drawing, no
+Quant™. This is a sequencing exception, not a scope expansion. (Documents &
+Drawings has since been merged — ADR-28 above.)
+
+**Commercial linkage.** [AGENT.md](../AGENT.md) requires a field feature to
+state its commercial input or output, and [PRODUCT.md](../PRODUCT.md) records
+Timeline's as *delay → forecast impact*. V1 establishes that linkage
+**structurally** — an optional `costCodeId` with a frozen `costCodeName`, the
+same spine every commercial document uses — and **implements no derivation from
+it**. The programme writes no Forecast, Cash Flow, Margin, Progress Claim,
+Budget Line, PO, or Variation value, and does not touch
+`projects/{projectId}.progress`. Future delay-impact intelligence will be
+**read-time**, composed from the programme and the existing commercial
+derivations, never a second authored commercial truth (the ADR-3/ADR-4
+posture).
+
+**Decision — one project-scoped collection.**
+`companies/{companyId}/projects/{projectId}/activities/{activityId}`, random
+document ids. Stored: `name`, `description`, `isMilestone`, `status`,
+`plannedStart`, `plannedFinish`, `actualStart`, `actualFinish`,
+`percentComplete`, `responsibleContactId` + `responsibleName`, `costCodeId` +
+`costCodeName`, `sortOrder`, `notes`, `cancelReason`/`cancelledAt`/`cancelledBy`,
+`revision`, and the create/update audit stamps. Deliberately **not** stored:
+`companyId`/`projectId` (the path carries them), `durationDays` (derived —
+a stored duration is a third fact that can disagree with two dates), baseline or
+dependency placeholders (speculative fields), `currency` (an activity holds no
+money), and any sequential number (a programme line is not a numbered financial
+document).
+
+**Milestones are a flag, not a collection.** `isMilestone: true` with
+`plannedFinish == plannedStart`, progress restricted to 0 or 100, and a derived
+duration of **zero days** — a milestone is a point in time, not a one-day
+activity. A parallel collection would double the hooks, rules and tests for the
+same data.
+
+**No task hierarchy / WBS.** Constrapp already has a WBS — the **cost code**.
+Inventing a parallel tree would breach the spine invariant and immediately raise
+unanswerable rollup questions (does a parent's percentage derive from its
+children? its dates?). Grouping is by optional cost code; ordering is by
+`sortOrder`.
+
+**Dates are date-only `'YYYY-MM-DD'` strings**, following `lib/payments.js` —
+the convention already used by `invoiceDate`, `dueDate`, `receiptDate` and
+`paymentDate`. A programme date is a day on a wall chart, not an instant; a
+`Timestamp` would attach timezone semantics to a fact that has none. String
+comparison is exact for zero-padded ISO **and expressible in Firestore rules**,
+which is what makes `plannedFinish >= plannedStart` server-enforceable. The
+finish is **inclusive** (duration = difference + 1) and every duration is
+**calendar days** — no working calendar, weekends or public holidays are
+modelled. *(Note the inconsistency this does not copy:
+`commercial/baseline` stores contract dates as `Timestamp|null`, the older
+pre-`payments.js` pattern. New date-only fields follow the string convention.)*
+
+**Status: five values, and deliberately NOT forward-only.** `not_started`,
+`in_progress`, `on_hold`, `completed`, `cancelled`. `on_hold` replaces the
+obvious `blocked` because a blocked activity is usually part-done, and a status
+implying no progress would lose that — the blocker goes in `notes`. Any
+non-cancelled status may move to any other, **including backwards**: this is an
+explicit departure from **ADR-11 (forward-only lifecycles)**, which exists
+because financial documents are an audit record. **A programme is a plan.** An
+activity ticked complete by mistake, or reopened for a defect, must be
+correctable, or the first mis-click becomes a permanent lie. Only `cancelled`
+is terminal.
+
+**Cancellation instead of deletion.** `allow delete: if false`, consistent with
+every collection in the file (ADR-12 posture). Cancelling is terminal, requires
+a **non-whitespace reason**, and rules restrict the write to the cancellation
+keys so no content edit can ride along. A cancelled activity is retained
+programme history that stops counting as outstanding work.
+
+**Progress is manually authored — and never coupled to Progress Claims.**
+`percentComplete` is a whole number 0–100 entered by a person. It is **not**
+derived from dates (elapsed time is not progress; a date-derived percentage
+asserts that work happened because the calendar moved, and would be wrong on
+exactly the slipping activities that matter), **not** from child tasks (no
+hierarchy), and **not** from claims. A progress claim is a *supplier's
+cumulative dollar claim against a PO line*, authored by the supplier and
+assessed by the QS, with retention and GST attached; an activity percentage is
+*physical progress on a programme line*, authored by the PM. They differ in
+granularity, authorship and truth conditions, and deriving either from the other
+would create **a second source of financial truth** — the failure ADR-23 and
+ADR-24 exist to prevent. It would also give an unverifiable, freely-editable
+field a financial consequence. The correct future move is to **report them side
+by side and highlight divergence**, never to compute one from the other.
+
+**No baseline — and the UI says so.** V1 reports *late against the current
+plan*. Because editing a planned date silently redefines "on time", the
+programme **cannot** report slippage against an approved baseline, and the page
+states this permanently rather than implying a variance it cannot compute.
+Baseline and re-baseline are a foundation of their own.
+
+**No dependencies, no critical path, no rescheduling.** A dependency without a
+rescheduling engine is decorative and goes stale silently — worse than absent —
+and an arrow claiming "B follows A" while the dates contradict it is actively
+misleading. Cycle freedom is also unenforceable server-side (rules have no list,
+query or graph traversal), so it could only ever be a client check. The only
+forward-compatibility this costs is **stable, never-reused document ids**, which
+the collection already has: predecessors would later be stored additively on the
+successor with no migration.
+
+**Permissions — the one place `qs` is narrower.** Read:
+`company_admin`, `project_manager`, **`qs`** (the QS needs the programme for
+commercial context). Create/update: `company_admin`, `project_manager` **only** —
+programme authorship is operational PM/admin responsibility. `subcontractor`
+and `client` are denied entirely, because those roles are **not scoped to their
+own projects** (SECURITY.md → Deferred Control 5/10): a read grant would expose
+every programme in the company. Sharing a programme externally is a
+client-portal feature with its own scoping design, **not a visibility flag on
+this document** — such a flag would be client-side only and must not be
+described as access control. `super_admin` gains nothing, matching every other
+collection.
+
+**Responsibility is a Contact, not a user.** `responsibleContactId` +
+a frozen `responsibleName` snapshot, the `supplierId`/`supplierName` pattern.
+Assigning an internal staff member is **impossible today**: ADR-27 made
+`users/{uid}` read-your-own-profile-only, so no client code can list or read
+another company user (`ProjectForecast.jsx` already renders the literal
+`'Another user'` for this reason). Internal assignment waits on trusted user
+management; **this was not a reason to reopen `users/{uid}`.**
+
+**No transaction and no currency ratchet.** Every other recent create wraps
+itself in `runTransaction` to stage `stageProjectCurrencyLock` (ADR-21) because
+it writes monetary data. An activity holds no amount and no currency, so there
+is nothing to make atomic and nothing to lock — engaging the ratchet on a
+scheduling write would be wrong.
+
+**Gantt without a dependency.** A Gantt is date arithmetic plus positioned
+rectangles. `lib/timelineGantt.js` holds **every** geometry decision (window,
+month/week ticks, bar offsets and widths, clipping, milestone centring, today
+marker, canvas width) with zero business logic, and the component renders plain
+CSS boxes on a fixed day grid inside one horizontal scroller — the fixed-slot
+approach proven by `CashFlowChart` under ADR-26. Recharts is present but has no
+range-bar primitive and would be more code with less control. **Nothing was
+installed.** The split also makes the Gantt unit-testable in the existing
+Node-only runner with no jsdom.
+
+**The table is the record.** The ADR-26 chart/table contract is reused
+unchanged: the Gantt consumes what the domain module already derived, re-derives
+nothing, and is **never the only path to the data** — the activity table below
+it is the complete record and the accessible equivalent. On mobile the Gantt is
+**not rendered at all**; grouped activity cards (Overdue → This week → Upcoming
+→ Later → Completed/Cancelled) replace it, because a legible horizontal
+programme does not fit a 375px screen and pinch-zoom is not an interaction model
+this app uses.
+
+**Consequences.**
+
+- **First non-financial project collection with a rules-enforced lifecycle.**
+  Shape, closed status set, date ordering, milestone equality, the percentage
+  bounds and integer type, the status/progress/actual-date invariants, the
+  both-or-neither reference pairs, immutable `createdAt`/`createdBy`/`revision`,
+  server-stamped audit fields, the cancellation key restriction, and
+  cancelled-terminality are **all rules-enforced**. `keys().hasOnly()` +
+  `hasAll()` pin the exact field set, so no arbitrary field can be pre-seeded —
+  the ADR-27 lesson applied preventively.
+- **Rules cannot verify truth**, and the block says so in its own comments:
+  a valid-shaped but impossible calendar date (`2026-02-30`) is accepted, a
+  `responsibleContactId`/`costCodeId` naming nothing is accepted, `sortOrder`
+  uniqueness is unenforceable, backwards transitions cannot be judged
+  legitimate, and `percentComplete` is an unverifiable assertion. Recorded as
+  **Deferred Control 23**, with rules tests that *prove* each gap rather than
+  assuming it.
+- **Last-write-wins concurrency.** Two users editing one activity overwrite each
+  other, including fields the second never looked at; `updatedAt`/`updatedBy`
+  record who wrote last, not what changed. Optimistic concurrency
+  (compare-and-set on `revision`) is deferred, not overlooked.
+- **`sortOrder` is not unique**, so display order breaks ties deterministically
+  on planned start, planned finish, name, then document id — the same list
+  always renders in the same order.
+- Added **112 unit tests** (`projectTimeline` 79 + `timelineGantt` 33) and the
+  **66-test** `activities` rules suite; with every other foundation merged the
+  combined totals are **493 unit** (7 files) and **450 rules** (10 files). Lint held at
+  its accepted **17 errors / 0 warnings**; no dependency, `package.json`,
+  `package-lock.json`, `firebase.json` or vitest-config change.
+- **No financial file was modified** and no migration is required — existing
+  projects simply have an empty programme.
+
+## ADR-30: Supplier Retention Release (hybrid model; derived held, authored release; `payableBasis` extension; no client retention)
+
+Retention withheld on a posted Supplier Invoice becomes payable through a new
+authored **Retention Release** document
+(`…/projects/{projectId}/retentionReleases/{releaseId}`, `RR-####` from a
+company-wide counter). Retention **held** stays derived from posted supplier
+invoices, **released** is derived from posted releases, and **paid** remains
+derived from posted Supplier Payment allocations — a **hybrid** whose only new
+stored fact is the release event itself.
+
+`payableBasis(invoice, released)` becomes
+`invoice.payableTotal + Σ posted releaseTotal`, so a released amount reappears as
+Remaining Payable and is settled by the **existing, unchanged** Supplier Payments
+flow. The released map is computed in `lib/retention.js →
+releasedByInvoiceId(releases)` and **passed explicitly** across the calculation
+boundary into `lib/supplierPayments.js` and `lib/cashFlow.js` (the
+`lib/clientInvoices.js → ageingByDueDate(invoices, receivedByInvoice, now)`
+precedent); `lib/` performs no Firestore access and holds no global state.
+
+**Why:**
+
+- **Retention was a one-way trapdoor.** A payment could only allocate against
+  `payableTotal`, which is permanently net of retention, so retained money had
+  **no route to ever becoming payable** — the single missing user problem.
+- **A release is not a document the model already contains.** Held and paid are
+  fully derivable; "we agreed to release $X on date D" exists nowhere, so it —
+  and only it — is stored. Storing a released rollup on the invoice would
+  duplicate authored financial truth (ADR-3/ADR-4).
+- **Not a supplier invoice.** A release-as-invoice would put `lineItems` into
+  `invoicedByCostCode` and **double-count cost**. The cost was fully recognised
+  when the invoice posted — `invoicedByCostCode` has always summed the complete
+  ex-GST lines and never subtracted retention.
+- **Not an allocation-target extension.** Adding a release target to
+  `allocations[]` would have touched `lib/payments.js`, `buildAllocations`,
+  `allocationExceptions`, `validatePaymentDraft`, and the payment editor — the
+  most delicate shipped module. Extending the payable basis leaves all of it
+  byte-identical.
+- **GST needed no new arithmetic for a full release.** Retention carries its own
+  GST on the invoice (`retentionGst = retention × 10%`), withheld *with* the
+  retention, so releasing all of it releases exactly the stored `retentionTotal`.
+
+**GST — the cumulative-snapshot model.** A partial release cannot round its own
+share: independent roundings drift, and after *n* partials the accumulated error
+exceeds a cent, so the last release would not reconcile. Each release therefore
+stores a derived `previouslyReleasedAmount` snapshot (the `previouslyApproved`
+idiom from Progress Claims) and
+
+```
+gstAmount = roundMoney((prev + amount) × 10%) − roundMoney(prev × 10%)
+```
+
+which **telescopes**: `Σ gstAmount == invoice.retentionGst` and
+`Σ releaseTotal == invoice.retentionTotal`, **exactly**, for any split and any
+drift-prone value. Proven for 1/2/3/7-way splits over nine retention values.
+
+**⚠️ Firestore Rules and JavaScript disagree on `math.round` — proven in the
+emulator, not assumed.** Rules integer `/` **truncates**: `10005 / 10` yields
+`1000` where JS `Math.round(1000.5)` yields `1001`. A naive
+`math.round(cents / 10)` rule rejected three legitimate writes while every unit
+test passed. The fix is on the **Rules** side —
+`math.floor((exGstCents + 5) / 10)`, which is round-half-up for non-negative
+values and correct under either division semantics — because mirroring the
+truncation in JS instead would have broken the telescoping invariant. Locked in
+by parity tests that fail if either side moves.
+
+**Consequences:**
+
+- **Zero releases reproduce every pre-ADR-30 figure byte-identically** (the
+  `releasedByInvoiceId = {}` default), asserted by dedicated regression tests.
+- **`apAgeing` gains `releasedByInvoiceId` before `now`**, mirroring
+  `ageingByDueDate`. Both parameters are defaulted; the only call site passed
+  two arguments.
+- **`sumRetentionWithheld` is replaced by `sumRetentionHeld`** (summing
+  `retentionHeld`, not `retentionTotal`) plus a clearly-labelled cumulative
+  `sumRetentionReleased`. Keeping the old function would have **double-counted**
+  released retention: once inside `row.remaining` as a payable and again as
+  "withheld and excluded from the forecast". `retentionHeld + releasedTotal ==
+  retentionTotal` by construction, so the two are disjoint.
+- **Released retention ages from the ORIGINAL invoice due date**, because a
+  release carries no due date of its own in V1 — so it normally lands straight in
+  the oldest AP bucket and in Cash Flow's `pastDueAP`, which **suppresses** peak
+  funding. That overstates its age and is stated wherever it shows; it is the
+  honest direction, and it is resolved by the deferred release-due-date work.
+- **Retention *paid* is deliberately NOT reported.** A payment settles an invoice
+  balance as **one** balance; nothing identifies whether the money settled the
+  original payable or released retention. An ordering convention would be an
+  accounting policy Constrapp does not make on the user's behalf (the
+  `allocateOldestFirst` precedent). No "released but unpaid" figure exists.
+- **The cumulative cap is hard-blocked in the UI and unenforceable in rules.**
+  Rules verify the target invoice and the per-document cap but cannot sum
+  siblings — see SECURITY.md → **Deferred Control 24**, whose two accepted gaps
+  are proven as *passing* rules tests.
+- **A failed release subscription is never a zero.** Every consuming page marks
+  the affected figures unavailable and disables release actions; treating missing
+  release data as "nothing released" would understate payables.
+- **Nothing is written onto a supplier invoice.** `retention`, `retentionGst`,
+  and `retentionTotal` are immutable for the life of the document, no `released`
+  status joins `SI_STATUS`, and voiding a release restores every balance at the
+  next render with no reversal, credit note, or adjustment record.
+- **Cost, forecast, and margin are untouched** — a release moves cash, not cost.
+- **Client retention remains deferred.** No client retention field exists
+  anywhere; adding it means a payable/gross split on `clientInvoices`, a new
+  `clientReceipts` reconciliation basis, revised AR ageing, and revised
+  cash-flow revenue timing — a second foundation, not an increment (ADR-22).
+- **Deferred with it:** retention due dates and defects-liability dates,
+  contract-level retention % / caps (no PO schema change), first-half /
+  second-half semantics as a first-class concept (expressible as two partial
+  releases), retention credit notes, retention-paid attribution, and final-account
+  linkage.
+- **A pre-existing Progress Claim defect is documented, not fixed here.**
+  `transitionStatus` computes `claimTotals(approvedAmounts, claim.retention)` but
+  does not rewrite the stored `retention`, so certifying below the retained
+  amount leaves the stored figure higher than the one applied; the supplier
+  invoice then fails `claimReconciliationError` with a confusing GST message. It
+  **fails safe** (creation is blocked, no money is misstated) and is a UX defect
+  only — out of scope for this branch.
+
+## ADR-31: Supplier Credit Notes (separate collection; read-time reduction; target-validated by rules)
+
+**Context.** A posted supplier invoice is terminal and immutable — no void, no
+cancel, no un-post (ADR-17: "corrections are future Credit Notes"). When a
+supplier over-bills, work is rejected, or a back-charge is agreed *after*
+posting, the overstated figures were permanent: cost-code Invoiced and Actual
+(and through them Forecast Final Cost and Margin) stayed high, and the invoice's
+Remaining Payable aged forever as money that would never be paid. The AP
+over-payment warning even told users to "check for a supplier credit still to be
+raised" — with nowhere to raise one. Client-side corrections have a
+rules-enforced path (`issued → void` + reissue, ADR-22), so the supplier side
+was the acute gap.
+
+**Decision.** A new project-scoped collection
+`companies/{companyId}/projects/{projectId}/supplierCreditNotes` holds
+**authored Supplier Credit Note documents**: `SCN-####` from a company-wide
+counter (ADR-5, currency ratchet in the create transaction per ADR-21),
+lifecycle `draft → posted → void` **rules-enforced to the ADR-22 standard**,
+and exactly **one posted supplier invoice per credit note**, referenced by a
+`supplierInvoiceId` that is **frozen at creation** together with the supplier
+snapshot. Lines mirror supplier-invoice lines (ex-GST `amount` + per-line
+`taxCode`/`gstAmount`) and **every line requires a cost code drawn from the
+target invoice's lines**. Headers store `subtotal`/`gstTotal`/`grossTotal`
+only — no retention, no payable/gross split.
+
+The three payable-side document kinds each hold exactly one truth, and none is
+ever mutated to reflect another:
+
+- **supplier invoice** — the original cost / payable fact;
+- **supplier payment** — the cash fact;
+- **supplier credit note** — the reduction fact.
+
+All net figures are derived at read time (ADR-3/ADR-4): posted, **valid-target**
+credits subtract from Invoiced and Actual by cost code (ex-GST, signed, never
+clamped) and from the target's Remaining Payable by `grossTotal`, flowing from
+there into AP ageing, the payment-allocation picker, Forecast Cash Out, FFC and
+Margin. **Actual Cash Out remains payment-only** — a credit moves no money.
+
+**Rejected alternatives.** *Negative invoices in `supplierInvoices`* — every
+existing derivation sums positive lines, the codebase's explicit rule is that a
+reduction is never a negative amount, and that collection still has no lifecycle
+rules (DC 1/2), which is the worst possible home for the one document whose
+forgery **erases** cost. *Mutating the posted invoice* — violates ADR-11/12/17
+outright. *A stored credited-total rollup* — the rejected `receivedToDate`
+precedent (ADR-23) governs. The `docType: 'credit_note'` / `adjustsInvoiceId`
+fields reserved on both invoice collections are **superseded and remain
+reserved, never activated**: the target reference lives on the credit-note
+document, pointing the correct direction, so nothing is ever written onto an
+invoice.
+
+**The first cross-document `get()` in a financial rules block.** Every earlier
+financial collection validates only its own document. A credit note inverts the
+app's safe-failure direction — every prior payable module failed safe by
+*keeping cost visible*, but a forged credit *understates* cost and flatters
+margin — and its target is a single scalar reference, so one `get()` can
+validate it. On create, on every draft edit, **and on the `draft → posted`
+transition** (the financial commit point — a stale draft must never post
+against a target that changed underneath it) the rules verify: the target exists
+in this project, is `posted`, matches the credit's `supplierId` and `currency`,
+carries **`retentionTotal` of zero**, and its `payableTotal` covers this
+credit's `grossTotal` (whole-cent comparison). The **cumulative** cap across
+sibling credit notes cannot be rules-enforced (no list/query/count); the app
+**hard-blocks** it — deliberately stricter than the warn-and-acknowledge posture
+of over-payment, because crediting more than a debt is not a judgement call —
+and Deferred Control 25 records what remains client-side.
+
+**Read-time validity gating (the safe failure mode).** `creditTargetException`
+is the single central gate every derivation funnels through, and a posted credit
+counts toward **no** figure unless it passes all of it. Two classes of check:
+
+- *Target* — still resolves to a counting supplier invoice, same supplier, same
+  currency, **zero retention**, and a `payableTotal` covering the credit's
+  gross. Rules check these at create, draft edit and post, but **never fire
+  again afterwards**, so a target cancelled or altered by a later direct SDK
+  call (supplier-invoice lifecycle is still client-enforced, DC 1/2) is caught
+  here.
+- *Document integrity* — the stored `subtotal`/`gstTotal`/`grossTotal` reconcile
+  to the credit's own `lineItems` in whole cents, each line's GST matches its
+  amount and tax code, each amount is positive, and every line's cost code
+  appears on the target invoice. **Rules cannot check any of this**: they cannot
+  iterate an array, so only the scalar header invariant is enforced server-side.
+  Without this gate a rules-valid document could store `grossTotal: 100` while
+  its lines claimed 50,000, reducing the payable by 100 and Actual by 50,000 at
+  once — an unbounded, silent understatement of cost in exactly the direction
+  this module must never fail toward.
+
+Anything failing is excluded **whole and never clamped** (a clamped forgery
+still lies) and surfaces in an exceptions panel: cost stays visible, which is
+the safe direction. The target-status check uses the counting statuses
+(`posted` + the deprecated forgeable `paid`), not `posted` alone, so a credit
+and its invoice can never disagree about whether the invoice's cost exists.
+
+⚠️ This gate protects **the figures this app renders**; it is not enforcement
+and does not repair the stored document. The cumulative sibling cap and
+concurrency remain unenforceable anywhere on the client (DC 25).
+
+**Retained invoices cannot be credited.** Crediting an invoice that withheld
+retention is ambiguous — does the credit come out of the payable slice or the
+retained slice? — and retention release is unmodelled. The target must carry
+`retentionTotal == 0`, enforced in the UI, in domain validation, **and by the
+rules `get()`**. This forecloses nothing: a future retention module can widen
+the rule with its own review.
+
+**Consequences.**
+
+- **Remaining Committed is deliberately NOT restored by a credit.** Credit lines
+  carry no `poLineIndex`, so commitment maturing still reads invoices only.
+  Between a credit and any corrected re-invoice, FFC is briefly understated by
+  the credited amount; the QS adjusts Uncommitted CTC if re-invoicing is
+  expected. Re-opening commitment is a possible future enhancement.
+- **Credit after full payment goes over-reconciled, honestly.** The invoice's
+  remaining payable goes negative, is excluded from ageing (never netted against
+  arrears), and is surfaced as *money recoverable from the supplier*. No refund
+  transaction is invented — `SP_DOC_TYPE.REFUND` stays reserved.
+- **A fully-credited unpaid invoice reads fully reconciled** — settlement by
+  credit is settlement; the paid and credited components stay separate columns.
+- **Voiding restores everything at the next render** with no reversal document
+  (the void reason is required, rules-enforced non-whitespace).
+- **Retargeting a draft is a void plus a new credit note** — the SCN sequence
+  gains an intentional gap, matching ADR-12's no-deletion posture.
+- **Client credit notes remain deferred.** When built, they must be a separate
+  collection (the ADR-23 split doctrine) and must never subtract from revenue a
+  second time — negative approved client variations already reduce the Current
+  Contract Sum.
+- Deferred: attachments (no Storage), an approval stage before posting,
+  line-index-level matching, free-standing credits, applying a credit as
+  payment against a future invoice, refunds, final-account linkage.
+
+## ADR-32: BOQ & Tender Foundation — Part 1: BOQ (measured schedule; null-rate unpriced; read-time budget comparison)
+
+*(ADR-28 Documents & Drawings, ADR-29 Project Timeline, ADR-30 Supplier
+Retention Release, and ADR-31 Supplier Credit Notes are above. Part 2 of this
+ADR — Tender Packages, Bids, Comparison, and Award — follows below; the two
+parts are deliberately independent, and nothing of Part 2 is implemented by
+Part 1.)*
+
+**Context.** Constrapp's commercial spine began at a number someone typed: a
+budget line is `costCodeId` + a lump-sum `budgeted`, with no record of the
+measured quantity, unit, or rate that produced it. The cost-code `unit` field
+sat unused by any financial document — a fossil of the missing measurement
+layer. The BOQ tab was a placeholder.
+
+**Decision.** One BOQ per project, represented as project-scoped
+`companies/{id}/projects/{id}/boqItems` — a flat register of measured items
+with **no header document** (mirroring `budgetLines`), random ids and **no
+counter** (a BOQ item is never quoted to a supplier or client, so ADR-5's
+rationale does not apply; `itemNumber` is a user-authored label like "2.1",
+`section` a free-text grouping). Each item: `description` (required),
+`quantity` (required, ≥ 0), `unit` (required; prefilled from the cost code's
+`unit`, editable), `rate` (**number ≥ 0 or null**), `amount` (**derived**
+quantity × rate; **null when rate is null**), mandatory `costCodeId` + frozen
+`costCodeName` snapshot (ADR-0a), currency audit snapshot, `revision: 1`,
+reserved `attachments: []`/`externalRefs: {}`, and full audit stamps.
+Lifecycle `active → void` (terminal, reasoned), **rules-enforced**, delete
+blocked — the two-state `cashFlowLines` shape, because a BOQ item has no
+financial commit point. Ex-GST throughout; GST enters at the PO.
+
+**Null means unpriced — never 0.** A BOQ is measured before it is priced.
+`rate: null` pairs with `amount: null` (the pairing is rules-enforced both
+ways); an unpriced item contributes nothing to any total, is counted in an
+explicit unpriced indicator, and **suppresses** the BOQ-vs-budget variance —
+headline and per-code — because a partial estimate must never manufacture a
+comparison. Zero is a *price* ("reviewed, nothing against this item"), exactly
+as a zero forecast input is a forecast (ADR-19).
+
+**The amount is derived and rules-enforced.** `amount == quantity × rate`
+compared in whole cents (`cents(v) = math.round(v * 100)`, the clientReceipts
+idiom — equivalent to a half-cent tolerance, so fractional quantities are
+fine). `lib/boq.js → boqLineAmount()` rounds through `lib/payments.js →
+toCents()`, which mirrors the rules exactly; **deliberately not `roundMoney`**,
+whose `Number.EPSILON` nudge diverges from `math.round` at exact half-cent
+float boundaries (1 × 1.005 → rules 1.00, roundMoney 1.01) and would make a
+client-valid write fail. A direct-SDK caller cannot store a priced amount that
+disagrees with its own quantity × rate.
+
+**The BOQ feeds no financial figure.** Budgeted, Committed, Actual, Invoiced,
+Forecast, Margin, and Cash Flow are all computed exactly as before, from the
+same sources as before (ADR-3/ADR-4 upheld). The only derived output is the
+read-time **BOQ vs Approved Budget** comparison on the BOQ page
+(`lib/boq.js → boqVsBudgetRows`), built with the `buildForecastRows` union
+discipline (codes never disappear; live names with snapshot fallbacks;
+inactive/unknown flagged, never hidden). Variance = Budgeted − BOQ (positive ⇒
+BOQ under budget, the ADR-19 sign). Nothing is stored, reconciled, or written
+back — the BOQ is not a second budget, and neither side validates the other.
+
+**Reads are restricted to financial roles** — the BOQ is the internal
+estimate; a subcontractor or client who can read rates prices against them.
+`super_admin` has no special powers (unchanged). Writes: `company_admin`,
+`project_manager`, `qs`.
+
+**Currency.** A **priced** item (including rate 0, including voided priced
+items — retained records carrying amounts, like a cancelled PO) is
+currency-lock evidence; a purely unpriced item is a measurement carrying no
+money and does not lock — the forecast-input precedent (ADR-21). The create
+transaction stages the ratchet atomically.
+
+**Deliberately deferred:** BOQ → Budget transfer (the placeholder's "one
+click" promise — it would be the first client transaction creating financial
+documents in another module, and budget lines cannot be deleted, so a
+double-transfer is unrecoverable without an idempotence design); estimating
+margin/overheads; multiple named/versioned BOQs (one BOQ per project in V1 —
+no header document to disagree with); manual takeoff linkage; attachments
+(Storage has no Security Rules); and everything tender-side. Server-side
+enforcement of cost-code reference validity, unit conventions, and duplicate
+detection is Deferred Control 26.
+
+**Consequences.** New `lib/boq.js` (pure), `hooks/useBoqItems.jsx`,
+`pages/project/ProjectBoq.jsx` (+ two page-local modals), one additive rules
+block, `monetaryLockReasons` gains priced-BOQ-item evidence, and the BOQ tab
+replaces its placeholder — label unchanged (the Tenders tab, added by Part 2,
+sits immediately after it). Unit suite
+173 → 219; rules suite 207 → 257. No migration — purely additive; no existing
+collection, hook, or derivation changed behaviour.
+
+## ADR-32: BOQ & Tender Foundation — Part 2: Tender (packages · manual bids · read-time comparison · award as a decision record; no stored totals)
+
+> **Numbering note.** ADR-28 (Documents & Drawings), ADR-29 (Project
+> Timeline), ADR-30 (Supplier Retention Release), ADR-31 (Supplier Credit
+> Notes), and Part 1 of this ADR (BOQ) are above. Part 2 is deliberately independent of Part 1: Tender V1 was designed
+> and built to work **without** BOQ (cost-code + free-text scope), and the
+> optional BOQ scope schedule remains a separate future step (see "Independence
+> & future BOQ integration" below).
+
+**Context.** The connected lifecycle (Drawing → … → Estimate → **Tender →
+Award** → Approved Budget → Commitment → …) had a hole between Estimate and
+Commitment: no record of what scope was put to market, who priced it, what
+they priced, or why the winner won. The award decision — the most consequential
+commercial decision on a cost code — lived in email. BOQ was implemented on a
+separate branch at the time, so Tender V1 was designed to work without
+`boqItems`.
+
+**Decision.** Two new project-scoped collections and one counter:
+
+- **`tenderPackages`** (`TP-0001` from `counters/tenderPackages`) — a named
+  scope of **≥1 selected cost codes + free-text scope**, lifecycle
+  `draft → issued → awarded`, with `draft|issued → cancelled`. Issuing
+  **freezes** name/description/scope/costCodes; while issued, only
+  `closingDate` and `notes` stay editable (a deliberate `hasOnly` carve-out —
+  extending an informational closing date must not force cancel-and-recreate).
+  Awarded and cancelled are **terminal**: no un-award/rescind flow in V1.
+- **`tenderBids`** — manual transcriptions of received bids, priced **per cost
+  code** within the package scope (ex-GST, **no GST fields** — tax is a
+  commitment-time concern), from **supplier/subcontractor contacts** with a
+  frozen `bidderName` snapshot. Two states, `received → void` — **no draft**:
+  a bid is a transcription of an external document, not an authored document
+  with a commit point (the cashFlowLines two-state precedent). Random ids, no
+  number, no counter. Project-level with a `tenderPackageId` reference (the
+  progressClaims→PO idiom), never a subcollection — one subscription serves
+  the register while rules still verify containment by `get()`.
+
+**The header-vs-lines decision (load-bearing): NO STORED TOTALS.** Bids store
+no `bidTotal`; packages store no `awardTotal`. Firestore rules cannot iterate
+or sum an array, so any stored header total would be an unverifiable second
+copy of the lines — the exact integrity defect previously identified in the
+Credit Notes design. Instead every figure passes through one **read-time
+validity gate** (`lib/tenders.js → assessBid`): a bid is valid only when every
+line has a real object shape, a non-empty in-scope `costCodeId`, string
+snapshot/description, and a finite numeric `amount ≥ 0` (zero is a legitimate
+price) — **and the resulting total is itself finite**, because finite lines can
+still sum beyond representable range and a non-finite total would otherwise
+pass as valid while rendering as "—". One malformed line invalidates the
+**whole bid** — total `null`, never a partial sum, never $0, never clamped —
+excluding it from the lowest-bid ranking, the budget comparison, the
+per-cost-code matrix, and the Awarded Bid Value while it stays visible and
+flagged. A direct-SDK caller can store malformed embedded lines **and can
+award such a bid** (rules verify the bid's identity and status but cannot read
+its lines, so the app's refusal to award it is UX only); the gate makes the
+resulting record **fail safely instead of being trusted** — the award value
+reads *unavailable*, and since an award writes no PO and no financial value,
+nothing downstream moves (Deferred Control 26).
+
+**Tender Comparison — read-time, and never "Bid Levelling".** Derived rows per
+package: derived total ex-GST, **Variance to Budget = Approved Budget − Bid**
+(positive = under budget — the app-wide sign convention), variance to lowest,
+whole-cent lowest ties, exclusions/notes, awarded flag, plus a per-cost-code
+matrix. When the package's cost codes have **no** budget lines the comparison
+reports *no budget* — it never compares against zero. Nothing is stored
+(ADR-3); void and invalid bids are excluded from every calculation.
+
+**Award is a commercial decision record ONLY.** `issued → awarded` stores
+`awardedBidId`, a rules-matched `awardedBidderName` snapshot, `awardNotes`, and
+stamps — nothing else. It creates **no Purchase Order** and writes **no
+budget, commitment, actual, invoiced, forecast, margin, or cash-flow figure**.
+Rules `get()` the bid and enforce: exists in this project, belongs to this
+package, is `received`, name snapshot matches — and the branch's
+`resource.data.status == 'issued'` requirement makes a **second award
+impossible** (Firestore serialises writes per document). Ending the package's
+issued state is also what **freezes every bid** (all bid writes require the
+parent to be `issued`), which is why the displayed **Awarded Bid Value** can be
+derived from the frozen bid's lines with no stored copy. **No inferred
+"awarded but not committed" arithmetic exists**: V1 has no Award → PO linkage,
+and netting awards against POs by cost code is wrong whenever packages share
+cost codes or POs span packages — the value is labelled a tender decision
+value only. "Raise PO from Award" is a separate future feature.
+
+**Closing date is INFORMATIONAL ONLY.** No trusted backend or server clock
+exists, so nothing blocks a late bid — in the app or by direct SDK — and the
+UI says so wherever the date appears. Rules validate shape only.
+
+**Privacy & roles.** Both collections are readable and writable by
+`company_admin` / `project_manager` / `qs` only — a bid **is competitor
+pricing**, so `subcontractor`/`client` read nothing, and `super_admin` has no
+special power (rules-tested). **QS may award** (product decision). Bidder
+contacts are rules-verified at create — existence, supplier/subcontractor
+type, and name snapshot via one `get()` — deliberately exceeding the
+supplierPayments precedent because a fabricated bidder in a competitive record
+is worth the extra read.
+
+**Currency.** Packages carry no amounts and no `currency` field and never lock
+the project currency; a **bid** is monetary evidence (including void — a
+retained audit record), so `createTenderBid` stages the ratchet in the same
+transaction (ADR-21) and `monetaryLockReasons` gains `tenderBids`. Award adds
+no lock logic: it stores no amount, and an awarded package already has a bid.
+
+**Independence & future BOQ integration.** V1 uses no Firebase Storage, no
+Cloud Functions, no new dependencies, no migration, and nothing from the BOQ
+foundation. Now that BOQ has merged, the intended extension is an **optional
+frozen scope schedule at issue** (`scopeSchedule` snapshotted from BOQ items)
+as a separate follow-up feature with its own design and security review —
+additive, absent-field-tolerant, and never required for a cost-code/free-text
+package. Tender records must remain valid without it.
+
+**Alternatives rejected.** Storing `bidTotal`/`awardTotal` (unverifiable —
+the Credit Notes lesson); bids as a package subcollection (collection-group
+rules weaken tenant scoping; the claims idiom already fits); a bid draft state
+(a transcription has no commit point); lump-sum-only bids (breaks the
+cost-code spine) and BOQ-item bids (no BOQ on main); deterministic
+bidder-keyed bid ids for uniqueness (blocks legitimate re-bids after void);
+automatic PO creation on award (award is a decision, commitment is a separate
+deliberate act); an inferred awarded-vs-committed exposure (wrong under
+shared cost codes); enforcing closure of tenders at the closing date (no
+trusted clock — pretending would overclaim).
+
+**Consequences.** The tender trail (scope → bidders → prices → decision) is
+durable, auditable, and financially inert; comparison honesty degrades safely
+under malformed data; and the award's derived value is exactly as trustworthy
+as the rules-frozen bid behind it. The costs are accepted and documented:
+per-line integrity, containment, bidder uniqueness, and closing behaviour are
+client-side only (Deferred Control 26), and a mistaken award has no in-app
+remedy in V1 (rescission is future work with its own audit design).

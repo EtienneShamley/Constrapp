@@ -302,8 +302,10 @@ export function monetaryLockReasons({
   clientReceipts = [],
   supplierPayments = [],
   variations = [],
+  tenderBids = [],
   forecastLines = [],
   cashFlowLines = [],
+  boqItems = [],
   baseline = null,
 } = {}) {
   const reasons = []
@@ -330,6 +332,11 @@ export function monetaryLockReasons({
   // retained audit record carrying that amount — exactly like a cancelled PO.
   if (supplierPayments.length) reasons.push(plural(supplierPayments.length, 'supplier payment', 'supplier payments'))
   if (variations.length)       reasons.push(plural(variations.length, 'variation', 'variations'))
+  // Every tender bid counts, including voided ones: a bid records ex-GST
+  // amounts in this project's currency, and a voided bid is a retained audit
+  // record carrying those amounts — exactly like a cancelled PO. Tender
+  // PACKAGES never count: they hold scope and dates, no amounts.
+  if (tenderBids.length)       reasons.push(plural(tenderBids.length, 'tender bid', 'tender bids'))
   // Every cash-flow timing line counts, including voided ones: a line records
   // an expected gross cash amount in this project's currency, and a voided line
   // is retained forecast history carrying that amount — exactly like a
@@ -342,6 +349,16 @@ export function monetaryLockReasons({
     (l) => l?.uncommittedCostToComplete !== null && l?.uncommittedCostToComplete !== undefined,
   ).length
   if (forecastInputs) reasons.push(plural(forecastInputs, 'forecast input', 'forecast inputs'))
+
+  // A BOQ item with `rate: null` is measured but UNPRICED and carries no money
+  // (a quantity is a measurement, not an amount) — only an authored rate
+  // (including 0) counts, exactly the forecast-input reasoning above. Voided
+  // priced items still count: a voided item is a retained record carrying an
+  // amount, exactly like a cancelled PO.
+  const pricedBoqItems = boqItems.filter(
+    (i) => i?.rate !== null && i?.rate !== undefined,
+  ).length
+  if (pricedBoqItems) reasons.push(plural(pricedBoqItems, 'priced BOQ item', 'priced BOQ items'))
 
   // An absent or empty baseline carries no money; an established one does.
   if (typeof baseline?.originalContractValue === 'number') reasons.push('a commercial baseline')

@@ -12,6 +12,7 @@ import { useCostCodes } from '../../hooks/useCostCodes'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
+import { useSupplierCreditNotes } from '../../hooks/useSupplierCreditNotes'
 import { useVariations } from '../../hooks/useVariations'
 import { useForecastLines } from '../../hooks/useForecastLines'
 import { useContacts } from '../../hooks/useContacts'
@@ -20,6 +21,7 @@ import { roundMoney } from '../../lib/purchaseOrders'
 import {
   isFinancialRole, isBaselineEstablished, projectForecastTotals, computeMargin,
 } from '../../lib/margin'
+import { CREDIT_READ_ERROR_NOTICE } from '../../lib/supplierCreditNotes'
 
 const inputCls = 'w-full bg-brand-bg border border-brand-border rounded-lg px-2.5 py-1.5 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
 const labelCls = 'block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1'
@@ -210,6 +212,7 @@ export default function ProjectCommercial() {
   const { purchaseOrders }   = usePurchaseOrders(mid)
   const { progressClaims }   = useProgressClaims(mid)
   const { supplierInvoices } = useSupplierInvoices(mid)
+  const { supplierCreditNotes, supplierCreditNotesError } = useSupplierCreditNotes(mid)
   const { variations }       = useVariations(mid)
   const { forecastLines }    = useForecastLines(mid)
   const { contacts }         = useContacts()
@@ -222,8 +225,8 @@ export default function ProjectCommercial() {
   )
 
   const forecastTotals = useMemo(
-    () => projectForecastTotals({ costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines }),
-    [costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines],
+    () => projectForecastTotals({ costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines }),
+    [costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines],
   )
 
   const m = useMemo(
@@ -263,6 +266,12 @@ export default function ProjectCommercial() {
 
   return (
     <div>
+      {supplierCreditNotesError && (
+        <Card className="mb-3.5">
+          <p className="text-[13px] font-bold text-brand-amber m-0">Supplier Credit Notes unavailable</p>
+          <p className="m-0 mt-1 text-[12px] text-brand-muted">{CREDIT_READ_ERROR_NOTICE}</p>
+        </Card>
+      )}
       {/* ── Margin summary ─────────────────────────────────────────────────── */}
       <Card className="mb-3.5">
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">

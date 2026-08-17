@@ -172,6 +172,165 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // BOQ items — the project's measured Bill of Quantities: description,
+    // quantity, unit, cost code (mandatory spine, frozen name snapshot), and —
+    // once priced — a rate with a DERIVED amount (ADR-32 Part 1).
+    //
+    // They are preconstruction records, not transactions: no counter, no
+    // sequential number, no posted status (`itemNumber` is a user-authored
+    // label, never a sequence). They feed NO financial figure — Budgeted,
+    // Committed, Actual, Invoiced, Forecast, Margin, and Cash Flow are all
+    // unreadable from and unwritable by a BOQ item, and the BOQ-vs-budget
+    // comparison is derived at read time in lib/boq.js, never stored.
+    //
+    // ⚠️ NULL MEANS UNPRICED. `rate: null` pairs with `amount: null` — a BOQ
+    // is measured before it is priced, and 0 would silently mean "priced at
+    // nothing". The pairing is enforced both ways below.
+    //
+    // THE ONE ARITHMETIC GUARANTEE rules CAN give: a priced item may never
+    // carry an amount that disagrees with its own quantity × rate. Compared in
+    // whole cents via math.round (the clientReceipts cents() idiom — exactly
+    // equivalent to a half-cent tolerance, so fractional quantities like
+    // 12.5 m³ are fine while any discrepancy of one cent or more fails).
+    // lib/boq.js → boqLineAmount() rounds through lib/payments.js → toCents(),
+    // which mirrors this precisely, so a write the client considers valid is
+    // never rejected here (or vice versa).
+    //
+    // Reads: restricted to internal financial roles — a BOQ is the project's
+    // internal estimate, so subcontractor and client users must NOT read it
+    // (a bidder who can read the estimate prices against it). A future tender
+    // or bidder-facing surface must never expose BOQ rates at all.
+    // Delete: blocked — voiding is a status change; voided items are retained
+    // BOQ history (and currency-lock evidence when priced).
+    //
+    // Lifecycle is RULES-ENFORCED, the two-state cashFlowLines shape (a BOQ
+    // item has no financial commit point):
+    //   · create only with status 'active', null void stamps,
+    //     createdBy == caller, createdAt == server request time
+    //   · active edits may change content (including pricing an unpriced item
+    //     and un-pricing a priced one) but not the status, must satisfy the
+    //     full shape, and may not forge a void stamp
+    //   · active -> void touches only status/voidedAt/voidedBy/voidReason/
+    //     updatedAt/updatedBy, with voidedBy == caller, voidedAt == server
+    //     request time, and a NON-WHITESPACE voidReason
+    //   · void is terminal; there is no void -> active and no void edit
+    //
+    // What is NOT enforced here (client-side only — NEVER describe as
+    // enforced; see docs/SECURITY.md → Deferred Control 26):
+    //   · that costCodeId names a real, active cost code in this company —
+    //     validated by SHAPE only (bounded non-empty string)
+    //   · that unit matches the cost code's unit, or any unit convention
+    //   · duplicate items (same code/section/itemNumber) across siblings —
+    //     rules have no list, query, or count
+    //   · that the BOQ agrees with the Approved Budget — deliberately none:
+    //     the two are independent by design and only COMPARED at read time
+    match /companies/{companyId}/projects/{projectId}/boqItems/{itemId} {
+      function financialMember() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // The document identity that no update of any kind may rewrite.
+      function corePreserved() {
+        return request.resource.data.currency  == resource.data.currency
+            && request.resource.data.createdAt == resource.data.createdAt
+            && request.resource.data.createdBy == resource.data.createdBy
+            && request.resource.data.revision  == resource.data.revision;
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // Whole-cent comparison (see block comment).
+      function cents(v) {
+        return math.round(v * 100);
+      }
+      // rate and amount travel together: both null (unpriced), or both
+      // non-negative numbers with amount == quantity × rate to the cent.
+      function pricingValid() {
+        return (request.resource.data.rate == null
+                && request.resource.data.amount == null)
+            || (request.resource.data.rate is number
+                && request.resource.data.rate >= 0
+                && request.resource.data.amount is number
+                && request.resource.data.amount >= 0
+                && cents(request.resource.data.quantity * request.resource.data.rate)
+                   == cents(request.resource.data.amount));
+      }
+      // Shape required of every stored ACTIVE state (create and edit alike).
+      function shapeValid() {
+        return request.resource.data.revision == 1
+            && request.resource.data.itemNumber is string
+            && request.resource.data.itemNumber.size() <= 40
+            && request.resource.data.section is string
+            && request.resource.data.description is string
+            && request.resource.data.description.trim().size() > 0
+            && request.resource.data.unit is string
+            && request.resource.data.unit.size() > 0
+            && request.resource.data.unit.size() <= 40
+            // A measurement, not money — non-negative; zero is a real
+            // measured quantity.
+            && request.resource.data.quantity is number
+            && request.resource.data.quantity >= 0
+            && pricingValid()
+            // Cost-code spine: MANDATORY on every item (frozen name snapshot).
+            && request.resource.data.costCodeId is string
+            && request.resource.data.costCodeId.size() > 0
+            && request.resource.data.costCodeName is string
+            && request.resource.data.costCodeName.size() > 0
+            && request.resource.data.notes is string
+            && request.resource.data.currency is string
+            && request.resource.data.currency.matches('^[A-Z]{3}$');
+      }
+
+      allow read: if financialMember();
+
+      allow create: if financialMember()
+                  && shapeValid()
+                  && request.resource.data.status == 'active'
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  // Void stamps cannot be forged at creation.
+                  && request.resource.data.voidedAt == null
+                  && request.resource.data.voidedBy == null;
+
+      allow update: if financialMember() && corePreserved() && updateStamped() && (
+                    // (a) ACTIVE EDIT — content (measurement, pricing, cost
+                    //     code, labels) is freely editable while active, but
+                    //     the status may not move and no void stamp may be
+                    //     forged.
+                    (
+                      resource.data.status == 'active'
+                      && request.resource.data.status == 'active'
+                      && shapeValid()
+                      && request.resource.data.voidedAt == resource.data.voidedAt
+                      && request.resource.data.voidedBy == resource.data.voidedBy
+                    )
+                    ||
+                    // (b) ACTIVE -> VOID (terminal). Voiding is the only exit:
+                    //     it may touch nothing but the void audit fields, so a
+                    //     voided item is immutable retained history.
+                    (
+                      resource.data.status == 'active'
+                      && request.resource.data.status == 'void'
+                      && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.voidedBy == request.auth.uid
+                      && request.resource.data.voidedAt == request.time
+                      && request.resource.data.voidReason is string
+                      && request.resource.data.voidReason.trim().size() > 0
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
     // Purchase Orders — project-scoped supplier commitments against company cost codes.
     // Reads: any authenticated user belonging to this company (subcontractors have PO read access).
     // Create/update: company_admin, project_manager, or qs.
@@ -801,6 +960,274 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Supplier Credit Notes — project-scoped REDUCTION records against exactly
+    // one POSTED Supplier Invoice (over-claimed quantities, rejected work,
+    // back-charges, negotiated reductions). SCN-#### from the company-wide
+    // counters/supplierCreditNotes document (covered by the counters block
+    // below — no separate rule needed).
+    //
+    // Reads: restricted to internal financial roles — credit notes expose
+    // supplier pricing and the project's cost corrections, so subcontractor and
+    // client users must NOT read them.
+    // Delete: blocked — voiding is a status change; credit notes are audit
+    // records (ADR-12).
+    //
+    // Lifecycle is RULES-ENFORCED, following clientInvoices/clientReceipts/
+    // supplierPayments (the ADR-22 standard):
+    //   · create only with status 'draft', docType 'credit_note', null
+    //     lifecycle stamps, createdBy == caller, createdAt == server request
+    //     time
+    //   · draft edits may change content but not the status, must satisfy the
+    //     full shape AND the target checks, and may not forge a lifecycle stamp
+    //   · the TARGET IS FROZEN AT CREATION: supplierInvoiceId and its snapshot
+    //     fields (invoiceNumber, supplierInvoiceNumber, supplierId,
+    //     supplierName) are core-preserved on every update — retargeting is a
+    //     void plus a new credit note
+    //   · posting is a SEPARATE operation touching only
+    //     status/postedAt/postedBy/updatedAt/updatedBy, with postedBy == caller
+    //     and postedAt == server request time
+    //   · voiding (from draft or posted) touches only
+    //     status/voidedAt/voidedBy/voidReason/updatedAt/updatedBy, with
+    //     voidedBy == caller, voidedAt == server request time, and a voidReason
+    //     containing NON-WHITESPACE text
+    //   · posted credit-note content is consequently immutable — voiding is the
+    //     only permitted update
+    //   · void is terminal; there is no posted -> draft and no void -> anything
+    //
+    // ⚠️ FIRST CROSS-DOCUMENT get() IN A FINANCIAL BLOCK. Every earlier
+    // financial collection validates only its own document (the deliberate
+    // posture recorded on supplierPayments). A credit note is different: a
+    // forged credit ERASES cost and flatters margin — the one direction the
+    // payable modules must never fail toward — and its target is a SINGLE
+    // scalar reference, not an array, so ONE get() can validate it. What the
+    // target get() enforces on create, on every draft edit, AND on the
+    // draft -> posted transition (the financial commit point — a stale draft
+    // must never post against a target that has since changed):
+    //   · the target supplier invoice EXISTS in this project
+    //   · its status is 'posted' (the financial commit point — not draft,
+    //     approved, cancelled, or the deprecated forgeable 'paid')
+    //   · its supplierId equals the credit note's frozen supplierId
+    //   · its currency equals the credit note's currency
+    //   · its retentionTotal is ZERO — retained invoices cannot be credited in
+    //     this foundation (crediting them is ambiguous while retention release
+    //     is unmodelled)
+    //   · THIS credit note's grossTotal does not exceed the target's
+    //     payableTotal (whole-cent comparison)
+    //
+    // What is NOT enforced here (client-side only — NEVER describe as
+    // enforced; see docs/SECURITY.md → Deferred Control 25):
+    //   · the SHAPE OF EACH lineItems[] ELEMENT — rules cannot iterate or index
+    //     into an array, so costCodeId / costCodeName / description / amount /
+    //     taxCode / gstAmount are unverified, as are the > 0 rule on each
+    //     amount and the cost-codes-must-appear-on-the-target-invoice rule
+    //   · subtotal/gstTotal MATCHING the sum of lineItems[] — same limitation.
+    //     What IS enforced is the SCALAR header invariant below. A document
+    //     whose headers and lines disagree is therefore WRITEABLE; the app
+    //     excludes it from every figure at READ TIME and reports it as an
+    //     exception (lib/supplierCreditNotes.js → creditTargetException). That
+    //     read-time gate is an additional correctness guard for what this app
+    //     renders — it is NOT a substitute for these rules and protects nothing
+    //     outside the app
+    //   · the CUMULATIVE credit cap: rules have no list, query, or count, so no
+    //     rule can sum SIBLING credit notes against the same invoice. The
+    //     app HARD-BLOCKS a cumulative total above payableTotal, but two users
+    //     can post credits against the same invoice concurrently and both
+    //     writes succeed — only the single-document cap above is guaranteed
+    //   · the target staying valid AFTER posting — supplier-invoice lifecycle
+    //     is still client-enforced (Deferred Controls 1 and 2), so a direct SDK
+    //     call can cancel or mutate the target after this credit is posted and
+    //     no rule will fire again. The app answers that at read time by
+    //     excluding the credit from every figure and surfacing it as an
+    //     exception (safe failure: cost stays visible)
+    //   · GST correctness per line (per-line tax codes make a flat check
+    //     unreliable — the ADR-21 no-enum precedent)
+    //   · company-wide SCN-number uniqueness independently of the client
+    //     transaction (the counter is client-writable — Deferred Control 6)
+    //   · creator != poster segregation (Deferred Control 4)
+    //   · BUSINESS TRUTH — that the supplier genuinely issued the credit
+    match /companies/{companyId}/projects/{projectId}/supplierCreditNotes/{creditNoteId} {
+      function financialMember() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // The document identity that no update of any kind may rewrite. Wider
+      // than the cash collections: the TARGET REFERENCE and its supplier
+      // snapshots are frozen from creation, so the get()-validated link can
+      // never be silently repointed at a different invoice or supplier.
+      function corePreserved() {
+        return request.resource.data.creditNumber          == resource.data.creditNumber
+            && request.resource.data.currency              == resource.data.currency
+            && request.resource.data.createdAt             == resource.data.createdAt
+            && request.resource.data.createdBy             == resource.data.createdBy
+            && request.resource.data.docType               == resource.data.docType
+            && request.resource.data.revision              == resource.data.revision
+            && request.resource.data.supplierInvoiceId     == resource.data.supplierInvoiceId
+            && request.resource.data.invoiceNumber         == resource.data.invoiceNumber
+            && request.resource.data.supplierInvoiceNumber == resource.data.supplierInvoiceNumber
+            && request.resource.data.supplierId            == resource.data.supplierId
+            && request.resource.data.supplierName          == resource.data.supplierName;
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // MONEY IS DECIMAL; IEEE-754 IS NOT. Rules numbers are doubles, so an
+      // exact `subtotal + gstTotal == grossTotal` REJECTS legitimate cent
+      // values: 0.10 + 0.20 evaluates to 0.30000000000000004, which is not
+      // 0.30. Both sides are therefore compared as WHOLE CENTS via math.round().
+      //
+      // This is a REPRESENTATION FIX, NOT A WEAKENED INVARIANT: it is exactly
+      // equivalent to a half-cent tolerance, so any discrepancy of one cent or
+      // more still fails. lib/payments.js → toCents() mirrors this precisely, so
+      // a write the client considers valid is never rejected here (or vice versa).
+      function cents(v) {
+        return math.round(v * 100);
+      }
+      // The header arithmetic guarantee rules CAN give: the stored totals must
+      // agree with each other (the lines themselves are unverifiable).
+      function headerInvariant() {
+        return request.resource.data.subtotal is number
+            && request.resource.data.subtotal > 0
+            && request.resource.data.gstTotal is number
+            && request.resource.data.gstTotal >= 0
+            && request.resource.data.grossTotal is number
+            && request.resource.data.grossTotal > 0
+            && cents(request.resource.data.subtotal + request.resource.data.gstTotal)
+               == cents(request.resource.data.grossTotal);
+      }
+      // The target supplier invoice this credit note reduces. Repeated access
+      // to the same document within one evaluation is a single billed read.
+      function targetInvoice() {
+        return get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/supplierInvoices/$(request.resource.data.supplierInvoiceId)).data;
+      }
+      // The single-document target checks (see the block comment above).
+      function targetValid() {
+        return exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/supplierInvoices/$(request.resource.data.supplierInvoiceId))
+            && targetInvoice().status == 'posted'
+            && targetInvoice().supplierId == request.resource.data.supplierId
+            && targetInvoice().currency == request.resource.data.currency
+            && targetInvoice().retentionTotal is number
+            && cents(targetInvoice().retentionTotal) == 0
+            && targetInvoice().payableTotal is number
+            && cents(request.resource.data.grossTotal) <= cents(targetInvoice().payableTotal);
+      }
+      // Shape required of every stored state (create and draft edit alike).
+      function shapeValid() {
+        return request.resource.data.docType == 'credit_note'
+            && request.resource.data.creditNumber is string
+            && request.resource.data.revision is number
+            && request.resource.data.supplierInvoiceId is string
+            && request.resource.data.supplierInvoiceId.size() > 0
+            && request.resource.data.invoiceNumber is string
+            && request.resource.data.supplierInvoiceNumber is string
+            // supplierId is frozen FROM THE TARGET INVOICE, which may
+            // legitimately carry null from before the Contacts module — so
+            // null is allowed here (unlike supplierPayments), but the get()
+            // equality in targetValid() still holds: null must match null.
+            && (request.resource.data.supplierId == null
+                || (request.resource.data.supplierId is string
+                    && request.resource.data.supplierId.size() > 0))
+            && request.resource.data.supplierName is string
+            && request.resource.data.supplierName.size() > 0
+            && request.resource.data.supplierCreditReference is string
+            && request.resource.data.creditDate is string
+            && request.resource.data.creditDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+            // A credit without a stated cause is an audit hole — the reason is
+            // authored content, required NON-WHITESPACE at every stored state.
+            && request.resource.data.reason is string
+            && request.resource.data.reason.trim().size() > 0
+            && request.resource.data.notes is string
+            && request.resource.data.currency is string
+            && request.resource.data.currency.matches('^[A-Z]{3}$')
+            && request.resource.data.lineItems is list
+            && request.resource.data.lineItems.size() >= 1
+            && request.resource.data.lineItems.size() <= 100
+            && headerInvariant();
+      }
+
+      allow read: if financialMember();
+
+      allow create: if financialMember()
+                  && shapeValid()
+                  && targetValid()
+                  && request.resource.data.status == 'draft'
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  // Lifecycle stamps cannot be forged at creation.
+                  && request.resource.data.postedAt == null
+                  && request.resource.data.postedBy == null
+                  && request.resource.data.voidedAt == null
+                  && request.resource.data.voidedBy == null;
+
+      allow update: if financialMember() && corePreserved() && updateStamped() && (
+                    // (a) DRAFT EDIT — content (date, reason, reference, lines,
+                    //     totals, notes) is freely editable while draft, but
+                    //     the frozen target must still validate (the amounts
+                    //     changed, so the payable cap is re-checked), the
+                    //     status may not move, and no lifecycle stamp may be
+                    //     forged.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'draft'
+                      && shapeValid()
+                      && targetValid()
+                      && request.resource.data.postedAt == resource.data.postedAt
+                      && request.resource.data.postedBy == resource.data.postedBy
+                      && request.resource.data.voidedAt == resource.data.voidedAt
+                      && request.resource.data.voidedBy == resource.data.voidedBy
+                    )
+                    ||
+                    // (b) DRAFT -> POSTED. A separate operation carrying no
+                    //     content change whatsoever — the target and totals
+                    //     that were validated are the ones committed.
+                    //
+                    //     ⚠️ THE TARGET IS RE-VALIDATED HERE. Posting is the
+                    //     FINANCIAL COMMIT POINT: it is the moment this document
+                    //     starts reducing Invoiced, Actual and the invoice's
+                    //     remaining payable. Validating the target only at
+                    //     create/draft-edit would leave a window in which the
+                    //     target is cancelled, has retention added, or has its
+                    //     payableTotal reduced by a direct SDK call (supplier-
+                    //     invoice lifecycle is still client-enforced — Deferred
+                    //     Controls 1 and 2) and the stale draft then posts into
+                    //     financial activity unchecked. Costs one extra document
+                    //     read per post.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'posted'
+                      && changedKeys().hasOnly(['status', 'postedAt', 'postedBy', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.postedBy == request.auth.uid
+                      && request.resource.data.postedAt == request.time
+                      && targetValid()
+                    )
+                    ||
+                    // (c) DRAFT|POSTED -> VOID (terminal). This branch is what
+                    //     makes a POSTED credit note immutable: voiding is the
+                    //     only permitted update, and it may touch nothing else.
+                    //     Voiding needs no reversal document — every net figure
+                    //     is derived at read time, so it restores immediately.
+                    (
+                      (resource.data.status == 'draft' || resource.data.status == 'posted')
+                      && request.resource.data.status == 'void'
+                      && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.voidedBy == request.auth.uid
+                      && request.resource.data.voidedAt == request.time
+                      && request.resource.data.voidReason is string
+                      && request.resource.data.voidReason.trim().size() > 0
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
     // Cash Flow timing lines — AUTHORED monthly forecast inputs for the Cash
     // Flow view: an expected GROSS cash amount in a chosen month, optionally
     // representing an ex-GST source value (completeness tracking only). They
@@ -940,6 +1367,881 @@ service cloud.firestore {
                     //     voided line is immutable retained history.
                     (
                       resource.data.status == 'active'
+                      && request.resource.data.status == 'void'
+                      && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.voidedBy == request.auth.uid
+                      && request.resource.data.voidedAt == request.time
+                      && request.resource.data.voidReason is string
+                      && request.resource.data.voidReason.trim().size() > 0
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
+    // Tender Packages — project-scoped tender scope records: a named package of
+    // selected cost codes + free-text scope put to market, numbered TP-#### from
+    // the company-wide counters/tenderPackages document (covered by the counters
+    // block below — no separate rule needed). A package holds NO amounts and NO
+    // currency field — the money lives on Tender Bids.
+    //
+    // Reads: restricted to internal financial roles — a package reveals what is
+    // out to tender and, beside its bids, competitor pricing context, so
+    // subcontractor and client users must NOT read it. A bidder portal is
+    // separate, future work (Deferred Control 10 posture).
+    // Delete: blocked — cancellation is a status change; packages are the audit
+    // trail of the award decision.
+    //
+    // Lifecycle is RULES-ENFORCED (the clientInvoices standard, ADR-22):
+    //   · create only with status 'draft', revision 1, ≥1 cost code, null
+    //     lifecycle stamps and award/cancel fields, createdBy == caller,
+    //     createdAt == server request time
+    //   · draft edits may change commercial content but not the status, and may
+    //     not forge stamps or award/cancel fields
+    //   · draft -> issued is a SEPARATE stamp-only operation — issuing FREEZES
+    //     name/description/scope/costCodes
+    //   · issued edits may touch ONLY closingDate and notes (the deliberate
+    //     carve-out: extending an informational closing date is routine and must
+    //     not force cancel-and-recreate)
+    //   · issued -> awarded may touch only the award fields, requires
+    //     awardedBy == caller and awardedAt == server request time, and — via
+    //     get() on the bid document — that the awarded bid EXISTS in THIS
+    //     project, BELONGS to this package, is RECEIVED (not void), and that
+    //     awardedBidderName equals the bid's own bidderName snapshot. Because
+    //     this branch requires resource.data.status == 'issued', a SECOND award
+    //     is rejected: Firestore serialises writes per document, so the loser of
+    //     a concurrent-award race evaluates against the already-awarded state
+    //   · draft|issued -> cancelled touches only the cancel fields, with a
+    //     NON-WHITESPACE cancelReason
+    //   · awarded and cancelled are terminal
+    //
+    // ⚠️ NO STORED TOTALS. There is deliberately NO awardTotal (and bids store
+    // no bidTotal): rules cannot iterate or sum an embedded array, so a stored
+    // header total would be an unverifiable second copy of the lines (the
+    // Credit Notes header-vs-lines problem). The award display value is derived
+    // at read time from the awarded bid's lineItems, which THIS block freezes by
+    // ending the parent's 'issued' state (see tenderBids below).
+    //
+    // What is NOT enforced here (client-only — never describe as enforced; see
+    // docs/SECURITY.md → Deferred Control 26):
+    //   · the SHAPE OF EACH costCodes[] ELEMENT — rules cannot iterate an
+    //     array, so costCodeId/costCodeName pairs are unverified beyond the
+    //     list's existence and size
+    //   · that each costCodeId names a REAL, ACTIVE company cost code
+    //   · that closingDate has passed or not — INFORMATIONAL ONLY by design;
+    //     nothing anywhere blocks a bid after the closing date
+    //   · that the awarded bid's line items are WELL-FORMED — the award rule
+    //     verifies package/status/identity via get(), but cannot iterate the
+    //     bid's lineItems; the client refuses to award a malformed bid and the
+    //     read-time validity gate (lib/tenders.js → assessBid) makes a forged
+    //     one fail safely rather than be trusted
+    match /companies/{companyId}/projects/{projectId}/tenderPackages/{packageId} {
+      function financialMember() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // The document identity that no update of any kind may rewrite.
+      function corePreserved() {
+        return request.resource.data.tenderNumber == resource.data.tenderNumber
+            && request.resource.data.createdAt    == resource.data.createdAt
+            && request.resource.data.createdBy    == resource.data.createdBy
+            && request.resource.data.revision     == resource.data.revision;
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // '' (no closing date) or a YYYY-MM-DD shape. That the date is future,
+      // past, or sane is NOT checked — it is informational only.
+      function closingDateValid() {
+        return request.resource.data.closingDate == ''
+            || (request.resource.data.closingDate is string
+                && request.resource.data.closingDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'));
+      }
+      // Shape required of every stored draft state (create and draft edit).
+      function shapeValid() {
+        return request.resource.data.tenderNumber is string
+            && request.resource.data.tenderNumber.size() > 0
+            && request.resource.data.revision == 1
+            && request.resource.data.name is string
+            && request.resource.data.name.trim().size() > 0
+            && request.resource.data.description is string
+            && request.resource.data.scope is string
+            && request.resource.data.notes is string
+            // ≥1 cost code — the cost-code spine; element shape is client-only.
+            && request.resource.data.costCodes is list
+            && request.resource.data.costCodes.size() >= 1
+            && request.resource.data.costCodes.size() <= 100
+            && closingDateValid();
+      }
+      // The awarded bid this award update points at.
+      function awardedBid() {
+        return get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/tenderBids/$(request.resource.data.awardedBidId)).data;
+      }
+
+      allow read: if financialMember();
+
+      allow create: if financialMember()
+                  && shapeValid()
+                  && request.resource.data.status == 'draft'
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  // Lifecycle stamps and award/cancel fields cannot be forged
+                  // at creation.
+                  && request.resource.data.issuedAt == null
+                  && request.resource.data.issuedBy == null
+                  && request.resource.data.awardedAt == null
+                  && request.resource.data.awardedBy == null
+                  && request.resource.data.cancelledAt == null
+                  && request.resource.data.cancelledBy == null
+                  && request.resource.data.awardedBidId == null
+                  && request.resource.data.awardedBidderName == null
+                  && request.resource.data.awardNotes == ''
+                  && request.resource.data.cancelReason == '';
+
+      allow update: if financialMember() && corePreserved() && updateStamped() && (
+                    // (a) DRAFT EDIT — commercial content (name, description,
+                    //     scope, costCodes, closingDate, notes) is freely
+                    //     editable while draft, but the status may not move and
+                    //     no stamp or award/cancel field may be forged.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'draft'
+                      && shapeValid()
+                      && request.resource.data.issuedAt == resource.data.issuedAt
+                      && request.resource.data.issuedBy == resource.data.issuedBy
+                      && request.resource.data.awardedAt == resource.data.awardedAt
+                      && request.resource.data.awardedBy == resource.data.awardedBy
+                      && request.resource.data.cancelledAt == resource.data.cancelledAt
+                      && request.resource.data.cancelledBy == resource.data.cancelledBy
+                      && request.resource.data.awardedBidId == resource.data.awardedBidId
+                      && request.resource.data.awardedBidderName == resource.data.awardedBidderName
+                      && request.resource.data.awardNotes == resource.data.awardNotes
+                      && request.resource.data.cancelReason == resource.data.cancelReason
+                    )
+                    ||
+                    // (b) DRAFT -> ISSUED. A separate stamp-only operation
+                    //     carrying no content change whatsoever — the scope that
+                    //     was reviewed is the scope that goes to market, and it
+                    //     freezes here.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'issued'
+                      && changedKeys().hasOnly(['status', 'issuedAt', 'issuedBy', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.issuedBy == request.auth.uid
+                      && request.resource.data.issuedAt == request.time
+                    )
+                    ||
+                    // (c) ISSUED EDIT — the closingDate/notes carve-out ONLY.
+                    //     Commercial scope (name, description, scope, costCodes)
+                    //     stays frozen; extending an informational closing date
+                    //     must not force cancel-and-recreate.
+                    (
+                      resource.data.status == 'issued'
+                      && request.resource.data.status == 'issued'
+                      && changedKeys().hasOnly(['closingDate', 'notes', 'updatedAt', 'updatedBy'])
+                      && closingDateValid()
+                      && request.resource.data.notes is string
+                    )
+                    ||
+                    // (d) ISSUED -> AWARDED (terminal). The decision record:
+                    //     which received bid on THIS package won. The bid get()
+                    //     is what stops awarding a nonexistent bid, another
+                    //     package's bid, a void bid, or a forged bidder-name
+                    //     snapshot; requiring the CURRENT status to be 'issued'
+                    //     is what stops a second award.
+                    (
+                      resource.data.status == 'issued'
+                      && request.resource.data.status == 'awarded'
+                      && changedKeys().hasOnly(['status', 'awardedBidId', 'awardedBidderName', 'awardNotes', 'awardedAt', 'awardedBy', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.awardedBy == request.auth.uid
+                      && request.resource.data.awardedAt == request.time
+                      && request.resource.data.awardNotes is string
+                      && request.resource.data.awardedBidId is string
+                      && request.resource.data.awardedBidId.size() > 0
+                      && awardedBid().tenderPackageId == packageId
+                      && awardedBid().status == 'received'
+                      && request.resource.data.awardedBidderName == awardedBid().bidderName
+                    )
+                    ||
+                    // (e) DRAFT|ISSUED -> CANCELLED (terminal). Touches only the
+                    //     cancel audit fields, with a real reason.
+                    (
+                      (resource.data.status == 'draft' || resource.data.status == 'issued')
+                      && request.resource.data.status == 'cancelled'
+                      && changedKeys().hasOnly(['status', 'cancelledAt', 'cancelledBy', 'cancelReason', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.cancelledBy == request.auth.uid
+                      && request.resource.data.cancelledAt == request.time
+                      && request.resource.data.cancelReason is string
+                      && request.resource.data.cancelReason.trim().size() > 0
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
+    // Tender Bids — project-scoped manual transcriptions of bids received
+    // against an ISSUED Tender Package, priced PER COST CODE (ex-GST, no GST
+    // fields — comparison is ex-GST; tax is a commitment-time concern). Random
+    // document ids, NO sequential number and NO counter: a bid is identified by
+    // its bidder and package. Project-level with a tenderPackageId reference —
+    // the progressClaims→PO idiom — NOT a subcollection, so one subscription
+    // serves the register and rules still verify containment via get().
+    //
+    // Reads: restricted to internal financial roles — a bid IS competitor
+    // pricing, so subcontractor and client users must NOT read any bid, least
+    // of all a competitor's. Delete: blocked — voiding is a status change; bids
+    // are the audit trail behind the award decision.
+    //
+    // Lifecycle is RULES-ENFORCED, two states (received → void): a bid is a
+    // TRANSCRIPTION of an external document, not an authored document with a
+    // commit point, so it is created directly as 'received' — a deliberate,
+    // documented deviation from the create-draft-only standard, analogous to
+    // cashFlowLines' two-state simplification.
+    //   · create only with status 'received', revision 1, null void stamps,
+    //     createdBy == caller, createdAt == server request time, AND — via
+    //     get() — a parent package IN THIS PROJECT whose status is 'issued', a
+    //     tenderNumber equal to that package's own (snapshot cannot be forged),
+    //     and a bidderContactId naming a REAL contact in this company whose
+    //     contactTypes include supplier or subcontractor, with bidderName equal
+    //     to that contact's displayName (snapshot cannot be forged). This
+    //     deliberately exceeds the supplierPayments precedent (which leaves
+    //     supplierId existence unverified): a fabricated bidder in a
+    //     competitive record is worth the extra get().
+    //   · received edits (transcription corrections: bidDate, bidderRef,
+    //     lineItems, exclusions, notes) are allowed ONLY while the parent
+    //     package is still 'issued'; bidder identity, package linkage, and the
+    //     tenderNumber snapshot are immutable
+    //   · received -> void touches only the void audit fields, with a
+    //     NON-WHITESPACE voidReason, ONLY while the parent package is 'issued'
+    //   · once the package is awarded or cancelled, EVERY bid write is rejected
+    //     — bids freeze, which is exactly what makes the awarded bid's derived
+    //     total trustworthy without a stored copy
+    //   · void is terminal
+    //
+    // What is NOT enforced here (client-only — never describe as enforced; see
+    // docs/SECURITY.md → Deferred Control 26):
+    //   · the SHAPE OF EACH lineItems[] ELEMENT — rules cannot iterate or index
+    //     into an array, so costCodeId / costCodeName / description / amount
+    //     are unverified per line, including finite-number and ≥ 0 checks. A
+    //     malicious direct-SDK caller CAN store malformed embedded line data;
+    //     the read-time validity gate (lib/tenders.js → assessBid) is what
+    //     makes such a bid fail safely — flagged invalid, excluded from totals,
+    //     comparison, and award — rather than silently influence a figure
+    //   · line cost-code CONTAINMENT within the package's costCodes, and that
+    //     any costCodeId names a real, active cost code
+    //   · ONE ACTIVE BID PER BIDDER PER PACKAGE — bid ids are random and rules
+    //     have no queries, so uniqueness is a client-side check; two
+    //     simultaneous creators can duplicate (the Deferred Control 9 posture)
+    //   · that bidDate is realistic, or before the package's closingDate — the
+    //     closing date is INFORMATIONAL ONLY and blocks nothing anywhere
+    //   · BUSINESS TRUTH — that the transcribed prices match the paper bid
+    match /companies/{companyId}/projects/{projectId}/tenderBids/{bidId} {
+      function financialMember() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // The document identity that no update of any kind may rewrite: package
+      // linkage, both frozen snapshots, bidder identity, currency, creation.
+      function corePreserved() {
+        return request.resource.data.tenderPackageId == resource.data.tenderPackageId
+            && request.resource.data.tenderNumber    == resource.data.tenderNumber
+            && request.resource.data.bidderContactId == resource.data.bidderContactId
+            && request.resource.data.bidderName      == resource.data.bidderName
+            && request.resource.data.currency        == resource.data.currency
+            && request.resource.data.createdAt       == resource.data.createdAt
+            && request.resource.data.createdBy       == resource.data.createdBy
+            && request.resource.data.revision        == resource.data.revision;
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // The parent package, from the SAME project path as this bid — so a bid
+      // can never graft onto another project's (or company's) package.
+      function parentPackage(pkgId) {
+        return get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/tenderPackages/$(pkgId)).data;
+      }
+      // The bidder contact named on a create.
+      function bidderContact() {
+        return get(/databases/$(database)/documents/companies/$(companyId)/contacts/$(request.resource.data.bidderContactId)).data;
+      }
+      // Shape required of every stored received state (create and edit alike).
+      function shapeValid() {
+        return request.resource.data.tenderPackageId is string
+            && request.resource.data.tenderPackageId.size() > 0
+            && request.resource.data.tenderNumber is string
+            && request.resource.data.tenderNumber.size() > 0
+            && request.resource.data.bidderContactId is string
+            && request.resource.data.bidderContactId.size() > 0
+            && request.resource.data.bidderName is string
+            && request.resource.data.bidderName.size() > 0
+            && request.resource.data.bidDate is string
+            && request.resource.data.bidDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+            && request.resource.data.bidderRef is string
+            && request.resource.data.exclusions is string
+            && request.resource.data.notes is string
+            // ≥1 priced line; element shape is client-only (see block note).
+            && request.resource.data.lineItems is list
+            && request.resource.data.lineItems.size() >= 1
+            && request.resource.data.lineItems.size() <= 100
+            && request.resource.data.currency is string
+            && request.resource.data.currency.matches('^[A-Z]{3}$')
+            && request.resource.data.revision == 1;
+      }
+
+      allow read: if financialMember();
+
+      allow create: if financialMember()
+                  && shapeValid()
+                  && request.resource.data.status == 'received'
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  // Void stamps cannot be forged at creation.
+                  && request.resource.data.voidedAt == null
+                  && request.resource.data.voidedBy == null
+                  && request.resource.data.voidReason == ''
+                  // Parent package must exist IN THIS PROJECT and be issued —
+                  // no bids on draft, awarded, or cancelled packages.
+                  && parentPackage(request.resource.data.tenderPackageId).status == 'issued'
+                  // The tenderNumber snapshot cannot be forged.
+                  && request.resource.data.tenderNumber == parentPackage(request.resource.data.tenderPackageId).tenderNumber
+                  // The bidder must be a real supplier/subcontractor contact in
+                  // this company, and the name snapshot must match it.
+                  && bidderContact().contactTypes.hasAny(['supplier', 'subcontractor'])
+                  && request.resource.data.bidderName == bidderContact().displayName;
+
+      allow update: if financialMember() && corePreserved() && updateStamped() && (
+                    // (a) RECEIVED EDIT — transcription corrections (bidDate,
+                    //     bidderRef, lineItems, exclusions, notes) while the
+                    //     parent package is STILL ISSUED. The status may not
+                    //     move and no void stamp may be forged. Once the
+                    //     package is awarded or cancelled this branch (and the
+                    //     void branch) stop matching — bids freeze.
+                    (
+                      resource.data.status == 'received'
+                      && request.resource.data.status == 'received'
+                      && shapeValid()
+                      && request.resource.data.voidedAt == resource.data.voidedAt
+                      && request.resource.data.voidedBy == resource.data.voidedBy
+                      && request.resource.data.voidReason == resource.data.voidReason
+                      && parentPackage(resource.data.tenderPackageId).status == 'issued'
+                    )
+                    ||
+                    // (b) RECEIVED -> VOID (terminal), only while the parent
+                    //     package is still issued. Touches only the void audit
+                    //     fields, with a real reason.
+                    (
+                      resource.data.status == 'received'
+                      && request.resource.data.status == 'void'
+                      && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.voidedBy == request.auth.uid
+                      && request.resource.data.voidedAt == request.time
+                      && request.resource.data.voidReason is string
+                      && request.resource.data.voidReason.trim().size() > 0
+                      && parentPackage(resource.data.tenderPackageId).status == 'issued'
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
+    // Project Timeline activities — the project programme (ADR-29).
+    //
+    // An activity is a PLANNING record, not a financial document: it holds no
+    // money, no currency, no counter and no sequential number, and it writes
+    // NOTHING to Forecast, Cash Flow, Margin, Progress Claims, Budget Lines, or
+    // projects/{projectId}.progress. The optional costCodeId + frozen
+    // costCodeName are the commercial spine link ONLY — a join key a future
+    // read-time "delay → forecast impact" derivation can use. No figure here
+    // ever reaches a financial figure.
+    //
+    // Reads: company_admin, project_manager AND qs — the QS needs the programme
+    // for commercial context.
+    // Create/update: company_admin and project_manager ONLY. Programme
+    // authorship is operational PM/admin responsibility, so QS IS READ-ONLY
+    // here — the one place its access is narrower than the other financial
+    // roles.
+    // subcontractor and client are DENIED entirely: those roles are not scoped
+    // to their own projects (docs/SECURITY.md → Deferred Control 5/10), so a
+    // read grant would expose EVERY programme in the company. Sharing a
+    // programme externally is a client-portal feature with its own scoping
+    // design, not a flag on this document.
+    // Delete: blocked — cancelling is a status change; a cancelled activity is
+    // retained programme history.
+    //
+    // ⚠️ LIFECYCLE IS DELIBERATELY NOT FORWARD-ONLY — an explicit departure
+    // from ADR-11. Financial lifecycles are forward-only because those
+    // documents are an audit record; a programme is a PLAN, so an activity
+    // ticked complete by mistake, or reopened for a defect, must be
+    // correctable. Any non-cancelled status may move to any other
+    // non-cancelled status, INCLUDING BACKWARDS. Only `cancelled` is terminal,
+    // and it is reachable only through its own branch below (reason + audit
+    // stamps required), never through an ordinary edit.
+    //
+    // `status` is validated as a closed literal set — the same justified
+    // exception as `direction`/`basis` on cashFlowLines: five values that
+    // structurally determine whether an activity counts as outstanding work.
+    //
+    // What is NOT enforced here (CLIENT-SIDE ONLY — never describe as
+    // enforced; docs/SECURITY.md → Deferred Control 23):
+    //   · that responsibleContactId names a real contact in this company, or
+    //     that responsibleName matches it — rules have no list/query and the
+    //     name is a frozen snapshot by design
+    //   · that costCodeId names a real cost code in this company
+    //   · that percentComplete reflects physical progress — it is a manually
+    //     authored, unverifiable assertion
+    //   · that actual dates reflect what happened on site, or are plausible
+    //     against the planned dates
+    //   · that a date is a REAL calendar date — the regex accepts 2026-02-30
+    //     and 2026-04-31 (rules have no calendar); the client rejects them
+    //   · sortOrder uniqueness — rules have no query or count, and concurrent
+    //     creation can tie (the app breaks ties deterministically instead)
+    //   · that a BACKWARDS status transition is legitimate rather than a
+    //     cover-up — permitting correction is the deliberate design
+    //   · freedom from dependency cycles — no dependency model exists in V1
+    //   · concurrent edits: this collection is LAST-WRITE-WINS. Two users
+    //     editing one activity will overwrite each other, including fields the
+    //     second never looked at. There is no revision compare-and-set.
+    match /companies/{companyId}/projects/{projectId}/activities/{activityId} {
+      function memberRole() {
+        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+      }
+      function sameCompany() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
+      }
+      // Read audience — includes qs.
+      function programmeReader() {
+        return sameCompany() && memberRole() in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Write audience — deliberately EXCLUDES qs.
+      function programmeWriter() {
+        return sameCompany() && memberRole() in ['company_admin', 'project_manager'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // The document identity that no update of any kind may rewrite.
+      function corePreserved() {
+        return request.resource.data.createdAt == resource.data.createdAt
+            && request.resource.data.createdBy == resource.data.createdBy
+            && request.resource.data.revision  == resource.data.revision;
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // EXACT shape — hasOnly + hasAll together mean no field may be added,
+      // renamed, or omitted. Pre-seeding an arbitrary privilege-bearing field
+      // is the lesson of ADR-27.
+      function exactKeys() {
+        return request.resource.data.keys().hasOnly([
+                 'name', 'description', 'isMilestone', 'status',
+                 'plannedStart', 'plannedFinish', 'actualStart', 'actualFinish',
+                 'percentComplete', 'responsibleContactId', 'responsibleName',
+                 'costCodeId', 'costCodeName', 'sortOrder', 'notes',
+                 'cancelReason', 'cancelledAt', 'cancelledBy',
+                 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+               ])
+            && request.resource.data.keys().hasAll([
+                 'name', 'description', 'isMilestone', 'status',
+                 'plannedStart', 'plannedFinish', 'actualStart', 'actualFinish',
+                 'percentComplete', 'responsibleContactId', 'responsibleName',
+                 'costCodeId', 'costCodeName', 'sortOrder', 'notes',
+                 'cancelReason', 'cancelledAt', 'cancelledBy',
+                 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+               ]);
+      }
+      function isIsoDate(v) {
+        return v is string
+            && v.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$');
+      }
+      // Shape required of every stored NON-CANCELLED state (create and edit).
+      function shapeValid() {
+        return exactKeys()
+            && request.resource.data.revision == 1
+            && request.resource.data.name is string
+            && request.resource.data.name.trim().size() > 0
+            && request.resource.data.name.size() <= 120
+            && request.resource.data.description is string
+            && request.resource.data.description.size() <= 500
+            && request.resource.data.notes is string
+            && request.resource.data.notes.size() <= 500
+            && request.resource.data.isMilestone is bool
+            // Closed status set; `cancelled` is reachable only via the branch
+            // below, so it is excluded from every ordinary write.
+            && request.resource.data.status in ['not_started', 'in_progress', 'on_hold', 'completed']
+            // Programme dates are DATE-ONLY strings. The finish is INCLUSIVE,
+            // and string comparison is exact for zero-padded ISO.
+            && isIsoDate(request.resource.data.plannedStart)
+            && isIsoDate(request.resource.data.plannedFinish)
+            && request.resource.data.plannedFinish >= request.resource.data.plannedStart
+            // A milestone is a point in time, not a one-day activity.
+            && (!request.resource.data.isMilestone
+                || request.resource.data.plannedFinish == request.resource.data.plannedStart)
+            && (request.resource.data.actualStart == null
+                || isIsoDate(request.resource.data.actualStart))
+            && (request.resource.data.actualFinish == null
+                || isIsoDate(request.resource.data.actualFinish))
+            && (request.resource.data.actualStart == null
+                || request.resource.data.actualFinish == null
+                || request.resource.data.actualFinish >= request.resource.data.actualStart)
+            // Manually authored progress — bounded whole percent.
+            && request.resource.data.percentComplete is int
+            && request.resource.data.percentComplete >= 0
+            && request.resource.data.percentComplete <= 100
+            && (!request.resource.data.isMilestone
+                || request.resource.data.percentComplete == 0
+                || request.resource.data.percentComplete == 100)
+            // Status invariants — status, progress and actual dates may not
+            // contradict each other.
+            && (request.resource.data.status != 'not_started'
+                || (request.resource.data.percentComplete == 0
+                    && request.resource.data.actualStart == null
+                    && request.resource.data.actualFinish == null))
+            && (request.resource.data.status != 'in_progress'
+                || request.resource.data.actualStart != null)
+            && (request.resource.data.status != 'completed'
+                || (request.resource.data.percentComplete == 100
+                    && request.resource.data.actualFinish != null))
+            // Responsible party: a Contacts link with a FROZEN name snapshot —
+            // both null/'' together, or both real together. Never a user
+            // account: users/{uid} is client-read-only (ADR-27), so no client
+            // can resolve another user.
+            && ((request.resource.data.responsibleContactId == null
+                 && request.resource.data.responsibleName == '')
+                || (request.resource.data.responsibleContactId is string
+                    && request.resource.data.responsibleContactId.size() > 0
+                    && request.resource.data.responsibleName is string
+                    && request.resource.data.responsibleName.trim().size() > 0
+                    && request.resource.data.responsibleName.size() <= 120))
+            // Cost-code spine: the same both-or-neither idiom.
+            && ((request.resource.data.costCodeId == null
+                 && request.resource.data.costCodeName == '')
+                || (request.resource.data.costCodeId is string
+                    && request.resource.data.costCodeId.size() > 0
+                    && request.resource.data.costCodeName is string
+                    && request.resource.data.costCodeName.trim().size() > 0
+                    && request.resource.data.costCodeName.size() <= 120))
+            && request.resource.data.sortOrder is number;
+      }
+
+      allow read: if programmeReader();
+
+      allow create: if programmeWriter()
+                  && shapeValid()
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  // Cancellation cannot be forged at creation.
+                  && request.resource.data.cancelReason == ''
+                  && request.resource.data.cancelledAt == null
+                  && request.resource.data.cancelledBy == null;
+
+      allow update: if programmeWriter() && corePreserved() && updateStamped() && (
+                    // (a) ORDINARY EDIT — content and status are freely
+                    //     editable, INCLUDING BACKWARDS, while the activity is
+                    //     not cancelled. No cancellation stamp may be forged.
+                    (
+                      resource.data.status != 'cancelled'
+                      && shapeValid()
+                      && request.resource.data.cancelReason == resource.data.cancelReason
+                      && request.resource.data.cancelledAt == resource.data.cancelledAt
+                      && request.resource.data.cancelledBy == resource.data.cancelledBy
+                    )
+                    ||
+                    // (b) CANCELLATION (terminal). The only exit, and it may
+                    //     touch nothing but the cancellation audit fields — so
+                    //     a cancelled activity is immutable retained history
+                    //     and cancelling can never smuggle in a content edit.
+                    (
+                      resource.data.status != 'cancelled'
+                      && request.resource.data.status == 'cancelled'
+                      && changedKeys().hasOnly(['status', 'cancelReason', 'cancelledAt', 'cancelledBy', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.cancelledBy == request.auth.uid
+                      && request.resource.data.cancelledAt == request.time
+                      && request.resource.data.cancelReason is string
+                      && request.resource.data.cancelReason.trim().size() > 0
+                      && request.resource.data.cancelReason.size() <= 500
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
+    // Retention Releases — project-scoped AUTHORISATIONS that make retention
+    // ALREADY WITHHELD on a posted Supplier Invoice payable. RR-#### from the
+    // company-wide counters/retentionReleases document (covered by the counters
+    // block below — no separate rule needed).
+    //
+    // ⚠️ A RETENTION RELEASE IS NOT A SUPPLIER INVOICE, NOT A TAX INVOICE, NOT A
+    // CREDIT NOTE, AND NOT A PAYMENT. It is an internal commercial
+    // authorisation. It creates no taxable supply, no cost, and no cash
+    // movement — only a posted Supplier Payment moves cash.
+    //
+    // ⚠️ NOTHING IS WRITTEN ONTO THE SUPPLIER INVOICE. `retention`,
+    // `retentionGst`, and `retentionTotal` are immutable for the life of that
+    // document; the released amount is DERIVED at read time from these
+    // documents (lib/retention.js → releasedByInvoiceId), which is why voiding
+    // a release restores every payable balance with no reversal record.
+    //
+    // Reads: restricted to internal financial roles — retention exposes
+    // supplier pricing and the project's cash position, so subcontractor and
+    // client users must NOT read it (matching supplierInvoices/supplierPayments).
+    // Delete: blocked — voiding is a status change; releases are audit records.
+    //
+    // ⚠️ THIS BLOCK ENFORCES MORE THAN THE ALLOCATION BLOCKS CAN. Payment
+    // allocations live in an array, and rules can neither iterate an array nor
+    // get() per element — so allocation targets are wholly unverified.
+    // `supplierInvoiceId` here is a SCALAR field, so the target invoice CAN be
+    // read, and the per-document cap and the exact GST formula CAN be enforced.
+    //
+    // Lifecycle is RULES-ENFORCED, following clientInvoices/clientReceipts/
+    // supplierPayments (ADR-22):
+    //   · create only with status 'draft', docType 'retention_release', null
+    //     lifecycle stamps, createdBy == caller, createdAt == server request time
+    //   · draft edits may change the money/date/reason/notes but not the status,
+    //     not the target invoice, and may not forge a lifecycle stamp
+    //   · posting is a SEPARATE operation touching only
+    //     status/postedAt/postedBy/updatedAt/updatedBy, with postedBy == caller
+    //     and postedAt == server request time
+    //   · voiding (from draft or posted) touches only
+    //     status/voidedAt/voidedBy/voidReason/updatedAt/updatedBy, with
+    //     voidedBy == caller, voidedAt == server request time, and a voidReason
+    //     containing NON-WHITESPACE text
+    //   · posted release content is consequently immutable — voiding is the only
+    //     permitted update
+    //   · void is terminal; there is no posted -> draft and no void -> anything
+    //   · there is deliberately NO 'paid' status — payment state derives from
+    //     Supplier Payment allocations and must not have a second source of
+    //     truth (ADR-24)
+    //
+    // What IS enforced here:
+    //   · the target supplier invoice EXISTS and is POSTED (create + draft edit
+    //     + post). Deliberately NOT re-checked on VOID: voiding must remain
+    //     possible even after the target invoice has been cancelled, which is
+    //     precisely when a release most needs withdrawing
+    //   · the PER-DOCUMENT cap: previouslyReleasedAmount + amount <=
+    //     invoice.retention (ex-GST), in whole cents
+    //   · the EXACT GST formula — gstAmount is the cumulative rounding delta
+    //     round((prev+amount)*10%) − round(prev*10%), so an arbitrary gstAmount
+    //     is REJECTED rather than tolerated, and the legitimate final rounding
+    //     remainder is accepted because the remainder IS this formula's output
+    //   · releaseTotal == amount + gstAmount, in whole cents
+    //
+    // ⚠️ What is NOT enforced here (client-side only — NEVER describe as
+    // enforced; docs/SECURITY.md → Deferred Control 24):
+    //   · that `previouslyReleasedAmount` is TRUTHFUL. Rules have no list,
+    //     query, or count, so they cannot sum sibling release documents. Two
+    //     documents can each claim previouslyReleasedAmount 0 and each pass the
+    //     per-document cap, so the CUMULATIVE cap across siblings is NOT
+    //     enforced and an invoice CAN be over-released
+    //   · that the cumulative snapshots are CONTIGUOUS (no gaps/overlaps), on
+    //     which the GST telescoping to invoice.retentionGst depends
+    //   · concurrent release safety — two users can compute the same remaining
+    //     retention and both writes succeed
+    //   · that the release was GENUINELY AGREED with the supplier — a release
+    //     asserts a commercial authorisation, not a bank movement
+    //   · company-wide RR-number uniqueness independently of the client
+    //     transaction (the counter is client-writable — Deferred Control 6)
+    //   · creator != poster segregation (Deferred Control 7 territory)
+    match /companies/{companyId}/projects/{projectId}/retentionReleases/{releaseId} {
+      function financialMember() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // The document identity that no update of any kind may rewrite. The TARGET
+      // INVOICE is part of that identity: re-pointing a release at a different
+      // invoice would move money between suppliers without any audit trail.
+      function corePreserved() {
+        return request.resource.data.releaseNumber     == resource.data.releaseNumber
+            && request.resource.data.currency          == resource.data.currency
+            && request.resource.data.createdAt         == resource.data.createdAt
+            && request.resource.data.createdBy         == resource.data.createdBy
+            && request.resource.data.docType           == resource.data.docType
+            && request.resource.data.revision          == resource.data.revision
+            && request.resource.data.supplierInvoiceId == resource.data.supplierInvoiceId;
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // MONEY IS DECIMAL; IEEE-754 IS NOT. Identical to the cents() helper in
+      // the clientReceipts/supplierPayments blocks and to lib/payments.js →
+      // toCents(), so a write the client considers valid is never rejected here
+      // for floating-point reasons (or vice versa).
+      function cents(v) {
+        return math.round(v * 100);
+      }
+      // GST on a CUMULATIVE ex-GST amount, in whole cents. Mirrors
+      // lib/retention.js → cumulativeRetentionGst() exactly: ONE rounding of the
+      // cumulative figure, never a composition of per-release roundings.
+      //
+      // ⚠️ DO NOT "SIMPLIFY" THIS TO math.round(exGstCents / 10). Firestore
+      // Rules and JavaScript DISAGREE there, and it was proven in the emulator:
+      // Rules `/` on two integers TRUNCATES, so 10005/10 yields 1000 while JS
+      // Math.round(1000.5) yields 1001 — a one-cent divergence that would reject
+      // legitimate client writes in production while every unit test passed.
+      //
+      // `math.floor((c + 5) / 10)` is round-half-up for non-negative c, and it
+      // is correct under EITHER division semantics (if `/` truncates, floor is a
+      // no-op; if `/` is float division, floor performs the truncation), so it
+      // cannot silently drift if the runtime ever changes. `c` is always a
+      // non-negative integer: cents() returns math.round(...) and both operands
+      // are validated >= 0.
+      //
+      // This mirrors JS roundMoney(x * 10%) exactly — see
+      // tests/rules/retentionReleases.rules.test.js → "math.round matches
+      // JavaScript on half-cent boundaries", which fails if either side moves.
+      function gstCents(exGstCents) {
+        return math.floor((exGstCents + 5) / 10);
+      }
+      function targetInvoice() {
+        return get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/supplierInvoices/$(request.resource.data.supplierInvoiceId));
+      }
+      // The target must exist, be POSTED (the financial commit point — retention
+      // on a draft/approved/cancelled invoice is not real), and hold enough
+      // retention for this document's cumulative claim.
+      function targetValid() {
+        return request.resource.data.supplierInvoiceId is string
+            && request.resource.data.supplierInvoiceId.size() > 0
+            && exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/supplierInvoices/$(request.resource.data.supplierInvoiceId))
+            && targetInvoice().data.status == 'posted'
+            && targetInvoice().data.retention is number
+            && cents(request.resource.data.previouslyReleasedAmount) + cents(request.resource.data.amount)
+               <= cents(targetInvoice().data.retention);
+      }
+      // The arithmetic guarantee rules CAN give per document: the GST is pinned
+      // to the cumulative rounding delta, so `gstAmount` cannot be arbitrary
+      // merely because releaseTotal happens to add up.
+      function moneyValid() {
+        return request.resource.data.amount is number
+            && request.resource.data.amount > 0
+            && request.resource.data.previouslyReleasedAmount is number
+            && request.resource.data.previouslyReleasedAmount >= 0
+            && request.resource.data.gstAmount is number
+            && request.resource.data.gstAmount >= 0
+            && request.resource.data.releaseTotal is number
+            && request.resource.data.releaseTotal > 0
+            && cents(request.resource.data.gstAmount)
+               == gstCents(cents(request.resource.data.previouslyReleasedAmount) + cents(request.resource.data.amount))
+                  - gstCents(cents(request.resource.data.previouslyReleasedAmount))
+            && cents(request.resource.data.releaseTotal)
+               == cents(request.resource.data.amount) + cents(request.resource.data.gstAmount);
+      }
+      // Shape required of every stored DRAFT state (create and draft edit alike).
+      function shapeValid() {
+        return request.resource.data.docType == 'retention_release'
+            && request.resource.data.releaseNumber is string
+            && request.resource.data.revision is number
+            && request.resource.data.invoiceNumber is string
+            && request.resource.data.supplierInvoiceNumber is string
+            // Supplier INVOICES may legitimately carry supplierId: null from
+            // before the Contacts module and are never backfilled (ADR-15), so a
+            // release inheriting that snapshot may too. The NAME is required.
+            && (request.resource.data.supplierId == null
+                || (request.resource.data.supplierId is string
+                    && request.resource.data.supplierId.size() > 0))
+            && request.resource.data.supplierName is string
+            && request.resource.data.supplierName.size() > 0
+            && request.resource.data.currency is string
+            && request.resource.data.currency.matches('^[A-Z]{3}$')
+            // The date the release was AGREED — not a defects-liability date, a
+            // contractual entitlement date, or a payment due date (ADR-30).
+            && request.resource.data.releaseDate is string
+            && request.resource.data.releaseDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+            && request.resource.data.reason is string
+            && request.resource.data.reason.trim().size() > 0
+            && request.resource.data.notes is string
+            && moneyValid();
+      }
+
+      allow read: if financialMember();
+
+      allow create: if financialMember()
+                  && shapeValid()
+                  && targetValid()
+                  && request.resource.data.status == 'draft'
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  // Lifecycle stamps cannot be forged at creation.
+                  && request.resource.data.postedAt == null
+                  && request.resource.data.postedBy == null
+                  && request.resource.data.voidedAt == null
+                  && request.resource.data.voidedBy == null;
+
+      allow update: if financialMember() && corePreserved() && updateStamped() && (
+                    // (a) DRAFT EDIT — the money, date, reason and notes are
+                    //     freely editable while draft (re-saving is also how a
+                    //     stale cumulative snapshot is refreshed), but the
+                    //     status may not move and no lifecycle stamp may be
+                    //     forged.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'draft'
+                      && shapeValid()
+                      && targetValid()
+                      && request.resource.data.postedAt == resource.data.postedAt
+                      && request.resource.data.postedBy == resource.data.postedBy
+                      && request.resource.data.voidedAt == resource.data.voidedAt
+                      && request.resource.data.voidedBy == resource.data.voidedBy
+                    )
+                    ||
+                    // (b) DRAFT -> POSTED. A separate operation carrying no
+                    //     content change whatsoever — the amount and GST that
+                    //     were reviewed are the ones committed. The target is
+                    //     re-verified because posting is the point at which the
+                    //     money becomes payable.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'posted'
+                      && changedKeys().hasOnly(['status', 'postedAt', 'postedBy', 'updatedAt', 'updatedBy'])
+                      && targetValid()
+                      && request.resource.data.postedBy == request.auth.uid
+                      && request.resource.data.postedAt == request.time
+                    )
+                    ||
+                    // (c) DRAFT|POSTED -> VOID (terminal). This branch is what
+                    //     makes a POSTED release immutable: voiding is the only
+                    //     permitted update, and it may touch nothing else.
+                    //     Voiding needs no reversal document — the released
+                    //     amount is derived, so every payable balance restores
+                    //     at the next render.
+                    //
+                    //     ⚠️ targetValid() is deliberately NOT required here. A
+                    //     release whose invoice was later cancelled is exactly
+                    //     the one that most needs withdrawing, and rules must
+                    //     never trap it in the posted state.
+                    (
+                      (resource.data.status == 'draft' || resource.data.status == 'posted')
                       && request.resource.data.status == 'void'
                       && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
                       && request.resource.data.voidedBy == request.auth.uid
@@ -1422,7 +2724,8 @@ service cloud.firestore {
 
     // Counters — sequential document numbering (purchaseOrders, progressClaims,
     // supplierInvoices, variationsClient, variationsSupplier, clientInvoices,
-    // clientReceipts, supplierPayments).
+    // clientReceipts, supplierPayments, supplierCreditNotes, tenderPackages,
+    // retentionReleases).
     // Read/write restricted to the roles that create numbered documents;
     // the create transaction must read and increment the counter.
     // Counter integrity (+1 only, no arbitrary set) is NOT enforced here — see

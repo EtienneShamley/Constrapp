@@ -1,6 +1,7 @@
 export const PROJECT_TABS = [
   { to: 'overview',         label: 'Overview' },
   { to: 'boq',              label: 'BOQ' },
+  { to: 'tenders',          label: 'Tenders' },
   { to: 'budget',           label: 'Budget' },
   { to: 'cost-codes',       label: 'Cost Codes' },
   { to: 'purchase-orders',  label: 'Purchase Orders' },
