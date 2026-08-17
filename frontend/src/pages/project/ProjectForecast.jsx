@@ -11,6 +11,7 @@ import { useCostCodes } from '../../hooks/useCostCodes'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
+import { useSupplierCreditNotes } from '../../hooks/useSupplierCreditNotes'
 import { useVariations } from '../../hooks/useVariations'
 import { useForecastLines } from '../../hooks/useForecastLines'
 import {
@@ -19,6 +20,7 @@ import {
   remainingBudgetReference, remainingBudgetSuggestion,
   isUnforecasted, isOverBudget,
 } from '../../lib/forecast'
+import { CREDIT_READ_ERROR_NOTICE } from '../../lib/supplierCreditNotes'
 
 const inputCls = 'w-full bg-brand-bg border border-brand-border rounded-lg px-2.5 py-1.5 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
 const thCls    = 'text-left px-3 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px] whitespace-nowrap'
@@ -99,6 +101,7 @@ export default function ProjectForecast() {
   const { purchaseOrders }  = usePurchaseOrders(projectId)
   const { progressClaims }  = useProgressClaims(projectId)
   const { supplierInvoices } = useSupplierInvoices(projectId)
+  const { supplierCreditNotes, supplierCreditNotesError } = useSupplierCreditNotes(projectId)
   const { variations }      = useVariations(projectId)
   const { forecastLines, forecastLinesLoading, upsertForecastLine } = useForecastLines(projectId)
 
@@ -109,8 +112,8 @@ export default function ProjectForecast() {
   const [filter, setFilter]       = useState('all')
 
   const baseRows = useMemo(
-    () => buildForecastRows({ costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines }),
-    [costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines],
+    () => buildForecastRows({ costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines }),
+    [costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines],
   )
 
   // Overlay unsaved edits and compute the input-dependent outputs from the
@@ -230,6 +233,12 @@ export default function ProjectForecast() {
 
   return (
     <div>
+      {supplierCreditNotesError && (
+        <Card className="mb-3.5">
+          <p className="text-[13px] font-bold text-brand-amber m-0">Supplier Credit Notes unavailable</p>
+          <p className="m-0 mt-1 text-[12px] text-brand-muted">{CREDIT_READ_ERROR_NOTICE}</p>
+        </Card>
+      )}
       <SummaryCards rollups={rollups} currencyCode={currencyCode} />
 
       {/* Toolbar: unforecasted count + save-all */}

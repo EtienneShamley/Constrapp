@@ -9,10 +9,12 @@ import { useCostCodes } from '../../hooks/useCostCodes'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
+import { useSupplierCreditNotes } from '../../hooks/useSupplierCreditNotes'
 import { useVariations } from '../../hooks/useVariations'
 import { maturedCommittedByCostCode } from '../../lib/purchaseOrders'
 import { actualClaimsByCostCode, claimedPendingByCostCode } from '../../lib/progressClaims'
 import { invoicedByCostCode, invoicedClaimIds, postedInvoicedByPoLine } from '../../lib/supplierInvoices'
+import { creditedByCostCode, CREDIT_READ_ERROR_NOTICE } from '../../lib/supplierCreditNotes'
 import { approvedSupplierVariationsByCostCode } from '../../lib/variations'
 
 const EMPTY_FORM = { costCodeId: '', budgeted: '', notes: '' }
@@ -122,6 +124,7 @@ export default function ProjectBudget() {
   const { purchaseOrders } = usePurchaseOrders(projectId)
   const { progressClaims } = useProgressClaims(projectId)
   const { supplierInvoices } = useSupplierInvoices(projectId)
+  const { supplierCreditNotes, supplierCreditNotesError } = useSupplierCreditNotes(projectId)
   const { variations } = useVariations(projectId)
   const [showModal, setShowModal] = useState(false)
 
@@ -134,11 +137,21 @@ export default function ProjectBudget() {
   // Committed = remaining OPEN commitment: PO line total − posted/paid invoiced
   //   against that line (floored at 0), grouped by cost code. As invoices post,
   //   value moves from Committed into Invoiced/Actual, so they are complementary.
+  // Committed is deliberately NOT restored by a credit note (ADR-31): credit
+  // lines carry no poLineIndex, so commitment maturing reads invoices only.
   const committedMap = maturedCommittedByCostCode(purchaseOrders, postedInvoicedByPoLine(supplierInvoices))
-  // Invoiced = ex-GST posted/paid supplier invoice lines by cost code.
-  const invoicedMap = invoicedByCostCode(supplierInvoices)
+  // Invoiced = ex-GST posted/paid supplier invoice lines by cost code, NET of
+  //   posted valid-target Supplier Credit Notes. Signed, never clamped — an
+  //   over-credited cost code goes negative and stays visible.
+  const creditedMap = creditedByCostCode(supplierCreditNotes, supplierInvoices)
+  const grossInvoicedMap = invoicedByCostCode(supplierInvoices)
+  const invoicedMap = {}
+  for (const cc of new Set([...Object.keys(grossInvoicedMap), ...Object.keys(creditedMap)])) {
+    invoicedMap[cc] = (grossInvoicedMap[cc] || 0) - (creditedMap[cc] || 0)
+  }
   // Actual = approved claims NOT yet superseded by a posted/paid invoice (read-
-  //   time exclusion — the claim is never mutated) PLUS posted/paid invoices.
+  //   time exclusion — the claim is never mutated) PLUS posted/paid invoices,
+  //   net of credit notes (already inside invoicedMap above).
   const invoicedClaims = invoicedClaimIds(supplierInvoices)
   const claimActualMap = actualClaimsByCostCode(progressClaims, invoicedClaims)
   const actualMap = {}
@@ -192,6 +205,12 @@ export default function ProjectBudget() {
 
   return (
     <div>
+      {supplierCreditNotesError && (
+        <Card className="mb-3.5">
+          <p className="text-[13px] font-bold text-brand-amber m-0">Supplier Credit Notes unavailable</p>
+          <p className="m-0 mt-1 text-[12px] text-brand-muted">{CREDIT_READ_ERROR_NOTICE}</p>
+        </Card>
+      )}
       <Card className="mb-3.5">
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3.5 mb-3">
           <div>
