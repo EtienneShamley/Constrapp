@@ -27,10 +27,15 @@ import { SI_STATUS, SI_COUNTING_STATUSES, TAX_CODES, gstForLine, normaliseInvoic
 //
 // ⚠️ RETAINED INVOICES CANNOT BE CREDITED in this foundation. A credit against
 // an invoice that withheld retention is ambiguous — does the credit come out of
-// the payable slice or the retained slice? — and retention release is not
-// modelled. The target must carry retentionTotal 0, enforced in the UI, here,
-// AND by Firestore rules (which get() the target invoice — a first for the
-// financial collections).
+// the payable slice or the retained slice? The target must carry retentionTotal
+// 0, enforced in the UI, here, AND by Firestore rules (which get() the target
+// invoice — a first for the financial collections).
+//
+// ⚠️ THIS IS UNCHANGED BY RETENTION RELEASE (ADR-30). The gate reads the STORED,
+// IMMUTABLE `retentionTotal`, never a release-aware figure, so an invoice whose
+// retention has since been released — wholly or partly — remains uncreditable in
+// V1. Releasing retention must never be a back door into crediting a retained
+// invoice; the ambiguity above is unresolved either way.
 //
 // All canonical line amounts are ex-GST with per-line taxCode/gstAmount,
 // exactly like the supplier-invoice lines they reverse. Every line REQUIRES a
@@ -132,7 +137,8 @@ export const creditableSupplierInvoices = (invoices) =>
 
 export const RETAINED_INVOICE_BLOCK_TEXT =
   'Invoices with retention withheld cannot receive a credit note in this foundation — crediting a retained ' +
-  'invoice is ambiguous while retention release is not modelled. This is enforced by Firestore rules.'
+  'invoice is ambiguous: it is unclear whether the credit reduces the payable slice or the retained slice. ' +
+  'This still applies once retention has been released. It is enforced by Firestore rules.'
 
 // ── Supplier identity matching ───────────────────────────────────────────────
 //

@@ -7,7 +7,7 @@ import {
   CFL_SOURCE_TYPE, CFL_IN_SOURCE_TYPES, CFL_OUT_SOURCE_TYPES,
   sourceTypesForDirection, isCoverageSourceType, isCostCodedSourceType,
   activeCashFlowLines, voidCashFlowLines, staleCashFlowLines,
-  manualForecastByMonth, classifyInvoiceBalances, sumRetentionWithheld,
+  manualForecastByMonth, classifyInvoiceBalances, sumRetentionHeld,
   buildMonthlyCombinedRows, projectedClosingPosition,
   coverageByType, committedCoverageByCostCode, ctcCoverageByCostCode,
   untimedForecastRevenue, untimedRemainingCommitted, untimedUncommittedCtc,
@@ -545,8 +545,15 @@ function arRow(overrides = {}) {
   return { id: id(), invoiceNumber: 'CI-0001', dueDate: '2026-09-15', remaining: 1100, ...overrides }
 }
 
+// `retentionHeld` defaults to "everything withheld, nothing released" — the
+// pre-ADR-30 situation — unless a test states otherwise. Retention RELEASED is
+// no longer held: it has become part of `remaining` (ADR-30).
 function apRow(overrides = {}) {
-  return { id: id(), invoiceNumber: 'SI-0001', dueDate: '2026-09-20', remaining: 990, retentionTotal: 0, ...overrides }
+  const base = {
+    id: id(), invoiceNumber: 'SI-0001', dueDate: '2026-09-20', remaining: 990,
+    retentionTotal: 0, releasedTotal: 0, ...overrides,
+  }
+  return { retentionHeld: Math.round((base.retentionTotal - base.releasedTotal) * 100) / 100, ...base }
 }
 
 function line(overrides = {}) {
@@ -673,13 +680,22 @@ describe('automatic AP forecast — posted supplier invoice payable balances', (
     expect(r.byMonth).toEqual({ '2026-09': 500 })
   })
 
-  it('sums retention withheld across AP rows for the standing warning', () => {
-    expect(sumRetentionWithheld([
+  it('sums retention HELD across AP rows for the standing warning', () => {
+    expect(sumRetentionHeld([
       apRow({ retentionTotal: 110 }),
       apRow({ retentionTotal: 55 }),
       apRow({ retentionTotal: 0 }),
     ])).toBe(165)
-    expect(sumRetentionWithheld([])).toBe(0)
+    expect(sumRetentionHeld([])).toBe(0)
+  })
+
+  it('drops RELEASED retention out of the held figure — it is in `remaining` now', () => {
+    // ADR-30: once released, retention is payable and already timed through the
+    // classification above. Counting it as "withheld" too would double-count it.
+    expect(sumRetentionHeld([
+      apRow({ retentionTotal: 110, releasedTotal: 110 }),
+      apRow({ retentionTotal: 55, releasedTotal: 22 }),
+    ])).toBe(33)
   })
 })
 
@@ -1260,7 +1276,7 @@ describe('forecast purity — inputs never mutated', () => {
       nowMonth: NOW,
     })).not.toThrow()
     expect(() => coverageByType(lines, 'contract_revenue')).not.toThrow()
-    expect(() => sumRetentionWithheld(ap)).not.toThrow()
+    expect(() => sumRetentionHeld(ap)).not.toThrow()
     expect(ar[0].remaining).toBe(1100)
     expect(lines[0].amount).toBe(1100)
   })

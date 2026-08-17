@@ -179,7 +179,9 @@ ProtectedRoute (redirects to /login when signed out)
    │        LABEL reads "Client Receipts" while the route stays `receipts`),
    │       `commercial/supplier-payments` = Supplier Payments (cash paid),
    │       `commercial/cash-flow` = Cash Flow (ACTUAL recorded cash movement —
-   │        read-only; forecast and charts are later branches).
+   │        read-only; forecast and charts are later branches),
+   │       `commercial/retention` = Supplier Retention register + Retention
+   │        Release (ADR-30);
    │       the `tenders` route renders the Tender register — packages, bids,
    │        Tender Comparison, and the award decision record; financial roles only)
    │    boq                  Bill of Quantities (ProjectBoq — measured items,
@@ -222,8 +224,9 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Supplier Invoices (accounts payable) | Implemented (foundation) |
 | Client Invoices / Accounts Receivable | Implemented (foundation) — read-time contract control and read-time reconciliation against receipts; **no tax-invoice output** |
 | Client Receipts (cash received) | Implemented (foundation) — embedded allocations, read-time balances |
-| Supplier Payments (cash paid) | Implemented (foundation) — embedded allocations against posted invoices' `payableTotal`, read-time Paid to Date / Remaining Payable / AP ageing; **no retention release** |
+| Supplier Payments (cash paid) | Implemented (foundation) — embedded allocations against each posted invoice's **derived payable basis** (stored `payableTotal` + posted retention released), read-time Paid to Date / Remaining Payable / AP ageing |
 | Supplier Credit Notes | Implemented (foundation) — reduction records against exactly one posted, retention-free supplier invoice; rules-enforced lifecycle **with target-invoice `get()` checks**; read-time subtraction from Invoiced/Actual/Remaining Payable; lives inside the Supplier Invoices view; **no client credit notes, no refunds** |
+| Supplier Retention & Retention Release | Implemented (foundation) — read-time register grouped by supplier; retention **held** derived from posted invoices, **released** from posted `retentionReleases`; partial releases with cumulative-snapshot GST; **no client retention, no retention due/DLP dates, no retention-paid attribution** (ADR-30) |
 | Cash Flow (actual + forecast) | Implemented (foundation) — read-time monthly actual, automatic invoice due-date forecast, manual `cashFlowLines` timing, projected cumulative/closing position, completeness, untimed reporting, peak funding with suppression, and a two-panel chart that consumes those derived rows without re-deriving them (ADR-26); **no date filtering, not a bank balance** |
 | Variations (client + supplier) | Implemented (foundation) |
 | Tenders (packages, bids, comparison, award) | Implemented (foundation) — cost-code + free-text scope (BOQ-independent), manual bids, read-time comparison, award as a decision record; **no stored totals, no PO creation, closing date informational** |

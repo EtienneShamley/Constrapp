@@ -1287,9 +1287,9 @@ document-only read is the real contract, not an accident.
   a user can no longer **grant themselves** that role, so the blast radius is
   now bounded by who is provisioned.
 
-<!-- ADR-28 (Documents & Drawings) and ADR-30 (Supplier Retention) are RESERVED
-     for parked feature branches and are deliberately absent here. Do not reuse
-     those numbers. The same applies to docs/TESTING.md §15o and §15q. -->
+<!-- ADR-28 (Documents & Drawings) is RESERVED for a parked feature branch and
+     is deliberately absent here. Do not reuse that number. The same applies to
+     docs/TESTING.md §15o. -->
 
 ## ADR-29: Project Timeline (current-plan programme; date-only strings; manual progress; no scheduling engine)
 
@@ -1483,6 +1483,123 @@ this app uses.
 - **No financial file was modified** and no migration is required — existing
   projects simply have an empty programme.
 
+## ADR-30: Supplier Retention Release (hybrid model; derived held, authored release; `payableBasis` extension; no client retention)
+
+Retention withheld on a posted Supplier Invoice becomes payable through a new
+authored **Retention Release** document
+(`…/projects/{projectId}/retentionReleases/{releaseId}`, `RR-####` from a
+company-wide counter). Retention **held** stays derived from posted supplier
+invoices, **released** is derived from posted releases, and **paid** remains
+derived from posted Supplier Payment allocations — a **hybrid** whose only new
+stored fact is the release event itself.
+
+`payableBasis(invoice, released)` becomes
+`invoice.payableTotal + Σ posted releaseTotal`, so a released amount reappears as
+Remaining Payable and is settled by the **existing, unchanged** Supplier Payments
+flow. The released map is computed in `lib/retention.js →
+releasedByInvoiceId(releases)` and **passed explicitly** across the calculation
+boundary into `lib/supplierPayments.js` and `lib/cashFlow.js` (the
+`lib/clientInvoices.js → ageingByDueDate(invoices, receivedByInvoice, now)`
+precedent); `lib/` performs no Firestore access and holds no global state.
+
+**Why:**
+
+- **Retention was a one-way trapdoor.** A payment could only allocate against
+  `payableTotal`, which is permanently net of retention, so retained money had
+  **no route to ever becoming payable** — the single missing user problem.
+- **A release is not a document the model already contains.** Held and paid are
+  fully derivable; "we agreed to release $X on date D" exists nowhere, so it —
+  and only it — is stored. Storing a released rollup on the invoice would
+  duplicate authored financial truth (ADR-3/ADR-4).
+- **Not a supplier invoice.** A release-as-invoice would put `lineItems` into
+  `invoicedByCostCode` and **double-count cost**. The cost was fully recognised
+  when the invoice posted — `invoicedByCostCode` has always summed the complete
+  ex-GST lines and never subtracted retention.
+- **Not an allocation-target extension.** Adding a release target to
+  `allocations[]` would have touched `lib/payments.js`, `buildAllocations`,
+  `allocationExceptions`, `validatePaymentDraft`, and the payment editor — the
+  most delicate shipped module. Extending the payable basis leaves all of it
+  byte-identical.
+- **GST needed no new arithmetic for a full release.** Retention carries its own
+  GST on the invoice (`retentionGst = retention × 10%`), withheld *with* the
+  retention, so releasing all of it releases exactly the stored `retentionTotal`.
+
+**GST — the cumulative-snapshot model.** A partial release cannot round its own
+share: independent roundings drift, and after *n* partials the accumulated error
+exceeds a cent, so the last release would not reconcile. Each release therefore
+stores a derived `previouslyReleasedAmount` snapshot (the `previouslyApproved`
+idiom from Progress Claims) and
+
+```
+gstAmount = roundMoney((prev + amount) × 10%) − roundMoney(prev × 10%)
+```
+
+which **telescopes**: `Σ gstAmount == invoice.retentionGst` and
+`Σ releaseTotal == invoice.retentionTotal`, **exactly**, for any split and any
+drift-prone value. Proven for 1/2/3/7-way splits over nine retention values.
+
+**⚠️ Firestore Rules and JavaScript disagree on `math.round` — proven in the
+emulator, not assumed.** Rules integer `/` **truncates**: `10005 / 10` yields
+`1000` where JS `Math.round(1000.5)` yields `1001`. A naive
+`math.round(cents / 10)` rule rejected three legitimate writes while every unit
+test passed. The fix is on the **Rules** side —
+`math.floor((exGstCents + 5) / 10)`, which is round-half-up for non-negative
+values and correct under either division semantics — because mirroring the
+truncation in JS instead would have broken the telescoping invariant. Locked in
+by parity tests that fail if either side moves.
+
+**Consequences:**
+
+- **Zero releases reproduce every pre-ADR-30 figure byte-identically** (the
+  `releasedByInvoiceId = {}` default), asserted by dedicated regression tests.
+- **`apAgeing` gains `releasedByInvoiceId` before `now`**, mirroring
+  `ageingByDueDate`. Both parameters are defaulted; the only call site passed
+  two arguments.
+- **`sumRetentionWithheld` is replaced by `sumRetentionHeld`** (summing
+  `retentionHeld`, not `retentionTotal`) plus a clearly-labelled cumulative
+  `sumRetentionReleased`. Keeping the old function would have **double-counted**
+  released retention: once inside `row.remaining` as a payable and again as
+  "withheld and excluded from the forecast". `retentionHeld + releasedTotal ==
+  retentionTotal` by construction, so the two are disjoint.
+- **Released retention ages from the ORIGINAL invoice due date**, because a
+  release carries no due date of its own in V1 — so it normally lands straight in
+  the oldest AP bucket and in Cash Flow's `pastDueAP`, which **suppresses** peak
+  funding. That overstates its age and is stated wherever it shows; it is the
+  honest direction, and it is resolved by the deferred release-due-date work.
+- **Retention *paid* is deliberately NOT reported.** A payment settles an invoice
+  balance as **one** balance; nothing identifies whether the money settled the
+  original payable or released retention. An ordering convention would be an
+  accounting policy Constrapp does not make on the user's behalf (the
+  `allocateOldestFirst` precedent). No "released but unpaid" figure exists.
+- **The cumulative cap is hard-blocked in the UI and unenforceable in rules.**
+  Rules verify the target invoice and the per-document cap but cannot sum
+  siblings — see SECURITY.md → **Deferred Control 24**, whose two accepted gaps
+  are proven as *passing* rules tests.
+- **A failed release subscription is never a zero.** Every consuming page marks
+  the affected figures unavailable and disables release actions; treating missing
+  release data as "nothing released" would understate payables.
+- **Nothing is written onto a supplier invoice.** `retention`, `retentionGst`,
+  and `retentionTotal` are immutable for the life of the document, no `released`
+  status joins `SI_STATUS`, and voiding a release restores every balance at the
+  next render with no reversal, credit note, or adjustment record.
+- **Cost, forecast, and margin are untouched** — a release moves cash, not cost.
+- **Client retention remains deferred.** No client retention field exists
+  anywhere; adding it means a payable/gross split on `clientInvoices`, a new
+  `clientReceipts` reconciliation basis, revised AR ageing, and revised
+  cash-flow revenue timing — a second foundation, not an increment (ADR-22).
+- **Deferred with it:** retention due dates and defects-liability dates,
+  contract-level retention % / caps (no PO schema change), first-half /
+  second-half semantics as a first-class concept (expressible as two partial
+  releases), retention credit notes, retention-paid attribution, and final-account
+  linkage.
+- **A pre-existing Progress Claim defect is documented, not fixed here.**
+  `transitionStatus` computes `claimTotals(approvedAmounts, claim.retention)` but
+  does not rewrite the stored `retention`, so certifying below the retained
+  amount leaves the stored figure higher than the one applied; the supplier
+  invoice then fails `claimReconciliationError` with a confusing GST message. It
+  **fails safe** (creation is blocked, no money is misstated) and is a UX defect
+  only — out of scope for this branch.
+
 ## ADR-31: Supplier Credit Notes (separate collection; read-time reduction; target-validated by rules)
 
 **Context.** A posted supplier invoice is terminal and immutable — no void, no
@@ -1613,9 +1730,9 @@ the rule with its own review.
 
 ## ADR-32: BOQ & Tender Foundation — Part 1: BOQ (measured schedule; null-rate unpriced; read-time budget comparison)
 
-*(ADR-28 Documents and ADR-30 Retention remain reserved for parked feature
-branches and are deliberately not written here — no stubs. ADR-29 Project
-Timeline and ADR-31 Supplier Credit Notes are above. Part 2 of this ADR — Tender Packages, Bids, Comparison, and
+*(ADR-28 Documents remains reserved for a parked feature branch and is
+deliberately not written here — no stub. ADR-29 Project Timeline, ADR-30
+Supplier Retention Release, and ADR-31 Supplier Credit Notes are above. Part 2 of this ADR — Tender Packages, Bids, Comparison, and
 Award — follows below; the two parts are deliberately independent, and nothing
 of Part 2 is implemented by Part 1.)*
 
@@ -1699,10 +1816,10 @@ collection, hook, or derivation changed behaviour.
 
 ## ADR-32: BOQ & Tender Foundation — Part 2: Tender (packages · manual bids · read-time comparison · award as a decision record; no stored totals)
 
-> **Numbering note.** ADR-28 (Documents & Drawings) and ADR-30 (Retention)
-> remain reserved for parked feature branches — the gap is intentional and no
-> stubs are written. ADR-29 (Project Timeline), ADR-31 (Supplier Credit Notes),
-> and Part 1 of this ADR (BOQ) are above. Part 2 is deliberately independent of Part 1: Tender V1 was designed
+> **Numbering note.** ADR-28 (Documents & Drawings) remains reserved for a
+> parked feature branch — the gap is intentional and no stub is written.
+> ADR-29 (Project Timeline), ADR-30 (Supplier Retention Release), ADR-31
+> (Supplier Credit Notes), and Part 1 of this ADR (BOQ) are above. Part 2 is deliberately independent of Part 1: Tender V1 was designed
 > and built to work **without** BOQ (cost-code + free-text scope), and the
 > optional BOQ scope schedule remains a separate future step (see "Independence
 > & future BOQ integration" below).

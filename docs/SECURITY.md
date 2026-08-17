@@ -812,9 +812,9 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     last-write stamps. Fabricated timing lines are a lower-severity analogue of
     Deferred Control 17: a line asserts an expectation, not a bank movement.
 
-<!-- Deferred Controls 20–22 (Documents & Drawings) and 24 (Supplier Retention)
-     are RESERVED for parked feature branches and are deliberately absent here.
-     Do not reuse those numbers. -->
+<!-- Deferred Controls 20–22 (Documents & Drawings) are RESERVED for a parked
+     feature branch and are deliberately absent here. Do not reuse those
+     numbers. -->
 
 23. **Programme integrity & concurrency (Project Timeline)** — Firestore rules
     enforce the `activities` shape and lifecycle thoroughly (exact field set,
@@ -846,6 +846,36 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     document and feeds no financial figure, so a fabricated programme misleads
     reporting but cannot move money — which is precisely why ADR-29 refuses to
     couple `percentComplete` to Progress Claims.
+
+24. **Retention-release aggregate cap & concurrency** — the `retentionReleases`
+    block enforces materially **more** than the allocation blocks can, because
+    `supplierInvoiceId` is a **scalar** field rather than an array element: rules
+    `get()` the target invoice and verify it **exists** and is **`posted`**, that
+    `amount > 0`, that the **per-document cap** holds
+    (`previouslyReleasedAmount + amount <= invoice.retention`, in whole cents),
+    that `gstAmount` **exactly** equals the cumulative rounding delta
+    `round((prev + amount) × 10%) − round(prev × 10%)`, that
+    `releaseTotal == amount + gstAmount`, plus the full lifecycle, role, and
+    audit-stamp rules (posted content immutable, void terminal with a
+    non-whitespace reason, delete blocked).
+    **What they still cannot do:** rules have no `list`, query, or `count`, so
+    they **cannot sum sibling releases** and therefore **cannot verify that
+    `previouslyReleasedAmount` is truthful**. The consequences, all accepted and
+    never presented otherwise: two documents can each claim
+    `previouslyReleasedAmount: 0`, each pass the per-document cap, and
+    **together over-release an invoice**; the cumulative snapshots may be
+    **non-contiguous**, which breaks the GST telescoping to
+    `invoice.retentionGst`; **two users can release the same retention
+    concurrently** and both writes succeed; and no rule can evidence that the
+    release was **genuinely agreed** with the supplier (the Deferred Control 17
+    posture — a release asserts a commercial authorisation, not a bank
+    movement). The normal UI **hard-blocks** an over-release against the
+    currently-loaded posted releases and disables every release action when the
+    release subscription fails — that is a correctness guard, **never** a
+    security boundary. The register reports any resulting over-release rather
+    than hiding it. Creator ≠ poster segregation is not enforced (Deferred
+    Control 7). Both accepted gaps are proven as passing tests in
+    `tests/rules/retentionReleases.rules.test.js` → *"accepted limitations"*.
 
 25. **Supplier-credit-note cumulative cap & concurrency** — the
     `supplierCreditNotes` rules are the strongest financial block in the file:

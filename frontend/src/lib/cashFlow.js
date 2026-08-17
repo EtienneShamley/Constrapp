@@ -10,7 +10,8 @@ import { safeAmount, toCents, todayIso } from './payments'
 //     · lib/supplierPayments.js → cashOutRows() (posted Supplier Payments, money OUT)
 //   LAYER 2 — NEAR-TERM FORECAST: open invoice balances by due date
 //     · clientInvoiceReconciliationRows()   (issued Client Invoices,  gross)
-//     · supplierInvoiceReconciliationRows() (posted Supplier Invoices, payableTotal)
+//     · supplierInvoiceReconciliationRows() (posted Supplier Invoices, derived
+//       payable basis — net of retention HELD, inclusive of retention RELEASED)
 //   LAYER 3 — LONGER-TERM FORECAST: manually timed cashFlowLines
 //     · authored gross cash amounts with ex-GST source coverage tracked separately
 //
@@ -307,8 +308,9 @@ export function manualForecastByMonth(lines, direction, nowMonth) {
 //
 // Input rows are the EXISTING read-time reconciliation rows —
 // clientInvoiceReconciliationRows() (issued invoices, gross remaining) and
-// supplierInvoiceReconciliationRows() (posted invoices, payableTotal remaining,
-// already net of retention). This function never re-derives a balance.
+// supplierInvoiceReconciliationRows() (posted invoices, remaining on the derived
+// payable basis — net of retention still held, inclusive of retention released).
+// This function never re-derives a balance.
 //
 // Classification of each positive remaining balance:
 //   · due month ≥ current month  →  timed into that month (byMonth)
@@ -348,11 +350,31 @@ export function classifyInvoiceBalances(rows, nowMonth) {
   return { byMonth, pastDue, noDueDate, overReconciled }
 }
 
-// Retention withheld on the invoices behind the AP rows — reported alongside
-// the forecast because payableTotal EXCLUDES it and retention release is not
-// modelled: forecast Cash Out omits it, and no release date is ever invented.
-export function sumRetentionWithheld(apRows) {
-  return roundMoney((apRows ?? []).reduce((sum, r) => sum + safeAmount(r?.retentionTotal), 0))
+// Retention still HELD on the invoices behind the AP rows — retention withheld
+// that has NOT been released, and is therefore not payable and correctly absent
+// from Forecast Cash Out. Reported alongside the forecast as known money with no
+// timing: a release date is never invented.
+//
+// ⚠️ THIS SUMS `retentionHeld`, NEVER `retentionTotal`. Once retention is
+// released it becomes part of the invoice's derived payable and flows into
+// `row.remaining`, which classifyInvoiceBalances already times. Summing
+// `retentionTotal` here would report that same money a SECOND time as "withheld
+// and excluded from the forecast" — the exact double-count ADR-30 exists to
+// avoid. `retentionHeld` and the released portion inside `remaining` are
+// disjoint by construction: retentionHeld + releasedTotal = retentionTotal.
+export function sumRetentionHeld(apRows) {
+  return roundMoney((apRows ?? []).reduce((sum, r) => sum + safeAmount(r?.retentionHeld), 0))
+}
+
+// Retention RELEASED to date across the AP rows — a cumulative statistic only.
+//
+// ⚠️ NOT A CASH FIGURE, NOT OUTSTANDING, NOT UNPAID, NOT FORECAST. Released
+// retention is already inside `row.remaining` and is timed there; how much of it
+// has since been PAID is not derivable at all, because a payment allocation
+// settles the invoice balance as one balance (see lib/retention.js). Present
+// this only as "released to date".
+export function sumRetentionReleased(apRows) {
+  return roundMoney((apRows ?? []).reduce((sum, r) => sum + safeAmount(r?.releasedTotal), 0))
 }
 
 // ── Combined monthly rows (actual + forecast) ────────────────────────────────
@@ -589,11 +611,18 @@ export function peakFunding(combinedRows) {
 // the funding need (the dangerous direction). The computed value may then be
 // shown only as a clearly-labelled lower bound.
 //
-// Unallocated cash and retention withheld WARN but never suppress: unallocated
-// cash is already correctly counted in actuals, and retention release is not
-// modellable at all — suppressing on it would disable peak funding on every
-// project that withholds retention. Both exclusions are stated beside the
-// figure instead.
+// Unallocated cash and retention still HELD WARN but never suppress:
+// unallocated cash is already correctly counted in actuals, and retention held
+// has no release date to time it by — suppressing on it would disable peak
+// funding on every project that withholds retention. Both exclusions are stated
+// beside the figure instead.
+//
+// ⚠️ RELEASED retention is NOT in that exemption. Once released it is a real
+// payable inside `row.remaining`, so it reaches the AP classification like any
+// other balance — and because a release carries no due date of its own in V1
+// (ADR-30) it is timed at the ORIGINAL invoice due date, normally landing in
+// `pastDueAP`, which DOES suppress. That is deliberate and is the honest
+// direction: released retention is money owed with no trustworthy month.
 export function peakFundingSuppression({
   untimedRevenue = 0, untimedCommitted = 0, untimedCtc = 0,
   untimedAR = 0, pastDueAR = 0, untimedAP = 0, pastDueAP = 0,

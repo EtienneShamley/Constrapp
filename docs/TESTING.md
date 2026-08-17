@@ -34,7 +34,7 @@ That script runs
   upgrade `firebase-tools`, you must also install JDK 21+.
 - Config: `frontend/firebase.json` (emulator + rules pointer only — no hosting,
   no functions, and **no `.firebaserc`**, so nothing can be deployed).
-- Tests — **450 in total across 10 files**:
+- Tests — **512 in total across 11 files**:
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -118,7 +118,20 @@ That script runs
     date (`2026-02-30`), a `responsibleContactId`/`costCodeId` naming nothing,
     a duplicate `sortOrder`, and a full-document overwrite (last-write-wins)
     are all ACCEPTED by rules.
-  - All ten run for `company_admin`, `project_manager`, `qs`, `subcontractor`,
+  - `frontend/tests/rules/retentionReleases.rules.test.js` — **62 tests**
+    covering every case in §15q below (Retention Release, ADR-30). It asserts
+    the `draft → posted → void` lifecycle with **void terminal**, delete blocked
+    in every status, and the **target-invoice `get()` checks** (missing,
+    unposted, and zero-retention targets rejected; the target frozen at
+    creation). It pins the **EXACT GST formula** — the rules helper
+    `gstCents(exGstCents) = math.floor((exGstCents + 5) / 10)`, which compensates
+    for Firestore rules' integer truncation at the half cent — and the
+    **per-document cap** (`previouslyReleasedAmount + amount <= retention`, in
+    whole cents). It also asserts the two documented **client-only** gaps
+    honestly (Deferred Control 24): a **cumulative** over-release across sibling
+    releases, and a forged `previouslyReleasedAmount`, are both ACCEPTED by
+    rules — rules cannot sum siblings.
+  - All eleven run for `company_admin`, `project_manager`, `qs`, `subcontractor`,
     `client`, an unauthenticated caller, and a financial-role user in a **second
     company**; the tender and activities suites add `super_admin` (proving it has
     no special power). The users and activities suites add a further identity: an
@@ -160,7 +173,7 @@ cd frontend
 npm run test:unit
 ```
 
-- `frontend/tests/unit/cashFlow.test.js` — **130 tests** over `lib/cashFlow.js`
+- `frontend/tests/unit/cashFlow.test.js` — **131 tests** over `lib/cashFlow.js`
   and the cash-row adapters (`lib/clientReceipts.js → cashInRows()`,
   `lib/supplierPayments.js → cashOutRows()`): month-key validation and labels,
   lexicographic ordering, dense ranges across the December–January boundary,
@@ -312,7 +325,46 @@ npm run test:unit
   boundary is what makes the geometry testable without them (the ADR-26
   precedent). Rendering is verified manually in §15p-viii.
 
-  Combined unit total: **493 tests** across the seven files.
+- `frontend/tests/unit/retention.test.js` — **79 tests** over `lib/retention.js`
+  and its supplier-payments consumers (ADR-30): the `draft → posted → void`
+  lifecycle and posted-only counting; retention **held** derived from posted
+  invoices vs **released** derived from posted releases; `releasedByInvoiceId`;
+  **GST telescoping** across partial releases (each release carries the
+  cumulative rounding delta, so N partial releases and one full release agree to
+  the cent); the payable-basis extension (`payableBasis(invoice, released)`) and
+  its **regression guarantee** — an empty release map reproduces every
+  pre-ADR-30 figure exactly; released retention becoming **allocatable** to a
+  payment; the over-release hard block; **void restoring every figure** with no
+  reversal document; and the proof that a release is **not cash** — Actual Cash
+  Out is unchanged while future cash requirement rises (the double-count proof
+  shared with `cashFlow.test.js`). Input purity throughout.
+
+  ⚠️ It asserts what rules CANNOT do as passing tests, so the client-only
+  cumulative cap (Deferred Control 24) is never mistaken for enforcement.
+
+- `frontend/tests/unit/retentionCreditNotes.test.js` — **19 tests** over the
+  **combined** payable model where ADR-30 (retention release) and ADR-31
+  (supplier credit notes) meet in `lib/supplierPayments.js`. Every other unit
+  suite exercises exactly one of the two, so this is the only proof that they
+  compose: `basis = payableTotal + released`, `settled = paid + credited`,
+  `remaining = basis − settled`. It pins the retained-invoice basis, a posted
+  release RAISING the basis (with `retentionHeld + releasedTotal ==
+  retentionTotal`, which is what makes double-counting retention structurally
+  impossible), a valid posted credit LOWERING what remains, draft/void
+  contributing zero on **both** sides, strict additivity when both apply,
+  released retention becoming **allocatable** to an ordinary payment, a release
+  **not** being cash (Actual Cash Out stays payments-only), over-reconciliation
+  staying **signed** and **excluded from AP ageing** while reported separately,
+  and the **regression guarantee** that empty adjustments reproduce every
+  pre-ADR-30/31 figure at every arity.
+
+  ⚠️ It also pins the **accepted ADR-31 boundary as a passing test**: a credit
+  against a **retained** invoice contributes **ZERO — even once the retention
+  has been fully released**, because the gate reads the stored, immutable
+  `retentionTotal`. Releasing retention is not a back door into crediting a
+  retained invoice; do not relax that case to make a future change pass.
+
+  Combined unit total: **592 tests** across the nine files.
 
 Setup: two provisioned users in the same company (e.g. a `project_manager` and a
 `qs`), signed in via `/login`. Reset state between suites by using a fresh
@@ -1885,7 +1937,8 @@ is the record.
 
 > **§15o is RESERVED for Documents & Drawings** (ADR-28), still on a parked
 > branch — the gap is intentional and no stub is written. Timeline holds
-> **§15p** / **ADR-29** / **Deferred Control 23**.
+> **§15p** / **ADR-29** / **Deferred Control 23**; Supplier Retention holds
+> **§15q** / **ADR-30** / **Deferred Control 24**.
 
 Covers the **Timeline** project tab (`/projects/:projectId/timeline`).
 Rationale and every deliberate exclusion: **ADR-29**.
@@ -2063,6 +2116,128 @@ progress bar must be **identical**.
 - [ ] **1280px:** four summary cards in one row; four filters in one row; table
   scrolls inside its card only.
 - [ ] No hover-only affordance anywhere — every action is reachable by tap.
+
+## 15q. Supplier Retention register & Retention Release
+
+Automated coverage: `tests/unit/retention.test.js` (pure domain, GST telescoping,
+supplier-payments regression, cash-flow double-count proof) and
+`tests/rules/retentionReleases.rules.test.js` (the trust boundary). The checks
+below are the **manual** acceptance pass.
+
+### 15q-i. The register
+
+- [ ] Commercial now shows **six** sub-tabs, ending in **Retention**; below `sm:`
+  the strip scrolls horizontally rather than wrapping, and every link stays ≥44px.
+- [ ] `…/commercial/retention` shows **Retention Held**, **Released to Date**,
+  **Total Withheld to Date**, and a **supplier count**. There is **no**
+  "released but unpaid" figure anywhere.
+- [ ] Suppliers are grouped with Invoices / Total Withheld / Released / Held, and
+  expand to per-invoice rows showing retention ex-GST + GST, total, released, held.
+- [ ] A project with no retention shows the empty state, not zeroes-as-facts.
+- [ ] A pre-Contacts invoice (`supplierId: null`) groups by its frozen supplier
+  name and is labelled as a name match.
+- [ ] **Non-financial roles** (subcontractor, client) see the restricted message
+  and trigger no reads.
+
+### 15q-ii. Releasing (the hard block)
+
+- [ ] **Release** on an invoice row opens the modal showing retention withheld
+  (ex-GST, GST, total), already released, and **available to release**.
+- [ ] **Release all remaining** fills the exact remaining ex-GST amount; it is
+  never pre-filled automatically.
+- [ ] GST and the resulting payable total are **derived and read-only**, and
+  update live as the amount changes.
+- [ ] Entering **more than the remaining retention is HARD-BLOCKED** — Save is
+  disabled and the message names what remains. **There is no acknowledgement
+  override.**
+- [ ] Over by exactly **one cent** is still blocked.
+- [ ] A blank/whitespace reason, a missing date, and a zero/negative amount are
+  each blocked.
+- [ ] Saving creates **RR-0001** as a **draft**, and the first release on a fresh
+  project sets `project.currencyLocked` — both in one transaction.
+- [ ] A draft release changes **no** payable figure anywhere.
+
+### 15q-iii. Posting and the payable basis
+
+- [ ] Posting a draft moves it to **Posted** with server-stamped `postedAt`/`postedBy`.
+- [ ] On **Supplier Invoices**, that invoice's **Retention Held** falls by the
+  released amount, **Currently Payable** rises by the same amount, and
+  **Remaining Payable** rises correspondingly. `Gross` is unchanged.
+- [ ] Open the invoice detail: the retention callout now states how much has been
+  released (included in the payable figures) and how much is still held, and says
+  retention **paid** is not reported.
+- [ ] On **Supplier Payments**, the invoice appears as an allocation target with
+  the released amount available; the target line reads **retention held**, and
+  shows **retention released** separately — never the same money twice.
+- [ ] The AP reconciliation table shows separate **Retention Held** and
+  **Released** columns.
+- [ ] AP **ageing** now includes the released balance. ⚠️ Confirm it ages from the
+  **original invoice due date** (usually the oldest bucket) — expected in V1.
+- [ ] Record and post a Supplier Payment for the released amount: Remaining
+  Payable returns to zero and the invoice reads fully reconciled.
+- [ ] Confirm **no** supplier-invoice field changed at any point — `retention`,
+  `retentionGst`, `retentionTotal`, `payableTotal`, and `status` are identical
+  before and after (inspect in the Firebase console).
+
+### 15q-iv. Partial releases and GST
+
+- [ ] Release retention in **two or three parts** that together equal the full
+  retention. The **sum of the GST amounts equals the invoice's `retentionGst`
+  exactly**, and the sum of the release totals equals `retentionTotal` exactly.
+- [ ] Use a drift-prone retention (e.g. **100.05**, whose GST is 10.01) split
+  three ways: the final release carries the **remainder**, not its own rounding,
+  and the totals still reconcile to the cent.
+- [ ] After full release, Retention Held for that invoice is **0**, the Release
+  button is disabled, and Currently Payable equals the invoice's **gross**.
+
+### 15q-v. Void and concurrency
+
+- [ ] Voiding a **posted** release requires a non-whitespace reason and states
+  that the amount returns to retention held.
+- [ ] After voiding, **every** figure returns to its pre-release value — payable,
+  remaining, ageing, retention held — with **no** reversal or credit-note document.
+- [ ] Void is **terminal**: a void release offers no Post, Edit, or Void action.
+- [ ] Releases are **never deleted** — the voided RR row remains in the register.
+- [ ] Prepare a draft, post a *different* release on the same invoice from another
+  session, then try to post the first: it is **blocked** with a message to re-open
+  and save the draft (the stale-snapshot guard).
+- [ ] Cancel a posted supplier invoice that has a posted release (direct SDK):
+  the release surfaces in the **exceptions** panel, is **not** auto-reversed, and
+  the invoice is not modified.
+
+### 15q-vi. Failed-subscription honesty (mandatory)
+
+Simulate a `retentionReleases` read failure (e.g. temporarily deny the collection
+in rules, or go offline before first load).
+
+- [ ] **Retention** page: every figure renders **“—”**, the reason is named, and
+  release actions are disabled. **No figure shows as 0.**
+- [ ] **Supplier Payments**: a red notice states the payable figures may
+  understate what is owed; the page does not silently show pre-release balances
+  as if correct.
+- [ ] **Supplier Invoices**: the same notice appears above the register.
+- [ ] **Cash Flow**: "Retention Releases" is listed among the unavailable
+  forecast sources; Retention held, AP no-due-date, and AP past-due render “—”,
+  and Forecast Cash Out is unavailable rather than understated.
+
+### 15q-vii. Cash Flow — no double count
+
+- [ ] With retention held and **nothing** released, "Retention held (not released
+  — not payable)" equals the full retention withheld, exactly as before ADR-30.
+- [ ] Release part of it and post: the held figure **falls** by that amount, and
+  the released amount appears **once** in the open-AP classification (normally
+  "past due — expected payment not retimed"). It is **not** also counted as
+  retention held.
+- [ ] Held + released reconciles to the total retention withheld.
+- [ ] Fully release: retention held reads **0**.
+- [ ] Peak funding is **suppressed** while the released balance sits past-due —
+  expected, and the reason is named.
+
+### 15q-viii. Responsive
+
+- [ ] At **375px / 768px / 1280px**: both register tables scroll horizontally
+  **inside their card** with no page-level horizontal scroll; the release modal
+  fits with internal scrolling; every action stays ≥44px.
 
 ## 15r. Supplier Credit Notes
 
@@ -2297,10 +2472,9 @@ in rules, or go offline after load and force a re-subscribe).
 ## 15s. BOQ & Tender Foundation
 
 > **§15s-i – §15s-v cover the Bill of Quantities (ADR-32 Part 1); §15s-vi
-> onward cover Tenders (ADR-32 Part 2).** §15o (Documents) and §15q
-> (Retention) remain reserved for parked feature branches — the gap is
-> intentional; §15p (Project Timeline) and §15r (Supplier Credit Notes) are
-> above.
+> onward cover Tenders (ADR-32 Part 2).** §15o (Documents) remains reserved for
+> a parked feature branch — the gap is intentional; §15p (Project Timeline),
+> §15q (Supplier Retention), and §15r (Supplier Credit Notes) are above.
 
 ### Bill of Quantities (BOQ) — §15s-i to §15s-v
 

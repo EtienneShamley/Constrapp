@@ -1989,6 +1989,271 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Retention Releases — project-scoped AUTHORISATIONS that make retention
+    // ALREADY WITHHELD on a posted Supplier Invoice payable. RR-#### from the
+    // company-wide counters/retentionReleases document (covered by the counters
+    // block below — no separate rule needed).
+    //
+    // ⚠️ A RETENTION RELEASE IS NOT A SUPPLIER INVOICE, NOT A TAX INVOICE, NOT A
+    // CREDIT NOTE, AND NOT A PAYMENT. It is an internal commercial
+    // authorisation. It creates no taxable supply, no cost, and no cash
+    // movement — only a posted Supplier Payment moves cash.
+    //
+    // ⚠️ NOTHING IS WRITTEN ONTO THE SUPPLIER INVOICE. `retention`,
+    // `retentionGst`, and `retentionTotal` are immutable for the life of that
+    // document; the released amount is DERIVED at read time from these
+    // documents (lib/retention.js → releasedByInvoiceId), which is why voiding
+    // a release restores every payable balance with no reversal record.
+    //
+    // Reads: restricted to internal financial roles — retention exposes
+    // supplier pricing and the project's cash position, so subcontractor and
+    // client users must NOT read it (matching supplierInvoices/supplierPayments).
+    // Delete: blocked — voiding is a status change; releases are audit records.
+    //
+    // ⚠️ THIS BLOCK ENFORCES MORE THAN THE ALLOCATION BLOCKS CAN. Payment
+    // allocations live in an array, and rules can neither iterate an array nor
+    // get() per element — so allocation targets are wholly unverified.
+    // `supplierInvoiceId` here is a SCALAR field, so the target invoice CAN be
+    // read, and the per-document cap and the exact GST formula CAN be enforced.
+    //
+    // Lifecycle is RULES-ENFORCED, following clientInvoices/clientReceipts/
+    // supplierPayments (ADR-22):
+    //   · create only with status 'draft', docType 'retention_release', null
+    //     lifecycle stamps, createdBy == caller, createdAt == server request time
+    //   · draft edits may change the money/date/reason/notes but not the status,
+    //     not the target invoice, and may not forge a lifecycle stamp
+    //   · posting is a SEPARATE operation touching only
+    //     status/postedAt/postedBy/updatedAt/updatedBy, with postedBy == caller
+    //     and postedAt == server request time
+    //   · voiding (from draft or posted) touches only
+    //     status/voidedAt/voidedBy/voidReason/updatedAt/updatedBy, with
+    //     voidedBy == caller, voidedAt == server request time, and a voidReason
+    //     containing NON-WHITESPACE text
+    //   · posted release content is consequently immutable — voiding is the only
+    //     permitted update
+    //   · void is terminal; there is no posted -> draft and no void -> anything
+    //   · there is deliberately NO 'paid' status — payment state derives from
+    //     Supplier Payment allocations and must not have a second source of
+    //     truth (ADR-24)
+    //
+    // What IS enforced here:
+    //   · the target supplier invoice EXISTS and is POSTED (create + draft edit
+    //     + post). Deliberately NOT re-checked on VOID: voiding must remain
+    //     possible even after the target invoice has been cancelled, which is
+    //     precisely when a release most needs withdrawing
+    //   · the PER-DOCUMENT cap: previouslyReleasedAmount + amount <=
+    //     invoice.retention (ex-GST), in whole cents
+    //   · the EXACT GST formula — gstAmount is the cumulative rounding delta
+    //     round((prev+amount)*10%) − round(prev*10%), so an arbitrary gstAmount
+    //     is REJECTED rather than tolerated, and the legitimate final rounding
+    //     remainder is accepted because the remainder IS this formula's output
+    //   · releaseTotal == amount + gstAmount, in whole cents
+    //
+    // ⚠️ What is NOT enforced here (client-side only — NEVER describe as
+    // enforced; docs/SECURITY.md → Deferred Control 24):
+    //   · that `previouslyReleasedAmount` is TRUTHFUL. Rules have no list,
+    //     query, or count, so they cannot sum sibling release documents. Two
+    //     documents can each claim previouslyReleasedAmount 0 and each pass the
+    //     per-document cap, so the CUMULATIVE cap across siblings is NOT
+    //     enforced and an invoice CAN be over-released
+    //   · that the cumulative snapshots are CONTIGUOUS (no gaps/overlaps), on
+    //     which the GST telescoping to invoice.retentionGst depends
+    //   · concurrent release safety — two users can compute the same remaining
+    //     retention and both writes succeed
+    //   · that the release was GENUINELY AGREED with the supplier — a release
+    //     asserts a commercial authorisation, not a bank movement
+    //   · company-wide RR-number uniqueness independently of the client
+    //     transaction (the counter is client-writable — Deferred Control 6)
+    //   · creator != poster segregation (Deferred Control 7 territory)
+    match /companies/{companyId}/projects/{projectId}/retentionReleases/{releaseId} {
+      function financialMember() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // The document identity that no update of any kind may rewrite. The TARGET
+      // INVOICE is part of that identity: re-pointing a release at a different
+      // invoice would move money between suppliers without any audit trail.
+      function corePreserved() {
+        return request.resource.data.releaseNumber     == resource.data.releaseNumber
+            && request.resource.data.currency          == resource.data.currency
+            && request.resource.data.createdAt         == resource.data.createdAt
+            && request.resource.data.createdBy         == resource.data.createdBy
+            && request.resource.data.docType           == resource.data.docType
+            && request.resource.data.revision          == resource.data.revision
+            && request.resource.data.supplierInvoiceId == resource.data.supplierInvoiceId;
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // MONEY IS DECIMAL; IEEE-754 IS NOT. Identical to the cents() helper in
+      // the clientReceipts/supplierPayments blocks and to lib/payments.js →
+      // toCents(), so a write the client considers valid is never rejected here
+      // for floating-point reasons (or vice versa).
+      function cents(v) {
+        return math.round(v * 100);
+      }
+      // GST on a CUMULATIVE ex-GST amount, in whole cents. Mirrors
+      // lib/retention.js → cumulativeRetentionGst() exactly: ONE rounding of the
+      // cumulative figure, never a composition of per-release roundings.
+      //
+      // ⚠️ DO NOT "SIMPLIFY" THIS TO math.round(exGstCents / 10). Firestore
+      // Rules and JavaScript DISAGREE there, and it was proven in the emulator:
+      // Rules `/` on two integers TRUNCATES, so 10005/10 yields 1000 while JS
+      // Math.round(1000.5) yields 1001 — a one-cent divergence that would reject
+      // legitimate client writes in production while every unit test passed.
+      //
+      // `math.floor((c + 5) / 10)` is round-half-up for non-negative c, and it
+      // is correct under EITHER division semantics (if `/` truncates, floor is a
+      // no-op; if `/` is float division, floor performs the truncation), so it
+      // cannot silently drift if the runtime ever changes. `c` is always a
+      // non-negative integer: cents() returns math.round(...) and both operands
+      // are validated >= 0.
+      //
+      // This mirrors JS roundMoney(x * 10%) exactly — see
+      // tests/rules/retentionReleases.rules.test.js → "math.round matches
+      // JavaScript on half-cent boundaries", which fails if either side moves.
+      function gstCents(exGstCents) {
+        return math.floor((exGstCents + 5) / 10);
+      }
+      function targetInvoice() {
+        return get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/supplierInvoices/$(request.resource.data.supplierInvoiceId));
+      }
+      // The target must exist, be POSTED (the financial commit point — retention
+      // on a draft/approved/cancelled invoice is not real), and hold enough
+      // retention for this document's cumulative claim.
+      function targetValid() {
+        return request.resource.data.supplierInvoiceId is string
+            && request.resource.data.supplierInvoiceId.size() > 0
+            && exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/supplierInvoices/$(request.resource.data.supplierInvoiceId))
+            && targetInvoice().data.status == 'posted'
+            && targetInvoice().data.retention is number
+            && cents(request.resource.data.previouslyReleasedAmount) + cents(request.resource.data.amount)
+               <= cents(targetInvoice().data.retention);
+      }
+      // The arithmetic guarantee rules CAN give per document: the GST is pinned
+      // to the cumulative rounding delta, so `gstAmount` cannot be arbitrary
+      // merely because releaseTotal happens to add up.
+      function moneyValid() {
+        return request.resource.data.amount is number
+            && request.resource.data.amount > 0
+            && request.resource.data.previouslyReleasedAmount is number
+            && request.resource.data.previouslyReleasedAmount >= 0
+            && request.resource.data.gstAmount is number
+            && request.resource.data.gstAmount >= 0
+            && request.resource.data.releaseTotal is number
+            && request.resource.data.releaseTotal > 0
+            && cents(request.resource.data.gstAmount)
+               == gstCents(cents(request.resource.data.previouslyReleasedAmount) + cents(request.resource.data.amount))
+                  - gstCents(cents(request.resource.data.previouslyReleasedAmount))
+            && cents(request.resource.data.releaseTotal)
+               == cents(request.resource.data.amount) + cents(request.resource.data.gstAmount);
+      }
+      // Shape required of every stored DRAFT state (create and draft edit alike).
+      function shapeValid() {
+        return request.resource.data.docType == 'retention_release'
+            && request.resource.data.releaseNumber is string
+            && request.resource.data.revision is number
+            && request.resource.data.invoiceNumber is string
+            && request.resource.data.supplierInvoiceNumber is string
+            // Supplier INVOICES may legitimately carry supplierId: null from
+            // before the Contacts module and are never backfilled (ADR-15), so a
+            // release inheriting that snapshot may too. The NAME is required.
+            && (request.resource.data.supplierId == null
+                || (request.resource.data.supplierId is string
+                    && request.resource.data.supplierId.size() > 0))
+            && request.resource.data.supplierName is string
+            && request.resource.data.supplierName.size() > 0
+            && request.resource.data.currency is string
+            && request.resource.data.currency.matches('^[A-Z]{3}$')
+            // The date the release was AGREED — not a defects-liability date, a
+            // contractual entitlement date, or a payment due date (ADR-30).
+            && request.resource.data.releaseDate is string
+            && request.resource.data.releaseDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+            && request.resource.data.reason is string
+            && request.resource.data.reason.trim().size() > 0
+            && request.resource.data.notes is string
+            && moneyValid();
+      }
+
+      allow read: if financialMember();
+
+      allow create: if financialMember()
+                  && shapeValid()
+                  && targetValid()
+                  && request.resource.data.status == 'draft'
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  // Lifecycle stamps cannot be forged at creation.
+                  && request.resource.data.postedAt == null
+                  && request.resource.data.postedBy == null
+                  && request.resource.data.voidedAt == null
+                  && request.resource.data.voidedBy == null;
+
+      allow update: if financialMember() && corePreserved() && updateStamped() && (
+                    // (a) DRAFT EDIT — the money, date, reason and notes are
+                    //     freely editable while draft (re-saving is also how a
+                    //     stale cumulative snapshot is refreshed), but the
+                    //     status may not move and no lifecycle stamp may be
+                    //     forged.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'draft'
+                      && shapeValid()
+                      && targetValid()
+                      && request.resource.data.postedAt == resource.data.postedAt
+                      && request.resource.data.postedBy == resource.data.postedBy
+                      && request.resource.data.voidedAt == resource.data.voidedAt
+                      && request.resource.data.voidedBy == resource.data.voidedBy
+                    )
+                    ||
+                    // (b) DRAFT -> POSTED. A separate operation carrying no
+                    //     content change whatsoever — the amount and GST that
+                    //     were reviewed are the ones committed. The target is
+                    //     re-verified because posting is the point at which the
+                    //     money becomes payable.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'posted'
+                      && changedKeys().hasOnly(['status', 'postedAt', 'postedBy', 'updatedAt', 'updatedBy'])
+                      && targetValid()
+                      && request.resource.data.postedBy == request.auth.uid
+                      && request.resource.data.postedAt == request.time
+                    )
+                    ||
+                    // (c) DRAFT|POSTED -> VOID (terminal). This branch is what
+                    //     makes a POSTED release immutable: voiding is the only
+                    //     permitted update, and it may touch nothing else.
+                    //     Voiding needs no reversal document — the released
+                    //     amount is derived, so every payable balance restores
+                    //     at the next render.
+                    //
+                    //     ⚠️ targetValid() is deliberately NOT required here. A
+                    //     release whose invoice was later cancelled is exactly
+                    //     the one that most needs withdrawing, and rules must
+                    //     never trap it in the posted state.
+                    (
+                      (resource.data.status == 'draft' || resource.data.status == 'posted')
+                      && request.resource.data.status == 'void'
+                      && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.voidedBy == request.auth.uid
+                      && request.resource.data.voidedAt == request.time
+                      && request.resource.data.voidReason is string
+                      && request.resource.data.voidReason.trim().size() > 0
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
     // Contacts — company-wide directory of suppliers, subcontractors,
     // consultants, and clients (third-party PII: names, phones, emails, ABNs,
     // payment terms).
@@ -2006,7 +2271,8 @@ service cloud.firestore {
 
     // Counters — sequential document numbering (purchaseOrders, progressClaims,
     // supplierInvoices, variationsClient, variationsSupplier, clientInvoices,
-    // clientReceipts, supplierPayments, supplierCreditNotes, tenderPackages).
+    // clientReceipts, supplierPayments, supplierCreditNotes, tenderPackages,
+    // retentionReleases).
     // Read/write restricted to the roles that create numbered documents;
     // the create transaction must read and increment the counter.
     // Counter integrity (+1 only, no arbitrary set) is NOT enforced here — see

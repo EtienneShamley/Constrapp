@@ -18,6 +18,8 @@ import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
 import { useSupplierCreditNotes } from '../../hooks/useSupplierCreditNotes'
 import { useVariations } from '../../hooks/useVariations'
 import { useForecastLines } from '../../hooks/useForecastLines'
+import { useRetentionReleases } from '../../hooks/useRetentionReleases'
+import { releasedByInvoiceId } from '../../lib/retention'
 import {
   isFinancialRole, isBaselineEstablished, projectForecastTotals, computeMargin,
 } from '../../lib/margin'
@@ -37,7 +39,7 @@ import {
   monthLabel, currentMonthKey,
   CFL_SOURCE_TYPE_LABELS,
   activeCashFlowLines, voidCashFlowLines, staleCashFlowLines,
-  manualForecastByMonth, classifyInvoiceBalances, sumRetentionWithheld,
+  manualForecastByMonth, classifyInvoiceBalances, sumRetentionHeld,
   buildMonthlyCombinedRows, projectedClosingPosition,
   untimedForecastRevenue, untimedRemainingCommitted, untimedUncommittedCtc,
   revenueCoverage, costCoverage, COMPLETENESS_STATE, completenessState,
@@ -110,6 +112,7 @@ export default function ProjectCashFlow() {
   const { supplierCreditNotes, supplierCreditNotesError } = useSupplierCreditNotes(mid)
   const { variations, variationsError }             = useVariations(mid)
   const { forecastLines, forecastLinesError }       = useForecastLines(mid)
+  const { retentionReleases, retentionReleasesError } = useRetentionReleases(mid)
 
   const nowMonth = currentMonthKey()
 
@@ -127,13 +130,23 @@ export default function ProjectCashFlow() {
     () => clientInvoiceReconciliationRows(clientInvoices, clientReceipts),
     [clientInvoices, clientReceipts],
   )
+  // ⚠️ The AP rows carry the DERIVED payable basis: net of retention still HELD,
+  // inclusive of retention RELEASED (ADR-30). A failed release read is never
+  // treated as "nothing released" — that would understate Forecast Cash Out.
+  const releasedMap = useMemo(
+    () => (retentionReleasesError ? {} : releasedByInvoiceId(retentionReleases)),
+    [retentionReleasesError, retentionReleases],
+  )
   const apRows = useMemo(
-    () => supplierInvoiceReconciliationRows(supplierInvoices, supplierPayments, supplierCreditNotes),
-    [supplierInvoices, supplierPayments, supplierCreditNotes],
+    () => supplierInvoiceReconciliationRows(supplierInvoices, supplierPayments, supplierCreditNotes, releasedMap),
+    [supplierInvoices, supplierPayments, supplierCreditNotes, releasedMap],
   )
   const arClass = useMemo(() => classifyInvoiceBalances(arRows, nowMonth), [arRows, nowMonth])
   const apClass = useMemo(() => classifyInvoiceBalances(apRows, nowMonth), [apRows, nowMonth])
-  const retentionWithheld = useMemo(() => sumRetentionWithheld(apRows), [apRows])
+  // ⚠️ NO DOUBLE COUNT. This sums retention HELD, never retentionTotal. Released
+  // retention is already inside each row's `remaining` and is therefore timed by
+  // apClass above; reporting it here as well would present the same money twice.
+  const retentionHeld = useMemo(() => sumRetentionHeld(apRows), [apRows])
 
   // ── Layer 3: manual timing lines ───────────────────────────────────────────
   const manualIn  = useMemo(() => manualForecastByMonth(cashFlowLines, 'in', nowMonth), [cashFlowLines, nowMonth])
@@ -293,6 +306,9 @@ export default function ProjectCashFlow() {
     clientInvoicesError && 'Client Invoices — Forecast Cash In and open AR are unavailable',
     supplierInvoicesError && 'Supplier Invoices — Forecast Cash Out and open AP are unavailable',
     supplierCreditNotesError && 'Supplier Credit Notes — open AP balances may be overstated, so Forecast Cash Out is unavailable',
+    // Missing release data is NOT "nothing released": it would understate every
+    // open AP balance and overstate retention held.
+    retentionReleasesError && 'Retention Releases — open AP and retention held may be understated, so both are unavailable',
     cashFlowLinesError && 'Cash Flow timing lines — the manual forecast is unavailable',
   ].filter(Boolean)
   const costBasisErrors = [
@@ -356,7 +372,7 @@ export default function ProjectCashFlow() {
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 mt-4 pt-4 border-t border-brand-border">
               <Metric label="Forecast Cash In" value={forecastUnavailable ? '—' : money(forecastIn)} help="Open client invoice balances by due date + manual timing · gross" />
-              <Metric label="Forecast Cash Out" value={forecastUnavailable ? '—' : money(forecastOut)} help="Open supplier invoice payables by due date + manual timing · gross, net of retention" />
+              <Metric label="Forecast Cash Out" value={forecastUnavailable ? '—' : money(forecastOut)} help="Open supplier invoice payables by due date + manual timing · gross, net of retention held" />
               <Metric
                 label="Forecast Net"
                 value={forecastUnavailable ? '—' : money(roundMoney(forecastIn - forecastOut))}
@@ -515,13 +531,13 @@ export default function ProjectCashFlow() {
                     <span>Past due — expected recovery not retimed</span><span className="tabular-nums">{clientInvoicesError ? '—' : money(arClass.pastDue)}</span>
                   </p>
                   <p className="m-0 text-[11.5px] text-brand-text flex justify-between gap-2">
-                    <span>AP — no due date</span><span className="tabular-nums">{supplierInvoicesError ? '—' : money(apClass.noDueDate)}</span>
+                    <span>AP — no due date</span><span className="tabular-nums">{supplierInvoicesError || retentionReleasesError ? '—' : money(apClass.noDueDate)}</span>
                   </p>
                   <p className="m-0 text-[11.5px] text-brand-text flex justify-between gap-2">
-                    <span>Past due — expected payment not retimed</span><span className="tabular-nums">{supplierInvoicesError ? '—' : money(apClass.pastDue)}</span>
+                    <span>Past due — expected payment not retimed</span><span className="tabular-nums">{supplierInvoicesError || retentionReleasesError ? '—' : money(apClass.pastDue)}</span>
                   </p>
                   <p className="m-0 text-[11.5px] text-brand-text flex justify-between gap-2">
-                    <span>Retention withheld (release not modelled)</span><span className="tabular-nums">{supplierInvoicesError ? '—' : money(retentionWithheld)}</span>
+                    <span>Retention held (not released — not payable)</span><span className="tabular-nums">{supplierInvoicesError || retentionReleasesError ? '—' : money(retentionHeld)}</span>
                   </p>
                 </div>
                 {(arClass.overReconciled < 0 || apClass.overReconciled < 0) && (
@@ -777,8 +793,12 @@ export default function ProjectCashFlow() {
             therefore differ from the net shown here.
           </li>
           <li className="text-[11.5px] text-brand-muted">
-            Retention withheld ({supplierInvoicesError ? 'unavailable' : money(retentionWithheld)}) is excluded from Forecast Cash Out. Retention release is not
-            modelled and no release date is invented — add a manual Cash Out line if you expect release in a
+            Retention <span className="font-semibold">held</span> ({supplierInvoicesError || retentionReleasesError ? 'unavailable' : money(retentionHeld)})
+            is excluded from Forecast Cash Out — it is not payable until it is released, and no release date is
+            invented. Retention that HAS been released (Commercial → Retention) is payable and is already counted
+            above inside the open supplier-invoice balances, so it is never shown here as well. Because a release
+            carries no due date of its own, it is timed at the original invoice due date and normally lands in
+            &ldquo;past due — expected payment not retimed&rdquo;; add a manual Cash Out line if you expect it in a
             known month.
           </li>
           <li className="text-[11.5px] text-brand-muted">

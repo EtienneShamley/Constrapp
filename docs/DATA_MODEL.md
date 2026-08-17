@@ -29,6 +29,7 @@ companies/{companyId}
     forecastLines/{costCodeId}           (deterministic id = costCodeId)
     cashFlowLines/{lineId}               (authored Cash Flow timing inputs)
     activities/{activityId}              (project programme — NON-FINANCIAL)
+    retentionReleases/{releaseId}        (authored retention-release authorisations)
     commercial/baseline                  (single doc; deterministic id = "baseline")
 ```
 
@@ -596,7 +597,9 @@ documents, and both are searchable (`SI-0007 · INV-4471`).
 `grossTotal`**. `payableTotal` is already net of retention withheld and of
 retention's own GST; using gross would present retained money as currently
 payable. A payment **never** writes, clears, or reduces `retention`,
-`retentionGst`, or `retentionTotal` — retention release is not modelled.
+`retentionGst`, or `retentionTotal` — they are immutable for the life of the
+invoice. Retention becomes payable only through a posted Retention Release
+(ADR-30), which raises the DERIVED payable basis and is never written back here.
 
 **The scalar invariant.** Rules enforce
 `allocatedTotal + unallocatedAmount == amount` (with both ≥ 0 and `amount > 0`),
@@ -941,6 +944,58 @@ coordinate are derived at read time (`lib/projectTimeline.js`,
 `lib/timelineGantt.js`) and never written back. **Deletion is blocked** — cancel
 via status. **No migration**: a project with no `activities` loads normally with
 an empty programme.
+
+## …/projects/{projectId}/retentionReleases/{releaseId}
+
+The authored event that makes retention **already withheld** on a posted Supplier
+Invoice **payable**. Random document ids; `RR-####` from the company-wide
+`counters/retentionReleases` document.
+
+> ⚠️ **A retention release is NOT a supplier invoice, a tax invoice, a credit
+> note, or a payment.** It is an internal commercial authorisation. It creates no
+> taxable supply, no cost, and no cash movement — only a posted Supplier Payment
+> moves cash, and the cost was fully recognised when the invoice posted.
+
+| Field | Type | Notes |
+|---|---|---|
+| `releaseNumber` | string | `RR-0001` |
+| `status` | string | `draft` \| `posted` \| `void` (void terminal). **No `paid`** — payment state derives from Supplier Payment allocations (ADR-24) |
+| `docType` | string | `retention_release` |
+| `supplierInvoiceId` | string | The target invoice. A **scalar**, which is why rules can `get()` it and verify it is `posted` |
+| `invoiceNumber`, `supplierInvoiceNumber` | string | Frozen snapshots — a register row renders without reading the invoice |
+| `supplierId` | string \| null | `null` for legacy pre-Contacts invoices; never backfilled (ADR-15) |
+| `supplierName` | string | Required non-empty; frozen snapshot |
+| `previouslyReleasedAmount` | number | **Derived snapshot**, never user-editable: ex-GST released before this release. Makes the partial-release GST telescope |
+| `amount` | number | Ex-GST released by this document, > 0 |
+| `gstAmount` | number | `roundMoney((prev + amount) × 10%) − roundMoney(prev × 10%)` — the cumulative rounding delta, rules-enforced exactly |
+| `releaseTotal` | number | `amount + gstAmount` — the cash that becomes payable |
+| `releaseDate` | string | `YYYY-MM-DD`, the date the release was **agreed**. **Not** a defects-liability date, contractual entitlement date, or payment due date — none is modelled |
+| `reason` | string | Required non-whitespace |
+| `notes` | string | Optional |
+| `currency`, `revision` | string, number | Audit snapshot / `1` |
+| `createdAt/By`, `updatedAt/By`, `postedAt/By`, `voidedAt/By`, `voidReason` | | Standard audit stamps |
+| `externalRefs` | map | `{}` — reserved for accounting sync |
+
+**Deliberately absent:** `costCodeId` (a release moves cash, not cost),
+`retentionPaid`, `retentionDueDate`, `defectsLiabilityDate`,
+`supplierReleaseInvoiceReference`, and every client-retention or PO-retention
+field.
+
+**Stored vs derived.** Only the fields above are authored. **Retention held,
+retention released, the derived payable basis, Remaining Payable, reconciliation
+state, and AP ageing are all derived at read time** (`lib/retention.js` +
+`lib/supplierPayments.js`) and **never** written back. In particular
+**`retention`, `retentionGst`, and `retentionTotal` on the supplier invoice are
+immutable for the life of that document** — no release reduces, clears, or stamps
+them, and no `released` status joins `SI_STATUS`. Voiding a release therefore
+restores every balance at the next render with no reversal record. A release is
+monetary data, so creating one **locks the project currency in the same
+transaction** (ADR-21); voided releases remain lock evidence. **No migration** —
+a project with no `retentionReleases` behaves exactly as before ADR-30.
+
+**Retention *paid* is not derivable and is not stored.** A payment allocation
+settles an invoice balance as one balance; nothing identifies whether it settled
+the original payable or released retention (ADR-30).
 
 ## Cash Flow — what is and is not persisted
 
