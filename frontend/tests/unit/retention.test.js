@@ -588,10 +588,10 @@ describe('zero releases reproduce the pre-ADR-30 figures exactly', () => {
   })
 
   it('an explicitly empty released map behaves identically to omitting it', () => {
-    expect(supplierInvoiceReconciliationRows([inv], pays, {}))
+    expect(supplierInvoiceReconciliationRows([inv], pays, [], {}))
       .toEqual(supplierInvoiceReconciliationRows([inv], pays))
-    expect(payablesSummary([inv], pays, {})).toEqual(payablesSummary([inv], pays))
-    expect(apAgeing([inv], pays, {})).toEqual(apAgeing([inv], pays))
+    expect(payablesSummary([inv], pays, [], {})).toEqual(payablesSummary([inv], pays))
+    expect(apAgeing([inv], pays, [], {})).toEqual(apAgeing([inv], pays))
   })
 })
 
@@ -605,7 +605,7 @@ describe('a posted release raises the payable exactly once', () => {
   })
 
   it('raises Remaining Payable on a fully-settled invoice back above zero', () => {
-    const [row] = supplierInvoiceReconciliationRows([inv], pays, map)
+    const [row] = supplierInvoiceReconciliationRows([inv], pays, [], map)
     expect(row.invoicePayableTotal).toBe(9900)
     expect(row.payableTotal).toBe(10340)
     expect(row.paid).toBe(9900)
@@ -614,7 +614,7 @@ describe('a posted release raises the payable exactly once', () => {
   })
 
   it('reduces retention HELD by the same amount it added to payable', () => {
-    const [row] = supplierInvoiceReconciliationRows([inv], pays, map)
+    const [row] = supplierInvoiceReconciliationRows([inv], pays, [], map)
     expect(row.retentionHeld).toBe(1100 - 440)
     expect(row.releasedTotal).toBe(440)
   })
@@ -631,7 +631,7 @@ describe('a posted release raises the payable exactly once', () => {
 
   it('raises the project payables summary', () => {
     const before = payablesSummary([inv], pays)
-    const after = payablesSummary([inv], pays, map)
+    const after = payablesSummary([inv], pays, [], map)
     expect(before.remaining).toBe(0)
     expect(after.remaining).toBe(440)
     expect(after.postedPayable).toBe(before.postedPayable + 440)
@@ -639,7 +639,7 @@ describe('a posted release raises the payable exactly once', () => {
 
   it('puts the released balance into AP ageing', () => {
     expect(apAgeing([inv], pays).total).toBe(0)
-    expect(apAgeing([inv], pays, map).total).toBe(440)
+    expect(apAgeing([inv], pays, [], map).total).toBe(440)
   })
 
   it('uses the new basis for over-payment warnings', () => {
@@ -655,9 +655,9 @@ describe('a posted release raises the payable exactly once', () => {
   it('never mutates the invoice document', () => {
     const target = invoice()
     const before = JSON.stringify(target)
-    supplierInvoiceReconciliationRows([target], pays, map)
-    payablesSummary([target], pays, map)
-    apAgeing([target], pays, map)
+    supplierInvoiceReconciliationRows([target], pays, [], map)
+    payablesSummary([target], pays, [], map)
+    apAgeing([target], pays, [], map)
     expect(JSON.stringify(target)).toBe(before)
   })
 })
@@ -670,15 +670,15 @@ describe('voiding a release restores the original numbers', () => {
     const posted = [release({ prev: 0, amount: 400, status: RR_STATUS.POSTED })]
     const voided = [release({ prev: 0, amount: 400, status: RR_STATUS.VOID })]
 
-    const withRelease = supplierInvoiceReconciliationRows([inv], pays, releasedByInvoiceId(posted))[0]
-    const afterVoid   = supplierInvoiceReconciliationRows([inv], pays, releasedByInvoiceId(voided))[0]
+    const withRelease = supplierInvoiceReconciliationRows([inv], pays, [], releasedByInvoiceId(posted))[0]
+    const afterVoid   = supplierInvoiceReconciliationRows([inv], pays, [], releasedByInvoiceId(voided))[0]
     const never       = supplierInvoiceReconciliationRows([inv], pays)[0]
 
     expect(withRelease.remaining).toBe(440)
     expect(afterVoid).toEqual(never)
     expect(afterVoid.remaining).toBe(0)
     expect(afterVoid.retentionHeld).toBe(1100)
-    expect(payablesSummary([inv], pays, releasedByInvoiceId(voided)))
+    expect(payablesSummary([inv], pays, [], releasedByInvoiceId(voided)))
       .toEqual(payablesSummary([inv], pays))
   })
 })
@@ -688,7 +688,7 @@ describe('releasing the full retention makes the whole gross payable', () => {
     const inv = invoice()
     const map = releasedByInvoiceId([release({ prev: 0, amount: 1000 })])
     expect(payableBasis(inv, map.si1)).toBe(inv.grossTotal)
-    const [row] = supplierInvoiceReconciliationRows([inv], [], map)
+    const [row] = supplierInvoiceReconciliationRows([inv], [], [], map)
     expect(row.retentionHeld).toBe(0)
     expect(row.payableTotal).toBe(11000)
   })
@@ -717,7 +717,7 @@ describe('cash flow retention semantics', () => {
 
   it('sums retention HELD, never retentionTotal', () => {
     const rows = supplierInvoiceReconciliationRows(
-      [inv], pays, releasedByInvoiceId([release({ prev: 0, amount: 400 })]),
+      [inv], pays, [], releasedByInvoiceId([release({ prev: 0, amount: 400 })]),
     )
     expect(sumRetentionHeld(rows)).toBe(660)
     expect(sumRetentionReleased(rows)).toBe(440)
@@ -725,7 +725,7 @@ describe('cash flow retention semantics', () => {
 
   it('NO DOUBLE COUNT: held and classified AP are disjoint and sum to the withholding', () => {
     const map = releasedByInvoiceId([release({ prev: 0, amount: 400 })])
-    const rows = supplierInvoiceReconciliationRows([inv], pays, map)
+    const rows = supplierInvoiceReconciliationRows([inv], pays, [], map)
     const held = sumRetentionHeld(rows)
     const cls = classifyInvoiceBalances(rows, NOW)
     const classified = cls.pastDue + cls.noDueDate
@@ -740,7 +740,7 @@ describe('cash flow retention semantics', () => {
 
   it('reports zero held once retention is fully released', () => {
     const map = releasedByInvoiceId([release({ prev: 0, amount: 1000 })])
-    const rows = supplierInvoiceReconciliationRows([inv], pays, map)
+    const rows = supplierInvoiceReconciliationRows([inv], pays, [], map)
     expect(sumRetentionHeld(rows)).toBe(0)
     expect(sumRetentionReleased(rows)).toBe(1100)
   })

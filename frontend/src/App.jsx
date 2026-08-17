@@ -19,6 +19,7 @@ import Subcontractors from './pages/Subcontractors'
 import Pulse          from './pages/Pulse'
 import Shield         from './pages/Shield'
 import ProjectOverview   from './pages/project/ProjectOverview'
+import ProjectBoq        from './pages/project/ProjectBoq'
 import ProjectBudget     from './pages/project/ProjectBudget'
 import ProjectCostCodes  from './pages/project/ProjectCostCodes'
 import ProjectPurchaseOrders from './pages/project/ProjectPurchaseOrders'
@@ -32,6 +33,8 @@ import ProjectClientReceipts from './pages/project/ProjectClientReceipts'
 import ProjectSupplierPayments from './pages/project/ProjectSupplierPayments'
 import ProjectCashFlow from './pages/project/ProjectCashFlow'
 import ProjectRetention from './pages/project/ProjectRetention'
+import ProjectTenders from './pages/project/ProjectTenders'
+import ProjectTimeline from './pages/project/ProjectTimeline'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
 
 export default function App() {
@@ -59,14 +62,14 @@ export default function App() {
                     <Route path="projects/:projectId" element={<ProjectDetailLayout />}>
                       <Route index element={<Navigate to="overview" replace />} />
                       <Route path="overview" element={<ProjectOverview />} />
-                      <Route path="boq" element={
-                        <ProjectPlaceholder
-                          icon="📋"
-                          title="BOQ & Tender Tool"
-                          description="Build a Bill of Quantities, set margin & overheads, and transfer to this project's budget in one click."
-                          badge="Coming in Sprint 3"
-                        />
-                      } />
+                      {/* BOQ — the measured Bill of Quantities (ADR-32 Part 1).
+                          Estimating (margin/overheads) and BOQ → Budget transfer
+                          are later branches. */}
+                      <Route path="boq" element={<ProjectBoq />} />
+                      {/* Tenders — packages, bids, Tender Comparison, and the
+                          award decision record (ADR-32 Part 2). Deliberately
+                          BOQ-independent: cost-code + free-text scope. */}
+                      <Route path="tenders"     element={<ProjectTenders />} />
                       <Route path="budget"      element={<ProjectBudget />} />
                       <Route path="cost-codes"  element={<ProjectCostCodes />} />
                       <Route path="purchase-orders" element={<ProjectPurchaseOrders />} />
@@ -104,14 +107,12 @@ export default function App() {
                           badge="Coming in Sprint 4"
                         />
                       } />
-                      <Route path="timeline" element={
-                        <ProjectPlaceholder
-                          icon="⏱"
-                          title="Timeline"
-                          description="Gantt-style schedule view with delay detection for this project."
-                          badge="Coming in Sprint 4"
-                        />
-                      } />
+                      {/* Project Timeline — the project programme (ADR-29).
+                          A CURRENT-PLAN schedule: activities, milestones,
+                          responsibility and manually entered progress, with a
+                          read-only Gantt. It writes no financial document and
+                          no project progress field. */}
+                      <Route path="timeline" element={<ProjectTimeline />} />
                       <Route path="reports" element={
                         <ProjectPlaceholder
                           icon="📊"

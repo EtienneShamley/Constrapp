@@ -14,10 +14,10 @@ Preconstruction → Procurement → Delivery → Cost Control → Forecasting �
 
 | Phase | What happens | Modules (status) |
 |---|---|---|
-| **Preconstruction** | Measure quantities, build the BOQ, estimate, transfer to an approved budget | Drawings/Takeoff, BOQ & Estimating *(planned)*; **Cost Codes**, **Budgets** *(implemented)* |
-| **Procurement** | Tender packages, subcontractor invitations, bid levelling, award, commitment | Tender & Award *(future)* → **Purchase Orders** *(implemented)* |
+| **Preconstruction** | Measure quantities, build the BOQ, estimate, transfer to an approved budget | Drawings/Takeoff *(planned)*; **BOQ** *(implemented — foundation)*; Estimating incl. BOQ → Budget transfer *(planned)*; **Cost Codes**, **Budgets** *(implemented)* |
+| **Procurement** | Tender packages, subcontractor invitations, bid levelling, award, commitment | **Tender & Award** *(implemented — foundation)*; subcontractor invitations, bid levelling, and Award → PO transfer *(planned)* → **Purchase Orders** *(implemented)* |
 | **Delivery** | Scope variations, cumulative progress claims against commitments | **Variations** *(implemented — foundation)*; **Progress Claims** *(implemented)* |
-| **Cost Control** | Supplier invoices, actual cost, payments/credit notes | **Supplier Invoices**, **Supplier Payments** *(implemented)*; Credit Notes, Retention Release *(future)* |
+| **Cost Control** | Supplier invoices, actual cost, payments/credit notes | **Supplier Invoices**, **Supplier Payments**, **Supplier Credit Notes** *(implemented)*; Retention Release *(future)* |
 | **Revenue Control** | Client invoices issued against the contract sum and approved client variations; receivables, and the cash received to settle them | **Client Invoices / Accounts Receivable**, **Client Receipts** *(implemented — foundation)* |
 | **Forecasting** | Forecast cost to complete and project margin *(implemented — foundation)*; cash flow | **Forecast Cost to Complete**, **Project Margin**, **Cash Flow** (actual + forecast, with visualisation) *(implemented — foundation)*; Cash Flow date filtering *(planned)* |
 | **Final Account** | Reconcile budget + variations + actual into final margin; commercial reporting | Final Account, Commercial Reporting *(future/planned)* |
@@ -107,17 +107,30 @@ frontend/                  The entire application (run all npm commands here)
                            project/cashFlow/ (CashFlowChart, CombinedMonthlyTable,
                            LineEditorModal, LineVoidModal — page-local),
                            ProjectVariations, ProjectForecast,
-                           ProjectCommercial (margin), ProjectPlaceholder
+                           ProjectBoq (Bill of Quantities),
+                           project/boq/ (BoqItemEditorModal, BoqItemVoidModal —
+                           page-local),
+                           ProjectCommercial (margin),
+                           ProjectTimeline (project programme),
+                           project/timeline/ (TimelineGantt, ActivityTable,
+                           ActivityCards, ActivityEditorModal,
+                           ActivityCancelModal — page-local),
+                           ProjectPlaceholder
     hooks/                 All Firestore access (see below); projectCurrencyLock.js
                            stages the project currency ratchet inside a caller's
                            transaction so monetary writes and the lock are atomic
     lib/                   firebase.js, formatters.js, currency.js, nav.js, projectTabs.js,
                            purchaseOrders.js, progressClaims.js, supplierInvoices.js,
-                           clientInvoices.js, payments.js (shared, direction-agnostic),
+                           supplierCreditNotes.js (reduction records against posted
+                           supplier invoices), clientInvoices.js,
+                           payments.js (shared, direction-agnostic),
                            clientReceipts.js, supplierPayments.js, cashFlow.js
                            (pure monthly cash aggregation), cashFlowChart.js
                            (chart presentation transform — no arithmetic),
-                           variations.js, forecast.js, margin.js, contacts.js
+                           variations.js, forecast.js, margin.js, contacts.js,
+                           boq.js (pure BOQ arithmetic + read-time budget comparison),
+                           projectTimeline.js (programme domain logic — NON-financial),
+                           timelineGantt.js (Gantt geometry — no arithmetic)
 docs/                      This documentation + design-reference assets
                            (Constrapp_v5.jsx prototype, screenshots, Word doc — do not move)
 AGENT.md / CLAUDE.md / README.md / PRODUCT.md / ROADMAP.md   (canonical root docs)
@@ -141,10 +154,11 @@ AuthProvider          Firebase Auth user (onAuthStateChanged)
 Per-page hooks (not context providers): `useProject(projectId)` (lookup within
 ProjectsProvider), `useCostCodes()`, `useContacts()`, `useBudgetLines(projectId)`,
 `usePurchaseOrders(projectId)`, `useProgressClaims(projectId)`,
-`useSupplierInvoices(projectId)`, `useClientInvoices(projectId)`,
+`useSupplierInvoices(projectId)`, `useSupplierCreditNotes(projectId)`,
+`useClientInvoices(projectId)`,
 `useClientReceipts(projectId)`, `useSupplierPayments(projectId)`,
 `useVariations(projectId)`, `useForecastLines(projectId)`,
-`useProjectCommercial(projectId)`.
+`useProjectCommercial(projectId)`, `useProjectActivities(projectId)`.
 
 ## Routing Structure
 
@@ -156,7 +170,7 @@ ProtectedRoute (redirects to /login when signed out)
    ├─ /                        Dashboard
    ├─ /projects                Projects list
    ├─ /projects/:projectId     ProjectDetailLayout (tab bar; index → overview)
-   │    overview | budget | cost-codes | purchase-orders | progress-claims | invoices | variations | forecasting | commercial  (live)
+   │    overview | boq | tenders | budget | cost-codes | purchase-orders | progress-claims | invoices | variations | forecasting | commercial  (live)
    │      (the `forecasting` route renders the Forecast Cost to Complete page; the tab is labelled "Forecast".
    │       the `invoices` route renders SUPPLIER invoices (AP); the tab is labelled "Supplier Invoices".
    │       the `commercial` route is a nested layout — index = Project Margin,
@@ -167,8 +181,17 @@ ProtectedRoute (redirects to /login when signed out)
    │       `commercial/cash-flow` = Cash Flow (ACTUAL recorded cash movement —
    │        read-only; forecast and charts are later branches),
    │       `commercial/retention` = Supplier Retention register + Retention
-   │        Release (ADR-30))
-   │    boq | documents | photos | timeline | reports  (ProjectPlaceholder)
+   │        Release (ADR-30);
+   │       the `tenders` route renders the Tender register — packages, bids,
+   │        Tender Comparison, and the award decision record; financial roles only)
+   │    boq                  Bill of Quantities (ProjectBoq — measured items,
+   │                          derived amounts, read-time BOQ-vs-budget comparison;
+   │                          tab label stays "BOQ"; the Tenders tab follows it)
+   │    timeline  (live — the project PROGRAMME: activities, milestones,
+   │      responsibility, manually entered progress, read-only Gantt.
+   │      Read: company_admin/project_manager/qs; write: company_admin/
+   │      project_manager only. Writes no financial document.)
+   │    documents | photos | reports  (ProjectPlaceholder)
    ├─ /settings/company        Company country & base currency (company_admin writes)
    ├─ /contacts                Company-wide contact directory
    ├─ /subcontractors          Filtered contacts view (+ IQ™ placeholder card)
@@ -202,16 +225,20 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Client Invoices / Accounts Receivable | Implemented (foundation) — read-time contract control and read-time reconciliation against receipts; **no tax-invoice output** |
 | Client Receipts (cash received) | Implemented (foundation) — embedded allocations, read-time balances |
 | Supplier Payments (cash paid) | Implemented (foundation) — embedded allocations against each posted invoice's **derived payable basis** (stored `payableTotal` + posted retention released), read-time Paid to Date / Remaining Payable / AP ageing |
+| Supplier Credit Notes | Implemented (foundation) — reduction records against exactly one posted, retention-free supplier invoice; rules-enforced lifecycle **with target-invoice `get()` checks**; read-time subtraction from Invoiced/Actual/Remaining Payable; lives inside the Supplier Invoices view; **no client credit notes, no refunds** |
 | Supplier Retention & Retention Release | Implemented (foundation) — read-time register grouped by supplier; retention **held** derived from posted invoices, **released** from posted `retentionReleases`; partial releases with cumulative-snapshot GST; **no client retention, no retention due/DLP dates, no retention-paid attribution** (ADR-30) |
 | Cash Flow (actual + forecast) | Implemented (foundation) — read-time monthly actual, automatic invoice due-date forecast, manual `cashFlowLines` timing, projected cumulative/closing position, completeness, untimed reporting, peak funding with suppression, and a two-panel chart that consumes those derived rows without re-deriving them (ADR-26); **no date filtering, not a bank balance** |
 | Variations (client + supplier) | Implemented (foundation) |
+| Tenders (packages, bids, comparison, award) | Implemented (foundation) — cost-code + free-text scope (BOQ-independent), manual bids, read-time comparison, award as a decision record; **no stored totals, no PO creation, closing date informational** |
 | Forecast Cost to Complete | Implemented (foundation) — read-time, cost-side |
 | Project Margin (Commercial tab) | Implemented (foundation) — read-time, ex-GST; commercial baseline is the only stored input |
 | Dashboard | Partial — live project list; static KPI/chart data |
 | Contacts | Implemented (foundation) — company-wide directory; supplier picker on POs |
 | Subcontractors | Partial — filtered contacts view; IQ™ scoring is a placeholder |
 | PULSE™, SHIELD™ | Placeholder screens |
-| BOQ, Documents, Photos, Timeline, Reports tabs | Placeholder (`ProjectPlaceholder`) |
+| BOQ (Bill of Quantities) | Implemented (foundation) — measured items with optional rates, rules-enforced derived amounts, read-time budget comparison; **feeds no financial figure**; Estimating and BOQ → Budget transfer are later branches |
+| Project Timeline (programme) | Implemented (foundation) — activities + milestones, date-only planned/actual dates, manual progress, read-time overdue/horizon derivation, read-only CSS/SVG Gantt (no new dependency), cancel-not-delete; **`qs` is read-only**, subcontractor/client denied; **no baseline, no dependencies, no financial effect** |
+| Documents, Photos, Reports tabs | Placeholder (`ProjectPlaceholder`) |
 
 ## Hooks-Only Firestore Access
 

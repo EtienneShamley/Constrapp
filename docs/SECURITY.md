@@ -64,16 +64,21 @@ to financial roles.**
 | `…/costCodes/{id}` | company member | financial roles | blocked — deactivate via `isActive` |
 | `…/contacts/{id}` | **financial roles only** | financial roles | blocked — archive via `isActive` |
 | `…/projects/{id}/budgetLines/{id}` | company member | financial roles | blocked |
+| `…/projects/{id}/boqItems/{id}` | **financial roles only** | financial roles, **create active-only; transitions, post-void immutability and the `amount == quantity × rate` invariant rules-enforced** | blocked — void via status |
 | `…/projects/{id}/purchaseOrders/{id}` | company member | financial roles | blocked — cancel via status |
 | `…/projects/{id}/progressClaims/{id}` | company member | financial roles | blocked — reject via status |
 | `…/projects/{id}/supplierInvoices/{id}` | **financial roles only** | financial roles | blocked — cancel via status |
 | `…/projects/{id}/clientInvoices/{id}` | **financial roles only** | financial roles, **create draft-only; transitions and issued-immutability rules-enforced** | blocked — void via status |
 | `…/projects/{id}/clientReceipts/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability and the scalar amount invariant rules-enforced** | blocked — void via status |
 | `…/projects/{id}/supplierPayments/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability and the scalar amount invariant rules-enforced** | blocked — void via status |
+| `…/projects/{id}/supplierCreditNotes/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability, the header cent invariant, AND the target-invoice checks (exists, posted, zero retention, supplier/currency match, grossTotal ≤ payableTotal) rules-enforced via a `get()` on the target at create, draft edit, and posting** | blocked — void via status |
 | `…/projects/{id}/variations/{id}` | **financial roles only** | financial roles | blocked — reject/withdraw via status |
+| `…/projects/{id}/tenderPackages/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, issued-scope freeze, the closingDate/notes carve-out, and award integrity (bid exists · same package · received · name snapshot · once) rules-enforced** | blocked — cancel via status |
+| `…/projects/{id}/tenderBids/{id}` | **financial roles only** | financial roles, **create received-only against an issued same-project package with a real supplier/subcontractor contact; edits/voids only while the package stays issued; bids freeze on award/cancel** | blocked — void via status |
 | `…/projects/{id}/forecastLines/{id}` | **financial roles only** | financial roles | blocked — clear via `null`, never deleted |
 | `…/projects/{id}/cashFlowLines/{id}` | **financial roles only** | financial roles, **create active-only; transitions and post-void immutability rules-enforced** | blocked — void via status |
 | `…/projects/{id}/commercial/baseline` | **financial roles only** | financial roles | blocked — the single baseline doc is never deleted |
+| `…/projects/{id}/activities/{id}` | **`company_admin`, `project_manager`, `qs`** | **`company_admin`, `project_manager` ONLY — `qs` is READ-ONLY**; shape, closed status set, date/milestone/percentage invariants, cancellation branch and cancelled-terminality rules-enforced | blocked — cancel via status |
 | `…/counters/{id}` | financial roles | financial roles | blocked |
 
 Contacts reads are deliberately tighter than the shared pattern: the directory
@@ -371,6 +376,95 @@ a rules change and a security review, which is the intended friction.
   period lock, no immutable snapshot, and no history beyond last-write
   `updatedAt`/`updatedBy` (Deferred Control 7 territory).
 
+## Tenders — competitor pricing, rules-enforced lifecycle
+
+**Reads are restricted to financial roles on BOTH collections.** A tender bid
+**is competitor pricing**, and a package read beside its bids reveals the whole
+competitive position — so `subcontractor` and `client` users must not read
+either collection. A subcontractor can therefore **never see a competitor's
+tender pricing** (nor their own bid — there is no bidder portal; Deferred
+Control 10 posture). `super_admin` has no special power here, as everywhere.
+
+**Both lifecycles are rules-enforced** (the ADR-22 standard). Packages:
+create draft-only with null stamps and empty award/cancel fields; draft edits
+only while draft; `draft → issued` is stamp-only and **freezes
+name/description/scope/costCodes**; issued edits may touch **only
+`closingDate` and `notes`** (`affectedKeys().hasOnly`); `issued → awarded`
+touches only the award fields, forces `awardedBy == request.auth.uid` and
+`awardedAt == request.time`, and — via `get()` on the bid document — verifies
+the awarded bid **exists in this project, belongs to this package
+(`bid.tenderPackageId == packageId`), is `received`**, and that
+`awardedBidderName` equals the bid's own `bidderName`; because the branch
+requires the current status to be `issued`, a **second/concurrent award is
+rejected** (Firestore serialises writes per document). `draft|issued →
+cancelled` needs a non-whitespace reason. Awarded and cancelled are terminal;
+delete is blocked in every status.
+
+Bids: create only as `received` (no draft state — a bid is a transcription),
+with `createdBy == request.auth.uid`, `createdAt == request.time`, null void
+stamps, and — via `get()`s — a **same-project parent package whose status is
+`issued`**, a `tenderNumber` equal to that package's own, and a
+`bidderContactId` naming a **real contact whose `contactTypes` include
+supplier or subcontractor**, with `bidderName` equal to that contact's
+`displayName` (this contact verification deliberately **exceeds** the
+supplierPayments precedent, which leaves `supplierId` existence unverified — a
+fabricated bidder in a competitive record is worth the extra `get()`).
+Received edits and voids are permitted **only while the package remains
+`issued`** — once it is awarded or cancelled, **every bid write is rejected**,
+which is what freezes the awarded bid's lines and makes the derived award
+value trustworthy. Void is terminal; delete is blocked.
+
+**⚠️ NO STORED TOTALS — deliberate.** Bids store no `bidTotal` and packages
+store no `awardTotal`: rules cannot iterate or sum an array, so a stored
+header total would be unverifiable and forgeable by direct SDK call (the
+header-vs-lines integrity problem previously identified in Credit Notes).
+Every displayed figure derives at read time through the **central validity
+gate** (`lib/tenders.js → assessBid`): a bid with any malformed line — or whose
+finite lines total beyond representable range — is invalid as a whole, total
+`null`, never a partial sum, never $0, never clamped, and is excluded from the
+lowest-bid ranking, the budget comparison, the per-cost-code matrix, and the
+**Awarded Bid Value**, while remaining visible and flagged. Malformed documents
+**fail safely instead of being trusted.**
+
+**⚠️ The award TRANSITION on a malformed bid is client-blocked only — state
+this precisely.** Rules verify the awarded bid's *identity and status*
+(exists · same package · `received` · name snapshot · single award) but
+**cannot read its `lineItems`**, so a financial-role caller using the SDK
+directly **can award a bid whose embedded lines are malformed**. The app
+refuses to (`awardBlockedReason`), but that is UX, not a boundary. The
+consequence is deliberately bounded and must not be overstated in either
+direction: the award record is created, but **no malformed figure is ever
+trusted anywhere** — `awardedBidValue` returns *unavailable*, the package
+renders "awarded bid missing or malformed" instead of a number, and because an
+award writes no PO and no financial value at all, **nothing downstream moves**.
+Preventing the transition itself is not achievable in this architecture and is
+not claimed; the alternative — a rules-checkable stored total — was rejected
+precisely because it would let the same caller forge a *plausible* number
+instead of an obviously unavailable one (ADR-32 Part 2).
+
+*Client-enforced only (deferred — never describe these as enforced; Deferred
+Control 26):*
+
+- **The shape of each `lineItems[]` element** — rules cannot iterate an array,
+  so per-line `costCodeId`/`costCodeName`/`description`/`amount` are
+  unverified, including finite-number and ≥ 0 checks. **A malicious direct-SDK
+  caller can create malformed embedded line data** — rules enforce
+  package/status/identity/lifecycle controls, not per-line integrity. Because
+  no derivation trusts a malformed bid (the validity gate above), such data
+  fails safely rather than silently influencing the comparison.
+- **Line cost-code containment** within the package's `costCodes`, and that any
+  `costCodeId` (on packages or bid lines) names a **real, active** cost code.
+- **The shape of each `costCodes[]` element** on packages.
+- **One active bid per bidder per package** — bid ids are random and rules have
+  no queries; two simultaneous creators can duplicate (the Deferred Control 9
+  posture). The comparison shows duplicates rather than hiding them.
+- **Closing-date enforcement — there is none, anywhere.** The closing date is
+  informational only; rules validate its `'YYYY-MM-DD'` shape and nothing else,
+  and a bid can be recorded after it (in the app and by direct SDK alike). The
+  UI states this wherever the date appears.
+- **`bidDate` realism** — shape only.
+- **Business truth** — that the transcribed prices match the paper bid.
+
 **Forecast Lines reads are restricted to financial roles** — deliberately tighter
 than the company-member `budgetLines` read. The Forecast Cost to Complete data
 exposes expected project overruns and implied margin (Forecast Final Cost,
@@ -404,6 +498,59 @@ variations) is future work alongside the deferred scoping controls below.
 
 Note the asymmetry: `qs` can write cost codes, budget lines, POs, and claims but
 **not** projects — with one deliberate, narrowly-scoped exception described below.
+
+## Bill of Quantities — the internal estimate, rules-enforced lifecycle
+
+**Reads are restricted to financial roles.** The BOQ is the project's internal
+estimate — measured quantities and the rates the contractor expects to pay —
+so `subcontractor` and `client` users must not read it: a bidder who can read
+the estimate prices against it. This is the tightest-audience posture in the
+app to date, and **any future tender or bidder-facing surface must never expose
+BOQ rates at all.**
+
+BOQ items feed **no financial figure**. The hook writes only `boqItems` (plus
+the currency ratchet inside the create transaction); Budgeted, Committed,
+Actual, Invoiced, Forecast, Margin, and Cash Flow are untouched, and the
+BOQ-vs-budget comparison is derived at read time in `lib/boq.js`, never stored
+(ADR-32 Part 1).
+
+**The `boqItems` lifecycle is rules-enforced** — the two-state `cashFlowLines`
+shape (a BOQ item is a preconstruction record with no financial commit point):
+
+- `create` only with `status: 'active'`, `revision: 1`, a non-whitespace
+  `description`, a bounded non-empty `unit`, `quantity >= 0`, a **mandatory**
+  `costCodeId` + non-empty `costCodeName` snapshot, a shape-valid `currency`,
+  `createdBy == request.auth.uid`, `createdAt == request.time`, and **null
+  void stamps**.
+- **The pricing invariant** — the one arithmetic guarantee rules can give
+  here: `rate` and `amount` are **both null** (unpriced) or **both
+  non-negative numbers** with `cents(quantity × rate) == cents(amount)`
+  (whole-cent comparison, the `clientReceipts` idiom — exactly equivalent to a
+  half-cent tolerance). A priced item can never carry an amount that disagrees
+  with its own quantity × rate, and `0` can never be smuggled in to mean
+  "unpriced".
+- **Every** update must preserve `currency`, `createdAt`, `createdBy`, and
+  `revision`, and must stamp `updatedBy == request.auth.uid` and
+  `updatedAt == request.time`.
+- **Active edits** may change content (measurement, pricing, cost code,
+  labels) but not the status, must satisfy the full shape, and may not forge a
+  void stamp.
+- **`active → void`** may affect **only** `status`, `voidedAt`, `voidedBy`,
+  `voidReason`, `updatedAt`, `updatedBy`, with `voidedBy == request.auth.uid`,
+  `voidedAt == request.time`, and a **non-whitespace** `voidReason`.
+- **`void` is terminal**; `delete` is blocked for active and void items alike.
+
+*Client-enforced only (deferred — never describe these as enforced; Deferred
+Control 26):*
+
+- **That `costCodeId` names a real, active cost code** in this company —
+  validated by shape only (the ADR-21 no-enum reasoning).
+- **That `unit` matches the cost code's unit**, or any unit convention at all.
+- **Duplicate items** (same code/section/item number) across siblings — rules
+  have no list, query, or count.
+- **BOQ ↔ Budget consistency — deliberately none.** The BOQ and the Approved
+  Budget are independent records compared only at read time; neither validates
+  the other, and no reconciliation is stored.
 
 ## Company Country & Currency
 
@@ -665,10 +812,40 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     last-write stamps. Fabricated timing lines are a lower-severity analogue of
     Deferred Control 17: a line asserts an expectation, not a bank movement.
 
-> **Numbering note.** Deferred Controls **20–22** are reserved for the parked
-> Documents & Drawings branch and **23** for the parked Project Timeline branch.
-> Neither is on `main` yet, so those numbers are held rather than reused.
-> Retention therefore takes **24**.
+<!-- Deferred Controls 20–22 (Documents & Drawings) are RESERVED for a parked
+     feature branch and are deliberately absent here. Do not reuse those
+     numbers. -->
+
+23. **Programme integrity & concurrency (Project Timeline)** — Firestore rules
+    enforce the `activities` shape and lifecycle thoroughly (exact field set,
+    closed status set, ISO date shape, `plannedFinish >= plannedStart`,
+    milestone same-day, integer percentage 0–100, the
+    status/progress/actual-date invariants, both-or-neither reference pairs,
+    immutable `createdAt`/`createdBy`/`revision`, server-stamped audit fields,
+    the cancellation key restriction, and cancelled-terminality) but **cannot
+    verify programme truth**. All of the following are **client-side only** and
+    are proven unenforced by tests in `tests/rules/activities.rules.test.js`:
+    a **valid-shaped but impossible calendar date** is accepted (`2026-02-30`,
+    `2026-04-31` — rules have no calendar); `responsibleContactId` and
+    `costCodeId` **may name nothing**, and the frozen name snapshots are never
+    checked against the referenced document; **`percentComplete` is an
+    unverifiable assertion** — a manually authored figure that no rule can
+    compare to physical progress; **actual dates need not reflect reality** or
+    be plausible against the planned dates; **`sortOrder` uniqueness is not
+    enforceable** (no query, no count — concurrent creation can tie, and the
+    app breaks ties deterministically instead of claiming uniqueness); a
+    **backwards status transition cannot be judged legitimate** rather than a
+    cover-up (permitting correction is the deliberate design — ADR-29); and
+    **dependency-cycle freedom is not enforced** because no dependency model
+    exists in V1. Additionally, this collection is **LAST-WRITE-WINS**: there is
+    no optimistic concurrency, so two users editing one activity overwrite each
+    other including fields the second never looked at, and
+    `updatedAt`/`updatedBy` record *who* wrote last, not *what* changed (no
+    field-level history — Deferred Control 7 territory).
+    **Blast radius is deliberately bounded:** the programme writes no financial
+    document and feeds no financial figure, so a fabricated programme misleads
+    reporting but cannot move money — which is precisely why ADR-29 refuses to
+    couple `percentComplete` to Progress Claims.
 
 24. **Retention-release aggregate cap & concurrency** — the `retentionReleases`
     block enforces materially **more** than the allocation blocks can, because
@@ -700,9 +877,143 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     Control 7). Both accepted gaps are proven as passing tests in
     `tests/rules/retentionReleases.rules.test.js` → *"accepted limitations"*.
 
+25. **Supplier-credit-note cumulative cap & concurrency** — the
+    `supplierCreditNotes` rules are the strongest financial block in the file:
+    the first to `get()` another document, validating on **create, on every
+    draft edit, AND on the `draft → posted` transition** that the target invoice
+    exists, is `posted`, carries zero retention, matches the credit's supplier
+    and currency, and has a `payableTotal` covering **this** credit's
+    `grossTotal`. What they still **cannot** do is anything requiring
+    aggregation, array iteration, or re-checking after the write:
+
+    - **The CUMULATIVE cap is app-enforced only.** Total posted credits against
+      one invoice never exceeding its `payableTotal` is a HARD BLOCK in the
+      UI/hook (deliberately stricter than the warn-and-acknowledge over-payment
+      posture), but rules have no list, query, or count with which to sum
+      sibling credit notes, so **two users can post credits against the same
+      invoice concurrently and both writes succeed**. This is the irreducible
+      residue of this control.
+    - **Rules cannot inspect `lineItems`.** `subtotal`/`gstTotal` may not match
+      the array's sum, and per-line shape (positive amounts, valid tax codes,
+      cost codes drawn from the target invoice) is unverified. Only the SCALAR
+      header invariant is rules-enforced. A document whose headers and lines
+      disagree is therefore **writeable**.
+    - **Rules never fire again after a write.** Supplier-invoice lifecycle is
+      itself client-enforced (Deferred Controls 1 and 2), so a direct SDK call
+      can cancel or alter a target *after* its credit posted, and no rule
+      re-runs.
+
+    **What the app does about the last two.** `lib/supplierCreditNotes.js →
+    creditTargetException` is a single central **read-time validity gate**: a
+    posted credit contributes to **no** figure — neither the payable side
+    (`grossTotal`) nor the cost side (`lineItems`) — unless the target still
+    exists, is posted, matches supplier and currency, carries zero retention,
+    covers the credit's gross, **and** the document's stored headers reconcile
+    to its own lines in whole cents, each line's GST matches its tax code, each
+    amount is positive, and every line's cost code appears on the target
+    invoice. Anything failing is excluded whole (never clamped) and listed in
+    the Credit-note exceptions panel. This closes the otherwise-unbounded
+    divergence in which a document could reduce AP by its header while reducing
+    Actual by its lines.
+
+    ⚠️ **That gate is an additional correctness guard for what this app
+    renders — it is NOT a substitute for Firestore rules and protects nothing
+    that reads the data by another route** (an export, a future backend, a
+    direct SDK reader). The malformed document still exists in Firestore; only
+    Constrapp's own figures are protected from it. Do not describe read-time
+    validation as enforcement.
+
+    Also not enforced: creator ≠ poster (Deferred Control 4), and company-wide
+    SCN-number uniqueness (shares Deferred Control 6).
+
+26. **BOQ & Tender integrity gaps (the shared ADR-32 control)** — one entry
+    for the two preconstruction foundations, because both hit the same
+    boundary: rules can enforce shape, lifecycle, and cross-document identity,
+    but cannot verify measured or transcribed content.
+
+    **BOQ portion (ADR-32 Part 1).** Firestore rules enforce the `boqItems` shape, lifecycle,
+    and the `amount == quantity × rate` whole-cent invariant for priced items,
+    but **cannot** verify the estimate itself. Consequences, all accepted and
+    never presented otherwise: `costCodeId` is validated by **shape only** and
+    may name no real (or an inactive) cost code; the `unit` is any bounded
+    non-empty string — nothing ties it to the cost code's unit; **duplicate
+    items cannot be blocked** (rules have no list, query, or count), so two
+    users can measure the same scope concurrently and both writes succeed; an
+    **active item stays freely editable** — there is no issue/freeze point, no
+    period locking, and no change history beyond last-write stamps; and
+    **nothing reconciles the BOQ against the Approved Budget** — deliberately,
+    because the two are independent records compared only at read time.
+    Fabricated BOQ items are the lowest-severity entry in this list: an item
+    feeds **no** financial figure, so a forged one distorts only the BOQ page's
+    own totals and its read-time budget comparison.
+
+    **Tender portion (ADR-32 Part 2).** Firestore rules enforce the tender lifecycles, the issued-
+    scope freeze, the bid-write windows, and the cross-document award checks
+    (bid exists · same package · received · bidder-name snapshot · single
+    award), plus bidder-contact existence and type at bid create. They
+    **cannot** verify anything inside an embedded array. Consequences, all
+    accepted and never presented otherwise: **a malicious direct-SDK caller
+    can create malformed embedded `lineItems` data** (non-numeric, negative,
+    or non-finite amounts; out-of-scope or fabricated cost codes; wrong
+    element shape) — mitigated at read time, not at write time: the central
+    validity gate (`lib/tenders.js → assessBid`) invalidates the whole bid, so
+    it is flagged and excluded from every derived total, the comparison
+    ranking, the cost-code matrix, and the Awarded Bid Value, and is never
+    partially summed, clamped, or treated as $0. **The same caller can also
+    AWARD such a bid**: the award rule checks the bid's identity and status
+    via `get()` but cannot read its lines, so refusing to award a malformed
+    bid is **client-only**. The bounded consequence — an award record whose
+    value reads *unavailable*, with no PO and no financial figure written —
+    is described in the Tenders section above and is accepted for V1.
+    Likewise client-only: `costCodes[]`
+    element shape on packages; real/active cost-code foreign-key integrity;
+    line containment within the package scope; **one active bid per bidder
+    per package** (random ids, no queries — two simultaneous creators can
+    duplicate, the Deferred Control 9 posture); **closing-date enforcement
+    (none exists anywhere — the date is informational only)**; `bidDate`
+    realism; **currency-lock activation via direct SDK** (a bid created
+    outside the app can decline to set the flag — the Deferred Control 12
+    posture); and the **business truth** of manually transcribed prices.
+    Because bids store no `bidTotal` and packages store no `awardTotal`,
+    there is **no trusted header figure to forge** — the absence of stored
+    totals is itself the mitigation for the header-vs-lines problem.
+
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
 is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.
+
+## Project Timeline — the one collection where `qs` is read-only
+
+The `activities` block splits read from write more narrowly than anywhere else
+in the file:
+
+- **Read:** `company_admin`, `project_manager`, **`qs`** — the QS needs the
+  programme as commercial context.
+- **Create/update:** `company_admin`, `project_manager` **only**. Programme
+  authorship is operational PM/admin responsibility, and `qs` is **read-only**
+  here (asserted by test).
+- **`subcontractor` and `client` are denied entirely.** This is an honesty
+  constraint, not a policy preference: those roles are **not scoped to their own
+  projects** (Deferred Control 5/10), so granting programme reads would expose
+  **every project's programme in the company**. A per-activity or per-project
+  "visibility" flag was deliberately **not** built — it could only be enforced
+  client-side, and a control that cannot be enforced must not be presented as
+  access control. Sharing a programme with a subcontractor or client is a
+  **client-portal feature with its own scoping design**.
+- **`super_admin` gains nothing**, matching every other collection.
+
+**Delete is blocked** (`allow delete: if false`). Cancellation is terminal,
+requires a non-whitespace reason, and rules restrict the write to
+`status`/`cancelReason`/`cancelledAt`/`cancelledBy`/`updatedAt`/`updatedBy`, so
+no content edit can ride along with a cancellation and a cancelled activity is
+immutable retained history.
+
+⚠️ **The lifecycle is deliberately NOT forward-only** (an explicit departure
+from ADR-11): any non-cancelled status may move to any other, including
+backwards, because a programme is a plan that gets corrected rather than an
+audit record. This is a *design* decision, not a rules gap — but it does mean
+the rules cannot tell a legitimate correction from a cover-up (Deferred Control
+20).
 
 ## Secrets & the Vite bundle
 
@@ -738,8 +1049,9 @@ the security-specific gate is:
       `users/{uid}` doc and compare `companyId` to the path).
 - [ ] Read/write role sets are correct; PII and commercially sensitive
       collections (Contacts, Supplier Invoices, **Client Invoices**, Client
-      Receipts, **Supplier Payments**, Variations, Forecast Lines, Commercial
-      Baseline, Counters) restrict **reads** to financial roles.
+      Receipts, **Supplier Payments**, Variations, **Tender Packages, Tender
+      Bids**, Forecast Lines, Commercial Baseline, Counters) restrict
+      **reads** to financial roles.
 - [ ] The `clientInvoices` lifecycle rules still permit exactly
       draft-edit / draft→issued / draft|issued→void, still require
       `issuedBy`/`voidedBy` to equal the caller and the stamps to equal
@@ -765,6 +1077,23 @@ the security-specific gate is:
       `direction in ['in','out']`, `amount > 0`, `revision == 1`, the
       `'YYYY-MM'` `monthKey` shape, and the costCodeId/costCodeName pairing,
       and still reject `void → *`.
+- [ ] The `tenderPackages` lifecycle rules still permit exactly
+      draft-edit / draft→issued / issued closingDate-and-notes-only edit /
+      issued→awarded / draft|issued→cancelled, still require
+      `issuedBy`/`awardedBy`/`cancelledBy` to equal the caller and the stamps
+      to equal `request.time`, still require a **non-whitespace**
+      `cancelReason`, still freeze name/description/scope/costCodes at issue,
+      and still verify the awarded bid via `get()` (same project · same
+      package · `received` · `awardedBidderName` equals the bid's
+      `bidderName`) with `resource.data.status == 'issued'` (single award).
+- [ ] The `tenderBids` lifecycle rules still permit exactly received-edit /
+      received→void, **both only while the parent package is `issued`**
+      (`get()` on the same-project package), still require the create-time
+      contact `get()` (exists · supplier/subcontractor · `bidderName` equals
+      `displayName`) and tenderNumber-snapshot match, still require
+      `voidedBy` to equal the caller with a **non-whitespace** `voidReason`,
+      and still reject `void → *`. **No stored `bidTotal`/`awardTotal` field
+      is introduced anywhere** — totals stay read-time-derived.
 - [ ] Company document writes stay scoped to the four currency fields
       (`affectedKeys().hasOnly`); create/delete remain blocked.
 - [ ] The `qs` project rule still affects `currencyLocked` **only**, and only

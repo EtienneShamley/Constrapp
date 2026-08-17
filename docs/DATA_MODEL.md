@@ -13,8 +13,9 @@ companies/{companyId}
   contacts/{contactId}
   counters/{counterId}                 (purchaseOrders, progressClaims, supplierInvoices,
                                         variationsClient, variationsSupplier, clientInvoices,
-                                        clientReceipts, supplierPayments)
+                                        clientReceipts, supplierPayments, tenderPackages)
   projects/{projectId}
+    boqItems/{itemId}                    (measured Bill of Quantities)
     budgetLines/{lineId}
     purchaseOrders/{poId}
     progressClaims/{claimId}
@@ -23,8 +24,11 @@ companies/{companyId}
     clientReceipts/{receiptId}
     supplierPayments/{paymentId}
     variations/{variationId}
+    tenderPackages/{packageId}
+    tenderBids/{bidId}
     forecastLines/{costCodeId}           (deterministic id = costCodeId)
     cashFlowLines/{lineId}               (authored Cash Flow timing inputs)
+    activities/{activityId}              (project programme — NON-FINANCIAL)
     retentionReleases/{releaseId}        (authored retention-release authorisations)
     commercial/baseline                  (single doc; deterministic id = "baseline")
 ```
@@ -151,14 +155,15 @@ next save. Embedding (not a `contactAssignments` subcollection) follows ADR-16.
 
 Company-wide sequential numbering. Documents: `purchaseOrders`, `progressClaims`,
 `supplierInvoices`, `variationsClient`, `variationsSupplier`, `clientInvoices`,
-`clientReceipts`, `supplierPayments`.
+`clientReceipts`, `supplierPayments`, `supplierCreditNotes`, `tenderPackages`.
 
 | Field | Type | Notes |
 |---|---|---|
 | `next` | number | The next number to assign. Read and incremented in the **same transaction** as the numbered document's creation, so concurrent users never share a number. Missing counter ⇒ starts at 1 |
 
 Numbers render as `PO-0001` / `PC-0001` / `SI-0001` / `CV-0001` / `SV-0001` /
-`CI-0001` / `CR-0001` / `SP-0001` (zero-padded to 4).
+`CI-0001` / `CR-0001` / `SP-0001` / `SCN-0001` / `TP-0001` (zero-padded to 4). Tender **bids**
+carry no number and use no counter — a bid is identified by its bidder and package.
 
 ## companies/{companyId}/projects/{projectId}
 
@@ -186,12 +191,54 @@ Currency **locks** as soon as the project holds any monetary value — a non-zer
 cancelled**), any progress claim, supplier invoice, **client invoice (including
 draft and void)**, **client receipt (including draft and void)**, **supplier
 payment (including draft and void)**, client or
-supplier variation, any forecast line with
-`uncommittedCostToComplete !== null`, or an established commercial baseline. Cost Codes and Contacts are company-wide and
+supplier variation, **any tender bid (including void — tender packages never
+lock: they carry scope and dates, no amounts)**, any forecast line with
+`uncommittedCostToComplete !== null`, any **priced** BOQ item (`rate !== null`,
+including rate 0 and voided priced items — an unpriced item is a measurement,
+not money, and never locks), or an established commercial baseline. Cost Codes and Contacts are company-wide and
 hold no money, so they **never** lock. Detecting that evidence is
 **client-enforced** (`lib/currency.js` → `monetaryLockReasons`); Firestore rules
 cannot enumerate random-id subcollections. What rules **do** enforce is the
 one-way ratchet once the flag is set. See [SECURITY.md](SECURITY.md).
+
+## …/projects/{projectId}/boqItems/{itemId}
+
+One measured line in the project's Bill of Quantities (ADR-32 Part 1). One BOQ
+per project — a flat register with **no header document** (mirroring
+`budgetLines`); random ids, **no counter** (a BOQ item is never quoted to a
+supplier or client, so ADR-5 does not apply). **Reads restricted to financial
+roles** — the BOQ is the internal estimate.
+
+| Field | Type | Notes |
+|---|---|---|
+| `itemNumber` | string | User-authored label (`"2.1"`), NOT a sequence; may be `''` |
+| `section` | string | Free-text grouping; may be `''` |
+| `description` | string | Required, non-whitespace |
+| `quantity` | number | Required, ≥ 0 — a measurement, not money |
+| `unit` | string | Required; prefilled from the cost code's `unit`, editable |
+| `rate` | number \| null | Ex-GST rate. **`null` = not yet priced** — never 0-as-unpriced; 0 is a price |
+| `amount` | number \| null | **Derived** `quantity × rate` (whole-cent, rules-enforced); **`null` whenever `rate` is `null`** |
+| `costCodeId` | string | **Required** — the cost-code spine |
+| `costCodeName` | string | Frozen display snapshot at write time |
+| `status` | string | `active` \| `void` — lifecycle **rules-enforced**; void terminal, reasoned |
+| `voidedAt` / `voidedBy` / `voidReason` | | Null / `''` until voided |
+| `currency` | string | Audit snapshot; the project currency remains the display authority |
+| `revision` | number | Always `1` (reserved) |
+| `notes` | string | |
+| `attachments` | array | Reserved `[]` — no uploads (no Storage rules exist) |
+| `externalRefs` | map | Reserved `{}` |
+| `createdAt/By`, `updatedAt/By` | | Rules-verified stamps |
+
+### Stored vs derived
+
+Only the measurement and pricing inputs are stored. The BOQ total, the unpriced
+count, and the **BOQ vs Approved Budget** comparison (per cost code, union of
+both sides, variance suppressed while any contributing item is unpriced) are
+derived at read time in `lib/boq.js` and never written anywhere. **BOQ items
+feed no financial figure** — Budgeted, Committed, Actual, Invoiced, Forecast,
+Margin, and Cash Flow are untouched. Estimating (margin/overheads), BOQ →
+Budget transfer, and Tender entities are NOT modelled (see Planned Commercial
+Entities below).
 
 ## …/projects/{projectId}/budgetLines/{lineId}
 
@@ -294,7 +341,7 @@ GST is stored per line as `gstAmount`.
 | `invoiceNumber` | string | `SI-0001` — from the company-wide `counters/supplierInvoices` |
 | `supplierInvoiceNumber` | string | The supplier's own invoice number — the duplicate-detection key |
 | `status` | string | `draft` \| `approved` \| `posted` \| `cancelled` (live); `received` \| `under_review` \| `disputed` reserved. **`paid` is DEPRECATED IN PLACE, not reserved** — no supported path writes it and `SI_TRANSITIONS` reaches it from nowhere; payment state derives from Supplier Payment allocations (ADR-24). It is retained for legacy rendering, and because supplier-invoice lifecycle rules are still deferred a direct-SDK caller **can** still forge it |
-| `docType` | string | `invoice`; `credit_note` reserved (Credit Notes are future) |
+| `docType` | string | `invoice`; the reserved `credit_note` value is **SUPERSEDED, never activated** — Supplier Credit Notes live in their own `supplierCreditNotes` collection (ADR-31) |
 | `source` | string | `progress_claim` \| `direct_po` |
 | `supplierId` | string \| null | → contact, snapshotted from the PO/claim; null for pre-Contacts POs |
 | `supplierName` | string | Snapshot from the PO/claim — never re-read |
@@ -320,7 +367,7 @@ GST is stored per line as `gstAmount`.
 | `postedAt`/`postedBy` | timestamp / uid | Stamped on post (the financial commit point) |
 | `cancelledAt` | timestamp \| null | Stamped on cancel |
 | `paidAt` | timestamp \| null | **DEPRECATED IN PLACE** — written once as `null` at creation and **never updated**. Supplier Payments shipped without activating it: payment state derives from posted Supplier Payment allocations, and setting a date here would create a second source of payment truth (ADR-24) |
-| `adjustsInvoiceId` | string \| null | **Reserved** — Credit Note target |
+| `adjustsInvoiceId` | string \| null | **SUPERSEDED, never activated** — the target reference lives on the Supplier Credit Note document (`supplierCreditNotes.supplierInvoiceId`, ADR-31), pointing the correct direction so nothing is ever written onto an invoice. Still written as `null` for shape stability |
 | `attachments` | array | **Reserved** — always `[]`; no Storage uploads yet |
 | `externalRefs` | map | **Reserved** — accounting-system IDs (Xero/MYOB/QuickBooks) |
 | `createdAt` / `createdBy` | timestamp / uid | |
@@ -550,7 +597,9 @@ documents, and both are searchable (`SI-0007 · INV-4471`).
 `grossTotal`**. `payableTotal` is already net of retention withheld and of
 retention's own GST; using gross would present retained money as currently
 payable. A payment **never** writes, clears, or reduces `retention`,
-`retentionGst`, or `retentionTotal` — retention release is not modelled.
+`retentionGst`, or `retentionTotal` — they are immutable for the life of the
+invoice. Retention becomes payable only through a posted Retention Release
+(ADR-30), which raises the DERIVED payable basis and is never written back here.
 
 **The scalar invariant.** Rules enforce
 `allocatedTotal + unallocatedAmount == amount` (with both ≥ 0 and `amount > 0`),
@@ -568,6 +617,74 @@ and whose `status` is **never** moved to `paid` and whose `paidAt` is **never**
 set (ADR-24). Voiding a payment therefore restores every invoice balance for
 free, with no reversal, refund, or bank-reversal document. **No migration** — a
 project with no `supplierPayments` loads normally.
+
+## …/projects/{projectId}/supplierCreditNotes/{creditNoteId}
+
+Project-scoped **reduction records** against exactly one **posted** Supplier
+Invoice (ADR-31): supplier credits for over-claimed quantities, rejected work,
+back-charges, or negotiated reductions. The third payable-side document kind —
+the invoice holds the cost/payable fact, the payment holds the cash fact, the
+credit note holds the reduction fact — and none is ever mutated to reflect
+another. All canonical line amounts are **ex-GST** with per-line
+`taxCode`/`gstAmount`, exactly like the supplier-invoice lines they reverse.
+
+| Field | Type | Notes |
+|---|---|---|
+| `creditNumber` | string | `SCN-0001` from `counters/supplierCreditNotes`; immutable (rules-enforced) |
+| `status` | string | `draft` \| `posted` \| `void` — lifecycle **rules-enforced** to the ADR-22 standard; `posted` is the counting point; void terminal |
+| `docType` | string | `credit_note` (rules-enforced literal, frozen) |
+| `supplierInvoiceId` | string | **The one target** — a posted, zero-retention supplier invoice in this project. **Frozen at creation and core-preserved by rules**: retargeting is a void plus a new credit note |
+| `invoiceNumber` | string | Frozen `SI-####` snapshot of the target |
+| `supplierInvoiceNumber` | string | Frozen supplier's-own-reference snapshot (`''` when none) |
+| `supplierId` | string \| null | Frozen from the target invoice — null allowed only because legacy invoices may carry null (rules require equality with the target) |
+| `supplierName` | string | Frozen display-name snapshot, required non-empty |
+| `supplierCreditReference` | string | The supplier's own credit-note number (e.g. `CN-1042`); `''` when none; duplicate-warned, never blocked |
+| `creditDate` | string | `'YYYY-MM-DD'` (shape rules-enforced) |
+| `reason` | string | **Required non-whitespace (rules-enforced)** — a credit without a stated cause is an audit hole |
+| `lineItems[]` | array | 1–100 entries (size rules-enforced; element shape client-side) |
+| `subtotal` | number | Σ line `amount` (ex-GST), `> 0` |
+| `gstTotal` | number | Σ line `gstAmount`, `≥ 0` |
+| `grossTotal` | number | `subtotal + gstTotal` — **whole-cent header invariant rules-enforced**, and `grossTotal ≤ target payableTotal` enforced via the rules `get()` |
+| `currency` | string | Audit snapshot **frozen from the target invoice** (rules require the match); never read for rendering |
+| `revision` | number | `1`; frozen |
+| `notes` | string | Optional |
+| `postedAt` / `postedBy` | Timestamp/string \| null | Rules: `== request.time` / caller on the post transition, null before |
+| `voidedAt` / `voidedBy` / `voidReason` | — | Void audit; reason non-whitespace (rules-enforced) |
+| `attachments` | array | **Reserved** — always `[]` (no Storage) |
+| `externalRefs` | map | **Reserved** — accounting sync |
+| `createdAt/By`, `updatedAt/By` | — | Unforgeable stamps (rules-enforced) |
+
+Line item: `{ costCodeId, costCodeName, description, amount (ex-GST > 0),
+taxCode ('gst'|'gst_free'|'input_taxed'), gstAmount }`. Every line **requires a
+cost code drawn from the target invoice's lines** (client-enforced) — a
+header-only credit would reduce AP cash but leave cost-code Actual/Invoiced
+overstated. There is **no `poLineIndex`**: commitment maturing deliberately
+ignores credits (ADR-31).
+
+**The target checks (first cross-document `get()` in a financial rules
+block).** On create, on every draft edit, and on the `draft → posted`
+transition, rules verify the target exists, is
+`posted`, matches `supplierId` and `currency`, carries **`retentionTotal` of
+zero** (retained invoices cannot be credited while retention release is
+unmodelled), and that this credit's `grossTotal` does not exceed its
+`payableTotal` (whole cents). The **cumulative** cap across sibling credit
+notes is app-enforced only — a HARD BLOCK, Deferred Control 25.
+
+**Stored vs derived.** Only the fields above are authored or snapshotted.
+**Credited-by-invoice, credited-by-cost-code, the net Invoiced/Actual figures,
+the net Remaining Payable, and the exceptions list are derived at read time**
+(`lib/supplierCreditNotes.js` and its consumers) and are **never** written back
+— above all **not onto the Supplier Invoice**, which gains no credited total,
+no status change, and no back-reference. A posted credit counts **only while it
+passes the read-time validity gate** (`creditTargetException`): target still
+resolving to a counting invoice with matching supplier, currency and zero
+retention and a payable covering the credit's gross, **and** stored headers
+reconciling to its own `lineItems` with per-line GST, positive amounts, and
+cost codes present on the target. Otherwise it contributes zero to **both** the
+payable and cost derivations and is surfaced as an exception — never clamped
+(safe failure: cost stays visible). Voiding a credit note restores every figure
+at the next render with no reversal document. **No migration** — a project with
+no `supplierCreditNotes` loads normally.
 
 ## …/projects/{projectId}/variations/{variationId}
 
@@ -751,6 +868,83 @@ creating one **locks the project currency in the same transaction** (ADR-21);
 voided lines are retained and remain lock evidence. **No migration** — a project
 with no `cashFlowLines` loads normally with an empty manual forecast.
 
+## …/projects/{projectId}/activities/{activityId}
+
+**The project programme** — Constrapp's first and only **non-financial** project
+collection. An activity is a planning record: it holds no money, no currency, no
+counter and no sequential number, and it **writes nothing to any financial
+document** (no Forecast Line, Cash Flow Line, Commercial Baseline, Progress
+Claim, PO, Supplier/Client Invoice, Budget Line or Variation) and **never
+touches `projects/{projectId}.progress`**. Document ids are random and stable.
+Rationale and the full set of deliberate exclusions: **ADR-29**. Access matrix
+(the one place `qs` is read-only): [SECURITY.md](SECURITY.md).
+
+⚠️ **This is a CURRENT-PLAN programme, not approved-baseline variance.** No
+immutable baseline exists, so "overdue" means late against the planned dates *as
+they stand now* — editing a planned date silently redefines "on time". Never
+present a Timeline figure as slippage against an approved programme.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | **Required non-whitespace**, ≤ 120 chars (rules-enforced) |
+| `description` | string | Optional, ≤ 500 |
+| `isMilestone` | bool | A **point in time**, not a one-day activity: forces `plannedFinish == plannedStart` (rules-enforced), restricts `percentComplete` to `0` or `100`, and derives a duration of **0 days** |
+| `status` | string | `not_started` \| `in_progress` \| `on_hold` \| `completed` \| `cancelled` — **closed set, rules-enforced**. `on_hold` deliberately replaces `blocked` (a blocked activity is usually part-done; the blocker goes in `notes`) |
+| `plannedStart` | string | `'YYYY-MM-DD'` **date-only string**, required |
+| `plannedFinish` | string | `'YYYY-MM-DD'`, required, **`>= plannedStart` (rules-enforced)**. **INCLUSIVE** — the last day of work |
+| `actualStart` | string \| null | `'YYYY-MM-DD'` or `null` |
+| `actualFinish` | string \| null | `'YYYY-MM-DD'` or `null`; **`>= actualStart` when both present** (rules-enforced) |
+| `percentComplete` | number | **Integer 0–100, rules-enforced.** ⚠️ **Manually authored and unverifiable** — never derived from dates, child tasks, or Progress Claims, and it feeds **no** budget, forecast, margin or cash figure (ADR-29) |
+| `responsibleContactId` | string \| null | → `companies/{c}/contacts/{id}`. **Never a user account** — `users/{uid}` is client-read-only (ADR-27), so no client can resolve another company user |
+| `responsibleName` | string | **Frozen snapshot**, ≤ 120; non-empty exactly when `responsibleContactId` is non-null (rules-enforced pairing) |
+| `costCodeId` | string \| null | **OPTIONAL** commercial-spine link → `companies/{c}/costCodes/{id}`. Not every programme activity maps to a cost code |
+| `costCodeName` | string | **Frozen snapshot**, ≤ 120; same both-or-neither pairing (rules-enforced) |
+| `sortOrder` | number | Manual programme order. ⚠️ **NOT unique** — rules cannot enforce uniqueness (no query/count) and concurrent creation can tie; display order breaks ties deterministically on planned start, planned finish, name, then id |
+| `notes` | string | Optional, ≤ 500. Where an `on_hold` blocker is recorded |
+| `cancelReason` | string | **Required non-whitespace** on cancellation, ≤ 500 (rules-enforced); `''` otherwise |
+| `cancelledAt` / `cancelledBy` | timestamp / uid | `null` until cancelled. Rules require `cancelledBy == request.auth.uid` and `cancelledAt == request.time` |
+| `revision` | number | `1` — rules-enforced on create, preserved on update |
+| `createdAt` / `createdBy` | timestamp / uid | Set once; rules reject any later change |
+| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on **every** write. ⚠️ Records *who wrote last*, **not what changed** |
+
+**Status invariants (all rules-enforced, all within-document):**
+`not_started` ⇒ `percentComplete == 0` and both actual dates `null`;
+`in_progress` ⇒ `actualStart != null`;
+`completed` ⇒ `percentComplete == 100` and `actualFinish != null`;
+`cancelled` is **terminal** and reachable only through the cancellation branch.
+
+**⚠️ The lifecycle is deliberately NOT forward-only** — an explicit departure
+from ADR-11. Any non-cancelled status may move to any other, **including
+backwards** (`completed → in_progress`), because a programme is a plan that gets
+corrected, not an audit record. Financial lifecycles are unaffected.
+
+**Deliberately NOT stored:** `companyId`/`projectId` (the collection path
+carries them — the ADR-24 precedent), `durationDays` (**derived**: a stored
+duration is a third fact that can disagree with the two dates), `baselineStart`/
+`baselineFinish` or any dependency/predecessor field (speculative — ADR-29
+defers both), `currency` (an activity holds no money, so **no currency ratchet
+is engaged** and creation needs no transaction), any sequential activity number,
+and any stored `overdue`/`isLate` flag (**derived on every read** — a stored
+flag would be wrong by tomorrow).
+
+**Dates are date-only strings, not Timestamps.** A programme date is a day on a
+wall chart, not an instant. This follows `lib/payments.js` (`invoiceDate`,
+`dueDate`, `receiptDate`, `paymentDate`) and makes `plannedFinish >=
+plannedStart` expressible **inside Firestore rules**. *(Note the older
+inconsistency this does not copy: `commercial/baseline` stores contract dates as
+`Timestamp|null`.)* Durations are **calendar days** — weekends, public holidays
+and working calendars are not modelled. Overdue/due-soon comparisons use the
+viewer's local date with **no timezone normalisation**, the same documented
+limitation as `daysPastDue`/`isFutureDate`.
+
+**Stored vs derived.** Only the fields above are authored. Duration, overdue,
+days late, days until due, the horizon grouping (Overdue / This week / Upcoming
+/ Later / Completed-Cancelled), the four summary counts, and every Gantt
+coordinate are derived at read time (`lib/projectTimeline.js`,
+`lib/timelineGantt.js`) and never written back. **Deletion is blocked** — cancel
+via status. **No migration**: a project with no `activities` loads normally with
+an empty programme.
+
 ## …/projects/{projectId}/retentionReleases/{releaseId}
 
 The authored event that makes retention **already withheld** on a posted Supplier
@@ -820,6 +1014,122 @@ existed:
 
 Nothing is written to any of them.
 
+## …/projects/{projectId}/tenderPackages/{packageId}
+
+A **Tender Package** — a named scope (free-text + ≥1 selected cost codes) put to
+market, and the durable record of the **award decision**. The step between
+Estimate and Commitment in the connected lifecycle. Numbered `TP-0001` from the
+company-wide `counters/tenderPackages`, incremented in the same transaction as
+the write. Lifecycle and semantics: [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md)
+→ Tenders. Reads are restricted to internal financial roles (see
+[SECURITY.md](SECURITY.md)). Rationale: ADR-32 Part 2.
+
+A package holds **no amounts and no currency field** — the money lives on Tender
+Bids. Creating a package therefore does **not** lock the project currency.
+
+| Field | Type | Notes |
+|---|---|---|
+| `tenderNumber` | string | `TP-0001` — from the company-wide counter; immutable |
+| `status` | string | `draft` \| `issued` \| `awarded` \| `cancelled`. Awarded and cancelled are **terminal** — there is no un-award/rescind in V1 |
+| `name` | string | Required non-whitespace (rules-enforced) |
+| `description` | string | Optional one-line summary |
+| `scope` | string | **Free-text scope of works** — the V1 scope carrier. A structured BOQ scope schedule is future work (see ADR-32 Part 2) |
+| `costCodes` | array | `[{ costCodeId, costCodeName }]` — **≥ 1 required**, ≤ 100 (rules enforce list-ness and size; **element shape is client-only**). Names are frozen snapshots. Editable while draft, **frozen at issue** |
+| `closingDate` | string | `'YYYY-MM-DD'` \| `''`. **⚠️ INFORMATIONAL ONLY — bids are NOT automatically blocked after this date** (no trusted backend/clock exists). Editable while draft **and while issued** (the carve-out) |
+| `notes` | string | Editable while draft and while issued (the carve-out) |
+| `awardedBidId` | string \| null | Null until awarded. On award, rules `get()` the bid and verify it **exists in this project, belongs to this package, and is `received`** |
+| `awardedBidderName` | string \| null | Frozen snapshot — rules require it to **equal the awarded bid's own `bidderName`** |
+| `awardNotes` | string | The decision rationale — the point of the record |
+| `cancelReason` | string | **Required non-whitespace** on cancel (rules-enforced) |
+| `revision` | number | 1 |
+| `issuedAt`/`issuedBy`, `awardedAt`/`awardedBy`, `cancelledAt`/`cancelledBy` | ts / uid | Null until each transition. Rules force the actor to the caller and the stamp to `request.time` |
+| `createdAt`/`createdBy` | ts / uid | Set once; rules reject any later change |
+| `updatedAt`/`updatedBy` | ts / uid | Refreshed on **every** write path |
+
+**⚠️ Deliberately NOT stored:** `awardTotal` (see the bid section — no stored
+header totals, ever), `currency` (no amounts to label), `projectId` (the path
+carries it — the ADR-24 precedent), `attachments`/`externalRefs` (tender
+documents are explicitly deferred; nothing is reserved).
+
+**Lifecycle (rules-enforced, ADR-22 standard):** create draft-only with null
+stamps and empty award/cancel fields; draft edits change content only;
+`draft → issued` is a stamp-only operation that **freezes
+name/description/scope/costCodes**; while issued, only `closingDate` and
+`notes` may change (`affectedKeys().hasOnly`); `issued → awarded` touches only
+the award fields and verifies the bid via `get()` — and because the branch
+requires the current status to be `issued`, a **second award is rejected**;
+`draft|issued → cancelled` needs a non-whitespace reason. Delete blocked.
+
+## …/projects/{projectId}/tenderBids/{bidId}
+
+A **Tender Bid** — the manual transcription of a bid received from a
+supplier/subcontractor contact against an **issued** package, priced **per cost
+code** (ex-GST; **no GST fields** — comparison is ex-GST, tax is a
+commitment-time concern). **Random document ids, no number, no counter.**
+Project-level with a `tenderPackageId` reference (the progressClaims→PO idiom),
+not a subcollection. Reads are restricted to internal financial roles — a bid
+**is competitor pricing** (see [SECURITY.md](SECURITY.md)).
+
+| Field | Type | Notes |
+|---|---|---|
+| `tenderPackageId` | string | → package in the **same project** (rules `get()` it from the same path). Immutable |
+| `tenderNumber` | string | **Frozen snapshot** — rules require it to equal the package's own at create |
+| `status` | string | `received` \| `void`. **No draft state** — a bid is a transcription of an external document, not an authored document with a commit point (a deliberate, documented deviation from the create-draft-only standard, analogous to `cashFlowLines`) |
+| `bidderContactId` | string | → contact of type `supplier`/`subcontractor`. Rules `get()` the contact at create and verify it **exists** and `contactTypes.hasAny(['supplier','subcontractor'])`. Immutable — a wrong-bidder entry is voided and re-recorded |
+| `bidderName` | string | **Frozen snapshot** — rules require it to equal the contact's `displayName` at create. Immutable |
+| `bidDate` | string | `'YYYY-MM-DD'` — when the bid was received. Informational; that it is realistic or before the closing date is unchecked everywhere |
+| `bidderRef` | string | The bidder's own quote/tender reference |
+| `lineItems` | array | **Embedded** (ADR-6) — see below. 1–100 (rules enforce list-ness and size; **element shape is client-only** — see Deferred Control 26) |
+| `exclusions` | string | First-class free text — surfaced prominently in the comparison |
+| `notes` | string | |
+| `voidReason` | string | **Required non-whitespace** on void (rules-enforced) |
+| `voidedAt`/`voidedBy` | ts / uid | Null until void; caller + `request.time` rules-forced |
+| `currency` | string | **Audit snapshot** of the project currency at write time. **Never read for display** |
+| `revision` | number | 1 |
+| `createdAt`/`createdBy`, `updatedAt`/`updatedBy` | ts / uid | Standard stamps, rules-forced |
+
+Each line item:
+
+```
+{ costCodeId,     // must sit inside the package's costCodes (CLIENT-enforced)
+  costCodeName,   // frozen snapshot from the PACKAGE's own frozen list
+  description,
+  amount }        // ex-GST, finite, ≥ 0 (zero is a legitimate price) — CLIENT-enforced
+```
+
+**⚠️ NO STORED `bidTotal` — the header-vs-lines decision (ADR-32 Part 2).**
+Firestore rules cannot iterate or sum an array, so a stored total would be an
+unverifiable second copy of the lines (the exact integrity problem previously
+found in Credit Notes). Every total is **derived at read time** through the
+central validity gate (`lib/tenders.js → assessBid`): a bid with ANY malformed
+line — or whose finite lines total beyond representable range — is **invalid as
+a whole**, its total `null` (never a partial sum, never $0, never clamped), it
+is excluded from the lowest-bid ranking, the budget comparison, the
+per-cost-code matrix, and the Awarded Bid Value, and it renders visibly
+flagged. A direct-SDK caller can store malformed embedded line data **and can
+award such a bid** — rules read the bid's identity and status, never its lines,
+so the app's refusal to award it is UX only. The gate is what makes such a
+document **fail safely** instead of influencing a figure: the award value reads
+*unavailable*, and an award writes no PO and no financial value regardless
+(docs/SECURITY.md → Tenders, Deferred Control 26).
+
+**Write windows (rules-enforced):** create only while the parent package is
+`issued`; received bids stay correctable (bidDate, bidderRef, lineItems,
+exclusions, notes) and voidable **only while the package remains `issued`**;
+once the package is awarded or cancelled **every bid write is rejected** —
+bids freeze, which is what makes the awarded bid's derived total trustworthy.
+Void is terminal. Delete blocked.
+
+**Stored vs derived.** Only the fields above are authored. **Bid totals, the
+Tender Comparison (variance to Approved Budget = Approved Budget − Bid,
+variance to lowest, lowest flags), the per-cost-code matrix, and the Awarded
+Bid Value are all derived at read time** (`lib/tenders.js`) and are **never**
+written back — not here, not onto the package, and above all not onto Budget
+Lines, POs, forecasts, margin, or Cash Flow. A tender bid is monetary data, so
+creating one **locks the project currency in the same transaction** (ADR-21);
+voided bids are retained and remain lock evidence. **No migration** — a
+project with no tender collections loads normally.
+
 ## Planned Commercial Entities (not yet modelled)
 
 The schema above is **implemented**. The commercial lifecycle will introduce
@@ -832,11 +1142,11 @@ exactly as budget lines, PO lines, claim lines, and invoice lines already do.
 
 | Planned entity | Role in the lifecycle | Cost-code relationship (intended) |
 |---|---|---|
-| **BOQ lines** | Measured quantities in the Bill of Quantities | Each line carries a `costCodeId` |
-| **Estimates** | Rates + margin/overheads applied to BOQ lines → estimate | Priced per cost code |
-| **Tender packages** | BOQ items grouped for tender | Scoped by cost code / trade |
-| **Tender bids** | Subcontractor responses, compared and levelled | Levelled per cost code against the estimate |
-| **Awards** | The winning bid, transferred to commitment | Carries cost-coded amounts into POs/budget |
+| ~~**BOQ lines**~~ | **Implemented** as `boqItems` above (ADR-32 Part 1) | Each item carries a mandatory `costCodeId` |
+| **Estimates** | Rates + margin/overheads applied to BOQ items → estimate; BOQ → Budget transfer | Priced per cost code |
+| ~~**Tender packages / bids / awards**~~ | **Implemented** as `tenderPackages` + `tenderBids` above (ADR-32 Part 2) — cost-code + free-text scope, manual bids, read-time Tender Comparison, award as a decision record | Package `costCodes[]` and bid `lineItems[]` carry `costCodeId` |
+| **BOQ scope schedule on tenders** | Optional frozen snapshot of BOQ items onto a package at issue (future, separate design) | Adds `boqItemId` per schedule line |
+| **"Raise PO from Award"** | Explicit Award → PO linkage (V1 deliberately creates no PO and infers no awarded-vs-committed netting) | Transfers the awarded bid's cost-coded amounts into a draft PO |
 | **Budget Adjustments** | Internal budget transfers/revisions (no external counterparty) — **a distinct future document type, not a variation** | Reallocate budget by cost code |
 | **Forecast period snapshots** | Immutable monthly cost-to-complete snapshots + prior-period comparison (the *current* per-cost-code forecast inputs are **implemented** above as `forecastLines`) | Aggregated by cost code |
 | **Final account records** | Closing budget-vs-actual reconciliation | Reconciled per cost code |
@@ -849,6 +1159,7 @@ a design assessment, a hook, and (where a new collection is introduced) a manual
 ## Relationships & Denormalisation Summary
 
 - Budget lines, PO lines, claim lines → cost codes via `costCodeId`; each carries a `costCodeName` snapshot.
+- BOQ items → cost codes via a **required** `costCodeId` (with a `costCodeName` snapshot). BOQ items reference **nothing else** and are referenced **by nothing**: no budget line, PO, claim, invoice, variation, forecast line, or cash figure reads or writes them, and the BOQ-vs-budget comparison is derived at read time (`lib/boq.js`) — never stored.
 - Contacts → projects via `projectAssignments[].projectId` (with derived `projectIds`) — administrative preference only; no name snapshot, and financial documents never read it. The PO supplier picker groups project-assigned contacts first but any active supplier remains selectable.
 - POs → contacts via `supplierId`, with `supplierName` snapshotted at write time (same pattern as `costCodeName`). Null `supplierId` = pre-Contacts PO; render from the snapshot.
 - Claims → POs via `poId`, with `poNumber`/`supplierName`/`supplierId`/`poLineTotal` snapshotted. Claims inherit supplier identity from the PO — they never reference contacts directly.
@@ -860,4 +1171,8 @@ a design assessment, a hook, and (where a new collection is introduced) a manual
 - Client invoices → a client contact via `clientId`, with the client's name, legal name, ABN, email, phone, and address **snapshotted at creation** so later contact edits never rewrite billing history; → approved **client** variations via an optional per-line `variationId` (+ frozen `variationNumber`/`variationDescription`). The linkage is **read-time only**: invoicing **never** mutates a variation (no stamp, no status change, no back-reference) and never touches the commercial baseline or Budget Lines. Line `costCodeId` is **optional** (ADR-22).
 - Client receipts → a client contact via a **required** `clientId` (with a frozen `clientName` snapshot); → issued client invoices via **embedded** `allocations[].clientInvoiceId` (+ a frozen `invoiceNumber` snapshot). The linkage is **read-time only**: a receipt **never** mutates an invoice (no balance field, no payment status, no back-reference), which is exactly why voiding a receipt restores every balance with no reversal record. Receipts touch no cost figure, no forecast, and no margin figure — cash is not revenue.
 - Supplier payments → a supplier/subcontractor contact via a **required** `supplierId` (with a frozen `supplierName` snapshot); → **posted** supplier invoices via **embedded** `allocations[].supplierInvoiceId` (+ frozen `invoiceNumber` **and** `supplierInvoiceNumber` snapshots). A supplier invoice with a legacy `supplierId: null` is matched on its frozen `supplierName` instead and is **never backfilled**. The linkage is **read-time only**: a payment **never** mutates a supplier invoice (no balance field, no payment status, no back-reference, no `paid` status, no `paidAt`), which is exactly why voiding a payment restores every balance with no reversal record. Payments touch no cost figure, no forecast, and no margin figure — cash out is not cost.
-- Counters are company-wide: PO/claim/invoice/receipt/payment numbers are unique per **company**, not per project. Contacts, forecast lines, and the commercial baseline carry no sequential number.
+- Supplier credit notes → exactly **one posted** supplier invoice via a **frozen** `supplierInvoiceId` (+ frozen `invoiceNumber`/`supplierInvoiceNumber`/`supplierId`/`supplierName`/`currency` snapshots — all core-preserved by rules). The target must be posted with **zero retention** at create/edit time (rules `get()`). The linkage is **read-time only**: a credit note **never** mutates the invoice; posted valid-target credits subtract from Invoiced/Actual by line `costCodeId` (ex-GST) and from the invoice's Remaining Payable by `grossTotal`. Credit lines carry cost codes drawn from the target invoice's lines and **no `poLineIndex`** — Remaining Committed is never restored by a credit (ADR-31).
+- Tender packages → cost codes via `costCodes[].costCodeId` (with frozen `costCodeName` snapshots — the package's join onto the spine); → the winning bid via `awardedBidId` (with a frozen `awardedBidderName` snapshot rules-matched to the bid's own). The award is **read-time only**: it never creates a PO, never touches Budget Lines, and stores no total.
+- Tender bids → one package via `tenderPackageId` (with a frozen `tenderNumber` snapshot rules-matched to the package); → a supplier/subcontractor contact via `bidderContactId` (with a frozen `bidderName` snapshot rules-matched to the contact); → cost codes via `lineItems[].costCodeId` (client-constrained to the package's own codes, with `costCodeName` snapshots from the package's frozen list). No stored totals anywhere — every figure derives through the `assessBid` validity gate.
+- Timeline activities → a company contact via an optional `responsibleContactId` (with a frozen `responsibleName` snapshot), and → cost codes via an **optional** `costCodeId` (with a frozen `costCodeName`). Both linkages are **labels only**: an activity never mutates a contact, a cost code, or any commercial document, and no financial figure is derived from one. The cost code is the **join key reserved for a future read-time "delay → forecast impact" derivation** (ADR-29) — it authors nothing today. Activities reference **no user account** (`users/{uid}` is client-read-only — ADR-27) and carry **no dependency link** to another activity.
+- Counters are company-wide: PO/claim/invoice/receipt/payment/credit-note/tender-package numbers are unique per **company**, not per project. Contacts, forecast lines, tender bids, timeline activities, and the commercial baseline carry no sequential number.

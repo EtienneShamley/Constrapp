@@ -195,7 +195,8 @@ Statuses: `draft` → `approved` → `posted`, with `cancelled` reachable from
 - **Posted** — the **financial commit point**: the invoice now counts toward
   Invoiced and Actual and matures Committed. Immutable. `postedAt`/`postedBy`
   stamped. **Posted invoices cannot be cancelled or unposted** — corrections are
-  future Credit Notes.
+  **Supplier Credit Notes** (see below; a posted, retention-free invoice can
+  receive one).
 - **Cancelled** — audit record retained (never deleted); contributes nothing.
   `cancelledAt` stamped.
 
@@ -451,8 +452,12 @@ client invoices are revenue-side and touch no cost figure.
 ### Deferred
 
 Printable invoice, PDF, email, branding · **"Tax Invoice" labelling and company
-legal/tax identity** (see [SECURITY.md](SECURITY.md)) · credit notes (fields
-reserved) · client retention · revenue recognition · client progress claims ·
+legal/tax identity** (see [SECURITY.md](SECURITY.md)) · **client** credit notes
+(supplier credit notes have since shipped — see *Supplier Credit Notes*; the
+client-side `docType`/`adjustsInvoiceId` fields stay reserved, and a future
+client credit note must never subtract from revenue a second time, because
+negative approved client variations already reduce the Current Contract Sum) ·
+client retention · revenue recognition · client progress claims ·
 client portal access. (Receipts, allocations, partial settlement, overpayments,
 payment date/method/bank reference, and the invoice balance after receipts have
 since **shipped** — see *Client Receipts* below.)
@@ -738,24 +743,30 @@ invoice, or on posting.
 ### Invoice balance derivation (read-time, never stored)
 
 ```
-Paid Against Invoice = Σ allocatedAmount across POSTED, non-void payments
-                         referencing that invoice
-Remaining Payable    = supplierInvoice.payableTotal − Paid Against Invoice   (SIGNED)
+Paid Against Invoice     = Σ allocatedAmount across POSTED, non-void payments
+                             referencing that invoice
+Credited Against Invoice = Σ grossTotal across POSTED, valid-target Supplier
+                             Credit Notes referencing that invoice
+Remaining Payable        = supplierInvoice.payableTotal
+                             − Paid Against Invoice
+                             − Credited Against Invoice                (SIGNED)
 ```
 
-The balance is **signed and never clamped**. Derived reconciliation state —
-**never an authored invoice status**:
+The balance is **signed and never clamped**. Paid and Credited are carried as
+**separate columns** — cash and reduction are different facts — and their sum
+is what settles the payable. Derived reconciliation state (settled = paid +
+credited) — **never an authored invoice status**:
 
 | State | Condition |
 |---|---|
-| **Unreconciled** | paid = 0 |
-| **Partly reconciled** | 0 < paid < payableTotal |
-| **Fully reconciled** | paid = payableTotal (compared in whole cents) |
-| **Over-reconciled** | paid > payableTotal |
+| **Unreconciled** | settled = 0 |
+| **Partly reconciled** | 0 < settled < payableTotal |
+| **Fully reconciled** | settled = payableTotal (compared in whole cents) — a fully-credited unpaid invoice reads fully reconciled |
+| **Over-reconciled** | settled > payableTotal — where a credit note contributes, the excess is **money recoverable from the supplier** (no refund is recorded automatically) |
 
-Draft payments count nothing. Void payments count nothing — **which is why
-voiding restores balances automatically at read time, with no reversal document
-and no write to any invoice.**
+Draft payments and credits count nothing. Void ones count nothing — **which is
+why voiding restores balances automatically at read time, with no reversal
+document and no write to any invoice.**
 
 ### Payment dates
 
@@ -774,8 +785,9 @@ not the date it was entered. **The future Cash Flow module consumes
 ### Accounts Payable — ageing on the remaining payable
 
 Posted supplier invoices are bucketed on their **remaining payable after posted
-payment allocations**: *No due date* · *Not yet due* · *Past due 1–30* · *31–60* ·
-*61–90* · *90+ days*.
+payment allocations and posted supplier credit notes**: *No due date* · *Not yet
+due* · *Past due 1–30* · *31–60* · *61–90* · *90+ days*. A credited slice is no
+longer owed, so it never ages as arrears.
 
 - **Fully reconciled invoices contribute zero and leave ageing entirely** — they
   stay in the register with a *Fully reconciled* badge, so nothing is hidden.
@@ -801,11 +813,12 @@ payment allocations**: *No due date* · *Not yet due* · *Past due 1–30* · *3
 
 Honest limits, shown in the UI:
 
-> Balances reflect posted Supplier Payments allocated to each invoice. Constrapp
-> warns but does not block over-reconciliation, and cannot prevent two users
-> allocating the same remaining payable concurrently. Unallocated payments are
-> shown separately and reduce no invoice balance. Retention withheld is
-> excluded — retention release is not modelled.
+> Balances reflect posted Supplier Payments allocated to each invoice, net of
+> posted Supplier Credit Notes. Constrapp warns but does not block
+> over-reconciliation, and cannot prevent two users allocating the same
+> remaining payable concurrently. Unallocated payments are shown separately and
+> reduce no invoice balance. Retention withheld is excluded — retention release
+> is not modelled.
 
 ### Allocation exceptions
 
@@ -836,11 +849,210 @@ Forecast Final Cost, and every margin figure are **completely unchanged**.
 
 **Forecast Cash Flow** (the *Actual* Cash Flow foundation has since shipped —
 see *Cash Flow — Actual*; **retention release** has since shipped — see
-*Retention Release* below) · supplier credit notes · refunds and payment reversals
+*Retention Release* below) · refunds and payment reversals
 (`docType: 'refund'` reserved) · payment batches and payment runs · remittance
 advice PDF · email · attachments · bank reconciliation and bank feeds ·
 accounting integrations · payment approval workflow and creator ≠ approver
 segregation · financial periods and period locking.
+see *Cash Flow — Actual*) · retention
+release · refunds and payment reversals
+(`docType: 'refund'` reserved; supplier **credit notes** have since shipped —
+see *Supplier Credit Notes* below) · payment batches and payment runs ·
+remittance advice PDF · email · attachments · bank reconciliation and bank
+feeds · accounting integrations · payment approval workflow and creator ≠
+approver segregation · financial periods and period locking.
+
+## Supplier Credit Notes (reduction records — accounts payable)
+
+A **Supplier Credit Note** (`SCN-0001` from the company-wide
+`counters/supplierCreditNotes`) records a reduction the supplier issued against
+**exactly one posted supplier invoice**: over-claimed quantities, rejected
+work, a back-charge, or a negotiated reduction (ADR-31). It is the third
+payable-side document kind, and each kind holds one truth: the **invoice** is
+the cost/payable fact, the **payment** is the cash fact, the **credit note** is
+the reduction fact. None is ever mutated to reflect another.
+
+### Lifecycle
+
+`draft → posted → void` (void from draft or posted; terminal) —
+**rules-enforced** to the ADR-22 standard, with unforgeable stamps and a
+required non-whitespace `reason` (a credit without a stated cause is an audit
+hole) and `voidReason`. Only **posted** credits count; voiding restores every
+figure at the next render with no reversal document. The **target is frozen at
+creation** — retargeting is a void plus a new credit note.
+
+### Eligible targets — posted, zero retention
+
+Only a **posted** supplier invoice with **no retention withheld** (and a stored
+currency) can receive a credit note. Crediting a retained invoice is ambiguous
+— payable slice or retained slice? — while retention release is unmodelled, so
+it is blocked in the UI, in domain validation, **and by Firestore rules**,
+which `get()` the target (the first cross-document read in a financial rules
+block) and verify: it exists in this project, is `posted`, matches the credit's
+`supplierId` and `currency`, carries `retentionTotal` of **zero**, and its
+`payableTotal` covers this credit's `grossTotal` (whole cents).
+
+### Lines, GST & the over-credit cap
+
+Credit lines mirror invoice lines — ex-GST `amount` + per-line `taxCode` with
+`gstAmount` (10% for `gst`, zero otherwise) — and **every line requires a cost
+code drawn from the target invoice's lines**: a header-only credit would
+reduce AP cash but leave cost-code Actual/Invoiced (and therefore FFC and
+Margin) overstated. Headers: `subtotal` / `gstTotal` / `grossTotal`, with the
+whole-cent header invariant rules-enforced. No retention and no payable/gross
+split — a credit's gross **is** its payable effect.
+
+```
+Maximum creditable = supplierInvoice.payableTotal
+                       − Σ grossTotal of already-POSTED credit notes on it
+```
+
+The cap is a **HARD BLOCK** in the editor and re-checked at post time —
+deliberately stricter than the warn-and-acknowledge over-payment posture,
+because crediting more than a debt is not a judgement call. Rules enforce the
+**single-document** half (`grossTotal ≤ payableTotal` via the target `get()`);
+the **cumulative** half across sibling credit notes cannot be rules-enforced
+(no list/query/count — Deferred Control 25), so two users can still post
+concurrent credits by direct SDK call.
+
+### Financial effects (all read-time, never stored)
+
+A **posted, valid-target** credit note:
+
+- **reduces Invoiced and Actual** by its ex-GST line amounts per `costCodeId`
+  (signed, never clamped — an over-credited cost code goes negative and stays
+  visible), and through Actual reduces **Forecast Final Cost** and improves
+  **Margin**;
+- **reduces the target's Remaining Payable** by `grossTotal`, flowing into AP
+  ageing, the payment-allocation picker, and **Forecast Cash Out**;
+- **does NOT restore Remaining Committed** — credit lines carry no
+  `poLineIndex`, so commitment maturing reads invoices only. Between a credit
+  and any corrected re-invoice, FFC is briefly understated by the credited
+  amount; the QS adjusts Uncommitted CTC if re-invoicing is expected (a
+  documented ADR-31 limitation);
+- **moves no cash** — Actual Cash Out remains payment-only, and a credit never
+  appears in any cash column.
+
+### Credit before, after partial, and after full payment
+
+- **Before payment:** the remaining payable simply drops.
+- **After partial payment:** `remaining = payable − paid − credited`; the
+  invoice partly reconciles.
+- **After full payment (or credits + payments exceeding the payable):** the
+  balance goes **negative** — *Over-reconciled*, excluded from ageing buckets
+  (never netted against arrears), and surfaced honestly as **money recoverable
+  from the supplier**. No refund transaction is invented; the supplier refund
+  workflow stays deferred (`docType: 'refund'` reserved).
+
+### Read-time validity gating & exceptions
+
+A posted credit counts toward **no** figure — neither the payable side nor the
+cost side — unless it passes the single central gate in
+`lib/supplierCreditNotes.js → creditTargetException`:
+
+| Class | Checked |
+|---|---|
+| **Target** | still resolves to a counting supplier invoice · matching supplier · matching currency · **zero retention** · `payableTotal` covers the credit's `grossTotal` |
+| **Document integrity** | stored `subtotal`/`gstTotal`/`grossTotal` reconcile to the credit's own `lineItems` (whole cents) · each line's GST matches its amount and tax code · each line amount is **positive** · every line's `costCodeId` appears on the target invoice |
+
+The target class matters because rules validate the target at create, draft edit
+and post but **never fire again**, so a target cancelled or altered afterwards
+by a direct SDK call (supplier-invoice lifecycle is still client-enforced —
+Deferred Controls 1 and 2) is caught here. The integrity class matters because
+**rules cannot iterate `lineItems` at all**: only the scalar header invariant is
+enforced server-side, so without this gate a rules-valid document could store
+`grossTotal: 100` while its lines claimed 50,000 — reducing the payable by 100
+and Actual by 50,000 simultaneously.
+
+A failing credit is excluded **whole and never clamped**, and listed in a
+*Credit-note exceptions* panel — the safe failure keeps project cost visible.
+The target-status check uses the counting statuses (`posted` + the deprecated
+forgeable `paid`), so a credit and its invoice can never disagree about whether
+the invoice's cost exists. Nothing is deleted, reassigned, or reversed
+automatically.
+
+⚠️ This gate protects the figures Constrapp renders. It is **not** enforcement
+and does not repair the stored document — see [SECURITY.md](SECURITY.md) →
+Deferred Control 25.
+
+### When credit notes cannot be read
+
+A failed credit-note subscription is treated as **unknown, never zero**. Posted
+credits reduce what is owed, so an empty list would *overstate* the remaining
+payable and could invite paying money already credited. Supplier Payments and
+Supplier Invoices therefore render every credit-dependent figure as
+unavailable and disable the actions that consume a remaining payable; the
+cost-side pages (Budget, Forecast, Overview, Commercial) warn that Actual and
+margin may be overstated, since that direction is conservative. Cash Flow
+already reports the same failure through its source-error panel.
+
+### No writes to any other document
+
+Supplier credit notes **never write onto Supplier Invoices** (no credited
+total, no status change, no back-reference) and never onto Budget Lines, POs,
+claims, variations, forecast lines, the commercial baseline, payments, client
+invoices, or client receipts. Every net figure is derived in
+`lib/supplierCreditNotes.js` and its consumers.
+
+### Deferred (Supplier Credit Notes)
+
+Client credit notes (a separate future collection; must never double-subtract
+revenue already reduced by negative client variations) · crediting retained
+invoices and any retention interaction · re-opening Remaining Committed ·
+line-index (`poLineIndex`) matching · free-standing/unallocated credits ·
+applying a credit as payment against a future invoice · refunds · an approval
+stage before posting · attachments (no Storage) · accounting sync ·
+final-account linkage.
+
+## Tenders (packages, bids, comparison, award — financially inert)
+
+The step between Estimate and Commitment, implemented as a **decision trail,
+not a financial document set** (ADR-32 Part 2). A **Tender Package**
+(`TP-0001`) names a scope — free text plus **≥1 selected cost codes** — and is
+issued to market (issuing freezes the scope; only the informational closing
+date and notes stay editable). **Tender Bids** are manual transcriptions of
+received bids from supplier/subcontractor contacts, priced **per cost code**
+within the package scope, **ex-GST with no GST fields** — GST enters the
+lifecycle at commitment (PO), not at tender.
+
+**No stored totals.** A bid stores only its lines; there is no `bidTotal` and
+no `awardTotal` anywhere. Every displayed figure passes through the read-time
+validity gate (`lib/tenders.js → assessBid`): a bid with any malformed line —
+or whose finite lines total beyond representable range — is invalid as a whole,
+total `null`, never a partial sum, never $0, and is excluded from ranking,
+budget comparison, the cost-code matrix, and the Awarded Bid Value while
+remaining visible and flagged. The app also refuses to award such a bid,
+though that refusal is client-side only — see [SECURITY.md](SECURITY.md) →
+Tenders for the direct-SDK case and why its consequence is bounded.
+
+**Tender Comparison** (never "bid levelling") derives at read time:
+
+```
+Bid Total (ex-GST)        = Σ valid lineItems.amount            (assessBid)
+Approved Budget (package) = Σ budgetLines.budgeted over the package's cost codes
+Variance to Budget        = Approved Budget − Bid Total          (positive = under budget)
+Variance to Lowest        = Bid Total − lowest valid bid total
+```
+
+When no budget line exists for any package cost code, the comparison reports
+**no budget** — it never compares against zero. Void and invalid bids are
+excluded from every calculation.
+
+**Award changes no financial figure.** `issued → awarded` records
+`awardedBidId`, the bidder-name snapshot, and notes. It creates **no PO** and
+touches none of the six budget figures, no forecast, no margin, and no cash
+flow; the **Awarded Bid Value** shown on the Tender pages is derived from the
+rules-frozen awarded bid's lines and is a tender decision value only — it is
+**never netted against Purchase Orders** (V1 has no Award → PO linkage, and
+such netting is wrong whenever packages share cost codes or POs span
+packages). Raising the PO remains a separate, deliberate act ("Raise PO from
+Award" is future work). Tender reads: the comparison **reads** budget lines;
+tender writes: packages, bids, the counter, and the currency-lock flag —
+nothing else, ever.
+
+**Currency.** A package holds no amounts and never locks the project currency;
+recording the first **bid** locks it in the same transaction (a voided bid
+remains lock evidence).
 
 ## Retention Release (supplier retention becoming payable)
 
@@ -944,8 +1156,8 @@ All derived figures group PO/claim **line items by `costCodeId`** and are ex-GST
 | **Budgeted** | Σ `budgeted` across the project's budget lines | Stored on budget lines |
 | **Committed** | Remaining **open** commitment: per PO line (POs in `sent`/`closed`), `lineTotal − posted/paid invoiced-to-date against that line`, floored at 0, grouped by cost code | Derived from POs + invoices |
 | **Claimed** | Σ `claimedThisPeriod` of claim lines, claims in `submitted`/`under_review` — uncertified exposure only | Derived from claims |
-| **Actual** | Σ `approvedThisPeriod` of claim lines (claims in `approved`/`invoiced`) **not superseded by a posted/paid invoice** + Σ ex-GST line `amount` of posted/paid supplier invoices | Derived from claims + invoices |
-| **Invoiced** | Σ ex-GST line `amount` of supplier invoices in `posted`/`paid`, grouped by cost code | Derived from invoices |
+| **Actual** | Σ `approvedThisPeriod` of claim lines (claims in `approved`/`invoiced`) **not superseded by a posted/paid invoice** + Σ ex-GST line `amount` of posted/paid supplier invoices **− Σ ex-GST line `amount` of posted valid-target supplier credit notes** (signed, never clamped) | Derived from claims + invoices − credit notes |
+| **Invoiced** | Σ ex-GST line `amount` of supplier invoices in `posted`/`paid` **− Σ ex-GST line `amount` of posted valid-target supplier credit notes**, grouped by cost code (signed, never clamped) | Derived from invoices − credit notes |
 | **Remaining** | `Budgeted − Actual` (per line and in total) | Computed |
 
 **The six canonical figures are unchanged by Variations.** The Budget page adds
@@ -993,20 +1205,39 @@ feature's design sprint (order: [ROADMAP.md](../ROADMAP.md)). Nothing below is a
 shipped guarantee; all commercial figures will follow the read-time-derivation and
 cost-code-spine invariants when built.
 
-### BOQ and Estimating *(planned)*
+### BOQ *(implemented — foundation)* and Estimating *(planned)*
 
-A Bill of Quantities captures measured quantities against **cost codes**; applying
-rates plus margin/overheads produces an **estimate**, which transfers into an
-**approved budget** (budget lines). The cost code is the join from measurement all
-the way to budget. Manual quantity entry precedes any AI takeoff.
+The **BOQ foundation is implemented** (ADR-32 Part 1): a per-project measured
+schedule at `…/projects/{id}/boqItems` — description, quantity, unit, a
+**mandatory** cost code (frozen name snapshot), and, once priced, an ex-GST
+`rate` with a **derived** `amount = quantity × rate` (whole-cent,
+rules-enforced). **`rate: null` means unpriced** — an unpriced item contributes
+nothing to any total and suppresses the budget variance; 0 is a price.
+Lifecycle `active → void` (terminal, reasoned), rules-enforced; delete blocked.
 
-### Tender and Award *(planned)*
+**The BOQ feeds no financial figure.** It never writes onto Budget Lines and
+never enters Committed, Actual, Invoiced, Forecast, Margin, or Cash Flow. Its
+only derived output is the read-time **BOQ vs Approved Budget** comparison on
+the BOQ page (`lib/boq.js`): per cost code over the union of both sides,
+`variance = Budgeted − BOQ` (positive ⇒ BOQ under budget), with the variance
+**null — never 0 or a partial figure** — wherever either side is missing or
+any contributing item is unpriced.
 
-Tender packages are assembled from BOQ items grouped by trade/cost code;
-subcontractors are invited; bids are compared and levelled **by cost code** against
-the estimate. The winning bid is **awarded**, becoming a commitment (a purchase
-order). Award snapshots values at the transfer point, mirroring the existing
-snapshot idiom.
+**Still planned (Estimating):** applying margin/overheads to produce an
+estimate, and the **BOQ → Budget transfer** into budget lines. The cost code
+remains the join from measurement all the way to budget. Manual quantity entry
+precedes any AI takeoff.
+
+### Tender and Award *(implemented — foundation; see the Tenders section above)*
+
+Tender packages, manual bid capture, read-time Tender Comparison, and the award
+decision record are **implemented** (ADR-32 Part 2), scoped by **cost codes +
+free-text scope** and financially inert. Still planned: assembling packages
+from **BOQ items** (an optional frozen scope schedule at issue — a separate
+follow-up now that both foundations coexist), subcontractor invitations, item-level **bid levelling**
+against the estimate, and **"Raise PO from Award"** — the explicit transfer of
+the awarded bid into a commitment. Award-to-PO transfer will snapshot values at
+the transfer point, mirroring the existing snapshot idiom.
 
 ### Variations *(implemented — foundation)*
 
@@ -1228,12 +1459,14 @@ only stored data is the authored `cashFlowLines` collection (see
 Forecast Cash In (M)  += Σ remaining of ISSUED client invoices   (GROSS, inc. GST)
                           where remaining > 0 and dueDate month = M ≥ current month
 Forecast Cash Out (M) += Σ remaining of POSTED supplier invoices (payableTotal,
-                          already net of retention)
+                          already net of retention AND of posted supplier
+                          credit notes)
                           where remaining > 0 and dueDate month = M ≥ current month
 ```
 
 Both reuse the existing reconciliation rows (`clientInvoiceReconciliationRows` /
-`supplierInvoiceReconciliationRows`) — no balance is re-derived. Classification:
+`supplierInvoiceReconciliationRows`) — no balance is re-derived, so a posted
+credit note reduces expected cash out automatically. Classification:
 
 - **Fully reconciled** (zero remaining) contributes nothing and leaves the
   forecast entirely; **partly reconciled** forecasts only its remainder.
@@ -1474,8 +1707,11 @@ cost-to-complete, cash flow, and the final account.
 
 - **Supplier Payments** — *implemented; see the Supplier Payments section above.*
   Retention release remains unmodelled.
-- **Credit Notes** — the reserved `docType: 'credit_note'` / `adjustsInvoiceId`
-  fields will carry supplier credits/negative adjustments that reduce Invoiced.
+- **Credit Notes** — *supplier side implemented; see the Supplier Credit Notes
+  section above* (its own `supplierCreditNotes` collection, ADR-31). The
+  `docType: 'credit_note'` / `adjustsInvoiceId` fields reserved on both invoice
+  collections are **superseded and stay reserved, never activated**; client
+  credit notes remain future work.
 - **Attachments** — the reserved `attachments: []` array on invoices anchors
   future Firebase Storage uploads (invoice PDFs); no uploads today.
 - **Variation → claim/invoice linkage** — the reserved `variationId` on claims

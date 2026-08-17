@@ -1,5 +1,6 @@
 import { roundMoney } from './purchaseOrders'
 import { SI_STATUS } from './supplierInvoices'
+import { creditedByInvoice } from './supplierCreditNotes'
 import {
   PAYMENT_STATUS, PAYMENT_COUNTING_STATUSES, MAX_ALLOCATIONS,
   allocatedTotal, allocationTotals, invoiceBalance, remainingBalance,
@@ -152,26 +153,54 @@ export function paidByInvoice(payments) {
   return map
 }
 
-// Remaining Payable for ONE supplier invoice. SIGNED and never clamped: an
-// overpaid invoice shows a negative balance, because hiding an over-reconciled
-// position is precisely the problem this module exists to expose.
-export function remainingPayable(invoice, paid, released = 0) {
-  return remainingBalance(payableBasis(invoice, released), paid)
+// Remaining Payable for ONE supplier invoice, net of everything that settled or
+// reduced it, on a basis that includes retention already RELEASED:
+//
+//     basis     = invoice.payableTotal + posted retention released   (ADR-30)
+//     settled   = cash paid + posted valid-target credit notes       (ADR-31)
+//     remaining = basis − settled
+//
+// SIGNED and never clamped: an overpaid or over-credited invoice shows a
+// negative balance, because hiding an over-reconciled position is precisely the
+// problem this module exists to expose. A negative balance whose cause includes
+// a posted credit note is money recoverable FROM the supplier — surfaced, never
+// auto-refunded (refunds remain unmodelled).
+//
+// ⚠️ THE TWO ADJUSTMENTS MOVE IN OPPOSITE DIRECTIONS AND MUST NOT BE CONFLATED:
+// a release ADDS to what is payable, a credit SUBTRACTS from it. Both default to
+// zero, so a project using neither feature produces byte-identical figures.
+export function remainingPayable(invoice, paid, credited = 0, released = 0) {
+  return remainingBalance(
+    payableBasis(invoice, released),
+    roundMoney(safeAmount(paid) + safeAmount(credited)),
+  )
 }
 
 // One invoice's full derived AP position: { total, settled, remaining, state }.
-export function invoiceReconciliation(invoice, paidMap = {}, releasedMap = {}) {
-  const basis = payableBasis(invoice, releasedMap[invoice?.id] || 0)
-  return invoiceBalance(basis, paidMap[invoice?.id] || 0)
+// `settled` blends cash paid AND posted valid-target credits — both reduce what
+// remains payable; callers needing the split use the reconciliation rows. The
+// basis includes released retention.
+export function invoiceReconciliation(invoice, paidMap = {}, creditedMap = {}, releasedMap = {}) {
+  return invoiceBalance(
+    payableBasis(invoice, releasedMap[invoice?.id] || 0),
+    roundMoney((paidMap[invoice?.id] || 0) + (creditedMap[invoice?.id] || 0)),
+  )
 }
 
 // Reconciliation rows for the POSTED supplier invoices of a project.
+//
+// `creditNotes` are Supplier Credit Notes: posted, valid-target credits reduce
+// the remaining payable by their GROSS total (lib/supplierCreditNotes.js).
 //
 // `releasedByInvoiceId` is { supplierInvoiceId: Σ posted releaseTotal } from
 // lib/retention.js — PASSED IN rather than computed here, so this module keeps
 // no dependency on the retention module and the caller supplies one consistent
 // set of balances (the lib/clientInvoices.js → ageingByDueDate precedent).
-// Defaulting to {} makes every figure identical to its pre-ADR-30 value.
+// Both default to empty, making every figure identical to its pre-ADR-30/31
+// value.
+//
+// Cash paid and credit reduction are carried as SEPARATE columns — they are
+// different facts — and only their sum settles the payable.
 //
 // The row deliberately exposes BOTH payable figures, because they answer
 // different questions and conflating them is how retention gets double-counted:
@@ -183,12 +212,16 @@ export function invoiceReconciliation(invoice, paidMap = {}, releasedMap = {}) {
 //   · retentionTotal      — the original withholding (immutable)
 //   · retentionHeld       — retention NOT yet released, therefore still not
 //                           payable and still excluded from Forecast Cash Out
-export function supplierInvoiceReconciliationRows(invoices, payments, releasedByInvoiceId = {}) {
+export function supplierInvoiceReconciliationRows(invoices, payments, creditNotes = [], releasedByInvoiceId = {}) {
   const paid = paidByInvoice(payments)
+  const credited = creditedByInvoice(creditNotes, invoices)
   return postedSupplierInvoices(invoices).map(inv => {
     const released       = roundMoney(safeAmount(releasedByInvoiceId[inv.id]))
     const basis          = payableBasis(inv, released)
     const retentionTotal = roundMoney(safeAmount(inv.retentionTotal))
+    const paidAmount     = roundMoney(paid[inv.id] || 0)
+    const creditedAmount = roundMoney(credited[inv.id] || 0)
+    const settled        = roundMoney(paidAmount + creditedAmount)
     return {
       id:                    inv.id,
       invoiceNumber:         inv.invoiceNumber,
@@ -206,30 +239,33 @@ export function supplierInvoiceReconciliationRows(invoices, payments, releasedBy
       releasedTotal:         released,
       invoicePayableTotal:   roundMoney(safeAmount(inv.payableTotal)),
       payableTotal:          basis,
-      paid:                  roundMoney(paid[inv.id] || 0),
-      remaining:             remainingBalance(basis, paid[inv.id] || 0),
-      state:                 reconciliationState(basis, paid[inv.id] || 0),
+      paid:                  paidAmount,
+      credited:              creditedAmount,
+      remaining:             remainingBalance(basis, settled),
+      state:                 reconciliationState(basis, settled),
     }
   })
 }
 
 // Project-level payables totals, all read-time.
-export function payablesSummary(invoices, payments, releasedByInvoiceId = {}) {
-  const rows = supplierInvoiceReconciliationRows(invoices, payments, releasedByInvoiceId)
+export function payablesSummary(invoices, payments, creditNotes = [], releasedByInvoiceId = {}) {
+  const rows = supplierInvoiceReconciliationRows(invoices, payments, creditNotes, releasedByInvoiceId)
   let postedPayable = 0
   let paid = 0
+  let credited = 0
   let remaining = 0
   let overReconciled = 0
   for (const r of rows) {
     postedPayable = roundMoney(postedPayable + r.payableTotal)
     paid          = roundMoney(paid + r.paid)
+    credited      = roundMoney(credited + r.credited)
     // Only positive balances are payable. A negative (over-reconciled) balance
     // is reported separately so it can never silently offset genuine arrears in
     // a single netted number.
     if (toCents(r.remaining) > 0) remaining = roundMoney(remaining + r.remaining)
     if (toCents(r.remaining) < 0) overReconciled = roundMoney(overReconciled + r.remaining)
   }
-  return { rows, postedPayable, paid, remaining, overReconciled, count: rows.length }
+  return { rows, postedPayable, paid, credited, remaining, overReconciled, count: rows.length }
 }
 
 export const overReconciledPayableRows = (rows) =>
@@ -305,14 +341,19 @@ export function paymentsForInvoice(payments, supplierInvoiceId) {
 //
 // Sorted OLDEST FIRST (invoiceDate, then invoiceNumber) so the picker order and
 // the "Allocate oldest first" proposal agree.
-export function allocatableSupplierInvoices(invoices, supplierId, supplierName, payments, { excludePaymentId = null, releasedByInvoiceId = {} } = {}) {
+export function allocatableSupplierInvoices(invoices, supplierId, supplierName, payments, { excludePaymentId = null, creditNotes = [], releasedByInvoiceId = {} } = {}) {
   const others = (payments ?? []).filter(p => p.id !== excludePaymentId)
   const paid = paidByInvoice(others)
+  // Posted credit notes REDUCE what remains payable, so the picker offers the
+  // net figure — paying a credited slice would over-reconcile immediately.
+  const credited = creditedByInvoice(creditNotes, invoices)
   return postedSupplierInvoices(invoices)
     .filter(inv => !!supplierId && supplierMatchesInvoice(inv, supplierId, supplierName))
     .map(inv => {
       const released       = roundMoney(safeAmount(releasedByInvoiceId[inv.id]))
       const retentionTotal = roundMoney(safeAmount(inv.retentionTotal))
+      const paidAmount     = roundMoney(paid[inv.id] || 0)
+      const creditedAmount = roundMoney(credited[inv.id] || 0)
       return {
         id:                    inv.id,
         invoiceNumber:         inv.invoiceNumber,
@@ -328,8 +369,9 @@ export function allocatableSupplierInvoices(invoices, supplierId, supplierName, 
         releasedTotal:         released,
         invoicePayableTotal:   roundMoney(safeAmount(inv.payableTotal)),
         payableTotal:          payableBasis(inv, released),
-        paid:                  roundMoney(paid[inv.id] || 0),
-        remaining:             remainingPayable(inv, paid[inv.id] || 0, released),
+        paid:                  paidAmount,
+        credited:              creditedAmount,
+        remaining:             remainingPayable(inv, paidAmount, creditedAmount, released),
         legacyNameMatch:       isLegacyNameMatch(inv),
       }
     })
@@ -371,9 +413,10 @@ export function allocateOldestFirst(amount, rows) {
 // invoice. Two users can allocate the same remaining payable concurrently and
 // both writes succeed. These are advisory warnings requiring an explicit
 // acknowledgement — never a guarantee. See docs/SECURITY.md → Deferred Controls.
-export function invoiceOverPaymentWarnings(allocations, invoices, payments, { excludePaymentId = null, releasedByInvoiceId = {} } = {}) {
+export function invoiceOverPaymentWarnings(allocations, invoices, payments, { excludePaymentId = null, creditNotes = [], releasedByInvoiceId = {} } = {}) {
   const others = (payments ?? []).filter(p => p.id !== excludePaymentId)
   const paid = paidByInvoice(others)
+  const credited = creditedByInvoice(creditNotes, invoices)
   const byId = new Map((invoices ?? []).map(inv => [inv.id, inv]))
 
   const warnings = []
@@ -381,7 +424,7 @@ export function invoiceOverPaymentWarnings(allocations, invoices, payments, { ex
     const inv = byId.get(a?.supplierInvoiceId)
     if (!inv) continue
     const alreadyPaid = paid[inv.id] || 0
-    const remaining = remainingPayable(inv, alreadyPaid, releasedByInvoiceId[inv.id] || 0)
+    const remaining = remainingPayable(inv, alreadyPaid, credited[inv.id] || 0, releasedByInvoiceId[inv.id] || 0)
     const excess = roundMoney(safeAmount(a.allocatedAmount) - remaining)
     if (toCents(excess) <= 0) continue
     warnings.push({
@@ -456,6 +499,8 @@ export const ALLOCATION_EXCEPTION_REMEDY =
 //     dedicated callout (a negative balance must never offset real arrears);
 //   · voiding a payment restores the balance at the next render;
 //   · unallocated payments reduce NO invoice balance and appear nowhere here;
+//   · posted valid-target CREDIT NOTES reduce the aged balance — a credited
+//     slice is no longer owed, so it must not age as arrears;
 //   · RETENTION STILL HELD IS EXCLUDED throughout — the basis is the derived
 //     payable, which is net of retention withheld;
 //   · RELEASED retention IS included, because a posted Retention Release makes
@@ -465,12 +510,12 @@ export const ALLOCATION_EXCEPTION_REMEDY =
 //     is visible rather than hidden, and is resolved by the deferred
 //     release-due-date work.
 //
-// ⚠️ SIGNATURE: `releasedByInvoiceId` precedes `now`, mirroring
+// ⚠️ SIGNATURE: the two adjustment sets precede `now`, mirroring
 // lib/clientInvoices.js → ageingByDueDate(invoices, receivedByInvoice, now).
-// Both parameters are defaulted, so the existing two-argument callers are
+// All three parameters are defaulted, so existing two-argument callers are
 // unaffected.
-export function apAgeing(invoices, payments, releasedByInvoiceId = {}, now = new Date()) {
-  const rows = supplierInvoiceReconciliationRows(invoices, payments, releasedByInvoiceId)
+export function apAgeing(invoices, payments, creditNotes = [], releasedByInvoiceId = {}, now = new Date()) {
+  const rows = supplierInvoiceReconciliationRows(invoices, payments, creditNotes, releasedByInvoiceId)
   return ageBalances(
     rows,
     { dueDateOf: (r) => r.dueDate, balanceOf: (r) => r.remaining },
@@ -499,10 +544,11 @@ export function isPastDuePayable(invoice, remaining, now = new Date()) {
 
 // Still honest about what is NOT enforced.
 export const AP_RECONCILIATION_NOTICE =
-  'Balances reflect posted Supplier Payments allocated to each invoice, plus any retention released against it. ' +
-  'Constrapp warns but does not block over-reconciliation, and cannot prevent two users allocating the same ' +
-  'remaining payable concurrently. Unallocated payments are shown separately and reduce no invoice balance. ' +
-  'Retention still HELD is excluded — it is not payable until it is released.'
+  'Balances reflect posted Supplier Payments allocated to each invoice, net of posted Supplier Credit Notes, ' +
+  'plus any retention released against it. Constrapp warns but does not block over-reconciliation, and cannot ' +
+  'prevent two users allocating the same remaining payable concurrently. Unallocated payments are shown ' +
+  'separately and reduce no invoice balance. Retention still HELD is excluded — it is not payable until it is ' +
+  'released.'
 
 // ── Validation (client-enforced) ─────────────────────────────────────────────
 
