@@ -78,6 +78,7 @@ to financial roles.**
 | `…/projects/{id}/forecastLines/{id}` | **financial roles only** | financial roles | blocked — clear via `null`, never deleted |
 | `…/projects/{id}/cashFlowLines/{id}` | **financial roles only** | financial roles, **create active-only; transitions and post-void immutability rules-enforced** | blocked — void via status |
 | `…/projects/{id}/commercial/baseline` | **financial roles only** | financial roles | blocked — the single baseline doc is never deleted |
+| `…/projects/{id}/activities/{id}` | **`company_admin`, `project_manager`, `qs`** | **`company_admin`, `project_manager` ONLY — `qs` is READ-ONLY**; shape, closed status set, date/milestone/percentage invariants, cancellation branch and cancelled-terminality rules-enforced | blocked — cancel via status |
 | `…/counters/{id}` | financial roles | financial roles | blocked |
 
 Contacts reads are deliberately tighter than the shared pattern: the directory
@@ -811,9 +812,40 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     last-write stamps. Fabricated timing lines are a lower-severity analogue of
     Deferred Control 17: a line asserts an expectation, not a bank movement.
 
-<!-- Deferred Controls 20–22 (Documents & Drawings), 23 (Project Timeline), and
-     24 (Supplier Retention) are RESERVED for parked feature branches and are
-     deliberately absent here. Do not reuse those numbers. -->
+<!-- Deferred Controls 20–22 (Documents & Drawings) and 24 (Supplier Retention)
+     are RESERVED for parked feature branches and are deliberately absent here.
+     Do not reuse those numbers. -->
+
+23. **Programme integrity & concurrency (Project Timeline)** — Firestore rules
+    enforce the `activities` shape and lifecycle thoroughly (exact field set,
+    closed status set, ISO date shape, `plannedFinish >= plannedStart`,
+    milestone same-day, integer percentage 0–100, the
+    status/progress/actual-date invariants, both-or-neither reference pairs,
+    immutable `createdAt`/`createdBy`/`revision`, server-stamped audit fields,
+    the cancellation key restriction, and cancelled-terminality) but **cannot
+    verify programme truth**. All of the following are **client-side only** and
+    are proven unenforced by tests in `tests/rules/activities.rules.test.js`:
+    a **valid-shaped but impossible calendar date** is accepted (`2026-02-30`,
+    `2026-04-31` — rules have no calendar); `responsibleContactId` and
+    `costCodeId` **may name nothing**, and the frozen name snapshots are never
+    checked against the referenced document; **`percentComplete` is an
+    unverifiable assertion** — a manually authored figure that no rule can
+    compare to physical progress; **actual dates need not reflect reality** or
+    be plausible against the planned dates; **`sortOrder` uniqueness is not
+    enforceable** (no query, no count — concurrent creation can tie, and the
+    app breaks ties deterministically instead of claiming uniqueness); a
+    **backwards status transition cannot be judged legitimate** rather than a
+    cover-up (permitting correction is the deliberate design — ADR-29); and
+    **dependency-cycle freedom is not enforced** because no dependency model
+    exists in V1. Additionally, this collection is **LAST-WRITE-WINS**: there is
+    no optimistic concurrency, so two users editing one activity overwrite each
+    other including fields the second never looked at, and
+    `updatedAt`/`updatedBy` record *who* wrote last, not *what* changed (no
+    field-level history — Deferred Control 7 territory).
+    **Blast radius is deliberately bounded:** the programme writes no financial
+    document and feeds no financial figure, so a fabricated programme misleads
+    reporting but cannot move money — which is precisely why ADR-29 refuses to
+    couple `percentComplete` to Progress Claims.
 
 25. **Supplier-credit-note cumulative cap & concurrency** — the
     `supplierCreditNotes` rules are the strongest financial block in the file:
@@ -919,6 +951,39 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
 is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.
+
+## Project Timeline — the one collection where `qs` is read-only
+
+The `activities` block splits read from write more narrowly than anywhere else
+in the file:
+
+- **Read:** `company_admin`, `project_manager`, **`qs`** — the QS needs the
+  programme as commercial context.
+- **Create/update:** `company_admin`, `project_manager` **only**. Programme
+  authorship is operational PM/admin responsibility, and `qs` is **read-only**
+  here (asserted by test).
+- **`subcontractor` and `client` are denied entirely.** This is an honesty
+  constraint, not a policy preference: those roles are **not scoped to their own
+  projects** (Deferred Control 5/10), so granting programme reads would expose
+  **every project's programme in the company**. A per-activity or per-project
+  "visibility" flag was deliberately **not** built — it could only be enforced
+  client-side, and a control that cannot be enforced must not be presented as
+  access control. Sharing a programme with a subcontractor or client is a
+  **client-portal feature with its own scoping design**.
+- **`super_admin` gains nothing**, matching every other collection.
+
+**Delete is blocked** (`allow delete: if false`). Cancellation is terminal,
+requires a non-whitespace reason, and rules restrict the write to
+`status`/`cancelReason`/`cancelledAt`/`cancelledBy`/`updatedAt`/`updatedBy`, so
+no content edit can ride along with a cancellation and a cancelled activity is
+immutable retained history.
+
+⚠️ **The lifecycle is deliberately NOT forward-only** (an explicit departure
+from ADR-11): any non-cancelled status may move to any other, including
+backwards, because a programme is a plan that gets corrected rather than an
+audit record. This is a *design* decision, not a rules gap — but it does mean
+the rules cannot tell a legitimate correction from a cover-up (Deferred Control
+20).
 
 ## Secrets & the Vite bundle
 

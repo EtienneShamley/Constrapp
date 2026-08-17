@@ -1287,9 +1287,201 @@ document-only read is the real contract, not an accident.
   a user can no longer **grant themselves** that role, so the blast radius is
   now bounded by who is provisioned.
 
-<!-- ADR-28 (Documents & Drawings), ADR-29 (Project Timeline), and ADR-30
-     (Supplier Retention) are RESERVED for parked feature branches and are
-     deliberately absent here. Do not reuse those numbers. -->
+<!-- ADR-28 (Documents & Drawings) and ADR-30 (Supplier Retention) are RESERVED
+     for parked feature branches and are deliberately absent here. Do not reuse
+     those numbers. The same applies to docs/TESTING.md §15o and §15q. -->
+
+## ADR-29: Project Timeline (current-plan programme; date-only strings; manual progress; no scheduling engine)
+
+**Context.** The Timeline tab had been a `ProjectPlaceholder` since Sprint 1.
+The pain it addresses is not "we lack Primavera" — it is that the programme
+lives in an MS Project or Excel file that was built once and stopped being true,
+so nobody can answer *what is late, who owns it, and what is due next fortnight*
+without opening a file nobody has touched in a month. Everything that makes
+scheduling software expensive (CPM, resource levelling, working calendars,
+drag-rescheduling) exists to **re-plan automatically**, which is precisely the
+capability a contractor with forty activities will not maintain.
+
+**Roadmap order.** [ROADMAP.md](../ROADMAP.md) places Timeline in item 10
+("Commercially linked field modules"), behind six lifecycle items. It was
+brought forward **deliberately and with product-owner approval** because
+Documents & Drawings — the branch that would otherwise be next — is parked
+pending Firebase Storage production setup, and Timeline is **completely
+independent of Storage**: no upload, no file, no drawing, no Quant™. This is a
+sequencing exception, not a scope expansion.
+
+**Commercial linkage.** [AGENT.md](../AGENT.md) requires a field feature to
+state its commercial input or output, and [PRODUCT.md](../PRODUCT.md) records
+Timeline's as *delay → forecast impact*. V1 establishes that linkage
+**structurally** — an optional `costCodeId` with a frozen `costCodeName`, the
+same spine every commercial document uses — and **implements no derivation from
+it**. The programme writes no Forecast, Cash Flow, Margin, Progress Claim,
+Budget Line, PO, or Variation value, and does not touch
+`projects/{projectId}.progress`. Future delay-impact intelligence will be
+**read-time**, composed from the programme and the existing commercial
+derivations, never a second authored commercial truth (the ADR-3/ADR-4
+posture).
+
+**Decision — one project-scoped collection.**
+`companies/{companyId}/projects/{projectId}/activities/{activityId}`, random
+document ids. Stored: `name`, `description`, `isMilestone`, `status`,
+`plannedStart`, `plannedFinish`, `actualStart`, `actualFinish`,
+`percentComplete`, `responsibleContactId` + `responsibleName`, `costCodeId` +
+`costCodeName`, `sortOrder`, `notes`, `cancelReason`/`cancelledAt`/`cancelledBy`,
+`revision`, and the create/update audit stamps. Deliberately **not** stored:
+`companyId`/`projectId` (the path carries them), `durationDays` (derived —
+a stored duration is a third fact that can disagree with two dates), baseline or
+dependency placeholders (speculative fields), `currency` (an activity holds no
+money), and any sequential number (a programme line is not a numbered financial
+document).
+
+**Milestones are a flag, not a collection.** `isMilestone: true` with
+`plannedFinish == plannedStart`, progress restricted to 0 or 100, and a derived
+duration of **zero days** — a milestone is a point in time, not a one-day
+activity. A parallel collection would double the hooks, rules and tests for the
+same data.
+
+**No task hierarchy / WBS.** Constrapp already has a WBS — the **cost code**.
+Inventing a parallel tree would breach the spine invariant and immediately raise
+unanswerable rollup questions (does a parent's percentage derive from its
+children? its dates?). Grouping is by optional cost code; ordering is by
+`sortOrder`.
+
+**Dates are date-only `'YYYY-MM-DD'` strings**, following `lib/payments.js` —
+the convention already used by `invoiceDate`, `dueDate`, `receiptDate` and
+`paymentDate`. A programme date is a day on a wall chart, not an instant; a
+`Timestamp` would attach timezone semantics to a fact that has none. String
+comparison is exact for zero-padded ISO **and expressible in Firestore rules**,
+which is what makes `plannedFinish >= plannedStart` server-enforceable. The
+finish is **inclusive** (duration = difference + 1) and every duration is
+**calendar days** — no working calendar, weekends or public holidays are
+modelled. *(Note the inconsistency this does not copy:
+`commercial/baseline` stores contract dates as `Timestamp|null`, the older
+pre-`payments.js` pattern. New date-only fields follow the string convention.)*
+
+**Status: five values, and deliberately NOT forward-only.** `not_started`,
+`in_progress`, `on_hold`, `completed`, `cancelled`. `on_hold` replaces the
+obvious `blocked` because a blocked activity is usually part-done, and a status
+implying no progress would lose that — the blocker goes in `notes`. Any
+non-cancelled status may move to any other, **including backwards**: this is an
+explicit departure from **ADR-11 (forward-only lifecycles)**, which exists
+because financial documents are an audit record. **A programme is a plan.** An
+activity ticked complete by mistake, or reopened for a defect, must be
+correctable, or the first mis-click becomes a permanent lie. Only `cancelled`
+is terminal.
+
+**Cancellation instead of deletion.** `allow delete: if false`, consistent with
+every collection in the file (ADR-12 posture). Cancelling is terminal, requires
+a **non-whitespace reason**, and rules restrict the write to the cancellation
+keys so no content edit can ride along. A cancelled activity is retained
+programme history that stops counting as outstanding work.
+
+**Progress is manually authored — and never coupled to Progress Claims.**
+`percentComplete` is a whole number 0–100 entered by a person. It is **not**
+derived from dates (elapsed time is not progress; a date-derived percentage
+asserts that work happened because the calendar moved, and would be wrong on
+exactly the slipping activities that matter), **not** from child tasks (no
+hierarchy), and **not** from claims. A progress claim is a *supplier's
+cumulative dollar claim against a PO line*, authored by the supplier and
+assessed by the QS, with retention and GST attached; an activity percentage is
+*physical progress on a programme line*, authored by the PM. They differ in
+granularity, authorship and truth conditions, and deriving either from the other
+would create **a second source of financial truth** — the failure ADR-23 and
+ADR-24 exist to prevent. It would also give an unverifiable, freely-editable
+field a financial consequence. The correct future move is to **report them side
+by side and highlight divergence**, never to compute one from the other.
+
+**No baseline — and the UI says so.** V1 reports *late against the current
+plan*. Because editing a planned date silently redefines "on time", the
+programme **cannot** report slippage against an approved baseline, and the page
+states this permanently rather than implying a variance it cannot compute.
+Baseline and re-baseline are a foundation of their own.
+
+**No dependencies, no critical path, no rescheduling.** A dependency without a
+rescheduling engine is decorative and goes stale silently — worse than absent —
+and an arrow claiming "B follows A" while the dates contradict it is actively
+misleading. Cycle freedom is also unenforceable server-side (rules have no list,
+query or graph traversal), so it could only ever be a client check. The only
+forward-compatibility this costs is **stable, never-reused document ids**, which
+the collection already has: predecessors would later be stored additively on the
+successor with no migration.
+
+**Permissions — the one place `qs` is narrower.** Read:
+`company_admin`, `project_manager`, **`qs`** (the QS needs the programme for
+commercial context). Create/update: `company_admin`, `project_manager` **only** —
+programme authorship is operational PM/admin responsibility. `subcontractor`
+and `client` are denied entirely, because those roles are **not scoped to their
+own projects** (SECURITY.md → Deferred Control 5/10): a read grant would expose
+every programme in the company. Sharing a programme externally is a
+client-portal feature with its own scoping design, **not a visibility flag on
+this document** — such a flag would be client-side only and must not be
+described as access control. `super_admin` gains nothing, matching every other
+collection.
+
+**Responsibility is a Contact, not a user.** `responsibleContactId` +
+a frozen `responsibleName` snapshot, the `supplierId`/`supplierName` pattern.
+Assigning an internal staff member is **impossible today**: ADR-27 made
+`users/{uid}` read-your-own-profile-only, so no client code can list or read
+another company user (`ProjectForecast.jsx` already renders the literal
+`'Another user'` for this reason). Internal assignment waits on trusted user
+management; **this was not a reason to reopen `users/{uid}`.**
+
+**No transaction and no currency ratchet.** Every other recent create wraps
+itself in `runTransaction` to stage `stageProjectCurrencyLock` (ADR-21) because
+it writes monetary data. An activity holds no amount and no currency, so there
+is nothing to make atomic and nothing to lock — engaging the ratchet on a
+scheduling write would be wrong.
+
+**Gantt without a dependency.** A Gantt is date arithmetic plus positioned
+rectangles. `lib/timelineGantt.js` holds **every** geometry decision (window,
+month/week ticks, bar offsets and widths, clipping, milestone centring, today
+marker, canvas width) with zero business logic, and the component renders plain
+CSS boxes on a fixed day grid inside one horizontal scroller — the fixed-slot
+approach proven by `CashFlowChart` under ADR-26. Recharts is present but has no
+range-bar primitive and would be more code with less control. **Nothing was
+installed.** The split also makes the Gantt unit-testable in the existing
+Node-only runner with no jsdom.
+
+**The table is the record.** The ADR-26 chart/table contract is reused
+unchanged: the Gantt consumes what the domain module already derived, re-derives
+nothing, and is **never the only path to the data** — the activity table below
+it is the complete record and the accessible equivalent. On mobile the Gantt is
+**not rendered at all**; grouped activity cards (Overdue → This week → Upcoming
+→ Later → Completed/Cancelled) replace it, because a legible horizontal
+programme does not fit a 375px screen and pinch-zoom is not an interaction model
+this app uses.
+
+**Consequences.**
+
+- **First non-financial project collection with a rules-enforced lifecycle.**
+  Shape, closed status set, date ordering, milestone equality, the percentage
+  bounds and integer type, the status/progress/actual-date invariants, the
+  both-or-neither reference pairs, immutable `createdAt`/`createdBy`/`revision`,
+  server-stamped audit fields, the cancellation key restriction, and
+  cancelled-terminality are **all rules-enforced**. `keys().hasOnly()` +
+  `hasAll()` pin the exact field set, so no arbitrary field can be pre-seeded —
+  the ADR-27 lesson applied preventively.
+- **Rules cannot verify truth**, and the block says so in its own comments:
+  a valid-shaped but impossible calendar date (`2026-02-30`) is accepted, a
+  `responsibleContactId`/`costCodeId` naming nothing is accepted, `sortOrder`
+  uniqueness is unenforceable, backwards transitions cannot be judged
+  legitimate, and `percentComplete` is an unverifiable assertion. Recorded as
+  **Deferred Control 23**, with rules tests that *prove* each gap rather than
+  assuming it.
+- **Last-write-wins concurrency.** Two users editing one activity overwrite each
+  other, including fields the second never looked at; `updatedAt`/`updatedBy`
+  record who wrote last, not what changed. Optimistic concurrency
+  (compare-and-set on `revision`) is deferred, not overlooked.
+- **`sortOrder` is not unique**, so display order breaks ties deterministically
+  on planned start, planned finish, name, then document id — the same list
+  always renders in the same order.
+- Added **112 unit tests** (`projectTimeline` 79 + `timelineGantt` 33) and the
+  **66-test** `activities` rules suite; with every other foundation merged the
+  combined totals are **493 unit** (7 files) and **450 rules** (10 files). Lint held at
+  its accepted **17 errors / 0 warnings**; no dependency, `package.json`,
+  `package-lock.json`, `firebase.json` or vitest-config change.
+- **No financial file was modified** and no migration is required — existing
+  projects simply have an empty programme.
 
 ## ADR-31: Supplier Credit Notes (separate collection; read-time reduction; target-validated by rules)
 
@@ -1421,9 +1613,9 @@ the rule with its own review.
 
 ## ADR-32: BOQ & Tender Foundation — Part 1: BOQ (measured schedule; null-rate unpriced; read-time budget comparison)
 
-*(ADR-28 Documents, ADR-29 Timeline, and ADR-30 Retention remain reserved for
-parked feature branches and are deliberately not written here — no stubs.
-ADR-31 Supplier Credit Notes is above. Part 2 of this ADR — Tender Packages, Bids, Comparison, and
+*(ADR-28 Documents and ADR-30 Retention remain reserved for parked feature
+branches and are deliberately not written here — no stubs. ADR-29 Project
+Timeline and ADR-31 Supplier Credit Notes are above. Part 2 of this ADR — Tender Packages, Bids, Comparison, and
 Award — follows below; the two parts are deliberately independent, and nothing
 of Part 2 is implemented by Part 1.)*
 
@@ -1507,10 +1699,10 @@ collection, hook, or derivation changed behaviour.
 
 ## ADR-32: BOQ & Tender Foundation — Part 2: Tender (packages · manual bids · read-time comparison · award as a decision record; no stored totals)
 
-> **Numbering note.** ADR-28–30 remain reserved for parked feature branches
-> (Documents & Drawings, Project Timeline, Retention) — the gap is intentional
-> and no stubs are written. ADR-31 (Supplier Credit Notes) and Part 1 of this
-> ADR (BOQ) are above. Part 2 is deliberately independent of Part 1: Tender V1 was designed
+> **Numbering note.** ADR-28 (Documents & Drawings) and ADR-30 (Retention)
+> remain reserved for parked feature branches — the gap is intentional and no
+> stubs are written. ADR-29 (Project Timeline), ADR-31 (Supplier Credit Notes),
+> and Part 1 of this ADR (BOQ) are above. Part 2 is deliberately independent of Part 1: Tender V1 was designed
 > and built to work **without** BOQ (cost-code + free-text scope), and the
 > optional BOQ scope schedule remains a separate future step (see "Independence
 > & future BOQ integration" below).

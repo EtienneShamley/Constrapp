@@ -33,6 +33,7 @@ import ProjectClientReceipts from './pages/project/ProjectClientReceipts'
 import ProjectSupplierPayments from './pages/project/ProjectSupplierPayments'
 import ProjectCashFlow from './pages/project/ProjectCashFlow'
 import ProjectTenders from './pages/project/ProjectTenders'
+import ProjectTimeline from './pages/project/ProjectTimeline'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
 
 export default function App() {
@@ -104,14 +105,12 @@ export default function App() {
                           badge="Coming in Sprint 4"
                         />
                       } />
-                      <Route path="timeline" element={
-                        <ProjectPlaceholder
-                          icon="⏱"
-                          title="Timeline"
-                          description="Gantt-style schedule view with delay detection for this project."
-                          badge="Coming in Sprint 4"
-                        />
-                      } />
+                      {/* Project Timeline — the project programme (ADR-29).
+                          A CURRENT-PLAN schedule: activities, milestones,
+                          responsibility and manually entered progress, with a
+                          read-only Gantt. It writes no financial document and
+                          no project progress field. */}
+                      <Route path="timeline" element={<ProjectTimeline />} />
                       <Route path="reports" element={
                         <ProjectPlaceholder
                           icon="📊"

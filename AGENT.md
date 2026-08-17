@@ -73,7 +73,8 @@ frontend/
                     useClientInvoices,
                     useClientReceipts, useSupplierPayments, useVariations,
                     useBoqItems, useTenderPackages, useTenderBids,
-                    useForecastLines, useProjectCommercial, useCashFlowLines
+                    useForecastLines, useProjectCommercial, useCashFlowLines,
+                    useProjectActivities (project programme — NON-financial)
     lib/            firebase.js, formatters.js, currency.js, nav.js, projectTabs.js,
                     purchaseOrders.js, progressClaims.js, supplierInvoices.js,
                     supplierCreditNotes.js (reduction records vs posted supplier
@@ -83,7 +84,9 @@ frontend/
                     tenders.js (packages, bids, validity gate, comparison, award),
                     forecast.js, margin.js, cashFlow.js (pure monthly cash
                     aggregation + forecast layers), contacts.js, boq.js (pure
-                    BOQ arithmetic + read-time budget comparison)
+                    BOQ arithmetic + read-time budget comparison),
+                    projectTimeline.js (programme domain logic — no financial
+                    arithmetic), timelineGantt.js (Gantt geometry only)
   tests/unit/       Unit tests for pure lib/ logic (npm run test:unit — no emulator)
 ```
 
@@ -231,6 +234,22 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
                                              terminal, non-whitespace reason); delete blocked; the
                                              no-past-month rule is CLIENT-enforced; reads restricted to
                                              financial roles
+  …/activities/{activityId}                  PROJECT PROGRAMME (NON-FINANCIAL): name, description, isMilestone,
+                                             status not_started|in_progress|on_hold|completed|cancelled,
+                                             DATE-ONLY 'YYYY-MM-DD' plannedStart/plannedFinish (finish INCLUSIVE,
+                                             finish >= start rules-enforced) + nullable actualStart/actualFinish,
+                                             INTEGER percentComplete 0-100 (MANUALLY AUTHORED, unverified),
+                                             optional responsibleContactId + frozen responsibleName (a CONTACT,
+                                             never a user — ADR-27), OPTIONAL costCodeId + frozen costCodeName
+                                             (the commercial spine link — a JOIN KEY only, no derivation),
+                                             sortOrder (NOT unique), notes, cancelReason/cancelledAt/cancelledBy —
+                                             duration/overdue/horizon/summary all derived read-time, never stored;
+                                             LIFECYCLE IS RULES-ENFORCED but DELIBERATELY NOT FORWARD-ONLY
+                                             (backwards correction allowed — an explicit ADR-11 departure);
+                                             cancelled terminal, delete blocked; NO currency, NO counter,
+                                             NO transaction, NO currency ratchet; reads company_admin/
+                                             project_manager/qs, writes company_admin/project_manager ONLY
+                                             (QS READ-ONLY); WRITES NO FINANCIAL VALUE ANYWHERE
   …/commercial/baseline                      single doc (id = "baseline"): originalContractValue, originalApprovedBudget
                                              (number|null), contract start/completion (Timestamp|null), clientId/clientName
                                              snapshot, notes — the ONLY stored Project Margin inputs; Current Contract Sum,
@@ -254,6 +273,7 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
 - POs snapshot `supplierName` from the chosen contact at write time (`supplierId` is the live link); contact edits or archiving never rewrite issued documents, and POs/claims with `supplierId: null` (pre-Contacts) render from the snapshot and are never backfilled
 - **One currency per project; a currency is a label, never a conversion.** There is **no FX conversion**, no exchange rates, and no mixed-currency transactions. Money is formatted **only** through `formatCurrency(amount, currencyCode)` in `lib/formatters.js` with the currency resolved by `lib/currency.js` (`project.currency` → `company.baseCurrency` → `AUD`) — never hard-code a currency code or a `$`. Project currency **locks** once the project holds any monetary value (non-zero `budget`, budget lines, POs incl. draft/cancelled, claims, invoices, receipts, **supplier payments (incl. draft/void)**, variations, non-null forecast inputs, established baseline); Cost Codes and Contacts never lock. The lock *condition* is client-enforced (rules cannot enumerate subcollections); the *ratchet* is rules-enforced once set (ADR-21)
 - **Currency is not tax.** `GST_RATE` remains a flat Australian 10% and every "GST 10%" label is Australian. Selecting another country changes the currency label only — never describe Constrapp as tax-compliant outside Australia
+- **The Project Timeline writes no financial value, in either direction.** Activities never write onto Budget Lines, Forecast Lines, Cash Flow Lines, the Commercial Baseline, Progress Claims, POs, Supplier/Client Invoices, or Variations, and never touch `projects/{projectId}.progress`. `percentComplete` is **manually authored and unverified** — it is never derived from dates, from child tasks, or from Progress Claims, and it feeds **no** budget, forecast, margin or cash figure. A claim is a supplier's cumulative dollar claim against a PO line; an activity percentage is physical progress on a programme line — deriving either from the other would create a second source of financial truth (ADR-23/ADR-24). The optional `costCodeId` is a **join key reserved for a future read-time derivation** (`delay → forecast impact`), never an authored commercial value (ADR-29)
 - Exact definitions and formulas: [docs/FINANCIAL_WORKFLOWS.md](docs/FINANCIAL_WORKFLOWS.md); rationale: [docs/PROJECT_DECISIONS.md](docs/PROJECT_DECISIONS.md)
 
 ## Naming

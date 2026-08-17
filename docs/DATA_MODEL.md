@@ -28,6 +28,7 @@ companies/{companyId}
     tenderBids/{bidId}
     forecastLines/{costCodeId}           (deterministic id = costCodeId)
     cashFlowLines/{lineId}               (authored Cash Flow timing inputs)
+    activities/{activityId}              (project programme — NON-FINANCIAL)
     commercial/baseline                  (single doc; deterministic id = "baseline")
 ```
 
@@ -864,6 +865,83 @@ creating one **locks the project currency in the same transaction** (ADR-21);
 voided lines are retained and remain lock evidence. **No migration** — a project
 with no `cashFlowLines` loads normally with an empty manual forecast.
 
+## …/projects/{projectId}/activities/{activityId}
+
+**The project programme** — Constrapp's first and only **non-financial** project
+collection. An activity is a planning record: it holds no money, no currency, no
+counter and no sequential number, and it **writes nothing to any financial
+document** (no Forecast Line, Cash Flow Line, Commercial Baseline, Progress
+Claim, PO, Supplier/Client Invoice, Budget Line or Variation) and **never
+touches `projects/{projectId}.progress`**. Document ids are random and stable.
+Rationale and the full set of deliberate exclusions: **ADR-29**. Access matrix
+(the one place `qs` is read-only): [SECURITY.md](SECURITY.md).
+
+⚠️ **This is a CURRENT-PLAN programme, not approved-baseline variance.** No
+immutable baseline exists, so "overdue" means late against the planned dates *as
+they stand now* — editing a planned date silently redefines "on time". Never
+present a Timeline figure as slippage against an approved programme.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | **Required non-whitespace**, ≤ 120 chars (rules-enforced) |
+| `description` | string | Optional, ≤ 500 |
+| `isMilestone` | bool | A **point in time**, not a one-day activity: forces `plannedFinish == plannedStart` (rules-enforced), restricts `percentComplete` to `0` or `100`, and derives a duration of **0 days** |
+| `status` | string | `not_started` \| `in_progress` \| `on_hold` \| `completed` \| `cancelled` — **closed set, rules-enforced**. `on_hold` deliberately replaces `blocked` (a blocked activity is usually part-done; the blocker goes in `notes`) |
+| `plannedStart` | string | `'YYYY-MM-DD'` **date-only string**, required |
+| `plannedFinish` | string | `'YYYY-MM-DD'`, required, **`>= plannedStart` (rules-enforced)**. **INCLUSIVE** — the last day of work |
+| `actualStart` | string \| null | `'YYYY-MM-DD'` or `null` |
+| `actualFinish` | string \| null | `'YYYY-MM-DD'` or `null`; **`>= actualStart` when both present** (rules-enforced) |
+| `percentComplete` | number | **Integer 0–100, rules-enforced.** ⚠️ **Manually authored and unverifiable** — never derived from dates, child tasks, or Progress Claims, and it feeds **no** budget, forecast, margin or cash figure (ADR-29) |
+| `responsibleContactId` | string \| null | → `companies/{c}/contacts/{id}`. **Never a user account** — `users/{uid}` is client-read-only (ADR-27), so no client can resolve another company user |
+| `responsibleName` | string | **Frozen snapshot**, ≤ 120; non-empty exactly when `responsibleContactId` is non-null (rules-enforced pairing) |
+| `costCodeId` | string \| null | **OPTIONAL** commercial-spine link → `companies/{c}/costCodes/{id}`. Not every programme activity maps to a cost code |
+| `costCodeName` | string | **Frozen snapshot**, ≤ 120; same both-or-neither pairing (rules-enforced) |
+| `sortOrder` | number | Manual programme order. ⚠️ **NOT unique** — rules cannot enforce uniqueness (no query/count) and concurrent creation can tie; display order breaks ties deterministically on planned start, planned finish, name, then id |
+| `notes` | string | Optional, ≤ 500. Where an `on_hold` blocker is recorded |
+| `cancelReason` | string | **Required non-whitespace** on cancellation, ≤ 500 (rules-enforced); `''` otherwise |
+| `cancelledAt` / `cancelledBy` | timestamp / uid | `null` until cancelled. Rules require `cancelledBy == request.auth.uid` and `cancelledAt == request.time` |
+| `revision` | number | `1` — rules-enforced on create, preserved on update |
+| `createdAt` / `createdBy` | timestamp / uid | Set once; rules reject any later change |
+| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on **every** write. ⚠️ Records *who wrote last*, **not what changed** |
+
+**Status invariants (all rules-enforced, all within-document):**
+`not_started` ⇒ `percentComplete == 0` and both actual dates `null`;
+`in_progress` ⇒ `actualStart != null`;
+`completed` ⇒ `percentComplete == 100` and `actualFinish != null`;
+`cancelled` is **terminal** and reachable only through the cancellation branch.
+
+**⚠️ The lifecycle is deliberately NOT forward-only** — an explicit departure
+from ADR-11. Any non-cancelled status may move to any other, **including
+backwards** (`completed → in_progress`), because a programme is a plan that gets
+corrected, not an audit record. Financial lifecycles are unaffected.
+
+**Deliberately NOT stored:** `companyId`/`projectId` (the collection path
+carries them — the ADR-24 precedent), `durationDays` (**derived**: a stored
+duration is a third fact that can disagree with the two dates), `baselineStart`/
+`baselineFinish` or any dependency/predecessor field (speculative — ADR-29
+defers both), `currency` (an activity holds no money, so **no currency ratchet
+is engaged** and creation needs no transaction), any sequential activity number,
+and any stored `overdue`/`isLate` flag (**derived on every read** — a stored
+flag would be wrong by tomorrow).
+
+**Dates are date-only strings, not Timestamps.** A programme date is a day on a
+wall chart, not an instant. This follows `lib/payments.js` (`invoiceDate`,
+`dueDate`, `receiptDate`, `paymentDate`) and makes `plannedFinish >=
+plannedStart` expressible **inside Firestore rules**. *(Note the older
+inconsistency this does not copy: `commercial/baseline` stores contract dates as
+`Timestamp|null`.)* Durations are **calendar days** — weekends, public holidays
+and working calendars are not modelled. Overdue/due-soon comparisons use the
+viewer's local date with **no timezone normalisation**, the same documented
+limitation as `daysPastDue`/`isFutureDate`.
+
+**Stored vs derived.** Only the fields above are authored. Duration, overdue,
+days late, days until due, the horizon grouping (Overdue / This week / Upcoming
+/ Later / Completed-Cancelled), the four summary counts, and every Gantt
+coordinate are derived at read time (`lib/projectTimeline.js`,
+`lib/timelineGantt.js`) and never written back. **Deletion is blocked** — cancel
+via status. **No migration**: a project with no `activities` loads normally with
+an empty programme.
+
 ## Cash Flow — what is and is not persisted
 
 `cashFlowLines` above is the **only** Cash Flow collection. Everything else the
@@ -1041,4 +1119,5 @@ a design assessment, a hook, and (where a new collection is introduced) a manual
 - Supplier credit notes → exactly **one posted** supplier invoice via a **frozen** `supplierInvoiceId` (+ frozen `invoiceNumber`/`supplierInvoiceNumber`/`supplierId`/`supplierName`/`currency` snapshots — all core-preserved by rules). The target must be posted with **zero retention** at create/edit time (rules `get()`). The linkage is **read-time only**: a credit note **never** mutates the invoice; posted valid-target credits subtract from Invoiced/Actual by line `costCodeId` (ex-GST) and from the invoice's Remaining Payable by `grossTotal`. Credit lines carry cost codes drawn from the target invoice's lines and **no `poLineIndex`** — Remaining Committed is never restored by a credit (ADR-31).
 - Tender packages → cost codes via `costCodes[].costCodeId` (with frozen `costCodeName` snapshots — the package's join onto the spine); → the winning bid via `awardedBidId` (with a frozen `awardedBidderName` snapshot rules-matched to the bid's own). The award is **read-time only**: it never creates a PO, never touches Budget Lines, and stores no total.
 - Tender bids → one package via `tenderPackageId` (with a frozen `tenderNumber` snapshot rules-matched to the package); → a supplier/subcontractor contact via `bidderContactId` (with a frozen `bidderName` snapshot rules-matched to the contact); → cost codes via `lineItems[].costCodeId` (client-constrained to the package's own codes, with `costCodeName` snapshots from the package's frozen list). No stored totals anywhere — every figure derives through the `assessBid` validity gate.
-- Counters are company-wide: PO/claim/invoice/receipt/payment/credit-note/tender-package numbers are unique per **company**, not per project. Contacts, forecast lines, tender bids, and the commercial baseline carry no sequential number.
+- Timeline activities → a company contact via an optional `responsibleContactId` (with a frozen `responsibleName` snapshot), and → cost codes via an **optional** `costCodeId` (with a frozen `costCodeName`). Both linkages are **labels only**: an activity never mutates a contact, a cost code, or any commercial document, and no financial figure is derived from one. The cost code is the **join key reserved for a future read-time "delay → forecast impact" derivation** (ADR-29) — it authors nothing today. Activities reference **no user account** (`users/{uid}` is client-read-only — ADR-27) and carry **no dependency link** to another activity.
+- Counters are company-wide: PO/claim/invoice/receipt/payment/credit-note/tender-package numbers are unique per **company**, not per project. Contacts, forecast lines, tender bids, timeline activities, and the commercial baseline carry no sequential number.

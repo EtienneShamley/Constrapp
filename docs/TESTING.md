@@ -34,7 +34,7 @@ That script runs
   upgrade `firebase-tools`, you must also install JDK 21+.
 - Config: `frontend/firebase.json` (emulator + rules pointer only — no hosting,
   no functions, and **no `.firebaserc`**, so nothing can be deployed).
-- Tests — **384 in total across 9 files**:
+- Tests — **450 in total across 10 files**:
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -107,11 +107,23 @@ That script runs
     asserts the documented **client-only** gap: malformed `lineItems`
     **elements** (non-numeric amounts, out-of-scope codes, non-object lines)
     are ACCEPTED by rules — the read-time validity gate is the mitigation.
-  - All nine run for `company_admin`, `project_manager`, `qs`, `subcontractor`,
+  - `frontend/tests/rules/activities.rules.test.js` — **66 tests** covering
+    every case in §15p-x below (the project programme, ADR-29). It is the only
+    suite where the **read and write audiences differ**: it asserts that `qs`
+    can read but cannot create, edit or cancel, that `subcontractor`, `client`
+    and `super_admin` are denied entirely, and that **no role can delete**. It
+    also asserts the deliberate **non**-forward-only lifecycle (`completed →
+    in_progress` and `in_progress → not_started` both SUCCEED) and the four
+    documented **client-only** gaps: an impossible-but-well-shaped calendar
+    date (`2026-02-30`), a `responsibleContactId`/`costCodeId` naming nothing,
+    a duplicate `sortOrder`, and a full-document overwrite (last-write-wins)
+    are all ACCEPTED by rules.
+  - All ten run for `company_admin`, `project_manager`, `qs`, `subcontractor`,
     `client`, an unauthenticated caller, and a financial-role user in a **second
-    company**; the tender suites add `super_admin` (proving it has no special
-    power). The users suite adds a further identity: an authenticated caller
-    with **no** `users/{uid}` document at all (the orphan case).
+    company**; the tender and activities suites add `super_admin` (proving it has
+    no special power). The users and activities suites add a further identity: an
+    authenticated caller with **no** `users/{uid}` document at all (the orphan
+    case).
 - **Run this before publishing any rules change** (see
   [DEPLOYMENT.md](DEPLOYMENT.md)).
 
@@ -130,11 +142,11 @@ That script runs
 > that pattern. `Timestamp.now()` remains correct inside `seed()` helpers, which
 > write **stored state** with rules disabled and assert nothing.
 
-§15i-x, §15j-x, §15k-x, §15r-x, and §15s-v below remain the human-readable
-specification of what those tests assert; the other manual sections are not
-automated. The users suite is self-describing and has no manual counterpart —
-`users/{uid}` has no UI, so there is nothing to click through: the rules ARE the
-feature.
+§15i-x, §15j-x, §15k-x, §15m-x, §15p-x, §15r-x, and §15s-v below remain the
+human-readable specification of what those tests assert; the other manual
+sections are not automated. The users suite is self-describing and has no
+manual counterpart — `users/{uid}` has no UI, so there is nothing to click
+through: the rules ARE the feature.
 
 ## 0b. Unit tests — pure `lib/` domain logic (no emulator)
 
@@ -264,7 +276,43 @@ npm run test:unit
   default** (it overstates remaining payable, the picker figure, and AP ageing)
   — the lib fact behind the page-level unavailable handling in §15r-xv.
 
-  Combined unit total: **381 tests** across the five files.
+- `frontend/tests/unit/projectTimeline.test.js` — **79 tests** over
+  `lib/projectTimeline.js`, the project-programme domain logic (ADR-29). Covers
+  the five-status vocabulary and its labels/badges, transition legality
+  **including the deliberate backwards corrections** (`completed →
+  in_progress`, `in_progress → not_started`) and `cancelled` terminality, the
+  read/write role split (`qs` reads but cannot author), ISO date validation
+  **rejecting impossible calendar dates** (`2026-02-30`, `2026-04-31`,
+  `2025-02-29`) that a regex alone would accept, UTC-based day arithmetic that
+  survives DST and year boundaries, **inclusive** duration (same-day = 1 day)
+  and **zero-day milestones**, overdue/days-late/days-until-due against an
+  **injected clock**, the horizon grouping windows and their boundaries, the
+  four summary counts, **deterministic sorting** through every tie-break level
+  (a total tie resolves identically whichever order it arrives in), draft
+  normalisation and every validation message including all status invariants
+  and the milestone rules, cancellation-reason validation, and **input purity**
+  (no draft or activity list is ever mutated).
+
+- `frontend/tests/unit/timelineGantt.test.js` — **33 tests** over
+  `lib/timelineGantt.js`, the Gantt **geometry transform**. Covers month
+  snapping and real month lengths (including February in a leap year), the
+  visible window widening for actual dates outside the plan and reaching to
+  today **only** when the programme is within a month of it, month/week ticks
+  with clipped partial months, bar offsets and **inclusive** widths, progress
+  fill as a share of the drawn bar with nonsense percentages **clamped**,
+  milestone centring, today-marker presence and absence, explicit-window
+  **clipping** with the cut end reported, exclusion of undrawable and
+  wholly-out-of-window activities (**reported, never silently dropped**), the
+  empty/single-activity/all-milestone cases, row order matching the table, and
+  input purity.
+
+  ⚠️ Neither Timeline suite retests the other's concern: geometry has one home
+  and programme semantics have another. The Gantt **component** is not
+  unit-tested — that would need jsdom and testing-library; the transform
+  boundary is what makes the geometry testable without them (the ADR-26
+  precedent). Rendering is verified manually in §15p-viii.
+
+  Combined unit total: **493 tests** across the seven files.
 
 Setup: two provisioned users in the same company (e.g. a `project_manager` and a
 `qs`), signed in via `/login`. Reset state between suites by using a fresh
@@ -286,7 +334,7 @@ project.
 - [ ] Project name is required; budget/progress inputs reject negatives (progress clamps 0–100).
 - [ ] Open a project → lands on `/projects/{id}/overview` showing budget, start date, progress bar.
 - [ ] Unknown project ID shows "Project not found."; unmatched routes redirect to `/projects`.
-- [ ] Documents/Photos/Timeline/Reports tabs show placeholder cards, no data wiring (Variations — see §14 — Forecast — see §15 — Commercial — see §15g — and BOQ — see §15s — are now live).
+- [ ] Documents/Photos/Reports tabs show placeholder cards, no data wiring (Variations — see §14 — Forecast — see §15 — Commercial — see §15g — BOQ and Tenders — see §15s — and Timeline — see §15p — are now live).
 
 ## 3. Cost Codes
 
@@ -1833,9 +1881,188 @@ is the record.
 - [ ] Using the chart writes **no** document — it is read-only, with no
   clickable edit path.
 
-<!-- §15o (Documents & Drawings), §15p (Project Timeline), and §15q (Supplier
-     Retention) are RESERVED for parked feature branches and are deliberately
-     absent here. Do not reuse those letters. -->
+## 15p. Project Timeline (project programme)
+
+> **§15o is RESERVED for Documents & Drawings** (ADR-28), still on a parked
+> branch — the gap is intentional and no stub is written. Timeline holds
+> **§15p** / **ADR-29** / **Deferred Control 23**.
+
+Covers the **Timeline** project tab (`/projects/:projectId/timeline`).
+Rationale and every deliberate exclusion: **ADR-29**.
+
+⚠️ **Frame every check against the current plan, not a baseline.** Constrapp
+stores no immutable programme baseline, so the only claim under test is *"late
+against the dates as they stand now"*. If any screen implies slippage against an
+**approved** programme, that is a defect.
+
+⚠️ **No check in this section may change a financial figure.** Before and after
+the whole section, Budget, Forecast, Margin, Cash Flow and the Projects list
+progress bar must be **identical**.
+
+### 15p-i. Access matrix (the one place QS is read-only)
+
+- [ ] As **company_admin** and as **project_manager**: the Timeline tab loads,
+  and **+ Add activity**, **Edit** and **Cancel** are all present.
+- [ ] As **qs**: the programme loads and is fully readable, but **no** Add /
+  Edit / Cancel control is rendered, and the footer note says access is
+  read-only.
+- [ ] As **subcontractor** or **client**: the tab shows the *"Programme not
+  available"* card explaining that those roles are not yet project-scoped — no
+  activity data appears.
+- [ ] Rules (not just UI) enforce this — see §17 and
+  `tests/rules/activities.rules.test.js`.
+
+### 15p-ii. Create an activity
+
+- [ ] **+ Add activity** → name, planned start and planned finish are required;
+  saving without them shows a message and writes nothing.
+- [ ] A finish **before** the start is rejected.
+- [ ] A **same-day** activity is accepted and reports **1 day** duration
+  (the finish is inclusive).
+- [ ] Duration is labelled **calendar days** — a Fri→Mon span reports **4
+  days**, not 2. There is no weekend or public-holiday handling anywhere.
+- [ ] Choosing **Responsible** lists company Contacts with this project's
+  contacts first; leaving it blank is allowed. There is **no option to assign an
+  internal staff member** (user management does not exist — ADR-27).
+- [ ] Choosing a **Cost code** is optional, and the hint states it changes no
+  budget, forecast or cash figure.
+- [ ] Saving returns to the programme with the activity in the table, the Gantt
+  and (at 375px) the cards.
+
+### 15p-iii. Milestones
+
+- [ ] Ticking **This is a milestone** collapses the two date fields to a single
+  **Milestone date**, and progress becomes a **Not reached (0%) / Reached
+  (100%)** choice — no free percentage.
+- [ ] A saved milestone shows **"Milestone"** as its duration (zero days, not
+  one day), a **◆** marker in the table/cards, and a **diamond** on the Gantt.
+- [ ] A milestone cannot be saved with a finish different from its start
+  (the form makes this impossible; rules also reject it).
+
+### 15p-iv. Status lifecycle and invariants
+
+- [ ] Selecting **In progress** pre-fills **Actual start** with today
+  **visibly, in the field** — never silently on save. Saving without an actual
+  start is rejected.
+- [ ] Selecting **Completed** pre-fills progress **100%** and **Actual finish**
+  with today. Saving at less than 100%, or with no actual finish, is rejected.
+- [ ] Selecting **Not started** clears progress to 0 and blanks both actual
+  dates; saving a not-started activity with any actual date is rejected.
+- [ ] **On hold** keeps its recorded progress and actual start, and the notes
+  field prompts for the blocker. The table/card shows *"On hold — <notes>"*.
+- [ ] **BACKWARDS CORRECTION WORKS AND IS INTENDED:** take a **Completed**
+  activity back to **In progress** (clearing the actual finish) and save — it
+  succeeds. Take an **In progress** activity back to **Not started** — it
+  succeeds. This is the deliberate ADR-11 departure; a programme is a plan.
+- [ ] Progress accepts whole numbers 0–100 only — `12.5`, `-1` and `101` are
+  rejected.
+
+### 15p-v. Cancellation (no hard delete)
+
+- [ ] **Cancel** opens its own modal (not the editor) with a warning that
+  cancelling is permanent, and requires a **reason**; whitespace-only is
+  rejected.
+- [ ] After cancelling: the activity remains listed, dimmed, badged
+  **Cancelled**, showing *"Cancelled — <reason>"*, with **no Edit or Cancel
+  action**.
+- [ ] A cancelled activity **cannot** be reopened, edited, re-cancelled or
+  deleted by any route.
+- [ ] It stops counting: **Overdue**, **Due next 14 days**, **In progress** and
+  **Milestones remaining** all exclude it, and it moves to the
+  **Completed / Cancelled** group on mobile.
+- [ ] There is **no delete button anywhere** in the module.
+
+### 15p-vi. Derived overdue and horizon
+
+- [ ] An open activity whose planned finish is **yesterday** shows an
+  **"Overdue"** badge/row plus **"1 day late"** — the word *Overdue* is always
+  present, so the state never depends on colour alone.
+- [ ] An activity due **today** is **not** overdue and reads *"Due today"*;
+  tomorrow reads *"Due tomorrow"*.
+- [ ] Marking an overdue activity **Completed** removes it from Overdue
+  immediately. Cancelling it does the same.
+- [ ] Nothing stores overdue: reload and the state still derives from today's
+  date.
+- [ ] Mobile groups read **Overdue → This week (≤7 days) → Upcoming (7–28
+  days) → Later → Completed / Cancelled**, each with its count and a plain
+  explanation of the window.
+
+### 15p-vii. Summary and filters
+
+- [ ] The four cards read **Overdue**, **Due next 14 days**, **In progress**,
+  **Milestones remaining**, and each matches a hand count of the table.
+- [ ] **Search** matches activity name, description, notes, responsible name and
+  cost code, case-insensitively.
+- [ ] **Status** and **Responsible** filters work and combine with search.
+- [ ] **Hide completed & cancelled** removes both at once.
+- [ ] With any filter active, a line reads *"Showing N of M activities"* with a
+  working **Clear filters** link.
+- [ ] There is **no filter builder** — exactly four controls.
+
+### 15p-viii. Gantt (read-only, desktop/tablet)
+
+- [ ] The Gantt renders at **768px and 1280px** and is **absent below `md:`
+  (375px)** — the cards replace it. Confirm no squashed chart appears on a
+  phone.
+- [ ] Bars sit on a **calendar-day grid**; month headers show each month's real
+  day count; weekly gridlines are present.
+- [ ] A **today line** is drawn when today falls inside the visible span, and is
+  absent when the whole programme is far in the past.
+- [ ] Bar length matches the planned span **inclusively**; the filled portion
+  matches the entered percentage.
+- [ ] Milestones render as **diamonds**, centred on their day.
+- [ ] Overdue bars carry a red outline **and** the word "Overdue" in the row
+  label — never colour alone. The legend is **textual**.
+- [ ] The whole canvas scrolls **horizontally inside its card** on a long
+  programme; the page itself never scrolls sideways.
+- [ ] **Nothing is draggable or resizable**, and clicking a bar changes no date.
+  The footer states there is no drag-to-reschedule and no dependencies.
+- [ ] An activity with unusable dates is reported as *not drawn* and still
+  appears in the table — never silently dropped.
+
+### 15p-ix. The table is the record
+
+- [ ] Every figure shown on the Gantt is readable in the table: name,
+  responsible, cost code, planned start/finish, duration, status, %, actual
+  dates, overdue.
+- [ ] Filtering updates the Gantt and the table together, in the same order.
+- [ ] Turning off the Gantt (narrowing to mobile) loses **no** information.
+
+### 15p-x. Honesty and financial isolation
+
+- [ ] The footer card states, in plain language: current plan not an approved
+  baseline · progress is entered by hand and unverified · calendar days ·
+  no dependencies or critical path · cost code is a label only · responsibility
+  is a Contact · cancelled not deleted · simultaneous edits overwrite.
+- [ ] The editor's progress hint says Constrapp **never** derives it from dates
+  or Progress Claims.
+- [ ] **Financial non-effect:** record Budget (all six figures), Forecast Final
+  Cost, Margin, Cash Flow totals and the Projects-list progress bar; create,
+  edit, complete and cancel activities; re-check — **every figure is
+  unchanged**.
+- [ ] **Currency non-effect:** on a project whose currency is **not yet
+  locked**, create an activity — the project currency **stays unlocked and
+  editable**. A programme write must never engage the currency ratchet.
+
+### 15p-xi. Concurrency and unavailability
+
+- [ ] Open the same activity in two browsers, edit different fields in each and
+  save both: the **second save wins outright**, including the first user's
+  field. This is expected (last-write-wins) — confirm `updatedAt`/`updatedBy`
+  reflect the second writer.
+- [ ] Simulate a read failure (e.g. sign in as a denied role): the page reports
+  the programme as **unavailable, not empty**, and never shows a false "no
+  activities" state.
+
+### 15p-xii. Responsive
+
+- [ ] **375px:** no Gantt; grouped cards; Edit/Cancel buttons full-width and
+  ≥44px; filters stack; modals scroll internally and fit; no horizontal page
+  scroll.
+- [ ] **768px:** Gantt and table appear; filter grid goes two-up; modal centred.
+- [ ] **1280px:** four summary cards in one row; four filters in one row; table
+  scrolls inside its card only.
+- [ ] No hover-only affordance anywhere — every action is reachable by tap.
 
 ## 15r. Supplier Credit Notes
 
@@ -2070,9 +2297,10 @@ in rules, or go offline after load and force a re-subscribe).
 ## 15s. BOQ & Tender Foundation
 
 > **§15s-i – §15s-v cover the Bill of Quantities (ADR-32 Part 1); §15s-vi
-> onward cover Tenders (ADR-32 Part 2).** §15o–§15q remain reserved for
-> parked feature branches (Documents, Timeline, Retention) — the gap is
-> intentional; §15r (Supplier Credit Notes) is above.
+> onward cover Tenders (ADR-32 Part 2).** §15o (Documents) and §15q
+> (Retention) remain reserved for parked feature branches — the gap is
+> intentional; §15p (Project Timeline) and §15r (Supplier Credit Notes) are
+> above.
 
 ### Bill of Quantities (BOQ) — §15s-i to §15s-v
 
@@ -2301,6 +2529,7 @@ rejection.
 - [ ] **375px:** sidebar hidden behind hamburger; drawer opens/closes (tap overlay); nav items ≥44px tall; project tab bar wraps; PO/claim tables scroll horizontally inside their card; modals fit with internal scrolling; all actions reachable by tap (no hover-only).
 - [ ] **768px:** sidebar visible and static; two-column grids engage; modals centred with margin.
 - [ ] **1280px:** dashboard/detail content capped at max-width 1280px; 4-column KPI grid; 5-column budget summary; no horizontal page scroll at any width.
+- [ ] **Timeline:** the read-only Gantt renders at 768px and 1280px and is **not rendered at all below `md:`** — 375px shows grouped activity cards instead (see §15p-viii / §15p-xii).
 
 ## 17. Security & Authorisation (negative-path)
 
@@ -2324,6 +2553,9 @@ Firestore Security Rules are the only trust boundary — these checks confirm th
   the nav.
 - [ ] The same user **can** still read company members' Projects, Cost Codes,
   Budget Lines, POs, and Progress Claims (the intended coarser read model).
+- [ ] **Project Timeline:** a `subcontractor`/`client` user is denied the
+  programme entirely (the tab shows the "not available" card), while a `qs` user
+  **can** read it. **AUTOMATED — see §0** (`activities.rules.test.js`).
 
 ### 17c. Write authorisation & delete-blocking
 
@@ -2332,15 +2564,29 @@ Firestore Security Rules are the only trust boundary — these checks confirm th
   the write).
 - [ ] No client path can delete a financial/audit document (POs, claims,
   invoices, variations, budget lines, BOQ items, cost codes, contacts,
-  counters, forecast lines, tender packages, tender bids, commercial baseline)
+  counters, forecast lines, tender packages, tender bids, timeline activities,
+  commercial baseline)
   — cancellation/rejection/archive is always a status/`isActive` change (the
   baseline is edited in place).
+- [ ] **Project Timeline is the one collection where `qs` cannot write:** a `qs`
+  user can read the programme but cannot create, edit or cancel an activity, and
+  **no role can delete** one (cancellation is the only exit, and it is terminal
+  and requires a reason). **AUTOMATED — see §0**.
 - [ ] **`users/{uid}` cannot be written at all** — no client can change its own
   `role` or `companyId` (nor `name`/`avatarInitials`/`email`), create a
   membership document, or delete one. **AUTOMATED — see §0**; the users suite
   proves every case, so this needs no manual pass.
 
 ### 17d. Client-only controls are *not* a security boundary (known gaps)
+
+**Project Timeline (Deferred Control 23)** — rules enforce the activity shape
+and lifecycle thoroughly, but a direct SDK call by an authorised writer can
+still store an **impossible-but-well-shaped calendar date** (`2026-02-30`), a
+`responsibleContactId`/`costCodeId` that **names nothing**, a **duplicate
+`sortOrder`**, and any `percentComplete` regardless of physical truth; a
+backwards status change cannot be judged legitimate; and concurrent edits are
+**last-write-wins**. All are proven unenforced by the automated suite. Blast
+radius is bounded by design: the programme writes no financial value.
 
 These document current deferred limitations — a direct SDK call by an authorized
 financial-role user can still bypass client checks (see SECURITY.md → Deferred
