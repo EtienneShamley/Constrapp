@@ -2254,6 +2254,459 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // ── Drawings ─────────────────────────────────────────────────────────────
+    //
+    // A DRAWING MASTER is the stable identity of a sheet; its `revisions`
+    // subcollection holds the immutable issues. The master carries a POINTER to
+    // the authored current revision plus mirrored display fields.
+    //
+    // READS ARE DELIBERATELY BROAD. Every provisioned member of the company may
+    // read drawings — including `subcontractor` and `client` — because a drawing
+    // is operational site information and withholding the current sheet is the
+    // real safety risk. This is the FIRST project-scoped collection with a
+    // membership-only read (the financial collections all gate on role), and it
+    // is intentional. Note what it is NOT: it is not project-specific. A
+    // provisioned member reads the drawings of EVERY project in their company —
+    // see docs/SECURITY.md → Deferred Control 20.
+    //
+    // WRITES are company_admin / project_manager only. QS is excluded on
+    // purpose: a QS measures from drawings but does not control which revision
+    // the site builds from. (QS does have general-document write, below.)
+    //
+    // What is enforced here:
+    //   · a master is BORN EMPTY — status 'active', currentRevisionId null,
+    //     currentRevisionCode '', revisionCount 0. A master can therefore never
+    //     be created already advertising a revision whose bytes never uploaded
+    //   · exactly four update shapes, each restricted with `hasOnly` — identity
+    //     edit, promotion, reinstatement, withdrawal — so nothing else moves
+    //   · promotion increments revisionCount by EXACTLY 1 and must set a
+    //     non-empty pointer, code, and 'YYYY-MM-DD' issue date
+    //   · reinstatement moves the pointer to a DIFFERENT revision and may NOT
+    //     touch revisionCount (reinstating is not issuing)
+    //   · withdrawal is terminal, clears the pointer, stamps the caller and the
+    //     server time, and requires a NON-WHITESPACE reason
+    //   · every revision is created as 'current', with a positive integer
+    //     revisionSequence, an allowed content type, a size within the 50 MB
+    //     ceiling, a content type that AGREES with fileExt, and — decisively —
+    //     a `storagePath` that must equal the EXACT derived path for this
+    //     company/project/drawing/revision. A revision can never point at
+    //     another tenant's bytes, at another drawing's bytes, or at a filename
+    //     of the caller's choosing
+    //   · a revision's file identity and authored identity are IMMUTABLE: every
+    //     update branch is `hasOnly`-restricted to its own lifecycle stamps, so
+    //     revisionCode, revisionSequence, revisionDate, fileName, fileExt,
+    //     fileSize, contentType and storagePath can never be rewritten
+    //   · legal revision transitions only — current→superseded,
+    //     current→withdrawn, superseded→current, superseded→withdrawn.
+    //     'withdrawn' is terminal
+    //   · pageCount stays null and sheetSize stays '' (reserved for a future
+    //     takeoff module; populating them will need a rules change, which is
+    //     the point — they are not free-text today)
+    //   · delete is blocked everywhere. There is no hard delete of a drawing or
+    //     a revision, ever
+    //
+    // What is NOT enforced here (client/business-only — never describe as
+    // enforced):
+    //   · drawingNumber uniqueness within a project, and revisionCode
+    //     uniqueness within a drawing — rules cannot query siblings. Both are
+    //     WARNED in the UI and both can be defeated by concurrent creates
+    //   · EXACTLY-ONE-CURRENT-REVISION. The promotion transaction supersedes
+    //     the previous current in the same commit, but a direct SDK caller with
+    //     a writer role can create a second 'current' sibling, because rules
+    //     cannot see sibling documents
+    //   · that `currentRevisionId` names a revision that EXISTS. It is created
+    //     in the SAME transaction, so a rules `exists()` would evaluate against
+    //     pre-transaction state and reject every legitimate promotion
+    //   · that the Storage object at `storagePath` exists, or that its bytes
+    //     are the file the metadata describes. Rules see metadata, never bytes
+    //   · that the promoted revision's code/date match the mirrored fields on
+    //     the master (no cross-document read at write time)
+    //   · project-specific membership, and malware/AV scanning
+    match /companies/{companyId}/projects/{projectId}/drawings/{drawingId} {
+      // Any provisioned member of THIS company, regardless of role.
+      function companyMember() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
+      }
+      function drawingWriter() {
+        return companyMember()
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // The document identity that no update of any kind may rewrite.
+      function masterCorePreserved() {
+        return request.resource.data.createdAt == resource.data.createdAt
+            && request.resource.data.createdBy == resource.data.createdBy
+            && request.resource.data.revisionSchemaVersion == resource.data.revisionSchemaVersion;
+      }
+      // Authored identity, validated identically at create and at edit.
+      function identityShape() {
+        return request.resource.data.drawingNumber is string
+            && request.resource.data.drawingNumber.trim().size() > 0
+            && request.resource.data.drawingNumber.size() <= 60
+            && request.resource.data.title is string
+            && request.resource.data.title.trim().size() > 0
+            && request.resource.data.title.size() <= 200
+            && request.resource.data.discipline in ['architectural', 'structural', 'civil', 'mechanical', 'electrical', 'hydraulic', 'landscape', 'other']
+            && request.resource.data.description is string
+            && request.resource.data.description.size() <= 2000;
+      }
+
+      allow read: if companyMember();
+
+      allow create: if drawingWriter()
+                  && identityShape()
+                  && request.resource.data.status == 'active'
+                  // Born empty — the first revision is promoted afterwards.
+                  && request.resource.data.currentRevisionId == null
+                  && request.resource.data.currentRevisionCode == ''
+                  && request.resource.data.currentRevisionIssuedDate == null
+                  && request.resource.data.revisionCount == 0
+                  && request.resource.data.revisionSchemaVersion == 1
+                  && request.resource.data.withdrawnAt == null
+                  && request.resource.data.withdrawnBy == null
+                  && request.resource.data.withdrawReason == ''
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped();
+
+      allow update: if drawingWriter() && masterCorePreserved() && updateStamped() && (
+                    // (a) IDENTITY EDIT — number/title/discipline/description.
+                    //     The pointer, the count, and the status stay put.
+                    (
+                      resource.data.status == 'active'
+                      && changedKeys().hasOnly(['drawingNumber', 'title', 'discipline', 'description', 'updatedAt', 'updatedBy'])
+                      && identityShape()
+                    )
+                    ||
+                    // (b) PROMOTION — a newly issued revision becomes current.
+                    //     revisionCount moves by EXACTLY +1, which is what makes
+                    //     revisionSequence dense and monotonic.
+                    (
+                      resource.data.status == 'active'
+                      && changedKeys().hasOnly(['currentRevisionId', 'currentRevisionCode', 'currentRevisionIssuedDate', 'revisionCount', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.revisionCount == resource.data.revisionCount + 1
+                      && request.resource.data.currentRevisionId is string
+                      && request.resource.data.currentRevisionId.size() > 0
+                      && request.resource.data.currentRevisionCode is string
+                      && request.resource.data.currentRevisionCode.size() > 0
+                      && request.resource.data.currentRevisionIssuedDate is string
+                      && request.resource.data.currentRevisionIssuedDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+                    )
+                    ||
+                    // (c) REINSTATEMENT — the current revision is being
+                    //     withdrawn and the user EXPLICITLY nominated an earlier
+                    //     one. The pointer must actually move, and the count
+                    //     must not: reinstating is not issuing.
+                    //
+                    //     There must ALREADY be a current revision. Without this
+                    //     an empty master could have its pointer set with no
+                    //     matching count increment, which would break the
+                    //     "revisionCount is the sequence high-water mark"
+                    //     invariant that revisionSequence is derived from.
+                    (
+                      resource.data.status == 'active'
+                      && resource.data.currentRevisionId != null
+                      && changedKeys().hasOnly(['currentRevisionId', 'currentRevisionCode', 'currentRevisionIssuedDate', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.currentRevisionId is string
+                      && request.resource.data.currentRevisionId.size() > 0
+                      && request.resource.data.currentRevisionId != resource.data.currentRevisionId
+                      && request.resource.data.currentRevisionCode is string
+                      && request.resource.data.currentRevisionCode.size() > 0
+                      && request.resource.data.currentRevisionIssuedDate is string
+                      && request.resource.data.currentRevisionIssuedDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+                    )
+                    ||
+                    // (d) WITHDRAWAL (terminal) — the master is recalled and
+                    //     left with NO current revision. Used both when the
+                    //     current revision is withdrawn with no replacement and
+                    //     when an empty master is retired.
+                    (
+                      resource.data.status == 'active'
+                      && request.resource.data.status == 'withdrawn'
+                      && changedKeys().hasOnly(['status', 'currentRevisionId', 'currentRevisionCode', 'currentRevisionIssuedDate', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.currentRevisionId == null
+                      && request.resource.data.currentRevisionCode == ''
+                      && request.resource.data.currentRevisionIssuedDate == null
+                      && request.resource.data.withdrawnBy == request.auth.uid
+                      && request.resource.data.withdrawnAt == request.time
+                      && request.resource.data.withdrawReason is string
+                      && request.resource.data.withdrawReason.trim().size() > 0
+                    )
+                  );
+
+      allow delete: if false;
+
+      // ── Drawing revisions (immutable issues) ───────────────────────────────
+      //
+      // The helper functions above are in scope here: rules functions declared
+      // in an outer match are visible to nested matches.
+      match /revisions/{revisionId} {
+        // The one storage path this revision is allowed to claim. Built from
+        // the path segments, so it cannot name another tenant, another project,
+        // another drawing, or a filename the caller chose.
+        function expectedStoragePath() {
+          return 'companies/' + companyId
+               + '/projects/' + projectId
+               + '/drawings/' + drawingId
+               + '/' + revisionId
+               + '/original.' + request.resource.data.fileExt;
+        }
+        // Content type and stored extension must agree — the extension is what
+        // the Storage object is named, so a disagreement means the object name
+        // lies about its own bytes.
+        function fileShape() {
+          return request.resource.data.fileName is string
+              && request.resource.data.fileName.size() > 0
+              && request.resource.data.fileName.size() <= 255
+              && request.resource.data.fileSize is int
+              && request.resource.data.fileSize > 0
+              && request.resource.data.fileSize <= 52428800
+              && (
+                   (request.resource.data.contentType == 'application/pdf' && request.resource.data.fileExt == 'pdf')
+                || (request.resource.data.contentType == 'image/png'       && request.resource.data.fileExt == 'png')
+                || (request.resource.data.contentType == 'image/jpeg'      && request.resource.data.fileExt == 'jpg')
+                 )
+              && request.resource.data.storagePath == expectedStoragePath();
+        }
+
+        allow read: if companyMember();
+
+        // Every revision is born CURRENT — it is created by the promotion
+        // transaction, which supersedes the previous current in the same commit.
+        allow create: if drawingWriter()
+                    && request.resource.data.revisionCode is string
+                    && request.resource.data.revisionCode.trim().size() > 0
+                    && request.resource.data.revisionCode.size() <= 12
+                    && request.resource.data.revisionSequence is int
+                    && request.resource.data.revisionSequence > 0
+                    && request.resource.data.revisionDate is string
+                    && request.resource.data.revisionDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+                    && request.resource.data.status == 'current'
+                    && request.resource.data.notes is string
+                    && request.resource.data.notes.size() <= 2000
+                    && fileShape()
+                    // Reserved for a future takeoff module — never authored here.
+                    && request.resource.data.pageCount == null
+                    && request.resource.data.sheetSize == ''
+                    // No lifecycle stamp can be forged at creation.
+                    && request.resource.data.supersededAt == null
+                    && request.resource.data.supersededBy == null
+                    && request.resource.data.supersededByRevisionId == null
+                    && request.resource.data.withdrawnAt == null
+                    && request.resource.data.withdrawnBy == null
+                    && request.resource.data.withdrawReason == ''
+                    && request.resource.data.revision == 1
+                    && request.resource.data.createdBy == request.auth.uid
+                    && request.resource.data.createdAt == request.time
+                    && updateStamped();
+
+        // Each branch is `hasOnly`-restricted to its own stamps, which is what
+        // makes the file identity and the authored identity IMMUTABLE.
+        allow update: if drawingWriter() && updateStamped() && (
+                      // (a) CURRENT -> SUPERSEDED, when a newer revision is issued.
+                      (
+                        resource.data.status == 'current'
+                        && request.resource.data.status == 'superseded'
+                        && changedKeys().hasOnly(['status', 'supersededAt', 'supersededBy', 'supersededByRevisionId', 'updatedAt', 'updatedBy'])
+                        && request.resource.data.supersededBy == request.auth.uid
+                        && request.resource.data.supersededAt == request.time
+                        && request.resource.data.supersededByRevisionId is string
+                        && request.resource.data.supersededByRevisionId.size() > 0
+                        && request.resource.data.supersededByRevisionId != revisionId
+                      )
+                      ||
+                      // (b) SUPERSEDED -> CURRENT, the explicit reinstatement
+                      //     half of withdrawing a current revision. The
+                      //     supersession stamps are cleared, never rewritten to
+                      //     a different revision.
+                      (
+                        resource.data.status == 'superseded'
+                        && request.resource.data.status == 'current'
+                        && changedKeys().hasOnly(['status', 'supersededAt', 'supersededBy', 'supersededByRevisionId', 'updatedAt', 'updatedBy'])
+                        && request.resource.data.supersededAt == null
+                        && request.resource.data.supersededBy == null
+                        && request.resource.data.supersededByRevisionId == null
+                      )
+                      ||
+                      // (c) -> WITHDRAWN (terminal), from current or superseded,
+                      //     with a NON-WHITESPACE reason.
+                      (
+                        resource.data.status in ['current', 'superseded']
+                        && request.resource.data.status == 'withdrawn'
+                        && changedKeys().hasOnly(['status', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'updatedAt', 'updatedBy'])
+                        && request.resource.data.withdrawnBy == request.auth.uid
+                        && request.resource.data.withdrawnAt == request.time
+                        && request.resource.data.withdrawReason is string
+                        && request.resource.data.withdrawReason.trim().size() > 0
+                      )
+                    );
+
+        allow delete: if false;
+      }
+    }
+
+    // ── General Project Documents ────────────────────────────────────────────
+    //
+    // The flat, non-drawing register: specifications, contracts, subcontracts,
+    // reports, certificates, safety documents, programmes, manuals,
+    // correspondence. No folders, no revision subcollection — a replacement is a
+    // NEW record and the old one is superseded with a forward link.
+    //
+    // VISIBILITY is the read gate:
+    //   · 'project'  → every provisioned member of the company
+    //   · 'internal' → company_admin / project_manager / qs only
+    //
+    // ⚠️ RULES ARE NOT FILTERS. A subcontractor or client issuing an UNFILTERED
+    // collection query is rejected outright the moment one internal document
+    // exists — Firestore evaluates this rule against every document in the
+    // result set and fails the whole query. hooks/useProjectDocuments.jsx
+    // therefore subscribes with `where('visibility','==','project')` for those
+    // roles. That filter is a QUERY REQUIREMENT, not a security control; the
+    // rule below is the control.
+    //
+    // What is enforced here:
+    //   · membership-and-visibility reads, exactly as described above
+    //   · writes restricted to company_admin / project_manager / qs
+    //   · create shape — allowed category, allowed visibility, status 'active',
+    //     no forged supersede/withdraw stamps, allowed content type within the
+    //     25 MB ceiling, a content type that AGREES with fileExt, and a
+    //     `storagePath` equal to the EXACT derived path for this
+    //     company/project/document
+    //   · three update shapes, each `hasOnly`-restricted — metadata edit,
+    //     supersession, withdrawal — so the file identity (fileName, fileExt,
+    //     fileSize, contentType, storagePath) is IMMUTABLE after creation
+    //   · legal transitions only — active→superseded, active→withdrawn,
+    //     superseded→withdrawn. 'withdrawn' is terminal
+    //   · withdrawal requires a NON-WHITESPACE reason and stamps the caller and
+    //     the server time
+    //   · delete is blocked. Nothing here is ever hard-deleted
+    //
+    // What is NOT enforced here (client/business-only):
+    //   · that `supersededByDocumentId` names a document that exists, belongs to
+    //     this project, or is itself active — rules cannot read siblings
+    //   · that the Storage object exists or that its bytes match the metadata
+    //   · name/category uniqueness
+    //   · project-specific membership, and malware/AV scanning
+    match /companies/{companyId}/projects/{projectId}/documents/{documentId} {
+      function companyMember() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
+      }
+      // Roles that may write documents AND read `internal` ones. The two sets
+      // coincide by definition: "internal" means visible to the people who
+      // administer the register.
+      function internalMember() {
+        return companyMember()
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      }
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      function docCorePreserved() {
+        return request.resource.data.createdAt == resource.data.createdAt
+            && request.resource.data.createdBy == resource.data.createdBy
+            && request.resource.data.revision  == resource.data.revision;
+      }
+      function metadataShape() {
+        return request.resource.data.name is string
+            && request.resource.data.name.trim().size() > 0
+            && request.resource.data.name.size() <= 200
+            && request.resource.data.category in ['specification', 'contract', 'subcontract', 'report', 'certificate', 'safety', 'schedule', 'manual', 'correspondence', 'other']
+            && request.resource.data.visibility in ['project', 'internal']
+            && request.resource.data.versionLabel is string
+            && request.resource.data.versionLabel.size() <= 40
+            && (request.resource.data.documentDate == null
+                || (request.resource.data.documentDate is string
+                    && request.resource.data.documentDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')))
+            && request.resource.data.notes is string
+            && request.resource.data.notes.size() <= 2000;
+      }
+      function expectedStoragePath() {
+        return 'companies/' + companyId
+             + '/projects/' + projectId
+             + '/documents/' + documentId
+             + '/original.' + request.resource.data.fileExt;
+      }
+      function fileShape() {
+        return request.resource.data.fileName is string
+            && request.resource.data.fileName.size() > 0
+            && request.resource.data.fileName.size() <= 255
+            && request.resource.data.fileSize is int
+            && request.resource.data.fileSize > 0
+            && request.resource.data.fileSize <= 26214400
+            && (
+                 (request.resource.data.contentType == 'application/pdf' && request.resource.data.fileExt == 'pdf')
+              || (request.resource.data.contentType == 'image/png'       && request.resource.data.fileExt == 'png')
+              || (request.resource.data.contentType == 'image/jpeg'      && request.resource.data.fileExt == 'jpg')
+               )
+            && request.resource.data.storagePath == expectedStoragePath();
+      }
+
+      allow read: if internalMember()
+                  || (companyMember() && resource.data.visibility == 'project');
+
+      allow create: if internalMember()
+                  && metadataShape()
+                  && fileShape()
+                  && request.resource.data.status == 'active'
+                  && request.resource.data.supersededByDocumentId == null
+                  && request.resource.data.withdrawnAt == null
+                  && request.resource.data.withdrawnBy == null
+                  && request.resource.data.withdrawReason == ''
+                  && request.resource.data.revision == 1
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped();
+
+      allow update: if internalMember() && docCorePreserved() && updateStamped() && (
+                    // (a) METADATA EDIT — the file is never re-pointed.
+                    (
+                      resource.data.status == 'active'
+                      && changedKeys().hasOnly(['name', 'category', 'visibility', 'versionLabel', 'documentDate', 'notes', 'updatedAt', 'updatedBy'])
+                      && metadataShape()
+                    )
+                    ||
+                    // (b) ACTIVE -> SUPERSEDED, linking forward to the record
+                    //     that replaces it. Both files are preserved.
+                    (
+                      resource.data.status == 'active'
+                      && request.resource.data.status == 'superseded'
+                      && changedKeys().hasOnly(['status', 'supersededByDocumentId', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.supersededByDocumentId is string
+                      && request.resource.data.supersededByDocumentId.size() > 0
+                      && request.resource.data.supersededByDocumentId != documentId
+                    )
+                    ||
+                    // (c) -> WITHDRAWN (terminal), with a NON-WHITESPACE reason.
+                    (
+                      resource.data.status in ['active', 'superseded']
+                      && request.resource.data.status == 'withdrawn'
+                      && changedKeys().hasOnly(['status', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.withdrawnBy == request.auth.uid
+                      && request.resource.data.withdrawnAt == request.time
+                      && request.resource.data.withdrawReason is string
+                      && request.resource.data.withdrawReason.trim().size() > 0
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
     // Contacts — company-wide directory of suppliers, subcontractors,
     // consultants, and clients (third-party PII: names, phones, emails, ABNs,
     // payment terms).

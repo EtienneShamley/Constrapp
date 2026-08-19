@@ -8,6 +8,7 @@ import AppShell from './layouts/AppShell'
 import AuthLayout from './layouts/AuthLayout'
 import ProjectDetailLayout from './layouts/ProjectDetailLayout'
 import ProjectCommercialLayout from './layouts/ProjectCommercialLayout'
+import ProjectDocumentsLayout from './layouts/ProjectDocumentsLayout'
 import Login          from './pages/Login'
 import CreateAccount  from './pages/CreateAccount'
 import ForgotPassword from './pages/ForgotPassword'
@@ -32,6 +33,9 @@ import ProjectClientInvoices from './pages/project/ProjectClientInvoices'
 import ProjectClientReceipts from './pages/project/ProjectClientReceipts'
 import ProjectSupplierPayments from './pages/project/ProjectSupplierPayments'
 import ProjectCashFlow from './pages/project/ProjectCashFlow'
+import ProjectDrawings from './pages/project/ProjectDrawings'
+import ProjectDrawingDetail from './pages/project/ProjectDrawingDetail'
+import ProjectGeneralDocuments from './pages/project/ProjectGeneralDocuments'
 import ProjectRetention from './pages/project/ProjectRetention'
 import ProjectTenders from './pages/project/ProjectTenders'
 import ProjectTimeline from './pages/project/ProjectTimeline'
@@ -91,14 +95,15 @@ export default function App() {
                         <Route path="cash-flow" element={<ProjectCashFlow />} />
                         <Route path="retention" element={<ProjectRetention />} />
                       </Route>
-                      <Route path="documents" element={
-                        <ProjectPlaceholder
-                          icon="📐"
-                          title="Documents"
-                          description="Upload, version, and mark up drawings and documents for this project."
-                          badge="Coming in Sprint 4"
-                        />
-                      } />
+                      {/* Documents is the project's DOCUMENT CONTROL workspace:
+                          the Drawings register (index) with a route per drawing,
+                          and the General Documents register. Sub-navigation
+                          rather than a fifteenth project tab. */}
+                      <Route path="documents" element={<ProjectDocumentsLayout />}>
+                        <Route index element={<ProjectDrawings />} />
+                        <Route path="drawings/:drawingId" element={<ProjectDrawingDetail />} />
+                        <Route path="general" element={<ProjectGeneralDocuments />} />
+                      </Route>
                       <Route path="photos" element={
                         <ProjectPlaceholder
                           icon="📷"

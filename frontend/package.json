@@ -12,7 +12,7 @@
     "test:credit-notes": "node scripts/credit-notes-dev.mjs",
     "test:tender": "node scripts/tender-dev.mjs",
     "test:unit": "vitest run --config vitest.config.js",
-    "test:rules": "firebase emulators:exec --only firestore --project constrapp-rules-test \"vitest run --config vitest.rules.config.js\""
+    "test:rules": "firebase emulators:exec --only firestore,storage --project constrapp-rules-test \"vitest run --config vitest.rules.config.js\""
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.1",
