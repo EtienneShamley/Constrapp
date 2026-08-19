@@ -2120,6 +2120,16 @@ this Firebase project yet."*
   is ≥44px; there is no page-level horizontal scroll.
 - [ ] At **768px / 1280px**: the register tables render; modals fit with internal
   scrolling.
+- [ ] ⚠️ **At 768px and at every width between 768px and full desktop**, the
+  Drawings register, the General Documents register and the Revision History
+  table **scroll horizontally inside their own card** and the row actions
+  (Open · Replace · Withdraw, and View · Withdraw on revisions) are reachable
+  **without widening the browser**. A register table sits inside `Card`, which
+  is `overflow-hidden` for its rounded corners, so a table with no
+  `overflow-x-auto` container of its own is **clipped, not scrolled**, and its
+  right-hand action column becomes permanently unreachable — the live
+  acceptance defect this check exists to catch. Drag the register left/right;
+  the page itself must not scroll sideways.
 - [ ] No financial figure anywhere in the app changes as a result of any action
   in this section.
 

@@ -28,41 +28,47 @@ export default function RevisionHistoryTable({
 
   return (
     <>
-      {/* Desktop / tablet register */}
-      <table className="w-full border-collapse hidden md:table">
-        <thead>
-          <tr className="bg-brand-card border-b border-brand-border">
-            {['Rev', 'Issued', 'Status', 'File', 'Size', 'Notes', ''].map((h, i) => (
-              <th key={h || i} className={thCls}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(r => (
-            <tr
-              key={r.id}
-              className={`border-b border-brand-border transition-colors ${r.id === selectedId ? 'bg-brand-card' : 'hover:bg-brand-card'}`}
-            >
-              <td className="px-3.5 py-3 text-[13px] font-bold text-brand-text">{r.revisionCode}</td>
-              <td className="px-3.5 py-3 text-[12px] text-brand-muted">{r.revisionDate}</td>
-              <td className="px-3.5 py-3">
-                <Badge label={formatRevisionStatus(r.status)} variant={statusVariant(r.status)} sm />
-              </td>
-              <td className="px-3.5 py-3 text-[12px] text-brand-muted break-all max-w-[220px]">{r.fileName}</td>
-              <td className="px-3.5 py-3 text-[12px] text-brand-muted whitespace-nowrap">{formatFileSize(r.fileSize)}</td>
-              <td className="px-3.5 py-3 text-[12px] text-brand-muted max-w-[240px]">{r.notes || '—'}</td>
-              <td className="px-3.5 py-3">
-                <div className="flex justify-end gap-2">
-                  <Btn variant="ghost" sm onClick={() => onSelect(r.id)}>View</Btn>
-                  {canWrite && !isWithdrawnRevision(r) && (
-                    <Btn variant="ghost" sm onClick={() => onWithdraw(r)}>Withdraw</Btn>
-                  )}
-                </div>
-              </td>
+      {/* Desktop / tablet register.
+          Wide content scrolls inside its OWN container — the established
+          pattern across every table in the app. Without it the table overflows
+          the Card, whose `overflow-hidden` CLIPS rather than scrolls, putting
+          View / Withdraw out of reach on a narrow desktop or tablet. */}
+      <div className="hidden md:block overflow-x-auto">
+        <table className="w-full border-collapse min-w-[860px]">
+          <thead>
+            <tr className="bg-brand-card border-b border-brand-border">
+              {['Rev', 'Issued', 'Status', 'File', 'Size', 'Notes', ''].map((h, i) => (
+                <th key={h || i} className={thCls}>{h}</th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr
+                key={r.id}
+                className={`border-b border-brand-border transition-colors ${r.id === selectedId ? 'bg-brand-card' : 'hover:bg-brand-card'}`}
+              >
+                <td className="px-3.5 py-3 text-[13px] font-bold text-brand-text">{r.revisionCode}</td>
+                <td className="px-3.5 py-3 text-[12px] text-brand-muted">{r.revisionDate}</td>
+                <td className="px-3.5 py-3">
+                  <Badge label={formatRevisionStatus(r.status)} variant={statusVariant(r.status)} sm />
+                </td>
+                <td className="px-3.5 py-3 text-[12px] text-brand-muted break-all max-w-[220px]">{r.fileName}</td>
+                <td className="px-3.5 py-3 text-[12px] text-brand-muted whitespace-nowrap">{formatFileSize(r.fileSize)}</td>
+                <td className="px-3.5 py-3 text-[12px] text-brand-muted max-w-[240px]">{r.notes || '—'}</td>
+                <td className="px-3.5 py-3">
+                  <div className="flex justify-end gap-2 whitespace-nowrap">
+                    <Btn variant="ghost" sm onClick={() => onSelect(r.id)}>View</Btn>
+                    {canWrite && !isWithdrawnRevision(r) && (
+                      <Btn variant="ghost" sm onClick={() => onWithdraw(r)}>Withdraw</Btn>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       {/* Mobile cards — the table is not squeezed, it is replaced. */}
       <div className="md:hidden flex flex-col">

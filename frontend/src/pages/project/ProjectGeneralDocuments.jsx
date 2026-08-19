@@ -153,51 +153,61 @@ export default function ProjectGeneralDocuments() {
           </div>
         ) : (
           <>
-            {/* Desktop / tablet register */}
-            <table className="w-full border-collapse hidden md:table">
-              <thead>
-                <tr className="bg-brand-card border-b border-brand-border">
-                  {['Name', 'Category', 'Visibility', 'Version', 'Date', 'File', 'Status', ''].map((h, i) => (
-                    <th key={h || i} className={thCls}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map(d => (
-                  <tr key={d.id} className="border-b border-brand-border hover:bg-brand-card transition-colors">
-                    <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text max-w-[260px] break-words">
-                      {d.name}
-                      {d.notes && <span className="block text-[11px] text-brand-muted font-normal mt-0.5">{d.notes}</span>}
-                    </td>
-                    <td className="px-3.5 py-3 text-[12px] text-brand-muted">{formatDocumentCategory(d.category)}</td>
-                    <td className="px-3.5 py-3">{visibilityCell(d)}</td>
-                    <td className="px-3.5 py-3 text-[12px] text-brand-muted">{d.versionLabel || '—'}</td>
-                    <td className="px-3.5 py-3 text-[12px] text-brand-muted whitespace-nowrap">{d.documentDate || '—'}</td>
-                    <td className="px-3.5 py-3 text-[12px] text-brand-muted whitespace-nowrap">
-                      {d.fileExt?.toUpperCase()} · {formatFileSize(d.fileSize)}
-                    </td>
-                    <td className="px-3.5 py-3">
-                      <Badge
-                        label={formatDocumentStatus(d.status)}
-                        variant={d.status === DOCUMENT_STATUS.ACTIVE ? 'active' : d.status === DOCUMENT_STATUS.WITHDRAWN ? 'danger' : 'soon'}
-                        sm
-                      />
-                    </td>
-                    <td className="px-3.5 py-3">
-                      <div className="flex justify-end gap-2">
-                        <Btn variant="ghost" sm onClick={() => openFile(d)}>Open</Btn>
-                        {canWrite && d.status === DOCUMENT_STATUS.ACTIVE && (
-                          <>
-                            <Btn variant="ghost" sm onClick={() => startReplace(d)}>Replace</Btn>
-                            <Btn variant="ghost" sm onClick={() => setWithdrawTarget(d)}>Withdraw</Btn>
-                          </>
-                        )}
-                      </div>
-                    </td>
+            {/* Desktop / tablet register.
+                Wide content scrolls inside its OWN container — the established
+                pattern across every table in the app. Without it the table
+                overflows the Card, whose `overflow-hidden` (for the rounded
+                corners) CLIPS the overflow rather than scrolling it, putting
+                Open / Replace / Withdraw permanently out of reach on a narrow
+                desktop or tablet. The `min-w` keeps the action buttons on one
+                line; it sits below the ~1010px a 1280px desktop offers, so the
+                desktop layout is unchanged. */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full border-collapse min-w-[960px]">
+                <thead>
+                  <tr className="bg-brand-card border-b border-brand-border">
+                    {['Name', 'Category', 'Visibility', 'Version', 'Date', 'File', 'Status', ''].map((h, i) => (
+                      <th key={h || i} className={thCls}>{h}</th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {rows.map(d => (
+                    <tr key={d.id} className="border-b border-brand-border hover:bg-brand-card transition-colors">
+                      <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text max-w-[260px] break-words">
+                        {d.name}
+                        {d.notes && <span className="block text-[11px] text-brand-muted font-normal mt-0.5">{d.notes}</span>}
+                      </td>
+                      <td className="px-3.5 py-3 text-[12px] text-brand-muted">{formatDocumentCategory(d.category)}</td>
+                      <td className="px-3.5 py-3">{visibilityCell(d)}</td>
+                      <td className="px-3.5 py-3 text-[12px] text-brand-muted">{d.versionLabel || '—'}</td>
+                      <td className="px-3.5 py-3 text-[12px] text-brand-muted whitespace-nowrap">{d.documentDate || '—'}</td>
+                      <td className="px-3.5 py-3 text-[12px] text-brand-muted whitespace-nowrap">
+                        {d.fileExt?.toUpperCase()} · {formatFileSize(d.fileSize)}
+                      </td>
+                      <td className="px-3.5 py-3">
+                        <Badge
+                          label={formatDocumentStatus(d.status)}
+                          variant={d.status === DOCUMENT_STATUS.ACTIVE ? 'active' : d.status === DOCUMENT_STATUS.WITHDRAWN ? 'danger' : 'soon'}
+                          sm
+                        />
+                      </td>
+                      <td className="px-3.5 py-3">
+                        <div className="flex justify-end gap-2 whitespace-nowrap">
+                          <Btn variant="ghost" sm onClick={() => openFile(d)}>Open</Btn>
+                          {canWrite && d.status === DOCUMENT_STATUS.ACTIVE && (
+                            <>
+                              <Btn variant="ghost" sm onClick={() => startReplace(d)}>Replace</Btn>
+                              <Btn variant="ghost" sm onClick={() => setWithdrawTarget(d)}>Withdraw</Btn>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
 
             {/* Mobile cards */}
             <div className="md:hidden flex flex-col">

@@ -106,44 +106,51 @@ export default function ProjectDrawings() {
           </div>
         ) : (
           <>
-            {/* Desktop / tablet register */}
-            <table className="w-full border-collapse hidden md:table">
-              <thead>
-                <tr className="bg-brand-card border-b border-brand-border">
-                  {['Drawing No.', 'Title', 'Discipline', 'Current Rev', 'Issued', 'Status', ''].map((h, i) => (
-                    <th key={h || i} className={thCls}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map(d => (
-                  <tr key={d.id} className="border-b border-brand-border hover:bg-brand-card transition-colors">
-                    <td className="px-3.5 py-3 text-[13px] font-bold text-brand-text">{d.drawingNumber}</td>
-                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{d.title}</td>
-                    <td className="px-3.5 py-3 text-[12px] text-brand-muted">{formatDiscipline(d.discipline)}</td>
-                    <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">
-                      {d.currentRevisionCode || <span className="text-brand-muted font-normal">None</span>}
-                    </td>
-                    <td className="px-3.5 py-3 text-[12px] text-brand-muted">{d.currentRevisionIssuedDate || '—'}</td>
-                    <td className="px-3.5 py-3">
-                      {isWithdrawnDrawing(d)
-                        ? <Badge label="Withdrawn" variant="danger" sm />
-                        : d.currentRevisionId
-                          ? <Badge label="Current" variant="active" sm />
-                          : <Badge label="No revision" variant="soon" sm />}
-                    </td>
-                    <td className="px-3.5 py-3 text-right">
-                      <Link
-                        to={`drawings/${d.id}`}
-                        className="text-[12px] font-bold text-brand-accent no-underline inline-flex items-center min-h-[44px] px-2"
-                      >
-                        Open
-                      </Link>
-                    </td>
+            {/* Desktop / tablet register.
+                Wide content scrolls inside its OWN container — the established
+                pattern across every table in the app. Without it the table
+                overflows the Card, whose `overflow-hidden` CLIPS rather than
+                scrolls, putting the Open link out of reach on a narrow desktop
+                or tablet. */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full border-collapse min-w-[820px]">
+                <thead>
+                  <tr className="bg-brand-card border-b border-brand-border">
+                    {['Drawing No.', 'Title', 'Discipline', 'Current Rev', 'Issued', 'Status', ''].map((h, i) => (
+                      <th key={h || i} className={thCls}>{h}</th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {rows.map(d => (
+                    <tr key={d.id} className="border-b border-brand-border hover:bg-brand-card transition-colors">
+                      <td className="px-3.5 py-3 text-[13px] font-bold text-brand-text">{d.drawingNumber}</td>
+                      <td className="px-3.5 py-3 text-[13px] text-brand-text">{d.title}</td>
+                      <td className="px-3.5 py-3 text-[12px] text-brand-muted">{formatDiscipline(d.discipline)}</td>
+                      <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">
+                        {d.currentRevisionCode || <span className="text-brand-muted font-normal">None</span>}
+                      </td>
+                      <td className="px-3.5 py-3 text-[12px] text-brand-muted">{d.currentRevisionIssuedDate || '—'}</td>
+                      <td className="px-3.5 py-3">
+                        {isWithdrawnDrawing(d)
+                          ? <Badge label="Withdrawn" variant="danger" sm />
+                          : d.currentRevisionId
+                            ? <Badge label="Current" variant="active" sm />
+                            : <Badge label="No revision" variant="soon" sm />}
+                      </td>
+                      <td className="px-3.5 py-3 text-right">
+                        <Link
+                          to={`drawings/${d.id}`}
+                          className="text-[12px] font-bold text-brand-accent no-underline inline-flex items-center min-h-[44px] px-2"
+                        >
+                          Open
+                        </Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
 
             {/* Mobile cards — the whole card is the tap target. */}
             <div className="md:hidden flex flex-col">
