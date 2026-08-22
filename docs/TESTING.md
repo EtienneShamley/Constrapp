@@ -43,7 +43,7 @@ That script runs
   deployed). The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **695 in total across 14 files: 649 Firestore + 46 Storage**:
+- Tests — **697 in total across 14 files: 651 Firestore + 46 Storage**:
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -62,8 +62,14 @@ That script runs
     tightening this block cannot break the other ~40 lookups.
     Unlike the suites below it constrains **no timestamp field**, so the
     skewed-clock rule in the note further down does not apply to it.
-  - `frontend/tests/rules/clientInvoices.rules.test.js` — **30 tests** covering
-    every case in §15i-x below.
+  - `frontend/tests/rules/clientInvoices.rules.test.js` — **32 tests** covering
+    every case in §15i-x below, including the **void-reason regression** (`10`,
+    `10b`, `10c`): this block previously compared `voidReason.size() > 0` while
+    every other financial block compared `voidReason.trim().size() > 0`, so a
+    whitespace-only reason was ACCEPTED — confirmed against the emulator before
+    the fix. `10b` now proves every blank shape (space, tab, newline) is rejected
+    from **both** `draft` and `issued`, and `10c` proves a real reason with
+    surrounding whitespace is still accepted.
   - `frontend/tests/rules/clientReceipts.rules.test.js` — **46 tests** covering
     every case in §15j-x below, including the whole-cent scalar-invariant cases.
   - `frontend/tests/rules/supplierPayments.rules.test.js` — **47 tests** covering
@@ -446,7 +452,92 @@ npm run test:unit
   `retentionTotal`. Releasing retention is not a back door into crediting a
   retained invoice; do not relax that case to make a future change pass.
 
-  Combined unit total: **720 tests** across the twelve files.
+- `frontend/tests/unit/documentsResponsive.test.js` — **16 tests** over the
+  Documents register's responsive layout helpers.
+
+- `frontend/tests/unit/clientInvoices.test.js` — **109 tests** over
+  `lib/clientInvoices.js`, which previously had **no** unit coverage at all.
+  Covers the forward-only `draft → issued → void` lifecycle and the deliberate
+  absence of any `paid`/`partially_paid` status (ADR-22); `CI-####` numbering;
+  the tax codes and per-line GST, including the **§15i-iv mixed acceptance case**
+  (1,000 `gst` + 500 `gst_free` + 200 `input_taxed` → subtotal **1,700**, GST
+  **100**, gross **1,800**), zero/garbage amounts, an unknown tax code attracting
+  **no** GST, and half-up cent rounding; header totals summing to whole cents;
+  the **§15i-v contract-control figures** (Current Contract Sum 1,010,000;
+  Available to Invoice 610,000 after a 400,000 invoice; a draft not reducing
+  availability; a void returning its value immediately); `availableToInvoice`
+  going **negative** and never being clamped; the **§15i-vii variation rules** —
+  draft and submitted variations are not invoiceable, an approved **positive**
+  one is, an approved **negative** one is **not offered** yet still reduces the
+  contract sum; `invoicedByVariation` counting **issued** invoices only; the
+  single-cost-code snapshot rule (several cost codes → `null`); the
+  approved/invoiced/remaining table including the signed **−5,000** double-invoice
+  case; both over-invoice warnings (and that neither says "prevented" or
+  "blocked"); due-date suggestion on the `invoice` and `eom` bases and the
+  deliberate **blank** when terms are absent; date-only `isPastDue`; ageing by
+  due date on the **remaining** balance, with fully-reconciled invoices dropping
+  out and over-reconciled invoices excluded into `overSettled`; and every
+  `validateInvoiceDraft` branch. It also pins two **no-mutation** invariants at
+  the derivation layer: `contractControl` reports the supplied contract sum
+  unchanged whatever the invoices say, and every derivation runs against
+  **frozen** variation and invoice documents without writing to them.
+
+- `frontend/tests/unit/clientReceipts.test.js` — **113 tests** over the AR /
+  reconciliation half of `lib/clientReceipts.js` (the cash half,
+  `cashInRows`, is covered in `cashFlow.test.js`). Pins the accounting
+  invariants: a **draft** receipt reconciles nothing, a **posted** one does, and
+  a **void** one restores the balance at the next render with no reversal
+  document; allocations landing on the invoice they name and on no other;
+  unallocated cash reducing **no** invoice balance; `remainingToReconcile`
+  signed and never clamped; reconciliation state across
+  unreconciled/partly/fully/over; rows and summaries excluding **draft and void
+  invoices**; an over-reconciled balance reported **separately** so it can never
+  offset genuine arrears (`remaining` 2,200 with `overReconciled` −500, never a
+  netted 1,700); allocation targets restricted to issued invoices of the
+  **selected client**, sorted oldest-first, with the receipt being edited
+  excluded from its own figures; `allocateOldestFirst` consuming rows in the
+  given order, never exceeding the cash or an invoice's balance, and skipping
+  settled invoices; over-allocation **warned, never blocked**; the three
+  allocation-exception reasons; corrected AR ageing under draft/posted/void
+  receipts and the over-reconciled exclusion; `isPastDueUnreconciled` being false
+  for a fully reconciled but overdue invoice; every `validateReceiptDraft`
+  branch including the hard block on allocating more than the receipt amount and
+  the target checks (missing, non-issued, wrong-client); posting rules
+  (backdating allowed, future-dating blocked); and `buildAllocations` storing
+  **only** the three allocation fields. A closing purity block proves every AR
+  derivation leaves both the invoice and the receipt documents **byte-identical**
+  — no balance, reconciliation state, `paid` status or receipt back-reference is
+  ever added — and that the derivations are idempotent.
+
+- `frontend/tests/unit/taxLimitation.test.js` — **12 tests** over the tax
+  limitation in `lib/currency.js`, which had no coverage. Pins `TAX_JURISDICTION`
+  as `AU` and the flat 10% `GST_RATE`; `needsTaxLimitationNotice` **false** for
+  `AU`, **true** for `NZ`, `ZA` and every other supported market, and **true**
+  for every non-AU country in the full list (AU is the sole exemption);
+  **false** for a blank/unset country, preserving §15h-i backwards compatibility;
+  and **true** for an unrecognised non-empty code, so the disclaimer fails loud.
+  It also asserts the notice never claims compliance in another jurisdiction.
+
+- `frontend/tests/unit/supplierPaymentsPurity.test.js` — **13 tests** closing the
+  one thing the retention and credit-note suites do not assert: that the **whole
+  payment-side derivation set** in `lib/supplierPayments.js` leaves a supplier
+  invoice **byte-identical** at runtime. `status` never moves to `paid`, `paidAt`
+  is never set (ADR-24), no balance / reconciliation-state / payment-reference
+  field is ever added, and the immutable `retention*` fields are never reduced by
+  a payment. It also re-pins that a void or draft payment reduces nothing (so
+  voiding restores the payable for free) and that payments settle the derived
+  **payable basis**, never `grossTotal`.
+
+  Combined unit total: **983 tests** across the seventeen files.
+
+  ⚠️ **Runtime non-mutation across COLLECTIONS is still not automated.** The
+  purity blocks above prove the pure derivation layer never writes to the
+  documents it reads. They do **not** prove that `useClientInvoices`,
+  `useClientReceipts` or `useSupplierPayments` write only to their own collection
+  and counter, nor that Budgeted / Committed / Claimed / Invoiced / Actual /
+  Forecast / margin figures are unmoved on the Budget and Commercial pages. Those
+  remain manual (§15i-xv, §15j-xiii, §15k-xvi) until the integration-test
+  milestone.
 
 Setup: two provisioned users in the same company (e.g. a `project_manager` and a
 `qs`), signed in via `/login`. Reset state between suites by using a fresh
@@ -947,8 +1038,9 @@ variation of **+50,000**, one **submitted** (pending) client variation of
 
 - [ ] The project tab formerly labelled "Invoices" now reads **Supplier Invoices**; its
   URL is unchanged (`/projects/{id}/invoices`) and the page is unchanged.
-- [ ] The **Commercial** tab shows sub-navigation **Margin · Client Invoices**. Margin is
-  the default and is byte-for-byte the previous Commercial page.
+- [ ] The **Commercial** tab shows sub-navigation **Margin · Client Invoices · Client
+  Receipts · Supplier Payments · Cash Flow · Retention**. Margin is the default and is
+  byte-for-byte the previous Commercial page.
 - [ ] `/projects/{id}/commercial/client-invoices` loads directly and is shareable.
 - [ ] On a project with **no** commercial baseline, the Client Invoices view shows
   "Set the commercial baseline first" and a link to Margin — creation is not offered.
@@ -1035,22 +1127,43 @@ variation of **+50,000**, one **submitted** (pending) client variation of
 
 ### 15i-ix. Accounts Receivable wording & ageing
 
-- [ ] The AR panel is titled **"Accounts Receivable — ageing by due date"** and shows
-  **"Issued, not yet reconciled"**, plus buckets *No due date*, *Not yet due*,
-  *Past due 1–30 / 31–60 / 61–90 / 90+ days*.
-- [ ] A permanent amber notice states that receipts are not recorded and that issued
-  invoices stay listed until voided regardless of payment.
-- [ ] `grep -rniE "unpaid|amount owing|outstanding receivable|overdue receivable" frontend/src`
-  returns **no** matches.
+> **Client Receipts now exist.** This panel no longer ages an invoice at its full
+> gross forever — it ages the **remaining balance after posted receipts**. The
+> arithmetic is covered automatically by
+> `frontend/tests/unit/clientInvoices.test.js` → *ageingByDueDate* and
+> `frontend/tests/unit/clientReceipts.test.js` → *arAgeing*. Check the **wording
+> and presentation** here.
+
+- [ ] The AR panel is titled **"Accounts Receivable — ageing by due date"**, subtitled
+  **"Gross (inc. GST) · remaining balance after posted receipts"**, and shows
+  **Received to Date** and **Remaining to Reconcile**, plus buckets *No due date*,
+  *Not yet due*, *Past due 1–30 / 31–60 / 61–90 / 90+ days*.
+- [ ] A standing notice states that balances reflect **posted receipts**, that
+  over-allocation is **warned but not blocked**, that two users allocating the same
+  balance concurrently cannot be prevented, and that **unallocated receipts are shown
+  separately and reduce no invoice balance**.
+- [ ] No screen claims receipts are unrecorded, or that an issued invoice stays listed
+  "regardless of payment" — that was the pre-Receipts disclaimer and is now wrong.
+- [ ] No screen uses **"paid"**, **"unpaid"**, or **"partially paid"** as an invoice
+  *status*, and no invoice row shows a payment-status badge. Reconciliation is reported
+  as *Unreconciled / Partly reconciled / Fully reconciled / Over-reconciled* (ADR-22).
+  *(Search the running UI, not the source: the source contains those words only in
+  comments recording that they are deliberately not used.)*
 - [ ] Buckets use **gross (inc. GST)** amounts and count **issued** invoices only —
   drafts and voids appear in none of them.
 - [ ] An invoice dated 45 days past due lands in *Past due 31–60 days*; the register row
   shows "Past due 45d" in red; the **Past due date** filter narrows to it.
+- [ ] Reconcile that invoice in full with a posted receipt → it leaves the buckets
+  entirely and is **no longer** marked past due. Void the receipt → the balance and the
+  past-due marker both return.
+- [ ] Over-reconcile an invoice → it is **excluded** from the buckets and reported in its
+  own **"Over-reconciled invoices"** callout, so a negative balance never offsets
+  genuine arrears.
 
 ### 15i-x. Lifecycle — Rules-enforced (AUTOMATED — see §0)
 
 **These cases are covered by the automated emulator suite** in
-`frontend/tests/rules/clientInvoices.rules.test.js` (`npm run test:rules`, 30
+`frontend/tests/rules/clientInvoices.rules.test.js` (`npm run test:rules`, 32
 tests). The list below is the specification those tests assert; re-run the suite
 rather than performing these by hand, and always before publishing rules.
 
@@ -1078,7 +1191,13 @@ these verify the rules, not the UI.
 - [ ] **any** update to an `issued` invoice that is not a void — changing `lineItems`,
   `subtotal`, `clientName`, `dueDate`, `notes`, or `externalInvoiceReference`.
 - [ ] `issued → draft`; `void → draft`; `void → issued`; any update to a `void` invoice.
-- [ ] void with an empty or whitespace-only `voidReason`, or with `voidedBy` ≠ the caller.
+- [ ] void with a `voidReason` that is **empty (`""`)** or **whitespace-only (`"   "`,
+  a tab, a newline)**, or with `voidedBy` ≠ the caller. A void reason is an audit
+  record, so the rule compares `voidReason.trim().size() > 0` — matching
+  clientReceipts, supplierPayments, supplierCreditNotes, retentionReleases and
+  boqItems. A reason with real content **surrounded** by whitespace is still accepted.
+  *(This block previously compared `voidReason.size() > 0`, which accepted `"   "`.
+  Tests `10`, `10b` and `10c` in the suite are the regression guard.)*
 - [ ] setting `status` to `paid`, `partially_paid`, or `sent`.
 - [ ] **delete** of a draft invoice **and** of an issued invoice.
 - [ ] create/update with a malformed `currency` (e.g. `AU`, `aud`, `1234`).
@@ -1125,15 +1244,34 @@ these verify the rules, not the UI.
 
 ### 15i-xv. Roles, isolation & no-mutation
 
-- [ ] Signed in as `subcontractor` or `client`: the Client Invoices view shows the
-  restricted card and **no** invoice data; a direct SDK read is **denied by rules**, and
-  a direct SDK create/update is **denied**.
-- [ ] A user in Company B cannot read or write Company A's `clientInvoices`.
+**Already proven automatically — do NOT re-test by hand.** The emulator Rules suite
+(`npm run test:rules`) is the authoritative test for the trust boundary and already
+exercises `company_admin`, `project_manager`, `qs`, `subcontractor`, `client`, an
+unauthenticated caller and a financial-role user in a **second company**:
+
+- role permissions (financial roles allowed; subcontractor and client denied read,
+  create, update and delete) — `clientInvoices.rules.test.js` §17;
+- unauthenticated denial — §17b;
+- cross-company denial **in both directions** — §18.
+
+Do not create six accounts to repeat these. What a human still needs to check:
+
+- [ ] Signed in as `subcontractor` or `client`, the Client Invoices view shows the
+  **restricted card** and **no** invoice data. *(This is the UI's own gating — the rules
+  suite proves the data is unreachable, not that the screen looks right.)*
 - [ ] Record every Budget figure, Forecast rollup, and Commercial margin figure before
   and after this whole suite → **every number identical**. Client invoices are
   revenue-side and change no cost figure and no margin figure.
 - [ ] No Budget Line, PO, Progress Claim, Supplier Invoice, Variation, Forecast Line, or
   Commercial Baseline document is modified by any client-invoice action.
+- [ ] The **client variation** document is byte-identical before and after invoicing —
+  `status`, `approvedSubtotal`, `lineItems`, and no invoice back-reference.
+
+> The last three remain **manual** on purpose. The read-time derivations are guarded by
+> `frontend/tests/unit/clientInvoices.test.js` (frozen-input purity: no derivation writes
+> to the variation or invoice objects it reads), but nothing yet asserts at runtime that
+> the **hook** writes only to `clientInvoices` and its counter. That is an
+> integration-test gap, tracked for the integration-test milestone.
 
 ### 15i-xvi. Responsive
 
@@ -1153,11 +1291,17 @@ invoice.
 ### 15j-i. Navigation & gating
 
 - [ ] The **Commercial** tab shows sub-navigation **Margin · Client Invoices ·
-  Receipts**; Margin remains the default.
-- [ ] `/projects/{id}/commercial/receipts` loads directly and is shareable.
+  Client Receipts · Supplier Payments · Cash Flow · Retention**; Margin remains
+  the default. The sub-nav label is **"Client Receipts"** — the shorter word
+  "Receipts" appears nowhere in the navigation.
+- [ ] `/projects/{id}/commercial/receipts` loads directly and is shareable. The
+  **URL keeps the shorter `receipts` segment** (it predates Supplier Payments and
+  was deliberately not renamed) — only the label was disambiguated.
 - [ ] With no client-type contacts, creation is disabled with a link to Contacts.
-- [ ] Signed in as `subcontractor` or `client`, the Receipts view shows the
-  restricted card and **no** data.
+- [ ] Signed in as `subcontractor` or `client`, the **Client Receipts** view shows
+  the restricted card and **no** data. *(Role, tenant and unauthenticated denial
+  itself is already proven by `clientReceipts.rules.test.js` §17/§17b/§18 — do not
+  re-test it by hand; this checks the UI's own gating.)*
 
 ### 15j-ii. Numbering & atomicity
 
@@ -1328,6 +1472,13 @@ unauthenticated read or write · cross-company read/write in both directions.
   cash.
 
 ### 15j-xiii. No mutation & no cost-side impact
+
+> **Partly automated.** `frontend/tests/unit/clientReceipts.test.js` → *purity*
+> already proves every AR derivation leaves the Client Invoice and the receipt
+> **byte-identical** — no balance, reconciliation state, `paid` status or receipt
+> back-reference is added. What is **not** automated is whether the hook writes
+> outside `clientReceipts` and its counter, and whether the Budget/Forecast/margin
+> figures move. Those are the checks below.
 
 - [ ] Record every Budget figure, Forecast rollup, and Commercial margin figure
   before and after this whole suite → **every number identical**. Cash is not
@@ -1629,6 +1780,14 @@ read or write · cross-company read/write in both directions.
   cash.
 
 ### 15k-xvi. No mutation & no accrual impact
+
+> **Partly automated.** `frontend/tests/unit/supplierPaymentsPurity.test.js`
+> already proves the whole payment-side derivation set leaves the Supplier Invoice
+> **byte-identical**: `status` never becomes `paid`, `paidAt` stays `null`, the
+> immutable `retention*` fields are never reduced, and no balance or
+> payment-reference field is added. What is **not** automated is whether the hook
+> writes outside `supplierPayments` and its counter, and whether the accrual
+> figures move. Those are the checks below.
 
 - [ ] Record every Budget figure (Budgeted, Committed, Claimed, Actual, Invoiced,
   Remaining), every Forecast rollup (Cost to Complete, Forecast Final Cost,
