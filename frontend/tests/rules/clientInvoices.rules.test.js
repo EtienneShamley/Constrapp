@@ -328,7 +328,32 @@ describe('MUST REJECT', () => {
     await seed('inv1', 'draft')
     const db = ctx(USERS.admin)
     await assertFails(updateDoc(invRef(db, 'inv1'), voidWrite(USERS.admin, '')))
+    await assertFails(updateDoc(invRef(db, 'inv1'), voidWrite(USERS.admin, '   ')))
     await assertFails(updateDoc(invRef(db, 'inv1'), voidWrite(USERS.admin, 'Duplicate', { voidedBy: USERS.pm.uid })))
+  })
+
+  // Regression for a real defect: this block previously used
+  // `voidReason.size() > 0` while every other financial block used
+  // `voidReason.trim().size() > 0`, so a whitespace-only reason was ACCEPTED on
+  // client invoices — verified against the emulator before the fix. A void
+  // reason is an audit record; whitespace is an unanswered question.
+  it('10b. whitespace-only void reasons are rejected in every shape, from draft AND from issued', async () => {
+    const db = ctx(USERS.admin)
+    const blanks = [' ', '   ', '\t', '\n', ' \t\n ']
+    for (const [i, reason] of blanks.entries()) {
+      await seed(`ws_d_${i}`, 'draft')
+      await seed(`ws_i_${i}`, 'issued')
+      await assertFails(updateDoc(invRef(db, `ws_d_${i}`), voidWrite(USERS.admin, reason)))
+      await assertFails(updateDoc(invRef(db, `ws_i_${i}`), voidWrite(USERS.admin, reason)))
+    }
+  })
+
+  it('10c. a reason with real content survives surrounding whitespace (the fix does not over-reject)', async () => {
+    const db = ctx(USERS.admin)
+    await seed('ok1', 'draft')
+    await seed('ok2', 'issued')
+    await assertSucceeds(updateDoc(invRef(db, 'ok1'), voidWrite(USERS.admin, '  Duplicate of CI-0007  ')))
+    await assertSucceeds(updateDoc(invRef(db, 'ok2'), voidWrite(USERS.admin, 'Client cancelled the claim')))
   })
 
   it('11. issued invoice content edit (issued invoices are immutable)', async () => {

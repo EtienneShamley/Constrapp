@@ -480,8 +480,10 @@ service cloud.firestore {
     //     and issuedAt == server request time
     //   · voiding (from draft or issued) touches only
     //     status/voidedAt/voidedBy/voidReason/updatedAt/updatedBy, with
-    //     voidedBy == caller, voidedAt == server request time, and a NON-EMPTY
-    //     voidReason
+    //     voidedBy == caller, voidedAt == server request time, and a
+    //     NON-WHITESPACE voidReason (trimmed, matching clientReceipts /
+    //     supplierPayments / supplierCreditNotes / retentionReleases / boqItems
+    //     — a reason of '   ' is an unanswered question, not an audit record)
     //   · void is terminal; there is no issued -> draft and no void -> anything
     //   · there is no 'paid' or 'partially_paid' status — a payment status
     //     without a Receipt record would be fabricated
@@ -572,7 +574,7 @@ service cloud.firestore {
                       && request.resource.data.voidedBy == request.auth.uid
                       && request.resource.data.voidedAt == request.time
                       && request.resource.data.voidReason is string
-                      && request.resource.data.voidReason.size() > 0
+                      && request.resource.data.voidReason.trim().size() > 0
                     )
                   );
 
