@@ -586,9 +586,33 @@ is the display authority for every money figure on a project, so changing it
 after amounts exist would **relabel** them without converting them.
 
 *Rules-enforced:* once `project.currencyLocked` is `true`, rules reject any
-change to `currency` **and** any attempt to set `currencyLocked` back to
-`false`. Codes are shape-validated on create and update. Reads stay
-company-member level so every role can render amounts with the correct label.
+change to a **well-formed** stored `currency` — including deleting or blanking
+it — **and** any attempt to set `currencyLocked` back to `false`. Codes are
+shape-validated on create and update. Reads stay company-member level so every
+role can render amounts with the correct label.
+
+*The one carve-out — legacy initialisation.* `currencyLocked` and `currency` are
+separate fields and the lock write is a lone `currencyLocked: true` (see **The
+`qs` ratchet rule** below), so a project predating this foundation can be
+**locked while storing no currency at all**, rendering through the company base
+currency. Company Settings exists to repair that by pinning the label the
+project is already displaying, and a strict
+`request.currency == resource.currency` comparison rejected that repair as a
+relabel — a defect confirmed against live data (`''` → `'AUD'` failed with
+*Missing or insufficient permissions*), leaving such projects permanently
+unpinnable. `currency` is therefore frozen while locked **except** when the
+stored value is not a well-formed ISO 4217 code, in which case the **first**
+explicit code may be written.
+
+This cannot become a relabel. The carve-out's precondition is a property of the
+**stored** document, and the only write it permits is the one that destroys that
+precondition: the moment a well-formed code lands the equality branch takes over
+for every subsequent write, so `'AUD'` → `'NZD'` and `'AUD'` → deleted/blank are
+both rejected. It is strictly one-way, like the lock itself, and it is **not** a
+general "locked projects may edit currency" exception. It also grants no new
+audience — it lives inside the `company_admin`/`project_manager` branch, so the
+`qs` rule below is untouched. Automated proof:
+`frontend/tests/rules/projects.rules.test.js`.
 
 *Client-enforced (deferred — Deferred Control 12):* **deciding that the lock
 should engage.** Firestore Security Rules offer `get()`/`exists()` on a known
@@ -1239,7 +1263,11 @@ the security-specific gate is:
 - [ ] Company document writes stay scoped to the four currency fields
       (`affectedKeys().hasOnly`); create/delete remain blocked.
 - [ ] The `qs` project rule still affects `currencyLocked` **only**, and only
-      `false` → `true`.
+      `false` → `true` — the legacy-currency carve-out must not reach it.
+- [ ] The project currency ratchet still rejects every relabel of a **well-formed**
+      stored `currency` (change, delete, blank) and every `currencyLocked`
+      `true` → `false`; the carve-out still permits **only** the first explicit
+      code on a project storing none.
 - [ ] Delete is blocked on financial/audit collections; lifecycle is a status
       change.
 - [ ] No secret is `VITE_`-prefixed or read in frontend code; no privileged

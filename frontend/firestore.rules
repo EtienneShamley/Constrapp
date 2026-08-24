@@ -90,10 +90,36 @@ service cloud.firestore {
     // financial activity is therefore CLIENT-enforced (lib/currency.js →
     // monetaryLockReasons; see docs/SECURITY.md → Deferred Controls).
     // What IS enforced here, once `currencyLocked` is true:
-    //   · `currency` can never change, and
+    //   · a well-formed stored `currency` can never change (and can never be
+    //     deleted or blanked), and
     //   · `currencyLocked` can never return to false.
-    // A client can decline to SET the lock; no client can unset it or change a
+    // A client can decline to SET the lock; no client can unset it or relabel a
     // locked currency.
+    //
+    // LEGACY INITIALISATION (the one carve-out). `currencyLocked` and `currency`
+    // are separate fields and the lock write is deliberately a lone
+    // `currencyLocked: true` (see the QS RATCHET note below), so a project that
+    // predates the Company Country & Currency foundation can legitimately be
+    // LOCKED while storing NO currency at all — it renders through the company
+    // base currency instead. Company Settings exists to repair exactly that
+    // state by pinning the label the project is ALREADY displaying, and a
+    // strict `request.currency == resource.currency` comparison rejected that
+    // repair as if it were a relabel ('' -> 'AUD' failed with "Missing or
+    // insufficient permissions"), leaving those projects permanently unpinnable
+    // and their amounts floating on the company base currency.
+    // So `currency` is frozen while locked EXCEPT when the stored value is not
+    // a well-formed ISO 4217 code, in which case the FIRST explicit code may be
+    // written. This cannot become a relabel: the carve-out's precondition is a
+    // property of the STORED document, and the only write it permits is the one
+    // that destroys that precondition. The moment a well-formed code lands, the
+    // equality branch takes over for every subsequent write — 'AUD' -> 'NZD',
+    // and 'AUD' -> deleted/blank, are both rejected. It is strictly one-way,
+    // like the lock itself.
+    // It is NOT a general "locked projects may edit currency" exception: a
+    // locked project that already stores a valid code has no path to another
+    // one. And it grants no new AUDIENCE — the carve-out lives inside branch
+    // (a), so only `company_admin`/`project_manager` can use it; the `qs`
+    // branch below still permits `currencyLocked` and nothing else.
     //
     // QS RATCHET. `qs` deliberately has NO general project write access (it may
     // write cost codes, budget lines, POs, claims, invoices, variations and
@@ -130,8 +156,17 @@ service cloud.firestore {
                          // Never unlock.
                          && (resource.data.get('currencyLocked', false) == false
                              || request.resource.data.get('currencyLocked', false) == true)
-                         // Currency frozen while locked.
+                         // Currency frozen while locked — with exactly ONE
+                         // carve-out: a locked project that stores NO
+                         // well-formed currency may receive its FIRST explicit
+                         // code (see LEGACY INITIALISATION above). The stored
+                         // code is shape-tested with the same '^[A-Z]{3}$'
+                         // pattern the request is validated against, so the
+                         // carve-out and the freeze partition every possible
+                         // stored value between them with no gap.
                          && (resource.data.get('currencyLocked', false) == false
+                             || !(resource.data.get('currency', '') is string
+                                  && resource.data.get('currency', '').matches('^[A-Z]{3}$'))
                              || request.resource.data.get('currency', '') == resource.data.get('currency', ''))
                        )
                        ||

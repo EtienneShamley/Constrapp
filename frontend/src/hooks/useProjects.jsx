@@ -3,7 +3,7 @@ import { collection, doc, onSnapshot, addDoc, updateDoc, serverTimestamp, query,
 import { db } from '../lib/firebase'
 import { useAuth } from './useAuth'
 import { useCompany } from './useCompany'
-import { isKnownCurrencyCode, resolveCompanyCurrency } from '../lib/currency'
+import { currencyToPinOnLock, isKnownCurrencyCode, resolveCompanyCurrency } from '../lib/currency'
 
 const ProjectsContext = createContext(null)
 
@@ -107,22 +107,49 @@ export function ProjectsProvider({ children }) {
   // but no flag. It is best-effort because it repairs history rather than
   // accompanying a write — there is nothing for it to fail alongside.
   //
-  // The write is deliberately a lone `currencyLocked: true` field: Firestore
-  // rules grant `qs` a narrowly-scoped ratchet permission that requires the
-  // update to affect that key and nothing else (qs must not gain general
-  // project write access). Adding audit stamps here would force that rule to be
-  // widened, so the lock carries none — the ratchet is one-way and its scope is
-  // rules-enforced, which is the control that matters.
+  // The write carries NO audit stamps: Firestore rules grant `qs` a
+  // narrowly-scoped ratchet permission that requires the update to affect
+  // `currencyLocked` and nothing else (qs must not gain general project write
+  // access). Adding stamps here would force that rule to be widened, so the
+  // lock carries none — the ratchet is one-way and its scope is rules-enforced,
+  // which is the control that matters.
+  //
+  // It DOES pin `currency` in the same write when the project has none, because
+  // `currencyLocked` and `currency` are separate fields and locking without a
+  // currency is exactly how a project ends up frozen with its amounts floating
+  // on the company base currency. `currencyToPinOnLock` decides: it returns the
+  // code the project is ALREADY displayed in, or null when the project is
+  // already pinned (pinning again would relabel) or the company base currency
+  // is not configured yet (the AUD display fallback is nobody's decision — that
+  // project must stay repairable through Company Settings). Nothing is
+  // converted or recalculated either way.
+  //
+  // The two-key write is attempted FIRST and falls back to the lone
+  // `currencyLocked: true`, because the narrow `qs` rule rejects the two-key
+  // diff. A `qs` opening the Overview must still engage the ratchet — pinning a
+  // label is the repair, engaging the ratchet is the control, and the control
+  // must never be lost to the repair.
   const lockProjectCurrency = useCallback(async (projectId) => {
     if (!companyId || !projectId || !user) return
     const project = projects.find(p => p.id === projectId)
     if (project?.currencyLocked === true) return
+    const ref = doc(db, 'companies', companyId, 'projects', projectId)
+    const pin = currencyToPinOnLock(project, company)
     try {
-      await updateDoc(doc(db, 'companies', companyId, 'projects', projectId), { currencyLocked: true })
+      if (pin) {
+        try {
+          await updateDoc(ref, { currencyLocked: true, currency: pin })
+          return
+        } catch {
+          // Rejected — the caller is a `qs`, whose rule permits `currencyLocked`
+          // alone. Fall through to the lock-only write below.
+        }
+      }
+      await updateDoc(ref, { currencyLocked: true })
     } catch {
       // Non-fatal — see above.
     }
-  }, [companyId, user, projects])
+  }, [companyId, user, projects, company])
 
   return (
     <ProjectsContext.Provider

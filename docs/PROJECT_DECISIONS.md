@@ -469,9 +469,23 @@ every financial subcollection uses random document ids. **No rule can determine
 whether a project has financial records.** Rather than pretend, the design
 splits the control: the *evidence check* is client-side (`lib/currency.js` →
 `monetaryLockReasons`), and the *consequence* is rules-enforced — once
-`currencyLocked` is `true`, rules reject any change to `currency` and any attempt
-to set the flag back to `false`. A client that bypasses the app can decline to
-**set** the lock; no client can **unset** it.
+`currencyLocked` is `true`, rules reject any change to a **well-formed**
+`currency` and any attempt to set the flag back to `false`. A client that
+bypasses the app can decline to **set** the lock; no client can **unset** it.
+
+**The lock and the currency are separate fields, so the ratchet has exactly one
+carve-out.** Because the lock write is a lone `currencyLocked: true` (see the
+`qs` rule below), a project predating this foundation can be **locked with no
+stored currency**, floating on the company base currency. Pinning it — which is
+what Company Settings is for — was rejected by a strict
+`request.currency == resource.currency` comparison, a defect confirmed against
+live data. Rules therefore free `currency` **only** while the stored value is not
+a well-formed ISO 4217 code, allowing the **first** explicit code and nothing
+more: the carve-out's precondition is a property of the stored document, and the
+only write it permits destroys that precondition, so it is one-way like the lock
+itself. `'AUD'` → `'NZD'`, and `'AUD'` → deleted/blank, stay rejected. See
+[SECURITY.md](SECURITY.md) → project currency ratchet, proven by
+`frontend/tests/rules/projects.rules.test.js`.
 
 **Lock activation is atomic with the record.** Every hook that writes monetary
 data stages the ratchet inside its **own Firestore transaction** via one shared
@@ -489,6 +503,25 @@ QS user. `useProjects.lockProjectCurrency` survives solely as a repair path for
 projects whose monetary data predates this behaviour, self-healing on the next
 Project Overview visit by a `company_admin`/`project_manager`. No page ever writes
 the project document to engage the lock.
+
+**The repair path also pins the currency, so the app stops minting
+locked-but-unpinned projects.** `lockProjectCurrency` writes `currency`
+alongside `currencyLocked: true` when `lib/currency.js` →
+`currencyToPinOnLock` returns a code, and that helper declines in two cases:
+the project already carries an explicit currency (overwriting it would
+**relabel**), or the company has no configured base currency — in which case
+`resolveProjectCurrency` answers the `DEFAULT_CURRENCY` **rendering** fallback,
+which nobody chose, and freezing a guess through a one-way ratchet would make it
+permanent. Such a project deliberately stays unpinned and therefore repairable
+through Company Settings. When a code *is* returned it is the one the project is
+already displayed in, so pinning changes no label and converts no amount. The
+two-key write is attempted first and falls back to the lone
+`currencyLocked: true`, because the narrow `qs` rule rejects the wider diff and
+engaging the ratchet must never be lost to performing the repair.
+`stageProjectCurrencyLock` deliberately does **not** pin: a two-key diff would
+fail **every** QS financial write on such a project, and the pin would be `null`
+for the whole population it would apply to anyway (an unpinned project is by
+definition one from a company that has not completed currency setup).
 
 **Why `qs` gets one narrow project permission.** `qs` writes budget lines, POs,
 claims, invoices, variations, and forecast lines, all of which must engage the

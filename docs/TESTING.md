@@ -43,7 +43,7 @@ That script runs
   deployed). The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **697 in total across 14 files: 651 Firestore + 46 Storage**:
+- Tests — **749 in total across 15 files: 703 Firestore + 46 Storage**:
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -62,6 +62,36 @@ That script runs
     tightening this block cannot break the other ~40 lookups.
     Unlike the suites below it constrains **no timestamp field**, so the
     skewed-clock rule in the note further down does not apply to it.
+  - `frontend/tests/rules/projects.rules.test.js` — **52 tests** covering the
+    project document and the **currency ratchet** — the last financially
+    significant collection with no suite. `currency` is the display authority for
+    every money figure on a project and Constrapp performs **no FX conversion**,
+    so changing a stored currency **relabels** existing amounts; these tests are
+    the only automated proof that it cannot happen. Covers the read audience
+    (all six Company A roles, cross-company/unauthenticated/orphan denied), the
+    create shape, blocked deletes for every role, and the whole ratchet:
+    **locked + no stored currency may be pinned ONCE** by `company_admin` and
+    `project_manager` (including the exact `writeBatch` shape
+    `useCompany.saveCompanyCurrency` issues, and empty-string, malformed
+    (`'aud'`) and non-string stored values all counting as unpinned); then the
+    door shuts — `'AUD'` → `'NZD'`, `'AUD'` → deleted, `'AUD'` → `''`, and a
+    relabel smuggled alongside a legitimate edit are all rejected, while an
+    identical-value rewrite and non-currency edits still succeed;
+    `currencyLocked` `true` → `false`, its deletion, and non-boolean values are
+    rejected while `false` → `true` (optionally pinning in the same write)
+    succeeds; unlocked projects stay freely settable; and nine malformed code
+    shapes are rejected on both locked and unlocked projects. A dedicated
+    **`qs`** group proves that narrow rule did not widen: `qs` may flip
+    `currencyLocked` `false`/absent → `true` **alone** and nothing else — it
+    cannot pin a currency on a locked or unlocked project, cannot combine the
+    lock with a pin, cannot smuggle `budget`/`name`/`status`/`progress`, cannot
+    re-write `true` on an already-locked project (which is why
+    `stageProjectCurrencyLock` stages a no-op), and cannot create a project.
+    It also asserts the documented **client-only** gap honestly: an **unknown**
+    but well-formed code (`'XYZ'`) is ACCEPTED by rules, because rules validate
+    shape and cannot hold an enum.
+    **Verified as a real regression test:** with the carve-out reverted, exactly
+    the nine initialisation cases fail and all 43 denial cases still pass.
   - `frontend/tests/rules/clientInvoices.rules.test.js` — **32 tests** covering
     every case in §15i-x below, including the **void-reason regression** (`10`,
     `10b`, `10c`): this block previously compared `voidReason.size() > 0` while
@@ -189,13 +219,13 @@ That script runs
     unlock a path; and the **catch-all deny** for arbitrary paths, a
     company-shaped but unapproved collection, and drawing objects nested one
     folder too deep or too shallow.
-  - All fourteen run for `company_admin`, `project_manager`, `qs`,
+  - All fifteen run for `company_admin`, `project_manager`, `qs`,
     `subcontractor`, `client`, an unauthenticated caller, and a financial-role
-    user in a **second company**; the tender, activities, drawings, documents
-    and storage suites add `super_admin` (proving it has no special power). The
-    users, activities, drawings, documents and storage suites add a further
-    identity: an authenticated caller with **no** `users/{uid}` document at all
-    (the orphan case).
+    user in a **second company**; the projects, tender, activities, drawings,
+    documents and storage suites add `super_admin` (proving it has no special
+    power). The users, projects, activities, drawings, documents and storage
+    suites add a further identity: an authenticated caller with **no**
+    `users/{uid}` document at all (the orphan case).
 - **Run this before publishing any rules change** (see
   [DEPLOYMENT.md](DEPLOYMENT.md)).
 
@@ -216,7 +246,12 @@ That script runs
 
 §15i-x, §15j-x, §15k-x, §15m-x, §15p-x, §15r-x, and §15s-v below remain the
 human-readable specification of what those tests assert; the other manual
-sections are not automated. The users suite is self-describing and has no
+sections are not automated. The **projects/currency-ratchet** suite is the one
+place where the split matters: it fully automates the rules half of §15h-vii and
+§15h-vii-a (what the boundary accepts and rejects), so the manual steps there are
+deliberately reduced to the short **end-to-end** acceptance run the emulator
+cannot cover — the real Company Settings page writing real projects and the
+figures on screen not moving. The users suite is self-describing and has no
 manual counterpart — `users/{uid}` has no UI, so there is nothing to click
 through: the rules ARE the feature.
 
@@ -528,7 +563,27 @@ npm run test:unit
   voiding restores the payable for free) and that payments settle the derived
   **payable basis**, never `grossTotal`.
 
-  Combined unit total: **983 tests** across the seventeen files.
+- `frontend/tests/unit/projectCurrencyLock.test.js` — **19 tests** over
+  `currencyToPinOnLock` in `lib/currency.js`, the client half of the
+  locked-but-unpinned fix: it decides what `useProjects.lockProjectCurrency`
+  writes alongside `currencyLocked: true`, so the app stops **minting** projects
+  that are locked with no currency. Pins both refusals — a project already
+  carrying a well-formed code is left completely alone (overwriting would
+  **relabel**, and its stored code still beats a differing company base
+  currency), and an **unconfigured** company yields `null` rather than freezing
+  the `DEFAULT_CURRENCY` rendering fallback, which is the live Apex Builders
+  state and is what keeps Gold Coast apartments repairable through Company
+  Settings. Proves the returned code is **exactly** `resolveProjectCurrency`, so
+  pinning changes no label; that empty/malformed/non-string stored values and a
+  malformed company `baseCurrency` are each treated as absent; and a purity
+  block asserting both arguments are left **byte-identical**, that no monetary
+  field is read or written, that the result is a bare `^[A-Z]{3}$` code (never a
+  rate or an amount), and that repeated calls agree. Closes with the monotonic
+  invariants: a set flag reports locked with **no** visible records, pinning
+  cannot unlock, and once pinned the helper declines forever — even after the
+  company base currency changes.
+
+  Combined unit total: **1,002 tests** across the eighteen files.
 
   ⚠️ **Runtime non-mutation across COLLECTIONS is still not automated.** The
   purity blocks above prove the pure derivation layer never writes to the
@@ -964,6 +1019,44 @@ Start each check from a fresh project with **budget 0** and no records.
   enumerate random-id subcollections. Within the app this cannot occur (the writes are
   atomic). See SECURITY.md → Deferred Controls 12.
 
+### 15h-vii-a. Legacy project with NO currency — the one-time pin (regression)
+
+The defect this scenario exists for was confirmed against live data: a project
+with `currencyLocked: true`, **no** stored `currency`, and real financial records
+could not be pinned by Company Settings — the save failed with **"Missing or
+insufficient permissions."** The rules ratchet was comparing
+`request.currency == resource.currency` and read the project's FIRST currency
+(`''` → `'AUD'`) as a forbidden relabel, leaving such projects permanently
+unpinnable and their amounts floating on the company base currency.
+
+**Automated coverage is in `frontend/tests/rules/projects.rules.test.js`** (§0) —
+every accept and reject listed below is asserted there against the emulator. The
+steps here are the **end-to-end** check the emulator cannot make: the real page,
+the real batch write, and the real figures on screen.
+
+Setup: a project with `currencyLocked: true`, no `currency` field, and financial
+records (a headline budget, budget lines, POs — anything monetary). Sign in as
+`company_admin`. Reaching this state honestly needs a project created before the
+currency foundation, or one seeded that way with admin credentials.
+
+- [ ] Company Settings lists that project with stored currency **"Not set"** (amber)
+  and an **enabled** selector — a locked project with no currency is offered for a
+  one-time pin, while a locked project that already carries a currency shows
+  **🔒 locked — has financial records** and no control.
+- [ ] Choose the currency the amounts were actually entered in, tick the
+  confirmation, and **Save** → the save **succeeds** (this is the regression: it
+  previously failed with "Missing or insufficient permissions").
+- [ ] The project now carries an **explicit** `currency`, and `currencyLocked` is
+  **still `true`** (check the console) — the pin does not release the ratchet.
+- [ ] **No amount changed.** Budget, Committed, Claimed, Invoiced, Actual,
+  Forecast, and the Commercial margin are identical before and after; only the
+  label the figures carry is now stored rather than inherited.
+- [ ] Re-open Company Settings → that project is now **frozen** (🔒, read-only).
+  Attempting a **direct SDK** write changing its currency is **rejected by rules**,
+  and so is deleting or blanking it. The pin is one-way, exactly like the lock.
+- [ ] Changing the company base currency afterwards leaves that project's
+  currency and every amount unchanged.
+
 ### 15h-viii. Roles & the qs ratchet rule
 
 - [ ] `project_manager`, `qs`, `subcontractor`, and `client` all see `/settings/company` as
@@ -987,7 +1080,9 @@ Start each check from a fresh project with **budget 0** and no records.
   currency to **USD** and save → **every existing project still displays NZD**; no amount
   changed; Budget, Forecast, and Commercial figures are identical before and after.
 - [ ] The **next new project** defaults to **USD**.
-- [ ] Locked projects appear in the settings list as **frozen** (🔒, read-only), not editable.
+- [ ] Locked projects that already carry an explicit currency appear in the settings list as
+  **frozen** (🔒, read-only), not editable. A locked project with **no** stored currency is the
+  one exception and stays editable for its single one-time pin — see §15h-vii-a.
 
 ### 15h-x. Formatting
 

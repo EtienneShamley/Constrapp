@@ -188,7 +188,7 @@ carry no number and use no counter — a bid is identified by its bidder and pac
 | `location` | string | |
 | `progress` | number | 0–100, manually set at creation |
 | `currency` | string | **ISO 4217** — THE display authority for every money figure on this project. Inherited from `company.baseCurrency` at creation and overridable there. **Absent** on projects predating this foundation ⇒ resolved through the company (see below) |
-| `currencyLocked` | boolean | The **currency ratchet**. Once `true`, Firestore rules reject any change to `currency` and any attempt to set this back to `false`. Set at creation when `budget > 0`, and by the single centralised lock operation whenever monetary data is first written. **Absent** ⇒ treated as `false` |
+| `currencyLocked` | boolean | The **currency ratchet**. Once `true`, Firestore rules reject any change to a **well-formed** `currency` (including deleting or blanking it) and any attempt to set this back to `false`. One carve-out: a locked project storing **no** well-formed currency may receive its **first** explicit code, so a legacy project can still be pinned by Company Settings — see [SECURITY.md](SECURITY.md) → project currency ratchet. Set at creation when `budget > 0`, and by the single centralised lock operation whenever monetary data is first written. **Absent** ⇒ treated as `false` |
 | `createdAt` / `createdBy` | timestamp / uid | |
 
 ### Currency resolution & locking
