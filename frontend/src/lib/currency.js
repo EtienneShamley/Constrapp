@@ -373,3 +373,33 @@ export const hasMonetaryRecords = (sources) => monetaryLockReasons(sources).leng
 // this foundation has no flag yet but may hold years of financial records.
 export const isProjectCurrencyLocked = (project, sources) =>
   project?.currencyLocked === true || hasMonetaryRecords({ ...sources, project })
+
+// The currency to write ALONGSIDE `currencyLocked: true` when the ratchet is
+// engaged on a project that carries no explicit currency — or `null` when
+// nothing should be pinned. Pure: it reads both arguments and mutates neither.
+//
+// Why pin at all: `currencyLocked` and `currency` are separate fields, so a
+// project predating this foundation can end up LOCKED with no stored currency,
+// its amounts floating on whatever the company base currency happens to be.
+// Writing both together closes that state at the source.
+//
+// It returns `null` in exactly two cases, both deliberate:
+//   · The project ALREADY carries an explicit currency. Overwriting it would be
+//     a RELABEL, which nothing in this app may do — the stored code always wins
+//     over the company fallback.
+//   · The COMPANY has no configured base currency. `resolveProjectCurrency`
+//     then answers DEFAULT_CURRENCY, which is a RENDERING fallback for
+//     unconfigured installations, not an authoritative choice anybody made.
+//     Freezing it would pre-empt the admin's confirmation in Company Settings
+//     and, because the ratchet is one-way, make a possibly-wrong label
+//     permanent. Leaving such a project unpinned keeps it REPAIRABLE, which is
+//     precisely what the Company Settings pinning step is for.
+//
+// When it does return a code, that code is the one the project is ALREADY
+// displayed in, so pinning changes no label, converts no amount, and
+// recalculates nothing.
+export function currencyToPinOnLock(project, company) {
+  if (projectHasExplicitCurrency(project)) return null
+  if (!isCompanyCurrencyConfigured(company)) return null
+  return resolveProjectCurrency(project, company)
+}
