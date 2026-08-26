@@ -18,10 +18,10 @@ steps:
   - checkout: self
     clean: true
 
-  - task: NodeTool@0
+  - task: UseNode@1
     displayName: Use Node 22.23.2
     inputs:
-      versionSpec: '22.23.2'
+      version: '22.23.2'
 
   - task: JavaToolInstaller@0
     displayName: Use Java 17
