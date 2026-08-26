@@ -1,0 +1,58 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  workingDirectory: frontend
+
+steps:
+  - checkout: self
+    clean: true
+
+  - task: NodeTool@0
+    displayName: Use Node 22.23.2
+    inputs:
+      versionSpec: '22.23.2'
+
+  - task: JavaToolInstaller@0
+    displayName: Use Java 17
+    inputs:
+      versionSpec: '17'
+      jdkArchitectureOption: 'x64'
+      jdkSourceOption: 'PreInstalled'
+
+  - script: |
+      node --version
+      npm --version
+      java -version
+    displayName: Verify tool versions
+
+  - script: npm ci
+    displayName: Install dependencies
+    workingDirectory: $(workingDirectory)
+
+  - script: npm run test:unit
+    displayName: Unit and behaviour tests
+    workingDirectory: $(workingDirectory)
+
+  - script: npm run test:rules
+    displayName: Firestore and Storage Rules tests
+    workingDirectory: $(workingDirectory)
+
+  - script: npm run lint
+    displayName: Lint
+    workingDirectory: $(workingDirectory)
+    continueOnError: true
+
+  - script: npm run build
+    displayName: Production build
+    workingDirectory: $(workingDirectory)
