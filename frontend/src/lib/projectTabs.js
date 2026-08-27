@@ -15,5 +15,6 @@ export const PROJECT_TABS = [
   { to: 'documents',        label: 'Documents' },
   { to: 'photos',           label: 'Photos' },
   { to: 'timeline',         label: 'Timeline' },
+  { to: 'rfis',             label: 'RFIs' },
   { to: 'reports',          label: 'Reports' },
 ]

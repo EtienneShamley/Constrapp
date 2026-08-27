@@ -2207,3 +2207,130 @@ as the rules-frozen bid behind it. The costs are accepted and documented:
 per-line integrity, containment, bidder uniqueness, and closing behaviour are
 client-side only (Deferred Control 26), and a mistaken award has no in-app
 remedy in V1 (rescission is future work with its own audit design).
+
+## ADR-33: RFI Foundation (evidence layer; per-project numbering; forward-only with no reopen; existence-verified drawing-revision references)
+
+**Context.** Questions that need a formal answer during a project — a drawing
+that contradicts the spec, a detail that is missing, a scope boundary that is
+unclear — were living in email. They are the origination point of most
+variations and the evidence for most delay claims, yet Constrapp held no record
+of when they were asked, of whom, against which revision, or how long the
+answer took. The Strategic Invariants forbid generic field reporting: an RFI
+register is in scope **only** as a commercial evidence layer, and this ADR
+records that framing explicitly.
+
+**Decision.** One new project-scoped collection, one project-scoped counter,
+one hook, one pure `lib/` module, one project tab.
+
+- **The commercial frame (adopted verbatim as the scope justification).** *RFI
+  V1 is an evidence layer for future delay / EOT / variation / forecast
+  analysis. V1 stores the record and stable commercial join keys only. It
+  implements NO financial derivation and changes NO financial figure.* The
+  optional `costCodeId` + frozen `costCodeName` is a **join key** for a future
+  read-time derivation (RFI ageing → delay → forecast/EOT evidence), never an
+  authored commercial value — the ADR-29 posture for `activities.costCodeId`.
+- **Financially inert, and the first non-financial NUMBERED document.** An RFI
+  holds no amount, no currency, no GST. The create transaction exists for the
+  **counter only** and deliberately does **not** stage the currency ratchet
+  (ADR-21): locking a project's currency on a question would be wrong. It
+  writes only the RFI and its counter; it never touches a financial document.
+- **Per-project numbering** — `…/projects/{projectId}/counters/rfis`, the
+  **first project-scoped counter** in the app. Every project starts at
+  `RFI-0001` independently (the construction convention). Every financial
+  counter remains company-wide. This was a one-way product decision made before
+  implementation: existing numbers cannot be renumbered later.
+- **`raisedByName` — the first stored user-name snapshot.** `users/{uid}` is
+  client-read-only and a user may read only their own profile (ADR-27), so the
+  app renders `You` / `Another user` everywhere else. A "Raised by" column that
+  read that way would be useless in the one module where it matters most, so
+  the creator snapshots **their own** profile name at write time — the
+  freeze-at-write idiom of `costCodeName`/`supplierName`, never backfilled. It
+  is **client-authored and NOT rules-verified** against the profile:
+  comparing it in rules would reject every create in a company whose
+  out-of-band-provisioned profiles carry a blank name. `createdBy` (the uid)
+  remains the trustworthy identity. This does **not** reopen `users/` and adds
+  no profile-write path.
+- **Assignee is a Contact** — `assignedToContactId` + frozen `assignedToName`,
+  both-or-neither, exactly `activities.responsibleContactId`. No
+  `assignedToUid`, no project-members collection, no new permissions model. An
+  internal colleague cannot be assigned unless they exist as a Contact —
+  accepted for V1.
+- **Assignee AND due date are required to raise, and REMAIN REQUIRED while
+  open** — optional on a draft only. They are the accountability fields of a
+  live RFI; the overdue register has no value without them. Rules enforce
+  this as a standing invariant of the open state: the open management edit may
+  reassign or re-date but may never clear either (regression-tested).
+- **Forward-only with NO reopen** — the ADR-11 default, and a deliberate
+  departure from ADR-29's backwards-correcting programme. An RFI is a
+  contractual audit record, not a plan. `answered → open` would either
+  overwrite an answer (destroying the audit) or version it (a history
+  subcollection — the scope creep the brief excluded). The construction-
+  standard workaround is built in: **close with a close-out note recording that
+  the answer was insufficient, and raise a new RFI.** No `supersedesRfiId`, no
+  threads, no answer revisions.
+- **Cancellation from `draft` and `open` only — never from `answered`.** A
+  cancelled RFI is a mistaken or duplicate question. A question that has been
+  answered was not a mistake to ask; its only exit is to close it with a note.
+  `closed` and `cancelled` are terminal; delete is blocked at every status
+  (ADR-12).
+- **Two freeze points.** The **question block** (title, question, raised date,
+  raiser name, reference, cost code) freezes at **raise** — that freeze is the
+  entire reason `draft` exists. The **management block** (assignee, due date)
+  freezes at **answer**, because reassignment and due-date extension are
+  legitimate on a live RFI and the dates become the record once an answer
+  exists. Each transition branch is `hasOnly`-restricted to its own keys.
+- **`answerDate` is authored, separately from `answeredAt`.** If the architect
+  answers Monday and the PM transcribes Thursday, a stamp-only register
+  understates responsiveness — and response time is the whole commercial
+  point. Both are kept; response days are measured between the **authored**
+  dates.
+- **Zero-or-one reference in SCALAR fields, existence-verified.** Rules cannot
+  iterate an array or `get()` per element (the credit-note lesson), so a
+  scalar target is the only shape whose existence can be verified. A
+  **drawing reference requires BOTH the master AND the specific revision**;
+  rules `exists()` both, and because revisions nest under their master the
+  nested path itself proves the revision belongs to that drawing. A
+  master-only / "whatever is current later" reference is **not supported** —
+  the RFI must remain linked to exactly the revision referenced when the
+  question was raised. Document references are existence-verified likewise.
+  Labels are frozen display snapshots. No bytes are copied, no `storagePath`
+  is stored, no download URL is ever persisted.
+- **Narrow reads.** `company_admin`/`project_manager`/`qs` read and write; QS
+  is a full author (measurement ambiguity is the classic RFI trigger).
+  `subcontractor`/`client` are denied — deliberately **not** the drawings read
+  model, because RFI content carries contractual positions and those roles are
+  not project-scoped (Deferred Control 20).
+- **A 16th project tab**, after Timeline. The tab bar is past comfortable;
+  regrouping navigation is a separate task and was deliberately kept out of
+  this branch.
+
+**Firestore rules expression budget (an implementation finding).** The `rfis`
+block validates ~34 fields plus two existence lookups across six update
+branches and, written the obvious way, hit Firestore's **1000-expressions-per-
+request** limit in the emulator (`Unable to evaluate the expression as the
+maximum of 1000 expressions to evaluate has been reached`). The fix — shape
+helpers taking the candidate map as an argument once, `hasAll` + `size()` in
+place of `hasOnly` + `hasAll`, and a `changedKeys()` allow-list for the draft
+edit rather than a second full-shape pass — is documented in SECURITY.md so it
+is not tidied back into the longer form. Future large blocks should start from
+this shape.
+
+**Alternatives rejected.** Company-wide numbering (consistent with every other
+counter, but `RFI-0007, RFI-0019…` within a project is not how the industry
+reads an RFI register); `You`/`Another user` for the raiser (unusable
+register); an `assignedToUid` or project-members model (a new people subsystem
+for one feature); reopen / answer versioning (history subcollection); a
+master-only drawing reference (floats to the current revision and breaks audit
+integrity); an array of references (unverifiable); rules-verifying
+`raisedByName` against the profile (production-breaking on blank provisioned
+names); housing RFIs under the Documents sub-layout (an RFI is a question, not
+a file); email/notifications (no trusted backend).
+
+**Consequences.** The RFI trail (question → assignee → due → answer → close)
+is durable, auditable, numbered per project, pinned to the exact drawing
+revision, and financially inert. The costs are accepted and documented in
+Deferred Control 27: number uniqueness and `+1` semantics, `raisedByName`
+truthfulness, assignee/cost-code existence, reference-label accuracy,
+duplicate questions, authored-date realism, last-write-wins, and creator ≠
+answerer are all client-side only. V1 is a **record, not a channel** — an
+assignee learns of an RFI only out of band — and the page says so.

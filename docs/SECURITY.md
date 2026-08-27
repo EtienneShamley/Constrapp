@@ -83,6 +83,8 @@ to financial roles.**
 | `…/projects/{id}/drawings/{id}/revisions/{id}` | **any company member** | same drawing writers; **file and authored identity immutable**, exact `storagePath` required, legal transitions only | blocked — a revision is never deleted |
 | `…/projects/{id}/documents/{id}` | `internal` → financial roles; `project` → **any company member** | financial roles; **file identity immutable**, three `hasOnly` update shapes, non-whitespace withdraw reason | blocked — withdraw via status |
 | `…/counters/{id}` | financial roles | financial roles | blocked |
+| `…/projects/{id}/counters/{id}` | financial roles | financial roles — **the per-project RFI counter** (`rfis`); +1 semantics NOT enforced | blocked |
+| `…/projects/{id}/rfis/{id}` | **`company_admin`, `project_manager`, `qs`** | same three roles; **create draft-only; the forward-only lifecycle (no reopen, answered cannot cancel, closed/cancelled terminal), the question-block freeze from `open`, the management freeze from `answered`, the raise gate (assignee + due date), `answerDate`/`dueDate >= raisedDate`, and referenced drawing + revision / document EXISTENCE are all rules-enforced** | blocked — cancel via status (draft/open only) |
 
 Contacts reads are deliberately tighter than the shared pattern: the directory
 holds third-party PII (names, phones, emails, ABNs, payment terms), so
@@ -1144,6 +1146,49 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     there is **no trusted header figure to forge** — the absence of stored
     totals is itself the mitigation for the header-vs-lines problem.
 
+27. **RFI integrity gaps (ADR-33)** — Firestore rules enforce the `rfis`
+    shape, the forward-only lifecycle (including **no reopen**, **answered
+    cannot be cancelled**, and closed/cancelled terminality), the question-block
+    freeze from `open`, the management-block freeze from `answered`, the raise
+    gate, both date orderings, and — because the reference is held in **scalar**
+    fields — the **existence** of the referenced drawing **and** its nested
+    revision, or the referenced document. They **cannot** verify the following,
+    all accepted and never presented otherwise:
+
+    - **`rfiNumber` uniqueness within the project, and `+1` counter semantics.**
+      The counter is per-project (`…/projects/{p}/counters/rfis`) but rules have
+      no list, query or count, and the counter is client-writable with no
+      increment constraint (the Deferred Control 6 posture). Normal app creates
+      are **transaction-safe** — two concurrent creates serialise on the counter
+      document — but a direct-SDK caller can duplicate a number or reset the
+      counter.
+    - **`raisedByName` truthfulness.** It is a snapshot the creator takes of
+      their **own** profile name (the only profile a client can read — ADR-27),
+      and it is **client-authored**: rules validate shape only and deliberately
+      do **not** compare it against `users/{uid}.name`, because profiles are
+      provisioned out of band and a blank provisioned name would then reject
+      every create in that company. A direct-SDK caller can attribute an RFI to
+      anyone. `createdBy` (the uid) remains the trustworthy identity.
+    - **That `assignedToContactId` and `costCodeId` name real, active
+      records** — shape only (the Deferred Control 23 posture).
+    - **That the frozen `referenceLabel` / `referenceRevisionCode` match the
+      referenced drawing/revision/document.** Existence is checked; content is
+      not, and a later rename makes the label stale by design.
+    - **Duplicate RFIs** (the same question raised twice) — rules cannot query
+      siblings.
+    - **Authored-date realism.** `raisedDate` and `answerDate` are user-entered
+      and can be back- or forward-dated arbitrarily, including an impossible
+      calendar date of valid shape (`2026-02-31`). Response-time figures are
+      only as honest as the people entering them, and **overdue is computed
+      from the client clock**.
+    - **Last-write-wins** on concurrent draft/management edits (no
+      compare-and-set); **creator ≠ answerer segregation** does not exist; and
+      **project-specific membership** does not exist (Deferred Control 20) — a
+      financial-role member reads the RFIs of every project in the company.
+
+    Fabricated RFIs are a low-severity entry in this list: an RFI feeds **no**
+    financial figure, so a forged one distorts only the register's own counts.
+
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
 is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.
@@ -1180,6 +1225,55 @@ backwards, because a programme is a plan that gets corrected rather than an
 audit record. This is a *design* decision, not a rules gap — but it does mean
 the rules cannot tell a legitimate correction from a cover-up (Deferred Control
 20).
+
+## RFIs — narrow reads, rules-enforced forward-only lifecycle, existence-verified references
+
+The `rfis` block (ADR-33) uses **one audience for reads and writes**:
+`company_admin`, `project_manager`, `qs`. QS is a **full author** here (unlike
+the programme) because scope and measurement ambiguity is the classic RFI
+trigger and QS already writes general documents.
+
+- **`subcontractor` and `client` are denied entirely** — deliberately **not**
+  the drawings read model. RFI content routinely carries contractual positions,
+  and those roles are not scoped to their own projects (Deferred Control 20).
+  There is no external RFI portal in V1; building one is a client-portal
+  feature with its own scoping design.
+- **`super_admin` gains nothing**, matching every other collection.
+- Because the read gate is uniform, **no `where()` query workaround is needed**
+  (contrast `documents`, whose visibility split forces one).
+
+**What is rules-enforced** (all asserted by `rfis.rules.test.js`): the exact
+34-key shape at create; draft-only creation with every lifecycle stamp
+null/empty; the six update branches, each `hasOnly`-restricted — draft edit,
+raise, open management edit, answer, close, cancel; the **forward-only**
+transition set (`draft → open|cancelled`, `open → answered|cancelled`,
+`answered → closed`) with **no reopen** and **answered → cancelled rejected**;
+`closed` and `cancelled` **terminal**; the question-block freeze from `open`
+and the management-block freeze from `answered`; the raise gate (assignee +
+due date already on the stored draft) **and the same pair as a standing
+invariant of every open RFI** — the open management edit may reassign or
+re-date but can never clear either; non-whitespace `answer` and
+`cancelReason`; `dueDate >= raisedDate` and `answerDate >= raisedDate`;
+caller + server time on every stamp; **referenced drawing AND nested revision
+existence** (a master-only drawing reference is rejected; a revision under a
+different drawing is rejected) or referenced document existence, at create and
+draft edit; `delete: if false` at every status.
+
+**The per-project counter** (`…/projects/{projectId}/counters/rfis`) is the
+first project-scoped counter in the app and has the same financial-role
+audience and tenant gate as the company counters. Rules do **not** enforce `+1`
+semantics or number uniqueness — see Deferred Control 27.
+
+⚠️ **Expression budget.** This block validates ~34 fields plus two existence
+lookups and sits close to Firestore's **1000-expressions-per-request** limit.
+Its shape helpers take the candidate map as an argument once, the exact-key
+check is `hasAll` + `size()`, and the draft-edit branch is a `changedKeys()`
+allow-list rather than a second full-shape pass. Do not "tidy" these back
+into the longer form — the emulator hit the limit during development when they
+were written the obvious way.
+
+**What is NOT enforced** is listed in Deferred Control 27 — most notably
+number uniqueness, `raisedByName` truthfulness, and reference-label accuracy.
 
 ## Secrets & the Vite bundle
 

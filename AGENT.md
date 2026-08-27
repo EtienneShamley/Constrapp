@@ -82,7 +82,8 @@ frontend/
                     useForecastLines, useProjectCommercial, useCashFlowLines,
                     useProjectActivities (project programme — NON-financial),
                     useStorageUpload (the ONLY place file bytes are written),
-                    useDrawings, useDrawingRevisions, useProjectDocuments
+                    useDrawings, useDrawingRevisions, useProjectDocuments,
+                    useRfis (RFI register — NON-financial; per-project counter)
     lib/            firebase.js, formatters.js, currency.js, nav.js, projectTabs.js,
                     purchaseOrders.js, progressClaims.js, supplierInvoices.js,
                     supplierCreditNotes.js (reduction records vs posted supplier
@@ -96,7 +97,9 @@ frontend/
                     projectTimeline.js (programme domain logic — no financial
                     arithmetic), timelineGantt.js (Gantt geometry only),
                     files.js (file types, size ceilings, deterministic storage
-                    paths), drawings.js, projectDocuments.js (pure domain logic)
+                    paths), drawings.js, projectDocuments.js (pure domain logic),
+                    rfis.js (RFI lifecycle, reference shape, overdue/response
+                    derivation — NON-financial)
   tests/unit/       Unit tests for pure lib/ logic (npm run test:unit — no emulator)
   tests/rules/      Firestore AND Storage security-rules suites
                     (npm run test:rules — starts both emulators)
@@ -271,6 +274,34 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
                                              NO transaction, NO currency ratchet; reads company_admin/
                                              project_manager/qs, writes company_admin/project_manager ONLY
                                              (QS READ-ONLY); WRITES NO FINANCIAL VALUE ANYWHERE
+  …/counters/rfis                            { next } — the ONLY PROJECT-SCOPED counter: every project numbers
+                                             its RFIs from RFI-0001 independently (financial counters stay
+                                             company-wide); same financial-role audience; delete blocked
+  …/rfis/{rfiId}                             RFI — REQUEST FOR INFORMATION (NON-FINANCIAL EVIDENCE RECORD,
+                                             ADR-33): rfiNumber (RFI-####, per-project counter, allocated in
+                                             the create transaction — NO currency ratchet), status
+                                             draft|open|answered|closed|cancelled (FORWARD-ONLY, NO REOPEN,
+                                             answered CANNOT be cancelled, closed/cancelled terminal — ALL
+                                             RULES-ENFORCED), title, question, AUTHORED raisedDate
+                                             ('YYYY-MM-DD'), raisedByName (client-authored snapshot of the
+                                             creator's OWN profile name — NOT rules-verified, DC27), ZERO-OR-
+                                             ONE scalar reference (referenceType none|drawing|document;
+                                             drawing REQUIRES referenceDrawingId + referenceRevisionId, both
+                                             EXISTENCE-VERIFIED by rules via the nested revisions path so the
+                                             RFI stays pinned to the exact sheet issued; document requires
+                                             referenceDocumentId, existence-verified; frozen referenceLabel +
+                                             referenceRevisionCode snapshots; NO storagePath, NO download
+                                             URL), OPTIONAL costCodeId + frozen costCodeName (JOIN KEY ONLY,
+                                             no derivation), assignedToContactId + frozen assignedToName (a
+                                             CONTACT, never a user — ADR-27), dueDate (>= raisedDate) — both
+                                             REQUIRED TO RAISE, optional on a draft; the QUESTION BLOCK
+                                             FREEZES AT RAISE, the MANAGEMENT BLOCK (assignee/due) FREEZES AT
+                                             ANSWER; answer + AUTHORED answerDate (>= raisedDate) written by
+                                             the answer transition only; closeOutNote; raised/answered/
+                                             closed/cancelled At/By stamps; overdue, days open, response
+                                             days, grouping, summary ALL derived read-time; delete blocked;
+                                             reads AND writes company_admin/project_manager/qs ONLY;
+                                             WRITES NO FINANCIAL VALUE ANYWHERE
   …/retentionReleases/{releaseId}            releaseNumber (RR-####, company counter), status draft|posted|void,
                                              docType 'retention_release', supplierInvoiceId (SCALAR — rules get()
                                              it and verify it is POSTED), invoiceNumber/supplierInvoiceNumber/

@@ -2744,6 +2744,337 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // RFIs — Requests for Information (ADR-33). The formal record of a
+    // question that needed clarification: who asked what, of whom, against
+    // which drawing revision or document, when it was due, what the answer was
+    // and when it arrived.
+    //
+    // ⚠️ AN RFI IS FINANCIALLY INERT. It carries no amount, no currency and no
+    // GST, feeds NO financial figure, and its create path must NEVER engage the
+    // project currency ratchet. The optional `costCodeId` + frozen
+    // `costCodeName` is a JOIN KEY reserved for future read-time analysis
+    // (RFI ageing → delay → EOT / variation / forecast evidence) — never an
+    // authored commercial value. Cost impact, time impact and variation
+    // origination are explicitly deferred.
+    //
+    // Reads AND writes: company_admin / project_manager / qs — the same three
+    // roles, deliberately NARROW. RFI content routinely carries contractual
+    // positions, so `subcontractor` and `client` must not read it (this is NOT
+    // the drawings read model), and there is no external RFI portal.
+    // `super_admin` gains nothing, matching every other collection.
+    // Delete: blocked at every status — cancellation is a status change.
+    //
+    // Lifecycle is RULES-ENFORCED and FORWARD-ONLY (the ADR-11 default — an RFI
+    // is an audit record, not a plan, so unlike `activities` it is never
+    // corrected backwards and there is NO REOPEN):
+    //   · create only with status 'draft', every lifecycle stamp null/empty,
+    //     createdBy == caller, createdAt == server request time
+    //   · DRAFT EDIT may change the question block, the reference, the cost
+    //     code, the assignee and the due date — but not the status and not
+    //     the number, and may not forge a stamp
+    //   · RAISE (draft → open) requires an assignee AND a due date, stamps
+    //     raisedAt/raisedBy, and touches nothing else. From this point the
+    //     QUESTION BLOCK (title, question, raisedDate, raisedByName, every
+    //     reference field, costCodeId/costCodeName) is FROZEN FOR LIFE
+    //   · OPEN MANAGEMENT EDIT may change ONLY the assignee pair and the due
+    //     date — and may NEVER clear them. Once open, an RFI always carries
+    //     an assignee and a due date (accountability fields); the raise gate
+    //     is a permanent invariant of the open state, not a one-off check
+    //   · ANSWER (open → answered) requires a NON-WHITESPACE answer and an
+    //     authored answerDate >= raisedDate, stamps answeredAt/answeredBy,
+    //     and touches nothing else. From this point the MANAGEMENT BLOCK is
+    //     frozen too
+    //   · CLOSE (answered → closed) stamps closedAt/closedBy with an optional
+    //     closeOutNote, and touches nothing else
+    //   · CANCEL is permitted from draft and open ONLY — NOT from answered
+    //     (an answered question was not a mistake to ask; close it with a note
+    //     instead). Requires a NON-WHITESPACE cancelReason, stamps
+    //     cancelledAt/cancelledBy, and touches nothing else
+    //   · closed and cancelled are TERMINAL — no update of any kind
+    //
+    // THE REFERENCE is ZERO OR ONE, held in SCALAR fields (never an array —
+    // rules cannot iterate an array or get() per element, the credit-note
+    // lesson), and its target's EXISTENCE IS VERIFIED HERE at create and at
+    // draft edit:
+    //   · 'drawing'  → BOTH drawings/{referenceDrawingId} AND
+    //                  drawings/{referenceDrawingId}/revisions/{referenceRevisionId}
+    //                  must exist. The nested path is what proves the revision
+    //                  belongs to that drawing. A master-only reference is NOT
+    //                  accepted: the RFI stays pinned to exactly the sheet as
+    //                  issued when the question was asked
+    //   · 'document' → documents/{referenceDocumentId} must exist
+    //   · 'none'     → all three ids null, both labels ''
+    // Labels are FROZEN display snapshots. No bytes, no storagePath and no
+    // download URL are ever stored on an RFI.
+    //
+    // What is NOT enforced here (client-side only — NEVER describe as
+    // enforced; see docs/SECURITY.md → Deferred Control 27):
+    //   · rfiNumber uniqueness within the project, and +1 counter semantics —
+    //     rules have no list, query or count (Deferred Control 6)
+    //   · that `raisedByName` is the caller's real profile name. It is a
+    //     client-authored snapshot; rules validate SHAPE only. It is NOT
+    //     compared against users/{uid} (a blank provisioned name would then
+    //     reject every create in that company)
+    //   · that assignedToContactId / costCodeId name real records — shape only
+    //   · that the frozen referenceLabel / referenceRevisionCode match the
+    //     referenced documents (existence is checked, content is not)
+    //   · an impossible calendar date of valid shape (2026-02-31)
+    //   · last-write-wins on concurrent draft edits; creator ≠ answerer
+    //     segregation; project-specific membership (Deferred Control 20)
+    match /companies/{companyId}/projects/{projectId}/rfis/{rfiId} {
+      function memberRole() {
+        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+      }
+      function sameCompany() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
+      }
+      // One audience for reads and writes.
+      function rfiMember() {
+        return sameCompany() && memberRole() in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // The document identity that no update of any kind may rewrite.
+      function corePreserved() {
+        return request.resource.data.rfiNumber == resource.data.rfiNumber
+            && request.resource.data.createdAt == resource.data.createdAt
+            && request.resource.data.createdBy == resource.data.createdBy
+            && request.resource.data.revision  == resource.data.revision;
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // ⚠️ EXPRESSION BUDGET. Firestore evaluates at most 1000 expressions per
+      // request, and this block validates ~34 fields plus two existence
+      // lookups. Every shape helper therefore takes the candidate map `d`
+      // ONCE as an argument instead of re-resolving `request.resource.data`
+      // per field, and the exact-key check is `hasAll` + `size()` rather than
+      // a second full list. Do not "tidy" these back into the longer form.
+      //
+      // EXACT shape — hasAll + size together mean no field may be added,
+      // renamed, or omitted (the ADR-27 lesson).
+      function exactKeys(d) {
+        return d.keys().hasAll([
+                 'rfiNumber', 'status',
+                 'title', 'question', 'raisedDate', 'raisedByName',
+                 'referenceType', 'referenceDrawingId', 'referenceRevisionId', 'referenceDocumentId',
+                 'referenceLabel', 'referenceRevisionCode',
+                 'costCodeId', 'costCodeName',
+                 'assignedToContactId', 'assignedToName', 'dueDate',
+                 'raisedAt', 'raisedBy',
+                 'answer', 'answerDate', 'answeredAt', 'answeredBy',
+                 'closeOutNote', 'closedAt', 'closedBy',
+                 'cancelReason', 'cancelledAt', 'cancelledBy',
+                 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+               ])
+            && d.size() == 34;
+      }
+      function isIsoDate(v) {
+        return v is string
+            && v.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$');
+      }
+      function nonBlank(v, max) {
+        return v is string && v.trim().size() > 0 && v.size() <= max;
+      }
+      // The reference — shape AND existence.
+      function referenceValid(d) {
+        return (
+                 d.referenceType == 'none'
+                 && d.referenceDrawingId == null
+                 && d.referenceRevisionId == null
+                 && d.referenceDocumentId == null
+                 && d.referenceLabel == ''
+                 && d.referenceRevisionCode == ''
+               )
+            || (
+                 d.referenceType == 'drawing'
+                 && d.referenceDrawingId is string
+                 && d.referenceDrawingId.size() > 0
+                 && d.referenceRevisionId is string
+                 && d.referenceRevisionId.size() > 0
+                 && d.referenceDocumentId == null
+                 && nonBlank(d.referenceLabel, 200)
+                 && nonBlank(d.referenceRevisionCode, 40)
+                 && exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/drawings/$(d.referenceDrawingId))
+                 && exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/drawings/$(d.referenceDrawingId)/revisions/$(d.referenceRevisionId))
+               )
+            || (
+                 d.referenceType == 'document'
+                 && d.referenceDocumentId is string
+                 && d.referenceDocumentId.size() > 0
+                 && d.referenceDrawingId == null
+                 && d.referenceRevisionId == null
+                 && nonBlank(d.referenceLabel, 200)
+                 && d.referenceRevisionCode == ''
+                 && exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/documents/$(d.referenceDocumentId))
+               );
+      }
+      // The question block — validated at create and at draft edit.
+      function questionShape(d) {
+        return nonBlank(d.title, 200)
+            && nonBlank(d.question, 5000)
+            && isIsoDate(d.raisedDate)
+            && nonBlank(d.raisedByName, 120)
+            && referenceValid(d)
+            // Cost-code spine: both-or-neither.
+            && ((d.costCodeId == null && d.costCodeName == '')
+                || (d.costCodeId is string && d.costCodeId.size() > 0
+                    && nonBlank(d.costCodeName, 120)));
+      }
+      // The management block — assignee (a CONTACT, never a user — ADR-27)
+      // with a frozen name snapshot, both-or-neither; optional due date not
+      // before the raised date.
+      function managementShape(d) {
+        return ((d.assignedToContactId == null && d.assignedToName == '')
+                || (d.assignedToContactId is string && d.assignedToContactId.size() > 0
+                    && nonBlank(d.assignedToName, 120)))
+            && (d.dueDate == null
+                || (isIsoDate(d.dueDate) && d.dueDate >= d.raisedDate));
+      }
+      // Every lifecycle stamp empty — required at create. Preserved through
+      // the draft phase by the draft-edit allow-list, which cannot touch them.
+      function noLifecycleStamps(d) {
+        return d.raisedAt == null && d.raisedBy == null
+            && d.answer == '' && d.answerDate == null
+            && d.answeredAt == null && d.answeredBy == null
+            && d.closeOutNote == '' && d.closedAt == null && d.closedBy == null
+            && d.cancelReason == '' && d.cancelledAt == null && d.cancelledBy == null;
+      }
+      // Raise gate — AND the standing invariant of every OPEN RFI: a real
+      // assignee and a real due date. Checked at raise and re-checked on
+      // every open management edit, so they can be changed but never cleared.
+      function raiseReady(d) {
+        return d.assignedToContactId is string
+            && d.assignedToContactId.size() > 0
+            && nonBlank(d.assignedToName, 120)
+            && isIsoDate(d.dueDate);
+      }
+
+      allow read: if rfiMember();
+
+      allow create: if rfiMember()
+                  && exactKeys(request.resource.data)
+                  && request.resource.data.revision == 1
+                  && request.resource.data.status == 'draft'
+                  && request.resource.data.rfiNumber is string
+                  && request.resource.data.rfiNumber.matches('^RFI-[0-9]{4,}$')
+                  && questionShape(request.resource.data)
+                  && managementShape(request.resource.data)
+                  && noLifecycleStamps(request.resource.data)
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped();
+
+      allow update: if rfiMember() && corePreserved() && updateStamped() && (
+                    // (a) DRAFT EDIT — the question block, the reference, the
+                    //     cost code, the assignee and the due date are all
+                    //     editable. The hasOnly allow-list is what keeps the
+                    //     status, the number and every lifecycle stamp fixed
+                    //     (they were validated null/empty at create), so no
+                    //     stamp can be forged and no key can be added.
+                    (
+                      resource.data.status == 'draft'
+                      && changedKeys().hasOnly([
+                           'title', 'question', 'raisedDate', 'raisedByName',
+                           'referenceType', 'referenceDrawingId', 'referenceRevisionId', 'referenceDocumentId',
+                           'referenceLabel', 'referenceRevisionCode',
+                           'costCodeId', 'costCodeName',
+                           'assignedToContactId', 'assignedToName', 'dueDate',
+                           'updatedAt', 'updatedBy'
+                         ])
+                      && questionShape(request.resource.data)
+                      && managementShape(request.resource.data)
+                    )
+                    ||
+                    // (b) RAISE — draft → open. Needs an assignee and a due
+                    //     date ALREADY on the stored draft. Touches only the
+                    //     status and the raise stamps, so the question block
+                    //     freezes by construction.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'open'
+                      && changedKeys().hasOnly(['status', 'raisedAt', 'raisedBy', 'updatedAt', 'updatedBy'])
+                      && raiseReady(request.resource.data)
+                      && request.resource.data.raisedBy == request.auth.uid
+                      && request.resource.data.raisedAt == request.time
+                    )
+                    ||
+                    // (c) OPEN MANAGEMENT EDIT — assignee and due date ONLY.
+                    //     Everything else is frozen by the hasOnly. Reassign
+                    //     and re-date are allowed; CLEARING either is not —
+                    //     raiseReady() keeps the open-state invariant.
+                    (
+                      resource.data.status == 'open'
+                      && changedKeys().hasOnly(['assignedToContactId', 'assignedToName', 'dueDate', 'updatedAt', 'updatedBy'])
+                      && managementShape(request.resource.data)
+                      && raiseReady(request.resource.data)
+                    )
+                    ||
+                    // (d) ANSWER — open → answered. Non-whitespace answer,
+                    //     authored answerDate >= raisedDate, stamps only.
+                    (
+                      resource.data.status == 'open'
+                      && request.resource.data.status == 'answered'
+                      && changedKeys().hasOnly(['status', 'answer', 'answerDate', 'answeredAt', 'answeredBy', 'updatedAt', 'updatedBy'])
+                      && nonBlank(request.resource.data.answer, 5000)
+                      && isIsoDate(request.resource.data.answerDate)
+                      && request.resource.data.answerDate >= resource.data.raisedDate
+                      && request.resource.data.answeredBy == request.auth.uid
+                      && request.resource.data.answeredAt == request.time
+                    )
+                    ||
+                    // (e) CLOSE — answered → closed (terminal). Optional
+                    //     close-out note; stamps only.
+                    (
+                      resource.data.status == 'answered'
+                      && request.resource.data.status == 'closed'
+                      && changedKeys().hasOnly(['status', 'closeOutNote', 'closedAt', 'closedBy', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.closeOutNote is string
+                      && request.resource.data.closeOutNote.size() <= 1000
+                      && request.resource.data.closedBy == request.auth.uid
+                      && request.resource.data.closedAt == request.time
+                    )
+                    ||
+                    // (f) CANCEL — draft/open → cancelled (terminal). NOT from
+                    //     answered. Non-whitespace reason; stamps only.
+                    (
+                      resource.data.status in ['draft', 'open']
+                      && request.resource.data.status == 'cancelled'
+                      && changedKeys().hasOnly(['status', 'cancelReason', 'cancelledAt', 'cancelledBy', 'updatedAt', 'updatedBy'])
+                      && nonBlank(request.resource.data.cancelReason, 500)
+                      && request.resource.data.cancelledBy == request.auth.uid
+                      && request.resource.data.cancelledAt == request.time
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
+    // Project counters — PER-PROJECT sequential numbering. Today the only
+    // document here is `rfis` ({ next }): every project numbers its RFIs from
+    // RFI-0001 independently, the construction convention. Every FINANCIAL
+    // counter remains company-wide (see the counters block below); this is the
+    // first project-scoped one.
+    //
+    // Same audience as the company counters — the roles that create numbered
+    // documents — and the same tenant gate. The create transaction reads and
+    // increments the counter in the SAME commit as the RFI write.
+    // Counter integrity (+1 only, no arbitrary set) is NOT enforced here — see
+    // docs/SECURITY.md → Deferred Control 6 / 27. Delete blocked.
+    match /companies/{companyId}/projects/{projectId}/counters/{counterId} {
+      allow read, create, update: if request.auth != null
+                  && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      allow delete: if false;
+    }
+
     // Contacts — company-wide directory of suppliers, subcontractors,
     // consultants, and clients (third-party PII: names, phones, emails, ABNs,
     // payment terms).
@@ -2759,10 +3090,11 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Counters — sequential document numbering (purchaseOrders, progressClaims,
-    // supplierInvoices, variationsClient, variationsSupplier, clientInvoices,
-    // clientReceipts, supplierPayments, supplierCreditNotes, tenderPackages,
-    // retentionReleases).
+    // Counters — COMPANY-WIDE sequential document numbering (purchaseOrders,
+    // progressClaims, supplierInvoices, variationsClient, variationsSupplier,
+    // clientInvoices, clientReceipts, supplierPayments, supplierCreditNotes,
+    // tenderPackages, retentionReleases). RFIs are NOT here — they use the
+    // PER-PROJECT counter block above (projects/{projectId}/counters/rfis).
     // Read/write restricted to the roles that create numbered documents;
     // the create transaction must read and increment the counter.
     // Counter integrity (+1 only, no arbitrary set) is NOT enforced here — see
