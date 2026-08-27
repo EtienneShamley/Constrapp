@@ -43,7 +43,7 @@ That script runs
   deployed). The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **749 in total across 15 files: 703 Firestore + 46 Storage**:
+- Tests — **828 in total across 16 files: 782 Firestore + 46 Storage**:
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -203,6 +203,32 @@ That script runs
     and withdrawal legality, terminal states, blocked deletes, and the documented
     gaps (unchecked `supersededByDocumentId`, non-unique names, unverifiable
     `fileSize`, and visibility flips that cannot un-read what was already read).
+  - `frontend/tests/rules/rfis.rules.test.js` — **79 tests** covering every
+    case in §15t-x below (RFIs, ADR-33) plus the **per-project counter**. It
+    asserts the single read/write audience (`company_admin`/`project_manager`/
+    `qs`; `subcontractor`/`client`/`super_admin`/cross-company/orphan/
+    unauthenticated all denied on read and on every write branch), the exact
+    create shape (extra field, missing field, wrong type, non-draft creation,
+    every forged lifecycle stamp, skewed clocks), the **forward-only lifecycle
+    with NO reopen** — `answered → cancelled` REJECTED, `closed`/`cancelled`
+    terminal including an identical-data rewrite — the **question-block freeze**
+    (eight field groups × four post-raise statuses), the management edit
+    allowed only while `open`, the raise gate (no assignee / no due date /
+    supplied in the same write / smuggled question edit), whitespace answers
+    and cancel reasons, `answerDate`/`dueDate` ordering, and the
+    **existence-verified reference**: a drawing master WITHOUT a revision is
+    rejected, a nonexistent master or revision is rejected, a revision that
+    exists under a DIFFERENT drawing is rejected, a drawing/document in
+    ANOTHER project is rejected, and valid drawing+revision and document
+    references are accepted (re-verified on draft edit). The counter group
+    proves two projects number independently. It also asserts the documented
+    **client-only** gaps (Deferred Control 27): an arbitrary `raisedByName`, a
+    duplicate `rfiNumber`, an assignee/cost code naming nothing, a stale
+    reference label, an impossible calendar date of valid shape, and an
+    arbitrary counter value are all ACCEPTED. A dedicated **open-state
+    invariant** group (REGRESSION 1–8) proves an open RFI can be reassigned
+    and re-dated but can **never** lose its assignee, assignee name or due
+    date, while a draft still may, and raise still requires both.
   - `frontend/tests/rules/storage.rules.test.js` — **46 tests**, the **Storage**
     boundary. Requires **both** emulator hosts, because the document read rule
     performs a `firestore.get()`. Covers: drawing files readable by every
@@ -219,13 +245,13 @@ That script runs
     unlock a path; and the **catch-all deny** for arbitrary paths, a
     company-shaped but unapproved collection, and drawing objects nested one
     folder too deep or too shallow.
-  - All fifteen run for `company_admin`, `project_manager`, `qs`,
+  - All sixteen run for `company_admin`, `project_manager`, `qs`,
     `subcontractor`, `client`, an unauthenticated caller, and a financial-role
     user in a **second company**; the projects, tender, activities, drawings,
-    documents and storage suites add `super_admin` (proving it has no special
-    power). The users, projects, activities, drawings, documents and storage
-    suites add a further identity: an authenticated caller with **no**
-    `users/{uid}` document at all (the orphan case).
+    documents, rfis and storage suites add `super_admin` (proving it has no
+    special power). The users, projects, activities, drawings, documents, rfis
+    and storage suites add a further identity: an authenticated caller with
+    **no** `users/{uid}` document at all (the orphan case).
 - **Run this before publishing any rules change** (see
   [DEPLOYMENT.md](DEPLOYMENT.md)).
 
@@ -244,7 +270,7 @@ That script runs
 > that pattern. `Timestamp.now()` remains correct inside `seed()` helpers, which
 > write **stored state** with rules disabled and assert nothing.
 
-§15i-x, §15j-x, §15k-x, §15m-x, §15p-x, §15r-x, and §15s-v below remain the
+§15i-x, §15j-x, §15k-x, §15m-x, §15p-x, §15r-x, §15s-v and §15t-x below remain the
 human-readable specification of what those tests assert; the other manual
 sections are not automated. The **projects/currency-ratchet** suite is the one
 place where the split matters: it fully automates the rules half of §15h-vii and
@@ -583,7 +609,28 @@ npm run test:unit
   cannot unlock, and once pinned the helper declines forever — even after the
   company base currency changes.
 
-  Combined unit total: **1,002 tests** across the eighteen files.
+- `frontend/tests/unit/rfis.test.js` — **81 tests** over `lib/rfis.js`
+  (ADR-33): `RFI-0001` formatting (zero-padding, overflow past 9999,
+  round-trip parsing), the complete **transition map** — every legal edge,
+  every illegal pair including self-transitions, **no reopen**, **answered
+  cannot cancel**, closed/cancelled terminal, unknown statuses — the
+  editability predicates by status (question block draft-only, management
+  block draft/open), the UX role mirror, **reference-shape validation** (a
+  drawing reference REQUIRES both drawing and revision ids plus both frozen
+  labels; a master-only reference is rejected; stray ids on `none`/`document`
+  are rejected; normalisation drops fields that do not belong to the chosen
+  type), assignment and cost-code both-or-neither pairs, whitespace and
+  length boundaries on every bounded string, `dueDate >= raisedDate` and
+  `answerDate >= raisedDate` including equality and the year boundary, the
+  raise/answer/close/cancel gates, the **overdue boundary** (open + past due
+  only; due today is not overdue; never for draft/answered/closed/cancelled),
+  days late / until due / open, **response days** (`answerDate − raisedDate`),
+  the six-group horizon, the summary counts, the deterministic sort (number
+  desc, unparseable last, title, id — stable across shuffles), every filter
+  alone and combined (assignee names are NOT searched), and a **purity** block
+  proving every exported function leaves deep-frozen inputs intact.
+
+  Combined unit total: **1,083 tests** across the nineteen files.
 
   ⚠️ **Runtime non-mutation across COLLECTIONS is still not automated.** The
   purity blocks above prove the pure derivation layer never writes to the
@@ -3147,6 +3194,171 @@ rejection.
 - [ ] 375px: register and comparison tables scroll horizontally inside their
   cards; modals fit with internal scrolling; all touch targets ≥44px.
 
+## 15t. RFIs — Requests for Information
+
+Setup: a project with at least one drawing carrying two revisions (A and B),
+one general document, one consultant Contact, one cost code, and a recorded
+baseline of **Budget, Committed, Actual, Forecast Final Cost, Project Margin,
+and the Cash Flow closing position**. Signed in as `company_admin` unless
+stated. Reads and writes for `project_manager` and `qs` are identical.
+
+### 15t-i. Navigation & register
+
+- [ ] The project tab bar shows **RFIs** immediately after Timeline. Opening it
+  on a fresh project shows the empty-state card and a **+ New RFI** action.
+- [ ] Signed in as `subcontractor` or `client`, the tab shows **"RFIs not
+  available"** — never an empty register — and no create action.
+
+### 15t-ii. Create a draft
+
+- [ ] Create an RFI with title, question, raised date (defaults to today), no
+  assignee, no due date, no reference. It saves as **Draft** numbered
+  **RFI-0001**, "Raised by" shows your profile name, and the summary cards
+  read Open 0 · Overdue 0 · Awaiting close 0 · Closed 0 (with "1 draft").
+
+### 15t-iii. Edit a draft
+
+- [ ] Edit the draft: change the title and question, add a cost code, assign
+  the consultant Contact, and set a due date. It saves; the number is
+  unchanged. Setting the due date **before** the raised date is rejected with
+  "Due date cannot be before the raised date".
+- [ ] Re-open the draft and press **Clear** beside the due date → the field
+  empties; **Save draft** succeeds and the register shows no due date
+  (`dueDate` is `null`, not a year-0001 date). Re-open: the field is empty and
+  Clear is not shown until a date is entered again.
+- [ ] Type a partial date by deleting only the year in the native control →
+  Save draft is rejected with "Due date is not a valid date" (the app's
+  message, not a browser popup); press Clear → saves.
+
+### 15t-iv. Per-project numbering
+
+- [ ] Create a second RFI → **RFI-0002**. Cancel it (reason required) → its
+  number is retained. Create a third → **RFI-0003** (never reused).
+- [ ] Open a **different project** and create an RFI → **RFI-0001**. Return to
+  the first project: its numbering is unaffected.
+
+### 15t-v. Raise gate
+
+- [ ] On a draft with **no assignee**, press **Raise** → blocked with "Assign
+  the RFI to a contact before raising it"; the draft stays a draft.
+- [ ] Assign a contact but clear the due date → **Raise** is blocked with "Set
+  a due date before raising the RFI".
+
+### 15t-v-a. Stale action errors clear
+
+- [ ] With the "Set a due date before raising the RFI" message showing, edit
+  the draft and add a due date → on **Save draft** the red message
+  disappears. Press **Raise** with the fix in place → succeeds, no message.
+- [ ] Trigger the message again on another draft, then open **any** other
+  action (New RFI, Edit, Answer, Close, Cancel) → the message clears on
+  opening; a failure inside that modal is shown **in the modal**, not in the
+  register banner.
+
+### 15t-vi. Raise
+
+- [ ] With assignee and due date set, **Raise** → status **Open**; the detail
+  view's History shows "Raised by You" with the server time; the Open card
+  reads 1.
+
+### 15t-vii. Question / reference freeze
+
+- [ ] On the open RFI, **Edit** opens the editor in **update mode**: title,
+  question, raised date, reference and cost code are disabled with the notice
+  that they are frozen; only assignee and due date are editable.
+
+### 15t-viii. Open management edit
+
+- [ ] Change the assignee to a different Contact and extend the due date → it
+  saves and the register reflects both.
+- [ ] On the open RFI the assignee picker offers **no** "Not assigned" option
+  and there is **no Clear** beside the due date; blanking the due date by hand
+  is rejected with "An open RFI must keep a due date". Both remain mandatory
+  for the life of an open RFI.
+
+### 15t-ix. Overdue
+
+- [ ] Set the due date to **yesterday** → the row shows **Overdue · 1 day
+  overdue** (in words, not colour alone), the Overdue card reads 1, and the
+  "Overdue only" filter shows just this RFI. Set it to **today** → not overdue
+  ("Due today").
+
+### 15t-x. Answer — Rules-enforced (AUTOMATED — see §0)
+
+- [ ] **Record answer** with an answer and an answer date **before** the raised
+  date → rejected. With a whitespace-only answer → rejected.
+- [ ] Record a real answer dated after the raised date → status **Answered**,
+  Overdue returns to 0, Awaiting close reads 1, the detail view shows the
+  answer with "N days to respond", and the editor no longer offers assignee /
+  due-date changes.
+
+### 15t-xi. Answered cannot be cancelled
+
+- [ ] On the answered RFI, **no Cancel action is offered** (table, cards or
+  detail). The only actions are View and **Close**.
+
+### 15t-xii. Close
+
+- [ ] **Close** with a close-out note → status **Closed**, Closed card reads 1,
+  the note appears in the detail view, and **no action of any kind** is
+  offered on the RFI — no edit, no cancel, no reopen, no delete.
+
+### 15t-xiii. Cancel a draft / open RFI
+
+- [ ] Cancel a **draft** with a reason → **Cancelled**, retained in the
+  register (filter Status → Cancelled), excluded from Open/Overdue counts. A
+  whitespace-only reason is rejected.
+- [ ] Cancel an **open** RFI the same way → same result.
+
+### 15t-xiv. Terminal states
+
+- [ ] Closed and cancelled RFIs offer **View only**. The detail view's action
+  row is absent for them.
+
+### 15t-xv. Drawing revision stays pinned
+
+- [ ] Create a draft referencing drawing **A-101 at Rev A** (the picker
+  requires choosing the drawing AND the revision; a drawing alone cannot be
+  saved — "Choose the specific drawing revision"). Raise it.
+- [ ] Issue **Rev B** of A-101 from the Drawings register. Return to the RFI:
+  the reference still reads **A-101 … · Rev A** in the register and the detail
+  view — it has not moved to the new current revision.
+- [ ] Rename the drawing's title. The RFI's stored label is **unchanged**.
+
+### 15t-xvi. General-document reference
+
+- [ ] Create a draft referencing the general document → the register shows
+  the document name as the reference. Switching the reference type to "No
+  reference" on the draft clears it; saving with the document type but no
+  document chosen is rejected.
+
+### 15t-xvii. Financial non-effect
+
+- [ ] After every step above, re-check **Budget, Committed, Actual, Forecast
+  Final Cost, Project Margin, and the Cash Flow closing position**: every
+  figure is identical to the recorded baseline. No PO, claim, invoice,
+  variation, forecast line or cash-flow line was created or changed.
+
+### 15t-xviii. Currency does not lock
+
+- [ ] On a **fresh** project with no monetary values, create, raise, answer and
+  close an RFI. The project's currency remains **unlocked** (Company Settings
+  still allows changing it / Overview shows unlocked).
+
+### 15t-xix. Responsive
+
+- [ ] **375px:** no table; grouped cards (Overdue → Due this week → Open →
+  Awaiting close → Draft → Closed/Cancelled); every action reachable by tap
+  with ≥44px targets; modals fit with internal scrolling.
+- [ ] **768px / 1280px:** the register table renders and scrolls horizontally
+  inside its card; four summary cards in one row at 1280px.
+
+### 15t-xx. Roles & tenant (negative path — rules, not UI)
+
+- [ ] Signed in as `subcontractor`, issue a **direct SDK** read and write
+  against `companies/{c}/projects/{p}/rfis` and `…/counters/rfis` → both
+  rejected. Repeat as a `company_admin` of a **second company** → rejected.
+  (Rules-proven in §0; confirm end-to-end once.)
+
 ## 16. Responsive Checks — 375px, 768px, 1280px
 
 - [ ] **375px:** sidebar hidden behind hamburger; drawer opens/closes (tap overlay); nav items ≥44px tall; project tab bar wraps; PO/claim tables scroll horizontally inside their card; modals fit with internal scrolling; all actions reachable by tap (no hover-only).
@@ -3171,9 +3383,9 @@ Firestore Security Rules are the only trust boundary — these checks confirm th
 
 - [ ] Signed in as a `subcontractor` or `client` role user, **Contacts, Supplier
   Invoices, Client Invoices, Client Receipts, Supplier Payments, Variations,
-  Tenders (packages AND bids — competitor pricing), Forecast, Commercial, and
-  BOQ** all show no data — reads are blocked by rules, not merely absent from
-  the nav.
+  Tenders (packages AND bids — competitor pricing), Forecast, Commercial,
+  BOQ, and RFIs** all show no data — reads are blocked by rules, not merely
+  absent from the nav.
 - [ ] The same user **can** still read company members' Projects, Cost Codes,
   Budget Lines, POs, and Progress Claims (the intended coarser read model).
 - [ ] **Project Timeline:** a `subcontractor`/`client` user is denied the

@@ -39,6 +39,7 @@ import ProjectGeneralDocuments from './pages/project/ProjectGeneralDocuments'
 import ProjectRetention from './pages/project/ProjectRetention'
 import ProjectTenders from './pages/project/ProjectTenders'
 import ProjectTimeline from './pages/project/ProjectTimeline'
+import ProjectRfis from './pages/project/ProjectRfis'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
 
 export default function App() {
@@ -118,6 +119,11 @@ export default function App() {
                           read-only Gantt. It writes no financial document and
                           no project progress field. */}
                       <Route path="timeline" element={<ProjectTimeline />} />
+                      {/* RFIs — Requests for Information (ADR-33). An
+                          EVIDENCE register: numbered per project, forward-only,
+                          pinned to drawing revisions / documents. Financially
+                          inert — it writes no financial document. */}
+                      <Route path="rfis" element={<ProjectRfis />} />
                       <Route path="reports" element={
                         <ProjectPlaceholder
                           icon="📊"

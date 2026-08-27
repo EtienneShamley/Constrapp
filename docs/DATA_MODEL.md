@@ -29,6 +29,8 @@ companies/{companyId}
     forecastLines/{costCodeId}           (deterministic id = costCodeId)
     cashFlowLines/{lineId}               (authored Cash Flow timing inputs)
     activities/{activityId}              (project programme — NON-FINANCIAL)
+    counters/rfis                        (PER-PROJECT RFI numbering — the only project-scoped counter)
+    rfis/{rfiId}                         (Requests for Information — NON-FINANCIAL evidence record)
     retentionReleases/{releaseId}        (authored retention-release authorisations)
     commercial/baseline                  (single doc; deterministic id = "baseline")
     drawings/{drawingId}                 (drawing master — random id)
@@ -176,6 +178,10 @@ Company-wide sequential numbering. Documents: `purchaseOrders`, `progressClaims`
 Numbers render as `PO-0001` / `PC-0001` / `SI-0001` / `CV-0001` / `SV-0001` /
 `CI-0001` / `CR-0001` / `SP-0001` / `SCN-0001` / `TP-0001` (zero-padded to 4). Tender **bids**
 carry no number and use no counter — a bid is identified by its bidder and package.
+
+**RFIs are NOT numbered here.** They use the **per-project** counter
+`…/projects/{projectId}/counters/rfis` (below) — the only project-scoped counter —
+so every project numbers its RFIs from `RFI-0001` independently.
 
 ## companies/{companyId}/projects/{projectId}
 
@@ -956,6 +962,111 @@ coordinate are derived at read time (`lib/projectTimeline.js`,
 `lib/timelineGantt.js`) and never written back. **Deletion is blocked** — cancel
 via status. **No migration**: a project with no `activities` loads normally with
 an empty programme.
+
+## …/projects/{projectId}/counters/{counterId}
+
+**Per-project sequential numbering.** Today the only document is `rfis`. This is
+the first — and only — project-scoped counter: every financial counter is
+company-wide (above). Same audience (financial roles), same tenant gate, delete
+blocked.
+
+| Field | Type | Notes |
+|---|---|---|
+| `next` | number | The next RFI number for **this project**. Read and incremented in the **same transaction** as the RFI's creation (`hooks/useRfis.jsx`), so two concurrent creates through the app never share a number. Missing counter ⇒ starts at 1 |
+
+⚠️ Rules cannot enforce `+1` semantics or sibling uniqueness (no list, query or
+count) — a direct-SDK caller can set any value or duplicate a number
+(Deferred Control 6 / 27).
+
+## …/projects/{projectId}/rfis/{rfiId}
+
+**Requests for Information** — the second **non-financial** project collection
+(after `activities`), and an **evidence record**: who asked what, of whom,
+against which drawing revision or document, when it was due, what the answer
+was and when it arrived. Rationale: **ADR-33**. Access matrix: [SECURITY.md](SECURITY.md).
+
+**The commercial frame.** RFI V1 is an **evidence layer for future delay / EOT /
+variation / forecast analysis**. It stores the record and **stable commercial
+join keys only** (an optional cost code; a drawing-revision or document
+reference). It implements **no financial derivation** and changes **no financial
+figure**. An RFI holds no amount, no currency and no GST; creating one engages
+**no currency ratchet** (the create transaction exists for the counter only).
+
+| Field | Type | Notes |
+|---|---|---|
+| `rfiNumber` | string | `RFI-0001` from the **per-project** counter above, allocated in the create transaction. Shape `^RFI-[0-9]{4,}$` rules-enforced; **immutable** after create. Never reused — a cancelled RFI keeps its number |
+| `status` | string | `draft` \| `open` \| `answered` \| `closed` \| `cancelled` — closed set, **forward-only, rules-enforced** (see lifecycle below) |
+| `title` | string | **Required non-whitespace**, ≤ 200. **Frozen from `open`** |
+| `question` | string | **Required non-whitespace**, ≤ 5000. **Frozen from `open`** |
+| `raisedDate` | string | `'YYYY-MM-DD'` **authored** — the date on the RFI, not the transcription date. Required. **Frozen from `open`** |
+| `raisedByName` | string | **Snapshot of the creator's OWN profile name** (`users/{uid}.name`), ≤ 120, non-whitespace. The first stored user-name snapshot in the app. ⚠️ **Client-authored and NOT rules-verified** against the profile (Deferred Control 27) — rules validate shape only. Frozen from `open` |
+| `referenceType` | string | `none` \| `drawing` \| `document` — **zero or one** reference, held in **scalar** fields (never an array — rules cannot iterate one). Frozen from `open` |
+| `referenceDrawingId` | string \| null | → `…/drawings/{id}`. **Required with `referenceRevisionId` when `drawing`**; null otherwise. **Existence rules-verified** at create and draft edit |
+| `referenceRevisionId` | string \| null | → `…/drawings/{referenceDrawingId}/revisions/{id}`. **Required when `drawing`** — a master-only reference is **not accepted**; the RFI stays pinned to the exact revision the question was asked against. **Existence rules-verified via the nested path**, which is what proves the revision belongs to that drawing |
+| `referenceDocumentId` | string \| null | → `…/documents/{id}`. Required when `document`; null otherwise. **Existence rules-verified** |
+| `referenceLabel` | string | **Frozen display snapshot** (`A-101 Ground Floor Plan` / `Structural Specification`), ≤ 200, non-whitespace whenever a reference exists, `''` for `none`. Never backfilled on rename |
+| `referenceRevisionCode` | string | **Frozen** revision code (`C`), ≤ 40, non-whitespace for `drawing`, `''` otherwise. Never sort by it |
+| `costCodeId` | string \| null | **OPTIONAL** commercial-spine link → `companies/{c}/costCodes/{id}`. **Join key only** — no derivation reads it in V1. Frozen from `open` |
+| `costCodeName` | string | **Frozen snapshot**, ≤ 120; both-or-neither pairing (rules-enforced) |
+| `assignedToContactId` | string \| null | → `companies/{c}/contacts/{id}`. **A Contact, never a user** (ADR-27). Optional on a draft; **required to raise and REQUIRED for the life of an open RFI** — may be reassigned while `open` but never cleared (rules-enforced); **frozen from `answered`** |
+| `assignedToName` | string | **Frozen snapshot**, ≤ 120; both-or-neither pairing (rules-enforced) |
+| `dueDate` | string \| null | `'YYYY-MM-DD'`, **`>= raisedDate` (rules-enforced)**. Optional on a draft; **required to raise and REQUIRED for the life of an open RFI** — may be changed while `open` but never cleared (rules-enforced); frozen from `answered` |
+| `raisedAt` / `raisedBy` | timestamp / uid | `null` until raised. Written **only** by the raise transition; rules require `raisedBy == request.auth.uid`, `raisedAt == request.time` |
+| `answer` | string | `''` until answered; then **required non-whitespace**, ≤ 5000, written **only** by the answer transition and **immutable** afterwards (no reopen, no revision) |
+| `answerDate` | string \| null | `'YYYY-MM-DD'` **authored** — the real-world date the answer was received/given, **`>= raisedDate` (rules-enforced)**. Kept separate from `answeredAt` because the transcription date is not the answer date; **response time is measured between the authored dates** |
+| `answeredAt` / `answeredBy` | timestamp / uid | System stamps, answer transition only |
+| `closeOutNote` | string | Optional, ≤ 1000, written **only** by the close transition. Where an unsatisfactory answer is recorded ("answer insufficient — raised RFI-0012 instead") |
+| `closedAt` / `closedBy` | timestamp / uid | Close transition only |
+| `cancelReason` | string | **Required non-whitespace** on cancellation, ≤ 500; `''` otherwise |
+| `cancelledAt` / `cancelledBy` | timestamp / uid | Cancel transition only |
+| `revision` | number | `1` — rules-enforced on create, preserved on update |
+| `createdAt` / `createdBy` | timestamp / uid | Set once; rules reject any later change. `createdBy` is the raiser's uid; `raisedByName` is the human-readable snapshot |
+| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on **every** write. ⚠️ Records *who wrote last*, **not what changed** |
+
+**Lifecycle (rules-enforced, forward-only, NO reopen):**
+
+```
+draft ──raise──► open ──answer──► answered ──close──► closed
+  │                │
+  └──cancel──►  cancelled  ◄──cancel──┘
+```
+
+- `draft → open` requires an assignee **and** a due date already on the stored
+  draft; the write touches only `status` + raise stamps.
+- `open → answered` requires a non-whitespace `answer` and an authored
+  `answerDate >= raisedDate`; touches only those + answer stamps.
+- `answered → closed` touches only `closeOutNote` + close stamps.
+- `draft|open → cancelled` requires a non-whitespace reason; touches only that
+  + cancel stamps. **`answered` cannot be cancelled** — an answered question was
+  not a mistake to ask; close it with a note.
+- `closed` and `cancelled` are **terminal** — no update of any kind.
+- Backwards moves and reopen do **not** exist. An unsatisfactory answer is
+  closed with a note and a **new** RFI is raised. No answer history, no
+  threads, no `supersedesRfiId`.
+
+**Editability (rules-enforced):** the **question block** (`title`, `question`,
+`raisedDate`, `raisedByName`, every `reference*`, `costCodeId`/`costCodeName`)
+is editable in `draft` only and **frozen for life from `open`**. The
+**management block** (`assignedToContactId`/`assignedToName`, `dueDate`) is
+editable in `draft` and `open` — but while `open` it may only be **changed,
+never cleared** (the open-state invariant) — and frozen from `answered`. Each transition
+branch is `hasOnly`-restricted to its own keys, so nothing else can ride along.
+
+**Deliberately NOT stored:** `companyId`/`projectId` (path), `currency`/any
+amount (financially inert — **no currency ratchet**), `storagePath`/any download
+URL (the reference is an id, never bytes), `assignedToUid` (no user-to-user
+resolution exists — ADR-27), `supersedesRfiId`/answer history (no reopen),
+`costImpact`/`timeImpact` (deferred), and any stored `overdue`/`responseDays`
+(**derived on every read**).
+
+**Stored vs derived.** Only the fields above are authored. Overdue (open + due
+date past; due today is not overdue), days late, days until due, days open,
+**response days** (`answerDate − raisedDate`), the horizon grouping (Overdue ·
+Due this week · Open · Awaiting close · Draft · Closed/Cancelled), the summary
+counts, filtering and the deterministic sort (number desc, title, id) are
+derived at read time (`lib/rfis.js`) and never written back. **Deletion is
+blocked** — cancel via status. **No migration**: a project with no `rfis` loads
+normally with an empty register.
 
 ## …/projects/{projectId}/retentionReleases/{releaseId}
 
