@@ -434,10 +434,86 @@ service cloud.firestore {
     // submit/post-approval immutability, creator != approver segregation, and
     // (counterparty + external reference) uniqueness here rather than only in
     // the client hook.
+    //
+    // ORIGINATING RFI (ADR-34) — the ONE rules-enforced content control on
+    // this collection, and DELIBERATELY the only one. A Variation may cite
+    // ZERO OR ONE RFI in three scalar fields: originRfiId + the frozen
+    // originRfiNumber / originRfiTitle snapshots. The RFI stores nothing back.
+    //   · The triple is ALL-NULL (or, on legacy documents, ABSENT — every
+    //     read below uses get(key, null)) or FULLY POPULATED. Never partial.
+    //   · When a populated triple is CREATED or CHANGED, the RFI must exist at
+    //     companies/{companyId}/projects/{projectId}/rfis/{originRfiId} — so
+    //     another project's or another company's RFI id simply is not there —
+    //     with status open | answered | closed (a draft has not been asked;
+    //     a cancelled question cannot originate work), and both snapshots
+    //     must EQUAL the RFI's rfiNumber and title. That is honest to verify:
+    //     the rfis block keeps rfiNumber in corePreserved() and freezes the
+    //     title for life at raise, so for every eligible RFI both are
+    //     immutable at the source.
+    //   · An UNCHANGED triple is NEVER revalidated. "Changed" is a VALUE
+    //     comparison (absent == null), not a key diff, so an RFI cancelled
+    //     AFTER it was linked cannot poison later draft edits or lifecycle
+    //     transitions on the Variation — the link is historical evidence and
+    //     survives.
+    //   · A change is permitted ONLY while the stored status is 'draft' (the
+    //     existing client-side freeze point). From 'submitted' onward the
+    //     triple is immutable BY RULES; nothing else on the document is.
+    // What this does NOT do — never describe it as doing so: it does not
+    // validate any other field, any status transition, post-submit
+    // immutability of amounts/lines/text, or that the RFI genuinely caused
+    // the variation (Deferred Controls 1 and 2 still apply in full).
     match /companies/{companyId}/projects/{projectId}/variations/{variationId} {
-      allow read, create, update: if request.auth != null
-                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      function financialMember() {
+        return request.auth != null
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      }
+      // The RFI this candidate cites, in THIS company and THIS project.
+      function originRfiDoc(d) {
+        return get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/rfis/$(d.originRfiId)).data;
+      }
+      function originUnlinked(d) {
+        return d.get('originRfiId', null) == null
+            && d.get('originRfiNumber', null) == null
+            && d.get('originRfiTitle', null) == null;
+      }
+      function originLinked(d) {
+        return d.get('originRfiId', null) is string
+            && d.originRfiId.size() > 0
+            && d.get('originRfiNumber', null) is string
+            && d.get('originRfiTitle', null) is string
+            && exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/rfis/$(d.originRfiId))
+            && originRfiDoc(d).status in ['open', 'answered', 'closed']
+            && originRfiDoc(d).rfiNumber == d.originRfiNumber
+            && originRfiDoc(d).title == d.originRfiTitle;
+      }
+      function originRfiValid(d) {
+        return originUnlinked(d) || originLinked(d);
+      }
+      // Value comparison, absent treated as null — legacy documents and the
+      // partial transition writes the hook issues never register as a change.
+      function originChanged() {
+        return request.resource.data.get('originRfiId', null)     != resource.data.get('originRfiId', null)
+            || request.resource.data.get('originRfiNumber', null) != resource.data.get('originRfiNumber', null)
+            || request.resource.data.get('originRfiTitle', null)  != resource.data.get('originRfiTitle', null);
+      }
+
+      allow read: if financialMember();
+      allow create: if financialMember() && originRfiValid(request.resource.data);
+      allow update: if financialMember()
+                  && (
+                       // (a) originRfi* untouched — every existing write shape
+                       //     (draft edits, submit, assess, reject, withdraw)
+                       //     continues exactly as before, whatever the linked
+                       //     RFI's status is today.
+                       !originChanged()
+                       ||
+                       // (b) originRfi* changed — only from a stored draft,
+                       //     and only to the unlinked triple or a verified
+                       //     eligible RFI. Applies even when the same write
+                       //     also moves draft → submitted.
+                       (resource.data.status == 'draft' && originRfiValid(request.resource.data))
+                     );
       allow delete: if false;
     }
 

@@ -9,6 +9,7 @@ import { useVariations } from '../../hooks/useVariations'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useContacts } from '../../hooks/useContacts'
 import { useCostCodes } from '../../hooks/useCostCodes'
+import { useRfis } from '../../hooks/useRfis'
 import { CONTACT_TYPE, PO_SUPPLIER_TYPES } from '../../lib/contacts'
 import {
   VARIATION_TYPE, VARIATION_TYPE_LABELS, VARIATION_TYPE_HELP,
@@ -21,6 +22,7 @@ import {
   approvedSupplierVariationsTotal, pendingSupplierVariationExposureTotal,
   approvedClientVariationsTotal, pendingClientVariationExposureTotal,
   openVariationCount,
+  eligibleOriginRfis, normaliseOriginRfi, originRfiLabel, canEditOriginRfi,
 } from '../../lib/variations'
 
 const inputCls = 'w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
@@ -79,10 +81,11 @@ function SummaryCards({ variations, currencyCode }) {
 
 // ── Create ───────────────────────────────────────────────────────────────────
 
-function CreateVariationModal({ variations, purchaseOrders, contacts, costCodes, currencyCode, onClose, onSave }) {
+function CreateVariationModal({ variations, purchaseOrders, contacts, costCodes, eligibleRfis, currencyCode, onClose, onSave }) {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const [variationType, setVariationType] = useState('')
+  const [originRfiId, setOriginRfiId] = useState('') // '' = none — evidence link only (ADR-34)
   const [title, setTitle]             = useState('')
   const [description, setDescription] = useState('')
   const [reason, setReason]           = useState('')
@@ -215,6 +218,7 @@ function CreateVariationModal({ variations, purchaseOrders, contacts, costCodes,
         identifiedDate, submittedDate, responseDueDate, effectiveDate,
         lineItems: builtLines,
         notes,
+        originRfi: eligibleRfis.find(r => r.id === originRfiId) ?? null,
       })
       onClose()
     } catch (err) {
@@ -275,6 +279,8 @@ function CreateVariationModal({ variations, purchaseOrders, contacts, costCodes,
                   </select>
                 </div>
               </div>
+
+              <OriginRfiSelect value={originRfiId} onChange={setOriginRfiId} eligibleRfis={eligibleRfis} />
 
               {/* Counterparty */}
               {isClient ? (
@@ -462,6 +468,87 @@ function CreateVariationModal({ variations, purchaseOrders, contacts, costCodes,
   )
 }
 
+// ── Originating RFI (evidence link, ADR-34) ──────────────────────────────────
+// Zero or one current-project RFI, open/answered/closed only. Choosing one
+// changes no amount, total, status or date — it records where the change came
+// from. Shared by the create form and the draft-only link editor below.
+
+function OriginRfiSelect({ value, onChange, eligibleRfis }) {
+  const none = eligibleRfis.length === 0
+  return (
+    <div>
+      <label className={labelCls}>Originating RFI <span className="normal-case font-semibold tracking-normal">(optional)</span></label>
+      <select className={inputCls} value={value} onChange={e => onChange(e.target.value)} disabled={none}>
+        <option value="">{none ? 'No open, answered or closed RFIs in this project' : 'None'}</option>
+        {eligibleRfis.map(r => (
+          <option key={r.id} value={r.id}>{originRfiLabel(normaliseOriginRfi(r))}</option>
+        ))}
+      </select>
+      <p className="m-0 mt-1 text-[11px] text-brand-muted">
+        {none
+          ? 'Raise an RFI first — draft and cancelled RFIs cannot originate a variation.'
+          : 'Evidence only — the RFI does not change this variation\u2019s value. Draft and cancelled RFIs are not listed.'}
+      </p>
+    </div>
+  )
+}
+
+// Draft-only editor for the ONE originating RFI. Deliberately edits nothing
+// else — there is no general variation edit flow, and this must not become one.
+function OriginRfiModal({ variation, eligibleRfis, onClose, onSave }) {
+  const [originRfiId, setOriginRfiId] = useState(variation.originRfiId ?? '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError]   = useState(null)
+
+  // A historical link to an RFI that is no longer eligible (cancelled since)
+  // is shown so the user knows what they are replacing or removing.
+  const current = originRfiLabel(variation)
+  const currentStillEligible = !variation.originRfiId || eligibleRfis.some(r => r.id === variation.originRfiId)
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    setSaving(true)
+    setError(null)
+    try {
+      await onSave(variation, eligibleRfis.find(r => r.id === originRfiId) ?? null)
+      onClose()
+    } catch (err) {
+      setError(err?.message || 'Failed to save. Check your connection and try again.')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-[520px] bg-brand-surface border border-brand-border rounded-xl shadow-2xl">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-brand-border">
+          <h2 className="text-[15px] font-bold text-brand-text m-0">Originating RFI — {variation.variationNumber}</h2>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="text-brand-muted hover:text-brand-text text-xl leading-none cursor-pointer min-w-[44px] min-h-[44px] flex items-center justify-center"
+          >
+            ×
+          </button>
+        </div>
+        <form onSubmit={handleSubmit} className="px-5 py-4 flex flex-col gap-3.5">
+          <p className="m-0 text-[12px] text-brand-muted">
+            Currently: <span className="text-brand-text font-semibold">{current || 'None'}</span>
+            {current && !currentStillEligible && ' (this RFI is no longer eligible — the existing link is kept unless you change it)'}
+          </p>
+          <OriginRfiSelect value={originRfiId} onChange={setOriginRfiId} eligibleRfis={eligibleRfis} />
+          {error && <p className="m-0 text-[12px] text-brand-red">{error}</p>}
+          <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
+            <Btn variant="ghost" type="button" onClick={onClose} sm disabled={saving}>Cancel</Btn>
+            <Btn type="submit" sm disabled={saving}>{saving ? 'Saving…' : 'Save'}</Btn>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 // ── Assess ───────────────────────────────────────────────────────────────────
 
 function AssessVariationModal({ variation, currencyCode, onClose, onTransition }) {
@@ -578,13 +665,16 @@ function AssessVariationModal({ variation, currencyCode, onClose, onTransition }
   )
 }
 
-function RowActions({ variation, onTransition, onAssess }) {
+function RowActions({ variation, onTransition, onAssess, onEditOrigin }) {
   const confirmThen = (label, nextStatus) => () => {
     if (window.confirm(`${label} ${variation.variationNumber}?`)) onTransition(variation, nextStatus).catch(() => {})
   }
   if (variation.status === VARIATION_STATUS.DRAFT) {
     return (
       <div className="flex gap-1.5 justify-end">
+        {canEditOriginRfi(variation.status) && (
+          <Btn sm variant="ghost" onClick={() => onEditOrigin(variation)}>Origin RFI</Btn>
+        )}
         <Btn sm variant="success" onClick={() => onTransition(variation, VARIATION_STATUS.SUBMITTED).catch(() => {})}>Submit</Btn>
         <Btn sm variant="ghost" onClick={confirmThen('Withdraw', VARIATION_STATUS.WITHDRAWN)}>Withdraw</Btn>
       </div>
@@ -607,12 +697,17 @@ export default function ProjectVariations() {
   const { projectId, currencyCode } = useOutletContext()
   const money = (n) => formatCurrency(n, currencyCode)
 
-  const { variations, variationsLoading, createVariation, transitionStatus } = useVariations(projectId)
+  const { variations, variationsLoading, createVariation, updateOriginRfi, transitionStatus } = useVariations(projectId)
   const { purchaseOrders } = usePurchaseOrders(projectId)
   const { contacts } = useContacts()
   const { costCodes } = useCostCodes()
+  // Originating-RFI candidates (evidence link, ADR-34) — read only; the
+  // variations page never writes an RFI.
+  const { rfis } = useRfis(projectId)
+  const eligibleRfis = useMemo(() => eligibleOriginRfis(rfis), [rfis])
   const [showCreate, setShowCreate]   = useState(false)
   const [assessing, setAssessing]     = useState(null)
+  const [editingOrigin, setEditingOrigin] = useState(null)
   const [actionError, setActionError] = useState(null)
   const [typeTab, setTypeTab]         = useState('all')  // 'all' | 'client' | 'supplier'
   const [search, setSearch]           = useState('')
@@ -635,7 +730,7 @@ export default function ProjectVariations() {
     if (costCodeFilter !== 'all' && !(v.lineItems ?? []).some(li => li.costCodeId === costCodeFilter)) return false
     if (search.trim()) {
       const q = search.trim().toLowerCase()
-      const hay = [v.variationNumber, v.title, v.description, counterpartyOf(v), v.clientRef, v.supplierRef, v.poNumber]
+      const hay = [v.variationNumber, v.title, v.description, counterpartyOf(v), v.clientRef, v.supplierRef, v.poNumber, v.originRfiNumber, v.originRfiTitle]
         .filter(Boolean).join(' ').toLowerCase()
       if (!hay.includes(q)) return false
     }
@@ -680,7 +775,7 @@ export default function ProjectVariations() {
         <div className="flex flex-wrap items-center gap-2 mb-3.5">
           <input
             className={`${inputCls} max-w-[240px]`}
-            placeholder="Search number, title, ref, PO…"
+            placeholder="Search number, title, ref, PO, RFI…"
             value={search}
             onChange={e => setSearch(e.target.value)}
           />
@@ -734,7 +829,12 @@ export default function ProjectVariations() {
                     <td className="px-3.5 py-3 text-[12px] text-brand-muted whitespace-nowrap">
                       {v.variationType === VARIATION_TYPE.CLIENT ? 'Client' : 'Supplier'}
                     </td>
-                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{v.title || '—'}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-text">
+                      {v.title || '—'}
+                      {originRfiLabel(v) && (
+                        <span className="block text-[11px] text-brand-muted mt-0.5">{originRfiLabel(v)}</span>
+                      )}
+                    </td>
                     <td className="px-3.5 py-3 text-[13px] text-brand-text">{counterpartyOf(v) || '—'}</td>
                     <td className="px-3.5 py-3 text-[12px] text-brand-muted whitespace-nowrap">{v.poNumber || '—'}</td>
                     <td className="px-3.5 py-3 text-[13px] text-brand-text whitespace-nowrap">{money(v.submittedTotal || 0)}</td>
@@ -745,7 +845,7 @@ export default function ProjectVariations() {
                       <Badge label={VARIATION_STATUS_LABELS[v.status] ?? v.status} variant={VARIATION_BADGE_VARIANTS[v.status]} sm />
                     </td>
                     <td className="px-3.5 py-3">
-                      <RowActions variation={v} onTransition={handleTransition} onAssess={setAssessing} />
+                      <RowActions variation={v} onTransition={handleTransition} onAssess={setAssessing} onEditOrigin={setEditingOrigin} />
                     </td>
                   </tr>
                 ))}
@@ -768,8 +868,17 @@ export default function ProjectVariations() {
           purchaseOrders={purchaseOrders}
           contacts={contacts}
           costCodes={costCodes}
+          eligibleRfis={eligibleRfis}
           onClose={() => setShowCreate(false)}
           onSave={createVariation}
+        />
+      )}
+      {editingOrigin && (
+        <OriginRfiModal
+          variation={variations.find(v => v.id === editingOrigin.id) ?? editingOrigin}
+          eligibleRfis={eligibleRfis}
+          onClose={() => setEditingOrigin(null)}
+          onSave={updateOriginRfi}
         />
       )}
       {assessing && (

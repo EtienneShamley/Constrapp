@@ -72,7 +72,7 @@ to financial roles.**
 | `…/projects/{id}/clientReceipts/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability and the scalar amount invariant rules-enforced** | blocked — void via status |
 | `…/projects/{id}/supplierPayments/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability and the scalar amount invariant rules-enforced** | blocked — void via status |
 | `…/projects/{id}/supplierCreditNotes/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability, the header cent invariant, AND the target-invoice checks (exists, posted, zero retention, supplier/currency match, grossTotal ≤ payableTotal) rules-enforced via a `get()` on the target at create, draft edit, and posting** | blocked — void via status |
-| `…/projects/{id}/variations/{id}` | **financial roles only** | financial roles | blocked — reject/withdraw via status |
+| `…/projects/{id}/variations/{id}` | **financial roles only** | financial roles; **the originating-RFI link (`originRfi*`) is rules-verified via a `get()` on the same-project RFI when created or changed and frozen once the variation leaves `draft` — nothing else on the document is lifecycle-enforced** | blocked — reject/withdraw via status |
 | `…/projects/{id}/tenderPackages/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, issued-scope freeze, the closingDate/notes carve-out, and award integrity (bid exists · same package · received · name snapshot · once) rules-enforced** | blocked — cancel via status |
 | `…/projects/{id}/tenderBids/{id}` | **financial roles only** | financial roles, **create received-only against an issued same-project package with a real supplier/subcontractor contact; edits/voids only while the package stays issued; bids freeze on award/cancel** | blocked — void via status |
 | `…/projects/{id}/forecastLines/{id}` | **financial roles only** | financial roles | blocked — clear via `null`, never deleted |
@@ -501,6 +501,26 @@ foundation they receive **no** variation access at all; client- and
 subcontractor-scoped visibility (e.g. a client seeing their own head-contract
 variations) is future work alongside the deferred scoping controls below.
 
+**The originating-RFI link is the ONE rules-enforced content control on a
+variation (ADR-34) — and deliberately the only one.** A variation may cite zero
+or one RFI in three scalar fields (`originRfiId` + frozen `originRfiNumber` /
+`originRfiTitle`). When that triple is **created or changed**, rules require
+the RFI to exist at `companies/{c}/projects/{p}/rfis/{originRfiId}` — so an id
+from another project or another company is simply not there — with status
+`open`, `answered` or `closed`, and both snapshots to **equal** the RFI's
+`rfiNumber` and `title` (honest to verify: the `rfis` block keeps the number in
+`corePreserved()` and freezes the title for life at raise). "Changed" is a
+**value** comparison with absent keys read as `null`, so legacy documents and
+the hook's partial transition writes never register as a change, and an
+**unchanged link is never re-validated** — an RFI cancelled *after* it was
+linked cannot block later draft edits or lifecycle transitions; the link is
+historical evidence and survives. A change is permitted **only while the stored
+status is `draft`**; from `submitted` onward the triple is immutable by rules.
+**Not enforced (client-only, never present otherwise):** that the RFI
+genuinely caused the variation; and everything Deferred Controls 1 and 2 list
+for the rest of the variation — status legality, post-submit immutability of
+amounts, lines and text — which this feature does **not** change.
+
 Note the asymmetry: `qs` can write cost codes, budget lines, POs, and claims but
 **not** projects — with one deliberate, narrowly-scoped exception described below.
 
@@ -804,7 +824,10 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
 2. **Post-submission immutability** — freezing PO lines after `sent`, claim
    amounts after submission/approval, supplier invoices after `posted`, and
    variation content after `submitted` / approved amounts after `approved` is
-   client-side only; rules allow full document updates.
+   client-side only; rules allow full document updates. **One narrow
+   exception (ADR-34):** a variation's `originRfiId`/`originRfiNumber`/
+   `originRfiTitle` **are** frozen by rules once it leaves `draft` — nothing
+   else on the variation is.
    **Exception: issued `clientInvoices`, posted `clientReceipts` and posted
    `supplierPayments` ARE immutable by rules** (voiding is the only permitted
    update, and it may touch only the void audit fields).

@@ -43,7 +43,7 @@ That script runs
   deployed). The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **828 in total across 16 files: 782 Firestore + 46 Storage**:
+- Tests — **942 in total across 17 files: 896 Firestore + 46 Storage**:
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -229,6 +229,36 @@ That script runs
     invariant** group (REGRESSION 1–8) proves an open RFI can be reassigned
     and re-dated but can **never** lose its assignee, assignee name or due
     date, while a draft still may, and raise still requires both.
+  - `frontend/tests/rules/variations.rules.test.js` — **107 tests**, the first
+    dedicated suite for the `variations` block (ADR-18 · ADR-34). It **pins the
+    existing posture** — the three financial roles read/create/update;
+    `subcontractor`/`client`/`super_admin`/cross-company/unauthenticated denied;
+    delete blocked at every status; and, deliberately, that a **direct status
+    forgery and a post-approval amount rewrite are still accepted** (Deferred
+    Controls 1 and 2 are unchanged). It then proves the **originating-RFI
+    link**: create with the null triple, with the keys absent (legacy client),
+    and against a same-project open/answered/closed RFI (supplier and client
+    variations, every financial role); create denied for a draft RFI, a
+    cancelled RFI, a nonexistent id, an RFI in **another project** of the same
+    company, an RFI in **another company**, seven partial/malformed triples, a
+    wrong number snapshot, a wrong title snapshot (including trimmed and
+    re-cased copies) and non-string snapshots; the RFI document is **untouched**
+    (still exactly 34 keys). Draft update: add (incl. to a legacy document),
+    change, remove, unrelated edits with an unchanged or identically re-sent
+    link, and denial of every invalid target, of snapshot-only or id-only
+    rewrites, and of partial removal. The **critical historical case**: link an
+    open RFI → cancel the RFI → an unrelated draft edit, **every** lifecycle
+    transition (submit, approve, withdraw, reject) and a re-send of the same
+    triple all still succeed and leave the link intact — while *changing* the
+    link to that now-cancelled RFI, or re-linking it after removal, is denied.
+    Freeze: from `submitted`/`approved`/`rejected`/`withdrawn` no role can add,
+    remove, or change the id, number or title (legacy documents included), while
+    transition-shaped writes with an unchanged, absent or identically re-sent
+    triple remain allowed. Smuggling: draft → submitted with an unchanged link,
+    or while setting/changing/removing to a **valid** link, is allowed; with an
+    invalid link the **whole write** fails (document still draft, still
+    unlinked); a non-draft source cannot bundle any origin change with a
+    transition, nor by rewriting `status: 'draft'` in the same request.
   - `frontend/tests/rules/storage.rules.test.js` — **46 tests**, the **Storage**
     boundary. Requires **both** emulator hosts, because the document read rule
     performs a `firestore.get()`. Covers: drawing files readable by every
@@ -630,7 +660,28 @@ npm run test:unit
   alone and combined (assignee names are NOT searched), and a **purity** block
   proving every exported function leaves deep-frozen inputs intact.
 
-  Combined unit total: **1,083 tests** across the nineteen files.
+- `frontend/tests/unit/variations.test.js` — **38 tests** over the
+  originating-RFI helpers in `lib/variations.js` (ADR-34): `ORIGIN_RFI_STATUSES`
+  is exactly open/answered/closed and every RFI status classifies one way;
+  `normaliseOriginRfi` maps null/undefined/non-objects and every partial or
+  malformed RFI to the all-null triple, a valid RFI to the **exact** id/number/
+  title (no trim, truncation or reformatting — a 400-character title survives
+  byte-for-byte), returns a fresh unfrozen object, ignores every non-link
+  field, does not decide eligibility, and never mutates its input;
+  `hasOriginRfi` and `originRfiLabel` on linked, explicitly unlinked and
+  **legacy (keys absent)** variations; `eligibleOriginRfis` filtering, RFI-number
+  ordering with an id tie-break (deterministic regardless of input order),
+  junk tolerance, and no input reordering; `canEditOriginRfi` is draft-only and
+  equals the existing `VARIATION_EDITABLE_STATUSES` freeze point;
+  `variationsForRfi` exact-id matching (no prefix/case/null matching, every
+  status included, legacy null ids never match `null`). **Financial-isolation
+  regression guards**: `variationTotals`, both approved/pending supplier maps
+  and totals, both client totals, `openVariationCount` and
+  `duplicateVariationWarnings` return **identical** results for a register with
+  the keys absent, the explicit null triple, and a populated link; and the
+  triple carries only strings — no amount, currency or GST.
+
+  Combined unit total: **1,125 tests** across the twenty files.
 
   ⚠️ **Runtime non-mutation across COLLECTIONS is still not automated.** The
   purity blocks above prove the pure derivation layer never writes to the
@@ -841,6 +892,18 @@ the full tax-invoice value.
 ### 14c. Supplier Variation — no PO
 
 - [ ] **No PO (manual)**: select an active supplier/subcontractor contact; every line requires a cost code entered manually. No synthetic PO is created (check Purchase Orders tab).
+
+### 14d-0. Originating RFI (evidence link — ADR-34; rules AUTOMATED — see §0)
+
+- [ ] New Variation (either type) shows **Originating RFI (optional)** with `None` selected. Create without choosing one → the register row shows no RFI sub-line; summary cards and every financial figure are exactly as before.
+- [ ] Raise an RFI (`open`), then create a variation choosing it. The option reads `RFI-0001 — <title>`. The register shows a muted `RFI-0001 — <title>` line under the variation title. Search for `RFI-0001` finds it.
+- [ ] A **draft** RFI and a **cancelled** RFI are **not** offered in the dropdown. With no open/answered/closed RFI in the project the dropdown is disabled and explains why.
+- [ ] A **draft** variation row has an **Origin RFI** action. It opens a small editor showing the current link; change it to another eligible RFI → sub-line updates; set `None` → sub-line disappears. Nothing else on the variation changes (title, lines, totals, status, dates).
+- [ ] **Submit** the variation → the **Origin RFI** action disappears; the sub-line remains. Submitted/approved/rejected/withdrawn rows never show the action.
+- [ ] Open the linked RFI's detail → **Linked variations** lists `SV-0001 — <title>` with its status badge. An RFI nobody cites shows `None`.
+- [ ] Budget, Forecast, Commercial, Cash Flow and Client Invoice figures are **identical** before and after linking (the link is metadata). The RFI document is unchanged (spot-check: no `variationId` on it).
+- [ ] Submit → Assess → Approve / Reject / Withdraw all still work on a linked variation exactly as on an unlinked one.
+- [ ] **Historical case:** link an **open** RFI to a draft variation, then **cancel** that RFI from the RFIs tab. The variation still shows the `RFI-… — …` sub-line; the Origin RFI editor says the RFI is no longer eligible but keeps the link; editing another field, submitting, assessing and approving all still succeed. Choosing that cancelled RFI as a *new* link is not possible (not listed; a direct write is rules-rejected).
 
 ### 14d. Lifecycle & assessment
 
@@ -3358,6 +3421,15 @@ stated. Reads and writes for `project_manager` and `qs` are identical.
   against `companies/{c}/projects/{p}/rfis` and `…/counters/rfis` → both
   rejected. Repeat as a `company_admin` of a **second company** → rejected.
   (Rules-proven in §0; confirm end-to-end once.)
+
+### 15t-xxi. Linked variations (read-time — ADR-34)
+
+- [ ] The RFI detail modal shows a **Linked variations** box: `None` for an
+  uncited RFI; `CV-0002 — <title> · Draft` (number, title, status badge) for
+  each variation whose `originRfiId` is this RFI, at every variation status.
+  The RFI document itself gains no field (§14d-0). If the variations read fails
+  (simulate offline or a rules rejection) the box reads **Unavailable**, never
+  `None`.
 
 ## 16. Responsive Checks — 375px, 768px, 1280px
 

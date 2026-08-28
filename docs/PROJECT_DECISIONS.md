@@ -2334,3 +2334,73 @@ truthfulness, assignee/cost-code existence, reference-label accuracy,
 duplicate questions, authored-date realism, last-write-wins, and creator ≠
 answerer are all client-side only. V1 is a **record, not a channel** — an
 assignee learns of an RFI only out of band — and the page says so.
+
+## ADR-34: RFI → Variation link (variation-owned, one-directional; eligible statuses; rules-verified snapshots; post-draft freeze; historical links survive)
+
+**Context.** ADR-33 framed the RFI register as an *evidence layer for future
+variation analysis* and deferred the obvious first use of it: recording which
+RFI a Variation came from. Without it, the clarification that caused the extra
+work and the commercial record that prices it are unrelated documents. The
+link must connect project evidence to the commercial workflow **without**
+creating any financial effect, and must not disturb two established postures:
+the `rfis` block's exact-key, near-budget-limit rules, and the `variations`
+block's role/tenant-only rules (Deferred Controls 1 and 2).
+
+**Decision.**
+
+- **The Variation owns the relationship, one-directionally.** Three scalars on
+  the variation — `originRfiId` plus frozen `originRfiNumber` / `originRfiTitle`
+  — all `null` when unlinked, never partial; **zero or one** RFI per variation.
+  The RFI stores **nothing** back: no `variationId`, no array. An RFI's *Linked
+  variations* are derived at read time (`variationsForRfi`) from the already-
+  loaded project variations, whose read audience is identical. Legacy variation
+  documents simply lack the keys and are read as unlinked — **no migration**.
+- **Eligible RFI statuses are `open`, `answered`, `closed`.** A draft has not
+  been formally asked (and its title is still editable); a cancelled question
+  cannot originate work.
+- **Snapshots are rules-verified.** When a populated triple is created or
+  changed, rules `get()` the RFI at the same-project path — so another project's
+  or another company's id does not exist there — require an eligible status,
+  and require `originRfiNumber == rfi.rfiNumber` and `originRfiTitle ==
+  rfi.title`. That is honest to verify because the `rfis` block keeps the number
+  in `corePreserved()` and freezes the title for life at raise: for every
+  eligible RFI both values are immutable at the source, so the snapshot can
+  never drift from what was verified.
+- **The link freezes at the existing variation freeze point.** It may be added,
+  changed or removed only while the **stored** status is `draft`; from
+  `submitted` onward the triple is immutable by rules. No new status, no new
+  transition.
+- **An unchanged link is never re-validated.** "Changed" is a **value**
+  comparison (absent keys read as `null`), evaluated against the stored
+  document. An RFI cancelled *after* it was linked therefore cannot block later
+  draft edits or lifecycle transitions on the variation; the link is historical
+  evidence and **survives**. Only *changing* the link to that RFI is refused.
+- **Rules enforcement is scoped to `originRfi*` only.** This is the first and
+  only rules-level content control in the `variations` block. It does **not**
+  validate status legality, post-submit immutability of amounts, lines or text,
+  or anything else — Deferred Controls 1 and 2 stand unchanged, and the
+  variations rules suite pins that a direct status forgery is still accepted.
+- **Financially inert.** No derivation in `lib/variations.js` reads the triple;
+  regression guards prove identical totals with and without it. The create
+  transaction, including its currency ratchet (ADR-21), is unchanged.
+- **Smallest UI.** A dropdown on New Variation, a draft-only *Origin RFI* row
+  action opening a link-only editor (deliberately **not** a general variation
+  edit), a muted sub-line under the register title (no tenth column), and a
+  read-time *Linked variations* box on the RFI detail that shows
+  **Unavailable** on a failed read rather than misreporting an error as `None`.
+
+**Alternatives rejected.** A `variationId` or array on the RFI (unverifiable by
+rules, breaks the exact-key shape, and would need an RFI update branch that the
+forward-only lifecycle forbids on closed RFIs); no snapshots (register and
+search would need a join and would break on a failed RFI read); re-validating
+the link on every draft write (a later RFI cancellation would poison unrelated
+variation edits); enforcing the whole variation lifecycle "while we are here"
+(a posture change far beyond this feature); a general Variation edit modal;
+automatic variation creation from an RFI; cost/time impact on the RFI.
+
+**Consequences.** Evidence and commercial record are joined by a stable id and
+two verified, drift-proof snapshots; the RFI module is untouched; a variation's
+link can be corrected freely as a draft and is an audit fact afterwards. The
+accepted limitation is semantic: rules cannot verify that the RFI *caused* the
+variation. Everything else about a variation remains client-enforced exactly as
+before.
