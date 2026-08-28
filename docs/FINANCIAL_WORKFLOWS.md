@@ -66,7 +66,9 @@ reachable from draft/pending_approval/sent. Forward-only — no status ever move
 backwards, and `closed`/`cancelled` are terminal. `pending_approval` is
 **reserved** (defined in code, no UI path yet).
 
-- **Draft** — fully editable (supplier, lines, notes). Not committed.
+- **Draft** — editable description, notes and lines via the single
+  create/edit editor (ADR-36); supplier fixed at creation. Wrong supplier →
+  cancel and recreate. Not committed — a draft edit moves no figure.
 - **Sent** — lines and amounts freeze permanently. The PO now counts toward
   Committed and becomes claimable. `sentAt` stamped.
 - **Closed** — work complete; still counts toward Committed; takes no further

@@ -2480,3 +2480,78 @@ regression-proven unchanged; the historical-RFI defect is closed by design.
 The accepted limitations are the existing ones: post-submit immutability of
 everything except the RFI triple remains client-enforced, and two users
 editing the same draft concurrently are last-write-wins.
+
+## ADR-36: Edit Draft Purchase Orders (one create/edit editor; draft-only correction; immutable supplier and number; stale-editor guard; no rules expansion)
+
+**Context.** The Purchase Orders foundation (ADR-12) could create a PO and
+move it through its lifecycle, but had no edit UI — `updatePurchaseOrder`
+existed in the hook and nothing called it. A mistyped description, quantity,
+rate or cost code on a draft therefore forced cancel-and-recreate, burning a
+number. The dormant hook also rewrote `supplierId`/`supplierName`, which
+contradicts the snapshot idiom every downstream record relies on.
+
+**Decision.**
+
+- **One editor, two modes.** The New Purchase Order modal becomes
+  `PurchaseOrderEditorModal` with a `po` prop: `null` = CREATE (unchanged
+  behaviour — supplier picker, quick-create supplier, numbering, currency
+  ratchet), a live draft = EDIT DRAFT. There is no second form. The line
+  mapping and validation the modal used inline move to `lib/purchaseOrders.js`
+  as pure helpers (`EMPTY_PO_FORM_LINE`, `poLineToForm`, `buildPoLineItem`,
+  `validatePoDraft`, `PO_EDITABLE_STATUSES`) so both modes share one
+  implementation and the rules can be unit-tested.
+- **Draft-only, at the existing freeze point.** `PO_EDITABLE_STATUSES` is
+  exactly `draft`; *Edit* is the first draft row action and does not exist
+  at any other status — `pending_approval` (reserved) is frozen like every
+  later status. No reopen, no new status, no transition change.
+- **Supplier and number are immutable.** `supplierId`/`supplierName`,
+  `poNumber`, `status`, `currency`, `revision`, the lifecycle stamps,
+  `externalRefs` and `createdAt`/`createdBy` are never written. The editor
+  renders the PO number, the **stored** `supplierName` snapshot and the status
+  as read-only information — the supplier need not resolve to a current
+  contact, so legacy `supplierId: null` POs remain editable. Wrong supplier →
+  cancel and recreate.
+- **What draft edit may rewrite** is exactly the authored content:
+  `description`, `notes` and the line items (`costCodeId`, re-snapshotted
+  `costCodeName`, `description`, `qty`, `unit`, `unitPrice`), with every
+  `lineTotal` rebuilt **inside the hook** and `subtotal`/`gst`/`total`
+  re-derived by the existing `poTotals` — a caller-supplied figure is never
+  trusted. The hook's update contract is `(po, { description, notes,
+  lineItems })`; it cannot write supplier identity. No currency ratchet is
+  staged (the project locked when the PO was created) and no audit stamp is
+  added (the model has none).
+- **Cost-code policy.** Saving re-snapshots `costCodeName` from the live
+  cost-code list. A stored line whose cost code no longer resolves is **not**
+  silently preserved: `validatePoDraft` blocks Save until a current code is
+  chosen. Line add/remove/reorder is permitted — no legitimate downstream
+  record can reference a draft PO (claims require `sent`; invoices and
+  supplier variations require `sent`/`closed`).
+- **Stale-editor guard, in the application layer.** The page passes the live
+  document from the subscribed collection; if its status leaves draft while
+  the editor is open the form shows a latest-version message and disables
+  Save, and the save path re-resolves the live document by id and refuses to
+  write unless it is still draft. The hook's draft guard remains the final
+  client-side check. No transaction, no concurrency framework — two concurrent
+  draft editors remain last-write-wins.
+- **No Firestore Rules change.** Rules enforce tenant membership,
+  financial-role write access and the delete block — nothing else on this
+  collection. Draft-only editing, supplier/number/currency immutability, the
+  line freeze after draft, totals correctness and transition legality are
+  **client-side only** and bypassable by a direct SDK call (SECURITY.md
+  Deferred Controls 1 and 2). PO rules hardening is a separate future
+  security increment, deliberately not bundled here.
+
+**Alternatives rejected.** A separate Edit modal (two forms to keep aligned);
+supplier switching (contradicts the snapshot idiom and every downstream
+copy); preserving an unresolvable cost code on save (would re-freeze a dead
+code into a commitment); a rules-side draft-only guard (a posture change
+belonging to the deferred hardening); a transaction re-reading status at save
+(over-engineering for a UX guard the rules do not back).
+
+**Consequences.** A draft can be corrected without losing its number; no
+commercial figure moves until the existing counting point (`sent`/`closed`),
+at which the **edited** lines commit exactly as normal — Budget Committed,
+Forecast, Commercial, Cash Flow, Margin, claims, invoices, variations and
+retention are regression-proven unchanged while draft. The accepted
+limitations are the existing ones: post-draft immutability remains
+client-enforced, and concurrent draft edits are last-write-wins.

@@ -9,18 +9,18 @@ import { useCostCodes } from '../../hooks/useCostCodes'
 import { useContacts } from '../../hooks/useContacts'
 import {
   PO_STATUS, PO_STATUS_LABELS, PO_BADGE_VARIANTS,
-  lineTotal, poTotals,
+  poTotals, EMPTY_PO_FORM_LINE, poLineToForm, buildPoLineItem, validatePoDraft,
 } from '../../lib/purchaseOrders'
 import {
   ENTITY_TYPE, CONTACT_TYPE, CONTACT_TYPE_LABELS, PO_SUPPLIER_TYPES,
   duplicateWarnings, isAssignedToProject,
 } from '../../lib/contacts'
 
-const EMPTY_LINE = { costCodeId: '', description: '', qty: '', unit: '', unitPrice: '' }
 const EMPTY_FORM = { supplierId: '', description: '', notes: '' }
 
 const inputCls  = 'w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
 const labelCls  = 'block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1.5'
+const infoCls   = 'm-0 text-[13px] text-brand-text font-semibold'
 
 // Inline minimal contact creation so raising a PO is never blocked by
 // directory admin. Full details are added later on the Contacts page.
@@ -87,11 +87,25 @@ function QuickCreateSupplier({ contacts, projectId, onCreateContact, onCreated, 
   )
 }
 
-function CreatePurchaseOrderModal({ costCodes, contacts, projectId, currencyCode, onCreateContact, onClose, onSave }) {
-  const money = (n) => formatCurrency(n, currencyCode)
+// One editor, two modes (ADR-36). CREATE (`po` = null) picks a supplier and
+// raises a numbered draft; EDIT DRAFT (`po` = the LIVE draft document) renders
+// the PO number, supplier snapshot and status read-only and lets the user
+// correct the authored content: description, notes and line items. Supplier
+// identity, number, status, currency, stamps and audit fields are never
+// touched. Line mapping and validation are the shared pure helpers in
+// lib/purchaseOrders.js so the two modes cannot drift.
+function PurchaseOrderEditorModal({ po = null, costCodes, contacts, projectId, currencyCode, onCreateContact, onClose, onSave }) {
+  const money  = (n) => formatCurrency(n, currencyCode)
+  const isEdit = !!po
 
-  const [form, setForm]   = useState(EMPTY_FORM)
-  const [lines, setLines] = useState([{ ...EMPTY_LINE }])
+  const [form, setForm]   = useState(() => isEdit
+    ? { supplierId: '', description: po.description ?? '', notes: po.notes ?? '' }
+    : EMPTY_FORM)
+  const [lines, setLines] = useState(() =>
+    isEdit && (po.lineItems ?? []).length > 0
+      ? po.lineItems.map(poLineToForm)
+      : [{ ...EMPTY_PO_FORM_LINE }]
+  )
   const [showQuickCreate, setShowQuickCreate] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState(null)
@@ -106,47 +120,53 @@ function CreatePurchaseOrderModal({ costCodes, contacts, projectId, currencyCode
   const otherSuppliers    = supplierContacts.filter(c => !isAssignedToProject(c, projectId))
   const selectedSupplier  = supplierContacts.find(c => c.id === form.supplierId) ?? null
 
+  // Live-status guard: the page passes the LIVE document, so if it left draft
+  // while this editor was open the form goes read-only and the save is refused.
+  const stale = isEdit && po.status !== PO_STATUS.DRAFT
+
   const set = (key) => (e) => setForm(f => ({ ...f, [key]: e.target.value }))
   const setLine = (idx, key) => (e) => {
     const value = e.target.value
     setLines(ls => ls.map((l, i) => (i === idx ? { ...l, [key]: value } : l)))
   }
-  const addLine    = () => setLines(ls => [...ls, { ...EMPTY_LINE }])
+  const addLine    = () => setLines(ls => [...ls, { ...EMPTY_PO_FORM_LINE }])
   const removeLine = (idx) => setLines(ls => ls.filter((_, i) => i !== idx))
 
-  const builtLines = lines.map(l => ({
-    costCodeId:   l.costCodeId,
-    costCodeName: (() => {
-      const cc = costCodes.find(c => c.id === l.costCodeId)
-      return cc ? `${cc.code} — ${cc.name}` : ''
-    })(),
-    description: l.description.trim(),
-    qty:         Number(l.qty) || 0,
-    unit:        l.unit.trim(),
-    unitPrice:   Number(l.unitPrice) || 0,
-    lineTotal:   lineTotal(l.qty, l.unitPrice),
-  }))
-  const totals = poTotals(builtLines)
-  const linesValid = lines.length > 0 && lines.every(l => l.costCodeId)
+  const builtLines = lines.map(l => buildPoLineItem(l, { costCodes }))
+  const totals     = poTotals(builtLines)
+  // A stored line whose cost code is no longer in the live list rebuilds with
+  // an empty costCodeName; the select shows no selection and validation blocks
+  // Save until a current cost code is chosen — never silently preserved.
+  const draftError = validatePoDraft({ lineItems: builtLines, costCodes })
+  const valid      = !draftError && (isEdit || !!selectedSupplier) && !stale
 
   async function handleSubmit(e) {
     e.preventDefault()
-    if (!selectedSupplier || !linesValid) return
+    if (!valid) return
     setSaving(true)
     setError(null)
     try {
-      // supplierName is a permanent write-time snapshot of the contact's
-      // display name — contact renames never rewrite issued documents.
-      await onSave({
-        supplierName: selectedSupplier.displayName,
-        supplierId:   selectedSupplier.id,
-        description:  form.description,
-        notes:        form.notes,
-        lineItems:    builtLines,
-      })
+      if (isEdit) {
+        // Supplier identity is deliberately absent — the hook cannot write it.
+        await onSave({
+          description: form.description,
+          notes:       form.notes,
+          lineItems:   builtLines,
+        })
+      } else {
+        // supplierName is a permanent write-time snapshot of the contact's
+        // display name — contact renames never rewrite issued documents.
+        await onSave({
+          supplierName: selectedSupplier.displayName,
+          supplierId:   selectedSupplier.id,
+          description:  form.description,
+          notes:        form.notes,
+          lineItems:    builtLines,
+        })
+      }
       onClose()
-    } catch {
-      setError('Failed to save. Check your connection and try again.')
+    } catch (err) {
+      setError(err?.message || 'Failed to save. Check your connection and try again.')
       setSaving(false)
     }
   }
@@ -156,7 +176,7 @@ function CreatePurchaseOrderModal({ costCodes, contacts, projectId, currencyCode
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       <div className="relative z-10 w-full max-w-[720px] max-h-[90vh] overflow-y-auto bg-brand-surface border border-brand-border rounded-xl shadow-2xl">
         <div className="flex items-center justify-between px-5 py-4 border-b border-brand-border">
-          <h2 className="text-[15px] font-bold text-brand-text m-0">New Purchase Order</h2>
+          <h2 className="text-[15px] font-bold text-brand-text m-0">{isEdit ? `Edit ${po.poNumber}` : 'New Purchase Order'}</h2>
           <button
             onClick={onClose}
             aria-label="Close"
@@ -167,7 +187,35 @@ function CreatePurchaseOrderModal({ costCodes, contacts, projectId, currencyCode
         </div>
 
         <form onSubmit={handleSubmit} className="px-5 py-4 flex flex-col gap-3.5">
+          {stale && (
+            <p className="m-0 text-[12px] text-brand-red">
+              This purchase order is no longer Draft. Close the editor and review the latest version.
+            </p>
+          )}
+
+          {isEdit && (
+            /* Immutable context — read-only information from the stored
+               snapshots, not disabled controls. The supplier need not resolve
+               to a current contact (legacy supplierId: null still renders). */
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 rounded-lg border border-brand-border bg-brand-bg px-3.5 py-3">
+              <div>
+                <p className={labelCls}>PO Number</p>
+                <p className={infoCls}>{po.poNumber}</p>
+              </div>
+              <div>
+                <p className={labelCls}>Supplier</p>
+                <p className={infoCls}>{po.supplierName || '—'}</p>
+                <p className="m-0 text-[11px] text-brand-muted">Fixed at creation — wrong supplier? Cancel and recreate.</p>
+              </div>
+              <div>
+                <p className={labelCls}>Status</p>
+                <Badge label={PO_STATUS_LABELS[po.status] ?? po.status} variant={PO_BADGE_VARIANTS[po.status]} sm />
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {!isEdit && (
             <div>
               <label className={labelCls}>
                 Supplier <span className="text-brand-red">*</span>
@@ -211,6 +259,7 @@ function CreatePurchaseOrderModal({ costCodes, contacts, projectId, currencyCode
                 )}
               </div>
             </div>
+            )}
             <div>
               <label className={labelCls}>Description</label>
               <input
@@ -222,7 +271,7 @@ function CreatePurchaseOrderModal({ costCodes, contacts, projectId, currencyCode
             </div>
           </div>
 
-          {showQuickCreate && (
+          {!isEdit && showQuickCreate && (
             <QuickCreateSupplier
               contacts={contacts}
               projectId={projectId}
@@ -312,11 +361,12 @@ function CreatePurchaseOrderModal({ costCodes, contacts, projectId, currencyCode
             <p className="m-0 font-bold">Total <span className="ml-2">{money(totals.total)}</span></p>
           </div>
 
+          {isEdit && draftError && <p className="m-0 text-[12px] text-brand-amber">{draftError}</p>}
           {error && <p className="text-[12px] text-brand-red">{error}</p>}
 
           <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
             <Btn variant="ghost" type="button" onClick={onClose} sm disabled={saving}>Cancel</Btn>
-            <Btn type="submit" sm disabled={saving || !linesValid}>{saving ? 'Saving…' : 'Create Draft PO'}</Btn>
+            <Btn type="submit" sm disabled={saving || !valid}>{saving ? 'Saving…' : (isEdit ? 'Save changes' : 'Create Draft PO')}</Btn>
           </div>
         </form>
       </div>
@@ -324,7 +374,7 @@ function CreatePurchaseOrderModal({ costCodes, contacts, projectId, currencyCode
   )
 }
 
-function RowActions({ po, onTransition }) {
+function RowActions({ po, onTransition, onEdit }) {
   const confirmThen = (label, nextStatus) => () => {
     if (window.confirm(`${label} ${po.poNumber}?`)) onTransition(po, nextStatus)
   }
@@ -332,6 +382,7 @@ function RowActions({ po, onTransition }) {
   if (po.status === PO_STATUS.DRAFT) {
     return (
       <div className="flex gap-1.5 justify-end">
+        <Btn sm variant="ghost" onClick={() => onEdit(po)}>Edit</Btn>
         <Btn sm variant="success" onClick={confirmThen('Send', PO_STATUS.SENT)}>Send</Btn>
         <Btn sm variant="ghost" onClick={confirmThen('Cancel', PO_STATUS.CANCELLED)}>Cancel</Btn>
       </div>
@@ -353,10 +404,10 @@ export default function ProjectPurchaseOrders() {
   const { projectId, currencyCode } = useOutletContext()
   const money = (n) => formatCurrency(n, currencyCode)
 
-  const { purchaseOrders, purchaseOrdersLoading, createPurchaseOrder, transitionStatus } = usePurchaseOrders(projectId)
+  const { purchaseOrders, purchaseOrdersLoading, createPurchaseOrder, updatePurchaseOrder, transitionStatus } = usePurchaseOrders(projectId)
   const { costCodes, costCodesLoading } = useCostCodes()
   const { contacts, createContact } = useContacts()
-  const [showModal, setShowModal] = useState(false)
+  const [editing, setEditing]         = useState(null)   // 'new' | draft PO | null
   const [actionError, setActionError] = useState(null)
 
   const noCostCodes = !costCodesLoading && costCodes.length === 0
@@ -371,6 +422,23 @@ export default function ProjectPurchaseOrders() {
     }
   }
 
+  // Draft edit — stale-editor guard (ADR-36). The save path resolves the LIVE
+  // document from the subscribed collection by id and refuses to write unless
+  // it is STILL a draft, so an editor left open across a send / cancel by
+  // another action, tab or user can never write stale draft content back.
+  // Two concurrent draft editors remain last-write-wins.
+  async function handleUpdate(poId, data) {
+    const live = purchaseOrders.find(p => p.id === poId)
+    if (!live || live.status !== PO_STATUS.DRAFT) {
+      throw new Error('This purchase order is no longer Draft. Close the editor and review the latest version.')
+    }
+    await updatePurchaseOrder(live, data)
+  }
+
+  const liveEditing = editing && editing !== 'new'
+    ? (purchaseOrders.find(p => p.id === editing.id) ?? editing)
+    : null
+
   return (
     <div>
       <div className="flex items-center justify-between gap-3 mb-3.5">
@@ -383,7 +451,7 @@ export default function ProjectPurchaseOrders() {
           {noCostCodes && (
             <Btn variant="ghost" sm onClick={goToCostCodes}>Go to Cost Codes</Btn>
           )}
-          <Btn sm onClick={() => setShowModal(true)} disabled={costCodesLoading || costCodes.length === 0}>
+          <Btn sm onClick={() => setEditing('new')} disabled={costCodesLoading || costCodes.length === 0}>
             + New Purchase Order
           </Btn>
         </div>
@@ -404,7 +472,7 @@ export default function ProjectPurchaseOrders() {
             {noCostCodes ? (
               <Btn variant="ghost" onClick={goToCostCodes}>Go to Cost Codes</Btn>
             ) : (
-              <Btn onClick={() => setShowModal(true)}>+ Create your first purchase order</Btn>
+              <Btn onClick={() => setEditing('new')}>+ Create your first purchase order</Btn>
             )}
           </div>
         ) : (
@@ -433,7 +501,7 @@ export default function ProjectPurchaseOrders() {
                       <Badge label={PO_STATUS_LABELS[po.status] ?? po.status} variant={PO_BADGE_VARIANTS[po.status]} sm />
                     </td>
                     <td className="px-3.5 py-3">
-                      <RowActions po={po} onTransition={handleTransition} />
+                      <RowActions po={po} onTransition={handleTransition} onEdit={setEditing} />
                     </td>
                   </tr>
                 ))}
@@ -443,15 +511,17 @@ export default function ProjectPurchaseOrders() {
         )}
       </Card>
 
-      {showModal && (
-        <CreatePurchaseOrderModal
+      {editing && (
+        <PurchaseOrderEditorModal
+          key={editing === 'new' ? 'new' : editing.id}
+          po={liveEditing}
           currencyCode={currencyCode}
           costCodes={costCodes}
           contacts={contacts}
           projectId={projectId}
           onCreateContact={createContact}
-          onClose={() => setShowModal(false)}
-          onSave={createPurchaseOrder}
+          onClose={() => setEditing(null)}
+          onSave={editing === 'new' ? createPurchaseOrder : (data) => handleUpdate(editing.id, data)}
         />
       )}
     </div>

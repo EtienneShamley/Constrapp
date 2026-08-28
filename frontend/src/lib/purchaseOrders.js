@@ -91,3 +91,73 @@ export function maturedCommittedByCostCode(purchaseOrders, invoicedByPoLine = {}
   }
   return map
 }
+
+// ── Draft editor line helpers (ADR-36) ───────────────────────────────────────
+// Pure mapping between the editor's form state and the stored line model, shared
+// by CREATE and EDIT DRAFT so the two modes cannot drift. Form state holds
+// strings (input values); the stored line holds the canonical numbers plus the
+// frozen costCodeName snapshot. Nothing here mutates its inputs.
+
+// Statuses whose authored content (description, notes, lines) may still change.
+// Exactly draft — pending_approval is reserved and, like every later status,
+// frozen at the product level. Enforced in the client hook only (rules do not
+// check status — SECURITY.md Deferred Control 2).
+export const PO_EDITABLE_STATUSES = [PO_STATUS.DRAFT]
+
+// Blank editor line — every form line has exactly these five keys.
+export const EMPTY_PO_FORM_LINE = Object.freeze({
+  costCodeId: '', description: '', qty: '', unit: '', unitPrice: '',
+})
+
+// Stored line → editor form line. Numbers become strings (0 → '0'); null /
+// undefined become ''. Legacy / partial / non-object input maps to a blank line.
+export function poLineToForm(line) {
+  const li = line && typeof line === 'object' ? line : {}
+  const num = (v) => (v == null || v === '' ? '' : String(v))
+  return {
+    costCodeId:  typeof li.costCodeId === 'string' ? li.costCodeId : '',
+    description: typeof li.description === 'string' ? li.description : '',
+    qty:         num(li.qty),
+    unit:        typeof li.unit === 'string' ? li.unit : '',
+    unitPrice:   num(li.unitPrice),
+  }
+}
+
+// Editor form line → stored line, exactly as the create flow always built it:
+// qty/unitPrice via Number(x) || 0, lineTotal via lineTotal(), description and
+// unit trimmed, and costCodeName re-snapshotted from the LIVE cost-code list
+// ('' when the id is unknown — validatePoDraft then rejects the line, so a
+// removed/inactive cost code is never silently preserved).
+export function buildPoLineItem(formLine, { costCodes = [] } = {}) {
+  const l = formLine && typeof formLine === 'object' ? formLine : {}
+  const costCodeId = typeof l.costCodeId === 'string' ? l.costCodeId : ''
+  const cc = (costCodes ?? []).find(c => c.id === costCodeId)
+  return {
+    costCodeId,
+    costCodeName: cc ? `${cc.code} — ${cc.name}` : '',
+    description:  String(l.description ?? '').trim(),
+    qty:          Number(l.qty) || 0,
+    unit:         String(l.unit ?? '').trim(),
+    unitPrice:    Number(l.unitPrice) || 0,
+    lineTotal:    lineTotal(l.qty, l.unitPrice),
+  }
+}
+
+// Draft content validation shared by create and edit — the existing product
+// rules, unchanged: at least one line, and a cost code on every line.
+// Description, qty, unit and rate are deliberately NOT required. When the
+// live `costCodes` list is supplied, every line's id must ALSO resolve to it —
+// a stored line whose cost code has since been removed blocks the save until
+// a current code is chosen (ADR-36); it is never silently preserved.
+// Returns null when valid, otherwise the first error message.
+export function validatePoDraft({ lineItems, costCodes = null } = {}) {
+  const lines = Array.isArray(lineItems) ? lineItems : []
+  if (lines.length === 0) return 'At least one line item is required'
+  const missing = lines.findIndex(li => !(typeof li?.costCodeId === 'string' && li.costCodeId.length > 0))
+  if (missing !== -1) return `Line ${missing + 1}: a cost code is required`
+  if (Array.isArray(costCodes)) {
+    const unresolved = lines.findIndex(li => !costCodes.some(c => c.id === li.costCodeId))
+    if (unresolved !== -1) return `Line ${unresolved + 1}: choose a current cost code`
+  }
+  return null
+}

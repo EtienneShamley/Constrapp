@@ -9,7 +9,7 @@ import { useCompany } from './useCompany'
 import { useProject } from './useProject'
 import { stageProjectCurrencyLock } from './projectCurrencyLock'
 import { resolveProjectCurrency } from '../lib/currency'
-import { PO_STATUS, canTransition, poTotals, formatPoNumber } from '../lib/purchaseOrders'
+import { PO_STATUS, canTransition, poTotals, formatPoNumber, lineTotal, validatePoDraft } from '../lib/purchaseOrders'
 
 export function usePurchaseOrders(projectId) {
   const { user }    = useAuth()
@@ -105,21 +105,30 @@ export function usePurchaseOrders(projectId) {
     })
   }, [companyId, projectId, user, projectCurrency])
 
-  // Draft-only edits — amounts and lines are frozen once a PO leaves draft.
-  const updatePurchaseOrder = useCallback(async (po, { supplierName, supplierId, description, notes, lineItems }) => {
+  // Draft-only edits (ADR-36) — authored content freezes once a PO leaves
+  // draft. Only description, notes and the line items may change: every
+  // lineTotal is rebuilt here (a caller-supplied figure is never trusted) and
+  // the header subtotal/gst/total are re-derived by the existing poTotals.
+  // Supplier identity (supplierId/supplierName), poNumber, status, currency,
+  // revision, lifecycle stamps, externalRefs and createdAt/createdBy are never
+  // written — updateDoc is partial, so they pass through untouched. No currency
+  // ratchet: the project locked when this PO was created. The draft guard is
+  // client-side only (rules do not check status — Deferred Control 2).
+  const updatePurchaseOrder = useCallback(async (po, { description, notes, lineItems }) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (po.status !== PO_STATUS.DRAFT) throw new Error('Only draft purchase orders can be edited')
+    const validationError = validatePoDraft({ lineItems })
+    if (validationError) throw new Error(validationError)
+    const lines = lineItems.map(li => ({ ...li, lineTotal: lineTotal(li.qty, li.unitPrice) }))
+    const { subtotal, gst, total } = poTotals(lines)
     const ref = doc(db, 'companies', companyId, 'projects', projectId, 'purchaseOrders', po.id)
-    const { subtotal, gst, total } = poTotals(lineItems)
     await updateDoc(ref, {
-      supplierName: supplierName.trim(),
-      supplierId:  supplierId || null,
       description: description?.trim() || '',
-      lineItems,
+      notes:       notes?.trim() || '',
+      lineItems:   lines,
       subtotal,
       gst,
       total,
-      notes:       notes?.trim() || '',
     })
   }, [companyId, projectId, user])
 
