@@ -294,10 +294,10 @@ Lifecycle and semantics: [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md).
 |---|---|---|
 | `poNumber` | string | `PO-0001` — from the company-wide counter |
 | `status` | string | `draft` \| `pending_approval` (reserved) \| `sent` \| `closed` \| `cancelled` |
-| `supplierName` | string | Snapshot of the contact's `displayName` at write time — permanently denormalised; contact renames never rewrite issued documents. Free text on POs created before the Contacts module |
+| `supplierName` | string | Snapshot of the contact's `displayName` at write time — permanently denormalised; contact renames never rewrite issued documents. **Immutable after create** with `supplierId` (ADR-36): the draft editor never writes either; wrong supplier → cancel and recreate. Free text on POs created before the Contacts module |
 | `supplierId` | string \| null | → company contact. Null on POs created before the Contacts module — such POs render from `supplierName` and are never backfilled; code must never assume `supplierId` resolves |
 | `description`, `notes` | string | |
-| `lineItems` | array | **Embedded**; frozen once the PO leaves draft |
+| `lineItems` | array | **Embedded**; editable while `draft` (add/remove/reorder, cost code, description, qty, unit, rate — `costCodeName` re-snapshotted from the live list on save, ADR-36); frozen once the PO leaves draft. Both the draft-only edit and the freeze are **client-side only** — rules check tenant and role, not status |
 | `subtotal`, `gst`, `total` | number | Denormalised from lines; GST = 10% of subtotal |
 | `currency` | string | **Audit snapshot** of the project currency at write time (frozen, like `supplierName`/`costCodeName`). **Never read for display** — the project currency is the display authority, so a project can never render mixed currencies. Documents created before this foundation keep their stored `AUD` and are **never rewritten** |
 | `revision` | number | 1 today |

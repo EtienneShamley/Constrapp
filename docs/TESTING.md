@@ -793,8 +793,17 @@ project.
 - [ ] The created PO stores `supplierId` and shows the contact's display name; renaming the contact afterwards does **not** change the PO's supplier name.
 - [ ] POs created before the Contacts module (`supplierId: null`) still display their free-text supplier name.
 - [ ] PO number is sequential company-wide (`PO-0001`, `PO-0002`, …) even when two users create simultaneously.
-- [ ] Draft badge shown; draft can be **Sent** or **Cancelled** (with confirm dialog).
-- [ ] Sent PO: no edit path; can be **Closed** or **Cancelled**; Closed/Cancelled show no further actions.
+- [ ] Draft badge shown; draft row actions are **Edit · Send · Cancel** (Send/Cancel with confirm dialog).
+- [ ] **Edit draft (ADR-36):** header reads `Edit PO-000n`; a read-only block shows PO number, the stored supplier name and the Draft badge — no supplier dropdown, no "+ New". Description, notes and every line are prefilled.
+- [ ] Change description + notes → **Save changes** → register updates; PO number and supplier unchanged.
+- [ ] Change a qty/rate → footer Subtotal/GST/Total recompute → Save → register total updates; Budget / Forecast / Commercial Committed figures **unchanged** while Draft.
+- [ ] Add a line, remove a line, change a line's cost code → Save → Cost Codes column updates. An untouched Edit → Save leaves the document unchanged.
+- [ ] A draft line whose cost code has since been removed shows no selection and an amber "choose a current cost code" hint; Save is disabled until a current code is picked.
+- [ ] Send the edited PO → **Edit** disappears; Budget Committed equals the **edited** ex-GST line totals; claims / invoices / supplier variations can use the Sent PO normally.
+- [ ] Stale edit: tab A opens Edit on a draft; tab B Sends it → tab A shows "This purchase order is no longer Draft…" and Save is disabled; a save attempted at that moment is refused with the same message.
+- [ ] A legacy PO with `supplierId: null` is editable and shows its stored free-text supplier name.
+- [ ] Sent PO: no edit path; can be **Closed** or **Cancelled**; Closed/Cancelled show no further actions and no **Edit**.
+- [ ] Editor is usable at 375 / 768 / 1280 px (context block stacks on mobile; line grid wraps as at create).
 
 ## 6. PO Cancellation Removes Committed Cost
 
