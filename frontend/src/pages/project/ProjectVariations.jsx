@@ -4,7 +4,6 @@ import Card from '../../components/Card'
 import Btn from '../../components/Btn'
 import Badge from '../../components/Badge'
 import { formatCurrency } from '../../lib/formatters'
-import { roundMoney } from '../../lib/purchaseOrders'
 import { useVariations } from '../../hooks/useVariations'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useContacts } from '../../hooks/useContacts'
@@ -15,14 +14,15 @@ import {
   VARIATION_TYPE, VARIATION_TYPE_LABELS, VARIATION_TYPE_HELP,
   VARIATION_STATUS, VARIATION_STATUS_LABELS, VARIATION_BADGE_VARIANTS,
   VARIATION_PO_STATUSES, VARIATION_PENDING_STATUSES,
-  TAX_CODE, TAX_CODES, TAX_CODE_LABELS,
+  TAX_CODES, TAX_CODE_LABELS,
   VARIATION_REASON, VARIATION_REASON_LABELS,
-  gstForLine, variationTotals, buildApprovedLineItems,
+  variationTotals, buildApprovedLineItems,
   approvalNeedsNotes, validateApprovedAmounts, duplicateVariationWarnings,
   approvedSupplierVariationsTotal, pendingSupplierVariationExposureTotal,
   approvedClientVariationsTotal, pendingClientVariationExposureTotal,
   openVariationCount,
-  eligibleOriginRfis, normaliseOriginRfi, originRfiLabel, canEditOriginRfi,
+  eligibleOriginRfis, normaliseOriginRfi, originRfiLabel, hasOriginRfi,
+  EMPTY_VARIATION_FORM_LINE, variationLineToForm, buildVariationLineItem, validateVariationDraft,
 } from '../../lib/variations'
 
 const inputCls = 'w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
@@ -35,7 +35,7 @@ function todayIso() {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
 }
 
-const EMPTY_LINE = { poLineIndex: '', costCodeId: '', description: '', submittedAmount: '', taxCode: TAX_CODE.GST }
+const EMPTY_LINE = EMPTY_VARIATION_FORM_LINE
 
 function TaxSelect({ value, onChange, disabled }) {
   return (
@@ -79,28 +79,41 @@ function SummaryCards({ variations, currencyCode }) {
   )
 }
 
-// ── Create ───────────────────────────────────────────────────────────────────
+// ── Editor (create + edit draft — ADR-35) ────────────────────────────────────
+// ONE editor for both modes. CREATE (`variation` null) chooses the type and the
+// counterparty; EDIT DRAFT (`variation` = the LIVE draft document) renders the
+// type, counterparty and PO context read-only from the stored snapshots — the
+// original contact or PO need not still be active or selectable — and lets the
+// user correct the authored content: title, reason, description, reference,
+// dates, line items and the originating RFI. Approved values, totals on the
+// approved side, status, stamps and identity are never touched. Line mapping
+// and validation are the shared pure helpers in lib/variations.js.
 
-function CreateVariationModal({ variations, purchaseOrders, contacts, costCodes, eligibleRfis, currencyCode, onClose, onSave }) {
-  const money = (n) => formatCurrency(n, currencyCode)
+function VariationEditorModal({ variation = null, variations, purchaseOrders, contacts, costCodes, eligibleRfis, currencyCode, onClose, onSave }) {
+  const money  = (n) => formatCurrency(n, currencyCode)
+  const isEdit = !!variation
 
-  const [variationType, setVariationType] = useState('')
-  const [originRfiId, setOriginRfiId] = useState('') // '' = none — evidence link only (ADR-34)
-  const [title, setTitle]             = useState('')
-  const [description, setDescription] = useState('')
-  const [reason, setReason]           = useState('')
+  const [variationType, setVariationType] = useState(variation?.variationType ?? '')
+  const [originRfiId, setOriginRfiId] = useState(variation?.originRfiId ?? '') // '' = none — evidence link only (ADR-34)
+  const [title, setTitle]             = useState(variation?.title ?? '')
+  const [description, setDescription] = useState(variation?.description ?? '')
+  const [reason, setReason]           = useState(variation?.reason ?? '')
   const [clientId, setClientId]       = useState('')
-  const [clientRef, setClientRef]     = useState('')
-  const [supplierMode, setSupplierMode] = useState('po') // 'po' | 'manual'
+  const [clientRef, setClientRef]     = useState(variation?.clientRef ?? '')
+  const [supplierMode, setSupplierMode] = useState(isEdit ? (variation.poId ? 'po' : 'manual') : 'po') // 'po' | 'manual'
   const [poId, setPoId]               = useState('')
   const [supplierId, setSupplierId]   = useState('')
-  const [supplierRef, setSupplierRef] = useState('')
-  const [identifiedDate, setIdentifiedDate]   = useState(todayIso())
+  const [supplierRef, setSupplierRef] = useState(variation?.supplierRef ?? '')
+  const [identifiedDate, setIdentifiedDate]   = useState(isEdit ? (variation.identifiedDate || '') : todayIso())
   const [submittedDate]                       = useState('') // set on the submit transition, not at create
-  const [responseDueDate, setResponseDueDate] = useState('')
-  const [effectiveDate, setEffectiveDate]     = useState('')
-  const [notes]                               = useState('') // reserved header notes; description input covers create-time detail
-  const [lines, setLines]             = useState([{ ...EMPTY_LINE }])
+  const [responseDueDate, setResponseDueDate] = useState(variation?.responseDueDate ?? '')
+  const [effectiveDate, setEffectiveDate]     = useState(variation?.effectiveDate ?? '')
+  const [notes]                               = useState('') // create only — on edit the stored notes pass through untouched
+  const [lines, setLines]             = useState(() =>
+    isEdit && (variation.lineItems ?? []).length > 0
+      ? variation.lineItems.map(variationLineToForm)
+      : [{ ...EMPTY_LINE }]
+  )
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState(null)
 
@@ -117,17 +130,40 @@ function CreateVariationModal({ variations, purchaseOrders, contacts, costCodes,
 
   const selectedClient   = clients.find(c => c.id === clientId) ?? null
   const selectedSupplier = suppliers.find(c => c.id === supplierId) ?? null
-  const po = isSupplier && supplierMode === 'po' ? (selectablePOs.find(p => p.id === poId) ?? null) : null
+  // On edit the PO is the stored one, resolved from ALL project POs — its
+  // status may have moved since the draft was raised, and the draft must still
+  // render and edit from its original commercial context. The PO is never
+  // modified.
+  const po = isEdit
+    ? (isSupplier && variation.poId ? (purchaseOrders.find(p => p.id === variation.poId) ?? null) : null)
+    : (isSupplier && supplierMode === 'po' ? (selectablePOs.find(p => p.id === poId) ?? null) : null)
+  const poMissing = isEdit && isSupplier && !!variation.poId && !po
 
-  // Supplier identity is locked from the PO snapshot when a PO is selected.
-  const supplierName = isSupplier
-    ? (supplierMode === 'po' ? (po ? po.supplierName : '') : (selectedSupplier?.displayName ?? ''))
-    : ''
-  const resolvedSupplierId = isSupplier
-    ? (supplierMode === 'po' ? (po?.supplierId ?? null) : (selectedSupplier?.id ?? null))
-    : null
+  // Supplier identity is locked from the PO snapshot when a PO is selected; on
+  // edit it is the stored snapshot, full stop.
+  const supplierName = isEdit
+    ? (variation.supplierName ?? '')
+    : isSupplier
+      ? (supplierMode === 'po' ? (po ? po.supplierName : '') : (selectedSupplier?.displayName ?? ''))
+      : ''
+  const resolvedSupplierId = isEdit
+    ? (variation.supplierId ?? null)
+    : isSupplier
+      ? (supplierMode === 'po' ? (po?.supplierId ?? null) : (selectedSupplier?.id ?? null))
+      : null
 
   const usesPoLines = isSupplier && supplierMode === 'po' && !!po
+
+  // Historical link (ADR-34/35): a stored RFI that is no longer eligible
+  // (cancelled since) is still shown so an untouched save PRESERVES it — it is
+  // never silently turned into null. It cannot be chosen as a NEW link.
+  const historicalOriginRfi = isEdit && hasOriginRfi(variation) && !eligibleRfis.some(r => r.id === variation.originRfiId)
+    ? variation
+    : null
+
+  // Live-status guard: the page passes the LIVE document, so if it left draft
+  // while this editor was open the form goes read-only and the save is refused.
+  const stale = isEdit && variation.status !== VARIATION_STATUS.DRAFT
 
   const setLine = (idx, key) => (e) => {
     const value = e.target.value
@@ -149,47 +185,21 @@ function CreateVariationModal({ variations, purchaseOrders, contacts, costCodes,
   const addLine    = () => setLines(ls => [...ls, { ...EMPTY_LINE }])
   const removeLine = (idx) => setLines(ls => ls.filter((_, i) => i !== idx))
 
-  function resolveLine(l) {
-    let costCodeId = ''
-    let costCodeName = ''
-    if (usesPoLines && l.poLineIndex !== '') {
-      const pl = (po.lineItems ?? [])[Number(l.poLineIndex)]
-      if (pl) { costCodeId = pl.costCodeId; costCodeName = pl.costCodeName }
-    } else {
-      costCodeId = l.costCodeId
-      const cc = costCodes.find(c => c.id === l.costCodeId)
-      costCodeName = cc ? `${cc.code} — ${cc.name}` : ''
-    }
-    const amount  = Number(l.submittedAmount) || 0
-    const taxCode = l.taxCode || TAX_CODE.GST
-    return {
-      costCodeId,
-      costCodeName,
-      description: l.description.trim(),
-      submittedAmount: roundMoney(amount),
-      submittedGst:    gstForLine(amount, taxCode),
-      approvedAmount:  null,
-      approvedGst:     null,
-      poLineIndex:     usesPoLines && l.poLineIndex !== '' ? Number(l.poLineIndex) : null,
-      taxCode,
-    }
-  }
-
-  const builtLines = lines.map(resolveLine)
+  const builtLines = lines.map(l => buildVariationLineItem(l, { po: usesPoLines ? po : null, costCodes }))
   const totals     = variationTotals(builtLines, 'submitted')
-  const linesValid = builtLines.length > 0 && builtLines.every(l => l.costCodeId)
+  const draftError = validateVariationDraft({ title, lineItems: builtLines })
 
-  const counterpartyValid =
+  const counterpartyValid = isEdit ? true :
     isClient ? !!clientId :
     isSupplier ? (supplierMode === 'po' ? !!po : !!selectedSupplier) :
     false
 
-  const valid = !!variationType && title.trim() && counterpartyValid && linesValid
+  const valid = !!variationType && !draftError && counterpartyValid && !poMissing && !stale
 
   const dupWarnings = variationType
     ? duplicateVariationWarnings(variations, isClient
-        ? { variationType, clientId, clientName: selectedClient?.displayName, clientRef }
-        : { variationType, supplierId: resolvedSupplierId, supplierName, supplierRef, poId: po ? po.id : null })
+        ? { id: variation?.id ?? null, variationType, clientId: isEdit ? variation.clientId : clientId, clientName: isEdit ? variation.clientName : selectedClient?.displayName, clientRef }
+        : { id: variation?.id ?? null, variationType, supplierId: resolvedSupplierId, supplierName, supplierRef, poId: po ? po.id : null })
     : []
 
   const chooseType = (t) => () => {
@@ -198,28 +208,53 @@ function CreateVariationModal({ variations, purchaseOrders, contacts, costCodes,
     setError(null)
   }
 
+  // The originating RFI to send. Create: the chosen eligible RFI or null.
+  // Edit: undefined when the selection is UNCHANGED (the hook then leaves the
+  // stored triple alone — including a historical, no-longer-eligible link),
+  // null to remove, or the newly chosen eligible RFI.
+  function originRfiPayload() {
+    if (!isEdit) return eligibleRfis.find(r => r.id === originRfiId) ?? null
+    if (originRfiId === (variation.originRfiId ?? '')) return undefined
+    if (originRfiId === '') return null
+    const rfi = eligibleRfis.find(r => r.id === originRfiId)
+    if (!rfi) throw new Error('The selected RFI is no longer eligible. Choose another RFI or None.')
+    return rfi
+  }
+
   async function handleSubmit(e) {
     e.preventDefault()
     if (!valid) return
     setSaving(true)
     setError(null)
     try {
-      await onSave({
-        variationType,
-        title, description, reason,
-        clientId:   isClient ? clientId : null,
-        clientName: isClient ? (selectedClient?.displayName ?? '') : null,
-        clientRef:  isClient ? clientRef : null,
-        supplierId:   isSupplier ? resolvedSupplierId : null,
-        supplierName: isSupplier ? supplierName : null,
-        supplierRef:  isSupplier ? supplierRef : null,
-        poId:     po ? po.id : null,
-        poNumber: po ? po.poNumber : null,
-        identifiedDate, submittedDate, responseDueDate, effectiveDate,
-        lineItems: builtLines,
-        notes,
-        originRfi: eligibleRfis.find(r => r.id === originRfiId) ?? null,
-      })
+      if (isEdit) {
+        await onSave({
+          title, description, reason,
+          clientRef:   isClient ? clientRef : null,
+          supplierRef: isSupplier ? supplierRef : null,
+          identifiedDate, responseDueDate, effectiveDate,
+          lineItems: builtLines,
+          // notes deliberately omitted — the stored value passes through
+          originRfi: originRfiPayload(),
+        })
+      } else {
+        await onSave({
+          variationType,
+          title, description, reason,
+          clientId:   isClient ? clientId : null,
+          clientName: isClient ? (selectedClient?.displayName ?? '') : null,
+          clientRef:  isClient ? clientRef : null,
+          supplierId:   isSupplier ? resolvedSupplierId : null,
+          supplierName: isSupplier ? supplierName : null,
+          supplierRef:  isSupplier ? supplierRef : null,
+          poId:     po ? po.id : null,
+          poNumber: po ? po.poNumber : null,
+          identifiedDate, submittedDate, responseDueDate, effectiveDate,
+          lineItems: builtLines,
+          notes,
+          originRfi: originRfiPayload(),
+        })
+      }
       onClose()
     } catch (err) {
       setError(err?.message || 'Failed to save. Check your connection and try again.')
@@ -227,12 +262,14 @@ function CreateVariationModal({ variations, purchaseOrders, contacts, costCodes,
     }
   }
 
+  const infoCls = 'm-0 text-[13px] text-brand-text'
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       <div className="relative z-10 w-full max-w-[820px] max-h-[90vh] overflow-y-auto bg-brand-surface border border-brand-border rounded-xl shadow-2xl">
         <div className="flex items-center justify-between px-5 py-4 border-b border-brand-border">
-          <h2 className="text-[15px] font-bold text-brand-text m-0">New Variation</h2>
+          <h2 className="text-[15px] font-bold text-brand-text m-0">{isEdit ? `Edit ${variation.variationNumber}` : 'New Variation'}</h2>
           <button
             onClick={onClose}
             aria-label="Close"
@@ -243,24 +280,55 @@ function CreateVariationModal({ variations, purchaseOrders, contacts, costCodes,
         </div>
 
         <form onSubmit={handleSubmit} className="px-5 py-4 flex flex-col gap-3.5">
-          {/* Type selector — choose first, then render only relevant fields */}
-          <div>
-            <label className={labelCls}>Variation Type <span className="text-brand-red">*</span></label>
-            <div className="flex flex-wrap gap-2">
-              {[VARIATION_TYPE.CLIENT, VARIATION_TYPE.SUPPLIER].map(t => (
-                <Btn
-                  key={t} sm type="button"
-                  variant={variationType === t ? 'success' : 'ghost'}
-                  onClick={chooseType(t)}
-                >
-                  {VARIATION_TYPE_LABELS[t]}
-                </Btn>
-              ))}
+          {stale && (
+            <p className="m-0 text-[12px] text-brand-red">
+              This variation is no longer Draft. Close the editor and review the latest version.
+            </p>
+          )}
+
+          {isEdit ? (
+            /* Immutable context — read-only information, not disabled controls. */
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 rounded-lg border border-brand-border bg-brand-bg px-3.5 py-3">
+              <div>
+                <p className={labelCls}>Variation Type</p>
+                <p className={infoCls}>{VARIATION_TYPE_LABELS[variationType]}</p>
+                <p className="m-0 text-[11px] text-brand-muted">{VARIATION_TYPE_HELP[variationType]}</p>
+              </div>
+              <div>
+                <p className={labelCls}>{isClient ? 'Client' : 'Supplier / Subcontractor'}</p>
+                <p className={infoCls}>{(isClient ? variation.clientName : variation.supplierName) || '—'}</p>
+              </div>
+              {isSupplier && (
+                <div>
+                  <p className={labelCls}>Purchase Order</p>
+                  <p className={infoCls}>{variation.poNumber || 'No PO (manual)'}</p>
+                  {poMissing && <p className="m-0 text-[11px] text-brand-red">The PO could not be loaded — lines cannot be resolved.</p>}
+                </div>
+              )}
+              <p className="m-0 sm:col-span-3 text-[11px] text-brand-muted">
+                Type, counterparty and PO are fixed once a variation is raised. If they are wrong, withdraw and recreate.
+              </p>
             </div>
-            {variationType && (
-              <p className="m-0 mt-1 text-[11px] text-brand-muted">{VARIATION_TYPE_HELP[variationType]}</p>
-            )}
-          </div>
+          ) : (
+            /* Type selector — choose first, then render only relevant fields */
+            <div>
+              <label className={labelCls}>Variation Type <span className="text-brand-red">*</span></label>
+              <div className="flex flex-wrap gap-2">
+                {[VARIATION_TYPE.CLIENT, VARIATION_TYPE.SUPPLIER].map(t => (
+                  <Btn
+                    key={t} sm type="button"
+                    variant={variationType === t ? 'success' : 'ghost'}
+                    onClick={chooseType(t)}
+                  >
+                    {VARIATION_TYPE_LABELS[t]}
+                  </Btn>
+                ))}
+              </div>
+              {variationType && (
+                <p className="m-0 mt-1 text-[11px] text-brand-muted">{VARIATION_TYPE_HELP[variationType]}</p>
+              )}
+            </div>
+          )}
 
           {variationType && (
             <>
@@ -280,22 +348,24 @@ function CreateVariationModal({ variations, purchaseOrders, contacts, costCodes,
                 </div>
               </div>
 
-              <OriginRfiSelect value={originRfiId} onChange={setOriginRfiId} eligibleRfis={eligibleRfis} />
+              <OriginRfiSelect value={originRfiId} onChange={setOriginRfiId} eligibleRfis={eligibleRfis} historical={historicalOriginRfi} />
 
               {/* Counterparty */}
               {isClient ? (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className={labelCls}>Client <span className="text-brand-red">*</span></label>
-                    <select className={inputCls} value={clientId} onChange={e => setClientId(e.target.value)} required>
-                      <option value="" disabled>
-                        {clients.length === 0 ? 'No client contacts yet…' : 'Select a client…'}
-                      </option>
-                      {clients.map(c => (
-                        <option key={c.id} value={c.id}>{c.displayName}</option>
-                      ))}
-                    </select>
-                  </div>
+                  {!isEdit && (
+                    <div>
+                      <label className={labelCls}>Client <span className="text-brand-red">*</span></label>
+                      <select className={inputCls} value={clientId} onChange={e => setClientId(e.target.value)} required>
+                        <option value="" disabled>
+                          {clients.length === 0 ? 'No client contacts yet…' : 'Select a client…'}
+                        </option>
+                        {clients.map(c => (
+                          <option key={c.id} value={c.id}>{c.displayName}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <div>
                     <label className={labelCls}>Client Reference</label>
                     <input className={inputCls} placeholder="Client / superintendent VO no. (optional)" value={clientRef} onChange={e => setClientRef(e.target.value)} />
@@ -303,21 +373,23 @@ function CreateVariationModal({ variations, purchaseOrders, contacts, costCodes,
                 </div>
               ) : (
                 <>
-                  <div>
-                    <label className={labelCls}>Against</label>
-                    <div className="flex flex-wrap gap-2">
-                      <Btn sm type="button" variant={supplierMode === 'po' ? 'success' : 'ghost'}
-                        onClick={() => { setSupplierMode('po'); setSupplierId(''); setLines([{ ...EMPTY_LINE }]) }}>
-                        A Purchase Order
-                      </Btn>
-                      <Btn sm type="button" variant={supplierMode === 'manual' ? 'success' : 'ghost'}
-                        onClick={() => { setSupplierMode('manual'); setPoId(''); setLines([{ ...EMPTY_LINE }]) }}>
-                        No PO (manual)
-                      </Btn>
+                  {!isEdit && (
+                    <div>
+                      <label className={labelCls}>Against</label>
+                      <div className="flex flex-wrap gap-2">
+                        <Btn sm type="button" variant={supplierMode === 'po' ? 'success' : 'ghost'}
+                          onClick={() => { setSupplierMode('po'); setSupplierId(''); setLines([{ ...EMPTY_LINE }]) }}>
+                          A Purchase Order
+                        </Btn>
+                        <Btn sm type="button" variant={supplierMode === 'manual' ? 'success' : 'ghost'}
+                          onClick={() => { setSupplierMode('manual'); setPoId(''); setLines([{ ...EMPTY_LINE }]) }}>
+                          No PO (manual)
+                        </Btn>
+                      </div>
                     </div>
-                  </div>
+                  )}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {supplierMode === 'po' ? (
+                    {!isEdit && (supplierMode === 'po' ? (
                       <div>
                         <label className={labelCls}>Purchase Order <span className="text-brand-red">*</span></label>
                         <select className={inputCls} value={poId}
@@ -342,13 +414,13 @@ function CreateVariationModal({ variations, purchaseOrders, contacts, costCodes,
                           ))}
                         </select>
                       </div>
-                    )}
+                    ))}
                     <div>
                       <label className={labelCls}>Supplier Reference</label>
                       <input className={inputCls} placeholder="Supplier's variation / quote no. (optional)" value={supplierRef} onChange={e => setSupplierRef(e.target.value)} />
                     </div>
                   </div>
-                  {supplierMode === 'po' && po && (
+                  {!isEdit && supplierMode === 'po' && po && (
                     <p className="m-0 -mt-1 text-[12px] text-brand-muted">
                       Supplier <span className="text-brand-text font-semibold">{po.supplierName}</span> is locked from {po.poNumber}. The PO is never modified.
                     </p>
@@ -460,7 +532,7 @@ function CreateVariationModal({ variations, purchaseOrders, contacts, costCodes,
 
           <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
             <Btn variant="ghost" type="button" onClick={onClose} sm disabled={saving}>Cancel</Btn>
-            <Btn type="submit" sm disabled={saving || !valid}>{saving ? 'Saving…' : 'Create Draft Variation'}</Btn>
+            <Btn type="submit" sm disabled={saving || !valid}>{saving ? 'Saving…' : isEdit ? 'Save draft' : 'Create Draft Variation'}</Btn>
           </div>
         </form>
       </div>
@@ -471,80 +543,31 @@ function CreateVariationModal({ variations, purchaseOrders, contacts, costCodes,
 // ── Originating RFI (evidence link, ADR-34) ──────────────────────────────────
 // Zero or one current-project RFI, open/answered/closed only. Choosing one
 // changes no amount, total, status or date — it records where the change came
-// from. Shared by the create form and the draft-only link editor below.
+// from. `historical` is a draft's EXISTING link whose RFI is no longer
+// eligible (cancelled since): it is listed, clearly labelled, as the current
+// selection so an untouched save preserves it — never as a fresh choice.
 
-function OriginRfiSelect({ value, onChange, eligibleRfis }) {
-  const none = eligibleRfis.length === 0
+function OriginRfiSelect({ value, onChange, eligibleRfis, historical = null }) {
+  const none = eligibleRfis.length === 0 && !historical
   return (
     <div>
       <label className={labelCls}>Originating RFI <span className="normal-case font-semibold tracking-normal">(optional)</span></label>
       <select className={inputCls} value={value} onChange={e => onChange(e.target.value)} disabled={none}>
         <option value="">{none ? 'No open, answered or closed RFIs in this project' : 'None'}</option>
+        {historical && (
+          <option value={historical.originRfiId}>{originRfiLabel(historical)} (no longer eligible)</option>
+        )}
         {eligibleRfis.map(r => (
           <option key={r.id} value={r.id}>{originRfiLabel(normaliseOriginRfi(r))}</option>
         ))}
       </select>
       <p className="m-0 mt-1 text-[11px] text-brand-muted">
-        {none
-          ? 'Raise an RFI first — draft and cancelled RFIs cannot originate a variation.'
-          : 'Evidence only — the RFI does not change this variation\u2019s value. Draft and cancelled RFIs are not listed.'}
+        {historical && value === historical.originRfiId
+          ? 'This RFI has been cancelled since it was linked. The existing link is kept unless you change it.'
+          : none
+            ? 'Raise an RFI first — draft and cancelled RFIs cannot originate a variation.'
+            : 'Evidence only — the RFI does not change this variation\u2019s value. Draft and cancelled RFIs are not listed.'}
       </p>
-    </div>
-  )
-}
-
-// Draft-only editor for the ONE originating RFI. Deliberately edits nothing
-// else — there is no general variation edit flow, and this must not become one.
-function OriginRfiModal({ variation, eligibleRfis, onClose, onSave }) {
-  const [originRfiId, setOriginRfiId] = useState(variation.originRfiId ?? '')
-  const [saving, setSaving] = useState(false)
-  const [error, setError]   = useState(null)
-
-  // A historical link to an RFI that is no longer eligible (cancelled since)
-  // is shown so the user knows what they are replacing or removing.
-  const current = originRfiLabel(variation)
-  const currentStillEligible = !variation.originRfiId || eligibleRfis.some(r => r.id === variation.originRfiId)
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setSaving(true)
-    setError(null)
-    try {
-      await onSave(variation, eligibleRfis.find(r => r.id === originRfiId) ?? null)
-      onClose()
-    } catch (err) {
-      setError(err?.message || 'Failed to save. Check your connection and try again.')
-      setSaving(false)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-[520px] bg-brand-surface border border-brand-border rounded-xl shadow-2xl">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-brand-border">
-          <h2 className="text-[15px] font-bold text-brand-text m-0">Originating RFI — {variation.variationNumber}</h2>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="text-brand-muted hover:text-brand-text text-xl leading-none cursor-pointer min-w-[44px] min-h-[44px] flex items-center justify-center"
-          >
-            ×
-          </button>
-        </div>
-        <form onSubmit={handleSubmit} className="px-5 py-4 flex flex-col gap-3.5">
-          <p className="m-0 text-[12px] text-brand-muted">
-            Currently: <span className="text-brand-text font-semibold">{current || 'None'}</span>
-            {current && !currentStillEligible && ' (this RFI is no longer eligible — the existing link is kept unless you change it)'}
-          </p>
-          <OriginRfiSelect value={originRfiId} onChange={setOriginRfiId} eligibleRfis={eligibleRfis} />
-          {error && <p className="m-0 text-[12px] text-brand-red">{error}</p>}
-          <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
-            <Btn variant="ghost" type="button" onClick={onClose} sm disabled={saving}>Cancel</Btn>
-            <Btn type="submit" sm disabled={saving}>{saving ? 'Saving…' : 'Save'}</Btn>
-          </div>
-        </form>
-      </div>
     </div>
   )
 }
@@ -665,16 +688,14 @@ function AssessVariationModal({ variation, currencyCode, onClose, onTransition }
   )
 }
 
-function RowActions({ variation, onTransition, onAssess, onEditOrigin }) {
+function RowActions({ variation, onTransition, onAssess, onEdit }) {
   const confirmThen = (label, nextStatus) => () => {
     if (window.confirm(`${label} ${variation.variationNumber}?`)) onTransition(variation, nextStatus).catch(() => {})
   }
   if (variation.status === VARIATION_STATUS.DRAFT) {
     return (
       <div className="flex gap-1.5 justify-end">
-        {canEditOriginRfi(variation.status) && (
-          <Btn sm variant="ghost" onClick={() => onEditOrigin(variation)}>Origin RFI</Btn>
-        )}
+        <Btn sm variant="ghost" onClick={() => onEdit(variation)}>Edit</Btn>
         <Btn sm variant="success" onClick={() => onTransition(variation, VARIATION_STATUS.SUBMITTED).catch(() => {})}>Submit</Btn>
         <Btn sm variant="ghost" onClick={confirmThen('Withdraw', VARIATION_STATUS.WITHDRAWN)}>Withdraw</Btn>
       </div>
@@ -697,7 +718,7 @@ export default function ProjectVariations() {
   const { projectId, currencyCode } = useOutletContext()
   const money = (n) => formatCurrency(n, currencyCode)
 
-  const { variations, variationsLoading, createVariation, updateOriginRfi, transitionStatus } = useVariations(projectId)
+  const { variations, variationsLoading, createVariation, updateVariation, transitionStatus } = useVariations(projectId)
   const { purchaseOrders } = usePurchaseOrders(projectId)
   const { contacts } = useContacts()
   const { costCodes } = useCostCodes()
@@ -705,9 +726,8 @@ export default function ProjectVariations() {
   // variations page never writes an RFI.
   const { rfis } = useRfis(projectId)
   const eligibleRfis = useMemo(() => eligibleOriginRfis(rfis), [rfis])
-  const [showCreate, setShowCreate]   = useState(false)
+  const [editing, setEditing]         = useState(null)   // 'new' | draft variation | null
   const [assessing, setAssessing]     = useState(null)
-  const [editingOrigin, setEditingOrigin] = useState(null)
   const [actionError, setActionError] = useState(null)
   const [typeTab, setTypeTab]         = useState('all')  // 'all' | 'client' | 'supplier'
   const [search, setSearch]           = useState('')
@@ -747,6 +767,22 @@ export default function ProjectVariations() {
     }
   }
 
+  // Draft edit — stale-editor guard (ADR-35). The save path resolves the LIVE
+  // document from the subscribed collection by id and refuses to write unless
+  // it is STILL a draft, so an editor left open across a submit / withdraw by
+  // another action, tab or user can never write stale draft content back.
+  async function handleUpdate(variationId, data) {
+    const live = variations.find(v => v.id === variationId)
+    if (!live || live.status !== VARIATION_STATUS.DRAFT) {
+      throw new Error('This variation is no longer Draft. Close the editor and review the latest version.')
+    }
+    await updateVariation(live, data)
+  }
+
+  const liveEditing = editing && editing !== 'new'
+    ? (variations.find(v => v.id === editing.id) ?? editing)
+    : null
+
   const pendingCount = variations.filter(v => VARIATION_PENDING_STATUSES.includes(v.status)).length
 
   return (
@@ -765,7 +801,7 @@ export default function ProjectVariations() {
             </button>
           ))}
         </div>
-        <Btn sm onClick={() => setShowCreate(true)}>+ New Variation</Btn>
+        <Btn sm onClick={() => setEditing('new')}>+ New Variation</Btn>
       </div>
 
       {actionError && <p className="text-[12px] text-brand-red mb-3">{actionError}</p>}
@@ -808,7 +844,7 @@ export default function ProjectVariations() {
             <p className="text-[13px] text-brand-muted mb-3">
               No variations yet. Record a client (head-contract) or supplier (subcontract) change.
             </p>
-            <Btn onClick={() => setShowCreate(true)}>+ Create your first variation</Btn>
+            <Btn onClick={() => setEditing('new')}>+ Create your first variation</Btn>
           </div>
         ) : filtered.length === 0 ? (
           <div className="px-5 py-12 text-center text-[13px] text-brand-muted">No variations match your filters.</div>
@@ -845,7 +881,7 @@ export default function ProjectVariations() {
                       <Badge label={VARIATION_STATUS_LABELS[v.status] ?? v.status} variant={VARIATION_BADGE_VARIANTS[v.status]} sm />
                     </td>
                     <td className="px-3.5 py-3">
-                      <RowActions variation={v} onTransition={handleTransition} onAssess={setAssessing} onEditOrigin={setEditingOrigin} />
+                      <RowActions variation={v} onTransition={handleTransition} onAssess={setAssessing} onEdit={setEditing} />
                     </td>
                   </tr>
                 ))}
@@ -861,24 +897,18 @@ export default function ProjectVariations() {
         </p>
       )}
 
-      {showCreate && (
-        <CreateVariationModal
+      {editing && (
+        <VariationEditorModal
+          key={editing === 'new' ? 'new' : editing.id}
+          variation={liveEditing}
           currencyCode={currencyCode}
           variations={variations}
           purchaseOrders={purchaseOrders}
           contacts={contacts}
           costCodes={costCodes}
           eligibleRfis={eligibleRfis}
-          onClose={() => setShowCreate(false)}
-          onSave={createVariation}
-        />
-      )}
-      {editingOrigin && (
-        <OriginRfiModal
-          variation={variations.find(v => v.id === editingOrigin.id) ?? editingOrigin}
-          eligibleRfis={eligibleRfis}
-          onClose={() => setEditingOrigin(null)}
-          onSave={updateOriginRfi}
+          onClose={() => setEditing(null)}
+          onSave={editing === 'new' ? createVariation : (data) => handleUpdate(editing.id, data)}
         />
       )}
       {assessing && (

@@ -2404,3 +2404,79 @@ link can be corrected freely as a draft and is an audit fact afterwards. The
 accepted limitation is semantic: rules cannot verify that the RFI *caused* the
 variation. Everything else about a variation remains client-enforced exactly as
 before.
+
+## ADR-35: Edit Draft Variations (one create/edit editor; draft-only correction; immutable type, counterparty and PO; Origin-RFI link editor retired; no rules expansion)
+
+**Context.** The Variations foundation (ADR-18) could create a variation and
+move it through its lifecycle, but had no general edit UI — `updateVariation`
+existed in the hook and nothing called it. ADR-34 added a deliberately
+link-only *Origin RFI* editor and named "a general Variation edit UI" as
+not included. A mistyped title, amount or cost code on a draft therefore
+forced withdraw-and-recreate, burning a number and losing the RFI link. The
+assessment for this feature also found a latent defect in the link-only
+editor: a draft whose RFI had since been cancelled seeded a select value that
+was no longer among the options, so an untouched *Save* silently unlinked it.
+
+**Decision.**
+
+- **One editor, two modes.** The New Variation modal becomes
+  `VariationEditorModal` with a `variation` prop: `null` = CREATE (unchanged
+  behaviour), a live draft = EDIT DRAFT. There is no second form. The line
+  mapping and validation the modal used inline move to `lib/variations.js`
+  as pure helpers (`variationLineToForm`, `buildVariationLineItem`,
+  `validateVariationDraft`, `stripApprovedFromLines`) so both modes share one
+  implementation and the rules can be unit-tested — and no further.
+- **Draft-only, at the existing freeze point.** `VARIATION_EDITABLE_STATUSES`
+  (`draft`) is unchanged; *Edit* is the first draft row action and does not
+  exist at any other status. No reopen, no new status, no transition change.
+- **Type, counterparty and PO are immutable.** `variationType` (the number
+  series and commercial side differ), `clientId`/`clientName`,
+  `supplierId`/`supplierName`, `poId`/`poNumber` are rendered as read-only
+  information from the **stored snapshots** — the original contact or PO need
+  not still be active or selectable. Wrong party → withdraw and recreate.
+- **What draft edit may rewrite** is exactly the authored content: title,
+  description, reason, the type's reference, the three authored dates, the
+  line items (with `submittedGst` and the submitted header totals re-derived
+  by the existing functions) and the `originRfi*` triple. The hook forces the
+  approved side of every line to `null` regardless of what the editor sends,
+  and writes `notes` only when explicitly supplied — the stored value passes
+  through an edit untouched.
+- **Supplier PO context.** The PO is resolved from **all** project POs by the
+  stored `poId`, never from the sent/closed-only create list, because the PO
+  may have changed status since the draft was raised. PO-inherited lines keep
+  `poLineIndex` and always take the PO line's cost code; a stale chosen cost
+  code cannot override inheritance. The PO is never written.
+- **Originating RFI lives in the editor; the link-only control is retired.**
+  `OriginRfiModal`, the *Origin RFI* row action and `updateOriginRfi` are
+  removed. The editor's payload follows the existing hook contract —
+  `undefined` = unchanged, RFI = set/change, `null` = remove — and an
+  existing link to a **no-longer-eligible** RFI is listed, labelled *(no
+  longer eligible)*, as the current selection, so an untouched save preserves
+  it; it cannot be chosen as a new link.
+- **Stale-editor guard, in the application layer.** Before writing, the page
+  resolves the live document from the subscribed collection by id and refuses
+  the save unless its status is still `draft`; the editor also renders
+  read-only if the live status moves while it is open. No transaction, no
+  concurrency framework — last-write-wins between two concurrent draft edits
+  remains the posture shared with POs and client invoices.
+- **No Firestore Rules change.** Every write shape the editor issues is
+  already covered by the ADR-34 branches (unchanged triple; draft add/change/
+  remove; post-draft freeze). Freezing identity fields by rules
+  (`corePreserved()`) is a worthwhile, **separate** security increment and is
+  deliberately not bundled here. Deferred Controls 1 and 2 stand.
+
+**Alternatives rejected.** A separate Edit modal (two forms to keep aligned);
+allowing counterparty or type changes (would need PO-line remapping and a
+number-series change); keeping the link-only modal beside the editor (two
+competing edit experiences, one of them defective); a rules-side draft-only
+guard on all fields (a posture change belonging to the deferred hardening);
+a transaction that re-reads status at save (over-engineering for a UX guard
+the rules do not back).
+
+**Consequences.** A draft can be corrected without losing its number or RFI
+link; pending exposure figures follow the edit at read time while every
+approved, committed, forecast, revenue, margin, invoicing and cash figure is
+regression-proven unchanged; the historical-RFI defect is closed by design.
+The accepted limitations are the existing ones: post-submit immutability of
+everything except the RFI triple remains client-enforced, and two users
+editing the same draft concurrently are last-write-wins.

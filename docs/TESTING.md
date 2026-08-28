@@ -660,8 +660,9 @@ npm run test:unit
   alone and combined (assignee names are NOT searched), and a **purity** block
   proving every exported function leaves deep-frozen inputs intact.
 
-- `frontend/tests/unit/variations.test.js` — **38 tests** over the
-  originating-RFI helpers in `lib/variations.js` (ADR-34): `ORIGIN_RFI_STATUSES`
+- `frontend/tests/unit/variations.test.js` — **67 tests**: 38 over the
+  originating-RFI helpers in `lib/variations.js` (ADR-34) and 29 over the
+  draft-edit helpers (ADR-35 — see the end of this bullet): `ORIGIN_RFI_STATUSES`
   is exactly open/answered/closed and every RFI status classifies one way;
   `normaliseOriginRfi` maps null/undefined/non-objects and every partial or
   malformed RFI to the all-null triple, a valid RFI to the **exact** id/number/
@@ -680,6 +681,24 @@ npm run test:unit
   `duplicateVariationWarnings` return **identical** results for a register with
   the keys absent, the explicit null triple, and a populated link; and the
   triple carries only strings — no amount, currency or GST.
+  **Draft editing (ADR-35, 29 tests):** `variationLineToForm` maps stored
+  new-scope and PO-inherited lines to form strings (index → string, no chosen
+  cost code on an inherited line, negatives/zero preserved, legacy/junk → safe
+  defaults); `buildVariationLineItem` inherits cost code + snapshot from the PO
+  line and **ignores a stale chosen cost code**, uses the chosen cost code for
+  new scope, ignores `poLineIndex` without a PO, rounds to cents, derives GST
+  per tax code, keeps negatives, and **always** emits `approvedAmount`/
+  `approvedGst: null`; stored → form → built **round-trips** exactly;
+  `validateVariationDraft` rejects a blank title, zero lines and a line with
+  no cost code, and accepts negative/zero amounts (no stricter policy);
+  `stripApprovedFromLines`; the origin-RFI payload contract (undefined =
+  preserve, RFI = replace, null = remove, and a link to a **since-cancelled**
+  RFI survives an unrelated edit); `notes` pass-through; purity over
+  deep-frozen inputs; and a **financial regression** that edits a draft
+  supplier and a draft client variation and proves every approved / committed
+  / forecast / revenue / margin / invoicing output is **identical** while only
+  the pending exposure figures move by the exact delta (including between
+  cost codes, and via a PO that is now cancelled).
 
   Combined unit total: **1,125 tests** across the twenty files.
 
@@ -898,12 +917,40 @@ the full tax-invoice value.
 - [ ] New Variation (either type) shows **Originating RFI (optional)** with `None` selected. Create without choosing one → the register row shows no RFI sub-line; summary cards and every financial figure are exactly as before.
 - [ ] Raise an RFI (`open`), then create a variation choosing it. The option reads `RFI-0001 — <title>`. The register shows a muted `RFI-0001 — <title>` line under the variation title. Search for `RFI-0001` finds it.
 - [ ] A **draft** RFI and a **cancelled** RFI are **not** offered in the dropdown. With no open/answered/closed RFI in the project the dropdown is disabled and explains why.
-- [ ] A **draft** variation row has an **Origin RFI** action. It opens a small editor showing the current link; change it to another eligible RFI → sub-line updates; set `None` → sub-line disappears. Nothing else on the variation changes (title, lines, totals, status, dates).
-- [ ] **Submit** the variation → the **Origin RFI** action disappears; the sub-line remains. Submitted/approved/rejected/withdrawn rows never show the action.
+- [ ] A **draft** variation row has an **Edit** action (ADR-35 — the link-only *Origin RFI* action no longer exists). Edit opens the variation editor with **Originating RFI** pre-selected; change it to another eligible RFI → Save draft → sub-line updates; set `None` → sub-line disappears. Nothing else on the variation changes unless you edit it (title, lines, totals, status, dates).
+- [ ] **Submit** the variation → the **Edit** action disappears; the sub-line remains. Submitted/approved/rejected/withdrawn rows never show Edit.
 - [ ] Open the linked RFI's detail → **Linked variations** lists `SV-0001 — <title>` with its status badge. An RFI nobody cites shows `None`.
 - [ ] Budget, Forecast, Commercial, Cash Flow and Client Invoice figures are **identical** before and after linking (the link is metadata). The RFI document is unchanged (spot-check: no `variationId` on it).
 - [ ] Submit → Assess → Approve / Reject / Withdraw all still work on a linked variation exactly as on an unlinked one.
-- [ ] **Historical case:** link an **open** RFI to a draft variation, then **cancel** that RFI from the RFIs tab. The variation still shows the `RFI-… — …` sub-line; the Origin RFI editor says the RFI is no longer eligible but keeps the link; editing another field, submitting, assessing and approving all still succeed. Choosing that cancelled RFI as a *new* link is not possible (not listed; a direct write is rules-rejected).
+- [ ] **Historical case:** link an **open** RFI to a draft variation, then **cancel** that RFI from the RFIs tab. The variation still shows the `RFI-… — …` sub-line; Edit shows the selection as `RFI-… — title (no longer eligible)` with an explanation; **Save draft without touching it → the link is kept** (spot-check `originRfiId` unchanged); editing another field, submitting, assessing and approving all still succeed. Choosing that cancelled RFI as a *new* link is not possible (not listed on any other variation; a direct write is rules-rejected).
+
+### 14d-1. Edit Draft Variations (ADR-35)
+
+**Supplier Variation**
+
+- [ ] Create a draft **Supplier Variation** against a sent PO with one **PO-inherited** line and one **new-scope** line (own cost code), and an **Originating RFI**. Note Pending Supplier Exposure on the Variations cards, the Forecast pending column per cost code, and Commercial's *Pending Supplier Variation Exposure*.
+- [ ] The draft row shows **Edit · Submit · Withdraw** (Edit first). Edit opens `Edit SV-000n`: type, supplier and PO are shown as **read-only information** (with "withdraw and recreate" guidance), every other field is pre-filled, live totals work.
+- [ ] Change **title** and **reason** → **Save draft** → row updates; number, type, counterparty, PO, status and Submitted total unchanged.
+- [ ] Edit the **new-scope amount** (e.g. 300 → −150) → Save → Pending Supplier Exposure and the Forecast pending cell move by exactly the delta; **Approved Supplier Variations, Commitment Exposure (Budget), Forecast Final Cost, Current Contract Sum, Gross Profit** are unchanged.
+- [ ] **Add** a line on another cost code and **remove** the original new-scope line → Save → pending exposure moves between cost codes on Forecast; the register cost-code filter follows.
+- [ ] Change the new-scope line's **cost code** → Save → the register's cost-code filter and the Forecast pending column follow; the PO-inherited line still shows its PO cost code (locked) and the PO document is unchanged.
+- [ ] Change the **Origin RFI** to another eligible RFI → Save → sub-line and the RFI detail's *Linked variations* follow. Set **None** → Save → sub-line gone.
+- [ ] **Historical:** link an open RFI, cancel it on the RFIs tab, Edit → the selection reads `(no longer eligible)`; Save without touching it → link preserved. Then choose None or another RFI → Save → replaced.
+- [ ] **Submit** → **Edit disappears**; Assess/Withdraw continue exactly as before; Approve uses the edited submitted amounts as its prefill.
+
+**Client Variation**
+
+- [ ] Create a draft **Client Variation**; note *Pending Client Variation Exposure* (Variations cards, Commercial, Client Invoices) and *Current Contract Sum* / *Available to Invoice*.
+- [ ] Edit title, **Client Reference** and the line amount → Save → Pending Client Exposure changes; **Current Contract Sum and Available to Invoice do not**; the draft is still not offered on a client invoice line.
+- [ ] Submit → Edit disappears.
+
+**Stale editor**
+
+- [ ] Open Edit on a draft. In a second tab **Submit** or **Withdraw** it. The stale editor shows "This variation is no longer Draft…" and **Save draft is blocked**; a save attempt never writes (the submitted/withdrawn document is unchanged).
+
+**Responsive**
+
+- [ ] At 375 / 768 / 1280 px the editor scrolls inside the modal, the read-only context block stacks, and line rows wrap without horizontal page scroll.
 
 ### 14d. Lifecycle & assessment
 
