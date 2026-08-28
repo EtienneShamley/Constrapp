@@ -780,6 +780,23 @@ read time by `variationsForRfi(variations, rfiId)` in `lib/variations.js`.
 The link takes part in **no** derivation — not `variationTotals`, not the
 approved/pending maps and totals, not duplicate detection, not invoicing.
 
+**Draft editing (ADR-35).** While `status` is `draft` the editor may rewrite
+**only** the authored content: `title`, `description`, `reason`, `clientRef`
+(client) / `supplierRef` (supplier), `identifiedDate`, `responseDueDate`,
+`effectiveDate`, `lineItems[]` (each line's `costCodeId` + re-snapshotted
+`costCodeName`, `description`, `submittedAmount`, `taxCode`, `poLineIndex`, with
+`submittedGst` and `submittedSubtotal`/`submittedGst`/`submittedTotal`
+re-derived) and the `originRfi*` triple. Every draft line's `approvedAmount`/
+`approvedGst` is forced `null` on write. **Never rewritten by an edit:**
+`variationNumber`, `variationType`, `status`, `clientId`/`clientName`,
+`supplierId`/`supplierName`, `poId`/`poNumber`, the `approved*` totals,
+`assessmentNotes`, `submittedDate`/`approvedDate`, every `…At`/`…By` stamp,
+`currency`, `revision`, `forecastAmount`, `attachments`, `externalRefs`,
+`supersededByVariationId`, `createdAt`/`createdBy` — and `notes`, which has no
+editor input and passes through unchanged. Immutability of these fields is
+client-side (the rules freeze only `originRfi*` post-draft — Deferred Control
+2); there is no `updatedAt`/`updatedBy` on this collection.
+
 ## …/projects/{projectId}/forecastLines/{costCodeId}
 
 Per-cost-code **Forecast Cost to Complete** inputs — the forward-looking,

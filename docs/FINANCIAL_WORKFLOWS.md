@@ -189,7 +189,16 @@ Statuses: `draft` → `approved` → `posted`, with `cancelled` reachable from
 > 1), a **direct-SDK caller can still forge `status: 'paid'`** — which is exactly
 > why `paid` is deliberately left in the counting statuses below. See ADR-24.
 
-- **Draft** — fully editable.
+- **Draft** — fully editable (ADR-35: title, description, reason, reference,
+  authored dates, line items and the originating RFI, via the same editor as
+  create; type, counterparty and PO are fixed). **Editing a draft moves only the
+  pending exposure / context figures that already derive from pending
+  variations** — Pending Supplier / Client Variation Exposure, pending supplier
+  exposure by cost code, and the pending reference lines on Forecast,
+  Commercial and Cash Flow. It never changes an approved total, Budget's
+  Approved Supplier Variations, Commitment Exposure, Forecast Final Cost, the
+  Current Contract Sum, Forecast Revenue, Gross Profit, Margin %, Available to
+  Invoice or the invoiceable list.
 - **Approved** — internally certified; locked except for valid lifecycle actions.
   `approvedAt`/`approvedBy` stamped.
 - **Posted** — the **financial commit point**: the invoice now counts toward

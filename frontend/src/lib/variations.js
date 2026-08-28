@@ -382,3 +382,87 @@ export function variationsForRfi(variations, rfiId) {
   if (typeof rfiId !== 'string' || rfiId.length === 0) return []
   return (variations ?? []).filter(v => v?.originRfiId === rfiId)
 }
+
+// ── Draft editor line helpers (ADR-35) ───────────────────────────────────────
+// Pure mapping between the editor's form state and the stored line model, shared
+// by CREATE and EDIT DRAFT so the two modes cannot drift. Form state holds
+// strings (input values); the stored line holds the canonical numbers plus the
+// frozen costCodeName snapshot. Nothing here mutates its inputs.
+
+// Blank editor line — every form line has exactly these five keys.
+export const EMPTY_VARIATION_FORM_LINE = Object.freeze({
+  poLineIndex: '', costCodeId: '', description: '', submittedAmount: '', taxCode: TAX_CODE.GST,
+})
+
+// Stored draft line → editor form line. poLineIndex null/absent → '' (new
+// scope); a numeric index → its string. A PO-inherited line carries no chosen
+// costCodeId in the form — the cost code is re-derived from the PO line on
+// rebuild, exactly as at create. Legacy / partial lines map to safe defaults.
+export function variationLineToForm(line) {
+  const li = line && typeof line === 'object' ? line : {}
+  const inherited = Number.isInteger(li.poLineIndex) && li.poLineIndex >= 0
+  return {
+    poLineIndex:     inherited ? String(li.poLineIndex) : '',
+    costCodeId:      inherited ? '' : (typeof li.costCodeId === 'string' ? li.costCodeId : ''),
+    description:     typeof li.description === 'string' ? li.description : '',
+    submittedAmount: li.submittedAmount == null || li.submittedAmount === '' ? '' : String(li.submittedAmount),
+    taxCode:         TAX_CODES.includes(li.taxCode) ? li.taxCode : TAX_CODE.GST,
+  }
+}
+
+// Editor form line → stored draft line. `po` is the Supplier Variation's PO
+// document (or null); a form line that names one of its lines INHERITS that
+// line's costCodeId/costCodeName and ignores any stale chosen cost code. A
+// new-scope line uses the chosen cost code with a fresh "CODE — NAME" snapshot
+// (empty when the id is unknown, which validateVariationDraft then rejects).
+// Amounts are rounded, GST derives from the tax code, and the approved side is
+// ALWAYS null — a draft never carries certified values.
+export function buildVariationLineItem(formLine, { po = null, costCodes = [] } = {}) {
+  const l = formLine && typeof formLine === 'object' ? formLine : {}
+  const poLine = po && l.poLineIndex !== '' && l.poLineIndex != null
+    ? ((po.lineItems ?? [])[Number(l.poLineIndex)] ?? null)
+    : null
+
+  let costCodeId, costCodeName
+  if (poLine) {
+    costCodeId   = poLine.costCodeId || ''
+    costCodeName = poLine.costCodeName || ''
+  } else {
+    costCodeId = typeof l.costCodeId === 'string' ? l.costCodeId : ''
+    const cc = (costCodes ?? []).find(c => c.id === costCodeId)
+    costCodeName = cc ? `${cc.code} — ${cc.name}` : ''
+  }
+
+  const amount  = Number(l.submittedAmount) || 0
+  const taxCode = TAX_CODES.includes(l.taxCode) ? l.taxCode : TAX_CODE.GST
+  return {
+    costCodeId,
+    costCodeName,
+    description:     String(l.description ?? '').trim(),
+    submittedAmount: roundMoney(amount),
+    submittedGst:    gstForLine(amount, taxCode),
+    approvedAmount:  null,
+    approvedGst:     null,
+    poLineIndex:     poLine ? Number(l.poLineIndex) : null,
+    taxCode,
+  }
+}
+
+// Draft content validation shared by create and edit — the existing product
+// rules, unchanged: a title, at least one line, and a cost code on every line.
+// Amounts are deliberately NOT checked (negative credits/omissions are valid).
+// Returns null when valid, otherwise the first error message.
+export function validateVariationDraft({ title, lineItems } = {}) {
+  if (!String(title ?? '').trim()) return 'Title is required'
+  const lines = Array.isArray(lineItems) ? lineItems : []
+  if (lines.length === 0) return 'At least one line item is required'
+  const missing = lines.findIndex(li => !(typeof li?.costCodeId === 'string' && li.costCodeId.length > 0))
+  if (missing !== -1) return `Line ${missing + 1}: a cost code is required`
+  return null
+}
+
+// Draft-only defence: whatever the editor sends, a draft line never carries
+// certified values. Returns new line objects; never mutates the input.
+export function stripApprovedFromLines(lineItems) {
+  return (lineItems ?? []).map(li => ({ ...li, approvedAmount: null, approvedGst: null }))
+}
