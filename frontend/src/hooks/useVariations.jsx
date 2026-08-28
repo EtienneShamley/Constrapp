@@ -13,6 +13,7 @@ import {
   VARIATION_TYPE, VARIATION_STATUS, VARIATION_COUNTER_ID,
   canTransition, variationTotals, validateApprovedAmounts, buildApprovedLineItems,
   formatClientVariationNumber, formatSupplierVariationNumber,
+  normaliseOriginRfi, isEligibleOriginRfi,
 } from '../lib/variations'
 
 const pad2 = (n) => String(n).padStart(2, '0')
@@ -72,7 +73,9 @@ export function useVariations(projectId) {
   // transaction as the write, matching POs/claims/invoices. The caller supplies
   // the counterparty/PO snapshots and built line items (ex-GST submittedAmount +
   // taxCode + submittedGst per line); submitted totals are derived here. Fields
-  // that do not apply to the type are stored as null.
+  // that do not apply to the type are stored as null. `originRfi` is the
+  // optional originating RFI document (evidence link, ADR-34) — snapshotted
+  // into originRfiId/Number/Title, or the all-null triple when absent.
   const createVariation = useCallback(async ({
     variationType,
     title, description, reason,
@@ -81,8 +84,10 @@ export function useVariations(projectId) {
     poId, poNumber,
     identifiedDate, submittedDate, responseDueDate, effectiveDate,
     lineItems, notes,
+    originRfi = null,
   }) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
+    if (originRfi && !isEligibleOriginRfi(originRfi)) throw new Error('Only open, answered or closed RFIs can originate a variation')
     const isClient = variationType === VARIATION_TYPE.CLIENT
 
     const counterRef = doc(db, 'companies', companyId, 'counters', VARIATION_COUNTER_ID[variationType])
@@ -120,6 +125,11 @@ export function useVariations(projectId) {
 
         poId:     isClient ? null : (poId ?? null),
         poNumber: isClient ? null : (poNumber ?? null),
+
+        // Originating RFI — evidence link only (ADR-34). Rules verify the RFI
+        // exists in this project, is open/answered/closed, and that the two
+        // snapshots match it exactly.
+        ...normaliseOriginRfi(originRfi),
 
         lineItems,
 
@@ -169,19 +179,24 @@ export function useVariations(projectId) {
   }, [companyId, projectId, user, projectCurrency])
 
   // Draft-only edits — content freezes once a variation is submitted. The caller
-  // supplies rebuilt line items; submitted totals are re-derived here.
+  // supplies rebuilt line items; submitted totals are re-derived here. The
+  // originating RFI is touched ONLY when `originRfi` is passed (an RFI document
+  // or null to unlink); leaving it undefined preserves the stored link.
   const updateVariation = useCallback(async (variation, {
     title, description, reason,
     clientRef, supplierRef,
     identifiedDate, submittedDate, responseDueDate, effectiveDate,
     lineItems, notes,
+    originRfi,
   }) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (variation.status !== VARIATION_STATUS.DRAFT) throw new Error('Only draft variations can be edited')
+    if (originRfi && !isEligibleOriginRfi(originRfi)) throw new Error('Only open, answered or closed RFIs can originate a variation')
     const isClient = variation.variationType === VARIATION_TYPE.CLIENT
     const ref       = doc(db, 'companies', companyId, 'projects', projectId, 'variations', variation.id)
     const submitted = variationTotals(lineItems, 'submitted')
     await updateDoc(ref, {
+      ...(originRfi === undefined ? {} : normaliseOriginRfi(originRfi)),
       title:       title?.trim()       || '',
       description: description?.trim() || '',
       reason:      reason || '',
@@ -197,6 +212,19 @@ export function useVariations(projectId) {
       submittedTotal:    submitted.total,
       notes: notes?.trim() || '',
     })
+  }, [companyId, projectId, user])
+
+  // Draft-only originating-RFI edit (ADR-34): add, change or remove the ONE
+  // linked RFI, touching nothing else on the Variation. `rfi` is an eligible
+  // RFI document or null to unlink. Draft-only is client-checked here AND
+  // rules-frozen once the Variation leaves draft (the only rules-level
+  // lifecycle control on this collection — the rest remains client-side).
+  const updateOriginRfi = useCallback(async (variation, rfi) => {
+    if (!companyId || !projectId || !user) throw new Error('Not authenticated')
+    if (variation.status !== VARIATION_STATUS.DRAFT) throw new Error('The originating RFI can only be changed on a draft variation')
+    if (rfi && !isEligibleOriginRfi(rfi)) throw new Error('Only open, answered or closed RFIs can originate a variation')
+    const ref = doc(db, 'companies', companyId, 'projects', projectId, 'variations', variation.id)
+    await updateDoc(ref, normaliseOriginRfi(rfi))
   }, [companyId, projectId, user])
 
   // Lifecycle transitions. Moving to approved requires per-line approvedAmount
@@ -264,5 +292,5 @@ export function useVariations(projectId) {
     throw new Error(`Unsupported transition to ${nextStatus}`)
   }, [companyId, projectId, user])
 
-  return { variations, variationsLoading, variationsError, createVariation, updateVariation, transitionStatus }
+  return { variations, variationsLoading, variationsError, createVariation, updateVariation, updateOriginRfi, transitionStatus }
 }

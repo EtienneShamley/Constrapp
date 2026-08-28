@@ -1,4 +1,5 @@
 import { PO_STATUS, GST_RATE, roundMoney } from './purchaseOrders'
+import { RFI_STATUS } from './rfis'
 
 // ── Variations (commercial change control) ───────────────────────────────────
 // One type-discriminated collection joins two commercial realities:
@@ -310,4 +311,74 @@ export function duplicateVariationWarnings(variations, candidate) {
     }
   }
   return warnings
+}
+
+// ── Originating RFI (evidence link, ADR-34) ──────────────────────────────────
+// A Variation may record the ONE RFI that originated or materially supports
+// it. The Variation OWNS the relationship (originRfiId + two frozen display
+// snapshots); the RFI stores nothing back — the reverse view is derived at read
+// time by variationsForRfi(). This is EVIDENCE METADATA ONLY: it takes part in
+// no amount, GST, budget, forecast, commitment, margin, cash-flow or invoicing
+// derivation, and never engages anything the RFI module does.
+//
+// Unlinked state is the all-null triple. Legacy Variation documents may lack
+// the keys entirely — every reader below treats an absent key as unlinked.
+
+// An RFI is eligible ONLY once formally raised and not withdrawn. A draft has
+// not been asked yet (and its title is still editable); a cancelled question
+// cannot originate work. Eligibility is checked when the link is created or
+// changed — an existing link SURVIVES a later cancellation of its RFI.
+export const ORIGIN_RFI_STATUSES = [RFI_STATUS.OPEN, RFI_STATUS.ANSWERED, RFI_STATUS.CLOSED]
+
+export const UNLINKED_ORIGIN_RFI = Object.freeze({
+  originRfiId:     null,
+  originRfiNumber: null,
+  originRfiTitle:  null,
+})
+
+export const isEligibleOriginRfi = (rfi) =>
+  !!rfi && typeof rfi === 'object' && ORIGIN_RFI_STATUSES.includes(rfi.status)
+
+// The stored triple for an RFI document, or the unlinked triple for
+// null/undefined/anything without a usable id, number and title. Snapshots are
+// the EXACT source values — never trimmed, truncated or reformatted — because
+// rules compare them to the RFI verbatim. Never mutates its input.
+export function normaliseOriginRfi(rfi) {
+  if (!rfi || typeof rfi !== 'object') return { ...UNLINKED_ORIGIN_RFI }
+  const { id, rfiNumber, title } = rfi
+  const usable = (v) => typeof v === 'string' && v.length > 0
+  if (!usable(id) || !usable(rfiNumber) || !usable(title)) return { ...UNLINKED_ORIGIN_RFI }
+  return { originRfiId: id, originRfiNumber: rfiNumber, originRfiTitle: title }
+}
+
+export const hasOriginRfi = (variation) =>
+  typeof variation?.originRfiId === 'string' && variation.originRfiId.length > 0
+
+// Current-project RFIs a Variation may link to, in RFI-number order (a new
+// array — the input is never reordered).
+export function eligibleOriginRfis(rfis) {
+  return (rfis ?? [])
+    .filter(isEligibleOriginRfi)
+    .slice()
+    .sort((a, b) =>
+      String(a.rfiNumber || '').localeCompare(String(b.rfiNumber || ''))
+      || String(a.id || '').localeCompare(String(b.id || '')))
+}
+
+// 'RFI-0012 — Revised structural steel connection', or null when unlinked.
+export function originRfiLabel(variation) {
+  if (!hasOriginRfi(variation)) return null
+  const number = variation.originRfiNumber || variation.originRfiId
+  return variation.originRfiTitle ? `${number} — ${variation.originRfiTitle}` : number
+}
+
+// The link is editable exactly while the Variation itself is — draft only.
+// Client-side UX gate; the variations rules block freezes the triple by rules
+// once the document leaves draft.
+export const canEditOriginRfi = (status) => VARIATION_EDITABLE_STATUSES.includes(status)
+
+// Read-time reverse view: every Variation citing this RFI, in the order given.
+export function variationsForRfi(variations, rfiId) {
+  if (typeof rfiId !== 'string' || rfiId.length === 0) return []
+  return (variations ?? []).filter(v => v?.originRfiId === rfiId)
 }

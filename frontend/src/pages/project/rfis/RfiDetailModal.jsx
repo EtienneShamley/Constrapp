@@ -6,6 +6,7 @@ import {
   formatIsoDate, dueLabel, isOverdue, responseDays, referenceLabel, hasReference,
   canEditQuestion, canEditManagement, canRaise, canAnswer, canClose, canCancel,
 } from '../../../lib/rfis'
+import { VARIATION_STATUS_LABELS, VARIATION_BADGE_VARIANTS } from '../../../lib/variations'
 import RfiModalShell from './RfiModalShell'
 
 // ── RFI detail — READ-ONLY ───────────────────────────────────────────────────
@@ -17,6 +18,11 @@ import RfiModalShell from './RfiModalShell'
 // Stamps show WHO (uid → 'You' or 'Another user' — users/{uid} is client-read-
 // only, ADR-27) and WHEN. `raisedByName` is the one human name on the record:
 // a snapshot the creator took of their own profile.
+//
+// LINKED VARIATIONS are a read-time reverse view of each Variation's
+// originRfiId (ADR-34) — the RFI document stores no variation reference. The
+// caller passes the already-loaded project variations filtered by this RFI,
+// plus whether that read failed, so an error is never shown as "None".
 
 const rowLabel = 'text-[10.5px] font-bold text-brand-muted uppercase tracking-[0.4px] m-0 mb-0.5'
 const rowValue = 'text-[12.5px] text-brand-text m-0'
@@ -32,6 +38,7 @@ function Row({ label, children }) {
 
 export default function RfiDetailModal({
   rfi, now, currentUid, canWrite,
+  linkedVariations = [], linkedVariationsUnavailable = false,
   onEdit, onRaise, onAnswer, onCloseRfi, onCancel, onClose,
 }) {
   if (!rfi) return null
@@ -88,6 +95,26 @@ export default function RfiDetailModal({
             <p className="m-0 text-[12.5px] text-brand-text whitespace-pre-wrap">{rfi.cancelReason}</p>
           </div>
         )}
+
+        {/* ── Linked variations (read-time, evidence only) ─────────── */}
+        <div className="border border-brand-border rounded-lg p-3 mb-4">
+          <p className={rowLabel}>Linked variations</p>
+          {linkedVariationsUnavailable ? (
+            <p className={`${rowValue} text-brand-muted`}>Unavailable</p>
+          ) : linkedVariations.length === 0 ? (
+            <p className={`${rowValue} text-brand-muted`}>None</p>
+          ) : (
+            <ul className="m-0 pl-0 list-none space-y-1">
+              {linkedVariations.map(v => (
+                <li key={v.id} className="flex flex-wrap items-center gap-2 text-[12.5px] text-brand-text">
+                  <span className="font-semibold">{v.variationNumber}</span>
+                  <span>— {v.title || '—'}</span>
+                  <Badge label={VARIATION_STATUS_LABELS[v.status] ?? v.status} variant={VARIATION_BADGE_VARIANTS[v.status] ?? 'info'} sm />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
 
         {/* ── Audit trail ──────────────────────────────────────────── */}
         <div className="border-t border-brand-border pt-3">

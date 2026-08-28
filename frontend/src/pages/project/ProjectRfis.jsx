@@ -8,6 +8,8 @@ import { useProfile } from '../../hooks/useProfile'
 import { useContacts } from '../../hooks/useContacts'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { useRfis } from '../../hooks/useRfis'
+import { useVariations } from '../../hooks/useVariations'
+import { variationsForRfi } from '../../lib/variations'
 import {
   RFI_STATUS, RFI_STATUS_ORDER, RFI_STATUS_LABELS,
   canReadRfis, canWriteRfis,
@@ -48,6 +50,10 @@ export default function ProjectRfis() {
     createRfi, updateRfiDraft, updateRfiManagement,
     raiseRfi, answerRfi, closeRfi, cancelRfi,
   } = useRfis(projectId)
+  // Read-time reverse view of the Variation → RFI evidence link (ADR-34). The
+  // RFI stores nothing; this page never writes a variation. A failed read is
+  // surfaced as UNAVAILABLE, never as "no links".
+  const { variations, variationsError } = useVariations(projectId)
 
   const [search, setSearch]       = useState('')
   const [status, setStatus]       = useState('')
@@ -361,6 +367,8 @@ export default function ProjectRfis() {
           now={now}
           currentUid={user?.uid}
           canWrite={canWrite}
+          linkedVariations={variationsForRfi(variations, viewingLive.id)}
+          linkedVariationsUnavailable={variationsError}
           onEdit={openEditor}
           onRaise={handleRaise}
           onAnswer={openAnswer}

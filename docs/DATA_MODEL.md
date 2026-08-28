@@ -739,6 +739,9 @@ Header totals derive from the line items (no flat header rate). Numbers come fro
 | `supplierRef` | string \| null | Supplier's own variation/quote number (optional). `null` on client variations |
 | `poId` | string \| null | Supplier type: the **one** PO this varies, or `null` (no-PO / manual). Always `null` on client variations |
 | `poNumber` | string \| null | Snapshot of the PO number |
+| `originRfiId` | string \| null | **Originating RFI** (ADR-34) — the **one** same-project `rfis/{id}` that originated or materially supports this variation, or `null`. **Evidence link only** — no financial effect. Rules verify the RFI **exists in this project** and is `open`/`answered`/`closed` **when the link is created or changed**; an unchanged link is never re-checked, so it **survives** a later cancellation of the RFI. **Frozen by rules once the variation leaves `draft`.** Legacy documents may lack all three keys (read as unlinked) |
+| `originRfiNumber` | string \| null | Frozen snapshot of `rfi.rfiNumber` — **rules-verified equal** to the RFI at link time (the number is immutable on the RFI) |
+| `originRfiTitle` | string \| null | Frozen snapshot of `rfi.title` — **rules-verified equal** to the RFI at link time (the title is frozen for life once an RFI is raised, so every eligible RFI's title is immutable) |
 | `lineItems` | array | See below — ex-GST, per-line tax |
 | `submittedSubtotal`, `submittedGst`, `submittedTotal` | number | Derived from submitted line amounts (signed) |
 | `approvedSubtotal`, `approvedGst`, `approvedTotal` | number \| null | Null until approved; frozen after (signed) |
@@ -768,6 +771,14 @@ Only `approved` variations count financially, derived at read time
 `lib/variations.js`). Variations **never** write onto Budget Lines and **never**
 mutate POs, claims, or invoices. Negative amounts (credits/omissions) are
 supported and are **not** clamped to zero.
+
+**Originating RFI (ADR-34).** The relationship is **one-directional** —
+`Variation → RFI` — held in the three `originRfi*` scalars above (all `null`
+or all populated, never partial; zero or one RFI per variation). The RFI
+document stores **nothing** back: an RFI's *Linked variations* are derived at
+read time by `variationsForRfi(variations, rfiId)` in `lib/variations.js`.
+The link takes part in **no** derivation — not `variationTotals`, not the
+approved/pending maps and totals, not duplicate detection, not invoicing.
 
 ## …/projects/{projectId}/forecastLines/{costCodeId}
 
@@ -1056,8 +1067,10 @@ branch is `hasOnly`-restricted to its own keys, so nothing else can ride along.
 amount (financially inert — **no currency ratchet**), `storagePath`/any download
 URL (the reference is an id, never bytes), `assignedToUid` (no user-to-user
 resolution exists — ADR-27), `supersedesRfiId`/answer history (no reopen),
-`costImpact`/`timeImpact` (deferred), and any stored `overdue`/`responseDays`
-(**derived on every read**).
+`costImpact`/`timeImpact` (deferred), any `variationId`/`variationIds`/
+`linkedVariations` (the RFI → Variation relationship is owned by the
+**variation** — `originRfiId` — and the reverse view is derived at read time,
+ADR-34), and any stored `overdue`/`responseDays` (**derived on every read**).
 
 **Stored vs derived.** Only the fields above are authored. Overdue (open + due
 date past; due today is not overdue), days late, days until due, days open,
