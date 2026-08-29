@@ -6,17 +6,19 @@ import Badge from '../../components/Badge'
 import { formatCurrency } from '../../lib/formatters'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
-import { roundMoney } from '../../lib/purchaseOrders'
+import { PO_STATUS, PO_STATUS_LABELS } from '../../lib/purchaseOrders'
 import {
   CLAIM_STATUS, CLAIM_STATUS_LABELS, CLAIM_BADGE_VARIANTS,
   CLAIMABLE_PO_STATUSES, CLAIM_PENDING_STATUSES,
-  approvedLineError, claimTotals, hasOpenClaim, previouslyApprovedByPoLine,
+  approvedLineError, buildClaimLine, claimLineToForm, claimTotals,
+  hasOpenClaim, previouslyApprovedByPoLine, validateClaimDraft,
 } from '../../lib/progressClaims'
 
 const inputCls    = 'w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
 const inputErrCls = 'w-full bg-brand-bg border border-brand-red rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-red focus:outline-none'
 const labelCls = 'block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1.5'
 const thCls    = 'text-left px-3.5 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px]'
+const infoCls  = 'm-0 text-[13px] text-brand-text font-semibold'
 
 function TotalsFooter({ totals, heading, currencyCode }) {
   const money = (n) => formatCurrency(n, currencyCode)
@@ -31,19 +33,38 @@ function TotalsFooter({ totals, heading, currencyCode }) {
   )
 }
 
-function CreateProgressClaimModal({ claimablePOs, progressClaims, currencyCode, onClose, onSave }) {
-  const money = (n) => formatCurrency(n, currencyCode)
+// One editor, two modes (ADR-37). CREATE (`claim` = null) selects a sent PO and
+// raises a numbered draft — unchanged behaviour. EDIT DRAFT (`claim` = the LIVE
+// draft document) renders the claim number, PO and supplier snapshots read-only
+// and lets the user correct the authored content: period ending, claim ref,
+// notes, retention, and the cumulative claimed-to-date on each line.
+//
+// THE LINE SET IS FIXED — one line per PO line, created one-to-one when the
+// claim was raised. There is no add, remove or reorder control in either mode:
+// `poLineIndex` is the identity previouslyApprovedByPoLine and the supplier
+// invoice seeding path both key off. In edit mode every line's identity is read
+// from the claim's OWN stored line, so the editor cannot repoint a line at a
+// different PO line or cost code. Line building and validation are the shared
+// pure helpers in lib/progressClaims.js so the two modes cannot drift.
+function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, progressClaims, currencyCode, onClose, onSave }) {
+  const money  = (n) => formatCurrency(n, currencyCode)
+  const isEdit = !!claim
 
   const [poId, setPoId]                 = useState('')
-  const [periodEnding, setPeriodEnding] = useState('')
-  const [claimRef, setClaimRef]         = useState('')
-  const [retention, setRetention]       = useState('')
-  const [notes, setNotes]               = useState('')
-  const [claimedToDate, setClaimedToDate] = useState([])
+  const [periodEnding, setPeriodEnding] = useState(() => (isEdit ? claim.periodEnding ?? '' : ''))
+  const [claimRef, setClaimRef]         = useState(() => (isEdit ? claim.claimRef ?? '' : ''))
+  const [retention, setRetention]       = useState(() => (isEdit ? String(claim.retention ?? '') : ''))
+  const [notes, setNotes]               = useState(() => (isEdit ? claim.notes ?? '' : ''))
+  const [claimedToDate, setClaimedToDate] = useState(() =>
+    isEdit ? (claim.lineItems ?? []).map(claimLineToForm) : []
+  )
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState(null)
 
-  const po      = claimablePOs.find(p => p.id === poId) ?? null
+  // The PO picker exists in CREATE only. EDIT never resolves the PO for its
+  // data — every value it renders is already snapshotted on the claim line — so
+  // a claim whose PO has since been closed or cancelled stays editable.
+  const po      = isEdit ? null : (claimablePOs.find(p => p.id === poId) ?? null)
   const prevMap = po ? previouslyApprovedByPoLine(progressClaims, po.id) : {}
 
   const selectPo = (e) => {
@@ -59,25 +80,26 @@ function CreateProgressClaimModal({ claimablePOs, progressClaims, currencyCode, 
     setClaimedToDate(vals => vals.map((v, i) => (i === idx ? value : v)))
   }
 
-  const builtLines = (po?.lineItems ?? []).map((li, idx) => {
-    const prev    = prevMap[idx] || 0
-    const toDate  = Number(claimedToDate[idx]) || 0
-    return {
-      poLineIndex:        idx,
-      costCodeId:         li.costCodeId,
-      costCodeName:       li.costCodeName,
-      description:        li.description,
-      poLineTotal:        li.lineTotal || 0,
-      previouslyApproved: prev,
-      claimedToDate:      toDate,
-      claimedThisPeriod:  roundMoney(toDate - prev),
-      approvedThisPeriod: null,
-    }
-  })
-  const totals       = claimTotals(builtLines.map(l => l.claimedThisPeriod), retention)
-  const hasBackwards = builtLines.some(l => l.claimedThisPeriod < 0)
-  const hasClaim     = builtLines.some(l => l.claimedThisPeriod > 0)
-  const valid        = po && hasClaim && !hasBackwards
+  // Identity always comes from the source line, never from form state. CREATE
+  // reads the PO's lines (supplying the index and the previously-approved seed);
+  // EDIT reads the claim's own stored lines and supplies nothing but the amount.
+  const builtLines = isEdit
+    ? (claim.lineItems ?? []).map((li, idx) =>
+        buildClaimLine(li, { claimedToDate: claimedToDate[idx] }))
+    : (po?.lineItems ?? []).map((li, idx) =>
+        buildClaimLine(li, {
+          poLineIndex:        idx,
+          previouslyApproved: prevMap[idx] || 0,
+          claimedToDate:      claimedToDate[idx],
+        }))
+
+  const totals     = claimTotals(builtLines.map(l => l.claimedThisPeriod), retention)
+  const draftError = validateClaimDraft({ lineItems: builtLines })
+  // Live-status guard: the page passes the LIVE document, so if it left draft
+  // while this editor was open the form shows a latest-version message and the
+  // save is refused. Two concurrent draft editors remain last-write-wins.
+  const stale      = isEdit && claim.status !== CLAIM_STATUS.DRAFT
+  const valid      = !draftError && (isEdit || !!po) && !stale
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -85,10 +107,18 @@ function CreateProgressClaimModal({ claimablePOs, progressClaims, currencyCode, 
     setSaving(true)
     setError(null)
     try {
-      await onSave({ po, periodEnding, claimRef, notes, retention, variationId: null, lineItems: builtLines })
+      if (isEdit) {
+        // Line items are deliberately absent — the hook rebuilds every line over
+        // the stored document, so this path cannot write line identity, PO or
+        // supplier. It supplies only the authored cumulative amounts, in stored
+        // order, one per stored line.
+        await onSave({ periodEnding, claimRef, notes, retention, claimedToDate })
+      } else {
+        await onSave({ po, periodEnding, claimRef, notes, retention, variationId: null, lineItems: builtLines })
+      }
       onClose()
-    } catch {
-      setError('Failed to save. Check your connection and try again.')
+    } catch (err) {
+      setError(err?.message || 'Failed to save. Check your connection and try again.')
       setSaving(false)
     }
   }
@@ -98,7 +128,9 @@ function CreateProgressClaimModal({ claimablePOs, progressClaims, currencyCode, 
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       <div className="relative z-10 w-full max-w-[760px] max-h-[90vh] overflow-y-auto bg-brand-surface border border-brand-border rounded-xl shadow-2xl">
         <div className="flex items-center justify-between px-5 py-4 border-b border-brand-border">
-          <h2 className="text-[15px] font-bold text-brand-text m-0">New Progress Claim</h2>
+          <h2 className="text-[15px] font-bold text-brand-text m-0">
+            {isEdit ? `Edit ${claim.claimNumber}` : 'New Progress Claim'}
+          </h2>
           <button
             onClick={onClose}
             aria-label="Close"
@@ -109,7 +141,47 @@ function CreateProgressClaimModal({ claimablePOs, progressClaims, currencyCode, 
         </div>
 
         <form onSubmit={handleSubmit} className="px-5 py-4 flex flex-col gap-3.5">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {stale && (
+            <p className="m-0 text-[12px] text-brand-red">
+              This progress claim is no longer Draft. Close the editor and review the latest version.
+            </p>
+          )}
+
+          {isEdit && (
+            /* Immutable context — read-only information from the stored
+               snapshots, not disabled controls. The supplier need not resolve to
+               a current contact (legacy supplierId: null still renders) and the
+               PO need not still be sent. */
+            <div className="rounded-lg border border-brand-border bg-brand-bg px-3.5 py-3">
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                <div>
+                  <p className={labelCls}>Claim #</p>
+                  <p className={infoCls}>{claim.claimNumber}</p>
+                </div>
+                <div>
+                  <p className={labelCls}>Purchase Order</p>
+                  <p className={infoCls}>{claim.poNumber || '—'}</p>
+                </div>
+                <div>
+                  <p className={labelCls}>Supplier</p>
+                  <p className={infoCls}>{claim.supplierName || '—'}</p>
+                </div>
+                <div>
+                  <p className={labelCls}>Status</p>
+                  <Badge label={CLAIM_STATUS_LABELS[claim.status] ?? claim.status} variant={CLAIM_BADGE_VARIANTS[claim.status]} sm />
+                </div>
+              </div>
+              <p className="m-0 mt-2 text-[11px] text-brand-muted">
+                Fixed at creation — wrong PO or supplier? Withdraw and raise a new claim.
+                {livePo && livePo.status !== PO_STATUS.SENT && (
+                  <> {claim.poNumber} is now {PO_STATUS_LABELS[livePo.status] ?? livePo.status}; this draft can still be corrected.</>
+                )}
+              </p>
+            </div>
+          )}
+
+          <div className={`grid grid-cols-1 gap-3 ${isEdit ? 'sm:grid-cols-2' : 'sm:grid-cols-3'}`}>
+            {!isEdit && (
             <div>
               <label className={labelCls}>
                 Purchase Order <span className="text-brand-red">*</span>
@@ -121,6 +193,7 @@ function CreateProgressClaimModal({ claimablePOs, progressClaims, currencyCode, 
                 ))}
               </select>
             </div>
+            )}
             <div>
               <label className={labelCls}>Period Ending</label>
               <input type="date" className={inputCls} value={periodEnding} onChange={e => setPeriodEnding(e.target.value)} />
@@ -131,7 +204,7 @@ function CreateProgressClaimModal({ claimablePOs, progressClaims, currencyCode, 
             </div>
           </div>
 
-          {po && (
+          {(isEdit || po) && (
             <div>
               <label className={labelCls}>
                 Claimed to Date (ex-GST) <span className="text-brand-red">*</span>
@@ -143,7 +216,12 @@ function CreateProgressClaimModal({ claimablePOs, progressClaims, currencyCode, 
                     <div key={idx} className="grid grid-cols-2 sm:grid-cols-[2fr_2fr_1fr_1fr_1fr] gap-2 items-center">
                       <p className="m-0 text-[12px] text-brand-text truncate">{line.costCodeName || '—'}</p>
                       <p className="m-0 text-[12px] text-brand-muted truncate">{line.description || '—'}</p>
-                      <p className="m-0 text-[12px] text-brand-muted whitespace-nowrap">of {money(line.poLineTotal)}</p>
+                      <div>
+                        <p className="m-0 text-[12px] text-brand-muted whitespace-nowrap">of {money(line.poLineTotal)}</p>
+                        {isEdit && line.previouslyApproved > 0 && (
+                          <p className="m-0 text-[11px] text-brand-muted whitespace-nowrap">approved {money(line.previouslyApproved)}</p>
+                        )}
+                      </div>
                       <input
                         type="number" min="0" step="any"
                         className={inputCls}
@@ -184,11 +262,14 @@ function CreateProgressClaimModal({ claimablePOs, progressClaims, currencyCode, 
 
           <TotalsFooter totals={totals} heading="Claimed this period" currencyCode={currencyCode} />
 
+          {isEdit && draftError && <p className="m-0 text-[12px] text-brand-amber">{draftError}</p>}
           {error && <p className="text-[12px] text-brand-red">{error}</p>}
 
           <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
             <Btn variant="ghost" type="button" onClick={onClose} sm disabled={saving}>Cancel</Btn>
-            <Btn type="submit" sm disabled={saving || !valid}>{saving ? 'Saving…' : 'Create Draft Claim'}</Btn>
+            <Btn type="submit" sm disabled={saving || !valid}>
+              {saving ? 'Saving…' : (isEdit ? 'Save changes' : 'Create Draft Claim')}
+            </Btn>
           </div>
         </form>
       </div>
@@ -306,7 +387,7 @@ function AssessProgressClaimModal({ claim, currencyCode, onClose, onTransition }
   )
 }
 
-function RowActions({ claim, onTransition, onAssess }) {
+function RowActions({ claim, onTransition, onAssess, onEdit }) {
   // Failures surface via the page-level error banner — swallow the rethrow
   // that exists for the assess modal's benefit.
   const confirmThen = (label, nextStatus) => () => {
@@ -316,6 +397,7 @@ function RowActions({ claim, onTransition, onAssess }) {
   if (claim.status === CLAIM_STATUS.DRAFT) {
     return (
       <div className="flex gap-1.5 justify-end">
+        <Btn sm variant="ghost" onClick={() => onEdit(claim)}>Edit</Btn>
         <Btn sm variant="success" onClick={confirmThen('Submit', CLAIM_STATUS.SUBMITTED)}>Submit</Btn>
         <Btn sm variant="ghost" onClick={confirmThen('Withdraw', CLAIM_STATUS.REJECTED)}>Withdraw</Btn>
       </div>
@@ -336,9 +418,9 @@ export default function ProjectProgressClaims() {
   const { projectId, currencyCode } = useOutletContext()
   const money = (n) => formatCurrency(n, currencyCode)
 
-  const { progressClaims, progressClaimsLoading, createProgressClaim, transitionStatus } = useProgressClaims(projectId)
+  const { progressClaims, progressClaimsLoading, createProgressClaim, updateProgressClaim, transitionStatus } = useProgressClaims(projectId)
   const { purchaseOrders, purchaseOrdersLoading } = usePurchaseOrders(projectId)
-  const [showCreate, setShowCreate]     = useState(false)
+  const [editing, setEditing]           = useState(null)   // 'new' | draft claim | null
   const [assessing, setAssessing]       = useState(null)
   const [actionError, setActionError]   = useState(null)
 
@@ -360,6 +442,29 @@ export default function ProjectProgressClaims() {
     }
   }
 
+  // Draft edit — stale-editor guard (ADR-37). The save path resolves the LIVE
+  // document from the subscribed collection by id and refuses to write unless it
+  // is STILL a draft, so an editor left open across a submit / withdraw by
+  // another action, tab or user can never write stale draft content back. The
+  // hook keeps its own draft guard as the final client-side check. Two concurrent
+  // draft editors remain last-write-wins.
+  async function handleUpdate(claimId, data) {
+    const live = progressClaims.find(c => c.id === claimId)
+    if (!live || live.status !== CLAIM_STATUS.DRAFT) {
+      throw new Error('This progress claim is no longer Draft. Close the editor and review the latest version.')
+    }
+    await updateProgressClaim(live, data)
+  }
+
+  // The open editor tracks the LIVE document, so a status change elsewhere
+  // reaches it through the existing subscription and puts it into stale mode.
+  const liveEditing = editing && editing !== 'new'
+    ? (progressClaims.find(c => c.id === editing.id) ?? editing)
+    : null
+  const liveEditingPo = liveEditing
+    ? (purchaseOrders.find(p => p.id === liveEditing.poId) ?? null)
+    : null
+
   return (
     <div>
       <div className="flex items-center justify-between gap-3 mb-3.5">
@@ -372,7 +477,7 @@ export default function ProjectProgressClaims() {
           {noSentPOs && (
             <Btn variant="ghost" sm onClick={goToPOs}>Go to Purchase Orders</Btn>
           )}
-          <Btn sm onClick={() => setShowCreate(true)} disabled={purchaseOrdersLoading || claimablePOs.length === 0}>
+          <Btn sm onClick={() => setEditing('new')} disabled={purchaseOrdersLoading || claimablePOs.length === 0}>
             + New Progress Claim
           </Btn>
         </div>
@@ -393,7 +498,7 @@ export default function ProjectProgressClaims() {
             {noSentPOs ? (
               <Btn variant="ghost" onClick={goToPOs}>Go to Purchase Orders</Btn>
             ) : (
-              <Btn onClick={() => setShowCreate(true)} disabled={claimablePOs.length === 0}>
+              <Btn onClick={() => setEditing('new')} disabled={claimablePOs.length === 0}>
                 + Create your first progress claim
               </Btn>
             )}
@@ -423,7 +528,7 @@ export default function ProjectProgressClaims() {
                       <Badge label={CLAIM_STATUS_LABELS[claim.status] ?? claim.status} variant={CLAIM_BADGE_VARIANTS[claim.status]} sm />
                     </td>
                     <td className="px-3.5 py-3">
-                      <RowActions claim={claim} onTransition={handleTransition} onAssess={setAssessing} />
+                      <RowActions claim={claim} onTransition={handleTransition} onAssess={setAssessing} onEdit={setEditing} />
                     </td>
                   </tr>
                 ))}
@@ -433,13 +538,16 @@ export default function ProjectProgressClaims() {
         )}
       </Card>
 
-      {showCreate && (
-        <CreateProgressClaimModal
+      {editing && (
+        <ProgressClaimEditorModal
+          key={editing === 'new' ? 'new' : editing.id}
+          claim={liveEditing}
+          livePo={liveEditingPo}
           currencyCode={currencyCode}
           claimablePOs={claimablePOs}
           progressClaims={progressClaims}
-          onClose={() => setShowCreate(false)}
-          onSave={createProgressClaim}
+          onClose={() => setEditing(null)}
+          onSave={editing === 'new' ? createProgressClaim : (data) => handleUpdate(editing.id, data)}
         />
       )}
       {assessing && (

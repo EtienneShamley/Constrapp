@@ -12,6 +12,7 @@ import { resolveProjectCurrency } from '../lib/currency'
 import {
   CLAIM_STATUS, CLAIMABLE_PO_STATUSES, canTransition, claimTotals,
   formatClaimNumber, hasOpenClaim, validateApprovedAmounts,
+  buildClaimLine, claimedToDateCountError, validateClaimDraft,
 } from '../lib/progressClaims'
 
 export function useProgressClaims(projectId) {
@@ -122,10 +123,40 @@ export function useProgressClaims(projectId) {
     })
   }, [companyId, projectId, user, progressClaims, projectCurrency])
 
-  // Draft-only edits — claimed amounts freeze once a claim is submitted.
-  const updateProgressClaim = useCallback(async (claim, { periodEnding, claimRef, notes, retention, lineItems }) => {
+  // Draft-only edits (ADR-37) — claimed amounts freeze once a claim is submitted.
+  //
+  // The caller supplies NO line items. `claimedToDate` is the ordered set of
+  // authored cumulative figures, one per STORED line, and the stored claim
+  // document is the sole authority for line identity: every line is rebuilt over
+  // `claim.lineItems`, so poLineIndex, costCodeId, costCodeName, description,
+  // poLineTotal and previouslyApproved cannot be rewritten by any caller.
+  // `previouslyApproved` is deliberately NOT re-derived — the one-open-claim rule
+  // means no later approved claim can legitimately appear while this draft is
+  // open, so re-deriving would be a no-op in every supported case and, in the
+  // already-broken ones, would silently move a figure the user never authored.
+  // `claimedThisPeriod` is always re-derived and `approvedThisPeriod` forced null.
+  //
+  // Immutable fields (claimNumber, status, poId/poNumber, supplierId/supplierName,
+  // variationId, currency, revision, every approved* value, assessmentNotes, the
+  // lifecycle stamps, approvedBy, externalRefs, createdAt/createdBy) are never
+  // written — updateDoc is partial, so they pass through untouched. No currency
+  // ratchet is staged (the project locked when the claim was created) and no audit
+  // stamp is added (the model has none). The draft guard is client-side only
+  // (rules do not check status — SECURITY.md Deferred Controls 1 and 2).
+  const updateProgressClaim = useCallback(async (claim, { periodEnding, claimRef, notes, retention, claimedToDate }) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (claim.status !== CLAIM_STATUS.DRAFT) throw new Error('Only draft claims can be edited')
+    // Exact positional pairing — a mismatch would silently pair authored values
+    // with the wrong lines, so nothing is written.
+    const countError = claimedToDateCountError(claim.lineItems, claimedToDate)
+    if (countError) throw new Error(countError)
+
+    const lineItems = claim.lineItems.map((storedLine, idx) =>
+      buildClaimLine(storedLine, { claimedToDate: claimedToDate[idx] })
+    )
+    const draftError = validateClaimDraft({ lineItems })
+    if (draftError) throw new Error(draftError)
+
     const ref    = doc(db, 'companies', companyId, 'projects', projectId, 'progressClaims', claim.id)
     const totals = claimTotals(lineItems.map(li => li.claimedThisPeriod), retention)
     await updateDoc(ref, {
