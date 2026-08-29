@@ -160,3 +160,106 @@ export function claimedPendingByCostCode(claims) {
   }
   return map
 }
+
+// ── Draft editor helpers (ADR-37) ────────────────────────────────────────────
+// Pure mapping between the editor's form state and the stored claim-line model,
+// shared by CREATE and EDIT DRAFT so the two modes cannot drift. Form state
+// holds strings (input values); the stored line holds the canonical numbers plus
+// the frozen PO snapshots. Nothing here mutates its inputs.
+//
+// A claim's LINE SET IS FIXED: one line per PO line, created one-to-one when the
+// claim is raised. Lines are never added, removed or reordered, and `poLineIndex`
+// is the identity every downstream consumer keys off (previouslyApprovedByPoLine,
+// supplierInvoices.postedInvoicedByPoLine, the invoice seeding path). The ONLY
+// authored per-line value in a draft edit is the cumulative `claimedToDate`.
+
+// Statuses whose authored content (claimed amounts, retention, period, refs,
+// notes) may still change. Exactly draft — the freeze point is `submitted`, and
+// every later status is frozen at the product level. Enforced in the client hook
+// only (rules do not check status — SECURITY.md Deferred Control 2).
+export const CLAIM_EDITABLE_STATUSES = [CLAIM_STATUS.DRAFT]
+
+// Stored claim line → the editor's per-line form value: the CUMULATIVE
+// claimed-to-date figure as a string. Matches the create seed (`String(n || 0)`),
+// so a missing, empty or malformed legacy value reads as '0' — never '', which
+// would render an empty input the user could mistake for "nothing claimed yet".
+export function claimLineToForm(line) {
+  const li  = line && typeof line === 'object' ? line : {}
+  const raw = li.claimedToDate
+  if (raw === '' || raw == null) return '0'
+  const n = Number(raw)
+  return Number.isFinite(n) ? String(n) : '0'
+}
+
+// ONE builder for both modes. `source` supplies the line's IDENTITY and is never
+// authored by the user:
+//   · CREATE — a PO line (`lineTotal`), with `poLineIndex` and
+//     `previouslyApproved` supplied by the caller (the index in the PO's line
+//     array and the seed from previouslyApprovedByPoLine).
+//   · EDIT   — the STORED claim line, which already carries all six identity
+//     fields; the caller supplies nothing but `claimedToDate`, so a draft edit
+//     cannot repoint a line at a different PO line or cost code.
+// `claimedThisPeriod` is ALWAYS re-derived (a caller-supplied figure is never
+// trusted) and `approvedThisPeriod` is ALWAYS forced null — certification is not
+// authored, and a draft line must never carry a certified amount.
+export function buildClaimLine(source, { claimedToDate, poLineIndex, previouslyApproved } = {}) {
+  const src = source && typeof source === 'object' ? source : {}
+  const str = (v) => (typeof v === 'string' ? v : '')
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
+
+  const idx    = poLineIndex        ?? src.poLineIndex
+  const prev   = num(previouslyApproved ?? src.previouslyApproved)
+  // A stored claim line holds `poLineTotal`; a PO line holds `lineTotal`.
+  const total  = num(src.poLineTotal ?? src.lineTotal)
+  // Cumulative, and deliberately NOT rounded here — the create flow has always
+  // stored the raw entered figure; only the derived delta is rounded to cents.
+  const toDate = num(claimedToDate)
+
+  return {
+    poLineIndex:        num(idx),
+    costCodeId:         str(src.costCodeId),
+    costCodeName:       str(src.costCodeName),
+    description:        str(src.description),
+    poLineTotal:        total,
+    previouslyApproved: prev,
+    claimedToDate:      toDate,
+    claimedThisPeriod:  roundMoney(toDate - prev),
+    approvedThisPeriod: null,
+  }
+}
+
+// Positional-pairing guard for the draft-edit contract: the caller supplies one
+// claimed-to-date value per STORED line, in stored order. A length mismatch
+// would silently pair values with the wrong lines, so it is refused outright
+// rather than padded or truncated. Returns null when the pairing is exact.
+export function claimedToDateCountError(lineItems, claimedToDate) {
+  if (!Array.isArray(lineItems) || lineItems.length === 0) {
+    return 'This progress claim has no line items to edit'
+  }
+  if (!Array.isArray(claimedToDate) || claimedToDate.length !== lineItems.length) {
+    const got = Array.isArray(claimedToDate) ? claimedToDate.length : 0
+    return `A claimed-to-date value is required for every claim line (expected ${lineItems.length}, got ${got})`
+  }
+  return null
+}
+
+// Draft content validation shared by create and edit — the existing product
+// rules, unchanged and now enforced in the hook as well as the modal:
+//   · at least one line;
+//   · no line may be claimed BELOW its previously approved amount;
+//   · at least one line must claim something this period.
+// Claiming ABOVE a PO line value stays WARN-ONLY (the amber ⚠ in the editor) —
+// real claims sometimes exceed the PO pending a variation. There is deliberately
+// no aggregate over-PO control. Returns null when valid, else the first error.
+export function validateClaimDraft({ lineItems } = {}) {
+  const lines = Array.isArray(lineItems) ? lineItems : []
+  if (lines.length === 0) return 'A progress claim needs at least one line'
+  const backwards = lines.findIndex(li => (Number(li?.claimedThisPeriod) || 0) < 0)
+  if (backwards !== -1) {
+    return `Line ${backwards + 1}: claimed to date cannot be below the previously approved amount`
+  }
+  if (!lines.some(li => (Number(li?.claimedThisPeriod) || 0) > 0)) {
+    return 'A progress claim must claim an amount on at least one line'
+  }
+  return null
+}

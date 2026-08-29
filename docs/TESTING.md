@@ -820,6 +820,28 @@ project.
 - [ ] A claim with all lines at zero this period cannot be created.
 - [ ] Claim numbers are sequential company-wide (`PC-0001`, …).
 
+## 7a. Edit Draft Progress Claims (ADR-37)
+
+- [ ] Draft claim row actions are **Edit · Submit · Withdraw**, Edit first. No **Edit** appears on a submitted, under review, approved, rejected or invoiced claim.
+- [ ] **Edit** opens `Edit PC-000n`. A read-only block shows Claim #, PO number, the stored supplier name and the Draft badge, with *"Fixed at creation — wrong PO or supplier? Withdraw and raise a new claim."* — **no PO selector, no supplier control**.
+- [ ] Period Ending, Claim Ref, Notes, Retention and every line's claimed-to-date are prefilled from the stored claim; lines render in stored order with cost code, description, "of {PO line total}" and, where non-zero, "approved {previously approved}".
+- [ ] Change Period Ending, Claim Ref and Notes → **Save changes** → register Period updates; claim number, PO and supplier unchanged.
+- [ ] Change one line's claimed-to-date → the ±this-period figure recomputes → the footer Claimed / Retention / GST 10% / Total payable recompute → Save → the register's **Claimed (inc. GST)** updates.
+- [ ] Change Retention → GST is 10% of (subtotal − retention), **not** 10% of the subtotal. Enter retention above the subtotal → it clamps to the subtotal on save and the payable total is zero.
+- [ ] Enter a line below its previously-approved amount → red **Below approved** on the line, an amber "claimed to date cannot be below the previously approved amount" hint, and Save disabled.
+- [ ] Zero every line → amber "must claim an amount on at least one line" and Save disabled.
+- [ ] Enter above the PO line value → amber **⚠** but Save **remains enabled** (warned, not blocked).
+- [ ] **No add / remove / reorder line control exists** in either Create or Edit; the line count always equals the PO's line count.
+- [ ] An untouched Edit → Save leaves the document unchanged.
+- [ ] **Draft financial non-effect:** before and after the edit, Budget (Committed / Claimed / Actual / Remaining), Forecast, Commercial, Overview margin cards, Cash Flow and Retention are **all identical**, and the Invoices tab still offers no invoice from this claim.
+- [ ] **Submit** the edited claim → **Edit disappears**; Budget **Claimed** rises by exactly the edited claimed-this-period; Actual unchanged.
+- [ ] **Assess → Approve** → certified amounts are bounded by the **edited** claimed amounts (entering more is rejected); Claimed falls, Actual rises by the certified total; a claim-sourced Supplier Invoice reconciles as normal.
+- [ ] **Withdraw** a separate draft → it becomes Rejected with no **Edit**, and its PO becomes claimable again.
+- [ ] **Stale edit:** tab A opens Edit on a draft; tab B Submits (or Withdraws) it → tab A shows *"This progress claim is no longer Draft. Close the editor and review the latest version."* and Save is disabled; a save attempted at that moment is refused with the same message.
+- [ ] A draft claim whose PO has since been **Closed or Cancelled** is still editable, with a muted advisory naming the PO's new status.
+- [ ] A legacy claim with `supplierId: null` is editable and shows its stored free-text supplier name.
+- [ ] Editor is usable at 375 / 768 / 1280 px (context block stacks on mobile; line grid wraps as at create).
+
 ## 8. Cumulative Claiming
 
 - [ ] Approve a claim on a PO, then start a second claim on the same PO: each line pre-fills at its approved-to-date value.

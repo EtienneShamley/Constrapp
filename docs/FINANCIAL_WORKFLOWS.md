@@ -98,7 +98,15 @@ module).
   draft/cancelled POs are not commitments).
 - **One open claim per PO**: a PO with a claim in draft/submitted/under_review
   cannot take another claim until that claim is approved or rejected.
-- **Draft** — editable (amounts, retention, period, notes).
+- **Draft** — editable in place through the single create/edit editor
+  (ADR-37): each line's cumulative `claimedToDate`, plus `retention`,
+  `periodEnding`, `claimRef` and `notes`. **The line set is fixed** — one line
+  per PO line, never added to, removed from or reordered — and the **PO and
+  supplier are fixed at creation**; wrong PO or supplier → withdraw and raise a
+  new claim. `claimedThisPeriod` and the claimed header totals are re-derived on
+  every save. **A draft edit moves no financial figure** — a draft claim is
+  counted nowhere. A draft whose PO has since been closed or cancelled remains
+  editable.
 - **Submitted** — claimed amounts freeze; awaits assessment. `submittedAt` stamped.
 - **Approved** — carries per-line certified amounts; `approvedAt`/`approvedBy`
   stamped; approved amounts frozen forever.

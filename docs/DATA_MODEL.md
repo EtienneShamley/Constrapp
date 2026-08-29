@@ -313,6 +313,16 @@ Each line item: `{ costCodeId, costCodeName, description, qty, unit, unitPrice, 
 Cumulative supplier claims against one **sent** PO. One open claim
 (draft/submitted/under_review) per PO at a time.
 
+**Draft editing (ADR-37).** While `status` is `draft` the claim may be corrected
+in place through the single create/edit editor. Editable: `periodEnding`,
+`claimRef`, `notes`, `retention` and each line's cumulative `claimedToDate` —
+nothing else. `claimNumber`, `poId`/`poNumber`, `supplierId`/`supplierName` and
+every field below marked as a stamp, snapshot or approved value are **immutable
+after create** at the product/client level; wrong PO or supplier → withdraw and
+raise a new claim. ⚠️ Both the draft-only edit and the `submitted` freeze are
+**client-side only** — rules check tenant and role, not status (SECURITY.md
+Deferred Controls 1 and 2).
+
 | Field | Type | Notes |
 |---|---|---|
 | `claimNumber` | string | `PC-0001` — from the company-wide counter |
@@ -321,7 +331,7 @@ Cumulative supplier claims against one **sent** PO. One open claim
 | `periodEnding` | string | Date string (may be empty) |
 | `claimRef` | string | Supplier's own reference |
 | `variationId` | string \| null | **Reserved forward-link** to a Supplier Variation. Always `null` in the current branch — the Variations foundation does **not** wire claim-against-variation yet (claim documents are never modified). Activated in a later phase (claim-against-variation linkage) |
-| `lineItems` | array | One per PO line — see below |
+| `lineItems` | array | **Embedded, and the line SET IS FIXED**: exactly one line per PO line, created one-to-one when the claim is raised. Lines are never added, removed or reordered — `poLineIndex` is downstream identity. A draft edit authors only each line's `claimedToDate`; every identity field is rebuilt from the stored line and `claimedThisPeriod` is re-derived (ADR-37). See below |
 | `retention` | number | Ex-GST amount withheld, clamped to subtotal |
 | `claimedSubtotal`, `claimedGst`, `claimedTotal` | number | GST applies to (subtotal − retention) |
 | `approvedSubtotal`, `approvedGst`, `approvedTotal` | number \| null | Null until approved; frozen after |
@@ -335,12 +345,16 @@ Cumulative supplier claims against one **sent** PO. One open claim
 Each claim line item:
 
 ```
-{ poLineIndex,            // stable key — PO lines freeze after draft
+{ poLineIndex,            // stable key — PO lines freeze after draft; NEVER rewritten
   costCodeId, costCodeName, description, poLineTotal,   // denormalised from PO line
-  previouslyApproved,     // approved-to-date across earlier approved/invoiced claims
-  claimedToDate,          // cumulative figure the supplier claims
-  claimedThisPeriod,      // claimedToDate − previouslyApproved
-  approvedThisPeriod }    // null until assessed; certified ex-GST amount
+  previouslyApproved,     // approved-to-date across earlier approved/invoiced claims.
+                          //   PRESERVED verbatim by a draft edit, never re-derived (ADR-37)
+  claimedToDate,          // cumulative figure the supplier claims — the ONE authored
+                          //   per-line value in a draft edit
+  claimedThisPeriod,      // ALWAYS derived: roundMoney(claimedToDate − previouslyApproved);
+                          //   a caller-supplied figure is never trusted
+  approvedThisPeriod }    // null until assessed; certified ex-GST amount.
+                          //   Forced null on every rebuilt draft line
 ```
 
 ## …/projects/{projectId}/supplierInvoices/{invoiceId}

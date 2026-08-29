@@ -2555,3 +2555,114 @@ Forecast, Commercial, Cash Flow, Margin, claims, invoices, variations and
 retention are regression-proven unchanged while draft. The accepted
 limitations are the existing ones: post-draft immutability remains
 client-enforced, and concurrent draft edits are last-write-wins.
+
+## ADR-37: Edit Draft Progress Claims (one create/edit editor; draft-only correction; fixed line set; immutable PO, supplier and claim number; stored `previouslyApproved` preserved; no rules expansion)
+
+**Context.** The Progress Claims foundation could raise a claim and move it
+through its lifecycle, but had no edit UI — `updateProgressClaim` existed in
+the hook and nothing called it. A mistyped claimed amount, retention, period
+or reference on a draft therefore forced withdraw-and-recreate, burning a
+`PC-####` number. The dormant hook was also weaker than it looked: it wrote
+the caller's `lineItems` verbatim (so a caller could repoint a line's
+`poLineIndex`, `costCodeId` or `previouslyApproved`, or forge an
+`approvedThisPeriod` onto a draft line), and it derived the header totals
+*from* a caller-supplied `claimedThisPeriod` rather than re-deriving it.
+
+**Decision.**
+
+- **One editor, two modes.** The New Progress Claim modal becomes
+  `ProgressClaimEditorModal` with a `claim` prop: `null` = CREATE (unchanged
+  behaviour — sent-PO picker, cumulative pre-fill, numbering, currency
+  ratchet), a live draft = EDIT DRAFT. There is no second form. The line
+  mapping and validation the modal used inline move to `lib/progressClaims.js`
+  as pure helpers (`CLAIM_EDITABLE_STATUSES`, `claimLineToForm`,
+  `buildClaimLine`, `claimedToDateCountError`, `validateClaimDraft`) so both
+  modes share one implementation and the rules can be unit-tested.
+- **Draft-only, at the existing freeze point.** `CLAIM_EDITABLE_STATUSES` is
+  exactly `draft`; *Edit* is the first draft row action and does not exist at
+  any other status — `submitted` is the freeze point and `under_review` /
+  `invoiced` (reserved) are frozen like every later status. No reopen, no new
+  status, no transition change.
+- **THE LINE SET IS FIXED.** A claim carries one line per PO line, created
+  one-to-one when it was raised. The editor offers **no add, remove or reorder
+  control**, and the update contract has no channel for one. `poLineIndex` is
+  the identity `previouslyApprovedByPoLine` and the supplier-invoice seeding
+  path both key off, so an invented, dropped or shifted line would silently
+  repoint cumulative history. This is deliberately narrower than ADR-36, where
+  a draft PO's lines *may* be added to and removed.
+- **The only authored per-line value is `claimedToDate`.** The update contract
+  is `(claim, { periodEnding, claimRef, notes, retention, claimedToDate })` —
+  the caller supplies **no line items at all**. `claimedToDate` is the ordered
+  set of cumulative figures, one per stored line, and
+  `claimedToDateCountError` refuses a length mismatch outright rather than
+  padding or truncating, so authored values can never pair with the wrong
+  lines. Every line is then rebuilt over `claim.lineItems`, which makes the
+  **stored document the sole authority for line identity**: `poLineIndex`,
+  `costCodeId`, `costCodeName`, `description`, `poLineTotal` and
+  `previouslyApproved` are structurally unwritable. `claimedThisPeriod` is
+  always re-derived as `roundMoney(claimedToDate − previouslyApproved)` (a
+  caller-supplied figure is never trusted) and `approvedThisPeriod` is forced
+  `null` on every rebuilt draft line.
+- **Stored `previouslyApproved` is preserved, never re-derived.** The
+  one-open-claim rule means no later approved claim can legitimately appear
+  while this draft is open, so re-deriving would be a no-op in every supported
+  case and, in the already-broken ones (Deferred Controls 1 and 3), would
+  silently move a figure the user never authored.
+- **PO, supplier and claim number are immutable.** `poId`/`poNumber`,
+  `supplierId`/`supplierName`, `claimNumber`, `status`, `variationId`,
+  `currency`, `revision`, every `approved*` value, `assessmentNotes`, the
+  lifecycle stamps, `approvedBy`, `externalRefs` and `createdAt`/`createdBy`
+  are never written. The editor renders the claim number, PO number, **stored**
+  `supplierName` snapshot and the status as read-only information — the
+  supplier need not resolve to a current contact (legacy `supplierId: null`
+  claims remain editable) and **the PO need not still be sent**: edit reads
+  nothing from the PO, because every value it renders is already snapshotted
+  on the claim line. Wrong PO or supplier → withdraw and raise a new claim.
+- **A draft claim whose PO has since closed or been cancelled stays editable.**
+  Current PO status is never a validation input; the editor shows an optional
+  muted advisory (`PO-0007 is now Cancelled; this draft can still be
+  corrected.`) and nothing more. No dependency framework.
+- **Validation, unchanged and now enforced in the hook too.**
+  `validateClaimDraft` encodes exactly the existing create rules: at least one
+  line, no line below its `previouslyApproved`, at least one line claiming
+  something this period. Claiming **above** a PO line value stays **warn-only**
+  (the amber ⚠) — real claims exceed the PO pending a variation — and no
+  aggregate over-PO control is introduced. Totals reuse `claimTotals`
+  unchanged: retention clamped to the subtotal, GST at 10% of the **net**, and
+  deliberately *not* the PO formula. No tax codes.
+- **Stale-editor guard, in the application layer.** The page passes the live
+  document from the subscribed collection; if its status leaves draft while the
+  editor is open the form shows a latest-version message and disables Save, and
+  the save path re-resolves the live document by id and refuses to write unless
+  it is still draft. The hook's draft guard remains the final client-side
+  check. No transaction, no revision locking, no concurrency framework — two
+  concurrent draft editors remain last-write-wins.
+- **No Firestore Rules change.** Rules enforce tenant membership,
+  financial-role write access and the delete block — nothing else on this
+  collection. Draft-only editing, claim/PO/supplier identity immutability, the
+  `submitted` freeze, transition legality, one-open-claim, the claimed floor,
+  the positive-claim requirement, totals correctness, retention clamping and
+  `approvedThisPeriod` staying null while draft are **client-side only** and
+  bypassable by a direct SDK call (SECURITY.md Deferred Controls 1 and 2).
+  Progress Claim rules hardening is a separate future security increment,
+  deliberately not bundled here.
+
+**Alternatives rejected.** A separate Edit modal (two forms to keep aligned);
+keeping the hook's `lineItems` parameter and merely re-anchoring inside it
+(leaves an identity-writing channel open for no benefit — the hook had no
+callers, so the contract was free to narrow); re-deriving `previouslyApproved`
+on save; allowing line add/remove (breaks `poLineIndex` identity and the
+invoice seeding path); blocking edit when the PO is no longer sent; a
+rules-side draft-only guard (a posture change belonging to the deferred
+hardening); a transaction re-reading status at save (over-engineering for a UX
+guard the rules do not back).
+
+**Consequences.** A draft can be corrected without losing its number; no
+commercial figure moves until the existing counting points, at which the
+**edited** values flow through exactly as normal — Budget Claimed (`submitted`)
+and Budget Actual (`approved`) are regression-proven to move by precisely the
+edited and certified amounts, while Committed, matured Committed, Forecast,
+Margin, Cash Flow inputs, Retention Held/Released and supplier-invoice
+availability are proven byte-identical across an arbitrary draft edit. The
+accepted limitations are the existing ones: post-draft immutability remains
+client-enforced, and concurrent draft edits are last-write-wins.
