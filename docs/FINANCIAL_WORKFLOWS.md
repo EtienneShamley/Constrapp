@@ -199,18 +199,33 @@ Statuses: `draft` → `approved` → `posted`, with `cancelled` reachable from
 > 1), a **direct-SDK caller can still forge `status: 'paid'`** — which is exactly
 > why `paid` is deliberately left in the counting statuses below. See ADR-24.
 
-- **Draft** — fully editable (ADR-35: title, description, reason, reference,
-  authored dates, line items and the originating RFI, via the same editor as
-  create; type, counterparty and PO are fixed). **Editing a draft moves only the
-  pending exposure / context figures that already derive from pending
-  variations** — Pending Supplier / Client Variation Exposure, pending supplier
-  exposure by cost code, and the pending reference lines on Forecast,
-  Commercial and Cash Flow. It never changes an approved total, Budget's
-  Approved Supplier Variations, Commitment Exposure, Forecast Final Cost, the
-  Current Contract Sum, Forecast Revenue, Gross Profit, Margin %, Available to
-  Invoice or the invoiceable list.
-- **Approved** — internally certified; locked except for valid lifecycle actions.
-  `approvedAt`/`approvedBy` stamped.
+- **Draft** — the **only editable status** (ADR-38). Correctable in place through
+  the same editor as create, instead of being cancelled and re-raised (which burns
+  an `SI-####`). Editable for **both** sources: `supplierInvoiceNumber`,
+  `invoiceDate`, `receivedDate`, `dueDate`, `notes`. A **`direct_po`** draft may
+  additionally edit `amount` and `taxCode` on each **stored** line plus header
+  `retention`; a **`progress_claim`** draft is **header-only** — its amounts, tax
+  codes and retention are the claim's certified values, rendered read-only and
+  omitted from the save payload entirely, so the reconciliation invariant is
+  structurally unbreakable. **The stored line set is fixed** (no add, remove,
+  reorder or reseed): create filters out zero-amount lines, so a PO line never
+  priced at create cannot be added by editing — cancel and raise a new invoice; a
+  line that *is* stored may be taken to zero and brought back. Source, supplier,
+  PO, claim, number, `paymentTerms`, currency, stamps and audit fields are
+  immutable, and per-line `poLineIndex` / `costCodeId` / `costCodeName` /
+  `description` are always read from the stored line. `gstAmount` is always
+  re-derived from `amount` + `taxCode`. **A draft is financially inert, so
+  editing one moves NO figure anywhere** — not Budget Invoiced or Actual, not
+  Committed maturing, not Forecast, Forecast Final Cost, Commercial, Overview,
+  Margin or Cash Flow, not Supplier Payments payables, Supplier Credit Note
+  figures, Retention Held/Released or PO Remaining. The edited values enter the
+  counting points unchanged when the invoice is **posted**. Draft-only editing and
+  every immutability above are **client-enforced only**
+  ([SECURITY.md](SECURITY.md) → Deferred Controls 1 and 2).
+- **Approved** — the **AUTHORING FREEZE POINT**: *Edit* disappears and the
+  content is locked, but **nothing has posted yet** — an approved invoice still
+  contributes to no financial figure. Internally certified; locked except for
+  valid lifecycle actions. `approvedAt`/`approvedBy` stamped.
 - **Posted** — the **financial commit point**: the invoice now counts toward
   Invoiced and Actual and matures Committed. Immutable. `postedAt`/`postedBy`
   stamped. **Posted invoices cannot be cancelled or unposted** — corrections are
@@ -226,6 +241,20 @@ direct-SDK caller forged that status on a real invoice, removing it here would
 silently erase that invoice from Invoiced and Actual. Counting it is the safe
 failure mode — the cost stays visible. It is **not** used for payment
 reconciliation, which reads **only `posted`** invoices (see *Supplier Payments*).
+
+> **Note (Variations, ADR-35) — retained here for reference.** This paragraph
+> was recorded in this section by the ADR-35 work and describes **Variations**,
+> not supplier invoices; it is kept verbatim because it appears nowhere else in
+> this document. *A draft Variation is fully editable (title, description,
+> reason, reference, authored dates, line items and the originating RFI, via the
+> same editor as create; type, counterparty and PO are fixed). Editing a draft
+> moves only the pending exposure / context figures that already derive from
+> pending variations — Pending Supplier / Client Variation Exposure, pending
+> supplier exposure by cost code, and the pending reference lines on Forecast,
+> Commercial and Cash Flow. It never changes an approved total, Budget's Approved
+> Supplier Variations, Commitment Exposure, Forecast Final Cost, the Current
+> Contract Sum, Forecast Revenue, Gross Profit, Margin %, Available to Invoice or
+> the invoiceable list.*
 
 ### Line amounts, GST & retention
 
