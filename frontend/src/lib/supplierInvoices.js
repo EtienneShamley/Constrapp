@@ -91,9 +91,20 @@ export const canTransition = (from, to) => (SI_TRANSITIONS[from] ?? []).includes
 // (lib/supplierPayments.js), which counts only `posted` invoices (ADR-24).
 export const SI_COUNTING_STATUSES = [SI_STATUS.POSTED, SI_STATUS.PAID]
 
-// A draft invoice is fully editable; everything from approved onward is frozen
-// except valid lifecycle actions (client-enforced, matching PO/claim posture).
+// Statuses whose authored content (references, dates, notes, and — for a
+// `direct_po` invoice — line amounts, tax codes and retention) may still change.
+// Exactly draft: `approved` is the AUTHORING FREEZE POINT and every later status
+// is frozen too. `posted` is a separate, later thing — the FINANCIAL COUNTING
+// POINT (SI_COUNTING_STATUSES). Enforced in the client hook and editor only —
+// Firestore rules check neither status nor transition legality on this
+// collection (docs/SECURITY.md -> Deferred Controls 1 and 2), so a direct-SDK
+// caller CAN still rewrite an approved or posted invoice. Never describe
+// draft-only editing as enforced.
 export const SI_EDITABLE_STATUSES = [SI_STATUS.DRAFT]
+
+// Whether an invoice may still be corrected in place. Content-only — it says
+// nothing about lifecycle actions, which stay with canTransition.
+export const isEditableInvoice = (inv) => SI_EDITABLE_STATUSES.includes(inv?.status)
 
 export const SI_SOURCE = {
   PROGRESS_CLAIM: 'progress_claim',
@@ -219,6 +230,239 @@ export function duplicateInvoiceWarnings(invoices, { id = null, supplierId = nul
 // One approved claim may carry only one non-cancelled supplier invoice.
 export const claimHasActiveInvoice = (invoices, progressClaimId) =>
   !!progressClaimId && invoices.some(inv => inv.progressClaimId === progressClaimId && inv.status !== SI_STATUS.CANCELLED)
+
+// ── Draft editing (ADR-38) ───────────────────────────────────────────────────
+//
+// A DRAFT supplier invoice may be corrected in place instead of being cancelled
+// and re-raised (which burns an SI-#### number). These helpers are shared by the
+// editor and the update hook so the two cannot drift, and they encode the two
+// structural guarantees the feature rests on.
+//
+// 1. THE STORED LINE SET IS FIXED. An invoice carries the lines that were
+//    actually stored when the draft was raised — for `direct_po` that is the
+//    PO lines that had a non-zero amount, because create filters the rest out.
+//    Edit offers no add, remove, reorder or reseed control and the update
+//    contract has no channel for one: `poLineIndex` is the identity
+//    postedInvoicedByPoLine keys off to mature Committed, so an invented,
+//    dropped or shifted line would silently repoint invoiced-to-date onto the
+//    wrong PO line. A PO line never priced at create is therefore unreachable
+//    by editing — cancel the draft and raise a new invoice. A line that IS
+//    stored may be taken to zero and back, because its identity stays stored.
+//
+// 2. IDENTITY COMES FROM THE STORED LINE, NEVER FROM FORM STATE. buildInvoiceLine
+//    reads poLineIndex/costCodeId/costCodeName/description from its `source`
+//    argument, which in edit mode IS the stored line — so a draft edit cannot
+//    repoint a line at a different PO line or cost code, and `gstAmount` is
+//    always re-derived rather than believed.
+//
+// Everything here is client-side only. Firestore rules on this collection check
+// role and tenancy and nothing else (docs/SECURITY.md -> Deferred Controls 1
+// and 2).
+
+// Whether this invoice was raised from an approved progress claim. Claim-sourced
+// drafts are HEADER-ONLY editable: their line amounts, tax codes and retention
+// are the certified claim values and must keep reconciling to them, so the
+// editor renders them read-only and the update contract ignores any attempt to
+// supply them (ADR-38 D1).
+export const isClaimSourced = (inv) => inv?.source === SI_SOURCE.PROGRESS_CLAIM
+
+// Stored invoice line -> the editor's per-line form values.
+//
+// `amount` becomes a string, matching the create seed, and a missing, empty or
+// malformed legacy value reads as '0' — never '', which would render an empty
+// input the user could mistake for "nothing invoiced on this line".
+//
+// `taxCode` is passed through VERBATIM and is deliberately NOT defaulted to
+// `gst` (ADR-38 D7). An unrecognised or missing legacy code must stay visible as
+// invalid so the user is required to choose one, rather than being silently
+// rewritten to a taxable code — which would change GST, the header totals and,
+// once posted, Actual. `invalidTaxCode` says exactly that, so the editor can
+// render the correction prompt without re-deriving the rule.
+export function invoiceLineToForm(line) {
+  const li  = line && typeof line === 'object' ? line : {}
+  const raw = li.amount
+  const n   = Number(raw)
+  const amount = (raw === '' || raw == null || !Number.isFinite(n)) ? '0' : String(n)
+  const taxCode = typeof li.taxCode === 'string' ? li.taxCode : ''
+  return { amount, taxCode, invalidTaxCode: !TAX_CODES.includes(taxCode) }
+}
+
+// ONE builder for both modes, so CREATE and EDIT DRAFT cannot drift.
+//
+// `source` supplies the line's IDENTITY and is never authored by the user:
+//   · CREATE — the PO line (index supplied by the caller as `poLineIndex`) or
+//     the approved claim line (which already carries `poLineIndex`).
+//   · EDIT   — the STORED invoice line, which already carries all four identity
+//     fields, so the caller supplies nothing but the authored money.
+//
+// `gstAmount` is ALWAYS re-derived through gstForLine; a caller-supplied value is
+// never trusted. `taxCode` is stored exactly as given — validation rejects an
+// invalid code before any write, rather than this builder quietly repairing one.
+//
+// ⚠️ `gstFromUnroundedAmount` EXISTS SOLELY TO PRESERVE PRE-ADR-38 CREATE
+// BEHAVIOUR, BYTE FOR BYTE. The create modal has always derived the two money
+// fields from the entered figure in this order:
+//
+//     amount:    roundMoney(entered)     // rounded to cents
+//     gstAmount: gstForLine(entered)     // from the UNROUNDED figure
+//
+// For an entry with more than two decimals the two bases can differ by one cent
+// (e.g. 1234.045 -> amount 1234.05, with GST 123.40 raw vs 123.41 rounded), so
+// collapsing them would silently change what CREATE stores. ADR-38 was required
+// to leave create untouched, so create passes this flag and gets exactly its old
+// arithmetic; the claim path is unaffected either way because it already hands in
+// a rounded `approvedThisPeriod`.
+//
+// EDIT DRAFT does NOT pass it and must not: rebuilding from the ROUNDED stored
+// amount is what makes every edited line satisfy
+// `gstAmount === gstForLine(amount, taxCode)`, the self-consistency invariant
+// claimSourcedDriftError relies on. The flag changes only which figure the GST is
+// computed from — it never affects identity, the stored `amount`, or the refusal
+// to trust a caller-supplied `gstAmount`.
+export function buildInvoiceLine(source, { amount, taxCode, poLineIndex, gstFromUnroundedAmount = false } = {}) {
+  const src = source && typeof source === 'object' ? source : {}
+  const str = (v) => (typeof v === 'string' ? v : '')
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
+
+  const idx = poLineIndex ?? src.poLineIndex
+  const raw = num(amount)
+  const amt = roundMoney(raw)
+  const tc  = typeof taxCode === 'string' ? taxCode : ''
+
+  return {
+    poLineIndex:  num(idx),
+    costCodeId:   str(src.costCodeId),
+    costCodeName: str(src.costCodeName),
+    description:  str(src.description),
+    amount:       amt,
+    taxCode:      tc,
+    gstAmount:    gstForLine(gstFromUnroundedAmount ? raw : amt, tc),
+  }
+}
+
+// Positional-pairing guard for the `direct_po` draft-edit contract: the caller
+// supplies one amount and one tax code per STORED line, in stored order. A length
+// mismatch would silently pair authored values with the wrong lines, so it is
+// refused outright rather than padded or truncated. Returns null when exact.
+//
+// Not used on the claim-sourced path, which authors no line values at all.
+export function invoiceLineInputCountError(lineItems, amounts, taxCodes) {
+  if (!Array.isArray(lineItems) || lineItems.length === 0) {
+    return 'This supplier invoice has no line items to edit'
+  }
+  const n = lineItems.length
+  if (!Array.isArray(amounts) || amounts.length !== n) {
+    const got = Array.isArray(amounts) ? amounts.length : 0
+    return `An amount is required for every invoice line (expected ${n}, got ${got})`
+  }
+  if (!Array.isArray(taxCodes) || taxCodes.length !== n) {
+    const got = Array.isArray(taxCodes) ? taxCodes.length : 0
+    return `A tax code is required for every invoice line (expected ${n}, got ${got})`
+  }
+  return null
+}
+
+// Draft content validation for EDIT. Returns null when valid, else the first
+// error.
+//
+//   · a supplier invoice reference is required (create's `refValid`);
+//   · an invoice date is required (create's `dateValid`);
+//   · at least one line must carry a positive amount (create's `hasAmount`,
+//     which create achieves by filtering zero lines out before saving);
+//
+// The next two clauses apply only when the line values are AUTHORED, i.e. the
+// `direct_po` path (`authoredLines`, default true). A claim-sourced draft
+// authors neither — its amounts, tax codes and retention are the certified claim
+// values, preserved byte-for-byte — so refusing to save a HEADER correction over
+// odd legacy line data there would block a fix the user cannot otherwise make.
+// That path is guarded by claimSourcedDriftError instead.
+//
+//   · every line's tax code must be one of TAX_CODES — ADR-38 D7, so a legacy
+//     invoice with a malformed code cannot be saved until it is corrected,
+//     rather than being silently rewritten to a taxable code;
+//   · retention must be a finite number and must not be NEGATIVE (ADR-38 D6).
+//     A negative retention makes the payable exceed the gross invoice value.
+//     `invoiceTotals` does NOT defend against this — it clamps only the upper
+//     bound (retention above subtotal falls to subtotal), which is deliberate
+//     and unchanged — so the floor is enforced here, before any write, rather
+//     than resting on the editor's `min="0"` attribute alone.
+//
+// Deliberately NOT blocked, matching create: a duplicate supplier reference and
+// over-invoicing against the PO both stay amber warnings (ADR-38 D3).
+//
+// CREATE keeps its own inline validity check unchanged (ADR-38: preserve create
+// behaviour exactly). Its seeds make the tax-code and retention clauses vacuous
+// there in any case — every created line is seeded with a valid code, and the
+// retention input is bounded by the browser's constraint validation.
+export function validateInvoiceDraft({
+  lineItems, supplierInvoiceNumber, invoiceDate, retention = 0, authoredLines = true,
+} = {}) {
+  const lines = Array.isArray(lineItems) ? lineItems : []
+  if (lines.length === 0) return 'A supplier invoice needs at least one line'
+  if (!String(supplierInvoiceNumber ?? '').trim()) return "The supplier's invoice number is required"
+  if (!String(invoiceDate ?? '').trim()) return 'An invoice date is required'
+
+  if (authoredLines) {
+    const badTax = lines.findIndex(li => !TAX_CODES.includes(li?.taxCode))
+    if (badTax !== -1) {
+      return `Line ${badTax + 1}: choose a tax code (${TAX_CODE_LABELS[TAX_CODE.GST]}, ${TAX_CODE_LABELS[TAX_CODE.GST_FREE]} or ${TAX_CODE_LABELS[TAX_CODE.INPUT_TAXED]})`
+    }
+    const retained = Number(retention)
+    if (!Number.isFinite(retained)) return 'Retention must be a number'
+    if (retained < 0) return 'Retention cannot be negative'
+  }
+
+  if (!lines.some(li => (Number(li?.amount) || 0) > 0)) {
+    return 'A supplier invoice must carry an amount on at least one line'
+  }
+  return null
+}
+
+// The header money fields a rebuild must reproduce exactly for a claim-sourced
+// invoice. Ordered so the message names the most meaningful drift first.
+const CLAIM_SOURCED_FROZEN_TOTALS = [
+  ['payableTotal',   'payable total'],
+  ['payableGst',     'payable GST'],
+  ['subtotal',       'subtotal'],
+  ['gstTotal',       'GST total'],
+  ['grossTotal',     'gross total'],
+  ['retention',      'retention'],
+  ['retentionGst',   'retention GST'],
+  ['retentionTotal', 'retention total'],
+  ['net',            'net'],
+]
+
+// DEFENCE IN DEPTH for the claim-sourced reconciliation invariant (ADR-38).
+//
+// A `progress_claim` invoice must keep paying exactly the approved claim's
+// certified GST and total — that is checked against the live claim at CREATE
+// (claimReconciliationError) and must not be breakable afterwards. Draft editing
+// makes it structurally unbreakable: the editor exposes no line, tax or retention
+// control on this path, and the update contract writes no financial field.
+//
+// This is the belt to that braces. It rebuilds the stored lines and refuses the
+// save if ANY stored header total fails to reproduce — which happens only when
+// the stored document is already internally inconsistent (a legacy or forged
+// `gstAmount` that disagrees with its own amount + tax code, or a missing total).
+// Such a draft is refused with a clear message rather than being mutated into
+// agreement, because rewriting it would move money the user never authored.
+//
+// It reads the invoice's OWN stored totals, never the progress claim, so normal
+// editing needs no live-claim dependency: approved claim amounts are frozen
+// forever, so the stored figures ARE the certified figures.
+export function claimSourcedDriftError(invoice, totals) {
+  if (!isClaimSourced(invoice)) return null
+  for (const [key, label] of CLAIM_SOURCED_FROZEN_TOTALS) {
+    const stored = Number(invoice?.[key])
+    if (!Number.isFinite(stored)) {
+      return `${invoice?.invoiceNumber || 'This invoice'} is missing its stored ${label} and cannot be safely edited. Cancel it and raise a new invoice from the claim.`
+    }
+    if (roundMoney(stored) !== roundMoney(Number(totals?.[key]) || 0)) {
+      return `${invoice?.invoiceNumber || 'This invoice'} no longer reconciles to its approved claim (${label} ${roundMoney(stored)} vs ${roundMoney(Number(totals?.[key]) || 0)}). Cancel it and raise a new invoice from the claim.`
+    }
+  }
+  return null
+}
 
 // ── Read-time budget derivations ─────────────────────────────────────────────
 

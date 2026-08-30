@@ -2666,3 +2666,202 @@ Margin, Cash Flow inputs, Retention Held/Released and supplier-invoice
 availability are proven byte-identical across an arbitrary draft edit. The
 accepted limitations are the existing ones: post-draft immutability remains
 client-enforced, and concurrent draft edits are last-write-wins.
+
+---
+
+## ADR-38: Edit Draft Supplier Invoices (one create/edit editor; draft-only correction at the `approved` freeze point; fixed stored line set; immutable source, supplier, PO and claim; claim-sourced drafts header-only; `gstAmount` always re-derived; no rules expansion)
+
+**Context.** The Supplier Invoice foundation could raise an invoice and move it
+through its lifecycle, but had no edit UI. `updateSupplierInvoice` existed in the
+hook and **nothing called it**; `SI_EDITABLE_STATUSES` was declared and never
+referenced. A mistyped supplier reference, date, amount, tax code or retention on
+a draft therefore forced cancel-and-recreate, burning an `SI-####` number.
+
+The dormant hook was also materially weaker than it looked. It wrote the caller's
+`lineItems` **verbatim** (so a caller could repoint a line's `poLineIndex`,
+`costCodeId`, `costCodeName` or `description`); it **trusted the caller's
+`gstAmount`** rather than deriving it, so a line could claim `gst_free` while
+carrying GST; it **never re-ran the claim reconciliation guard**, so a
+`progress_claim` draft could be edited out of reconciliation and then approved and
+posted, breaking the ADR-24 invariant that a claim-sourced invoice pays exactly
+the approved claim's certified GST and total; and it re-validated none of create's
+required fields.
+
+`lib/supplierInvoices.js` — which feeds Budget Invoiced and Actual, Committed
+maturing, the claim side of Actual, Forecast, Margin, Cash Flow, Supplier
+Payments, Supplier Credit Notes and Retention — had **no unit suite at all**.
+
+**Decision.**
+
+- **One editor, two modes.** `CreateInvoiceModal` becomes
+  `SupplierInvoiceEditorModal` with an `invoice` prop: `null` = CREATE (unchanged
+  behaviour — source toggle, PO/claim picker, line seeding, the zero-amount line
+  filter, numbering, the currency ratchet, reconciliation block), a live draft =
+  EDIT DRAFT. There is no second form. The line mapping and validation move to
+  `lib/supplierInvoices.js` as pure helpers (`isEditableInvoice`, `isClaimSourced`,
+  `invoiceLineToForm`, `buildInvoiceLine`, `invoiceLineInputCountError`,
+  `validateInvoiceDraft`, `claimSourcedDriftError`) so both modes share one
+  implementation and the rules can be unit-tested.
+- **Draft-only, at the existing AUTHORING FREEZE POINT.** `SI_EDITABLE_STATUSES`
+  is exactly `draft`; *Edit* is the first draft row action and exists at no other
+  status. Note the two points are different and both are preserved: **`approved`
+  freezes authored content**, and **`posted` is the financial counting point**
+  (`SI_COUNTING_STATUSES`). No reopen, no new status, no transition change.
+- **THE STORED LINE SET IS FIXED.** The editor operates only over the
+  `lineItems` that were actually stored when the draft was raised. There is **no
+  add, remove, reorder or reseed control** in either mode, and the update contract
+  has no channel for one. `poLineIndex` is the identity `postedInvoicedByPoLine`
+  keys off to mature Committed, so an invented, dropped or shifted line would
+  silently repoint invoiced-to-date onto the wrong PO line. Create filters out
+  zero-amount lines, so **a PO line never priced at create was never stored and
+  cannot be added by editing** — cancel the draft and raise a new invoice. This is
+  deliberate and is stated in the editor. A line that **is** stored may be taken
+  to zero and brought back, because its identity stays stored. Narrower than
+  ADR-36 (where a draft PO's lines may be added to and removed), matching ADR-37.
+- **Identity always comes from the stored line.** `buildInvoiceLine` reads
+  `poLineIndex`, `costCodeId`, `costCodeName` and `description` from its `source`,
+  which in edit mode **is** the stored line. The update contract carries **no
+  `lineItems`** — only ordered `amounts` and `taxCodes`, one per stored line, with
+  `invoiceLineInputCountError` refusing a length mismatch outright rather than
+  padding or truncating. Line identity is therefore structurally unwritable.
+- **`gstAmount` is ALWAYS re-derived** through `gstForLine(amount, taxCode)` in
+  both modes; a caller-supplied value is never trusted, and a stored value that
+  disagrees with its own amount and tax code is ignored. **In EDIT** it is derived
+  from the **rounded** stored amount, so every edited line satisfies
+  `gstAmount === gstForLine(amount, taxCode)` exactly — the invariant
+  `claimSourcedDriftError` depends on. **CREATE is untouched**: it has always
+  stored `roundMoney(entered)` as the amount while deriving GST from the
+  **unrounded** entered figure, which for a >2-decimal entry can differ by one
+  cent (1234.045 → amount 1234.05, GST 123.40 not 123.41). Since ADR-38 was
+  required to leave create's behaviour byte-identical, `buildInvoiceLine` takes a
+  narrowly-scoped `gstFromUnroundedAmount` flag that create passes and edit never
+  does. The flag changes only which figure the GST is computed from — never
+  identity, never the stored `amount`, and never the refusal to trust a
+  caller-supplied `gstAmount`. The claim path is unaffected either way, because it
+  already seeds a rounded `approvedThisPeriod`.
+- **`direct_po` drafts** may edit the five header authoring fields
+  (`supplierInvoiceNumber`, `invoiceDate`, `receivedDate`, `dueDate`, `notes`)
+  plus, per **stored** line, `amount` and `taxCode`, plus header `retention`.
+- **`progress_claim` drafts are HEADER-ONLY.** Their line amounts, tax codes and
+  retention are the approved claim's certified values. The editor renders them
+  read-only and **the save payload omits them entirely** — the reconciliation
+  invariant is made *structurally unbreakable* rather than validated after the
+  fact, so no control is exposed that would merely fail reconciliation afterwards.
+  As defence in depth the hook rebuilds the stored lines and refuses the save if
+  any stored header total fails to reproduce (`claimSourcedDriftError`), which can
+  happen only when the stored document is already internally inconsistent. **No
+  progress claim is read or modified**, and normal editing has no live-claim
+  dependency: approved claim amounts are frozen forever, so the invoice's own
+  stored figures *are* the certified figures.
+- **Negative retention is refused before the write.** `invoiceTotals` clamps only
+  the *upper* bound (retention above subtotal falls to subtotal — deliberate and
+  unchanged); it does **not** clamp a negative, which would make the payable
+  exceed the gross supply. `validateInvoiceDraft` therefore enforces the floor in
+  the hook, not merely through the editor's `min="0"` attribute.
+- **An unknown legacy tax code is never silently rewritten.** `invoiceLineToForm`
+  passes a stored `taxCode` through verbatim and reports `invalidTaxCode`; the
+  select shows an empty *"Choose a tax code…"* placeholder in red and
+  `validateInvoiceDraft` **blocks Save** until the user picks a real one.
+  Defaulting to `gst` would quietly add 10% to a line the supplier never taxed and,
+  once posted, land it in Actual. `gstForLine`'s own zero-rating of an unknown code
+  is unchanged. On the claim-sourced path tax codes are read-only, so
+  `validateInvoiceDraft` skips this clause (`authoredLines: false`) rather than
+  blocking a header correction the user could not otherwise make.
+- **Source, supplier, PO, claim and number are immutable.** `invoiceNumber`,
+  `status`, `docType`, `source`, `supplierId`/`supplierName`, `poId`/`poNumber`,
+  `progressClaimId`/`claimNumber`, `paymentTerms`, `currency`, `revision`, every
+  lifecycle stamp, `paidAt`, `adjustsInvoiceId`, `attachments`, `externalRefs` and
+  `createdAt`/`createdBy` are never written. The editor renders the SI number,
+  source, **stored** supplier snapshot, PO/claim numbers and the status as
+  read-only context. A legacy `supplierId: null` invoice stays editable, and the
+  **PO need not still be sent or closed** — edit reads no invoice data from it.
+  Wrong source, supplier, PO or claim → cancel and raise a new invoice.
+- **`paymentTerms` is never re-snapshotted.** It records the terms the invoice was
+  raised on. When the invoice date changes, the due-date suggestion uses the
+  invoice's **own stored** `paymentTerms`, so edit never re-reads the contact.
+- **Duplicates stay warning-only.** `duplicateInvoiceWarnings` is re-run in edit
+  mode with the current invoice `id` excluded (the parameter existed from the
+  beginning and create never passed it), so an untouched draft never warns against
+  itself. A genuine collision shows the existing amber warning and **Save remains
+  allowed**. Server-enforced uniqueness stays deferred.
+- **Over-invoicing stays warning-only and advisory.** In edit the PO is resolved
+  by `poId` from **all** project POs (its status may have moved on) and feeds the
+  per-line and total ⚠ only; stored invoice lines are paired to PO lines through
+  each line's own `poLineIndex`, never by position. If the PO cannot be resolved
+  the advisory is simply omitted — it never blocks editing.
+- **Stale-editor guard.** The page passes the **live** document, so a status
+  change elsewhere reaches the open editor through the existing subscription and
+  puts it into stale mode ("This supplier invoice is no longer Draft. Close the
+  editor and review the latest version.") with Save disabled. `handleUpdate`
+  re-resolves the live invoice by id immediately before writing and refuses unless
+  it is still a draft; the hook keeps its own draft guard as the final client-side
+  check. **No transaction, no revision locking, no optimistic concurrency.** Two
+  concurrent draft editors remain **last-write-wins**.
+- **No transaction, counter or currency ratchet on the edit path.** No number is
+  allocated, and the project currency lock was already committed when the invoice
+  was created; re-staging it on an already-locked project would be **rejected** for
+  a `qs` user by the deliberately narrow rule on that field.
+- **No Firestore Rules change.** See below.
+
+**Financial position.** Draft supplier invoices are financially inert in every
+consumer — `SI_COUNTING_STATUSES` (posted + the deprecated, forgeable `paid`)
+gates Budget Invoiced/Actual, Committed maturing, `postedInvoicedByPo(Line)` and
+the claim-side Actual exclusion; `isPayableInvoice`, `isCreditableInvoice` and
+`retentionInvoices` all gate on `posted` alone. Editing a draft therefore moves
+**no** Budget, Forecast, Forecast Final Cost, Commercial, Overview, Margin, Cash
+Flow, Supplier Payments, Supplier Credit Note, Retention Held/Released or PO
+Remaining figure, and the edited values enter the existing counting points
+unchanged when the invoice is posted — proven byte-for-byte by the new suite. The
+two non-financial draft effects are preserved and unreachable by editing because
+their inputs are immutable: `claimHasActiveInvoice` (a draft still holds its
+claim) and `monetaryLockReasons` (any invoice is currency-lock evidence; the lock
+was already committed at create). **No stored rollup is added.**
+
+**Security posture — RULES-ENFORCED vs CLIENT-ENFORCED.** No rule changed, and
+none is required. On `supplierInvoices` the rules enforce **only**: company/tenant
+isolation; the `company_admin` / `project_manager` / `qs` gate on read *and* write
+(tighter than POs and claims — subcontractor and client users cannot read the AP
+register); and `allow delete: if false`. Everything this feature relies on is
+**CLIENT-ENFORCED ONLY and must never be described as enforced**: draft-only
+editing, lifecycle/transition legality, post-`approved` content freeze,
+post-`posted` immutability, source/supplier/PO/claim identity immutability, fixed
+line identity, GST correctness, header-total correctness, claim reconciliation,
+one-active-invoice-per-claim, and duplicate-reference semantics. A direct-SDK
+caller can still rewrite an approved or posted supplier invoice — that was already
+true before this feature, which adds no new exposure and uses a write permission
+that already existed unconstrained (docs/SECURITY.md → Deferred Controls 1 and 2;
+`firestore.rules` retains its existing TODO). The one genuine server-side control
+nearby is on the **credit-note** side: `supplierCreditNotes` rules `get()` the
+target invoice and require `status == 'posted'`, which protects credit notes from
+drafts — not invoices from edits. Rules hardening for this collection (a
+`corePreserved()` identity freeze plus a lifecycle model spanning create, edit and
+every transition, with its own `supplierInvoices.rules.test.js`) remains a
+**separate security increment**, deliberately not taken opportunistically here —
+the ADR-35 precedent.
+
+**Alternatives rejected.**
+
+- *Reseeding the full PO line set in edit for `direct_po`, merging stored amounts
+  by `poLineIndex`.* Would close the "line never priced at create" gap and restore
+  full parity with create, but introduces a live-PO dependency in edit that ADR-36
+  and ADR-37 both deliberately avoided, plus a fallback path when the PO is
+  unresolvable. Supplier invoices are the posting point for Actual and the
+  riskiest of the four draft-edit documents; the fixed stored line set was chosen.
+- *Allowing tax-code edits on claim-sourced drafts, guarded by the reconciliation
+  check.* Rejected: `claimReconciliationError` already forces effectively
+  all-`gst` codes on that path, so the control would almost always fail validation
+  — exposing a control that merely fails afterwards.
+- *Re-reading the progress claim during edit to reconcile.* Rejected: approved
+  claim amounts are frozen forever, so the invoice's own stored totals are the
+  certified figures. Checking against them keeps edit free of any live-claim
+  dependency.
+- *Turning duplicate references into a blocking validation.* Rejected — that would
+  be a new control, not parity with create.
+- *Silently defaulting an unknown legacy tax code to `gst`.* Rejected — it moves
+  money the user never authored.
+
+**Accepted limitations.** Post-draft immutability and every guarantee above are
+client-enforced only; concurrent draft edits are last-write-wins; a PO line never
+priced at create cannot be reached by editing; and the create path's own
+negative-retention protection remains the browser's `min="0"` constraint
+validation (unchanged — create behaviour was preserved exactly).

@@ -368,6 +368,30 @@ Two sources: `progress_claim` (from one approved claim) and `direct_po` (directl
 against one sent/closed PO, no claim). All canonical line amounts are **ex-GST**;
 GST is stored per line as `gstAmount`.
 
+**Editable while `draft` (ADR-38).** `approved` is the AUTHORING FREEZE POINT
+(`posted`, later, is the financial counting point). A draft may be corrected in
+place instead of cancelled and re-raised:
+
+| Source | Editable |
+|---|---|
+| both | `supplierInvoiceNumber`, `invoiceDate`, `receivedDate`, `dueDate`, `notes` |
+| `direct_po` | additionally, per **stored** line: `amount`, `taxCode`; and header `retention` |
+| `progress_claim` | **header only** — amounts, tax codes and retention are the claim's certified values and are read-only |
+
+Everything else is immutable from creation and is never written by an edit:
+`invoiceNumber`, `status`, `docType`, `source`, `supplierId`/`supplierName`,
+`poId`/`poNumber`, `progressClaimId`/`claimNumber`, `paymentTerms`, `currency`,
+`revision`, all lifecycle stamps, `paidAt`, `adjustsInvoiceId`, `attachments`,
+`externalRefs`, `createdAt`/`createdBy`. Per line, `poLineIndex`, `costCodeId`,
+`costCodeName` and `description` are identity, read from the **stored** line on
+every rebuild and structurally unwritable; `gstAmount` is always re-derived from
+`amount` + `taxCode`, never accepted from a caller. **The stored line set is
+fixed** — no add, remove, reorder or reseed, in either mode: create filters out
+zero-amount lines, so a PO line never priced at create was never stored and cannot
+be added by editing (cancel and raise a new invoice); a line that *is* stored may
+be taken to zero and brought back. All of this is **client-enforced only** — see
+[SECURITY.md](SECURITY.md) → Deferred Controls 1 and 2.
+
 | Field | Type | Notes |
 |---|---|---|
 | `invoiceNumber` | string | `SI-0001` — from the company-wide `counters/supplierInvoices` |

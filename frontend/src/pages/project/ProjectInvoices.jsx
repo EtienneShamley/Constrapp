@@ -19,6 +19,8 @@ import {
   gstForLine, invoiceTotals, suggestDueDate,
   duplicateInvoiceWarnings, claimHasActiveInvoice, postedInvoicedByPoLine,
   claimReconciliationError,
+  isEditableInvoice, isClaimSourced, invoiceLineToForm, buildInvoiceLine,
+  validateInvoiceDraft, claimSourcedDriftError,
 } from '../../lib/supplierInvoices'
 import {
   RECONCILIATION_LABELS, RECONCILIATION_BADGE_VARIANTS, paymentMethodLabel, daysPastDue,
@@ -66,9 +68,20 @@ function TotalsFooter({ totals, currencyCode }) {
   )
 }
 
+// An UNRECOGNISED stored tax code is surfaced, never silently repaired
+// (ADR-38 D7): the select shows an empty "Choose a tax code…" placeholder in red
+// and draft validation blocks Save until the user picks a real one. Defaulting it
+// to `gst` would quietly add 10% to a line the supplier never taxed. The branch
+// is inert for every valid value, so the Credit Note editor is unaffected.
 function TaxSelect({ value, onChange }) {
+  const invalid = !TAX_CODES.includes(value)
   return (
-    <select className={inputCls} value={value} onChange={onChange}>
+    <select
+      className={invalid ? `${inputCls} border-brand-red` : inputCls}
+      value={invalid ? '' : value}
+      onChange={onChange}
+    >
+      {invalid && <option value="" disabled>Choose a tax code…</option>}
       {TAX_CODES.map(tc => (
         <option key={tc} value={tc}>{TAX_CODE_LABELS[tc]}</option>
       ))}
@@ -76,34 +89,80 @@ function TaxSelect({ value, onChange }) {
   )
 }
 
-function CreateInvoiceModal({ invoiceablePOs, invoiceableClaims, purchaseOrders, supplierInvoices, contacts, currencyCode, onClose, onSave }) {
-  const money = (n) => formatCurrency(n, currencyCode)
+// ── Supplier Invoice editor (create / draft edit) ────────────────────────────
+//
+// ONE editor, two modes (ADR-38).
+//
+//   · CREATE (`invoice` = null) — unchanged behaviour: pick a source (a sent /
+//     closed PO, or an approved progress claim), seed the lines from it, and
+//     raise a numbered draft through the counter + currency-ratchet transaction.
+//     Lines with a zero amount are filtered out and never stored.
+//   · EDIT DRAFT (`invoice` = the LIVE draft document) — correct the authored
+//     content in place instead of cancelling and re-raising, which would burn an
+//     SI-#### number.
+//
+// THE SOURCE, SUPPLIER, PO AND CLAIM ARE IMMUTABLE. Edit renders them read-only
+// from the invoice's OWN stored snapshots and offers no source toggle and no PO,
+// claim or supplier picker. Nothing about the editor's data comes from a live
+// PO or claim, so a legacy `supplierId: null` invoice stays editable and an
+// invoice whose PO has since been closed or cancelled stays editable too (the
+// live PO is resolved for the over-invoicing advisory ONLY, and its absence just
+// drops the advisory). Wrong source → cancel the draft and raise a new invoice.
+//
+// THE STORED LINE SET IS FIXED. There is no add, remove, reorder or reseed
+// control in either mode, and edit iterates the invoice's OWN stored lines, so
+// a PO line that carried no amount at create — and was therefore filtered out —
+// cannot be reached by editing. A line that IS stored may be taken to zero and
+// brought back, because its identity stays stored.
+//
+// CLAIM-SOURCED DRAFTS ARE HEADER-ONLY (D1). Their amounts, tax codes and
+// retention are the approved claim's certified values, so they render read-only
+// and the save payload omits them entirely — the reconciliation invariant is
+// structurally unbreakable rather than validated after the fact.
+//
+// Line building and validation are the shared pure helpers in
+// lib/supplierInvoices.js so the two modes cannot drift.
+function SupplierInvoiceEditorModal({
+  invoice = null, livePo = null,
+  invoiceablePOs, invoiceableClaims, purchaseOrders, supplierInvoices, contacts,
+  currencyCode, onClose, onSave,
+}) {
+  const money  = (n) => formatCurrency(n, currencyCode)
+  const isEdit = !!invoice
+  // Claim-sourced drafts author no line values at all.
+  const claimSourced = isEdit && isClaimSourced(invoice)
 
-  const [source, setSource]   = useState(SI_SOURCE.DIRECT_PO)
-  const [selectedId, setSelectedId] = useState('')      // poId (direct) or claimId (progress_claim)
-  const [supplierInvoiceNumber, setSupplierInvoiceNumber] = useState('')
-  const [invoiceDate, setInvoiceDate]   = useState(todayIso())
-  const [receivedDate, setReceivedDate] = useState(todayIso())
-  const [dueDate, setDueDate]           = useState('')
+  const [source, setSource]         = useState(isEdit ? invoice.source : SI_SOURCE.DIRECT_PO)
+  const [selectedId, setSelectedId] = useState('')      // poId (direct) or claimId (progress_claim); CREATE only
+  const [supplierInvoiceNumber, setSupplierInvoiceNumber] = useState(() => (isEdit ? invoice.supplierInvoiceNumber ?? '' : ''))
+  const [invoiceDate, setInvoiceDate]   = useState(() => (isEdit ? invoice.invoiceDate  ?? '' : todayIso()))
+  const [receivedDate, setReceivedDate] = useState(() => (isEdit ? invoice.receivedDate ?? '' : todayIso()))
+  const [dueDate, setDueDate]           = useState(() => (isEdit ? invoice.dueDate      ?? '' : ''))
   const [dueTouched, setDueTouched]     = useState(false)
-  const [retention, setRetention]       = useState('0')
-  const [notes, setNotes]               = useState('')
-  const [amounts, setAmounts]           = useState([])   // Path B per-line amount strings
-  const [taxCodes, setTaxCodes]         = useState([])   // per-line tax codes
+  const [retention, setRetention]       = useState(() => (isEdit ? String(invoice.retention ?? 0) : '0'))
+  const [notes, setNotes]               = useState(() => (isEdit ? invoice.notes ?? '' : ''))
+  // Per-line form state. CREATE seeds these when a source is picked; EDIT seeds
+  // them from the STORED lines — a malformed legacy amount reads as '0' and an
+  // unrecognised tax code stays empty and invalid rather than becoming `gst`.
+  const [amounts, setAmounts]           = useState(() =>
+    (isEdit ? (invoice.lineItems ?? []).map(li => invoiceLineToForm(li).amount) : []))
+  const [taxCodes, setTaxCodes]         = useState(() =>
+    (isEdit ? (invoice.lineItems ?? []).map(li => invoiceLineToForm(li).taxCode) : []))
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState(null)
 
-  // Resolve the selected source document and its supplier snapshot.
-  const claim = source === SI_SOURCE.PROGRESS_CLAIM ? invoiceableClaims.find(c => c.id === selectedId) ?? null : null
-  const po    = source === SI_SOURCE.DIRECT_PO
+  // Resolve the selected source document and its supplier snapshot. CREATE only:
+  // in EDIT every value rendered is already snapshotted on the invoice.
+  const claim = !isEdit && source === SI_SOURCE.PROGRESS_CLAIM ? invoiceableClaims.find(c => c.id === selectedId) ?? null : null
+  const po    = isEdit ? null : (source === SI_SOURCE.DIRECT_PO
     ? invoiceablePOs.find(p => p.id === selectedId) ?? null
-    : (claim ? purchaseOrders.find(p => p.id === claim.poId) ?? null : null)
+    : (claim ? purchaseOrders.find(p => p.id === claim.poId) ?? null : null))
 
-  const supplierId   = claim ? (claim.supplierId ?? null) : (po ? (po.supplierId ?? null) : null)
-  const supplierName = claim ? claim.supplierName : (po ? po.supplierName : '')
+  const supplierId   = isEdit ? (invoice.supplierId ?? null) : (claim ? (claim.supplierId ?? null) : (po ? (po.supplierId ?? null) : null))
+  const supplierName = isEdit ? (invoice.supplierName || '')  : (claim ? claim.supplierName : (po ? po.supplierName : ''))
   const supplierContact = supplierId ? contacts.find(c => c.id === supplierId) ?? null : null
 
-  // Seed per-line state when the source document changes.
+  // Seed per-line state when the source document changes (CREATE only).
   function seedFromClaim(nextClaim) {
     const lines = nextClaim?.lineItems ?? []
     setTaxCodes(lines.map(() => TAX_CODE.GST))
@@ -118,10 +177,15 @@ function CreateInvoiceModal({ invoiceablePOs, invoiceableClaims, purchaseOrders,
     setRetention('0')
     applyDueSuggestion(invoiceDate, nextPo?.supplierId)
   }
+  // EDIT uses the invoice's OWN stored `paymentTerms` snapshot and never re-reads
+  // the supplier contact (D5) — the terms recorded when the invoice was raised are
+  // what it was raised on, and `paymentTerms` is never rewritten by an edit.
   function applyDueSuggestion(dateStr, sid) {
     if (dueTouched) return
-    const contact = sid ? contacts.find(c => c.id === sid) : null
-    const suggestion = suggestDueDate(dateStr, contact?.paymentTerms)
+    const terms = isEdit
+      ? (invoice.paymentTerms ?? null)
+      : (sid ? contacts.find(c => c.id === sid)?.paymentTerms : null)
+    const suggestion = suggestDueDate(dateStr, terms)
     if (suggestion) setDueDate(suggestion)
   }
 
@@ -149,58 +213,108 @@ function CreateInvoiceModal({ invoiceablePOs, invoiceableClaims, purchaseOrders,
   const setTax = (idx) => (e) => setTaxCodes(ts => ts.map((t, i) => (i === idx ? e.target.value : t)))
   const setAmount = (idx) => (e) => setAmounts(as => as.map((a, i) => (i === idx ? e.target.value : a)))
 
-  // Build the canonical (ex-GST) invoice lines from the selected source.
-  const sourceLines = claim ? (claim.lineItems ?? []) : (po ? (po.lineItems ?? []) : [])
-  const builtLines = sourceLines.map((li, idx) => {
-    const tc = taxCodes[idx] || TAX_CODE.GST
-    // Path A: certified amount is fixed. Path B: user-entered amount.
-    const amount = claim ? roundMoney(li.approvedThisPeriod || 0) : (Number(amounts[idx]) || 0)
-    return {
-      poLineIndex:  claim ? li.poLineIndex : idx,
-      costCodeId:   li.costCodeId,
-      costCodeName: li.costCodeName,
-      description:  li.description || '',
-      amount:       roundMoney(amount),
-      taxCode:      tc,
-      gstAmount:    gstForLine(amount, tc),
-    }
-  })
+  // Build the canonical (ex-GST) invoice lines.
+  //
+  // IDENTITY ALWAYS COMES FROM THE SOURCE LINE, NEVER FROM FORM STATE. In CREATE
+  // that source is the PO line (whose index the caller supplies) or the approved
+  // claim line; in EDIT it is the invoice's OWN stored line, so the editor cannot
+  // repoint a line at a different PO line or cost code. `gstAmount` is re-derived
+  // inside buildInvoiceLine in both modes — it is never authored.
+  const sourceLines = isEdit
+    ? (invoice.lineItems ?? [])
+    : (claim ? (claim.lineItems ?? []) : (po ? (po.lineItems ?? []) : []))
+  const builtLines = isEdit
+    ? sourceLines.map((li, idx) => (claimSourced
+        // Certified claim values, preserved verbatim — nothing here is authored.
+        ? buildInvoiceLine(li, { amount: li.amount, taxCode: li.taxCode })
+        : buildInvoiceLine(li, { amount: amounts[idx], taxCode: taxCodes[idx] })))
+    : sourceLines.map((li, idx) => buildInvoiceLine(li, {
+        poLineIndex: claim ? li.poLineIndex : idx,
+        // Path A: certified amount is fixed. Path B: user-entered amount.
+        amount:      claim ? roundMoney(li.approvedThisPeriod || 0) : (Number(amounts[idx]) || 0),
+        taxCode:     taxCodes[idx] || TAX_CODE.GST,
+        // CREATE has always derived GST from the UNROUNDED entered figure while
+        // storing the rounded amount. Preserved exactly — see buildInvoiceLine.
+        gstFromUnroundedAmount: true,
+      }))
+  // CREATE stores only the priced lines; EDIT never re-filters, so a stored line
+  // taken to zero keeps its identity and can be brought back.
   const savedLines = builtLines.filter(l => l.amount > 0)
-  const totals = invoiceTotals(builtLines, retention)
+  // A claim-sourced draft's retention is the claim's and is never authored here.
+  const retentionInput = claimSourced ? (invoice.retention ?? 0) : retention
+  const totals = invoiceTotals(builtLines, retentionInput)
 
-  // Over-invoicing warning (Path B): posted-to-date + this line vs PO line total.
+  // Over-invoicing warning: posted-to-date + this line vs the PO line total.
+  // ADVISORY ONLY, and in EDIT the PO is resolved by `poId` from ALL project POs
+  // (its status may have moved on since the invoice was raised). If it cannot be
+  // resolved the advisory is simply omitted — it never blocks editing.
+  const advisoryPo = isEdit ? livePo : po
   const postedByPoLine = useMemo(() => postedInvoicedByPoLine(supplierInvoices), [supplierInvoices])
   const overLineIdx = new Set()
   let overPoTotal = false
-  if (po) {
-    const forPo = postedByPoLine[po.id] ?? {}
+  if (advisoryPo) {
+    const forPo = postedByPoLine[advisoryPo.id] ?? {}
+    const poLines = advisoryPo.lineItems ?? []
     let poToDate = 0
-    ;(po.lineItems ?? []).forEach((li, idx) => {
-      poToDate += forPo[idx] || 0
-      const amt = claim ? roundMoney(sourceLines[idx]?.approvedThisPeriod || 0) : (Number(amounts[idx]) || 0)
-      if (roundMoney((forPo[idx] || 0) + amt) > roundMoney(li.lineTotal || 0)) overLineIdx.add(idx)
-    })
-    if ((po.subtotal || 0) > 0 && roundMoney(poToDate + totals.subtotal) > roundMoney(po.subtotal || 0)) {
+    if (isEdit) {
+      // Stored invoice lines are a subset of the PO's, in stored order — pair
+      // them through the line's OWN poLineIndex, never by position.
+      poToDate = Object.values(forPo).reduce((sum, v) => sum + (Number(v) || 0), 0)
+      builtLines.forEach((line, idx) => {
+        const poLine = poLines[line.poLineIndex]
+        if (!poLine) return
+        if (roundMoney((forPo[line.poLineIndex] || 0) + line.amount) > roundMoney(poLine.lineTotal || 0)) overLineIdx.add(idx)
+      })
+    } else {
+      poLines.forEach((li, idx) => {
+        poToDate += forPo[idx] || 0
+        const amt = claim ? roundMoney(sourceLines[idx]?.approvedThisPeriod || 0) : (Number(amounts[idx]) || 0)
+        if (roundMoney((forPo[idx] || 0) + amt) > roundMoney(li.lineTotal || 0)) overLineIdx.add(idx)
+      })
+    }
+    if ((advisoryPo.subtotal || 0) > 0 && roundMoney(poToDate + totals.subtotal) > roundMoney(advisoryPo.subtotal || 0)) {
       overPoTotal = true
     }
   }
 
-  const dupWarnings = duplicateInvoiceWarnings(supplierInvoices, { supplierId, supplierName, supplierInvoiceNumber })
+  // Warning-only in both modes (D3). In EDIT the invoice excludes ITSELF, so an
+  // untouched reference never warns against its own document.
+  const dupWarnings = duplicateInvoiceWarnings(supplierInvoices, {
+    id: isEdit ? invoice.id : null, supplierId, supplierName, supplierInvoiceNumber,
+  })
   const gstAdvisory = supplierContact?.gstStatus === 'not_registered' && totals.gstTotal > 0
     ? `${supplierName} is recorded as not GST-registered, but this invoice includes GST. Check the supplier's tax status.`
     : null
 
   // A claim-sourced invoice must pay exactly the approved claim's certified GST
-  // and total — this blocks creation (also re-checked in the hook).
+  // and total. CREATE checks the rebuilt totals against the live claim (also
+  // re-checked in the hook). EDIT authors none of those values, so it checks
+  // instead that the STORED document still reconciles with itself — no live claim
+  // is read, and a draft that does not is refused rather than repaired.
   const reconcileError = claim
     ? claimReconciliationError(totals, { approvedGst: claim.approvedGst, approvedTotal: claim.approvedTotal })
     : null
+  const driftError = claimSourced ? claimSourcedDriftError(invoice, totals) : null
+  const draftError = isEdit
+    ? validateInvoiceDraft({
+        lineItems: builtLines, supplierInvoiceNumber, invoiceDate,
+        retention: retentionInput, authoredLines: !claimSourced,
+      })
+    : null
 
+  // Live-status guard: the page passes the LIVE document, so if it left draft
+  // while this editor was open the form shows a latest-version message and the
+  // save is refused. Two concurrent draft editors remain last-write-wins.
+  const stale = isEdit && !isEditableInvoice(invoice)
+
+  // CREATE keeps its own validity expression, unchanged.
   const hasSource   = !!(claim || po)
   const hasAmount   = savedLines.length > 0
   const refValid    = supplierInvoiceNumber.trim().length > 0
   const dateValid   = !!invoiceDate
-  const valid       = hasSource && hasAmount && refValid && dateValid && !reconcileError
+  const valid       = isEdit
+    ? (!stale && !draftError && !driftError)
+    : (hasSource && hasAmount && refValid && dateValid && !reconcileError)
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -208,25 +322,35 @@ function CreateInvoiceModal({ invoiceablePOs, invoiceableClaims, purchaseOrders,
     setSaving(true)
     setError(null)
     try {
-      await onSave({
-        source,
-        supplierId,
-        supplierName,
-        poId:     po ? po.id : (claim ? claim.poId : null),
-        poNumber: po ? po.poNumber : (claim ? claim.poNumber : null),
-        progressClaimId: claim ? claim.id : null,
-        claimNumber:     claim ? claim.claimNumber : null,
-        claimApprovedGst:   claim ? (claim.approvedGst ?? null) : null,
-        claimApprovedTotal: claim ? (claim.approvedTotal ?? null) : null,
-        supplierInvoiceNumber,
-        invoiceDate,
-        receivedDate,
-        dueDate,
-        paymentTerms: supplierContact?.paymentTerms ?? null,
-        lineItems: savedLines,
-        retention,
-        notes,
-      })
+      if (isEdit) {
+        // No line items and no identity: the hook rebuilds every line over the
+        // STORED document. A claim-sourced payload additionally omits amounts,
+        // tax codes and retention outright, so it has no channel to move
+        // certified money.
+        await onSave(claimSourced
+          ? { supplierInvoiceNumber, invoiceDate, receivedDate, dueDate, notes }
+          : { supplierInvoiceNumber, invoiceDate, receivedDate, dueDate, notes, amounts, taxCodes, retention })
+      } else {
+        await onSave({
+          source,
+          supplierId,
+          supplierName,
+          poId:     po ? po.id : (claim ? claim.poId : null),
+          poNumber: po ? po.poNumber : (claim ? claim.poNumber : null),
+          progressClaimId: claim ? claim.id : null,
+          claimNumber:     claim ? claim.claimNumber : null,
+          claimApprovedGst:   claim ? (claim.approvedGst ?? null) : null,
+          claimApprovedTotal: claim ? (claim.approvedTotal ?? null) : null,
+          supplierInvoiceNumber,
+          invoiceDate,
+          receivedDate,
+          dueDate,
+          paymentTerms: supplierContact?.paymentTerms ?? null,
+          lineItems: savedLines,
+          retention,
+          notes,
+        })
+      }
       onClose()
     } catch (err) {
       setError(err?.message || 'Failed to save. Check your connection and try again.')
@@ -239,7 +363,9 @@ function CreateInvoiceModal({ invoiceablePOs, invoiceableClaims, purchaseOrders,
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       <div className="relative z-10 w-full max-w-[820px] max-h-[90vh] overflow-y-auto bg-brand-surface border border-brand-border rounded-xl shadow-2xl">
         <div className="flex items-center justify-between px-5 py-4 border-b border-brand-border">
-          <h2 className="text-[15px] font-bold text-brand-text m-0">New Supplier Invoice</h2>
+          <h2 className="text-[15px] font-bold text-brand-text m-0">
+            {isEdit ? `Edit ${invoice.invoiceNumber}` : 'New Supplier Invoice'}
+          </h2>
           <button
             onClick={onClose}
             aria-label="Close"
@@ -250,30 +376,56 @@ function CreateInvoiceModal({ invoiceablePOs, invoiceableClaims, purchaseOrders,
         </div>
 
         <form onSubmit={handleSubmit} className="px-5 py-4 flex flex-col gap-3.5">
-          {/* Source selector */}
-          <div>
-            <label className={labelCls}>Source</label>
-            <div className="flex flex-wrap gap-2">
-              <Btn
-                sm type="button"
-                variant={source === SI_SOURCE.DIRECT_PO ? 'success' : 'ghost'}
-                onClick={changeSource(SI_SOURCE.DIRECT_PO)}
-              >
-                Direct against PO
-              </Btn>
-              <Btn
-                sm type="button"
-                variant={source === SI_SOURCE.PROGRESS_CLAIM ? 'success' : 'ghost'}
-                onClick={changeSource(SI_SOURCE.PROGRESS_CLAIM)}
-              >
-                From approved claim
-              </Btn>
-            </div>
-          </div>
+          {stale && (
+            <p className="m-0 text-[12px] text-brand-amber">
+              This supplier invoice is no longer Draft. Close the editor and review the latest version.
+            </p>
+          )}
 
-          {/* Source document picker */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {source === SI_SOURCE.DIRECT_PO ? (
+          {/* Immutable context — EDIT renders the invoice's own snapshots. */}
+          {isEdit && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <DetailRow
+                label="Supplier Invoice"
+                value={`${invoice.invoiceNumber} · ${claimSourced ? 'From approved claim' : 'Direct against PO'}`}
+              />
+              <DetailRow label="Status" value={SI_STATUS_LABELS[invoice.status] ?? invoice.status} />
+              <DetailRow label="Supplier" value={invoice.supplierName || '—'} />
+              <DetailRow
+                label={claimSourced ? 'PO · Claim' : 'Purchase Order'}
+                value={claimSourced
+                  ? `${invoice.poNumber || '—'} · ${invoice.claimNumber || '—'}`
+                  : (invoice.poNumber || '—')}
+              />
+            </div>
+          )}
+
+          {/* Source selector — CREATE only; the source is immutable once raised. */}
+          {!isEdit && (
+            <div>
+              <label className={labelCls}>Source</label>
+              <div className="flex flex-wrap gap-2">
+                <Btn
+                  sm type="button"
+                  variant={source === SI_SOURCE.DIRECT_PO ? 'success' : 'ghost'}
+                  onClick={changeSource(SI_SOURCE.DIRECT_PO)}
+                >
+                  Direct against PO
+                </Btn>
+                <Btn
+                  sm type="button"
+                  variant={source === SI_SOURCE.PROGRESS_CLAIM ? 'success' : 'ghost'}
+                  onClick={changeSource(SI_SOURCE.PROGRESS_CLAIM)}
+                >
+                  From approved claim
+                </Btn>
+              </div>
+            </div>
+          )}
+
+          {/* Source document picker — CREATE only. */}
+          <div className={`grid grid-cols-1 gap-3 ${isEdit ? '' : 'sm:grid-cols-2'}`}>
+            {!isEdit && (source === SI_SOURCE.DIRECT_PO ? (
               <div>
                 <label className={labelCls}>Purchase Order <span className="text-brand-red">*</span></label>
                 <select className={inputCls} value={selectedId} onChange={selectPo} required autoFocus>
@@ -297,7 +449,7 @@ function CreateInvoiceModal({ invoiceablePOs, invoiceableClaims, purchaseOrders,
                   ))}
                 </select>
               </div>
-            )}
+            ))}
             <div>
               <label className={labelCls}>Supplier Invoice # <span className="text-brand-red">*</span></label>
               <input
@@ -309,7 +461,7 @@ function CreateInvoiceModal({ invoiceablePOs, invoiceableClaims, purchaseOrders,
             </div>
           </div>
 
-          {hasSource && (
+          {!isEdit && hasSource && (
             <p className="m-0 -mt-1 text-[12px] text-brand-muted">
               Supplier <span className="text-brand-text font-semibold">{supplierName || '—'}</span>
               {' · '}PO <span className="text-brand-text font-semibold">{po ? po.poNumber : (claim?.poNumber || '—')}</span>
@@ -336,20 +488,24 @@ function CreateInvoiceModal({ invoiceablePOs, invoiceableClaims, purchaseOrders,
             </div>
           </div>
 
-          {/* Line items */}
-          {hasSource && (
+          {/* Line items. The set is FIXED in both modes — no add, remove or
+              reorder control exists, and EDIT iterates the invoice's own stored
+              lines. Cost code and description are identity and are never
+              editable. */}
+          {(isEdit || hasSource) && (
             <div>
               <label className={labelCls}>
-                Line Items (ex-GST){source === SI_SOURCE.PROGRESS_CLAIM && ' — certified amounts are fixed'}
+                Line Items (ex-GST){(claimSourced || (!isEdit && source === SI_SOURCE.PROGRESS_CLAIM)) && ' — certified amounts are fixed'}
               </label>
               <div className="flex flex-col gap-2">
                 {builtLines.map((line, idx) => {
                   const over = overLineIdx.has(idx)
+                  const readOnlyAmount = claimSourced || (!isEdit && !!claim)
                   return (
                     <div key={idx} className="grid grid-cols-2 sm:grid-cols-[2fr_2fr_1fr_1.2fr] gap-2 items-center">
                       <p className="m-0 text-[12px] text-brand-text truncate">{line.costCodeName || '—'}</p>
                       <p className="m-0 text-[12px] text-brand-muted truncate">{line.description || '—'}</p>
-                      {claim ? (
+                      {readOnlyAmount ? (
                         <p className={`m-0 text-[12px] whitespace-nowrap ${over ? 'text-brand-amber' : 'text-brand-text'}`}>
                           {money(line.amount)}{over ? ' ⚠' : ''}
                         </p>
@@ -357,19 +513,37 @@ function CreateInvoiceModal({ invoiceablePOs, invoiceableClaims, purchaseOrders,
                         <input
                           type="number" min="0" step="any"
                           className={inputCls}
-                          placeholder={`of ${money(sourceLines[idx]?.lineTotal || 0)}`}
+                          placeholder={isEdit ? '0.00' : `of ${money(sourceLines[idx]?.lineTotal || 0)}`}
                           value={amounts[idx] ?? ''}
                           onChange={setAmount(idx)}
                         />
                       )}
-                      <TaxSelect value={taxCodes[idx] || TAX_CODE.GST} onChange={setTax(idx)} />
+                      {claimSourced ? (
+                        <p className="m-0 text-[12px] text-brand-muted truncate">
+                          {TAX_CODE_LABELS[line.taxCode] ?? (line.taxCode || '—')}
+                        </p>
+                      ) : (
+                        <TaxSelect value={isEdit ? (taxCodes[idx] ?? '') : (taxCodes[idx] || TAX_CODE.GST)} onChange={setTax(idx)} />
+                      )}
                     </div>
                   )
                 })}
               </div>
-              {source === SI_SOURCE.DIRECT_PO && (
+              {!isEdit && source === SI_SOURCE.DIRECT_PO && (
                 <p className="m-0 mt-1.5 text-[11px] text-brand-muted">
                   Enter the invoiced amount per PO line; leave unused lines at zero. ⚠ marks invoiced-to-date above the PO line value.
+                </p>
+              )}
+              {isEdit && !claimSourced && (
+                <p className="m-0 mt-1.5 text-[11px] text-brand-muted">
+                  These are the lines stored when this draft was raised — the set is fixed.
+                  A PO line left at zero at creation was never stored and cannot be added here;
+                  cancel this draft and raise a new invoice instead.
+                </p>
+              )}
+              {claimSourced && (
+                <p className="m-0 mt-1.5 text-[11px] text-brand-muted">
+                  Certified amounts and tax codes are fixed by {invoice.claimNumber || 'the approved claim'}.
                 </p>
               )}
             </div>
@@ -382,11 +556,13 @@ function CreateInvoiceModal({ invoiceablePOs, invoiceableClaims, purchaseOrders,
               <input
                 type="number" min="0" step="any"
                 className={inputCls}
-                value={retention}
+                value={claimSourced ? String(invoice.retention ?? 0) : retention}
                 onChange={e => setRetention(e.target.value)}
-                readOnly={!!claim}
+                readOnly={claimSourced || (!isEdit && !!claim)}
               />
-              {claim && <p className="m-0 mt-1 text-[11px] text-brand-muted">Carried from the approved claim.</p>}
+              {(claimSourced || (!isEdit && !!claim)) && (
+                <p className="m-0 mt-1 text-[11px] text-brand-muted">Carried from the approved claim.</p>
+              )}
             </div>
             <div>
               <label className={labelCls}>Notes</label>
@@ -402,20 +578,25 @@ function CreateInvoiceModal({ invoiceablePOs, invoiceableClaims, purchaseOrders,
           ))}
           {gstAdvisory && <p className="m-0 text-[12px] text-brand-amber">⚠ {gstAdvisory}</p>}
           {reconcileError && <p className="m-0 text-[12px] text-brand-red">{reconcileError}</p>}
+          {driftError && <p className="m-0 text-[12px] text-brand-red">{driftError}</p>}
+          {isEdit && draftError && <p className="m-0 text-[12px] text-brand-amber">{draftError}</p>}
 
-          {hasSource && <TotalsFooter totals={totals} currencyCode={currencyCode} />}
+          {(isEdit || hasSource) && <TotalsFooter totals={totals} currencyCode={currencyCode} />}
 
           {error && <p className="text-[12px] text-brand-red">{error}</p>}
 
           <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
             <Btn variant="ghost" type="button" onClick={onClose} sm disabled={saving}>Cancel</Btn>
-            <Btn type="submit" sm disabled={saving || !valid}>{saving ? 'Saving…' : 'Create Draft Invoice'}</Btn>
+            <Btn type="submit" sm disabled={saving || !valid}>
+              {saving ? 'Saving…' : (isEdit ? 'Save changes' : 'Create Draft Invoice')}
+            </Btn>
           </div>
         </form>
       </div>
     </div>
   )
 }
+
 
 // ── Read-only supplier invoice detail ────────────────────────────────────────
 
@@ -635,13 +816,16 @@ function InvoiceDetailModal({ invoice, reconciliation, allocatedPayments, credit
   )
 }
 
-function RowActions({ invoice, onTransition, onRecordPayment, onRecordCredit, creditActionsDisabled = false }) {
+function RowActions({ invoice, onTransition, onEdit, onRecordPayment, onRecordCredit, creditActionsDisabled = false }) {
   const confirmThen = (label, nextStatus) => () => {
     if (window.confirm(`${label} ${invoice.invoiceNumber}?`)) onTransition(invoice, nextStatus)
   }
+  // Draft is the only editable status (ADR-38): `approved` is the authoring
+  // freeze point, so Edit exists here and nowhere else.
   if (invoice.status === SI_STATUS.DRAFT) {
     return (
       <div className="flex gap-1.5 justify-end">
+        <Btn sm variant="ghost" onClick={() => onEdit(invoice)}>Edit</Btn>
         <Btn sm variant="success" onClick={confirmThen('Approve', SI_STATUS.APPROVED)}>Approve</Btn>
         <Btn sm variant="ghost" onClick={confirmThen('Cancel', SI_STATUS.CANCELLED)}>Cancel</Btn>
       </div>
@@ -988,7 +1172,7 @@ export default function ProjectInvoices() {
   const { projectId, currencyCode } = useOutletContext()
   const money = (n) => formatCurrency(n, currencyCode)
 
-  const { supplierInvoices, supplierInvoicesLoading, createSupplierInvoice, transitionStatus } = useSupplierInvoices(projectId)
+  const { supplierInvoices, supplierInvoicesLoading, createSupplierInvoice, updateSupplierInvoice, transitionStatus } = useSupplierInvoices(projectId)
   const { supplierPayments } = useSupplierPayments(projectId)
   // Retention releases raise an invoice's payable basis (ADR-30). A FAILED read
   // must never be treated as "nothing released" — that would understate every
@@ -1011,7 +1195,8 @@ export default function ProjectInvoices() {
   const { purchaseOrders, purchaseOrdersLoading } = usePurchaseOrders(projectId)
   const { progressClaims } = useProgressClaims(projectId)
   const { contacts } = useContacts()
-  const [showCreate, setShowCreate]   = useState(false)
+  // 'new' = create, an invoice = edit that draft, null = closed.
+  const [editing, setEditing]         = useState(null)
   const [detail, setDetail]           = useState(null)
   const [actionError, setActionError] = useState(null)
   const [search, setSearch]           = useState('')
@@ -1093,6 +1278,34 @@ export default function ProjectInvoices() {
     }
   }
 
+  // Draft edit — stale-editor guard (ADR-38). The save path resolves the LIVE
+  // document from the subscribed collection by id and refuses to write unless it
+  // is STILL a draft, so an editor left open across an approve / cancel by
+  // another action, tab or user can never write stale draft content back. The
+  // hook keeps its own draft guard as the final client-side check. Both are
+  // client-side only — Firestore rules do not check supplier-invoice status
+  // (docs/SECURITY.md -> Deferred Controls 1 and 2). Two concurrent draft
+  // editors remain last-write-wins.
+  async function handleUpdate(invoiceId, data) {
+    const live = supplierInvoices.find(inv => inv.id === invoiceId)
+    if (!live || !isEditableInvoice(live)) {
+      throw new Error('This supplier invoice is no longer Draft. Close the editor and review the latest version.')
+    }
+    await updateSupplierInvoice(live, data)
+  }
+
+  // The open editor tracks the LIVE document, so a status change elsewhere
+  // reaches it through the existing subscription and puts it into stale mode.
+  // The PO is resolved from ALL project POs by poId — it may have been closed or
+  // cancelled since the invoice was raised — and feeds the over-invoicing
+  // advisory only; the editor never reads invoice data from it.
+  const liveEditing = editing && editing !== 'new'
+    ? (supplierInvoices.find(inv => inv.id === editing.id) ?? editing)
+    : null
+  const liveEditingPo = liveEditing
+    ? (purchaseOrders.find(p => p.id === liveEditing.poId) ?? null)
+    : null
+
   // Posting re-runs the target and cumulative-cap checks against current data
   // in the hook — a cancelled target or a sibling credit posted since the
   // draft was saved blocks the post with a specific message.
@@ -1122,7 +1335,7 @@ export default function ProjectInvoices() {
         <div className="flex items-center gap-2">
           {noPOs && <Btn variant="ghost" sm onClick={goToPOs}>Go to Purchase Orders</Btn>}
           <Btn variant="ghost" sm onClick={goToPayments}>Supplier Payments</Btn>
-          <Btn sm onClick={() => setShowCreate(true)} disabled={purchaseOrdersLoading || !canCreate}>
+          <Btn sm onClick={() => setEditing('new')} disabled={purchaseOrdersLoading || !canCreate}>
             + New Supplier Invoice
           </Btn>
         </div>
@@ -1276,7 +1489,7 @@ export default function ProjectInvoices() {
             {noPOs ? (
               <Btn variant="ghost" onClick={goToPOs}>Go to Purchase Orders</Btn>
             ) : (
-              <Btn onClick={() => setShowCreate(true)} disabled={!canCreate}>+ Create your first supplier invoice</Btn>
+              <Btn onClick={() => setEditing('new')} disabled={!canCreate}>+ Create your first supplier invoice</Btn>
             )}
           </div>
         ) : filtered.length === 0 ? (
@@ -1371,6 +1584,7 @@ export default function ProjectInvoices() {
                         <RowActions
                           invoice={inv}
                           onTransition={handleTransition}
+                          onEdit={setEditing}
                           onRecordPayment={handleRecordPayment}
                           creditActionsDisabled={creditStateUnknown}
                           onRecordCredit={(invoice) => setCreditEditor({ invoice, creditNote: null })}
@@ -1451,16 +1665,19 @@ export default function ProjectInvoices() {
         </Card>
       )}
 
-      {showCreate && (
-        <CreateInvoiceModal
+      {editing && (
+        <SupplierInvoiceEditorModal
+          key={editing === 'new' ? 'new' : editing.id}
+          invoice={liveEditing}
+          livePo={liveEditingPo}
           currencyCode={currencyCode}
           invoiceablePOs={invoiceablePOs}
           invoiceableClaims={invoiceableClaims}
           purchaseOrders={purchaseOrders}
           supplierInvoices={supplierInvoices}
           contacts={contacts}
-          onClose={() => setShowCreate(false)}
-          onSave={createSupplierInvoice}
+          onClose={() => setEditing(null)}
+          onSave={editing === 'new' ? createSupplierInvoice : (data) => handleUpdate(editing.id, data)}
         />
       )}
 

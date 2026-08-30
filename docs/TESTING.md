@@ -922,6 +922,71 @@ the full tax-invoice value.
 - [ ] Posting invoices beyond a PO's value drives that PO line's Committed to zero (never negative).
 - [ ] Signed in as a `subcontractor` or `client` role user, the Invoices tab shows no data (reads are blocked by rules).
 
+## 13e. Edit Draft Supplier Invoices (ADR-38)
+
+*Draft is the only editable status. `approved` is the authoring freeze point;
+`posted` is the financial counting point. Draft-only editing and every
+immutability below are **client-enforced only** — a direct-SDK caller can still
+rewrite an approved or posted invoice ([SECURITY.md](SECURITY.md) → Deferred
+Controls 1 and 2).*
+
+### Direct against PO
+
+- [ ] Create a draft invoice against a **sent** PO with two priced lines. The row action set reads **Edit · Approve · Cancel**, with Edit first.
+- [ ] **Edit** → title reads `Edit SI-####`. There is **no** source toggle, PO picker, claim picker or supplier picker.
+- [ ] The read-only context shows the SI number, `Direct against PO`, the supplier name, the PO number and status **Draft**.
+- [ ] Supplier invoice #, invoice date, received date, due date and notes are prefilled from the stored values.
+- [ ] The line list shows exactly the lines stored when the draft was raised, with cost code and description read-only, and amount + tax code prefilled.
+- [ ] Change the supplier invoice number, invoice date and notes → **Save changes** → the register and detail modal show the new values; `SI-####`, supplier, PO and source are unchanged.
+- [ ] Change a line amount and pick a different valid tax code → the totals footer recomputes live (subtotal, GST, gross, net payable) → Save → the detail modal matches, and the line's GST equals 10% of the amount for `gst` and 0 for `gst_free`/`input_taxed`.
+- [ ] Set retention > 0 → net payable falls by retention × 1.1; the footer shows the ex-GST + GST split → Save → the detail modal matches.
+- [ ] Set retention **above** the subtotal → it clamps to the subtotal, net payable is 0, never negative.
+- [ ] Enter a **negative** retention → Save is **blocked** with "Retention cannot be negative" (not only the input's `min`; the hook refuses it too).
+- [ ] Clear the supplier invoice number → Save blocked. Clear the invoice date → Save blocked. Set **every** stored line amount to zero → Save blocked.
+- [ ] Enter the supplier invoice number of another non-cancelled invoice for the **same** supplier → amber duplicate warning appears and **Save is still allowed**.
+- [ ] Reopen that same invoice and save it unchanged → **no** duplicate warning against itself.
+- [ ] Take a line above its PO line value → amber ⚠ on the line; take the total above the PO subtotal → the over-PO advisory. **Neither blocks Save.**
+- [ ] Confirm there is **no** control to add a line, remove a line or reorder lines, and that a PO line left at zero when the draft was created is **not** shown (the editor says so; cancel and raise a new invoice instead).
+- [ ] Take a stored line to **zero**, save, reopen → the line is still listed at 0 with its cost code intact, and can be given an amount again.
+- [ ] **Legacy tax code:** for a draft whose stored line carries an unrecognised `taxCode`, the tax select shows an empty red *"Choose a tax code…"* placeholder, Save is blocked with `Line N: choose a tax code…`, and the code is **not** silently converted to GST. Picking a valid code unblocks Save.
+
+### From an approved claim
+
+- [ ] Create a draft invoice from an approved progress claim → **Edit**.
+- [ ] Context shows `From approved claim` with both the PO and claim numbers.
+- [ ] Supplier invoice #, invoice date, received date, due date and notes are editable.
+- [ ] Line **amounts are read-only**; **tax codes are read-only** (rendered as text, not a select); **retention is read-only** with "Carried from the approved claim."
+- [ ] Save a header-only change → succeeds; the detail modal shows the new header values and **identical** subtotal, GST, gross, retention, payable GST and payable total.
+- [ ] Post the invoice → the payable GST and payable total still equal the claim's certified `approvedGst` / `approvedTotal`.
+
+### Financial non-effect
+
+- [ ] Note Budget **Invoiced / Actual / Committed / Remaining**, Forecast, Forecast Final Cost, Commercial, Overview **Margin %**, Cash Flow (Actual and Forecast Cash Out, open AP), **Retention Held**, Supplier Payments payables, Credit Notes register and PO remaining. Now make a **large** draft edit (change both amounts, change both tax codes, add retention) → **every one of those figures is unchanged.**
+- [ ] **Approve** the edited draft → *Edit* disappears (row shows Post · Cancel only) → **still** no movement in any figure above.
+- [ ] **Post** it → Budget Invoiced and Actual rise by the **edited** ex-GST total, Committed for those PO lines drops by the same amounts, and Retention Held shows the **edited** retention.
+
+### Downstream still works
+
+- [ ] Post an edited **zero-retention** invoice → *Record credit note* appears → raise and post one → remaining payable falls correctly.
+- [ ] Post an edited invoice → *Record payment* → allocate → Paid to Date and Remaining Payable are correct and **no allocation exception** is raised.
+- [ ] Post an edited invoice **with** retention → it appears on the Retention register with the edited figures; a retention release works.
+
+### Stale editor (two tabs)
+
+- [ ] Tab A: open **Edit** on a draft. Tab B: **Approve** it. Tab A shows *"This supplier invoice is no longer Draft. Close the editor and review the latest version."* and Save is disabled.
+- [ ] Repeat with **Cancel** in Tab B → same behaviour.
+- [ ] Two draft editors open on the same invoice remain **last-write-wins** (documented, not prevented).
+
+### Legacy records
+
+- [ ] A pre-Contacts invoice (`supplierId: null`) opens for edit, shows its stored `supplierName`, and saves; duplicate detection falls back to the name match.
+- [ ] An invoice whose PO has since been **closed or cancelled** still opens and saves; the over-invoicing advisory is simply absent.
+- [ ] An invoice with a missing or malformed stored line `amount` renders `0`, not a blank input.
+
+### Responsive
+
+- [ ] **375 / 768 / 1280** — the editor scrolls within `max-h-[90vh]`, the line grid reflows at `sm:`, there is no horizontal page overflow, and the close button stays ≥ 44 px.
+
 ## 14. Variations
 
 ### 14a. Client Variation

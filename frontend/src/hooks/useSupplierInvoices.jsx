@@ -13,6 +13,8 @@ import {
   SI_STATUS, SI_DOC_TYPE, SI_SOURCE,
   canTransition, invoiceTotals, formatSupplierInvoiceNumber, claimHasActiveInvoice,
   claimReconciliationError,
+  isEditableInvoice, isClaimSourced, buildInvoiceLine, invoiceLineInputCountError,
+  validateInvoiceDraft, claimSourcedDriftError,
 } from '../lib/supplierInvoices'
 
 export function useSupplierInvoices(projectId) {
@@ -177,17 +179,98 @@ export function useSupplierInvoices(projectId) {
     return invoiceRef.id
   }, [companyId, projectId, user, supplierInvoices, projectCurrency])
 
-  // Draft-only edits — everything freezes once an invoice leaves draft.
-  const updateSupplierInvoice = useCallback(async (invoice, { supplierInvoiceNumber, invoiceDate, receivedDate, dueDate, lineItems, retention, notes }) => {
+  // ── Draft-only edits (ADR-38) ──────────────────────────────────────────────
+  //
+  // Corrects a DRAFT supplier invoice in place. `approved` is the authoring
+  // freeze point (`posted`, later, is the financial counting point), so this
+  // refuses anything that is not still a draft. That guard, like every
+  // immutability below, is CLIENT-SIDE ONLY — Firestore rules on this collection
+  // check role and tenancy and nothing else (docs/SECURITY.md -> Deferred
+  // Controls 1 and 2), so a direct-SDK caller can still rewrite an approved or
+  // posted invoice.
+  //
+  // THE CALLER SUPPLIES NO LINE ITEMS. Every line is rebuilt over the STORED
+  // document, which makes it the sole authority for line identity: poLineIndex,
+  // costCodeId, costCodeName and description are structurally unwritable, and
+  // `gstAmount` is always re-derived from the amount and tax code rather than
+  // believed. The stored line SET is likewise fixed — there is no add, remove,
+  // reorder or reseed channel, because poLineIndex is the identity
+  // postedInvoicedByPoLine keys off to mature Committed.
+  //
+  // Nothing outside the authored set is written: invoiceNumber, status, docType,
+  // source, supplier / PO / claim identity, paymentTerms, currency, revision,
+  // every lifecycle stamp, paidAt, adjustsInvoiceId, attachments, externalRefs
+  // and createdAt/createdBy are all absent from every payload below and survive
+  // the partial updateDoc untouched.
+  //
+  // No transaction, no counter and no currency ratchet: no number is allocated,
+  // and the project currency lock was already committed when the invoice was
+  // created — re-staging it on an already-locked project would be REJECTED for a
+  // `qs` user by the deliberately narrow rule on that field.
+  const updateSupplierInvoice = useCallback(async (invoice, {
+    supplierInvoiceNumber, invoiceDate, receivedDate, dueDate, notes,
+    amounts, taxCodes, retention,
+  } = {}) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
-    if (invoice.status !== SI_STATUS.DRAFT) throw new Error('Only draft supplier invoices can be edited')
-    const ref    = doc(db, 'companies', companyId, 'projects', projectId, 'supplierInvoices', invoice.id)
-    const totals = invoiceTotals(lineItems, retention)
-    await updateDoc(ref, {
+    if (!isEditableInvoice(invoice)) throw new Error('Only draft supplier invoices can be edited')
+
+    const storedLines = Array.isArray(invoice.lineItems) ? invoice.lineItems : []
+    const ref = doc(db, 'companies', companyId, 'projects', projectId, 'supplierInvoices', invoice.id)
+
+    // The authored header — the only fields BOTH sources may change.
+    const header = {
       supplierInvoiceNumber: supplierInvoiceNumber?.trim() || '',
       invoiceDate:  invoiceDate  || '',
       receivedDate: receivedDate || '',
       dueDate:      dueDate      || '',
+      notes:        notes?.trim() || '',
+    }
+
+    // ── progress_claim: HEADER ONLY ──────────────────────────────────────────
+    // The line amounts, tax codes and retention ARE the approved claim's
+    // certified values, and the invoice must keep paying exactly the claim's
+    // certified GST and total. That invariant is made structurally unbreakable
+    // rather than merely validated: `amounts`, `taxCodes` and `retention` are
+    // IGNORED here, and the payload carries no financial field at all — so no
+    // caller, editor or otherwise, has a channel to move certified money.
+    //
+    // The rebuild below writes nothing. It exists only to prove the stored
+    // document still reconciles with itself before a header correction is
+    // allowed; a draft whose stored gstAmount disagrees with its own amount and
+    // tax code (legacy or forged) is REFUSED with a clear message rather than
+    // being mutated into agreement. No progress claim is read or modified.
+    if (isClaimSourced(invoice)) {
+      const lineItems = storedLines.map(li => buildInvoiceLine(li, { amount: li.amount, taxCode: li.taxCode }))
+      const draftError = validateInvoiceDraft({
+        lineItems,
+        supplierInvoiceNumber,
+        invoiceDate,
+        retention:     invoice.retention,
+        authoredLines: false,
+      })
+      if (draftError) throw new Error(draftError)
+      const driftError = claimSourcedDriftError(invoice, invoiceTotals(lineItems, invoice.retention))
+      if (driftError) throw new Error(driftError)
+      await updateDoc(ref, header)
+      return
+    }
+
+    // ── direct_po: header + per-line amount / tax code + retention ───────────
+    // Exact positional pairing — one amount and one tax code per STORED line, in
+    // stored order. A mismatch would silently pair authored values with the wrong
+    // lines, so nothing is written.
+    const countError = invoiceLineInputCountError(storedLines, amounts, taxCodes)
+    if (countError) throw new Error(countError)
+
+    const lineItems = storedLines.map((li, idx) =>
+      buildInvoiceLine(li, { amount: amounts[idx], taxCode: taxCodes[idx] })
+    )
+    const draftError = validateInvoiceDraft({ lineItems, supplierInvoiceNumber, invoiceDate, retention })
+    if (draftError) throw new Error(draftError)
+
+    const totals = invoiceTotals(lineItems, retention)
+    await updateDoc(ref, {
+      ...header,
       lineItems,
       retention:      totals.retention,
       retentionGst:   totals.retentionGst,
@@ -198,7 +281,6 @@ export function useSupplierInvoices(projectId) {
       net:            totals.net,
       payableGst:     totals.payableGst,
       payableTotal:   totals.payableTotal,
-      notes:     notes?.trim() || '',
     })
   }, [companyId, projectId, user])
 
