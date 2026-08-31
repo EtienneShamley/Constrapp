@@ -4,6 +4,7 @@ import { db } from '../lib/firebase'
 import { useAuth } from './useAuth'
 import { useCompany } from './useCompany'
 import { currencyToPinOnLock, isKnownCurrencyCode, resolveCompanyCurrency } from '../lib/currency'
+import { buildProjectFields, validateProjectEdit } from '../lib/projects'
 
 const ProjectsContext = createContext(null)
 
@@ -70,6 +71,46 @@ export function ProjectsProvider({ children }) {
       createdBy: user.uid,
     })
   }, [companyId, user, company])
+
+  // Correct a project's METADATA after creation (ADR-39).
+  //
+  // Writes exactly `name`, `status`, `startDate`, `location` and `progress` —
+  // the keys in PROJECT_EDITABLE_KEYS — and nothing else. It CANNOT write
+  // `budget`, `currency`, `currencyLocked`, `createdAt` or `createdBy`: the
+  // field list below is literal, not spread from the caller, so a caller
+  // passing extra keys cannot smuggle them through. Firestore rules
+  // independently freeze `budget`/`createdAt`/`createdBy` and enforce the
+  // status enum, so this is the UX mirror of an enforced boundary.
+  //
+  // NO TRANSACTION AND NO CURRENCY RATCHET. Every other write path in the app
+  // stages `stageProjectCurrencyLock` because it commits MONETARY data; this
+  // one commits none. A name, a location, a start date, a progress percentage
+  // and a status badge are financially inert — no budget, commitment, actual,
+  // forecast, margin or cash-flow figure reads any of them — so there is
+  // nothing here for the ratchet to protect and a plain updateDoc is correct.
+  //
+  // `startDate` arrives as a 'YYYY-MM-DD' string (or '' / null to clear) and is
+  // converted to a Timestamp here, because pages never import firebase/*.
+  // Clearing writes NULL, restoring the exact state of a project created with
+  // no start date.
+  //
+  // Concurrent editors are last-write-wins, as everywhere else in the app
+  // (ADR-36) — there is no transaction and no version guard.
+  const updateProject = useCallback(async (projectId, { name, status, startDate, location, progress }) => {
+    if (!companyId || !projectId || !user) throw new Error('Not authenticated')
+
+    const fields = buildProjectFields({ name, status, startDate, location, progress })
+    const validationError = validateProjectEdit(fields)
+    if (validationError) throw new Error(validationError)
+
+    await updateDoc(doc(db, 'companies', companyId, 'projects', projectId), {
+      name:      fields.name,
+      status:    fields.status,
+      startDate: fields.startDate ? Timestamp.fromDate(new Date(fields.startDate)) : null,
+      location:  fields.location,
+      progress:  fields.progress,
+    })
+  }, [companyId, user])
 
   // Change a project's currency BEFORE it holds any monetary data.
   //
@@ -153,7 +194,7 @@ export function ProjectsProvider({ children }) {
 
   return (
     <ProjectsContext.Provider
-      value={{ projects, projectsLoading, createProject, updateProjectCurrency, lockProjectCurrency }}
+      value={{ projects, projectsLoading, createProject, updateProject, updateProjectCurrency, lockProjectCurrency }}
     >
       {children}
     </ProjectsContext.Provider>

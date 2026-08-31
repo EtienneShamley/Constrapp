@@ -30,7 +30,13 @@ export default function ProjectDetailLayout() {
           <h1 className="text-xl font-semibold text-brand-text">{project.name}</h1>
           <p className="text-sm text-brand-muted mt-0.5">
             {project.location ? `${project.location} · ` : ''}
-            {project.budget ? formatCurrency(project.budget, currencyCode) : '—'}
+            {/* The HEADLINE budget — the figure captured when the project was
+                created. It is reporting metadata and feeds no derivation; the
+                live Approved Budget is the sum of the project's budget lines on
+                the Budget tab. Labelled so the two are never confused (ADR-39). */}
+            {project.budget
+              ? <>Headline Budget {formatCurrency(project.budget, currencyCode)}</>
+              : '—'}
             <span className="ml-2 text-[11px] font-semibold text-brand-muted">{currencyCode}</span>
           </p>
         </div>

@@ -259,10 +259,16 @@ export default function ProjectOverview() {
     <div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
         <Card>
+          {/* The HEADLINE budget — captured at creation, reporting metadata
+              only. It feeds no financial derivation; the current Approved
+              Budget is Σ budget lines on the Budget tab (ADR-39). */}
           <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1.5">
-            Budget <span className="font-normal normal-case tracking-normal">({currencyCode})</span>
+            Headline Budget <span className="font-normal normal-case tracking-normal">({currencyCode})</span>
           </p>
           <p className="text-lg font-bold text-brand-text">{project.budget ? money(project.budget) : '—'}</p>
+          <p className="m-0 mt-1 text-[11px] text-brand-muted">
+            Set at creation. The current Approved Budget is on the Budget tab.
+          </p>
         </Card>
         <Card>
           <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1.5">Start Date</p>

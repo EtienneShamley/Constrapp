@@ -105,12 +105,36 @@ Company-wide taxonomy shared by every project (see
 | `name` | string | e.g. `Concrete Slab` |
 | `category` | string | Optional |
 | `unit` | string | Optional, e.g. `m³` |
-| `isActive` | boolean | Deactivate instead of delete (deletes are blocked by rules) |
-| `createdAt` / `createdBy` | timestamp / uid | |
+| `isActive` | boolean | Deactivate instead of delete (deletes are blocked by rules). **Absent ⇒ ACTIVE** — legacy documents predate the flag, and every picker tests `isActive !== false` |
+| `createdAt` / `createdBy` | timestamp / uid | Immutable (rules-enforced) |
+| `updatedAt` / `updatedBy` | timestamp / uid | Written on edit and on deactivate/reactivate |
+
+**Editable after creation (ADR-39):** `code`, `name`, `category`, `unit` through
+the editor, and `isActive` through the separate Deactivate/Reactivate action.
+Rules restrict an update to exactly those keys plus the audit stamps and freeze
+`createdAt`/`createdBy`. **Deletes stay blocked** — deactivation is the
+retirement path, and it is reversible.
+
+⚠️ **`code` uniqueness is CLIENT-ENFORCED ONLY** (`lib/costCodes.js`). Rules
+have no list, query or count, so a direct SDK call or two concurrent writers can
+create a duplicate. Nothing breaks — the document id remains the financial key —
+but list ordering becomes ambiguous. See [SECURITY.md](SECURITY.md) → Deferred
+Control 28.
 
 Budget lines, PO lines, and claim lines all reference cost codes by
 `costCodeId` and denormalise a display string `costCodeName`
 (`"03-100 — Concrete Slab"`) at write time, so renames don't rewrite history.
+
+**Renaming is safe by construction and NEVER backfills.** Every financial
+derivation groups by the document id; `code` and `name` are display only, so a
+rename moves no Budgeted, Committed, Actual, Invoiced, Forecast, Margin or Cash
+Flow figure. Historical snapshots record what the code was called when the
+commitment was made and are not rewritten — the Budget, Forecast and BOQ pages
+resolve the **current** name at read time instead (`lib/costCodes.js` →
+`resolveCostCodeName`: live → stored snapshot → `"Unknown cost code"`).
+**Deactivating** likewise changes no figure: an inactive code keeps its budget
+line, commitments and actuals, read-time rows flag it `isInactive` rather than
+dropping it, and only NEW authoring stops offering it.
 
 ## companies/{companyId}/contacts/{contactId}
 
@@ -187,15 +211,47 @@ so every project numbers its RFIs from `RFI-0001` independently.
 
 | Field | Type | Notes |
 |---|---|---|
-| `name` | string | |
-| `status` | string | UI labels: `Planning`, `In Progress`, `Backlogged`, `On Hold`, `Completed` |
-| `budget` | number | Headline project budget (display only — not reconciled against budget lines) |
-| `startDate` | Timestamp \| null | |
-| `location` | string | |
-| `progress` | number | 0–100, manually set at creation |
+| `name` | string | Editable; required, ≤ 200 chars |
+| `status` | string | UI labels: `Planning`, `In Progress`, `Backlogged`, `On Hold`, `Completed`. Editable — see the status note below |
+| `budget` | number | **Headline Budget — set at creation and IMMUTABLE (rules-enforced).** Display/reporting only: it feeds **no** financial derivation (the live Approved Budget is Σ `budgetLines.budgeted`), but it **is** currency-lock evidence — see below |
+| `startDate` | Timestamp \| null | Editable, including clearing back to `null` |
+| `location` | string | Editable; ≤ 200 chars, may be blank |
+| `progress` | number | 0–100, manually set and editable. Financially inert |
 | `currency` | string | **ISO 4217** — THE display authority for every money figure on this project. Inherited from `company.baseCurrency` at creation and overridable there. **Absent** on projects predating this foundation ⇒ resolved through the company (see below) |
 | `currencyLocked` | boolean | The **currency ratchet**. Once `true`, Firestore rules reject any change to a **well-formed** `currency` (including deleting or blanking it) and any attempt to set this back to `false`. One carve-out: a locked project storing **no** well-formed currency may receive its **first** explicit code, so a legacy project can still be pinned by Company Settings — see [SECURITY.md](SECURITY.md) → project currency ratchet. Set at creation when `budget > 0`, and by the single centralised lock operation whenever monetary data is first written. **Absent** ⇒ treated as `false` |
-| `createdAt` / `createdBy` | timestamp / uid | |
+| `createdAt` / `createdBy` | timestamp / uid | Immutable (rules-enforced) |
+
+### Editable fields (ADR-39)
+
+**Editable after creation:** `name`, `status`, `startDate` (including clearing
+to `null`), `location`, `progress`. **Immutable:** `budget`, `createdAt`,
+`createdBy` (rules-enforced), plus `currency`/`currencyLocked`, which have their
+own control surface and ratchet.
+
+Editing project metadata has **zero financial effect** — no derivation in
+`lib/` reads any of these fields.
+
+⚠️ **`status` is DESCRIPTIVE, not a lifecycle.** It gates no purchase order,
+claim, invoice, variation, payment or Firestore rule anywhere in the app: its
+only consumers are two Badges, a status-dot colour lookup, and the Dashboard's
+"In Progress" count. **Any status may move to any other, and `Completed` is
+freely reopenable.** Rules enforce the five-value **vocabulary** and nothing
+more — do not describe project status as a lifecycle control.
+
+⚠️ **Why the headline `budget` is frozen rather than editable.** It is not a
+financial source, but `createProject` sets `currencyLocked: budget > 0`, so it
+is currency-lock **evidence**. Raising it would have to engage the one-way
+ratchet atomically; lowering it to 0 could never release the lock, leaving a
+permanently locked project whose lock has no visible reason. It is displayed as
+**"Headline Budget"** (Projects list, project header, Overview card) so it is
+never confused with the live Approved Budget on the Budget tab. The field is
+**not** deleted or migrated.
+
+⚠️ **Legacy documents.** Rules validate each project field "**unchanged, or
+valid**" rather than "valid": projects predating the current vocabulary store
+statuses outside the five-value enum, and validating an untouched field would
+make them permanently unwritable — including by the Company Settings currency
+pin. The constraint is one-way toward the current vocabulary.
 
 ### Currency resolution & locking
 
@@ -264,14 +320,42 @@ One allocation of project budget against a company cost code.
 
 | Field | Type | Notes |
 |---|---|---|
-| `costCodeId` | string | → company cost code |
-| `costCodeName` | string | Denormalised display string |
-| `budgeted` | number | **Stored** — the allocation (ex-GST) |
+| `costCodeId` | string | → company cost code. **IMMUTABLE (rules-enforced)** — a line is never re-pointed |
+| `costCodeName` | string | Denormalised display string, frozen at write time. **IMMUTABLE (rules-enforced)** — never re-snapshotted on edit; the current name is resolved at read time |
+| `budgeted` | number | **Stored** — the allocation (ex-GST). Editable; must be a **number ≥ 0** (rules-enforced). Zero is valid |
 | `invoiced` | number | Written once as `0` at creation and **never updated — ignored by the UI.** Invoiced is derived at read time from supplier invoices (see below), matching Committed/Actual — nothing writes this field |
 | `committed` | number | Written once as `0` at creation and **never updated — ignored by the UI** |
 | `actual` | number | Written once as `0` at creation and **never updated — ignored by the UI** |
-| `notes` | string | |
-| `createdAt` / `createdBy` | timestamp / uid | |
+| `notes` | string | Editable; ≤ 2000 chars |
+| `createdAt` / `createdBy` | timestamp / uid | Immutable (rules-enforced) |
+| `updatedAt` / `updatedBy` | timestamp / uid | Written on edit; **rules-verified** against the caller and `request.time` |
+
+### Editable fields (ADR-39)
+
+**Editable after creation:** `budgeted` and `notes`, and nothing else. Rules
+restrict an update to exactly those two keys plus the audit stamps — which is
+also what freezes the vestigial `committed`/`actual`/`invoiced` zeros. **No
+delete, no cost-code re-pointing, no bulk edit.**
+
+**What a `budgeted` edit moves:** Budgeted, Remaining (`budgeted − actual`),
+Variance to Budget, Remaining Budget Reference, the BOQ Approved-Budget
+comparison, and tender variance to budget.
+
+**What it must NOT move — and does not:**
+
+- **Forecast Final Cost.** FFC = Actual + Remaining Committed + Uncommitted Cost
+  to Complete; `budgeted` is in none of those terms. A stored Uncommitted CTC
+  produced by *Use remaining budget* is a one-time **copy**, never a live
+  formula, so it is not recomputed.
+- **Margin.** `computeMargin` reads only the baseline, variations and FFC —
+  Forecast Gross Profit, Forecast Margin %, Current Contract Sum, Original
+  Planned Profit and Margin Movement all stand. The Commercial tab's "current
+  approved budget" is a **reference** behind an explicit action, never
+  auto-applied to `originalApprovedBudget`.
+- **Cash Flow.** `lib/cashFlow.js` never reads a budget line.
+
+In one sentence: *correcting a budget moves the variance, not the forecast.*
+All of the above is proven in `tests/unit/foundationEditInvariance.test.js`.
 
 ### Stored vs derived
 

@@ -43,7 +43,7 @@ That script runs
   deployed). The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **942 in total across 17 files: 896 Firestore + 46 Storage**:
+- Tests — **1095 in total across 19 files: 1049 Firestore + 46 Storage**:
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -62,9 +62,9 @@ That script runs
     tightening this block cannot break the other ~40 lookups.
     Unlike the suites below it constrains **no timestamp field**, so the
     skewed-clock rule in the note further down does not apply to it.
-  - `frontend/tests/rules/projects.rules.test.js` — **52 tests** covering the
-    project document and the **currency ratchet** — the last financially
-    significant collection with no suite. `currency` is the display authority for
+  - `frontend/tests/rules/projects.rules.test.js` — **89 tests** covering the
+    project document, the **currency ratchet**, and (since ADR-39) **metadata
+    correction**. `currency` is the display authority for
     every money figure on a project and Constrapp performs **no FX conversion**,
     so changing a stored currency **relabels** existing amounts; these tests are
     the only automated proof that it cannot happen. Covers the read audience
@@ -323,6 +323,50 @@ cd frontend
 npm run test:unit
 ```
 
+- `frontend/tests/unit/projects.test.js` — **26 tests** over `lib/projects.js`
+  (ADR-39): the five-value status vocabulary and its rejection of legacy slugs
+  (`'in_progress'`); the deliberate **absence** of a transition graph — every
+  status accepted from every other, `Completed` reopenable; the editable key set
+  proven never to contain `budget`, `currency`, `currencyLocked`, `createdAt` or
+  `createdBy`, with `buildProjectFields` emitting only those keys; progress
+  clamping (bounds, numeric strings, junk → 0 rather than NaN); name/location
+  trimming; a blank start date mapping to **null**, not `''`; and
+  `projectStartDateToInput` round-tripping a Timestamp and degrading to `''` on
+  malformed legacy values instead of throwing.
+- `frontend/tests/unit/costCodes.test.js` — **34 tests** over `lib/costCodes.js`
+  (ADR-39): a **missing `isActive` means ACTIVE** (the legacy-document rule every
+  picker relies on); `resolveCostCodeName`'s three-step chain (live → stored
+  snapshot → `"Unknown cost code"`), including resolving an *inactive* code live;
+  duplicate detection that is case- and whitespace-insensitive and **excludes the
+  record being edited**; field trimming and bounds; `buildCostCodeFields` proven
+  never to emit `isActive` or provenance; and the deactivate notice asserted to
+  promise no figure change while making no per-project count claim.
+- `frontend/tests/unit/budgetLines.test.js` — **23 tests** over
+  `lib/budgetLines.js` (ADR-39): the editable key set is exactly
+  `budgeted` + `notes`, proven never to contain `costCodeId`, `costCodeName`, the
+  vestigial figures or provenance; **zero is a valid budget** while blank, null,
+  junk, non-finite and array input are all rejected rather than coerced to 0
+  (the `Number([]) === 0` hole is closed by an explicit type guard); notes
+  bounds; and `budgetLineToForm` rendering a stored `0` as `'0'`, not blank.
+- `frontend/tests/unit/foundationEditInvariance.test.js` — **42 tests**, the
+  FINANCIAL INVARIANCE proof for ADR-39, exercising the real read-time
+  derivations rather than any re-implementation. **Project metadata edits** are
+  shown financially inert structurally — the ten financial `lib/` modules are
+  asserted to read no `project.<field>` at all. **Cost-code rename and
+  deactivation** are shown to change no number: forecast rollups byte-identical,
+  every numeric row field unchanged (only the label and the `isInactive` flag
+  move), the deactivated code keeping its row, margin unchanged, and the BOQ
+  comparison unchanged — with the historical budget-line snapshot proven
+  un-rewritten. **A `budgeted` edit** is shown to move Approved Budget, Variance
+  to Budget, Remaining Budget Reference, Budget-tab Remaining and the BOQ
+  comparison by *exactly* the delta, while **Forecast Final Cost**, the cost-side
+  rollups, **every margin output** (Forecast Gross Profit, Forecast Margin %,
+  Current Contract Sum, Original Planned Profit, Margin Movement) and **Cash
+  Flow** are byte-identical — including the proof that a stored Uncommitted CTC
+  is *not* recomputed even though the "use remaining budget" suggestion moves.
+  A final group covers correcting a budget to **zero**: the row survives with
+  `hasBudgetLine` true, FFC still does not move, and the variance goes negative
+  so an overrun is surfaced rather than hidden.
 - `frontend/tests/unit/cashFlow.test.js` — **131 tests** over `lib/cashFlow.js`
   and the cash-row adapters (`lib/clientReceipts.js → cashInRows()`,
   `lib/supplierPayments.js → cashOutRows()`): month-key validation and labels,
@@ -733,11 +777,41 @@ project.
 - [ ] Unknown project ID shows "Project not found."; unmatched routes redirect to `/projects`.
 - [ ] Documents/Photos/Reports tabs show placeholder cards, no data wiring (Variations — see §14 — Forecast — see §15 — Commercial — see §15g — BOQ and Tenders — see §15s — and Timeline — see §15p — are now live).
 
+### 2a. Edit Project metadata (ADR-39)
+
+Rules coverage is automated (§0). These are the end-to-end checks the emulator
+cannot make.
+
+- [ ] Signed in as `company_admin` or `project_manager`, each project row shows **View ▾** and **Edit**. Signed in as `qs`, `subcontractor` or `client`, **no Edit action appears**.
+- [ ] Edit → the modal is titled **Edit Project**, prefilled with the stored name, status, start date, location and progress, and the primary button reads **Save Changes**.
+- [ ] Change name, location, start date, progress (0 → 35) and status (Planning → In Progress) → Save. The list row, the project header, the Overview cards and the Dashboard **"active projects"** count all update immediately.
+- [ ] **Headline Budget renders READ-ONLY** in the modal, with the note that it is set at creation and that the current Approved Budget lives on the Budget tab. **Currency renders READ-ONLY**, pointing at the Overview currency card.
+- [ ] The Budget column, project header and Overview card are all labelled **"Headline Budget"**, never plain "Budget".
+- [ ] The status list offers all five values from **every** current status, and a **Completed** project can be set back to **In Progress** — status is descriptive, not a lifecycle. The modal says so.
+- [ ] Clearing the start date and saving shows "—" wherever the date appeared.
+- [ ] A blank project name blocks Save with an inline message.
+- [ ] **Financial invariance:** before and after the whole edit, the Budget, Forecast, Commercial (Margin) and Cash Flow tabs show **identical figures**.
+- [ ] There is **no Delete or Archive** action on a project.
+- [ ] Modals are usable at 375 px, 768 px and 1280 px.
+
 ## 3. Cost Codes
 
 - [ ] Cost Codes tab (within a project) lists company-wide codes ordered by code.
 - [ ] Create one (code + name required; category/unit optional) → appears in **every** project's Cost Codes tab and in PO/budget-line dropdowns.
 - [ ] New codes are created `isActive: true`; there is no delete action.
+
+### 3-i. Edit, Deactivate and Reactivate Cost Codes (ADR-39)
+
+- [ ] Signed in as `company_admin`, `project_manager` or `qs`, each row shows **Edit** plus **Deactivate**/**Reactivate**. As `subcontractor` or `client`, **no write actions appear** and "+ Add Cost Code" is hidden.
+- [ ] Edit a code's **code and name** → Save. The Cost Codes list, the **Budget tab row label**, and the **Forecast** and **BOQ** row labels all show the new label immediately.
+- [ ] **No backfill:** open an existing **sent PO** and a **posted supplier invoice** that used that code — their stored line labels are **UNCHANGED**. Same for an approved progress claim and a variation.
+- [ ] **Financial invariance after the rename:** Budget (Budgeted/Committed/Actual/Invoiced/Remaining), Forecast (including Forecast Final Cost), Commercial (Margin) and Cash Flow are all **unchanged**.
+- [ ] Saving a code that duplicates another code (differing only in case or spacing) is **blocked** with "already in use". Saving the **same record** with its own unchanged code succeeds.
+- [ ] **Deactivate** shows a confirmation explaining that existing records keep the code and no figure changes → confirm. The row badge flips to **Inactive**.
+- [ ] After deactivation: the code **no longer appears** in the New Budget Line picker; the **existing budget line still shows and still totals**; Forecast and BOQ rows still show it, flagged **(inactive)**; every figure is unchanged.
+- [ ] **Reactivate** restores it to the picker.
+- [ ] A cost code created before the `isActive` flag existed still shows as **Active** and remains editable.
+- [ ] There is **no Delete** action.
 
 ## 3a. Contacts
 
@@ -784,6 +858,25 @@ project.
 - [ ] With zero cost codes: Budget tab disables "Add Budget Line" and links to Cost Codes.
 - [ ] Create a line (cost code + budgeted) → row shows Budgeted, zeros/— elsewhere, Remaining = Budgeted.
 - [ ] Summary card shows Budgeted / Committed / Claimed / Actual / Remaining totals and a usage bar.
+
+### 4a. Edit Budget Lines (ADR-39)
+
+Rules coverage is automated (§0). **This is the one edit in this feature with a
+financial effect, so the invariance checks below are the important ones.**
+
+- [ ] Signed in as `company_admin`, `project_manager` or `qs`, each budget row shows **Edit**. As `subcontractor` or `client`, no Edit appears and "+ Add Budget Line" is hidden.
+- [ ] The **create** picker offers **ACTIVE cost codes only**. With no active codes, the tab disables creation and links to Cost Codes.
+- [ ] Edit a line → the modal is titled **Edit Budget Line**; **the cost code renders READ-ONLY** with the reason, and only **Budgeted** and **Notes** are editable. A line whose cost code has since been **deactivated** still opens and still saves.
+- [ ] Change Budgeted 100,000 → 112,500 and Save. Then check, one screen each:
+  - [ ] **Budget tab** — line Budgeted 112,500, line Remaining **+12,500**, header Budgeted and Remaining **+12,500**, usage bar moves. **Committed, Claimed, Actual and Invoiced are UNCHANGED.**
+  - [ ] **Forecast tab** — row Budgeted and **Variance to Budget +12,500**, Remaining Budget Reference **+12,500**, and **Forecast Final Cost UNCHANGED** (the stored Uncommitted CTC is not recomputed).
+  - [ ] **Commercial tab** — **Forecast Gross Profit, Forecast Margin %, Current Contract Sum, Original Planned Profit and Margin Movement all UNCHANGED.**
+  - [ ] **Cash Flow tab** — **UNCHANGED** in every figure.
+  - [ ] **BOQ tab** — Approved Budget total and the BOQ variance move by 12,500.
+- [ ] Setting Budgeted to **0** saves (a reviewed allocation of nothing) and the row stays, showing a negative variance rather than disappearing.
+- [ ] A **negative** or non-numeric Budgeted is blocked with an inline message and nothing is written.
+- [ ] Editing only **Notes** leaves every figure untouched.
+- [ ] There is **no Delete**, no way to change the cost code, and no bulk edit.
 
 ## 5. Purchase Orders
 
@@ -1281,6 +1374,39 @@ insufficient permissions."** The rules ratchet was comparing
 `request.currency == resource.currency` and read the project's FIRST currency
 (`''` → `'AUD'`) as a forbidden relabel, leaving such projects permanently
 unpinnable and their amounts floating on the company base currency.
+
+### ADR-39 rules suites (automated — see §0)
+
+- `frontend/tests/rules/projects.rules.test.js` gained **37 tests**: the
+  headline `budget` is immutable in both directions (including delete, a smuggled
+  change, an accepted identical rewrite, and a project with no `budget` key);
+  `createdAt`/`createdBy` immutable; the five-value status enum accepted, every
+  status-to-status move accepted (including reopening `Completed`), and
+  out-of-vocabulary/non-string values rejected; `name`/`progress`/`location`/
+  `startDate` shapes including both bounds and clearing `startDate` to null; the
+  **legacy carve-out** (an untouched out-of-enum status leaves the document
+  writable, the Company Settings currency pin still succeeds on it, a legacy
+  status may be corrected once and a valid one can never regress); the `qs`
+  ratchet branch proven unaffected; and non-writer roles still refused.
+- `frontend/tests/rules/costCodes.rules.test.js` — **new, 51 tests**: the read
+  audience and tenant isolation; create by the three writer roles and refused for
+  the rest; provenance immutability; the update key allow-list; every field shape
+  and length bound; `isActive` reversible in **both** directions and a legacy
+  document with no `isActive` key still writable; deletes blocked for every role;
+  and **Group F proves the documented gap** — duplicate codes are accepted at the
+  boundary, because rules cannot query siblings.
+- `frontend/tests/rules/budgetLines.rules.test.js` — **new, 65 tests**: the read
+  audience and tenant isolation; create shape (`costCodeId` required, `budgeted`
+  numeric ≥ 0, zero accepted, negative rejected); **`costCodeId` re-pointing
+  rejected** (alone, smuggled, and deleted); **`costCodeName` re-snapshot
+  rejected**; the vestigial `committed`/`actual`/`invoiced` frozen; provenance
+  immutable; `budgeted` numeric safety (zero, decimals, negative, numeric string,
+  null/bool/map, deletion); the key allow-list; **audit stamps verified** against
+  caller and `request.time` using the deliberately skewed client clocks; legacy
+  documents (no `notes`, no `costCodeName`) still correctable but unable to
+  *gain* a snapshot; deletes blocked; and **Group G proves the documented gaps** —
+  a non-existent `costCodeId` and a second line on one cost code are both
+  accepted at the boundary.
 
 **Automated coverage is in `frontend/tests/rules/projects.rules.test.js`** (§0) —
 every accept and reject listed below is asserted there against the emulator. The

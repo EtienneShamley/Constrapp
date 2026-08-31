@@ -8,7 +8,7 @@ import {
   assertFails,
 } from '@firebase/rules-unit-testing'
 import {
-  doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, writeBatch,
+  doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, writeBatch, Timestamp,
 } from 'firebase/firestore'
 
 // ── companies/{companyId}/projects/{projectId} Security Rules — emulator tests ─
@@ -574,4 +574,312 @@ describe('projects — delete is blocked for everyone', () => {
     await assertFails(deleteDoc(projRef(anon)))
     expect((await stored()).currency).toBe('AUD')
   })
+})
+
+// ── K. METADATA CORRECTION (ADR-39) ─────────────────────────────────────────
+//
+// Branch (a) previously validated ONLY the currency fields, so any
+// company_admin / project_manager write could rewrite every other key including
+// provenance. Projects became correctable through the UI, so the branch now
+// also freezes the headline budget and provenance, and shape-validates the five
+// editable metadata fields.
+//
+// ⚠️ VALIDATED ON CHANGE, NOT ON PRESENCE. LEGACY_PROJECT stores
+// `status: 'in_progress'` — a value OUTSIDE the current five-word vocabulary,
+// and exactly the kind of document real deployments hold. Every condition
+// therefore reads "unchanged, or valid": an untouched legacy value passes
+// through, while any WRITE to that field must land on a valid one. Requiring
+// validity unconditionally would make every legacy project permanently
+// unwritable, INCLUDING by the Company Settings currency pin. Group K3 is the
+// regression net for exactly that.
+
+const VALID_STATUSES = ['Planning', 'In Progress', 'Backlogged', 'On Hold', 'Completed']
+
+describe('projects — the headline budget is IMMUTABLE', () => {
+  it('changing budget is REJECTED for company_admin and project_manager', async () => {
+    // It feeds no financial derivation, but it IS currency-lock evidence:
+    // raising it would have to engage the one-way ratchet atomically, and
+    // lowering it could never release the lock.
+    await seed({ currency: 'AUD', currencyLocked: true })
+    for (const key of ['admin', 'pm']) {
+      await assertFails(updateDoc(projRef(ctx(USERS[key])), { budget: 999_999 }))
+    }
+    expect((await stored()).budget).toBe(LEGACY_PROJECT.budget)
+  })
+
+  it('lowering budget to 0 is REJECTED — the ratchet could never be released', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true })
+    await assertFails(updateDoc(projRef(ctx(USERS.admin)), { budget: 0 }))
+    expect((await stored()).budget).toBe(LEGACY_PROJECT.budget)
+  })
+
+  it('DELETING budget is REJECTED', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true })
+    await assertFails(updateDoc(projRef(ctx(USERS.admin)), { budget: deleteField() }))
+  })
+
+  it('a budget change smuggled alongside a legitimate rename is REJECTED', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true })
+    await assertFails(updateDoc(projRef(ctx(USERS.admin)), { name: 'Renamed', budget: 42 }))
+    const after = await stored()
+    expect(after.budget).toBe(LEGACY_PROJECT.budget)
+    expect(after.name).toBe(LEGACY_PROJECT.name)
+  })
+
+  it('an identical budget value is accepted — idempotent, not a change', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true })
+    await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), {
+      budget: LEGACY_PROJECT.budget, name: 'Renamed',
+    }))
+    expect((await stored()).name).toBe('Renamed')
+  })
+
+  it('a project with NO budget key stays writable and cannot gain one', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(projRef(c.firestore()), {
+        name: 'No budget key', status: 'Planning', currency: 'AUD', currencyLocked: true,
+      })
+    })
+    await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), { name: 'Renamed' }))
+    await assertFails(updateDoc(projRef(ctx(USERS.admin)), { budget: 10_000 }))
+  })
+})
+
+describe('projects — createdAt / createdBy are IMMUTABLE', () => {
+  const withProvenance = { createdAt: Timestamp.fromDate(new Date('2026-01-05T00:00:00Z')), createdBy: USERS.pm.uid }
+
+  it('rewriting createdBy is REJECTED', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true, ...withProvenance })
+    await assertFails(updateDoc(projRef(ctx(USERS.admin)), { createdBy: USERS.admin.uid }))
+    expect((await stored()).createdBy).toBe(USERS.pm.uid)
+  })
+
+  it('rewriting or deleting createdAt is REJECTED', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true, ...withProvenance })
+    await assertFails(updateDoc(projRef(ctx(USERS.admin)), { createdAt: Timestamp.fromDate(new Date()) }))
+    await assertFails(updateDoc(projRef(ctx(USERS.admin)), { createdAt: deleteField() }))
+  })
+
+  it('provenance rewritten alongside a legitimate edit is REJECTED', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true, ...withProvenance })
+    await assertFails(updateDoc(projRef(ctx(USERS.admin)), { progress: 55, createdBy: USERS.admin.uid }))
+    expect((await stored()).progress).toBe(LEGACY_PROJECT.progress)
+  })
+})
+
+describe('projects — status must be one of the five valid values ON CHANGE', () => {
+  it('accepts every valid status', async () => {
+    for (const status of VALID_STATUSES) {
+      await seed({ currency: 'AUD', currencyLocked: true })
+      await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), { status }))
+      expect((await stored()).status).toBe(status)
+    }
+  })
+
+  it('ANY valid status may move to ANY other — there is no lifecycle to enforce', async () => {
+    // `status` gates no order, claim, invoice, variation or payment anywhere in
+    // the app. Rules enforce the vocabulary and deliberately nothing more.
+    for (const from of VALID_STATUSES) {
+      for (const to of VALID_STATUSES) {
+        await seed({ currency: 'AUD', currencyLocked: true, status: from })
+        await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), { status: to }))
+      }
+    }
+  })
+
+  it('Completed may be REOPENED to any other status', async () => {
+    for (const to of VALID_STATUSES) {
+      await seed({ currency: 'AUD', currencyLocked: true, status: 'Completed' })
+      await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), { status: to }))
+      expect((await stored()).status).toBe(to)
+    }
+  })
+
+  it('REJECTS a status outside the vocabulary', async () => {
+    // Seeded with a VALID status so every candidate below is a genuine CHANGE.
+    // (On the legacy fixture, writing 'in_progress' would be an UNCHANGED write
+    // and is correctly allowed through — that carve-out is proved in Group K3.)
+    await seed({ currency: 'AUD', currencyLocked: true, status: 'Planning' })
+    for (const bad of ['in_progress', 'Archived', 'planning', 'IN PROGRESS', 'Complete', '']) {
+      await assertFails(updateDoc(projRef(ctx(USERS.admin)), { status: bad }))
+    }
+    expect((await stored()).status).toBe('Planning')
+  })
+
+  it('a VALID status can never regress to a legacy slug', async () => {
+    // The constraint is one-way: once a project holds a current value, it can
+    // only move to another current value.
+    await seed({ currency: 'AUD', currencyLocked: true, status: 'In Progress' })
+    await assertFails(updateDoc(projRef(ctx(USERS.admin)), { status: 'in_progress' }))
+    expect((await stored()).status).toBe('In Progress')
+  })
+
+  it('REJECTS a non-string status', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true })
+    for (const bad of [1, true, { v: 'Planning' }, ['Planning']]) {
+      await assertFails(updateDoc(projRef(ctx(USERS.admin)), { status: bad }))
+    }
+  })
+
+  it('REJECTS an invalid status smuggled alongside a legitimate edit', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true })
+    await assertFails(updateDoc(projRef(ctx(USERS.admin)), { progress: 60, status: 'Archived' }))
+    expect((await stored()).progress).toBe(LEGACY_PROJECT.progress)
+  })
+})
+
+describe('projects — LEGACY documents remain writable (the load-bearing carve-out)', () => {
+  it('a legacy out-of-vocabulary status is left ALONE and the project stays editable', async () => {
+    // LEGACY_PROJECT.status is 'in_progress'. Editing the NAME must not drag
+    // the untouched status through validation and lock the document.
+    await seed({ currency: 'AUD', currencyLocked: true })
+    expect(VALID_STATUSES).not.toContain(LEGACY_PROJECT.status)
+    await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), { name: 'Renamed' }))
+    const after = await stored()
+    expect(after.name).toBe('Renamed')
+    expect(after.status).toBe('in_progress')
+  })
+
+  it('every other metadata field can be edited on a legacy-status project', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true })
+    await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), { progress: 65 }))
+    await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), { location: 'Cairns QLD' }))
+    await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), {
+      startDate: Timestamp.fromDate(new Date('2026-03-01T00:00:00Z')),
+    }))
+  })
+
+  it('the Company Settings currency pin still works on a legacy-status project', async () => {
+    // THE REGRESSION THAT MATTERS. The pin writes `currency` alone; if the
+    // untouched legacy status were validated, this would start failing with
+    // "Missing or insufficient permissions" exactly as the original defect did.
+    await seed({ currencyLocked: true })
+    const db = ctx(USERS.admin)
+    const batch = writeBatch(db)
+    batch.update(projRef(db), { currency: 'AUD' })
+    await assertSucceeds(batch.commit())
+    expect((await stored()).currency).toBe('AUD')
+  })
+
+  it('a legacy status may still be CORRECTED to a valid one', async () => {
+    // The constraint is strictly one-way toward the current vocabulary.
+    await seed({ currency: 'AUD', currencyLocked: true })
+    await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), { status: 'In Progress' }))
+    expect((await stored()).status).toBe('In Progress')
+  })
+
+  it('but a legacy status may NOT be swapped for another invalid one', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true })
+    await assertFails(updateDoc(projRef(ctx(USERS.admin)), { status: 'on_hold' }))
+  })
+
+  it('a minimal project holding only a name stays writable', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(projRef(c.firestore()), { name: 'Bare' })
+    })
+    await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), { name: 'Bare renamed' }))
+    await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), { progress: 10 }))
+  })
+})
+
+describe('projects — name, progress, location and startDate shapes ON CHANGE', () => {
+  it('ACCEPTS a well-formed metadata correction in one write', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true })
+    await assertSucceeds(updateDoc(projRef(ctx(USERS.pm)), {
+      name: 'Lakeside Apartments Stage 2',
+      status: 'On Hold',
+      location: 'Southport QLD 4215',
+      progress: 35,
+      startDate: Timestamp.fromDate(new Date('2026-04-01T00:00:00Z')),
+    }))
+    const after = await stored()
+    expect(after.name).toBe('Lakeside Apartments Stage 2')
+    expect(after.progress).toBe(35)
+  })
+
+  it('REJECTS a blank, deleted, non-string or over-long name', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true })
+    await assertFails(updateDoc(projRef(ctx(USERS.admin)), { name: '' }))
+    await assertFails(updateDoc(projRef(ctx(USERS.admin)), { name: deleteField() }))
+    await assertFails(updateDoc(projRef(ctx(USERS.admin)), { name: 12345 }))
+    await assertFails(updateDoc(projRef(ctx(USERS.admin)), { name: 'x'.repeat(201) }))
+  })
+
+  it('ACCEPTS a name at exactly the limit', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true })
+    await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), { name: 'x'.repeat(200) }))
+  })
+
+  it('REJECTS progress outside 0–100, or non-numeric', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true })
+    for (const bad of [-1, 101, 1000, '50', true, null]) {
+      await assertFails(updateDoc(projRef(ctx(USERS.admin)), { progress: bad }))
+    }
+    expect((await stored()).progress).toBe(LEGACY_PROJECT.progress)
+  })
+
+  it('ACCEPTS progress at both bounds', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true })
+    await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), { progress: 0 }))
+    await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), { progress: 100 }))
+  })
+
+  it('REJECTS a non-string or over-long location; ACCEPTS a blank one', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true })
+    await assertFails(updateDoc(projRef(ctx(USERS.admin)), { location: 999 }))
+    await assertFails(updateDoc(projRef(ctx(USERS.admin)), { location: 'x'.repeat(201) }))
+    await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), { location: '' }))
+  })
+
+  it('ACCEPTS a timestamp startDate and CLEARING it to null', async () => {
+    // Clearing must restore exactly the state of a project created without one.
+    await seed({ currency: 'AUD', currencyLocked: true })
+    await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), {
+      startDate: Timestamp.fromDate(new Date('2026-04-01T00:00:00Z')),
+    }))
+    await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), { startDate: null }))
+    expect((await stored()).startDate).toBeNull()
+  })
+
+  it('REJECTS a non-timestamp startDate', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true })
+    for (const bad of ['2026-04-01', 1_800_000_000, true, { seconds: 1 }]) {
+      await assertFails(updateDoc(projRef(ctx(USERS.admin)), { startDate: bad }))
+    }
+  })
+})
+
+describe('projects — the QS ratchet branch is UNAFFECTED by the metadata tightening', () => {
+  it('qs can still flip currencyLocked false -> true and nothing else', async () => {
+    await seed({ currency: 'AUD' })
+    await assertSucceeds(updateDoc(projRef(ctx(USERS.qs)), { currencyLocked: true }))
+    expect((await stored()).currencyLocked).toBe(true)
+  })
+
+  it('qs still cannot edit name, status, progress, location or budget', async () => {
+    await seed({ currency: 'AUD', currencyLocked: false })
+    const db = ctx(USERS.qs)
+    await assertFails(updateDoc(projRef(db), { name: 'QS rename' }))
+    await assertFails(updateDoc(projRef(db), { status: 'Completed' }))
+    await assertFails(updateDoc(projRef(db), { progress: 90 }))
+    await assertFails(updateDoc(projRef(db), { location: 'Elsewhere' }))
+    await assertFails(updateDoc(projRef(db), { budget: 1 }))
+  })
+
+  it('qs cannot ride a valid metadata edit in alongside the ratchet', async () => {
+    await seed({ currency: 'AUD' })
+    await assertFails(updateDoc(projRef(ctx(USERS.qs)), { currencyLocked: true, status: 'Completed' }))
+  })
+})
+
+describe('projects — non-writer roles still cannot correct metadata', () => {
+  for (const key of NON_WRITERS) {
+    it(`${key} cannot edit project metadata`, async () => {
+      await seed({ currency: 'AUD', currencyLocked: true })
+      const db = ctx(USERS[key])
+      await assertFails(updateDoc(projRef(db), { name: 'Nope' }))
+      await assertFails(updateDoc(projRef(db), { status: 'Completed' }))
+      await assertFails(updateDoc(projRef(db), { progress: 1 }))
+    })
+  }
 })
