@@ -128,7 +128,91 @@ service cloud.firestore {
     // `currencyLocked` from false/absent to true and changing NOTHING else. The
     // `hasOnly(['currencyLocked'])` diff is what prevents a qs user from
     // touching currency, name, budget, status, dates, or any other field.
+    //
+    // ── METADATA CORRECTION (ADR-39) ──────────────────────────────────────
+    // Branch (a) previously validated ONLY the currency fields, so any
+    // company_admin / project_manager write could rewrite every other key
+    // including provenance. Projects are now correctable through the UI, so the
+    // branch additionally enforces:
+    //
+    //   · `budget` IS IMMUTABLE. The headline budget is creation-time reporting
+    //     metadata that feeds NO financial derivation (the live Approved Budget
+    //     is the sum of the project's budget lines), but it IS currency-lock
+    //     evidence — `createProject` sets `currencyLocked: budget > 0`. Editing
+    //     it up would have to engage the one-way ratchet atomically, and
+    //     editing it down could never release it, leaving a permanently locked
+    //     project whose lock has no visible reason. So it is frozen here rather
+    //     than routed through an editor.
+    //   · `createdAt` / `createdBy` are IMMUTABLE provenance.
+    //   · `status`, `name`, `progress`, `location` and `startDate` are
+    //     shape-validated.
+    //
+    // ⚠️ VALIDATED ON CHANGE, NOT ON PRESENCE — and this is load-bearing, not a
+    // convenience. Projects predating the current vocabulary store statuses
+    // outside the five-value enum (`'in_progress'` rather than `'In Progress'`;
+    // the rules suite's LEGACY_PROJECT fixture is exactly such a document).
+    // Every field condition below therefore reads "UNCHANGED, or valid":
+    // an untouched legacy value passes through, while any WRITE to that field
+    // must land on a valid one. Requiring validity unconditionally would make
+    // every legacy project permanently unwritable — including by the Company
+    // Settings currency pin, which updates `currency` alone and would drag the
+    // whole document through validation. The constraint is strictly one-way
+    // toward the current vocabulary and locks nobody out, the same shape as the
+    // LEGACY INITIALISATION carve-out above.
+    //
+    // Everything reads through `.get(key, default)` for the same reason: a bare
+    // `request.resource.data.name` errors on a document that has no such key.
+    //
+    // What these rules DO NOT enforce (client-side only — NEVER describe as
+    // enforced; see docs/SECURITY.md → Deferred Control 28):
+    //   · status TRANSITION legality — there is none to enforce. `status` is
+    //     descriptive: it gates no order, claim, invoice, variation or payment
+    //     anywhere in the app, and any value may move to any other.
+    //   · that a project's metadata is accurate, or that concurrent editors do
+    //     not overwrite one another (last-write-wins, no version guard).
     match /companies/{companyId}/projects/{projectId} {
+      // The five-value project status vocabulary, mirroring
+      // frontend/src/lib/projects.js → PROJECT_STATUSES. Unlike the ISO 4217
+      // currency table (deliberately shape-tested above because an enum copied
+      // into this manually-published file would drift against an external
+      // standard), this list is short, product-owned and stable, so it is
+      // enumerated — the same posture as boqItems, clientInvoices and rfis.
+      function validProjectStatus(s) {
+        return s in ['Planning', 'In Progress', 'Backlogged', 'On Hold', 'Completed'];
+      }
+      // Field is untouched by this write, or the incoming value is well-formed.
+      function statusOk() {
+        return request.resource.data.get('status', '') == resource.data.get('status', '')
+            || validProjectStatus(request.resource.data.get('status', ''));
+      }
+      function nameOk() {
+        return request.resource.data.get('name', '') == resource.data.get('name', '')
+            || (request.resource.data.get('name', '') is string
+                && request.resource.data.get('name', '').size() > 0
+                && request.resource.data.get('name', '').size() <= 200);
+      }
+      function progressOk() {
+        return request.resource.data.get('progress', 0) == resource.data.get('progress', 0)
+            || (request.resource.data.get('progress', 0) is number
+                && request.resource.data.get('progress', 0) >= 0
+                && request.resource.data.get('progress', 0) <= 100);
+      }
+      function locationOk() {
+        return request.resource.data.get('location', '') == resource.data.get('location', '')
+            || (request.resource.data.get('location', '') is string
+                && request.resource.data.get('location', '').size() <= 200);
+      }
+      function startDateOk() {
+        return request.resource.data.get('startDate', null) == resource.data.get('startDate', null)
+            || request.resource.data.get('startDate', null) == null
+            || request.resource.data.get('startDate', null) is timestamp;
+      }
+      // The headline budget and the provenance stamps that NO update may move.
+      function projectCorePreserved() {
+        return request.resource.data.get('budget', 0) == resource.data.get('budget', 0)
+            && request.resource.data.get('createdAt', null) == resource.data.get('createdAt', null)
+            && request.resource.data.get('createdBy', null) == resource.data.get('createdBy', null);
+      }
       allow read: if request.auth != null
                   && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
 
@@ -168,6 +252,15 @@ service cloud.firestore {
                              || !(resource.data.get('currency', '') is string
                                   && resource.data.get('currency', '').matches('^[A-Z]{3}$'))
                              || request.resource.data.get('currency', '') == resource.data.get('currency', ''))
+                         // ADR-39 metadata correction: headline budget and
+                         // provenance frozen, editable fields shape-validated
+                         // on change. See the METADATA CORRECTION note above.
+                         && projectCorePreserved()
+                         && statusOk()
+                         && nameOk()
+                         && progressOk()
+                         && locationOk()
+                         && startDateOk()
                        )
                        ||
                        // (b) QS currency-lock ratchet ONLY: false/absent -> true,
@@ -187,23 +280,142 @@ service cloud.firestore {
     // Reads: any authenticated user belonging to this company.
     // Create/update: company_admin, project_manager, or qs (owns budgets/forecasting per PRODUCT.md).
     // Delete: blocked — use isActive: false instead.
+    //
+    // ── CORRECTION (ADR-39) ───────────────────────────────────────────────
+    // `create, update` was one unconstrained rule; update is now split out so a
+    // correction cannot rewrite provenance or invent fields. An update may
+    // touch ONLY `code`, `name`, `category`, `unit`, `isActive` and the audit
+    // stamps, and `createdAt`/`createdBy` are frozen.
+    //
+    // Renaming is SAFE by construction and needs no further guard: every
+    // financial derivation in the app groups by the DOCUMENT ID, never by
+    // `code` or `name`, and the historical `costCodeName` snapshots on budget
+    // lines, PO/claim/invoice/credit-note/variation lines, BOQ items, forecast
+    // lines and cash-flow lines are never rewritten — the current name is
+    // resolved at READ time instead. A rename therefore moves no figure.
+    //
+    // `isActive` is freely reversible in both directions: deactivation is
+    // administrative (it removes a code from NEW authoring only), not a
+    // financial lifecycle, so there is no terminal state to enforce.
+    //
+    // What these rules DO NOT enforce (client-side only — NEVER describe as
+    // enforced; see docs/SECURITY.md → Deferred Control 28):
+    //   · `code` UNIQUENESS. Rules have no list, query or count and cannot see
+    //     sibling documents. The duplicate check lives in lib/costCodes.js and
+    //     is bypassable by a direct SDK call and by concurrent writers. Nothing
+    //     breaks when a duplicate lands — the id remains the financial key —
+    //     but list ordering becomes ambiguous.
+    //   · that deactivating a code in use is safe. It always is, and it is
+    //     deliberately never blocked.
     match /companies/{companyId}/costCodes/{costCodeId} {
+      function costCodeWriter() {
+        return request.auth != null
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      }
       allow read: if request.auth != null
                   && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
-      allow create, update: if request.auth != null
-                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+
+      allow create: if costCodeWriter();
+
+      allow update: if costCodeWriter()
+                  // Provenance is immutable.
+                  && request.resource.data.get('createdAt', null) == resource.data.get('createdAt', null)
+                  && request.resource.data.get('createdBy', null) == resource.data.get('createdBy', null)
+                  // Only the content fields and the audit stamps may move.
+                  && request.resource.data.diff(resource.data).affectedKeys()
+                       .hasOnly(['code', 'name', 'category', 'unit', 'isActive', 'updatedAt', 'updatedBy'])
+                  && request.resource.data.code is string
+                  && request.resource.data.code.size() > 0
+                  && request.resource.data.code.size() <= 40
+                  && request.resource.data.name is string
+                  && request.resource.data.name.size() > 0
+                  && request.resource.data.name.size() <= 120
+                  && request.resource.data.get('category', '') is string
+                  && request.resource.data.get('category', '').size() <= 80
+                  && request.resource.data.get('unit', '') is string
+                  && request.resource.data.get('unit', '').size() <= 24
+                  // Absent means ACTIVE (legacy documents predate the flag), so
+                  // presence is not required — but a stored value must be bool.
+                  && request.resource.data.get('isActive', true) is bool;
+
       allow delete: if false;
     }
 
     // Budget Lines — project-scoped allocations against a company cost code.
-    // Same role set as Cost Codes; delete blocked for Sprint 2.
+    // Same role set as Cost Codes; delete blocked.
+    //
+    // ── CORRECTION (ADR-39) ───────────────────────────────────────────────
+    // `create, update` was one unconstrained rule; update is now split out and
+    // is the NARROWEST write path in this file that is not a lifecycle
+    // transition. An existing budget line may change EXACTLY `budgeted` and
+    // `notes`.
+    //
+    //   · `costCodeId` IS IMMUTABLE — the cost-code spine. Re-pointing a line
+    //     would relocate an approved budget to another cost code underneath
+    //     existing commitments and actuals, with no record that it moved.
+    //   · `costCodeName` IS IMMUTABLE — the frozen display snapshot. It is
+    //     deliberately NOT re-snapshotted on edit (diverging from the ADR-36 PO
+    //     editor, whose line cost code CAN change in the same write): rewriting
+    //     it during an edit made only to a number would silently rewrite the
+    //     line's recorded history. Screens resolve the CURRENT name at read
+    //     time instead.
+    //   · `committed` / `actual` / `invoiced` are VESTIGIAL ZEROS written once
+    //     at creation and read by no consumer in the app — every one of those
+    //     figures is derived at read time from POs, claims, invoices and credit
+    //     notes. The `hasOnly` allow-list freezes them so an edit can never
+    //     revive them as a second, stale source of truth.
+    //   · `createdAt` / `createdBy` are immutable provenance.
+    //   · `budgeted` must be a NUMBER >= 0. Zero is valid (a reviewed
+    //     allocation of nothing); a negative or non-numeric allocation would
+    //     flow straight into Remaining, Variance to Budget and the BOQ
+    //     comparison as a silently wrong figure.
+    //   · The audit stamps are verified against the caller and the server
+    //     clock, so a client cannot forge who corrected a budget or when.
+    //
+    // What these rules DO NOT enforce (client-side only — NEVER describe as
+    // enforced; see docs/SECURITY.md → Deferred Control 28):
+    //   · that `costCodeId` names a REAL, ACTIVE cost code in this company —
+    //     validated by SHAPE only on create, matching the boqItems posture
+    //     (Deferred Control 26). A forged id surfaces as an "Unknown cost code"
+    //     row, never as a corrupted total.
+    //   · one-line-per-cost-code, or agreement with the BOQ — rules cannot
+    //     query siblings.
+    //   · concurrent-edit safety. Two editors are last-write-wins; there is no
+    //     transaction and no version guard.
     match /companies/{companyId}/projects/{projectId}/budgetLines/{lineId} {
+      function budgetLineWriter() {
+        return request.auth != null
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      }
       allow read: if request.auth != null
                   && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
-      allow create, update: if request.auth != null
-                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+
+      allow create: if budgetLineWriter()
+                  && request.resource.data.costCodeId is string
+                  && request.resource.data.costCodeId.size() > 0
+                  && request.resource.data.budgeted is number
+                  && request.resource.data.budgeted >= 0;
+
+      allow update: if budgetLineWriter()
+                  // The cost-code spine and the provenance no update may move.
+                  && request.resource.data.costCodeId   == resource.data.costCodeId
+                  && request.resource.data.get('costCodeName', '') == resource.data.get('costCodeName', '')
+                  && request.resource.data.get('createdAt', null)  == resource.data.get('createdAt', null)
+                  && request.resource.data.get('createdBy', null)  == resource.data.get('createdBy', null)
+                  // Only the two authored values and the stamps may move — this
+                  // is also what freezes the vestigial committed/actual/invoiced.
+                  && request.resource.data.diff(resource.data).affectedKeys()
+                       .hasOnly(['budgeted', 'notes', 'updatedAt', 'updatedBy'])
+                  && request.resource.data.budgeted is number
+                  && request.resource.data.budgeted >= 0
+                  && request.resource.data.get('notes', '') is string
+                  && request.resource.data.get('notes', '').size() <= 2000
+                  // Stamps verified against the caller and the server clock.
+                  && request.resource.data.updatedBy == request.auth.uid
+                  && request.resource.data.updatedAt == request.time;
+
       allow delete: if false;
     }
 

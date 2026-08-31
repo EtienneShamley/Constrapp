@@ -2865,3 +2865,145 @@ client-enforced only; concurrent draft edits are last-write-wins; a PO line neve
 priced at create cannot be reached by editing; and the create path's own
 negative-retention protection remains the browser's `min="0"` constraint
 validation (unchanged — create behaviour was preserved exactly).
+
+## ADR-39: Foundation Record Editing (Projects, Cost Codes, Budget Lines — correction without deletion; no status lifecycle; headline budget frozen; cost-code spine immutable; read-time name resolution, never backfill)
+
+**Context.** Projects, Cost Codes and Budget Lines were the last create-only
+records in the app and the private-beta blocker: a mistyped project name, a
+wrong cost code, or a budget entered as 10,000 instead of 100,000 could not be
+corrected. Deletion is blocked everywhere by design, so the only remedies were
+abandoning a project or stacking a second budget line to paper over the first.
+Meanwhile the Firestore rules for all three were the *loosest* in the file —
+`projects` branch (a) validated only currency, and `costCodes`/`budgetLines`
+were a single unconstrained `allow create, update` — so the records were
+already writable at the boundary; only the UI was missing.
+
+**Decision.**
+
+- **One editor, two modes**, per ADR-35/36: `ProjectEditorModal`,
+  `CostCodeEditorModal` and `BudgetLineEditorModal` take a `project`/`costCode`/
+  `line` prop — `null` = CREATE (behaviour unchanged), a live document = EDIT.
+  No second form. Normalisation and validation moved to three new pure modules
+  (`lib/projects.js`, `lib/costCodes.js`, `lib/budgetLines.js`) so both modes
+  share one implementation and the rules are unit-testable.
+
+- **Projects — editable metadata is `name`, `status`, `startDate` (including
+  clear to null), `location`, `progress` (clamped 0–100).** `updateProject`
+  writes a literal field list, not a caller spread, and stages **no currency
+  ratchet**: metadata is financially inert, so there is nothing for the ratchet
+  to protect and a plain `updateDoc` is correct.
+
+- **Project `status` has NO transition graph, deliberately.** Repository
+  inspection found its only consumers to be two Badges, a status-dot colour
+  lookup and the Dashboard's "In Progress" count; it gates no order, claim,
+  invoice, variation, payment or rule. Any value may move to any other and
+  **`Completed` is freely reopenable**. Rules enforce the five-value
+  **vocabulary** and nothing more. A `PROJECT_STATUS_TRANSITIONS` map was
+  explicitly rejected: it would advertise a control that does not exist. If
+  `status` is ever given financial meaning, the rules come first and so does a
+  new ADR.
+
+- **The project headline `budget` stays IMMUTABLE and is relabelled.** It feeds
+  **no** financial derivation — the live Approved Budget is Σ
+  `budgetLines.budgeted` — but it **is** currency-lock evidence
+  (`createProject` sets `currencyLocked: budget > 0`). Raising it would have to
+  engage the one-way ratchet atomically; lowering it could never release the
+  lock, leaving a permanently locked project whose lock has no visible reason
+  (`monetaryLockReasons` would return an empty list and Overview would fall back
+  to its "no evidence" message). So it is frozen in rules and the three display
+  sites are relabelled **"Headline Budget"** — Projects list column, project
+  header, Overview card — with the Overview card naming the Budget tab as the
+  source of the current Approved Budget. The field is **not** deleted or
+  migrated.
+
+- **Cost Codes — `code`, `name`, `category`, `unit` editable; `isActive` moved
+  through a separate Deactivate/Reactivate action** so a content edit can never
+  flip availability as a side effect. Deactivation is **administrative and
+  reversible**, never a financial lifecycle: it removes a code from NEW
+  authoring only. It is **confirmed, never blocked**, and the confirmation makes
+  no claim about how many records use the code (cost codes are company-wide
+  while budget lines are per-project, so any count would be misleading).
+
+- **Renaming is safe by construction, and history is NEVER backfilled.** Every
+  derivation groups by `costCodeId`; `code` and `name` are display only.
+  Historical `costCodeName` snapshots on budget lines, PO/claim/invoice/
+  credit-note/variation lines, BOQ items, forecast lines and cash-flow lines
+  record what the code was called when the commitment was made and are not
+  rewritten. **The Budget page now resolves the current name at READ time**
+  (`resolveCostCodeName`: live → stored snapshot → "Unknown cost code"), the
+  exact chain `lib/forecast.js` and `lib/boq.js` already used — closing a
+  pre-existing split where a rename showed on Forecast/BOQ but not on Budget.
+
+- **Inactive codes: preserved, never re-pointed.** Existing records and the
+  Budget editor keep an inactive code and stay fully editable; only the CREATE
+  picker filters to active codes (matching Tenders, RFI and Timeline). A missing
+  `isActive` means **ACTIVE** — legacy documents predate the flag.
+
+- **Budget Lines — `budgeted` and `notes` only.** `costCodeId` **and**
+  `costCodeName` are immutable in rules. Re-pointing would relocate an approved
+  budget under existing commitments and actuals with no record that it moved;
+  wrong cost code → add a line on the right one. `costCodeName` is **not
+  re-snapshotted on edit**, deliberately diverging from ADR-36 (whose PO line
+  cost code *can* change in the same write): rewriting it during an edit made
+  only to a number would rewrite recorded history, and read-time resolution
+  makes it unnecessary. The vestigial `committed`/`actual`/`invoiced` zeros are
+  frozen by the update key allow-list. `budgeted` must be a **number ≥ 0** —
+  zero is valid (a reviewed allocation of nothing); junk is rejected rather than
+  silently coerced to 0 as the create path's `Number(x) || 0` would.
+
+- **`updatedAt`/`updatedBy` added to budget lines only**, diverging from
+  ADR-36/38 (which skipped stamps because their models carried none). A budget
+  figure has no other trace anywhere — no field-level history exists (Deferred
+  Control 7) — so the stamps are the only record that a correction happened, and
+  rules verify them against the caller and `request.time`.
+
+- **Rules TIGHTENED, not opened**, and the projects branch (a) additions read
+  "**unchanged, or valid**" rather than "valid". Projects predating the current
+  vocabulary store out-of-enum statuses (`LEGACY_PROJECT` stores
+  `'in_progress'`); validating an untouched field would make them permanently
+  unwritable, including by the Company Settings currency pin — reproducing the
+  original pinning defect. The constraint is strictly one-way toward the current
+  vocabulary. The `qs` ratchet branch is untouched and asserted unaffected.
+
+- **No deletes anywhere, no bulk edit, no cost-code merge, no snapshot backfill,
+  no audit-history feature, no new dependency and no new test infrastructure.**
+
+**Alternatives rejected.** Editable headline budget (see above — the ratchet is
+one-way and the field is not a financial source); a client-side status
+transition graph (advertises a control that does not exist); a rules-side status
+transition graph (no financial invariant depends on it); re-snapshotting
+`costCodeName` on a budget edit (rewrites recorded history); backfilling
+snapshots on rename (destroys what the commitment actually said); forcing an
+existing record off an inactive cost code (would silently move a financial
+record); deleting the vestigial `committed`/`actual`/`invoiced` fields (a data
+migration — freezing them is sufficient); a per-project "used by N records"
+count on the deactivate confirmation (cost codes are company-wide, so the count
+would mislead); `exists()`-verifying `costCodeId` in rules (a posture change,
+matching the `boqItems`/Deferred Control 26 decision instead).
+
+**Consequences.** A beta user can correct ordinary setup mistakes without
+deleting a financial record or touching history. The financial effect of each
+edit is bounded and proven in
+`tests/unit/foundationEditInvariance.test.js`:
+
+- **Project metadata** — zero financial effect; no derivation reads a project
+  field.
+- **Cost-code rename or deactivation** — zero numeric effect; ids remain the
+  financial key. Only labels and the `isInactive` flag move, and an inactive
+  code keeps its row rather than disappearing.
+- **Budget-line `budgeted`** — moves Budgeted, Remaining, Variance to Budget,
+  Remaining Budget Reference, the BOQ Approved-Budget comparison and tender
+  variance. It **does not** move **Forecast Final Cost** (= Actual + Remaining
+  Committed + Uncommitted CTC — a stored Uncommitted CTC produced by "Use
+  remaining budget" is a one-time copy, never recomputed), therefore **does not**
+  move **Margin** (Forecast Gross Profit, Forecast Margin %, Current Contract
+  Sum, Original Planned Profit, Margin Movement), and **does not** move **Cash
+  Flow** (which never reads a budget line at all). In one sentence for the user:
+  *correcting a budget moves the variance, not the forecast.*
+
+**Accepted limitations.** Cost-code `code` uniqueness, inactive-code filtering
+and the editor's read-only fields are **client-enforced only**; the boundary
+does not verify that a `costCodeId` names a real, active code; all three records
+are **last-write-wins** with no version guard; and a corrected budget's previous
+value is not retained beyond a single latest-writer stamp. See
+[SECURITY.md](SECURITY.md) → Deferred Control 28.

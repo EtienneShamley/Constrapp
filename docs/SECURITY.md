@@ -1212,6 +1212,70 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     Fabricated RFIs are a low-severity entry in this list: an RFI feeds **no**
     financial figure, so a forged one distorts only the register's own counts.
 
+28. **Foundation record editing gaps (ADR-39)** — Projects, Cost Codes and
+    Budget Lines became correctable after creation. Firestore rules enforce a
+    great deal here, and the split below is exact.
+
+    **RULES-ENFORCED** (the trust boundary, proven by
+    `tests/rules/projects.rules.test.js`, `costCodes.rules.test.js` and
+    `budgetLines.rules.test.js`):
+
+    - **Projects** — `budget` (the headline figure) is **immutable**;
+      `createdAt`/`createdBy` are immutable; `status` must be one of the five
+      valid values **on change**; `name`, `progress`, `location` and `startDate`
+      are shape-validated on change; the currency ratchet and the narrow `qs`
+      ratchet branch are unchanged; delete blocked.
+    - **Cost Codes** — `createdAt`/`createdBy` immutable; updates restricted by
+      key allow-list to `code`, `name`, `category`, `unit`, `isActive` and the
+      audit stamps; every field shape- and length-validated; delete blocked.
+    - **Budget Lines** — **`costCodeId` and `costCodeName` are immutable** (no
+      re-pointing, no snapshot rewrite); the vestigial `committed`/`actual`/
+      `invoiced` zeros are frozen by the key allow-list; `createdAt`/`createdBy`
+      immutable; `budgeted` must be a **number ≥ 0** on both create and update;
+      `notes` bounded; `updatedBy`/`updatedAt` verified against the caller and
+      `request.time`; delete blocked.
+
+    **CLIENT-ENFORCED ONLY** — never present any of these as secure:
+
+    - **Cost-code `code` uniqueness.** Rules have no list, query or count and
+      cannot see sibling documents. `lib/costCodes.js` blocks duplicates in the
+      app; a direct SDK call and two concurrent writers both bypass it (proved
+      accepted at the boundary in `costCodes.rules.test.js` Group F). Nothing
+      breaks — the document id remains the financial key — but list ordering
+      becomes ambiguous.
+    - **That a budget line's `costCodeId` names a real, ACTIVE cost code.**
+      Shape only, matching the `boqItems` posture (Deferred Control 26). A
+      forged id surfaces as an "Unknown cost code" row, never as a corrupted
+      total.
+    - **Inactive-code filtering in new authoring.** The Budget create picker
+      hides deactivated codes; the boundary does not.
+    - **That only `budgeted` and `notes` are offered by the editor**, and that
+      the headline budget and cost code render read-only. Those are UX mirrors
+      — the immutability itself *is* enforced above.
+    - **Concurrent-edit safety.** All three records are **last-write-wins**;
+      there is no transaction, version guard or compare-and-set, so two
+      simultaneous editors silently overwrite one another.
+    - **Edit history.** Only budget lines gain `updatedAt`/`updatedBy`, and
+      that is a single latest-writer stamp, not a field-level audit trail
+      (Deferred Control 7). A corrected budget's previous value is gone.
+
+    ⚠️ **Project `status` transition legality is deliberately NOT enforced —
+    and there is nothing to enforce.** `status` is descriptive: it gates no
+    purchase order, claim, invoice, variation, payment or rule anywhere in the
+    app. Any value may move to any other and `Completed` is freely reopenable.
+    Rules constrain the **vocabulary** and nothing more; do not describe project
+    status as a lifecycle control.
+
+    ⚠️ **Legacy compatibility carve-out.** Every project field condition reads
+    "**unchanged, or valid**" rather than "valid". Projects predating the
+    current vocabulary store statuses outside the five-value enum (the rules
+    suite's `LEGACY_PROJECT` fixture stores `'in_progress'`), and validating an
+    untouched field would make those documents permanently unwritable —
+    including by the Company Settings currency pin, reproducing the original
+    pinning defect. The constraint is strictly one-way toward the current
+    vocabulary: a legacy value may be corrected to a valid one, a valid one can
+    never regress. Both directions are asserted by test.
+
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
 is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.
