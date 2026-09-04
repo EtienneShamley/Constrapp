@@ -387,7 +387,8 @@ Lifecycle and semantics: [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md).
 | `revision` | number | 1 today |
 | `sentAt`, `closedAt`, `cancelledAt` | timestamp \| null | Stamped on transition |
 | `externalRefs` | map | Empty today; reserved for accounting integrations (Xero/MYOB/QuickBooks IDs) |
-| `createdAt` / `createdBy` | timestamp / uid | |
+| `createdAt` / `createdBy` | timestamp / uid | Rules require `createdBy == request.auth.uid` and `createdAt == request.time` at create, and freeze both for life |
+| `updatedAt` / `updatedBy` | timestamp / uid | **ADR-40 addition.** Required by rules on **every** write — create, draft edit, and all three transitions (`updatedBy == request.auth.uid`, `updatedAt == request.time`). Absent on invoices raised before ADR-40; required only of the *incoming* document, so those acquire it on their next valid write. Last-write only — no field-level history (Deferred Control 7) |
 
 Each line item: `{ costCodeId, costCodeName, description, qty, unit, unitPrice, lineTotal }`
 (`lineTotal` = qty × unitPrice, ex-GST, rounded to cents).
@@ -452,9 +453,9 @@ Two sources: `progress_claim` (from one approved claim) and `direct_po` (directl
 against one sent/closed PO, no claim). All canonical line amounts are **ex-GST**;
 GST is stored per line as `gstAmount`.
 
-**Editable while `draft` (ADR-38).** `approved` is the AUTHORING FREEZE POINT
-(`posted`, later, is the financial counting point). A draft may be corrected in
-place instead of cancelled and re-raised:
+**Editable while `draft` (ADR-38), and RULES-ENFORCED since ADR-40.** `approved`
+is the AUTHORING FREEZE POINT (`posted`, later, is the financial counting point).
+A draft may be corrected in place instead of cancelled and re-raised:
 
 | Source | Editable |
 |---|---|
@@ -473,14 +474,22 @@ every rebuild and structurally unwritable; `gstAmount` is always re-derived from
 fixed** — no add, remove, reorder or reseed, in either mode: create filters out
 zero-amount lines, so a PO line never priced at create was never stored and cannot
 be added by editing (cancel and raise a new invoice); a line that *is* stored may
-be taken to zero and brought back. All of this is **client-enforced only** — see
-[SECURITY.md](SECURITY.md) → Deferred Controls 1 and 2.
+be taken to zero and brought back.
+
+**What of that is rules-enforced (ADR-40), and what is not.** Rules enforce
+draft-only editing, the immutable list above, the `progress_claim` header-only
+contract (`changedKeys().hasOnly` of exactly the five header fields plus the two
+audit stamps — certified money has **no channel**), and the stored line **COUNT**
+on the `direct_po` path. Rules **cannot** enforce anything *inside* `lineItems` —
+per-line identity, amount sign, tax-code validity, cost-code validity, and the
+`gstAmount` re-derivation are **client-enforced only**. Never describe those as
+enforced; see [SECURITY.md](SECURITY.md) → Deferred Control 29.
 
 | Field | Type | Notes |
 |---|---|---|
 | `invoiceNumber` | string | `SI-0001` — from the company-wide `counters/supplierInvoices` |
 | `supplierInvoiceNumber` | string | The supplier's own invoice number — the duplicate-detection key |
-| `status` | string | `draft` \| `approved` \| `posted` \| `cancelled` (live); `received` \| `under_review` \| `disputed` reserved. **`paid` is DEPRECATED IN PLACE, not reserved** — no supported path writes it and `SI_TRANSITIONS` reaches it from nowhere; payment state derives from Supplier Payment allocations (ADR-24). It is retained for legacy rendering, and because supplier-invoice lifecycle rules are still deferred a direct-SDK caller **can** still forge it |
+| `status` | string | `draft` \| `approved` \| `posted` \| `cancelled` (live) — **the transitions are RULES-ENFORCED (ADR-40)**: `draft→approved`, `approved→posted`, `draft\|approved→cancelled`, with `posted` and `cancelled` terminal. `received` \| `under_review` \| `disputed` reserved and now **unauthorable** (activating one needs a rules change). **`paid` is DEPRECATED IN PLACE, not reserved** — no path writes it, `SI_TRANSITIONS` reaches it from nowhere, and since ADR-40 no direct-SDK caller can forge it either; payment state derives from Supplier Payment allocations (ADR-24). It is retained for legacy rendering and stays in `SI_COUNTING_STATUSES`, because rules prevent *future* forgery and do not revert *past* forgery |
 | `docType` | string | `invoice`; the reserved `credit_note` value is **SUPERSEDED, never activated** — Supplier Credit Notes live in their own `supplierCreditNotes` collection (ADR-31) |
 | `source` | string | `progress_claim` \| `direct_po` |
 | `supplierId` | string \| null | → contact, snapshotted from the PO/claim; null for pre-Contacts POs |
@@ -505,7 +514,7 @@ be taken to zero and brought back. All of this is **client-enforced only** — s
 | `notes` | string | |
 | `approvedAt`/`approvedBy` | timestamp / uid | Stamped on approve |
 | `postedAt`/`postedBy` | timestamp / uid | Stamped on post (the financial commit point) |
-| `cancelledAt` | timestamp \| null | Stamped on cancel |
+| `cancelledAt`/`cancelledBy` | timestamp \| null / uid \| null | Stamped on cancel. **`cancelledBy` is an ADR-40 addition** — cancellation previously recorded *when* but not *who*. Invoices raised before ADR-40 carry no such key; rules read it through `get(key, null)` on both sides so those documents stay writable and acquire it on their next valid write. There is deliberately **no** `cancelReason` (ADR-40 D8) |
 | `paidAt` | timestamp \| null | **DEPRECATED IN PLACE** — written once as `null` at creation and **never updated**. Supplier Payments shipped without activating it: payment state derives from posted Supplier Payment allocations, and setting a date here would create a second source of payment truth (ADR-24) |
 | `adjustsInvoiceId` | string \| null | **SUPERSEDED, never activated** — the target reference lives on the Supplier Credit Note document (`supplierCreditNotes.supplierInvoiceId`, ADR-31), pointing the correct direction so nothing is ever written onto an invoice. Still written as `null` for shape stability |
 | `attachments` | array | **Reserved** — always `[]`; no Storage uploads yet |
@@ -526,6 +535,29 @@ GST-inclusive entry may be offered as a UI mode, but storage is always ex-GST +
 `gstAmount`. Contact `gstStatus` is **advisory only** — it can raise a warning
 but never auto-selects a tax code and never blocks. Cost codes are constrained to
 the selected PO/claim lines — arbitrary non-PO cost-code lines are not allowed.
+**All of that is client-side**: rules cannot inspect an array element.
+
+**Header money is rules-enforced in whole cents (ADR-40).** `subtotal + gstTotal
+== grossTotal`; `retention + retentionGst == retentionTotal`; `subtotal −
+retention == net`; `gstTotal − retentionGst == payableGst`; `grossTotal −
+retentionTotal == payableTotal`; `retentionGst == round(retention × 10%)`;
+`subtotal > 0`; `grossTotal > 0`; `gstTotal`/`retention`/`retentionGst`/
+`retentionTotal`/`net` all `>= 0`; and `retention <= subtotal`. The
+**`retention >= 0` floor is new** — `invoiceTotals` clamps only the upper bound,
+so a negative retention used to reach the stored document and make the payable
+exceed the gross value; `createSupplierInvoice` now rejects it too.
+
+⚠️ **`payableGst` and `payableTotal` can legitimately be NEGATIVE** and carry no
+floor: an invoice whose lines are all `gst_free`/`input_taxed` has `gstTotal: 0`,
+so any retention drives both below zero. That is a **deferred domain issue**, not
+a rules gap — see [SECURITY.md](SECURITY.md) → Deferred Control 30.
+
+**Source references are validated at CREATE ONLY (ADR-40).** `poId` must name a
+`sent`/`closed` PO in this project; a `progress_claim` invoice's
+`progressClaimId` must name an `approved` claim in this project; a `direct_po`
+invoice must carry `progressClaimId: null`. They are never revalidated
+afterwards — both are core-preserved, so re-checking could only strand an invoice
+whose PO later closed or was cancelled (the ADR-34 rule).
 
 ## …/projects/{projectId}/clientInvoices/{invoiceId}
 

@@ -178,7 +178,12 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
                                              claimed/approved subtotal-gst-total
   …/supplierInvoices/{invoiceId}             invoiceNumber (SI-####), status, source, poId, progressClaimId,
                                              ex-GST lineItems[] w/ per-line taxCode, retention, subtotal-gst-net-total —
-                                             accounts payable; reads restricted to financial roles
+                                             accounts payable; reads restricted to financial roles. LIFECYCLE +
+                                             APPROVED AUTHORING FREEZE + POSTED/CANCELLED IMMUTABILITY + IMMUTABLE
+                                             IDENTITY + SCALAR HEADER ARITHMETIC ARE RULES-ENFORCED (ADR-40), and
+                                             rules GET() THE SOURCE AT CREATE (PO sent|closed; claim approved).
+                                             lineItems CONTENTS stay client-enforced (DC29); payableGst/payableTotal
+                                             can legitimately go NEGATIVE on a GST-free retained invoice (DC30)
   …/supplierCreditNotes/{creditNoteId}       creditNumber (SCN-####), status draft|posted|void, FROZEN target
                                              (supplierInvoiceId + invoiceNumber/supplierInvoiceNumber/
                                              supplierId/supplierName/currency snapshots — core-preserved),

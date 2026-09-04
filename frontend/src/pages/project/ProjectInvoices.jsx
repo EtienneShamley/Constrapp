@@ -1282,10 +1282,12 @@ export default function ProjectInvoices() {
   // document from the subscribed collection by id and refuses to write unless it
   // is STILL a draft, so an editor left open across an approve / cancel by
   // another action, tab or user can never write stale draft content back. The
-  // hook keeps its own draft guard as the final client-side check. Both are
-  // client-side only — Firestore rules do not check supplier-invoice status
-  // (docs/SECURITY.md -> Deferred Controls 1 and 2). Two concurrent draft
-  // editors remain last-write-wins.
+  // hook keeps its own draft guard as the final client-side check. Since ADR-40
+  // Firestore rules enforce draft-only editing as well, so a stale write is
+  // rejected at the trust boundary too; both client guards remain because they
+  // produce a legible message instead of "Missing or insufficient permissions".
+  // Two concurrent draft editors remain last-write-wins — rules have no
+  // optimistic-concurrency primitive.
   async function handleUpdate(invoiceId, data) {
     const live = supplierInvoices.find(inv => inv.id === invoiceId)
     if (!live || !isEditableInvoice(live)) {

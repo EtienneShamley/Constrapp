@@ -442,11 +442,18 @@ export function invoiceOverPaymentWarnings(allocations, invoices, payments, { ex
 
 // ── Allocation exceptions ────────────────────────────────────────────────────
 //
-// A posted supplier invoice can be CANCELLED after a payment was posted against
-// it. Rules cannot prevent that — supplier-invoice lifecycle legality is still
-// client-enforced (docs/SECURITY.md → Deferred Controls 1 and 2), so a direct
-// SDK call can cancel a posted invoice. Constrapp surfaces the result rather
-// than automating a fix:
+// An allocation's target can stop being valid after the payment was posted.
+//
+// ⚠️ ADR-40 NARROWED THIS SHARPLY, and the honest statement changed with it. A
+// POSTED supplier invoice is now RULES-IMMUTABLE AND RULES-TERMINAL: it matches
+// no update branch, so it can no longer be cancelled, unposted, or rewritten by
+// any caller. The cancelled-target case below is therefore now reachable only
+// for invoices tampered with BEFORE ADR-40, or for allocations that never
+// pointed at a valid invoice in the first place — rules still cannot verify an
+// allocation TARGET at all, because allocations live in an ARRAY and rules can
+// neither iterate it nor get() per element (Deferred Control 18). Every branch
+// below is retained unchanged: it is a read-time correctness guard, and
+// Constrapp surfaces the result rather than automating a fix:
 //
 //   · the CASH STAYS REAL — the payment keeps its amount and stays counted;
 //   · the ALLOCATION becomes an exception, shown here;

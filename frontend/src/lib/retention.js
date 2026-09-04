@@ -319,10 +319,14 @@ export function retentionSummary(invoices, releases) {
 // unreadable) contributes to no register row, because rows iterate POSTED
 // invoices only. Rather than let it vanish silently, it is surfaced here.
 //
-// Supplier-invoice lifecycle legality is still client-enforced
-// (docs/SECURITY.md → Deferred Controls 1 and 2), so a direct SDK call CAN
-// cancel a posted invoice that a release targets. Constrapp surfaces the result
-// rather than automating a fix — the allocationExceptions philosophy:
+// ⚠️ ADR-40 NARROWED THIS. A posted supplier invoice is now RULES-IMMUTABLE and
+// RULES-TERMINAL, so no caller can cancel a posted invoice a release targets;
+// the cancelled-target case is reachable only for invoices tampered with before
+// ADR-40, or where the target became unreadable. The exception path is retained
+// unchanged — voiding a release must stay possible even when its target is gone,
+// and rules deliberately do NOT re-validate the target on void for exactly that
+// reason. Constrapp surfaces the result rather than automating a fix — the
+// allocationExceptions philosophy:
 //
 //   · the RELEASE stays recorded, exactly as authored;
 //   · nothing is deleted, reassigned, or reversed automatically;

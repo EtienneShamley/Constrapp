@@ -12,7 +12,7 @@ import { resolveProjectCurrency } from '../lib/currency'
 import {
   SI_STATUS, SI_DOC_TYPE, SI_SOURCE,
   canTransition, invoiceTotals, formatSupplierInvoiceNumber, claimHasActiveInvoice,
-  claimReconciliationError,
+  claimReconciliationError, retentionFloorError,
   isEditableInvoice, isClaimSourced, buildInvoiceLine, invoiceLineInputCountError,
   validateInvoiceDraft, claimSourcedDriftError,
 } from '../lib/supplierInvoices'
@@ -79,6 +79,18 @@ export function useSupplierInvoices(projectId) {
     if (progressClaimId && claimHasActiveInvoice(supplierInvoices, progressClaimId)) {
       throw new Error('This progress claim already has an active supplier invoice')
     }
+
+    // ADR-40 — THE RETENTION FLOOR AT CREATE. `invoiceTotals` clamps only the
+    // UPPER bound, so a negative retention would flow into the stored document
+    // and make the payable exceed the gross invoice value. ADR-38 D6 put this
+    // check on the EDIT path only; on create the sole guard was the editor
+    // input's `min="0"` attribute, which is browser constraint validation and
+    // not a control. Checked here at the DOMAIN boundary, before any total is
+    // derived, and mirrored by Firestore Rules (`retention >= 0`, whole cents).
+    // The shared helper is the same one validateInvoiceDraft calls, so the two
+    // paths cannot drift.
+    const retentionError = retentionFloorError(retention)
+    if (retentionError) throw new Error(retentionError)
 
     const totals = invoiceTotals(lineItems, retention)
     // A claim-sourced invoice must pay exactly the approved claim's certified
@@ -149,12 +161,19 @@ export function useSupplierInvoices(projectId) {
 
         notes: notes?.trim() || '',
 
-        // Audit stamps.
+        // Audit stamps. Every one is REQUIRED NULL at creation by Firestore
+        // Rules (ADR-40), so no caller can mint an invoice that is already
+        // approved, posted or cancelled.
         approvedAt:  null,
         approvedBy:  null,
         postedAt:    null,
         postedBy:    null,
         cancelledAt: null,
+        // ADR-40 addition — cancellation previously recorded WHEN but not WHO.
+        // Invoices raised before ADR-40 store no such key; rules read it through
+        // get('cancelledBy', null) on both sides so those documents stay
+        // editable and acquire the field on their next valid write.
+        cancelledBy: null,
 
         // ⚠️ paidAt is DEPRECATED IN PLACE (ADR-24), not reserved. It is written
         // once as null at creation and is NEVER updated — Supplier Payments
@@ -173,6 +192,12 @@ export function useSupplierInvoices(projectId) {
 
         createdAt: serverTimestamp(),
         createdBy: user.uid,
+        // ADR-40 — the last-write audit stamps every hardened collection
+        // carries. Firestore Rules require BOTH on every write to this
+        // collection (`updatedBy == request.auth.uid`, `updatedAt ==
+        // request.time`), on create and on every transition alike.
+        updatedAt: serverTimestamp(),
+        updatedBy: user.uid,
       })
       commitLock()
     })
@@ -183,11 +208,20 @@ export function useSupplierInvoices(projectId) {
   //
   // Corrects a DRAFT supplier invoice in place. `approved` is the authoring
   // freeze point (`posted`, later, is the financial counting point), so this
-  // refuses anything that is not still a draft. That guard, like every
-  // immutability below, is CLIENT-SIDE ONLY — Firestore rules on this collection
-  // check role and tenancy and nothing else (docs/SECURITY.md -> Deferred
-  // Controls 1 and 2), so a direct-SDK caller can still rewrite an approved or
-  // posted invoice.
+  // refuses anything that is not still a draft.
+  //
+  // ⚠️ THAT GUARD IS NOW RULES-ENFORCED TOO (ADR-40). Firestore rules on this
+  // collection no longer check only role and tenancy: draft-only editing, the
+  // approved authoring freeze, posted and cancelled immutability, the immutable
+  // identity set, and the scalar header arithmetic are all enforced at the trust
+  // boundary. A direct-SDK caller can NOT rewrite an approved or posted invoice.
+  //
+  // What is still CLIENT-SIDE ONLY, and must never be described otherwise: the
+  // PER-LINE contents below — poLineIndex / costCodeId / costCodeName /
+  // description identity, per-line amount sign, tax-code validity, and the
+  // gstAmount re-derivation. Rules can neither iterate nor index an array, so
+  // they enforce only the line COUNT and the scalar header totals
+  // (docs/SECURITY.md → Deferred Control 29).
   //
   // THE CALLER SUPPLIES NO LINE ITEMS. Every line is rebuilt over the STORED
   // document, which makes it the sole authority for line identity: poLineIndex,
@@ -217,13 +251,23 @@ export function useSupplierInvoices(projectId) {
     const storedLines = Array.isArray(invoice.lineItems) ? invoice.lineItems : []
     const ref = doc(db, 'companies', companyId, 'projects', projectId, 'supplierInvoices', invoice.id)
 
-    // The authored header — the only fields BOTH sources may change.
+    // The authored header — the only fields BOTH sources may change — plus the
+    // ADR-40 audit stamps every write to this collection must carry.
+    //
+    // ⚠️ THIS OBJECT IS THE CLAIM-SOURCED RULES CONTRACT. The Firestore Rules
+    // branch for a `progress_claim` draft edit is
+    // `changedKeys().hasOnly(['supplierInvoiceNumber', 'invoiceDate',
+    // 'receivedDate', 'dueDate', 'notes', 'updatedAt', 'updatedBy'])` — exactly
+    // these seven keys. Adding a key here without adding it there will be
+    // REJECTED by rules in production.
     const header = {
       supplierInvoiceNumber: supplierInvoiceNumber?.trim() || '',
       invoiceDate:  invoiceDate  || '',
       receivedDate: receivedDate || '',
       dueDate:      dueDate      || '',
       notes:        notes?.trim() || '',
+      updatedAt:    serverTimestamp(),
+      updatedBy:    user.uid,
     }
 
     // ── progress_claim: HEADER ONLY ──────────────────────────────────────────
@@ -284,11 +328,19 @@ export function useSupplierInvoices(projectId) {
     })
   }, [companyId, projectId, user])
 
-  // Lifecycle transitions. approve/post carry the acting user; all stamp a
-  // timestamp. Posting is the financial commit point and is terminal here —
-  // posted invoices cannot be cancelled or unposted (corrections use Credit
-  // Notes, a future module). Legality is client-checked (server enforcement
-  // is deferred, matching POs/claims).
+  // Lifecycle transitions. approve/post/cancel each carry the acting user and
+  // stamp the server time. Posting is the financial commit point and is terminal
+  // — posted invoices cannot be cancelled or unposted (corrections are Supplier
+  // Credit Notes, ADR-31).
+  //
+  // ⚠️ LEGALITY IS RULES-ENFORCED (ADR-40), unlike POs and progress claims,
+  // where it remains client-checked. `canTransition` below is now a UX
+  // fast-path that produces a friendly message; Firestore Rules permit exactly
+  // draft→approved, draft→cancelled, approved→posted and approved→cancelled,
+  // and match no branch at all from `posted` or `cancelled`. The reserved
+  // statuses (`received`, `under_review`, `disputed`) and the deprecated `paid`
+  // are unauthorable from any path, which closes the ADR-24 hole in which a
+  // direct-SDK caller could forge `status: 'paid'` on a real invoice.
   const transitionStatus = useCallback(async (invoice, nextStatus) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (!canTransition(invoice.status, nextStatus)) {
@@ -296,11 +348,24 @@ export function useSupplierInvoices(projectId) {
     }
     const ref = doc(db, 'companies', companyId, 'projects', projectId, 'supplierInvoices', invoice.id)
     const extra =
-      nextStatus === SI_STATUS.APPROVED  ? { approvedAt: serverTimestamp(), approvedBy: user.uid } :
-      nextStatus === SI_STATUS.POSTED    ? { postedAt:   serverTimestamp(), postedBy:   user.uid } :
-      nextStatus === SI_STATUS.CANCELLED ? { cancelledAt: serverTimestamp() } :
+      nextStatus === SI_STATUS.APPROVED  ? { approvedAt:  serverTimestamp(), approvedBy:  user.uid } :
+      nextStatus === SI_STATUS.POSTED    ? { postedAt:    serverTimestamp(), postedBy:    user.uid } :
+      // ADR-40 — cancellation now records WHO as well as WHEN, matching every
+      // other terminal transition in the codebase and satisfying the rules
+      // branch's `cancelledBy == request.auth.uid`.
+      nextStatus === SI_STATUS.CANCELLED ? { cancelledAt: serverTimestamp(), cancelledBy: user.uid } :
       {}
-    await updateDoc(ref, { status: nextStatus, ...extra })
+    // ⚠️ EACH PAYLOAD IS A RULES CONTRACT (ADR-40). Firestore Rules restrict
+    // every transition with `changedKeys().hasOnly([...])` to exactly `status`,
+    // its own two stamps, and `updatedAt`/`updatedBy` — so a transition can
+    // carry NO content change, and adding a key here without adding it to the
+    // matching rules branch will be REJECTED in production.
+    await updateDoc(ref, {
+      status: nextStatus,
+      ...extra,
+      updatedAt: serverTimestamp(),
+      updatedBy: user.uid,
+    })
   }, [companyId, projectId, user])
 
   return { supplierInvoices, supplierInvoicesLoading, supplierInvoicesError, createSupplierInvoice, updateSupplierInvoice, transitionStatus }

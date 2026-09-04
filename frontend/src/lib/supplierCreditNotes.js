@@ -202,9 +202,13 @@ export function creditTargetException(creditNote, invoiceById) {
   if (inv.currency !== creditNote.currency) {
     return `${inv.invoiceNumber} is denominated in ${inv.currency || 'an unknown currency'}, not ${creditNote.currency || 'unknown'}.`
   }
-  // Retention may appear on the target AFTER the credit was posted — supplier-
-  // invoice lifecycle is still client-enforced (Deferred Controls 1 and 2), so
-  // the rules get() at create/post time cannot be the last word.
+  // Retention on the target is re-checked at READ TIME even though the rules
+  // get() already validated it at create and at post. Since ADR-40 a posted
+  // supplier invoice is rules-immutable, so retention can no longer be ADDED to
+  // a target after the fact; this guard remains because it also catches an
+  // invoice tampered with before ADR-40 and, more importantly, because rules
+  // never verified the target's LINE data (Deferred Control 25) — the read-time
+  // gate is what keeps a broken target out of every figure.
   if (toCents(safeAmount(inv.retentionTotal)) !== 0) {
     return `${inv.invoiceNumber} now withholds retention (${roundMoney(safeAmount(inv.retentionTotal)).toFixed(2)}) — a retained invoice cannot carry a credit note in this foundation.`
   }

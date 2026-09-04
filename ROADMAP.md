@@ -73,6 +73,8 @@ Firestore security rules for all of the above are written in `frontend/firestore
 
 ---
 
+- [x] **Supplier Invoice Rules Hardening (ADR-40)** — security hardening of the collection the MVP audit ranked **highest-risk**, not a Supplier Invoice redesign. The `supplierInvoices` block enforced role and tenancy and **nothing else**, while `supplierCreditNotes`, `retentionReleases` and `supplierPayments` all `get()` or allocate against these documents and trust what they find — so a forged `posted` invoice with an arbitrary `payableTotal` unlocked valid-looking credits and payments against something that never existed. The block now follows the ADR-22 standard, modelling the collection's **two** lifecycle points (`approved` = authoring freeze, `posted` = financial commit). **Rules-enforced:** the status enum (the reserved `received`/`under_review`/`disputed` and the deprecated `paid` are now **unauthorable from any path**, closing the ADR-24 forgery hole); all four legal transitions and nothing else; `posted` and `cancelled` **terminal and immutable** (a posted invoice can no longer be cancelled or unposted); the approved authoring freeze; draft-only editing **split by source** — `progress_claim` is header-only by `hasOnly`, so certified money has no channel, and `direct_po` has its stored line **count** pinned; a sixteen-field immutable identity; creator/last-writer provenance against `request.time`; unforgeable lifecycle stamps; five whole-cent scalar identities plus the exact `retentionGst` formula; and **create-only cross-document `get()`s** verifying the PO is `sent`/`closed` and the claim `approved` **in this project** (never revalidated afterwards — an invoice must not become unwritable because its PO later closed). **Create-path fix:** `retention >= 0` now holds at the domain boundary too — `invoiceTotals` clamps only the upper bound, so a negative retention used to be stored verbatim and made the payable exceed the gross value; the shared `retentionFloorError` is called by both `createSupplierInvoice` and `validateInvoiceDraft`. **Schema:** `updatedAt`/`updatedBy` (required by rules on every write) and `cancelledBy` added; **no `cancelReason`**, no UI change, no new status, no stored aggregate. Legacy documents are handled in the rules, not by migration (`get(key, null)` on both sides; stamps required only of the incoming document), so a pre-ADR-40 invoice stays editable and acquires the fields on its next valid write. Added a new **141-test** `tests/rules/supplierInvoices.rules.test.js` — of which **sixteen prove the security CEILING honestly** (duplicate references and SI-numbers, two invoices per claim, cumulative PO over-invoicing, header/line contradiction, negative per-line amounts, bogus cost codes and tax codes, creator == approver == poster, and the deliberate absence of any `payableTotal` floor or `gstTotal` ceiling all remain **accepted** by rules) — plus **6 unit tests** for the create-path floor. Totals **1,556 unit** across 27 files and **1,236 rules** across 20 files (**1,190 Firestore + 46 Storage**). Lint held at 17 errors / 0 warnings. ⚠️ **The rules are NOT published** — and must not be published before the application build ships, because pre-ADR-40 writes send none of the three new fields (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) → *Ordering gate*). **⚠️ Not included:** hardening of `purchaseOrders`/`progressClaims`/`variations`/`budgetLines`/`costCodes`, `lineItems` deep validation (rules cannot iterate an array), sibling aggregation of any kind, uniqueness, creator ≠ approver segregation, a `cancelReason`, new statuses, UX changes, and the **negative `payableGst`/`payableTotal`** a GST-free retained invoice produces — recorded as a deferred **domain** issue (Deferred Control 30), deliberately not corrected here. **ADR-40** · **§13f** · **DC 29/30**
+
 ## Documentation Sprint — Current
 
 Bring documentation in line with the implemented system:
@@ -88,7 +90,15 @@ Bring documentation in line with the implemented system:
 
 **Deferred security hardening** (client-enforced today, server enforcement deferred — full list in [docs/SECURITY.md](docs/SECURITY.md)):
 
-- Server-enforced lifecycle transitions and post-submission immutability
+- Server-enforced lifecycle transitions and post-submission immutability — **now
+  limited to `purchaseOrders`, `progressClaims` and `variations`**; every other
+  financial collection, including `supplierInvoices` since ADR-40, enforces both
+  by rules
+- Supplier-invoice **`lineItems` contents** — rules cannot iterate an array, so
+  per-line amounts, cost codes, tax codes and GST stay client-enforced, as do
+  one-invoice-per-claim and cumulative PO over-invoicing (Deferred Control 29)
+- **Negative `payableGst`/`payableTotal`** on a GST-free retained supplier
+  invoice — a deferred **domain** issue, not a rules gap (Deferred Control 30)
 - One-open-claim race protection
 - Creator ≠ approver segregation
 - Supplier-scoped subcontractor access
