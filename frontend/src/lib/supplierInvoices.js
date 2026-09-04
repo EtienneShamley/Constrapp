@@ -25,10 +25,14 @@ export const SI_STATUS = {
   // (below) contains no transition into it.
   //
   // It is retained — with its label and badge variant — so that a legacy or
-  // malformed document can still render. Supplier-invoice lifecycle legality is
-  // still client-enforced (docs/SECURITY.md → Deferred Control 1), so a
-  // direct-SDK caller CAN forge `status: 'paid'`; do not claim that no document
-  // can ever hold the value.
+  // malformed document can still render.
+  //
+  // ⚠️ ADR-40 CLOSED THE FORGERY PATH, BUT NOT RETROSPECTIVELY. Firestore Rules
+  // now permit exactly draft → approved → posted plus cancellation, so NO caller
+  // can author `status: 'paid'` on a new or existing invoice from here on. What
+  // rules cannot do is revert PAST tampering: any document that already holds
+  // this value keeps it, which is exactly why the value, its label, and its
+  // place in SI_COUNTING_STATUSES all stay.
   PAID:         'paid',
   CANCELLED:    'cancelled',
 }
@@ -79,12 +83,14 @@ export const canTransition = (from, to) => (SI_TRANSITIONS[from] ?? []).includes
 // Statuses whose value counts toward the budget figures.
 //
 // `paid` is INERT: no supported application path writes it and SI_TRANSITIONS
-// reaches it from nowhere, so the app never produces such a document. It is
-// deliberately RETAINED in this list rather than removed, because supplier-
-// invoice lifecycle Rules are still deferred: if a direct-SDK caller forged
-// `status: 'paid'` on a real invoice, dropping it here would silently erase that
-// invoice from Invoiced and Actual. Counting it is the safe failure mode — the
-// cost stays visible in the budget figures.
+// reaches it from nowhere, so the app never produces such a document. Since
+// ADR-40 no DIRECT-SDK path produces one either — Firestore Rules make the
+// status unauthorable. It is nevertheless deliberately RETAINED in this list
+// rather than removed, because rules prevent FUTURE tampering and do not revert
+// PAST tampering: if a document forged before ADR-40 still holds `paid`,
+// dropping it here would silently erase that invoice from Invoiced and Actual.
+// Counting it is the safe failure mode — the cost stays visible in the budget
+// figures. Removing it is a data-migration decision, not a code decision.
 //
 // It is NOT used for payment reconciliation. Paid to Date and Remaining Payable
 // derive exclusively from posted Supplier Payment allocations
@@ -95,11 +101,10 @@ export const SI_COUNTING_STATUSES = [SI_STATUS.POSTED, SI_STATUS.PAID]
 // `direct_po` invoice — line amounts, tax codes and retention) may still change.
 // Exactly draft: `approved` is the AUTHORING FREEZE POINT and every later status
 // is frozen too. `posted` is a separate, later thing — the FINANCIAL COUNTING
-// POINT (SI_COUNTING_STATUSES). Enforced in the client hook and editor only —
-// Firestore rules check neither status nor transition legality on this
-// collection (docs/SECURITY.md -> Deferred Controls 1 and 2), so a direct-SDK
-// caller CAN still rewrite an approved or posted invoice. Never describe
-// draft-only editing as enforced.
+// POINT (SI_COUNTING_STATUSES). RULES-ENFORCED since ADR-40: Firestore rules
+// permit a content edit only while the stored status is `draft`, and an approved
+// or posted invoice matches no editing branch at all. The client hook and editor
+// mirror it for a friendly message, not as the control.
 export const SI_EDITABLE_STATUSES = [SI_STATUS.DRAFT]
 
 // Whether an invoice may still be corrected in place. Content-only — it says
@@ -255,9 +260,16 @@ export const claimHasActiveInvoice = (invoices, progressClaimId) =>
 //    repoint a line at a different PO line or cost code, and `gstAmount` is
 //    always re-derived rather than believed.
 //
-// Everything here is client-side only. Firestore rules on this collection check
-// role and tenancy and nothing else (docs/SECURITY.md -> Deferred Controls 1
-// and 2).
+// ⚠️ WHAT IS AND IS NOT ENFORCED HERE (updated by ADR-40). Firestore rules on
+// this collection now enforce draft-only editing, the approved authoring freeze,
+// posted/cancelled immutability, the immutable identity set, the scalar header
+// arithmetic, and — for a `progress_claim` invoice — that a draft edit touches
+// the header and NOTHING financial. What they still cannot enforce is
+// guarantee 2 above and everything else inside the array: rules can neither
+// iterate nor index `lineItems`, so per-line identity, amounts, tax codes and
+// gstAmount stay CLIENT-ENFORCED ONLY. Rules bound the line COUNT (guarantee 1)
+// and the header totals; the identity discipline below is what makes the
+// contents correct (docs/SECURITY.md → Deferred Control 29).
 
 // Whether this invoice was raised from an approved progress claim. Claim-sourced
 // drafts are HEADER-ONLY editable: their line amounts, tax codes and retention
@@ -362,6 +374,32 @@ export function invoiceLineInputCountError(lineItems, amounts, taxCodes) {
   return null
 }
 
+// THE RETENTION FLOOR — shared by CREATE (the hook) and EDIT
+// (validateInvoiceDraft below), so the two cannot drift.
+//
+// `invoiceTotals` deliberately clamps only the UPPER bound (a retention above
+// the subtotal falls to the subtotal). It applies NO floor, so a negative
+// retention flows straight through into the stored document and makes `net`
+// exceed `subtotal` and `payableTotal` exceed `grossTotal` — the invoice would
+// claim more payable than the supply is worth.
+//
+// ADR-38 D6 put this floor on the EDIT path only, leaving CREATE guarded by
+// nothing but the editor input's `min="0"` attribute — which is browser
+// constraint validation, not a control. ADR-40 closes that asymmetry by calling
+// this from `createSupplierInvoice` before any total is derived, and mirrors it
+// in Firestore Rules (`retention >= 0`, whole cents), so the floor now holds at
+// the domain boundary AND at the trust boundary.
+//
+// Deliberately narrow: it validates the retention SCALAR and nothing else.
+// Create's other validity checks are unchanged (ADR-38: preserve create
+// behaviour exactly).
+export function retentionFloorError(retention) {
+  const retained = Number(retention)
+  if (!Number.isFinite(retained)) return 'Retention must be a number'
+  if (retained < 0) return 'Retention cannot be negative'
+  return null
+}
+
 // Draft content validation for EDIT. Returns null when valid, else the first
 // error.
 //
@@ -407,9 +445,8 @@ export function validateInvoiceDraft({
     if (badTax !== -1) {
       return `Line ${badTax + 1}: choose a tax code (${TAX_CODE_LABELS[TAX_CODE.GST]}, ${TAX_CODE_LABELS[TAX_CODE.GST_FREE]} or ${TAX_CODE_LABELS[TAX_CODE.INPUT_TAXED]})`
     }
-    const retained = Number(retention)
-    if (!Number.isFinite(retained)) return 'Retention must be a number'
-    if (retained < 0) return 'Retention cannot be negative'
+    const retentionError = retentionFloorError(retention)
+    if (retentionError) return retentionError
   }
 
   if (!lines.some(li => (Number(li?.amount) || 0) > 0)) {

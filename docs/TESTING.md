@@ -43,7 +43,7 @@ That script runs
   deployed). The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **1095 in total across 19 files: 1049 Firestore + 46 Storage**:
+- Tests — **1236 in total across 20 files: 1190 Firestore + 46 Storage**:
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -176,6 +176,52 @@ That script runs
     honestly (Deferred Control 24): a **cumulative** over-release across sibling
     releases, and a forged `previouslyReleasedAmount`, are both ACCEPTED by
     rules — rules cannot sum siblings.
+  - `frontend/tests/rules/supplierInvoices.rules.test.js` — **141 tests**
+    covering every case in §13f below (Supplier Invoice Rules Hardening,
+    ADR-40). This block was the highest-risk collection in the database — role
+    and tenancy and nothing else, while `supplierCreditNotes`,
+    `retentionReleases` and `supplierPayments` all trust these documents — so the
+    suite is correspondingly broad. It asserts the **TWO lifecycle points**
+    (`approved` = authoring freeze, `posted` = financial commit): every legal
+    transition, every illegal one (`draft → posted` skipping approval,
+    `approved → draft`, every exit from `posted` and from `cancelled`, and every
+    move into the reserved `received`/`under_review`/`disputed` or the deprecated
+    `paid` — the **ADR-24 forgery hole, now closed**), **transition purity**
+    (seven kinds of content smuggled into each of approve/post/cancel, forged
+    actors, and three skewed client clocks per stamp), the **approved authoring
+    freeze**, **posted and cancelled terminality** including that a posted
+    invoice cannot be cancelled, and blocked deletes for every role × status.
+    It pins the create shape (status/source/docType, provenance against
+    `request.time`, all eight null lifecycle/dead-field stamps), the
+    **sixteen-field immutable identity** across both a draft edit and a
+    transition, the **scalar money invariants** — each of the five identities
+    broken by exactly one cent, plus a ten-value **retention-GST rounding sweep**
+    proving the rules helper `gstCents(c) = math.floor((c + 5) / 10)` matches
+    JavaScript `roundMoney(x × 10%)` on half-cent boundaries — and the
+    **create-only Tier-2 source `get()`s** (missing/draft/cancelled/wrong-project
+    PO, non-approved claim, and a `direct_po` invoice forbidden a claim
+    reference), together with the **ADR-34 rule that an unchanged reference is
+    never revalidated**: a PO cancelled *after* create must not trap the invoice.
+    The two draft-edit contracts are asserted separately — `direct_po` (line
+    money re-authored, line **count** pinned) and `progress_claim`
+    (**header-only**, so certified money has no channel). A dedicated group
+    proves **documents raised before ADR-40 stay writable** and acquire
+    `updatedAt`/`updatedBy`/`cancelledBy` on their next valid write, and another
+    proves `supplierCreditNotes` and `retentionReleases` still accept an invoice
+    created and posted through the new rules.
+    Finally, **fourteen tests assert the security CEILING honestly** (Deferred
+    Controls 29 and 30): duplicate supplier references and duplicate SI-####
+    numbers, two invoices against one approved claim, cumulative over-invoicing
+    against a PO, header totals contradicting their own lines, a negative
+    per-line amount, a bogus cost code, an invalid tax code, a per-line
+    `gstAmount` that disagrees with itself, an arbitrary `poLineIndex`,
+    creator == approver == poster, an impossible-but-well-shaped date, a
+    future-dated invoice, and last-write-wins concurrency — **all ACCEPTED by
+    rules**. Two further tests pin the deliberate absence of a
+    `payableGst`/`payableTotal` floor and of any `gstTotal` ceiling: a wholly
+    GST-free retained invoice (negative payable — Deferred Control 30) and a
+    `gstTotal` above 10% of subtotal (per-line roundings) are both accepted,
+    because rejecting them would reject documents the app itself writes.
   - `frontend/tests/rules/drawings.rules.test.js` — **86 tests** over the drawing
     master and its `revisions` subcollection: the **broad read** (all six Company
     A roles read masters and revisions, cross-company and unauthenticated denied),
@@ -1079,6 +1125,88 @@ Controls 1 and 2).*
 ### Responsive
 
 - [ ] **375 / 768 / 1280** — the editor scrolls within `max-h-[90vh]`, the line grid reflows at `sm:`, there is no horizontal page overflow, and the close button stays ≥ 44 px.
+
+## 13f. Supplier Invoice Rules Hardening — Rules-enforced (AUTOMATED — see §0)
+
+**Everything in this section is proven by the automated emulator suite**
+`frontend/tests/rules/supplierInvoices.rules.test.js` (141 tests), not by
+clicking. It is listed here so the manual pass knows what the boundary now
+guarantees, and — just as importantly — what it still does not.
+
+⚠️ **These rules must not be published before the updated application code is
+deployed.** They require `updatedAt`/`updatedBy` on every write and
+`cancelledBy` on a cancellation, and pre-ADR-40 builds send none of the three.
+See [DEPLOYMENT.md](DEPLOYMENT.md) → *Ordering gate*.
+
+### Rules-enforced (automated)
+
+- [ ] Reads, creates and updates are `company_admin` / `project_manager` / `qs`
+      only; `subcontractor`, `client`, unauthenticated, cross-company and a user
+      with **no membership document** are all denied. Delete is blocked for every
+      role in every status.
+- [ ] A create must be `status: 'draft'`, `docType: 'invoice'`, a `source` of
+      `direct_po` or `progress_claim`, with `createdBy`/`updatedBy` == the caller
+      and `createdAt`/`updatedAt` == server time, and **all eight** of
+      `approvedAt`/`By`, `postedAt`/`By`, `cancelledAt`/`By`, `paidAt`,
+      `adjustsInvoiceId` null.
+- [ ] **Source validation at create:** the `poId` must be a `sent`/`closed` PO in
+      **this** project; a `progress_claim` invoice's claim must be `approved` in
+      this project; a `direct_po` invoice must carry `progressClaimId: null`.
+- [ ] **Those references are never revalidated.** Cancel the PO afterwards (or
+      reject the claim) and the invoice can still be edited, approved and posted.
+- [ ] Sixteen identity fields are immutable for life, including both source
+      references, `paymentTerms`, and the dead `paidAt`/`adjustsInvoiceId`.
+- [ ] Only `draft → approved`, `approved → posted`, `draft|approved → cancelled`.
+      **`draft → posted` is rejected** (posting cannot skip approval).
+      `posted` and `cancelled` accept **no** update at all — a posted invoice
+      cannot be cancelled, unposted, or rewritten.
+- [ ] `received`, `under_review`, `disputed` and `paid` are **unauthorable from
+      any path**, at create and at every transition.
+- [ ] Each transition carries **only** `status`, its own two stamps and
+      `updatedAt`/`updatedBy`; the actor must be the caller and the timestamp the
+      server's. Smuggled content is rejected.
+- [ ] An **approved** invoice takes no header, line, retention or total edit —
+      only post or cancel.
+- [ ] A `progress_claim` draft is **header-only**: any line, retention or total
+      change is rejected, including an internally consistent one.
+- [ ] A `direct_po` draft may re-author line money, but the stored **line count**
+      cannot grow or shrink.
+- [ ] Header money must balance in whole cents (five identities), `retentionGst`
+      must be exactly `round(retention × 10%)`, `subtotal > 0`, `retention >= 0`
+      and `retention <= subtotal`.
+- [ ] Invoices raised **before** ADR-40 (no `updatedAt`/`updatedBy`/
+      `cancelledBy`) stay editable and acquire the fields on their next write; a
+      legacy **posted** invoice is still terminal.
+
+### Manual spot-checks (the app must still work against the new rules)
+
+- [ ] Create a `direct_po` draft, edit it, approve it, post it — each step
+      succeeds with no permission error in the console.
+- [ ] Create a `progress_claim` draft from an approved claim, correct its header,
+      approve and post it.
+- [ ] Cancel a draft and cancel an approved invoice; both succeed.
+- [ ] A **posted** invoice offers no Edit and no Cancel, and the register renders
+      unchanged.
+- [ ] **Negative retention is refused at create**, not just on edit — the hook
+      throws "Retention cannot be negative" before anything is written.
+- [ ] An approved claim whose PO has since been **cancelled** can no longer be
+      invoiced (a create-time refusal). This is the one accepted behavioural
+      consequence of the Tier-2 checks — see ADR-40 D4.
+
+### Deliberately NOT enforced — do not report these as controls
+
+- [ ] Duplicate supplier invoice references, duplicate `SI-####` numbers, two
+      invoices against one approved claim, and cumulative over-invoicing against
+      a PO all still succeed at the boundary (no sibling aggregation).
+- [ ] `lineItems` contents are unverified: header totals contradicting their own
+      lines, a negative per-line amount, a bogus cost code, an invalid tax code,
+      a self-contradicting `gstAmount` and an arbitrary `poLineIndex` are all
+      writable (Deferred Control 29).
+- [ ] Creator == approver == poster is permitted; impossible-but-well-shaped and
+      future dates are permitted; concurrent draft edits are last-write-wins.
+- [ ] A wholly **GST-free retained invoice** produces a **negative**
+      `payableGst`/`payableTotal` and is **accepted** — a deferred *domain*
+      issue, not a rules gap (Deferred Control 30). Do not "fix" it here.
 
 ## 14. Variations
 
@@ -3769,15 +3897,32 @@ financial-role user can still bypass client checks (see SECURITY.md → Deferred
 Controls). They are **expected** to be bypassable today; do not report them as
 enforced.
 
-- [ ] Lifecycle-transition legality, post-submission/`posted`/`approved`
-  immutability, one-open-claim / one-invoice-per-claim races, creator ≠ approver
-  segregation, counter integrity, and uniqueness are all client-enforced only.
-  **Exception:** `clientInvoices`, `clientReceipts` **and `supplierPayments`**
-  transitions and post-commit immutability **are** rules-enforced — see §15i-x,
-  §15j-x and §15k-x, which test them as real rejections. Note the live
-  consequence of the remaining gap: a direct-SDK caller can cancel a **posted**
-  supplier invoice that a payment has settled (surfaced as an allocation
-  exception), or forge `status: 'paid'` on one (§15k-xiii).
+- [ ] Lifecycle-transition legality, post-submission/`approved` immutability,
+  one-open-claim races, creator ≠ approver segregation, counter integrity, and
+  uniqueness are client-enforced only **on `purchaseOrders`, `progressClaims` and
+  `variations`**. **Exception:** `clientInvoices`, `clientReceipts`,
+  `supplierPayments`, `supplierCreditNotes`, `retentionReleases` **and — since
+  ADR-40 — `supplierInvoices`** enforce transitions and post-commit immutability
+  **by rules** — see §15i-x, §15j-x, §15k-x, §15r-x, §15q and **§13f**, which test
+  them as real rejections. ⚠️ The consequence recorded here is now **closed**: a
+  posted supplier invoice can no longer be cancelled by any caller, and
+  `status: 'paid'` is unauthorable. What remains is that a document tampered with
+  *before* ADR-40 keeps its state, which is why `paid` stays in
+  `SI_COUNTING_STATUSES`.
+- [ ] **Supplier-invoice `lineItems` integrity is client-side only**, identically
+  to the allocation arrays: rules cannot iterate an array, so header totals may
+  contradict their own lines, and a per-line negative amount, bogus cost code,
+  invalid tax code, self-contradicting `gstAmount` or arbitrary `poLineIndex` are
+  all writable. One-invoice-per-claim, cumulative PO over-invoicing, duplicate
+  supplier references and `SI-####` uniqueness are likewise unenforceable (no
+  sibling aggregation). Expected — do not report as enforced (SECURITY.md →
+  Deferred Control 29). The **scalar header** invariants and the create-time
+  **source-document `get()`s** ARE rules-enforced (§13f).
+- [ ] A wholly **GST-free supplier invoice carrying retention** stores a
+  **negative** `payableGst`/`payableTotal`, and rules deliberately accept it — a
+  floor would reject documents the app itself writes. Expected, and a **deferred
+  domain issue** rather than a rules gap (SECURITY.md → Deferred Control 30). Do
+  not "fix" it in a hardening pass.
 - [ ] Client-invoice **Available to Invoice** and **per-variation remaining**
   limits are client-side warnings only: two users invoicing the same remaining
   value concurrently both succeed. Expected — do not report as enforced

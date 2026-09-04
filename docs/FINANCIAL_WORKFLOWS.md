@@ -219,9 +219,12 @@ Statuses: `draft` → `approved` → `posted`, with `cancelled` reachable from
   Committed maturing, not Forecast, Forecast Final Cost, Commercial, Overview,
   Margin or Cash Flow, not Supplier Payments payables, Supplier Credit Note
   figures, Retention Held/Released or PO Remaining. The edited values enter the
-  counting points unchanged when the invoice is **posted**. Draft-only editing and
-  every immutability above are **client-enforced only**
-  ([SECURITY.md](SECURITY.md) → Deferred Controls 1 and 2).
+  counting points unchanged when the invoice is **posted**. Since ADR-40,
+  draft-only editing, the immutable identity list, the `progress_claim`
+  header-only contract and the stored line **count** are all **rules-enforced**;
+  what stays **client-enforced only** is everything *inside* `lineItems` —
+  per-line identity, amount sign, tax-code validity and the `gstAmount`
+  re-derivation ([SECURITY.md](SECURITY.md) → Deferred Control 29).
 - **Approved** — the **AUTHORING FREEZE POINT**: *Edit* disappears and the
   content is locked, but **nothing has posted yet** — an approved invoice still
   contributes to no financial figure. Internally certified; locked except for
@@ -1004,9 +1007,12 @@ cost side — unless it passes the single central gate in
 | **Document integrity** | stored `subtotal`/`gstTotal`/`grossTotal` reconcile to the credit's own `lineItems` (whole cents) · each line's GST matches its amount and tax code · each line amount is **positive** · every line's `costCodeId` appears on the target invoice |
 
 The target class matters because rules validate the target at create, draft edit
-and post but **never fire again**, so a target cancelled or altered afterwards
-by a direct SDK call (supplier-invoice lifecycle is still client-enforced —
-Deferred Controls 1 and 2) is caught here. The integrity class matters because
+and post but **never fire again**. ⚠️ **ADR-40 narrowed what can drift**: a posted
+supplier invoice is now rules-immutable and rules-terminal, so it can no longer be
+cancelled, unposted, or have its retention or `payableTotal` altered by any
+caller. What this gate still catches is a target tampered with *before* ADR-40,
+and — the part rules will never reach — a target whose own `lineItems` contradict
+its headers. The integrity class matters because
 **rules cannot iterate `lineItems` at all**: only the scalar header invariant is
 enforced server-side, so without this gate a rules-valid document could store
 `grossTotal: 100` while its lines claimed 50,000 — reducing the payable by 100

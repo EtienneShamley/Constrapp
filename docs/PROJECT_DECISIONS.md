@@ -3007,3 +3007,180 @@ does not verify that a `costCodeId` names a real, active code; all three records
 are **last-write-wins** with no version guard; and a corrected budget's previous
 value is not retained beyond a single latest-writer stamp. See
 [SECURITY.md](SECURITY.md) → Deferred Control 28.
+
+## ADR-40: Supplier Invoice Rules Hardening (ADR-22 standard applied to the highest-risk collection; two lifecycle points; create-only source validation; scalar-only money guarantees)
+
+**Context.** The MVP audit ranked `supplierInvoices` the highest-risk collection
+in the database, and the reason was structural rather than incidental. Its rules
+block was six lines long — role and tenancy and **nothing else** — while three
+other blocks `get()` these documents and *trust what they find*:
+
+- `supplierCreditNotes` reads `status`, `supplierId`, `currency`,
+  `retentionTotal` and `payableTotal`;
+- `retentionReleases` reads `status` and `retention`;
+- `supplierPayments` allocates against `payableTotal` (unverifiably, through an
+  array).
+
+So a financial-role user issuing a direct SDK call could mint a document with
+`status: 'posted'`, `retentionTotal: 0` and any `payableTotal` at all, and that
+fabrication would then satisfy both downstream target checks. The same caller
+could rewrite a **posted** invoice — its lines, its cost codes, its totals —
+moving Invoiced, Actual, Committed maturation and Remaining Payable at will;
+un-cancel a cancelled invoice; or forge `status: 'paid'`, the hole ADR-24
+documented and deliberately left open.
+
+Meanwhile the *authoring* model was already carefully specified (ADR-38) and
+enforced entirely in the client. The gap was not a missing design; it was a
+missing boundary.
+
+**Decision.** Harden the `supplierInvoices` block to the ADR-22 standard already
+set by `clientInvoices` → `clientReceipts` → `supplierPayments` →
+`supplierCreditNotes` → `retentionReleases`. This is **security hardening, not a
+Supplier Invoice redesign**: no new status, no UX change, no change to GST,
+retention or financial-counting semantics, and no stored aggregate.
+
+**D1 — TWO LIFECYCLE POINTS, MODELLED AS SUCH.** Every earlier hardened
+collection has a single commit point. A supplier invoice has two, and the rules
+keep them distinct: `approved` is the **authoring freeze point** (content stops
+changing) and `posted` is the **financial commit point** (the invoice starts
+counting). An approved invoice is therefore frozen but not yet financial, and
+accepts exactly two updates — post and cancel. Five exclusive update branches
+encode it: claim-sourced draft edit, direct-PO draft edit, `draft→approved`,
+`approved→posted`, `draft|approved→cancelled`. `posted` and `cancelled` match no
+branch at all, which is what makes them terminal.
+
+**D2 — THE STATUS ENUM IS ENFORCED BY OMISSION.** Because a status can only be
+reached through a branch, the reserved values (`received`, `under_review`,
+`disputed`) and the deprecated `paid` become **unauthorable from any path**. That
+closes the ADR-24 forgery hole. It does **not** revert past tampering, which is
+precisely why `paid` stays in `SI_COUNTING_STATUSES`: dropping it would silently
+erase an already-forged invoice from Invoiced and Actual, and counting it remains
+the safe failure mode. Activating a reserved status later needs a rules change —
+that is the intent, not an oversight (the `drawings.pageCount` precedent).
+
+**D3 — THE CLAIM-SOURCED FREEZE IS MADE STRUCTURAL, NOT VALIDATED.** ADR-38 D1
+made a `progress_claim` invoice header-only editable so it keeps reconciling to
+its approved claim's certified GST and total. Rules now express that directly: on
+that path `changedKeys().hasOnly([...the five header fields..., 'updatedAt',
+'updatedBy'])` — the exact payload the hook writes. Certified money has **no
+channel** through which to move, from any caller. The `direct_po` path may
+re-author line money, and the stored line **count** is pinned to its previous
+value: that is the honest rules ceiling on ADR-38's "the stored line set is
+fixed", since rules cannot iterate an array to check per-element identity.
+
+**D4 — CROSS-DOCUMENT SOURCE VALIDATION, AT CREATE ONLY.** `poId` must name a
+purchase order **in this project** whose status is `sent` or `closed`, and a
+`progress_claim` invoice's `progressClaimId` must name an **approved** claim in
+this project. A `direct_po` invoice must carry `progressClaimId: null`, because a
+posted invoice's claim reference excludes that claim from the claim side of
+Actual — a forged one would silently erase an approved claim from the cost
+position. Both references are scalars, so unlike an allocations array they can be
+`get()`-ed (the ADR-31 precedent).
+
+These checks are **create-only, deliberately**. The references are core-preserved
+and can never change, so re-validating them on a draft edit or a transition could
+only strand a legitimate invoice whose PO was later closed or cancelled — the
+ADR-34 rule that *an unchanged reference is never revalidated*. **An invoice must
+never become permanently unwritable because its source document moved on.** One
+consequence is accepted and recorded: an approved claim whose PO is later
+cancelled can no longer be invoiced. That is commercially right (a cancelled
+commitment is not billable) and it is a create-time refusal, never a trap.
+
+**D5 — THE MONEY GUARANTEE IS SCALAR AND HONEST ABOUT IT.** Rules enforce five
+whole-cent identities (`subtotal + gstTotal == grossTotal`;
+`retention + retentionGst == retentionTotal`; `subtotal − retention == net`;
+`gstTotal − retentionGst == payableGst`; `grossTotal − retentionTotal ==
+payableTotal`), plus `retentionGst == round(retention × 10%)` using the
+`math.floor((c + 5) / 10)` formula proven in the `retentionReleases` block, plus
+`subtotal > 0`, `grossTotal > 0`, the non-negativity of `gstTotal`, `retention`,
+`retentionGst`, `retentionTotal` and `net`, and `retention <= subtotal`. This
+bounds what a document may **claim**. It says nothing about the lines, and the
+documentation never pretends otherwise.
+
+**D6 — THREE INVARIANTS WERE CONSIDERED AND DELIBERATELY REJECTED**, because each
+would reject **app-reachable** documents under the current financial model:
+`payableGst >= 0`, `payableTotal >= 0`, and any `gstTotal <= 10% of subtotal`
+ceiling. See D9.
+
+**D7 — THE CREATE-PATH RETENTION FLOOR.** `invoiceTotals` clamps retention's
+**upper** bound only; it applies no floor, so a negative retention was stored
+verbatim and made `net` exceed `subtotal` and `payableTotal` exceed `grossTotal`.
+ADR-38 D6 put the floor on the **edit** path; on create the only guard was the
+editor input's `min="0"` attribute — browser constraint validation, not a
+control. The clause is now extracted as `retentionFloorError` in
+`lib/supplierInvoices.js`, called by **both** `validateInvoiceDraft` (behaviour
+byte-identical) and `createSupplierInvoice` before any total is derived, and
+mirrored in rules as `retention >= 0`. Deliberately narrow: it validates the
+retention scalar and nothing else. Create's other validity checks are unchanged
+(ADR-38: preserve create behaviour exactly), and `invoiceTotals` itself is
+untouched.
+
+**D8 — TWO AUDIT FIELDS AND ONE ACTOR WERE ADDED.** `updatedAt` / `updatedBy` did
+not exist on this collection at all, so the ADR-22 `updateStamped()` pattern had
+nothing to check; `cancelledAt` was stamped without a `cancelledBy`, making
+cancellation the one lifecycle action with no actor. Both are now written on
+every path. **No `cancelReason` was added** — the field does not exist, adding it
+requires a cancellation UI change this increment excludes, and permitting an
+unvalidated key in the `hasOnly` allow-list instead would be a free-text hole.
+Adding it later is a small, self-contained rules + UI change.
+
+Backward compatibility is handled in the rules rather than by a migration:
+`cancelledBy` is compared through `get(key, null)` on **both** sides, and the
+audit stamps are required only of the **incoming** document. A pre-ADR-40 invoice
+is therefore never trapped — it stays editable and acquires the new fields on its
+next valid write. **This creates a publish-ordering gate** (see
+[DEPLOYMENT.md](DEPLOYMENT.md)): the application build ships first, the rules
+second. Publishing rules against the old bundle breaks every supplier-invoice
+write.
+
+**D9 — A DOMAIN DEFECT IS RECORDED, NOT SILENTLY CORRECTED.** Under the current
+model `payableGst` and `payableTotal` can legitimately go **negative**: both
+subtract a retention-derived figure carrying 10% GST, while `gstTotal` may be
+zero on an invoice whose lines are all `gst_free` / `input_taxed`. Retention on a
+wholly GST-free invoice therefore produces a negative payable — a real document
+the app will write today, and one a rules floor would have rejected. Changing
+that behaviour means changing retention or GST semantics, which is out of scope
+here, so it is documented as [SECURITY.md](SECURITY.md) → **Deferred Control 30**
+and pinned by a passing test that asserts the negative figures are accepted.
+Fixing it is a separate, deliberate financial-model decision.
+
+**D10 — AN ENGINE LIMIT SHAPED THE IMPLEMENTATION.** Firestore evaluates at most
+**1000 expressions per request**, and it evaluates the allow statements in a match
+block until one grants — so a *denied* create was also being measured against the
+large `update` rule with a null `resource`. The combined evaluation exceeded the
+ceiling and the emulator returned "Unable to evaluate the expression" instead of a
+clean denial. The outcome was still deny, but the headroom was gone: a slightly
+larger rule would have begun erroring on **legitimate** writes. Three changes
+restored it — `let` bindings so `request.resource.data` and each `cents(...)` are
+computed once rather than per reference; `moneyValid()` split into a types/signs
+half and an identities half so the arithmetic runs only after the `is number`
+guards pass; and a leading `resource != null` guard on `allow update` so a create
+short-circuits out of it immediately. The emulator suite now runs with **zero**
+evaluation errors, and that is the regression signal.
+
+**Consequences.**
+
+*Enforced at the trust boundary, where none of it was before:* the status enum
+and every legal transition; posted and cancelled immutability; the approved
+authoring freeze; draft-only editing, split by source; a sixteen-field immutable
+identity including both source references and the two dead fields (`paidAt`,
+`adjustsInvoiceId`); creator and last-writer provenance against `request.time`;
+unforgeable lifecycle stamps; the scalar money identities; and create-time
+existence and status of the PO and claim. `supplierCreditNotes` and
+`retentionReleases` now `get()` a document whose lifecycle and headers are
+genuinely guaranteed, which materially narrows their own "target may change
+afterwards" caveats.
+
+*Still client-enforced only, and never to be described otherwise* (Deferred
+Control 29): everything inside `lineItems` — per-line identity, amount sign, tax
+code, cost code and GST derivation — and `subtotal`/`gstTotal` matching the sum
+of the lines; tax-code enum membership (ADR-21); the claim reconciliation itself;
+one-active-invoice-per-claim and cumulative over-invoicing (no sibling
+aggregation); duplicate supplier references and SI-#### uniqueness; creator ≠
+approver ≠ poster; calendar validity and future-dating; and concurrency, which
+stays last-write-wins.
+
+*Scope held:* `purchaseOrders`, `progressClaims`, `variations`, `budgetLines` and
+`costCodes` are untouched and remain client-enforced (Deferred Controls 1 and 2).
+No UI change, no new status, no `cancelReason`, no backend, and the rules were
+**not published** — that remains a manual step, gated on the ordering above.

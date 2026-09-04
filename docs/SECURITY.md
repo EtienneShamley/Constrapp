@@ -96,6 +96,94 @@ the `supplierName` snapshot on POs/claims — no contact read required.
 than the POs/claims read pattern): the accounts-payable register exposes supplier
 billing detail, so `subcontractor` and `client` users must not read it.
 
+## Supplier Invoices — rules-enforced lifecycle (ADR-40)
+
+**This was the highest-risk collection in the database, and it no longer is.**
+Until ADR-40 the block enforced role and tenancy and **nothing else**, while three
+other blocks `get()` these documents and trust what they find:
+`supplierCreditNotes` (status, `supplierId`, `currency`, `retentionTotal`,
+`payableTotal`), `retentionReleases` (status, `retention`), and `supplierPayments`
+(allocations against `payableTotal`). A forged `status: 'posted'` with an inflated
+`payableTotal` therefore unlocked valid-looking credit notes and payment
+allocations against an invoice that never existed.
+
+**Reads** stay restricted to `company_admin` / `project_manager` / `qs`.
+**Delete** stays blocked for every role and every status.
+
+**Two lifecycle points, not one.** Unlike every earlier hardened collection,
+`approved` is the **authoring freeze point** (content stops changing) and
+`posted` is the **financial commit point** (the invoice starts counting toward
+Invoiced, Actual, Committed maturation and Remaining Payable). An approved
+invoice is frozen but not yet financial.
+
+*Rules-enforced:*
+
+- `create` only with `status: 'draft'`, `docType: 'invoice'`, a `source` of
+  `direct_po` or `progress_claim`, `createdBy == request.auth.uid`,
+  `createdAt == request.time`, `updatedBy`/`updatedAt` likewise, and **null
+  lifecycle stamps** (`approvedAt`/`By`, `postedAt`/`By`, `cancelledAt`/`By`)
+  plus null `paidAt` and `adjustsInvoiceId`.
+- **Source-document validation at create** (cross-document `get()`): `poId` must
+  name a purchase order **in this project** whose status is `sent` or `closed`;
+  a `progress_claim` invoice's `progressClaimId` must name an **approved** claim
+  in this project; and a `direct_po` invoice must carry `progressClaimId: null`
+  (a posted invoice's claim reference removes that claim from the claim side of
+  Actual, so a forged one would erase an approved claim from the cost position).
+  ⚠️ **Create-only, deliberately.** Both references are core-preserved and can
+  never change, so re-checking them later could only strand a legitimate invoice
+  whose PO was subsequently closed or cancelled (the ADR-34 rule). One accepted
+  consequence: an approved claim whose PO is later cancelled can no longer be
+  invoiced.
+- **Every** update preserves a sixteen-field identity: `invoiceNumber`,
+  `docType`, `source`, `currency`, `revision`, `createdAt`, `createdBy`,
+  `supplierId`, `supplierName`, `poId`, `poNumber`, `progressClaimId`,
+  `claimNumber`, `paymentTerms`, and the two dead fields `paidAt` and
+  `adjustsInvoiceId` — pinned at the null they are born with, so no second source
+  of payment truth can ever be authored (ADR-24/ADR-31). Every update also stamps
+  `updatedBy == request.auth.uid` and `updatedAt == request.time`.
+- **Draft-only editing, split by source.** A `progress_claim` invoice is
+  **header-only by rules**: `changedKeys().hasOnly(['supplierInvoiceNumber',
+  'invoiceDate', 'receivedDate', 'dueDate', 'notes', 'updatedAt', 'updatedBy'])`.
+  Certified money has no channel through which to move, from any caller — the
+  ADR-38 D1 reconciliation invariant is now structural rather than validated. A
+  `direct_po` invoice may re-author line money, subject to the full shape and the
+  scalar identities, and its stored **line count** is pinned.
+- **`draft → approved`**, **`approved → posted`** and **`draft|approved →
+  cancelled`** each affect **only** `status`, their own two stamps, and
+  `updatedAt`/`updatedBy`, with the actor `== request.auth.uid` and the timestamp
+  `== request.time`. A transition can therefore carry **no** content change.
+- **`posted` and `cancelled` are terminal and immutable** — they match no update
+  branch at all. A posted invoice cannot be cancelled, unposted, or rewritten;
+  corrections are Supplier Credit Notes.
+- **The status enum is enforced by omission.** `received`, `under_review`,
+  `disputed` and the deprecated `paid` are **unauthorable from any path**, which
+  closes the ADR-24 hole in which a direct-SDK caller could forge `status:
+  'paid'`. ⚠️ This prevents *future* forgery and does **not** revert *past*
+  forgery — which is exactly why `paid` remains in `SI_COUNTING_STATUSES`.
+- **Scalar money invariants**, in whole cents: `subtotal + gstTotal ==
+  grossTotal`; `retention + retentionGst == retentionTotal`; `subtotal −
+  retention == net`; `gstTotal − retentionGst == payableGst`; `grossTotal −
+  retentionTotal == payableTotal`; `retentionGst == round(retention × 10%)`
+  (using the `math.floor((c + 5) / 10)` formula proven in `retentionReleases`);
+  `subtotal > 0`; `grossTotal > 0`; `gstTotal`, `retention`, `retentionGst`,
+  `retentionTotal` and `net` all `>= 0`; and `retention <= subtotal`. The
+  **`retention >= 0` floor closes a real create-path hole** — `invoiceTotals`
+  clamps only the upper bound, so a negative retention used to be stored verbatim
+  and made the payable exceed the gross invoice value.
+
+*Client-enforced only (deferred — never describe these as enforced):* see
+**Deferred Control 29** for the full list, and **Deferred Control 30** for the
+negative-payable domain issue this hardening deliberately did not fix.
+
+⚠️ **Publishing these rules requires an ordering gate.** The block requires
+`updatedAt`/`updatedBy` on every write and `cancelledBy` on a cancellation, and
+pre-ADR-40 application code sends none of the three. **The application build ships
+first; the rules are published second** — see [DEPLOYMENT.md](DEPLOYMENT.md).
+Existing documents are unaffected: `cancelledBy` is compared through
+`get(key, null)` on both sides and the audit stamps are required only of the
+incoming document, so a pre-ADR-40 invoice stays editable and acquires the new
+fields on its next valid write.
+
 ## Client Invoices — deliberately stricter than every other collection
 
 **Reads are restricted to financial roles.** Client invoices expose contract
@@ -302,15 +390,27 @@ as the standard (ADR-22/ADR-23/ADR-24):
   avoid the enum drift ADR-21 records for currency codes.
 - **Business truth** — that the money genuinely left the bank account.
 
-**⚠️ Deliberate asymmetry with `supplierInvoices`.** This block enforces
-lifecycle legality and post-`posted` immutability; the `supplierInvoices` block
-still enforces neither (Deferred Controls 1–2), and the Supplier Payments branch
-did **not** harden it. The consequence is real and accepted: a direct-SDK caller
-can cancel a posted supplier invoice that a payment has already settled, or forge
-`status: 'paid'` on one. Constrapp surfaces the first as an **allocation
-exception** on both views rather than auto-reversing, and deliberately keeps
-`paid` inside `SI_COUNTING_STATUSES` so the second cannot make a real cost vanish
-from Invoiced and Actual (ADR-24). Neither is prevented.
+**⚠️ The `supplierInvoices` asymmetry is CLOSED (ADR-40).** This section
+previously recorded that the `supplierInvoices` block enforced neither lifecycle
+legality nor post-`posted` immutability, with two accepted consequences: a
+direct-SDK caller could cancel a posted supplier invoice a payment had already
+settled, and could forge `status: 'paid'` on one. **Both are now prevented** — a
+posted supplier invoice matches no update branch at all, and `paid` is
+unauthorable from any path.
+
+Three things did **not** change, and none should be rounded up:
+
+- **Allocation targets are still unverifiable from here.** Allocations live in an
+  **array**, and rules can neither iterate it nor `get()` per element, so this
+  block still cannot check that an allocated invoice exists, is posted, belongs
+  to this project, or belongs to the selected supplier (Deferred Control 18).
+- **The allocation-exception machinery stays.** Constrapp still surfaces a broken
+  allocation on both views rather than auto-reversing — it now catches invoices
+  tampered with *before* ADR-40, and allocations that never pointed at a valid
+  invoice.
+- **`paid` stays inside `SI_COUNTING_STATUSES`.** Rules prevent *future* forgery
+  and do not revert *past* forgery, so removing it could still make a real cost
+  vanish from Invoiced and Actual (ADR-24).
 
 ## Cash Flow — one authored collection, rules-enforced lifecycle
 
@@ -811,29 +911,41 @@ place themselves in any row with a single write.
 These are known gaps, deliberately deferred (client-side checks exist in the
 hooks, but any authorized user could bypass them with direct Firestore calls):
 
-1. **Server-enforced lifecycle transitions** — rules don't validate status
-   changes; `canTransition` runs client-side only. A financial-role user could
-   set any status directly. Applies equally to supplier invoices (including the
-   "posted invoices cannot be cancelled/unposted" rule) and to variations
+1. **Server-enforced lifecycle transitions** — for the collections listed below,
+   rules don't validate status changes; `canTransition` runs client-side only, so
+   a financial-role user could set any status directly.
+   **Still deferred: `purchaseOrders`, `progressClaims`, `variations`**
    (draft → submitted → approved/rejected/withdrawn legality).
-   **Exception: `clientInvoices`, `clientReceipts` and `supplierPayments`
-   transitions ARE rules-enforced** — that is the intended future standard for
-   the collections above. Note the live consequence of the gap: a direct-SDK
-   caller can cancel a **posted** supplier invoice that a Supplier Payment has
-   already settled, or forge `status: 'paid'` on one (ADR-24).
+   **Rules-enforced: `clientInvoices`, `clientReceipts`, `supplierPayments`,
+   `supplierCreditNotes`, `retentionReleases`, `cashFlowLines`, `activities`,
+   `rfis`, `boqItems`, `tenderPackages`, `tenderBids`, and — since ADR-40 —
+   `supplierInvoices`.** ⚠️ The supplier-invoice consequence recorded here is
+   **closed**: a posted supplier invoice can no longer be cancelled or unposted,
+   and `status: 'paid'` is unauthorable from any path (ADR-24/ADR-40). Rules
+   prevent *future* forgery only — a document tampered with before ADR-40 keeps
+   whatever status it holds.
 2. **Post-submission immutability** — freezing PO lines after `sent`, claim
-   amounts after submission/approval, supplier invoices after `posted`, and
-   variation content after `submitted` / approved amounts after `approved` is
-   client-side only; rules allow full document updates. **One narrow
-   exception (ADR-34):** a variation's `originRfiId`/`originRfiNumber`/
-   `originRfiTitle` **are** frozen by rules once it leaves `draft` — nothing
-   else on the variation is.
-   **Exception: issued `clientInvoices`, posted `clientReceipts` and posted
-   `supplierPayments` ARE immutable by rules** (voiding is the only permitted
-   update, and it may touch only the void audit fields).
+   amounts after submission/approval, and variation content after `submitted` /
+   approved amounts after `approved` is client-side only; rules allow full
+   document updates on those three collections. **One narrow exception
+   (ADR-34):** a variation's `originRfiId`/`originRfiNumber`/`originRfiTitle`
+   **are** frozen by rules once it leaves `draft` — nothing else on the
+   variation is.
+   **Exception: issued `clientInvoices`, posted `clientReceipts`, posted
+   `supplierPayments`, posted `supplierCreditNotes`, posted `retentionReleases`
+   and — since ADR-40 — `approved` AND `posted` `supplierInvoices` ARE immutable
+   by rules.** Supplier invoices are the one case with **two** freeze points:
+   `approved` freezes authored content (only post and cancel remain), and
+   `posted` is terminal — it matches no update branch at all. What is **not**
+   frozen there is anything inside `lineItems`, which rules cannot inspect (item
+   29).
 3. **One-open-claim / one-invoice-per-claim race protection** — these checks
    read the local snapshot; two simultaneous creators can produce two open claims
-   on one PO, or two supplier invoices against one approved claim.
+   on one PO, or two supplier invoices against one approved claim. **ADR-40 did
+   not change this**: rules have no list, query, or count, so no rule can sum or
+   even see sibling documents. Rules *can* now verify that the referenced claim
+   exists and is approved — they cannot verify it is not already invoiced. Proven
+   unenforced by `tests/rules/supplierInvoices.rules.test.js`.
 4. **Creator vs approver segregation** — nothing prevents the claim (or
    variation) creator from approving their own document.
 5. **Supplier-scoped subcontractor access** — subcontractors can read all
@@ -1049,6 +1161,12 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     `releaseTotal == amount + gstAmount`, plus the full lifecycle, role, and
     audit-stamp rules (posted content immutable, void terminal with a
     non-whitespace reason, delete blocked).
+    ⚠️ **ADR-40 strengthened what that `get()` is worth.** The target invoice's
+    `status` and `retention` are now themselves rules-enforced and immutable once
+    posted, so the release block is no longer validating against a document any
+    caller could rewrite afterwards. Voiding a release still deliberately does
+    **not** re-check the target — a release whose invoice is gone is exactly the
+    one that most needs withdrawing.
     **What they still cannot do:** rules have no `list`, query, or `count`, so
     they **cannot sum sibling releases** and therefore **cannot verify that
     `previouslyReleasedAmount` is truthful**. The consequences, all accepted and
@@ -1089,10 +1207,14 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       cost codes drawn from the target invoice) is unverified. Only the SCALAR
       header invariant is rules-enforced. A document whose headers and lines
       disagree is therefore **writeable**.
-    - **Rules never fire again after a write.** Supplier-invoice lifecycle is
-      itself client-enforced (Deferred Controls 1 and 2), so a direct SDK call
-      can cancel or alter a target *after* its credit posted, and no rule
-      re-runs.
+    - **Rules never fire again after a write.** ⚠️ **ADR-40 narrowed this
+      sharply.** A posted supplier invoice is now rules-immutable and
+      rules-terminal, so a direct SDK call can no longer cancel it, unpost it,
+      add retention to it, or reduce its `payableTotal` — which was precisely
+      the drift this bullet described. What remains is the array limitation
+      above: the target's own **line** data is still unverifiable, so a target
+      whose headers and lines disagree can still underlie a credit, and a
+      document tampered with *before* ADR-40 keeps whatever state it holds.
 
     **What the app does about the last two.** `lib/supplierCreditNotes.js →
     creditTargetException` is a single central **read-time validity gate**: a
@@ -1275,6 +1397,73 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     pinning defect. The constraint is strictly one-way toward the current
     vocabulary: a legacy value may be corrected to a valid one, a valid one can
     never regress. Both directions are asserted by test.
+
+29. **Supplier-invoice line and aggregate gaps (ADR-40)** — the
+    `supplierInvoices` block now enforces the lifecycle, the immutable identity,
+    the audit stamps, the create-time source references, and the scalar header
+    arithmetic (see *Supplier Invoices — rules-enforced lifecycle* above). What it
+    **cannot** enforce, and what must never be described as enforced:
+
+    - **The SHAPE OF EACH `lineItems[]` ELEMENT.** Rules can neither iterate nor
+      map an array, so `poLineIndex`, `costCodeId`, `costCodeName`,
+      `description`, `amount`, `taxCode` and `gstAmount` are **wholly
+      unverified**. A per-line **negative amount**, a **bogus cost code**, an
+      **invalid tax code**, and a `gstAmount` that disagrees with its own amount
+      and tax code are all writable. The identity discipline that makes these
+      correct lives in `lib/supplierInvoices.js → buildInvoiceLine`, which reads
+      every identity field from the **stored** line and always re-derives
+      `gstAmount` — client-side, and bypassable by a direct SDK call.
+    - **`subtotal`/`gstTotal` matching the sum of `lineItems[]`.** Same
+      limitation. A document whose headers and lines disagree is **writeable**;
+      only the scalar header invariant is enforced. What rules *do* pin is the
+      stored line **COUNT** on a `direct_po` draft edit — the honest ceiling on
+      ADR-38's "the stored line set is fixed".
+    - **Tax-code membership** of `TAX_CODES` — validated nowhere in rules,
+      because an enum duplicated into a manually-published file would drift out
+      of sync with `lib/supplierInvoices.js` (the ADR-21 precedent).
+    - **The claim reconciliation itself.** Rules freeze a `progress_claim`
+      invoice's money so it *cannot move*, but cannot verify it equals the
+      claim's certified `approvedGst`/`approvedTotal`.
+    - **One active invoice per approved claim**, and **cumulative over-invoicing**
+      against a PO line or a PO total — rules have no list, query, or count, so
+      no rule can sum sibling invoices. Two users can invoice the same claim, or
+      the same remaining PO value, concurrently and both writes succeed.
+    - **Duplicate `(supplierId + supplierInvoiceNumber)`** detection (item 9) and
+      **company-wide SI-#### uniqueness** (item 6, the counter is
+      client-writable).
+    - **Creator ≠ approver ≠ poster** segregation (item 4).
+    - **Calendar validity** — `2026-02-30` matches the `YYYY-MM-DD` shape — and
+      **future-dating**; **that `costCodeId` names a real cost code**, or that the
+      invoice's cost codes are confined to the source PO/claim lines;
+      **concurrency**, which stays last-write-wins; and **business truth** — that
+      the supplier issued this invoice at all.
+
+    Every item above is **proven unenforced** by a passing test in
+    `frontend/tests/rules/supplierInvoices.rules.test.js`, so the ceiling is
+    documented as explicitly as the floor.
+
+30. **Negative `payableGst` / `payableTotal` on a GST-free retained invoice
+    (deferred DOMAIN issue, not a rules gap)** — under the current financial
+    model both figures subtract a retention-derived amount that carries 10% GST,
+    while `gstTotal` may legitimately be **zero** on an invoice whose lines are
+    all `gst_free` or `input_taxed`. Retention on such an invoice therefore
+    produces a **negative payable**, and at the clamped maximum
+    (`retention == subtotal`) `payableTotal` reaches `−10% × subtotal`.
+
+    This is app-reachable today, so ADR-40 deliberately applies **no**
+    `payableGst >= 0` or `payableTotal >= 0` floor: doing so would reject
+    documents the application itself writes. (The same reasoning excludes any
+    `gstTotal <= 10% of subtotal` ceiling — `gstTotal` is a **sum of per-line
+    roundings**, which can legitimately exceed one rounding of the sum.) A
+    passing test asserts the negative figures are accepted, so the behaviour is
+    pinned rather than latent.
+
+    **Downstream effect:** such an invoice presents a negative payable to
+    Supplier Payments and to the credit-note `payableTotal` cap. Fixing it means
+    changing retention or GST semantics — clamping retention against the payable
+    rather than the subtotal, or deriving retention GST from the taxable portion
+    only — which is a deliberate financial-model decision, not a hardening one,
+    and is **out of scope for ADR-40**.
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this

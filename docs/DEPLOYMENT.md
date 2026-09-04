@@ -72,6 +72,33 @@ manual:
 Keep the console and the repo file identical — the repo copy is the reviewed
 artifact; the console copy is what actually enforces.
 
+### ⚠️ ORDERING GATE — application code first, rules second (ADR-40)
+
+Rules and application code are versioned together in this repo but **published
+separately**, so a rules change that requires a NEW FIELD must not reach the
+console before the code that writes it. Publishing out of order is an outage,
+not a rollback-able mistake: every write the old bundle issues is rejected with
+"Missing or insufficient permissions" until the new bundle is live.
+
+**One such gate is outstanding.** The ADR-40 `supplierInvoices` block requires
+`updatedAt` / `updatedBy` on every write and `cancelledBy` on a cancellation.
+Supplier-invoice writes issued before ADR-40 send **none of those three**, so:
+
+1. Deploy the application build containing `hooks/useSupplierInvoices.jsx` first.
+2. Confirm the deployed bundle is live and a supplier invoice can be created,
+   edited, approved, posted and cancelled against the CURRENT (pre-ADR-40) rules
+   — the new fields are additive, so the old rules accept them.
+3. Only then publish `frontend/firestore.rules`.
+
+Reversing those steps breaks **create, draft edit, approve, post and cancel** on
+the Supplier Invoices register for every user until the build catches up.
+
+The general rule: **if a rules change adds a required field, the code that writes
+it ships first.** Existing documents are unaffected either way — the ADR-40
+block reads `cancelledBy` through `get(key, null)` on both sides and requires the
+audit stamps only of the INCOMING document, so a pre-ADR-40 invoice stays
+editable and acquires the new fields on its next valid write.
+
 ## Enabling Cloud Storage — Manual Process (one time)
 
 Documents & Drawings stores file bytes in Cloud Storage. Until Storage is

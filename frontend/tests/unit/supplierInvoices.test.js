@@ -9,7 +9,7 @@ import {
   invoicedByCostCode, postedInvoicedByPoLine, postedInvoicedByPo, invoicedClaimIds,
   suggestDueDate, isOverdue,
   isClaimSourced, invoiceLineToForm, buildInvoiceLine, invoiceLineInputCountError,
-  validateInvoiceDraft, claimSourcedDriftError,
+  validateInvoiceDraft, claimSourcedDriftError, retentionFloorError,
 } from '../../src/lib/supplierInvoices'
 import { PO_STATUS, GST_RATE, roundMoney, maturedCommittedByCostCode } from '../../src/lib/purchaseOrders'
 import { isPayableInvoice, postedSupplierInvoices, payablesSummary } from '../../src/lib/supplierPayments'
@@ -785,6 +785,57 @@ describe('invoiceLineInputCountError — exact positional pairing', () => {
 })
 
 // ── L. validateInvoiceDraft ──────────────────────────────────────────────────
+
+describe('retentionFloorError — the shared CREATE + EDIT retention floor (ADR-40)', () => {
+  // Before ADR-40 the floor existed on the EDIT path only (ADR-38 D6). CREATE
+  // was guarded by the editor input's `min="0"` attribute alone — browser
+  // constraint validation, not a control — so a negative retention reached the
+  // stored document and made the payable exceed the gross invoice value.
+  // `createSupplierInvoice` now calls this helper before any total is derived,
+  // and Firestore Rules mirror it (`retention >= 0`, whole cents).
+
+  it('accepts zero, a positive number, and a numeric string', () => {
+    expect(retentionFloorError(0)).toBeNull()
+    expect(retentionFloorError(1000)).toBeNull()
+    expect(retentionFloorError('50')).toBeNull()
+    expect(retentionFloorError('0')).toBeNull()
+    expect(retentionFloorError(0.01)).toBeNull()
+  })
+
+  it('REJECTS a negative retention, including a negative numeric string', () => {
+    expect(retentionFloorError(-1)).toBe('Retention cannot be negative')
+    expect(retentionFloorError(-0.01)).toBe('Retention cannot be negative')
+    expect(retentionFloorError('-0.01')).toBe('Retention cannot be negative')
+  })
+
+  it('REJECTS a non-numeric retention', () => {
+    expect(retentionFloorError('abc')).toBe('Retention must be a number')
+    expect(retentionFloorError(NaN)).toBe('Retention must be a number')
+    expect(retentionFloorError(Infinity)).toBe('Retention must be a number')
+    expect(retentionFloorError(undefined)).toBe('Retention must be a number')
+    expect(retentionFloorError(null)).toBeNull()   // Number(null) === 0 — unchanged from ADR-38
+  })
+
+  it('does NOT clamp the upper bound — invoiceTotals still owns that, unchanged', () => {
+    expect(retentionFloorError(999999)).toBeNull()
+  })
+
+  it('is exactly the clause validateInvoiceDraft applies, so the two cannot drift', () => {
+    const ok = { lineItems: [line()], supplierInvoiceNumber: 'INV-1', invoiceDate: '2026-08-01' }
+    for (const retention of [-1, '-0.01', 'abc', 0, '50', 999999]) {
+      expect(validateInvoiceDraft({ ...ok, retention })).toBe(retentionFloorError(retention))
+    }
+  })
+
+  it('CHARACTERISES what a negative retention would have stored — the reason for the floor', () => {
+    // invoiceTotals is deliberately unchanged: it clamps only the upper bound.
+    // These are the figures the create path used to be able to write.
+    const totals = invoiceTotals([line({ amount: 1000, gstAmount: 100 })], -500)
+    expect(totals.retention).toBe(-500)
+    expect(totals.net).toBeGreaterThan(totals.subtotal)
+    expect(totals.payableTotal).toBeGreaterThan(totals.grossTotal)
+  })
+})
 
 describe('validateInvoiceDraft', () => {
   const ok = { lineItems: [line()], supplierInvoiceNumber: 'INV-1', invoiceDate: '2026-08-01', retention: 0 }
