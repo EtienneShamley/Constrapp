@@ -48,7 +48,7 @@ particular:
 | Routing | React Router 7 (`react-router-dom`) |
 | State | React Context + hooks (no Redux) |
 | Charts | Recharts 3 |
-| Backend | Firebase **client SDK only** (Auth, Firestore, Cloud Storage). No Cloud Functions and no server code. `frontend/firebase.json` **does exist** — it points the Firestore **and Storage** emulators at `firestore.rules` / `storage.rules` for the automated rules suites. There is still **no `.firebaserc`**, no hosting config, and no deploy pipeline: both rules files are published manually |
+| Backend | Firebase **client SDK only** (Auth, Firestore, Cloud Storage). No Cloud Functions and no server code. `frontend/firebase.json` **does exist** — it points the Firestore **and Storage** emulators at `firestore.rules` / `storage.rules` for the automated rules suites, and since Beta Launch Readiness it also carries a **Firebase Hosting block** (`public: dist`, SPA rewrite) that **has never been deployed**. There is still **no `.firebaserc`** and no deploy pipeline: every deploy must name `--project` explicitly, and both rules files are published manually |
 | Font | Sora (Google Fonts), fallback DM Sans |
 
 ## Repository Structure
@@ -129,7 +129,7 @@ debt, not licence to add more) are in [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM
 - Membership and role come from the `users/{uid}` Firestore document (`companyId`, `role`); security rules `get()` that document to authorize access. **Firebase Auth custom claims are not implemented** — do not reference them in rules or UI guards
 - **`users/{uid}` is CLIENT-READ-ONLY (ADR-27).** A user may read their own profile; `create`, `update` and `delete` are all blocked by rules. No app code writes it — the only `users/` reference in `frontend/src` is the read in `hooks/useProfile.jsx`. Do not add a profile-write path, a "harmless field" allow-list, or admin user management: membership is **provisioned out of band**, and signup/invites/user administration require a trusted backend (Admin SDK), never the browser
 - Check `frontend/firestore.rules` before adding any new collection or field; rules are published manually via the Firebase console (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md))
-- `frontend/firebase.json` exists **only** to point the Firestore and Storage emulators at `firestore.rules` / `storage.rules` for the automated Security Rules suites (`npm run test:rules`). There is **no `.firebaserc`**, no hosting, and no functions config — do not claim or assume Firebase CLI/Hosting deployment, and never run `firebase deploy`. Both rules files are still published manually
+- `frontend/firebase.json` points the Firestore and Storage emulators at `firestore.rules` / `storage.rules` for the automated Security Rules suites (`npm run test:rules`), and carries a **Firebase Hosting** block that has **never been deployed**. There is **no `.firebaserc`** and no functions config — do not claim the app is deployed, and **never run `firebase deploy` from a task that was not explicitly asked to deploy**. When a release does deploy, it is `firebase deploy --only hosting --project constrapp-69b5d`: `--only hosting` is mandatory, because both rules files are still published **manually** through the console after review (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md))
 - **Run `npm run test:rules` before any `firestore.rules` OR `storage.rules` change is published** (see [docs/TESTING.md](docs/TESTING.md) §0). One command starts both emulators and runs both suites
 
 ## Cloud Storage Conventions

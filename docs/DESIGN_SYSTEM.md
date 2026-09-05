@@ -122,7 +122,7 @@ touching these files:
 - `components/Stat.jsx` — inline styles; hard-coded `#00C9A7`, `#E8F0F7`
 - `components/Btn.jsx` — gradient hexes `#00C9A7→#00A888` (primary), `#F5A623→#D4880A` (gold) in arbitrary-value classes
 - `components/ProgBar.jsx` — inline `style` for width (legitimately dynamic) and colour (via token CSS vars)
-- `pages/Dashboard.jsx` — chart tooltip styled inline with raw hexes; Recharts fills/ticks hard-coded (`#3B82F6`, `#00C9A7`, `#F59E0B`, `#EF4444`, `#546E84`)
+- ~~`pages/Dashboard.jsx` — chart tooltip styled inline with raw hexes; Recharts fills/ticks hard-coded~~ **resolved** — the Dashboard charts were fabricated data and were removed entirely (Beta Launch Readiness), taking the inline hexes with them
 - `pages/Projects.jsx` — `DOT_COLORS` hex map
 - `layouts/Sidebar.jsx` / `layouts/TopBar.jsx` — inline `height: 56`, inline NavLink active styles; **off-token colours `#FF6B9D` (PULSE™) and `#00D4FF` (SHIELD™)** also used in `pages/Pulse.jsx` / `pages/Shield.jsx` — if these brand colours are permanent they should become tokens
 - Logo SVGs (`Sidebar.jsx`, `AuthLayout.jsx`) — stroke `#00C9A7` hard-coded

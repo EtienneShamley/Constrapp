@@ -202,50 +202,55 @@ export default function ProjectCostCodes() {
             {canWrite && <Btn onClick={() => setEditing('new')}>+ Create your first cost code</Btn>}
           </div>
         ) : (
-          <table className="w-full border-collapse">
-            <thead>
-              <tr className="bg-brand-card border-b border-brand-border">
-                {['Code', 'Name', 'Category', 'Unit', 'Status', 'Actions'].map(h => (
-                  <th key={h} className="text-left px-3.5 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px]">
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {costCodes.map(cc => {
-                // A legacy document written before the flag existed has no
-                // `isActive` key and is ACTIVE — never treat absent as
-                // deactivated, or working codes vanish from every picker.
-                const active = cc.isActive !== false
-                return (
-                  <tr key={cc.id} className="border-b border-brand-border hover:bg-brand-card transition-colors">
-                    <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">{cc.code}</td>
-                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{cc.name}</td>
-                    <td className="px-3.5 py-3 text-[12px] text-brand-muted">{cc.category || '—'}</td>
-                    <td className="px-3.5 py-3 text-[12px] text-brand-muted">{cc.unit || '—'}</td>
-                    <td className="px-3.5 py-3">
-                      <Badge label={active ? 'Active' : 'Inactive'} variant={active ? 'active' : 'soon'} sm />
-                    </td>
-                    <td className="px-3.5 py-3">
-                      {canWrite && (
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <Btn variant="ghost" sm onClick={() => setEditing(cc)}>Edit</Btn>
-                          {active ? (
-                            <Btn variant="ghost" sm onClick={() => { setActionError(null); setDeactivating(cc) }}>
-                              Deactivate
-                            </Btn>
-                          ) : (
-                            <Btn variant="ghost" sm onClick={() => handleSetActive(cc, true)}>Reactivate</Btn>
-                          )}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+          // `Card` carries `overflow-hidden` for its rounded corners, so a table
+          // wider than the Card is CLIPPED rather than scrolled and the last
+          // column becomes unreachable. Same wrapper every other register uses.
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse min-w-[820px]">
+              <thead>
+                <tr className="bg-brand-card border-b border-brand-border">
+                  {['Code', 'Name', 'Category', 'Unit', 'Status', 'Actions'].map(h => (
+                    <th key={h} className="text-left px-3.5 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px]">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {costCodes.map(cc => {
+                  // A legacy document written before the flag existed has no
+                  // `isActive` key and is ACTIVE — never treat absent as
+                  // deactivated, or working codes vanish from every picker.
+                  const active = cc.isActive !== false
+                  return (
+                    <tr key={cc.id} className="border-b border-brand-border hover:bg-brand-card transition-colors">
+                      <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">{cc.code}</td>
+                      <td className="px-3.5 py-3 text-[13px] text-brand-text">{cc.name}</td>
+                      <td className="px-3.5 py-3 text-[12px] text-brand-muted">{cc.category || '—'}</td>
+                      <td className="px-3.5 py-3 text-[12px] text-brand-muted">{cc.unit || '—'}</td>
+                      <td className="px-3.5 py-3">
+                        <Badge label={active ? 'Active' : 'Inactive'} variant={active ? 'active' : 'soon'} sm />
+                      </td>
+                      <td className="px-3.5 py-3">
+                        {canWrite && (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <Btn variant="ghost" sm onClick={() => setEditing(cc)}>Edit</Btn>
+                            {active ? (
+                              <Btn variant="ghost" sm onClick={() => { setActionError(null); setDeactivating(cc) }}>
+                                Deactivate
+                              </Btn>
+                            ) : (
+                              <Btn variant="ghost" sm onClick={() => handleSetActive(cc, true)}>Reactivate</Btn>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
 

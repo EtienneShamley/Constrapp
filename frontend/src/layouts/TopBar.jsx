@@ -67,25 +67,15 @@ export default function TopBar({ onMenuClick }) {
         </div>
       </div>
 
-      {/* Right: search · notifications · user menu */}
+      {/* Right: user menu.
+          ⚠️ A decorative SEARCH box (readOnly, tabIndex -1) and a NOTIFICATION
+          BELL carrying a permanent red unread dot used to sit here. Neither had
+          a handler: the search could not be typed into and the dot asserted
+          unread notifications that cannot exist, because notifications are not
+          a feature. Both are removed rather than disabled — an affordance that
+          looks live and does nothing is worse than an absent one. Re-add them
+          with the features, not before. */}
       <div className="flex items-center gap-3">
-        {/* Search — decorative */}
-        <div className="hidden sm:flex items-center gap-2 bg-brand-bg border border-brand-border rounded-lg px-3 py-[6px]">
-          <span className="text-brand-muted text-[13px] leading-none">🔍</span>
-          <input
-            className="bg-transparent border-none outline-none text-brand-text text-[12.5px] w-[130px] placeholder:text-brand-muted"
-            placeholder="Search…"
-            readOnly
-            tabIndex={-1}
-          />
-        </div>
-
-        {/* Notification bell */}
-        <div className="relative w-9 h-9 bg-brand-bg border border-brand-border rounded-lg flex items-center justify-center cursor-default select-none shrink-0">
-          <span className="text-base leading-none">🔔</span>
-          <div className="absolute top-[6px] right-[6px] w-2 h-2 bg-brand-red rounded-full border-2 border-brand-sidebar" />
-        </div>
-
         {/* User menu trigger + dropdown */}
         <div className="relative" ref={menuRef}>
           <button

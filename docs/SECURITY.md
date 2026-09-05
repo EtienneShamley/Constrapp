@@ -24,8 +24,12 @@ the data is the rules file.
 ## Authentication & Membership — Implemented
 
 - Firebase Auth **email/password** sign-in only. The Create Account and Forgot
-  Password screens are stubs; users are provisioned manually (Auth user +
-  matching `users/{uid}` document).
+  **Password reset is implemented** — `pages/ForgotPassword.jsx` calls
+  `sendPasswordResetEmail` and deliberately shows the SAME success state for an
+  unknown address as for a real one, so the form cannot be used to enumerate
+  accounts. Account creation remains a stub: users are provisioned manually
+  (Auth user + matching `users/{uid}` document), and the Login page states that
+  rather than linking to the stub.
 - Membership and role live on the **`users/{uid}` Firestore document**
   (`companyId`, `role`). Security rules authorize every company-scoped request
   by `get()`-ing that document and comparing its `companyId` to the path.

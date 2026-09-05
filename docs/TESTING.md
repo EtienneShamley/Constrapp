@@ -38,9 +38,10 @@ That script runs
 - **Requires a JDK.** `firebase-tools` is pinned to `^13` because v14+ requires
   **JDK 21**, while the Firestore emulator under v13 runs on **JDK 17**. If you
   upgrade `firebase-tools`, you must also install JDK 21+.
-- Config: `frontend/firebase.json` (both emulators + both rules pointers only —
-  no hosting, no functions, and **no `.firebaserc`**, so nothing can be
-  deployed). The Storage emulator runs on port 9199.
+- Config: `frontend/firebase.json` (both emulators + both rules pointers, plus a
+  never-deployed Hosting block; no functions and **no `.firebaserc`**). The
+  emulator commands pass `--only firestore,storage`, so the Hosting block is
+  inert here. The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
 - Tests — **1236 in total across 20 files: 1190 Firestore + 46 Storage**:
@@ -636,6 +637,24 @@ npm run test:unit
 - `frontend/tests/unit/documentsResponsive.test.js` — **16 tests** over the
   Documents register's responsive layout helpers.
 
+- `frontend/tests/unit/betaSurfaces.test.js` — **28 tests** guarding the
+  private-beta surfaces. Not domain logic: like `documentsResponsive.test.js`
+  these assert **source structure**, because the defects are structural and the
+  runner has no jsdom. Three groups: (1) each of the four tables the Beta Launch
+  Readiness assessment found bare inside a `Card` — Dashboard, Projects, Project
+  Budget, Project Cost Codes — is wrapped in its own `overflow-x-auto` container
+  and keeps its assessed `min-w`, so the Actions column can never become
+  unreachable again; (2) `lib/nav.js` and `lib/projectTabs.js` offer no
+  placeholder module (no Photos, Reports, PULSE™ or SHIELD™) **while the routes
+  in `App.jsx` still exist** — the test pins both halves, so "hidden" can never
+  quietly become "deleted", and it also lists every tab that must survive so
+  hiding two never becomes hiding six; (3) `pages/Dashboard.jsx` contains no
+  `recharts` import, no `chartData`/`donutData`, and none of the removed
+  hardcoded figures, while still deriving its counts from the live projects
+  subscription. The Dashboard group strips comments before asserting, because
+  the file's header comment deliberately **names** the numbers that were
+  removed and that record is worth keeping.
+
 - `frontend/tests/unit/clientInvoices.test.js` — **109 tests** over
   `lib/clientInvoices.js`, which previously had **no** unit coverage at all.
   Covers the forward-only `draft → issued → void` lifecycle and the deliberate
@@ -821,7 +840,7 @@ project.
 - [ ] Project name is required; budget/progress inputs reject negatives (progress clamps 0–100).
 - [ ] Open a project → lands on `/projects/{id}/overview` showing budget, start date, progress bar.
 - [ ] Unknown project ID shows "Project not found."; unmatched routes redirect to `/projects`.
-- [ ] Documents/Photos/Reports tabs show placeholder cards, no data wiring (Variations — see §14 — Forecast — see §15 — Commercial — see §15g — BOQ and Tenders — see §15s — and Timeline — see §15p — are now live).
+- [ ] The **Photos and Reports tabs are not shown** (hidden for private beta — see §18). Navigating directly to `/projects/{id}/photos` or `/projects/{id}/reports` still renders the placeholder card. Documents is live (Variations — see §14 — Forecast — see §15 — Commercial — see §15g — BOQ and Tenders — see §15s — and Timeline — see §15p — are now live).
 
 ### 2a. Edit Project metadata (ADR-39)
 
@@ -3959,3 +3978,107 @@ enforced.
 - [ ] The built bundle (`frontend/dist/`) contains only public `VITE_*` values
   (Firebase web config). No Stripe/AI/email/service-account secret appears in the
   bundle or in any `VITE_`-prefixed variable.
+
+---
+
+## 18. Beta Launch Readiness
+
+Manual acceptance for the Beta Launch Readiness increment. Nothing here is
+covered by the emulator suite; the structural parts (table wrappers, hidden
+navigation, no fabricated Dashboard literals) are pinned by
+`tests/unit/betaSurfaces.test.js`, which is a source-structure guard, not a
+render test.
+
+### 18a. Password reset
+
+- [ ] `/login` → **Forgot password?** opens a real form (email field, Send reset
+      link button), not a "coming soon" card.
+- [ ] A **real** beta account: submit → success message → the reset email
+      actually arrives → the link opens Firebase's hosted confirmation page →
+      set a new password → sign in with it.
+- [ ] An **unknown but well-formed** address: submit → the **identical** success
+      message. ⚠️ Any difference in wording, timing or error state between this
+      and the real account is an account-enumeration leak and a defect.
+- [ ] A **malformed** address that clears the browser's `type="email"` check
+      (e.g. `a@b`) → inline "That email address doesn't look right."
+- [ ] Repeated rapid submissions → "Too many attempts. Please try again later."
+- [ ] **Back to sign in** works from both the form and the success state.
+- [ ] Layout matches Login at 375px: 44px submit target, no overflow.
+
+### 18b. Login — no dead signup affordance
+
+- [ ] The Login page shows **non-clickable** copy ("No account? Constrapp
+      accounts are set up for you — contact your company admin"), not a link.
+- [ ] `/create-account` typed directly still renders its existing stub page —
+      the route was kept deliberately.
+
+### 18c. Dashboard — nothing fabricated
+
+- [ ] **No charts at all.** No "Project Financial Overview" bar chart, no "Task
+      Progress" donut, no 72% figure anywhere.
+- [ ] Exactly **two** KPI cards: **Active Projects** (with an "N total" sub) and
+      **Total Projects**. No Pending POs, no Budget Utilization, no Upcoming
+      Tasks, and no "placeholder data" caption.
+- [ ] Active Projects equals the number of projects whose status is
+      **In Progress**; Total equals the full project count. Change a project's
+      status → both update live.
+- [ ] The table is headed **Projects** (not "Active Projects") and lists **every**
+      project, which is what makes that heading honest.
+- [ ] Row values are real: name, location, status badge, budget in the
+      **project's** currency, start date. Loading and empty states still appear.
+- [ ] Welcome line shows the real profile name and company name.
+
+### 18d. Responsive tables — 375 / 768 / 1280px
+
+At **375px**, for each of Dashboard, Projects, Project Budget and Project Cost
+Codes:
+
+- [ ] The table **scrolls horizontally inside the card** — it is not clipped and
+      the page body does not scroll sideways.
+- [ ] The **last column is reachable** by scrolling: Actions on Dashboard,
+      Projects and Cost Codes; the row-action cell on Budget.
+- [ ] No column is crushed to unreadability; no text overlaps the card edge.
+- [ ] At 768px and 1280px the tables look unchanged from before this increment.
+
+### 18e. Navigation — nothing unbuilt is offered
+
+- [ ] Sidebar shows **Dashboard, Projects, Contacts, Subcontractors** only. No
+      PULSE™, no SHIELD™, and no animated "live" dots.
+- [ ] The project tab bar has **no Photos and no Reports** tab; every other tab
+      is present and lands on its live page.
+- [ ] Typing `/pulse`, `/shield`, `/projects/{id}/photos`, `/projects/{id}/reports`
+      still renders the existing placeholder pages — hiding is not deleting.
+- [ ] The TopBar has **no search box** and **no notification bell / red unread
+      dot**. The user menu still opens and Sign out still works.
+- [ ] Subcontractors shows the contacts table with **no Constrapp IQ™ "Coming
+      Soon" card** beneath it.
+- [ ] No "Sprint 3 / 4 / 5" text appears anywhere a beta user can reach.
+
+### 18f. Error boundary
+
+- [ ] Temporarily add `throw new Error('boundary check')` at the top of a page
+      component (e.g. `pages/Projects.jsx`), run `npm run dev`, and open it.
+- [ ] A styled Constrapp fallback appears — "Something went wrong", neutral copy
+      pointing at reload and then the company administrator, and a **Reload
+      Constrapp** button.
+- [ ] The copy makes **no claim about the user's data**. A render can fail after a
+      Firestore write has already committed, so any "your data is safe" wording is
+      a guarantee the boundary cannot make — treat it as a defect if it reappears.
+- [ ] **No stack trace, error message, component name or file path** is visible
+      on screen. The detail appears in the browser console only.
+- [ ] The Reload button reloads the app.
+- [ ] ⚠️ **Revert the temporary throw** and confirm the app renders normally
+      again before considering this checklist complete.
+
+### 18g. Hosting configuration (config review only — do NOT deploy)
+
+- [ ] `npm run build` succeeds and writes `frontend/dist/` with `index.html` and
+      a hashed `assets/` bundle.
+- [ ] `frontend/firebase.json` has a `hosting` block with `"public": "dist"` —
+      correct because `firebase.json` itself lives in `frontend/`.
+- [ ] The SPA rewrite `** → /index.html` is present, so deep links survive a hard
+      refresh once deployed.
+- [ ] `npm run test:rules` still starts both emulators and passes — the Hosting
+      block must not disturb it.
+- [ ] Nothing was deployed and no rules were published; the release steps live in
+      [DEPLOYMENT.md](DEPLOYMENT.md) → Private-Beta Release Checklist.

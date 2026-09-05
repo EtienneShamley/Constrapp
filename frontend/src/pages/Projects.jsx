@@ -303,54 +303,59 @@ export default function Projects() {
             <Btn onClick={() => setEditing('new')}>+ Create your first project</Btn>
           </div>
         ) : (
-          <table className="w-full border-collapse">
-            <thead>
-              <tr className="bg-brand-card border-b border-brand-border">
-                {['', 'Project Name', 'Status', 'Headline Budget', 'Start Date', 'Progress', 'Actions'].map(h => (
-                  <th
-                    key={h}
-                    className="text-left px-3.5 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px]"
-                  >
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {projects.map(p => (
-                <tr key={p.id} className="border-b border-brand-border hover:bg-brand-card transition-colors">
-                  <td className="py-3 pl-4 pr-1.5">
-                    <div className="w-2 h-2 rounded-full" style={{ background: DOT_COLORS[p.status] ?? '#546E84' }} />
-                  </td>
-                  <td className="px-3.5 py-3">
-                    <p className="text-[13px] font-semibold text-brand-text m-0 leading-tight">{p.name}</p>
-                    {p.location && (
-                      <p className="text-[11px] text-brand-muted mt-0.5 m-0 leading-tight">📍 {p.location}</p>
-                    )}
-                  </td>
-                  <td className="px-3.5 py-3">
-                    <Badge label={p.status} sm />
-                  </td>
-                  <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">
-                    {p.budget ? formatCurrency(p.budget, resolveProjectCurrency(p, company)) : '—'}
-                  </td>
-                  <td className="px-3.5 py-3 text-[12px] text-brand-muted">{formatDate(p.startDate)}</td>
-                  <td className="px-3.5 py-3 min-w-[110px]">
-                    <div className="flex items-center gap-1.5">
-                      <div className="flex-1"><ProgBar value={p.progress ?? 0} /></div>
-                      <span className="text-[10px] text-brand-muted w-7 text-right">{p.progress ?? 0}%</span>
-                    </div>
-                  </td>
-                  <td className="px-3.5 py-3">
-                    <div className="flex items-center gap-1.5">
-                      <Btn variant="ghost" sm onClick={() => navigate(`/projects/${p.id}`)}>View ▾</Btn>
-                      {canEdit && <Btn variant="ghost" sm onClick={() => setEditing(p)}>Edit</Btn>}
-                    </div>
-                  </td>
+          // `Card` carries `overflow-hidden` for its rounded corners, so a table
+          // wider than the Card is CLIPPED rather than scrolled and the last
+          // column becomes unreachable. Same wrapper every other register uses.
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse min-w-[860px]">
+              <thead>
+                <tr className="bg-brand-card border-b border-brand-border">
+                  {['', 'Project Name', 'Status', 'Headline Budget', 'Start Date', 'Progress', 'Actions'].map(h => (
+                    <th
+                      key={h}
+                      className="text-left px-3.5 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px]"
+                    >
+                      {h}
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {projects.map(p => (
+                  <tr key={p.id} className="border-b border-brand-border hover:bg-brand-card transition-colors">
+                    <td className="py-3 pl-4 pr-1.5">
+                      <div className="w-2 h-2 rounded-full" style={{ background: DOT_COLORS[p.status] ?? '#546E84' }} />
+                    </td>
+                    <td className="px-3.5 py-3">
+                      <p className="text-[13px] font-semibold text-brand-text m-0 leading-tight">{p.name}</p>
+                      {p.location && (
+                        <p className="text-[11px] text-brand-muted mt-0.5 m-0 leading-tight">📍 {p.location}</p>
+                      )}
+                    </td>
+                    <td className="px-3.5 py-3">
+                      <Badge label={p.status} sm />
+                    </td>
+                    <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">
+                      {p.budget ? formatCurrency(p.budget, resolveProjectCurrency(p, company)) : '—'}
+                    </td>
+                    <td className="px-3.5 py-3 text-[12px] text-brand-muted">{formatDate(p.startDate)}</td>
+                    <td className="px-3.5 py-3 min-w-[110px]">
+                      <div className="flex items-center gap-1.5">
+                        <div className="flex-1"><ProgBar value={p.progress ?? 0} /></div>
+                        <span className="text-[10px] text-brand-muted w-7 text-right">{p.progress ?? 0}%</span>
+                      </div>
+                    </td>
+                    <td className="px-3.5 py-3">
+                      <div className="flex items-center gap-1.5">
+                        <Btn variant="ghost" sm onClick={() => navigate(`/projects/${p.id}`)}>View ▾</Btn>
+                        {canEdit && <Btn variant="ghost" sm onClick={() => setEditing(p)}>Edit</Btn>}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
 

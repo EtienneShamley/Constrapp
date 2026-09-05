@@ -365,57 +365,62 @@ export default function ProjectBudget() {
             )}
           </div>
         ) : (
-          <table className="w-full border-collapse">
-            <thead>
-              <tr className="bg-brand-card border-b border-brand-border">
-                {['Cost Code', 'Budgeted', 'Committed', 'Appr. Supplier Var.', 'Actual', 'Invoiced', 'Remaining', ''].map(h => (
-                  <th key={h} className="text-left px-3.5 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px]">
-                    {h}
-                  </th>
+          // `Card` carries `overflow-hidden` for its rounded corners, so a table
+          // wider than the Card is CLIPPED rather than scrolled and the last
+          // column becomes unreachable. Same wrapper every other register uses.
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse min-w-[980px]">
+              <thead>
+                <tr className="bg-brand-card border-b border-brand-border">
+                  {['Cost Code', 'Budgeted', 'Committed', 'Appr. Supplier Var.', 'Actual', 'Invoiced', 'Remaining', ''].map(h => (
+                    <th key={h} className="text-left px-3.5 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px]">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {budgetLines.map(line => (
+                  <tr key={line.id} className="border-b border-brand-border hover:bg-brand-card transition-colors">
+                    {/* The CURRENT cost-code code/name, resolved live by id with
+                        the line's stored snapshot as fallback — the same
+                        resolution lib/forecast.js and lib/boq.js already use, so
+                        a rename shows consistently on every tab. Read-time only:
+                        the stored snapshot is never rewritten (ADR-39). */}
+                    <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">
+                      {resolveCostCodeName(line.costCodeId, costCodes, line.costCodeName)}
+                    </td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{money(line.budgeted || 0)}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{money(committedMap[line.costCodeId] || 0)}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{supplierVarMap[line.costCodeId] ? money(supplierVarMap[line.costCodeId]) : '—'}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{money(actualMap[line.costCodeId] || 0)}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{money(invoicedMap[line.costCodeId] || 0)}</td>
+                    <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">
+                      {money((line.budgeted || 0) - (actualMap[line.costCodeId] || 0))}
+                    </td>
+                    <td className="px-3.5 py-3">
+                      {canWrite && <Btn variant="ghost" sm onClick={() => setEditing(line)}>Edit</Btn>}
+                    </td>
+                  </tr>
                 ))}
-              </tr>
-            </thead>
-            <tbody>
-              {budgetLines.map(line => (
-                <tr key={line.id} className="border-b border-brand-border hover:bg-brand-card transition-colors">
-                  {/* The CURRENT cost-code code/name, resolved live by id with
-                      the line's stored snapshot as fallback — the same
-                      resolution lib/forecast.js and lib/boq.js already use, so
-                      a rename shows consistently on every tab. Read-time only:
-                      the stored snapshot is never rewritten (ADR-39). */}
-                  <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">
-                    {resolveCostCodeName(line.costCodeId, costCodes, line.costCodeName)}
-                  </td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{money(line.budgeted || 0)}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{money(committedMap[line.costCodeId] || 0)}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{supplierVarMap[line.costCodeId] ? money(supplierVarMap[line.costCodeId]) : '—'}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{money(actualMap[line.costCodeId] || 0)}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-text">{money(invoicedMap[line.costCodeId] || 0)}</td>
-                  <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">
-                    {money((line.budgeted || 0) - (actualMap[line.costCodeId] || 0))}
-                  </td>
-                  <td className="px-3.5 py-3">
-                    {canWrite && <Btn variant="ghost" sm onClick={() => setEditing(line)}>Edit</Btn>}
-                  </td>
-                </tr>
-              ))}
-              {unbudgetedRows.map(row => (
-                <tr key={row.costCodeId} className="border-b border-brand-border bg-brand-amber/5">
-                  <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-amber">
-                    {row.costCodeName}
-                    <span className="block text-[11px] font-normal">Cost against a code with no budget line</span>
-                  </td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.committed ? money(row.committed) : '—'}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.supplierVar ? money(row.supplierVar) : '—'}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.actual ? money(row.actual) : '—'}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.invoiced ? money(row.invoiced) : '—'}</td>
-                  <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>
-                  <td className="px-3.5 py-3" />
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                {unbudgetedRows.map(row => (
+                  <tr key={row.costCodeId} className="border-b border-brand-border bg-brand-amber/5">
+                    <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-amber">
+                      {row.costCodeName}
+                      <span className="block text-[11px] font-normal">Cost against a code with no budget line</span>
+                    </td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.committed ? money(row.committed) : '—'}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.supplierVar ? money(row.supplierVar) : '—'}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.actual ? money(row.actual) : '—'}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.invoiced ? money(row.invoiced) : '—'}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>
+                    <td className="px-3.5 py-3" />
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
 
