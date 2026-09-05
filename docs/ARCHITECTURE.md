@@ -47,7 +47,7 @@ modules** (screens exist, no functionality) are listed in the module-status tabl
 | Styling | Tailwind CSS v4 via `@tailwindcss/vite` | Tokens in `@theme` in `frontend/src/index.css`; no `tailwind.config.js` |
 | Routing | React Router 7 (`react-router-dom`) | `BrowserRouter` |
 | State | React Context + hooks | No Redux/Zustand |
-| Charts | Recharts 3 | Dashboard only |
+| Charts | Recharts 3 | Cash Flow chart only (the Dashboard's charts were fabricated data and were removed) |
 | Backend | Firebase JS SDK 12 — Auth, Firestore, Storage | **Client SDK only** |
 | Lint | ESLint 10 (flat config) | `npm run lint` |
 | Rules tests | Vitest 4 + `@firebase/rules-unit-testing` + `firebase-tools` 13 (emulator) | `npm run test:rules` — **dev-only**. Requires JDK 17 |
@@ -56,10 +56,11 @@ modules** (screens exist, no functionality) are listed in the module-status tabl
 ## Client-SDK-Only Backend
 
 There is **no backend code**: no Cloud Functions, no server, no `functions/`
-directory, and no `.firebaserc`. (`frontend/firebase.json` exists, but declares
-only the Firestore and Storage emulators and the two rules-file paths for the
-automated Security Rules suites — no hosting and no functions target, and with no
-`.firebaserc` there is no project to deploy to.) The browser talks directly to
+directory, and no `.firebaserc`. (`frontend/firebase.json` declares the Firestore
+and Storage emulators, the two rules-file paths for the automated Security Rules
+suites, and a **Firebase Hosting** block that has never been deployed — no
+functions target, and with no `.firebaserc` a deploy must name `--project`
+explicitly.) The browser talks directly to
 Firebase Auth, Firestore **and Cloud Storage**, which since the Documents &
 Drawings foundation carries real file bytes. All business rules run client-side,
 backed by **two** rules files — `firestore.rules` and `storage.rules` — which are
@@ -81,8 +82,8 @@ frontend/                  The entire application (run all npm commands here)
   firestore.rules          Firestore security rules — published manually (see DEPLOYMENT.md)
   storage.rules            Cloud Storage security rules — the SECOND trust boundary,
                            also published manually
-  firebase.json            Firestore + Storage EMULATORS and both rules paths only
-                           (no hosting/functions, no .firebaserc) — backs `npm run test:rules`
+  firebase.json            Firestore + Storage EMULATORS, both rules paths, and a
+                           NEVER-DEPLOYED Hosting block (no functions, no .firebaserc)
   vitest.rules.config.js   Vitest config for the rules suite (Node, no app plugins)
   vitest.config.js         Vitest config for the UNIT suite (tests/unit/ only)
   tests/rules/             Firestore AND Storage Security Rules tests (both emulators)
@@ -92,7 +93,9 @@ frontend/                  The entire application (run all npm commands here)
     main.jsx               Entry — StrictMode + App
     App.jsx                Providers + all routes
     index.css              Tailwind import + @theme tokens + base styles
-    components/            Card, Btn, Badge, Stat, ProgBar, PageHeader, ProtectedRoute
+    components/            Card, Btn, Badge, Stat, ProgBar, PageHeader, ProtectedRoute,
+                           ErrorBoundary (wraps <App/> in main.jsx — the ONLY class
+                           component; renders a reload fallback and never shows a stack)
     layouts/               AppShell, Sidebar, TopBar, AuthLayout, ProjectDetailLayout,
                            ProjectCommercialLayout (Commercial sub-nav:
                            Margin | Client Invoices | Client Receipts |
@@ -102,7 +105,7 @@ frontend/                  The entire application (run all npm commands here)
     pages/                 Login, CreateAccount, ForgotPassword, Dashboard, Projects,
                            CompanySettings (country & base currency),
                            Contacts (company directory), Subcontractors (filtered
-                           contacts view + IQ™ placeholder), Pulse, Shield
+                           contacts view), Pulse, Shield
     pages/project/         ProjectOverview, ProjectBudget, ProjectCostCodes,
                            ProjectPurchaseOrders, ProjectProgressClaims,
                            ProjectInvoices (supplier/AP), ProjectClientInvoices (client/AR),
@@ -209,12 +212,15 @@ ProtectedRoute (redirects to /login when signed out)
    │       `documents/drawings/:drawingId` = the drawing detail ROUTE (not a modal:
    │        a drawing is linked to, shared and bookmarked),
    │       `documents/general` = the General Documents register)
-   │    photos | reports  (ProjectPlaceholder)
+   │    photos | reports  (ProjectPlaceholder — routes LIVE, tabs HIDDEN:
+   │      the entries are absent from lib/projectTabs.js for private beta, so
+   │      the URL still renders but nothing offers it)
    ├─ /settings/company        Company country & base currency (company_admin writes)
    ├─ /contacts                Company-wide contact directory
-   ├─ /subcontractors          Filtered contacts view (+ IQ™ placeholder card)
-   ├─ /pulse                   Placeholder (PULSE™)
-   ├─ /shield                  Placeholder (SHIELD™)
+   ├─ /subcontractors          Filtered contacts view
+   ├─ /pulse                   Placeholder (PULSE™) — route LIVE, sidebar entry HIDDEN
+   ├─ /shield                  Placeholder (SHIELD™) — route LIVE, sidebar entry HIDDEN
+   │                            (both absent from lib/nav.js for private beta)
    └─ *                        → /projects
 ```
 
@@ -231,7 +237,7 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 
 | Module | Status |
 |---|---|
-| Auth (sign-in), protected routing | Implemented (signup/reset screens are stubs) |
+| Auth (sign-in, password reset), protected routing | Implemented — reset does not enumerate accounts; **signup remains a stub** (membership is provisioned out of band, ADR-27) |
 | Company/user context | Implemented |
 | Projects (create, list) + Project Detail shell | Implemented (no general edit/delete; currency editable until locked) |
 | Company Country & Currency | Implemented (foundation) — company country/base currency, project currency inheritance + ratchet lock, one shared formatter; no FX, tax stays Australian GST |
@@ -250,14 +256,14 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Tenders (packages, bids, comparison, award) | Implemented (foundation) — cost-code + free-text scope (BOQ-independent), manual bids, read-time comparison, award as a decision record; **no stored totals, no PO creation, closing date informational** |
 | Forecast Cost to Complete | Implemented (foundation) — read-time, cost-side |
 | Project Margin (Commercial tab) | Implemented (foundation) — read-time, ex-GST; commercial baseline is the only stored input |
-| Dashboard | Partial — live project list; static KPI/chart data |
+| Dashboard | Minimal but wholly real — live project table and two derived project counts. The fabricated KPIs and charts were **removed**, not rederived; a portfolio financial rollup is later work |
 | Contacts | Implemented (foundation) — company-wide directory; supplier picker on POs |
-| Subcontractors | Partial — filtered contacts view; IQ™ scoring is a placeholder |
+| Subcontractors | Implemented — filtered contacts view (the IQ™ "Coming Soon" card was removed for private beta) |
 | Documents & Drawings | Implemented (foundation) — drawing masters + **immutable** revisions with a transactional current-revision pointer, revision history, current/superseded/withdrawn lifecycle, explicit succession on withdrawal, and a flat general-document register with project/internal visibility. Bytes in Cloud Storage, metadata in Firestore, **uploads Storage-first**; **no photos, DWG, markup, OCR, AI or takeoff** |
-| PULSE™, SHIELD™ | Placeholder screens |
+| PULSE™, SHIELD™ | Placeholder screens — routes and pages live, **hidden from the sidebar** for private beta (`lib/nav.js`) |
 | BOQ (Bill of Quantities) | Implemented (foundation) — measured items with optional rates, rules-enforced derived amounts, read-time budget comparison; **feeds no financial figure**; Estimating and BOQ → Budget transfer are later branches |
 | Project Timeline (programme) | Implemented (foundation) — activities + milestones, date-only planned/actual dates, manual progress, read-time overdue/horizon derivation, read-only CSS/SVG Gantt (no new dependency), cancel-not-delete; **`qs` is read-only**, subcontractor/client denied; **no baseline, no dependencies, no financial effect** |
-| Photos, Reports tabs | Placeholder (`ProjectPlaceholder`) |
+| Photos, Reports tabs | Placeholder (`ProjectPlaceholder`) — routes and pages live, **hidden from the project tab bar** for private beta (`lib/projectTabs.js`) |
 
 ## Hooks-Only Firestore Access
 

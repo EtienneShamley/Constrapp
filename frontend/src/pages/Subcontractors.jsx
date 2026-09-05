@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import Card from '../components/Card'
 import Btn from '../components/Btn'
-import Badge from '../components/Badge'
 import { useContacts } from '../hooks/useContacts'
 import { CONTACT_TYPE, formatAbn } from '../lib/contacts'
 
@@ -95,16 +94,6 @@ export default function Subcontractors() {
             </table>
           </div>
         )}
-      </Card>
-
-      <Card>
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-sm font-medium text-brand-text">Constrapp IQ™</span>
-          <Badge label="Coming Soon" variant="soon" />
-        </div>
-        <p className="text-sm text-brand-muted">
-          Coming in a later sprint — AI-powered subcontractor accountability scoring, schedule analysis, and variation intelligence are planned for Sprint 5.
-        </p>
       </Card>
     </div>
   )

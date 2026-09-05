@@ -21,7 +21,7 @@ Today the delivery-and-cost-control middle of this lifecycle is implemented (bud
 
 ## What Works Today
 
-- Email/password sign-in (account creation and password reset screens are stubs — users are provisioned manually)
+- Email/password sign-in and password reset (account creation is still a stub — users are provisioned manually)
 - Multi-tenant company/user foundation (`users/{uid}` → `companies/{companyId}`)
 - Company Country & Currency: a company sets its country (which suggests a currency) and confirms a base currency; new projects inherit it, each project reports in one currency, and that currency locks once the project holds monetary data. **No FX conversion.** *Currency display is configurable; tax calculation is not — GST remains a flat Australian 10%*
 - Projects: create and list, with a Project Detail area (Overview, Budget, Cost Codes, Purchase Orders, Progress Claims, Supplier Invoices, Variations, Forecast, and Commercial tabs live — Commercial holds Margin, Client Invoices, Client Receipts, Supplier Payments and Cash Flow; other tabs are placeholders)
@@ -40,9 +40,11 @@ Today the delivery-and-cost-control middle of this lifecycle is implemented (bud
 - Project Margin (foundation): a per-project Commercial Baseline (Original Contract Value + Original Approved Budget + contract dates + client) drives read-time Current Contract Sum, Forecast Revenue, Forecast Gross Profit, Forecast Margin %, and Margin Movement (all ex-GST) on a new Commercial tab; reads restricted to financial roles
 - Cash Flow (foundation — actual and forecast): a **Cash Flow** sub-view on the Commercial tab. **Actual** — Cash In from posted Client Receipts (by `receiptDate`), Cash Out from posted Supplier Payments (by `paymentDate`), using the full transaction amount (never the allocated portion). **Forecast** — open Client Invoice balances (gross) and open Supplier Invoice payables (net of retention) timed by due date, plus manually authored monthly timing lines (`cashFlowLines`) for remaining contract revenue and cost to complete. Months before the current month are **actual-only**, so nothing is ever double-counted; past-due and undated balances are reported as untimed rather than guessed into a month. Adds a projected cumulative and closing position (still from zero), revenue/cost completeness, untimed reporting on three separate bases, stale-line handling, and a peak funding requirement that is suppressed while significant amounts remain untimed. *Not a bank balance: no bank account, opening balance, financing, retention release, or GST/BAS remittance is modelled — each is warned about, never silently adjusted. Charts, date filtering, and invoice retiming are not built yet*
 
-Dashboard KPIs and charts are partly placeholder data. PULSE™ and SHIELD™ are
-placeholder screens; Subcontractors lists live contacts but its IQ™ scoring is
-a placeholder. See [PRODUCT.md](PRODUCT.md) for module-by-module status.
+The Dashboard is deliberately sparse: its fabricated KPIs and charts were
+removed rather than rederived, so every figure on it now comes from Firestore.
+PULSE™, SHIELD™, Photos and Reports remain placeholder screens with live routes
+but are **hidden from navigation** for private beta; Subcontractors lists live
+contacts. See [PRODUCT.md](PRODUCT.md) for module-by-module status.
 
 ## Local Setup
 
@@ -107,10 +109,12 @@ npm run test:rules
 6. Publish the Firestore rules **manually**: paste the contents of
    `frontend/firestore.rules` into Firebase console → Firestore → Rules → Publish
 
-`frontend/firebase.json` exists **only** to point the Firestore and Storage
-emulators at the two rules files for the automated suites. There is no
-`.firebaserc` — Firebase CLI deployment, Hosting, and automated deployment are
-future work (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
+`frontend/firebase.json` points the Firestore and Storage emulators at the two
+rules files for the automated suites, and carries a **Firebase Hosting** block
+(`public: dist`, SPA rewrite) that has **never been deployed**. There is no
+`.firebaserc`, so a deploy must name its project: `firebase deploy --only
+hosting --project constrapp-69b5d`. Rules publishing stays manual, and automated
+deployment is still future work (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
 
 ## Repository Layout
 

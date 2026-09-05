@@ -81,13 +81,15 @@ export default function Login() {
           >
             Forgot password?
           </Link>
-          <Link
-            to="/create-account"
-            className="text-xs text-brand-muted hover:text-brand-text transition-colors"
-          >
-            No account?{' '}
-            <span className="text-brand-accent font-semibold">Create one</span>
-          </Link>
+          {/* Constrapp accounts are provisioned OUT OF BAND — an Auth user plus a
+              matching `users/{uid}` membership document, which no browser
+              client may write (ADR-27). There is deliberately no self-service
+              signup, so this stays non-interactive copy rather than a link into
+              the /create-account stub. */}
+          <p className="text-xs text-brand-muted m-0">
+            No account? Constrapp accounts are set up for you — contact your
+            company admin.
+          </p>
         </div>
       </div>
     </div>

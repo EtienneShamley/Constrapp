@@ -1,3 +1,9 @@
+// ⚠️ Photos and Reports are DELIBERATELY ABSENT.
+//
+// Both are unimplemented placeholder screens. Their routes and
+// `ProjectPlaceholder` pages remain in App.jsx — typing the URL still renders
+// them — but a private-beta user must not be offered a tab that leads nowhere.
+// Re-add the entry here when the module ships; do not delete the route.
 export const PROJECT_TABS = [
   { to: 'overview',         label: 'Overview' },
   { to: 'boq',              label: 'BOQ' },
@@ -13,8 +19,6 @@ export const PROJECT_TABS = [
   { to: 'variations',       label: 'Variations' },
   { to: 'commercial',       label: 'Commercial' },
   { to: 'documents',        label: 'Documents' },
-  { to: 'photos',           label: 'Photos' },
   { to: 'timeline',         label: 'Timeline' },
   { to: 'rfis',             label: 'RFIs' },
-  { to: 'reports',          label: 'Reports' },
 ]
