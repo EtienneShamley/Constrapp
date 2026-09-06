@@ -179,11 +179,11 @@ export default function ProjectBudget() {
   const { budgetLines, budgetLinesLoading, createBudgetLine, updateBudgetLine } = useBudgetLines(projectId)
   const { costCodes, costCodesLoading } = useCostCodes()
   const { profile } = useProfile()
-  const { purchaseOrders } = usePurchaseOrders(projectId)
-  const { progressClaims } = useProgressClaims(projectId)
-  const { supplierInvoices } = useSupplierInvoices(projectId)
-  const { supplierCreditNotes, supplierCreditNotesError } = useSupplierCreditNotes(projectId)
-  const { variations } = useVariations(projectId)
+  const { purchaseOrders, purchaseOrdersLoading } = usePurchaseOrders(projectId)
+  const { progressClaims, progressClaimsLoading } = useProgressClaims(projectId)
+  const { supplierInvoices, supplierInvoicesLoading } = useSupplierInvoices(projectId)
+  const { supplierCreditNotes, supplierCreditNotesLoading, supplierCreditNotesError } = useSupplierCreditNotes(projectId)
+  const { variations, variationsLoading } = useVariations(projectId)
   // null = closed · 'new' = create · a budget line = edit that line.
   const [editing, setEditing] = useState(null)
 
@@ -279,6 +279,23 @@ export default function ProjectBudget() {
   const remaining     = totals.budgeted - totals.actual
   const usagePercent  = totals.budgeted > 0 ? Math.min(100, (totals.actual / totals.budgeted) * 100) : 0
 
+  // ── PRESENTATION ONLY — loading is not a zero (ADR-41) ────────────────────
+  //
+  // Every figure above is derived from source documents, and a subscription
+  // that has not settled yet contributes nothing — so mid-load these sums are
+  // arithmetically 0 while meaning "not known yet". Rendering that as currency
+  // states a financial fact the app does not have. THREE STATES, THREE
+  // RENDERINGS: still loading → the neutral em dash; read failed → the
+  // existing unavailable notice; settled and genuinely nil → a real 0.
+  //
+  // This gates DISPLAY ONLY. `totals`, `remaining`, `commitmentExposure` and
+  // every map above are untouched, as is the table below (which has always had
+  // its own `budgetLinesLoading` gate).
+  const summaryLoading = budgetLinesLoading || purchaseOrdersLoading
+    || progressClaimsLoading || supplierInvoicesLoading
+    || supplierCreditNotesLoading || variationsLoading
+  const summaryMoney = (value) => (summaryLoading ? '—' : money(value))
+
   return (
     <div>
       {supplierCreditNotesError && (
@@ -291,26 +308,26 @@ export default function ProjectBudget() {
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3.5 mb-3">
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Budgeted</p>
-            <p className="text-lg font-bold text-brand-text">{money(totals.budgeted)}</p>
+            <p className="text-lg font-bold text-brand-text">{summaryMoney(totals.budgeted)}</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Committed</p>
-            <p className="text-lg font-bold text-brand-text">{money(totals.committed)}</p>
+            <p className="text-lg font-bold text-brand-text">{summaryMoney(totals.committed)}</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Claimed</p>
-            <p className="text-lg font-bold text-brand-text">{money(totals.claimed)}</p>
+            <p className="text-lg font-bold text-brand-text">{summaryMoney(totals.claimed)}</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Actual</p>
-            <p className="text-lg font-bold text-brand-text">{money(totals.actual)}</p>
+            <p className="text-lg font-bold text-brand-text">{summaryMoney(totals.actual)}</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Remaining</p>
-            <p className="text-lg font-bold text-brand-text">{money(remaining)}</p>
+            <p className="text-lg font-bold text-brand-text">{summaryMoney(remaining)}</p>
           </div>
         </div>
-        <ProgBar value={usagePercent} colour={usagePercent >= 100 ? 'brand-red' : 'brand-accent'} />
+        <ProgBar value={summaryLoading ? 0 : usagePercent} colour={usagePercent >= 100 ? 'brand-red' : 'brand-accent'} />
 
         {/* Read-time variation figures — kept SEPARATE from the six canonical
             figures above. Committed is unchanged; Commitment Exposure adds
@@ -318,11 +335,11 @@ export default function ProjectBudget() {
         <div className="grid grid-cols-2 gap-3.5 mt-3 pt-3 border-t border-brand-border">
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Approved Supplier Variations</p>
-            <p className="text-lg font-bold text-brand-text">{money(totals.supplierVariations)}</p>
+            <p className="text-lg font-bold text-brand-text">{summaryMoney(totals.supplierVariations)}</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Commitment Exposure</p>
-            <p className="text-lg font-bold text-brand-text">{money(commitmentExposure)}</p>
+            <p className="text-lg font-bold text-brand-text">{summaryMoney(commitmentExposure)}</p>
           </div>
         </div>
         <p className="m-0 mt-2 text-[11px] text-brand-muted">

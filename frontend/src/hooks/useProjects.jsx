@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback } from 'react'
+import { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react'
 import { collection, doc, onSnapshot, addDoc, updateDoc, serverTimestamp, query, orderBy, Timestamp } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { useAuth } from './useAuth'
@@ -11,35 +11,61 @@ const ProjectsContext = createContext(null)
 export function ProjectsProvider({ children }) {
   const { user }    = useAuth()
   const { company } = useCompany()
-  const [projects, setProjects]             = useState([])
-  const [projectsLoading, setProjectsLoading] = useState(true)
-
   const companyId = company?.id ?? null
 
-  useEffect(() => {
-    if (!companyId) {
-      setProjects([])
-      setProjectsLoading(false)
-      return
-    }
+  // Live subscription state, tagged with the target (`key`) it belongs to —
+  // the keyed-snapshot pattern used by useProjectActivities / useDrawings. The
+  // effect is subscription-only: state is written ONLY from the async
+  // onSnapshot callbacks, never synchronously in the effect body, so
+  // projects/loading are DERIVED at render time below
+  // (react-hooks/set-state-in-effect).
+  //
+  // The target is the COMPANY alone. ⚠️ THIS IS A ROOT PROVIDER: `projects`
+  // feeds useProject, which gates the ENTIRE project route tree through
+  // ProjectDetailLayout ("Loading project…" / "Project not found."). The
+  // `targetKey`/`key` expressions below must stay identical — if they ever
+  // diverge, `settled` never becomes true and every project page loads forever.
+  //
+  // `error` is tracked here for pattern uniformity but deliberately NOT
+  // exposed: adding a `projectsError` would change this provider's public
+  // context value. A failed read therefore still presents as an empty list,
+  // exactly as it did before this migration.
+  const [snap, setSnap] = useState({ key: null, projects: [], error: false })
 
-    setProjectsLoading(true)
+  useEffect(() => {
+    if (!companyId) return undefined
+
+    const key = companyId
     const ref = collection(db, 'companies', companyId, 'projects')
     const q   = query(ref, orderBy('createdAt', 'desc'))
 
     const unsubscribe = onSnapshot(
       q,
-      (snap) => {
-        setProjects(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })))
-        setProjectsLoading(false)
-      },
-      () => {
-        setProjects([])
-        setProjectsLoading(false)
-      }
+      (querySnap) => setSnap({
+        key,
+        projects: querySnap.docs.map(d => ({ id: d.id, ...d.data() })),
+        error: false,
+      }),
+      // Read error (most often a rules rejection) — degrade gracefully rather
+      // than crashing the app root.
+      () => setSnap({ key, projects: [], error: true }),
     )
     return unsubscribe
   }, [companyId])
+
+  // Derived, at render time: no synchronous setState in the effect. With no
+  // target we are idle (no data, not loading); with a target we are loading
+  // until the subscription reports for THAT target (`settled`), which also
+  // hides a previous company's projects immediately.
+  const targetKey = companyId || null
+  const settled = targetKey !== null && snap.key === targetKey
+  // Memoised so the write callbacks below (which validate against the live
+  // list) keep stable dependencies across renders.
+  const projects = useMemo(
+    () => (settled ? snap.projects : []),
+    [settled, snap.projects],
+  )
+  const projectsLoading = targetKey !== null && !settled
 
   const createProject = useCallback(async ({ name, status, budget, startDate, location, progress, currency }) => {
     if (!companyId || !user) throw new Error('Not authenticated')

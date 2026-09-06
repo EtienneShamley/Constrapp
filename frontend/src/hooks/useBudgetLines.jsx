@@ -9,42 +9,53 @@ import { buildBudgetLineFields, validateBudgetLine } from '../lib/budgetLines'
 export function useBudgetLines(projectId) {
   const { user }    = useAuth()
   const { company } = useCompany()
-  const [budgetLines, setBudgetLines]             = useState([])
-  const [budgetLinesLoading, setBudgetLinesLoading] = useState(true)
-  // True when the live read failed (connection loss or a rules rejection).
-  // Consumers deriving financial figures must treat a failed read as
-  // UNAVAILABLE — never as a genuine zero. Set only from the async snapshot
-  // callbacks; existing consumers may ignore it.
-  const [budgetLinesError, setBudgetLinesError]   = useState(false)
+  // Live subscription state, tagged with the target (`key`) it belongs to —
+  // the keyed-snapshot pattern used by useProjectActivities / useDrawings. The
+  // effect is subscription-only: state is written ONLY from the async
+  // onSnapshot callbacks, never synchronously in the effect body, so
+  // budgetLines/loading/error are DERIVED at render time below
+  // (react-hooks/set-state-in-effect).
+  //
+  // `error` is true when the live read failed (connection loss or a rules
+  // rejection). Consumers deriving financial figures MUST treat a failed read
+  // as UNAVAILABLE — never as a genuine zero. It is exposed only once the
+  // CURRENT target has settled, so a project switch never flashes a stale
+  // unavailable banner under the new project.
+  const [snap, setSnap] = useState({ key: null, budgetLines: [], error: false })
 
   const companyId = company?.id ?? null
 
   useEffect(() => {
-    if (!companyId || !projectId) {
-      setBudgetLines([])
-      setBudgetLinesLoading(false)
-      return
-    }
+    if (!companyId || !projectId) return undefined
 
-    setBudgetLinesLoading(true)
+    const key = `${companyId}/${projectId}`
     const ref = collection(db, 'companies', companyId, 'projects', projectId, 'budgetLines')
     const q   = query(ref, orderBy('createdAt', 'desc'))
 
     const unsubscribe = onSnapshot(
       q,
-      (snap) => {
-        setBudgetLines(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })))
-        setBudgetLinesLoading(false)
-        setBudgetLinesError(false)
-      },
-      () => {
-        setBudgetLines([])
-        setBudgetLinesLoading(false)
-        setBudgetLinesError(true)
-      }
+      (querySnap) => setSnap({
+        key,
+        budgetLines: querySnap.docs.map(d => ({ id: d.id, ...d.data() })),
+        error: false,
+      }),
+      // A failed read must NOT look like an empty register — "none" and "we
+      // could not load them" are opposite facts, and confusing them on a
+      // financial register fabricates a zero.
+      () => setSnap({ key, budgetLines: [], error: true }),
     )
     return unsubscribe
   }, [companyId, projectId])
+
+  // Derived, at render time: no synchronous setState in the effect. With no
+  // target we are idle (no data, not loading); with a target we are loading
+  // until the subscription reports for THAT target (`settled`), which also
+  // hides the previous project's rows immediately.
+  const targetKey = companyId && projectId ? `${companyId}/${projectId}` : null
+  const settled = targetKey !== null && snap.key === targetKey
+  const budgetLines = settled ? snap.budgetLines : []
+  const budgetLinesLoading = targetKey !== null && !settled
+  const budgetLinesError = settled ? snap.error : false
 
   const createBudgetLine = useCallback(async ({ costCodeId, costCodeName, budgeted, notes }) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')

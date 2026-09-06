@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import {
   collection, doc, onSnapshot, query, orderBy,
   runTransaction, updateDoc, serverTimestamp,
@@ -21,13 +21,19 @@ export function useSupplierInvoices(projectId) {
   const { user }    = useAuth()
   const { company } = useCompany()
   const { project } = useProject(projectId)
-  const [supplierInvoices, setSupplierInvoices]               = useState([])
-  const [supplierInvoicesLoading, setSupplierInvoicesLoading] = useState(true)
-  // True when the live read failed (connection loss or a rules rejection).
-  // Consumers deriving financial figures must treat a failed read as
-  // UNAVAILABLE — never as a genuine zero. Set only from the async snapshot
-  // callbacks; existing consumers may ignore it.
-  const [supplierInvoicesError, setSupplierInvoicesError]     = useState(false)
+  // Live subscription state, tagged with the target (`key`) it belongs to —
+  // the keyed-snapshot pattern used by useProjectActivities / useDrawings. The
+  // effect is subscription-only: state is written ONLY from the async
+  // onSnapshot callbacks, never synchronously in the effect body, so
+  // supplierInvoices/loading/error are DERIVED at render time below
+  // (react-hooks/set-state-in-effect).
+  //
+  // `error` is true when the live read failed (connection loss or a rules
+  // rejection). Consumers deriving financial figures MUST treat a failed read
+  // as UNAVAILABLE — never as a genuine zero. It is exposed only once the
+  // CURRENT target has settled, so a project switch never flashes a stale
+  // unavailable banner under the new project.
+  const [snap, setSnap] = useState({ key: null, supplierInvoices: [], error: false })
 
   const companyId = company?.id ?? null
 
@@ -37,31 +43,41 @@ export function useSupplierInvoices(projectId) {
   const projectCurrency = resolveProjectCurrency(project, company)
 
   useEffect(() => {
-    if (!companyId || !projectId) {
-      setSupplierInvoices([])
-      setSupplierInvoicesLoading(false)
-      return
-    }
+    if (!companyId || !projectId) return undefined
 
-    setSupplierInvoicesLoading(true)
+    const key = `${companyId}/${projectId}`
     const ref = collection(db, 'companies', companyId, 'projects', projectId, 'supplierInvoices')
     const q   = query(ref, orderBy('createdAt', 'desc'))
 
     const unsubscribe = onSnapshot(
       q,
-      (snap) => {
-        setSupplierInvoices(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-        setSupplierInvoicesLoading(false)
-        setSupplierInvoicesError(false)
-      },
-      () => {
-        setSupplierInvoices([])
-        setSupplierInvoicesLoading(false)
-        setSupplierInvoicesError(true)
-      }
+      (querySnap) => setSnap({
+        key,
+        supplierInvoices: querySnap.docs.map(d => ({ id: d.id, ...d.data() })),
+        error: false,
+      }),
+      // A failed read must NOT look like an empty register — "none" and "we
+      // could not load them" are opposite facts, and confusing them on a
+      // financial register fabricates a zero.
+      () => setSnap({ key, supplierInvoices: [], error: true }),
     )
     return unsubscribe
   }, [companyId, projectId])
+
+  // Derived, at render time: no synchronous setState in the effect. With no
+  // target we are idle (no data, not loading); with a target we are loading
+  // until the subscription reports for THAT target (`settled`), which also
+  // hides the previous project's rows immediately.
+  const targetKey = companyId && projectId ? `${companyId}/${projectId}` : null
+  const settled = targetKey !== null && snap.key === targetKey
+  // Memoised so the write callbacks below (which validate against the live
+  // list) keep stable dependencies across renders.
+  const supplierInvoices = useMemo(
+    () => (settled ? snap.supplierInvoices : []),
+    [settled, snap.supplierInvoices],
+  )
+  const supplierInvoicesLoading = targetKey !== null && !settled
+  const supplierInvoicesError = settled ? snap.error : false
 
   // Creates a draft supplier invoice. The company-wide counter is read and
   // incremented in the same transaction as the invoice write, matching POs and

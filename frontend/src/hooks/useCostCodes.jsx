@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { collection, doc, onSnapshot, addDoc, updateDoc, serverTimestamp, query, orderBy } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { useAuth } from './useAuth'
@@ -8,35 +8,59 @@ import { buildCostCodeFields, validateCostCode } from '../lib/costCodes'
 export function useCostCodes() {
   const { user }    = useAuth()
   const { company } = useCompany()
-  const [costCodes, setCostCodes]             = useState([])
-  const [costCodesLoading, setCostCodesLoading] = useState(true)
-
   const companyId = company?.id ?? null
 
-  useEffect(() => {
-    if (!companyId) {
-      setCostCodes([])
-      setCostCodesLoading(false)
-      return
-    }
+  // Live subscription state, tagged with the target (`key`) it belongs to —
+  // the keyed-snapshot pattern used by useProjectActivities / useDrawings. The
+  // effect is subscription-only: state is written ONLY from the async
+  // onSnapshot callbacks, never synchronously in the effect body, and
+  // costCodes/loading are DERIVED at render time below
+  // (react-hooks/set-state-in-effect).
+  //
+  // The target is the COMPANY alone — cost codes are company-scoped, so
+  // switching project neither re-subscribes nor reloads them.
+  //
+  // `error` is tracked here for pattern uniformity but deliberately NOT
+  // exposed: adding a `costCodesError` would change this hook's public API. A
+  // failed read therefore still presents as an empty list, exactly as it did
+  // before this migration.
+  const [snap, setSnap] = useState({ key: null, costCodes: [], error: false })
 
-    setCostCodesLoading(true)
+  useEffect(() => {
+    if (!companyId) return undefined
+
+    const key = companyId
     const ref = collection(db, 'companies', companyId, 'costCodes')
     const q   = query(ref, orderBy('code', 'asc'))
 
     const unsubscribe = onSnapshot(
       q,
-      (snap) => {
-        setCostCodes(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })))
-        setCostCodesLoading(false)
-      },
-      () => {
-        setCostCodes([])
-        setCostCodesLoading(false)
-      }
+      (querySnap) => setSnap({
+        key,
+        costCodes: querySnap.docs.map(d => ({ id: d.id, ...d.data() })),
+        error: false,
+      }),
+      // Read error (most often a rules rejection) — degrade gracefully rather
+      // than crashing every cost-code picker in the app.
+      () => setSnap({ key, costCodes: [], error: true }),
     )
     return unsubscribe
   }, [companyId])
+
+  // Derived, at render time: no synchronous setState in the effect. With no
+  // target we are idle (no data, not loading); with a target we are loading
+  // until the subscription reports for THAT target (`settled`), which also
+  // hides a previous company's cost codes immediately.
+  const targetKey = companyId || null
+  const settled = targetKey !== null && snap.key === targetKey
+  // Memoised so the write callbacks below (which validate the duplicate-code
+  // rule against the live list) keep stable dependencies across renders —
+  // the same reason useSupplierCreditNotes / useRetentionReleases memoise.
+  const costCodes = useMemo(
+    () => (settled ? snap.costCodes : []),
+    [settled, snap.costCodes],
+  )
+  const costCodesLoading = targetKey !== null && !settled
 
   // Create normalises and validates through the SAME pure helpers the edit path
   // uses, so the two modes cannot drift. The only behaviour change from the

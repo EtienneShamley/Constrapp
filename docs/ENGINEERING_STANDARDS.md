@@ -91,7 +91,10 @@ without an approved architecture change (record it in
 
 ## 4. Validation & testing checks (required)
 
-- `npm run lint` **and** `npm run build` pass clean (run from `frontend/`).
+- `npm run lint` **and** `npm run build` pass clean (run from `frontend/`). Lint is
+  `eslint . --max-warnings 0` and the standing policy is **0 errors / 0 warnings** —
+  there is no accepted baseline to add to. Azure runs it **blocking**, first, right
+  after `npm ci` (ADR-41).
 - **If `frontend/firestore.rules` changed: `npm run test:rules` passes**, and new
   rules behaviour has matching cases in `frontend/tests/rules/`. This suite runs
   against the **Firestore emulator only** and must pass **before** rules are
