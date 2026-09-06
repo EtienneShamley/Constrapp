@@ -30,7 +30,12 @@ import BoqItemVoidModal from './boq/BoqItemVoidModal'
 const thCls = 'text-left px-3 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px] whitespace-nowrap'
 const tdCls = 'px-3 py-3 text-[13px] text-brand-text whitespace-nowrap'
 
-function SummaryCards({ totals, budgetTotal, budgetUnavailable, variance, currencyCode }) {
+// `budgetLoading` and `budgetUnavailable` are DIFFERENT FACTS that share one
+// rendering (ADR-41): neither may show a number, because `budgetedTotal([])` is
+// arithmetically 0 while an unsettled subscription means "not known yet". Only
+// the FAILED read carries the red unavailable sub-line; a settled budget of
+// genuinely nil still renders a real 0.
+function SummaryCards({ totals, budgetTotal, budgetLoading, budgetUnavailable, variance, currencyCode }) {
   const money = (n) => formatCurrency(n, currencyCode)
 
   return (
@@ -43,20 +48,22 @@ function SummaryCards({ totals, budgetTotal, budgetUnavailable, variance, curren
         </div>
         <div>
           <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Approved Budget</p>
-          <p className="text-lg font-bold text-brand-text">{budgetUnavailable ? '—' : money(budgetTotal)}</p>
+          <p className="text-lg font-bold text-brand-text">{budgetUnavailable || budgetLoading ? '—' : money(budgetTotal)}</p>
           {budgetUnavailable && <p className="m-0 mt-0.5 text-[10.5px] text-brand-red">Unavailable — budget failed to load</p>}
         </div>
         <div>
           <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Variance to Budget</p>
           <p className={`text-lg font-bold ${variance !== null && variance < 0 ? 'text-brand-red' : 'text-brand-text'}`}>
-            {variance === null || budgetUnavailable ? '—' : money(variance)}
+            {variance === null || budgetUnavailable || budgetLoading ? '—' : money(variance)}
           </p>
           <p className="m-0 mt-0.5 text-[10.5px] text-brand-muted">
             {budgetUnavailable
               ? 'Needs the Approved Budget'
-              : variance === null
-                ? (totals.itemCount === 0 ? 'No BOQ items yet' : 'Suppressed while items are unpriced')
-                : 'Budget − BOQ · positive = BOQ under budget'}
+              : budgetLoading
+                ? 'Loading the Approved Budget…'
+                : variance === null
+                  ? (totals.itemCount === 0 ? 'No BOQ items yet' : 'Suppressed while items are unpriced')
+                  : 'Budget − BOQ · positive = BOQ under budget'}
           </p>
         </div>
         <div>
@@ -145,7 +152,7 @@ export default function ProjectBoq() {
     createBoqItem, updateBoqItem, voidBoqItem,
   } = useBoqItems(mid)
   const { costCodes, costCodesLoading } = useCostCodes()
-  const { budgetLines, budgetLinesError } = useBudgetLines(mid)
+  const { budgetLines, budgetLinesLoading, budgetLinesError } = useBudgetLines(mid)
 
   const [editing, setEditing] = useState(null)      // item | 'new' | null
   const [voiding, setVoiding] = useState(null)      // item | null
@@ -246,6 +253,7 @@ export default function ProjectBoq() {
         <SummaryCards
           totals={totals}
           budgetTotal={budgetTotal}
+          budgetLoading={budgetLinesLoading}
           budgetUnavailable={budgetLinesError}
           variance={variance}
           currencyCode={currencyCode}

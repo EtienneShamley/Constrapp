@@ -14,35 +14,56 @@ const CompanyContext = createContext(null)
 export function CompanyProvider({ children }) {
   const { user }    = useAuth()
   const { profile } = useProfile()
-  const [company, setCompany]             = useState(null)
-  const [companyLoading, setCompanyLoading] = useState(true)
+  // Live subscription state, tagged with the target (`key`) it belongs to —
+  // the keyed-snapshot pattern; the single-document reference is
+  // useProjectCommercial. The effect is subscription-only: state is written
+  // ONLY from the async onSnapshot callbacks, never synchronously in the effect
+  // body, so company/loading are DERIVED at render time below
+  // (react-hooks/set-state-in-effect).
+  //
+  // The target is the profile's companyId. ⚠️ `companyLoading` deliberately
+  // does NOT absorb `profileLoading`: while the profile is still resolving
+  // there is no target, so this provider is IDLE (no company, not loading) —
+  // exactly as before this migration. CompanySettings compensates by gating on
+  // both flags; do not "fix" that here.
+  //
+  // A settled `company === null` means the company document does not exist (or
+  // the read was rejected), which is distinct from still loading.
+  //
+  // `error` is tracked here for pattern uniformity but deliberately NOT
+  // exposed: adding a `companyError` would change this provider's public
+  // context value.
+  const [snap, setSnap] = useState({ key: null, company: null, error: false })
 
   useEffect(() => {
     const companyId = profile?.companyId
-    if (!companyId) {
-      setCompany(null)
-      setCompanyLoading(false)
-      return
-    }
+    if (!companyId) return undefined
 
-    setCompanyLoading(true)
+    const key = companyId
     const ref = doc(db, 'companies', companyId)
     const unsubscribe = onSnapshot(
       ref,
-      (snap) => {
-        setCompany(snap.exists() ? { id: snap.id, ...snap.data() } : null)
-        setCompanyLoading(false)
-      },
-      () => {
-        // Firestore read error — degrade gracefully
-        setCompany(null)
-        setCompanyLoading(false)
-      }
+      (docSnap) => setSnap({
+        key,
+        company: docSnap.exists() ? { id: docSnap.id, ...docSnap.data() } : null,
+        error: false,
+      }),
+      // Firestore read error — degrade gracefully.
+      () => setSnap({ key, company: null, error: true }),
     )
     return unsubscribe
   }, [profile?.companyId])
 
   const companyId = profile?.companyId ?? null
+
+  // Derived, at render time: no synchronous setState in the effect. With no
+  // target we are idle (no company, not loading); with a target we are loading
+  // until the subscription reports for THAT target (`settled`), which also
+  // hides a previous company immediately on an account switch.
+  const targetKey = companyId
+  const settled = targetKey !== null && snap.key === targetKey
+  const company = settled ? snap.company : null
+  const companyLoading = targetKey !== null && !settled
 
   // ── Company country & base currency ────────────────────────────────────────
   //

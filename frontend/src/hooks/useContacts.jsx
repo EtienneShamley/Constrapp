@@ -68,35 +68,53 @@ function buildContactFields(data) {
 export function useContacts() {
   const { user }    = useAuth()
   const { company } = useCompany()
-  const [contacts, setContacts]               = useState([])
-  const [contactsLoading, setContactsLoading] = useState(true)
-
   const companyId = company?.id ?? null
 
-  useEffect(() => {
-    if (!companyId) {
-      setContacts([])
-      setContactsLoading(false)
-      return
-    }
+  // Live subscription state, tagged with the target (`key`) it belongs to —
+  // the keyed-snapshot pattern used by useProjectActivities / useDrawings. The
+  // effect is subscription-only: state is written ONLY from the async
+  // onSnapshot callbacks, never synchronously in the effect body, and
+  // contacts/loading are DERIVED at render time below
+  // (react-hooks/set-state-in-effect).
+  //
+  // The target is the COMPANY alone — the contact book is company-scoped, so
+  // switching project neither re-subscribes nor reloads it.
+  //
+  // `error` is tracked here for pattern uniformity but deliberately NOT
+  // exposed: adding a `contactsError` would change this hook's public API. A
+  // failed read therefore still presents as an empty list, exactly as it did
+  // before this migration.
+  const [snap, setSnap] = useState({ key: null, contacts: [], error: false })
 
-    setContactsLoading(true)
+  useEffect(() => {
+    if (!companyId) return undefined
+
+    const key = companyId
     const ref = collection(db, 'companies', companyId, 'contacts')
     const q   = query(ref, orderBy('nameLower', 'asc'))
 
     const unsubscribe = onSnapshot(
       q,
-      (snap) => {
-        setContacts(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-        setContactsLoading(false)
-      },
-      () => {
-        setContacts([])
-        setContactsLoading(false)
-      }
+      (querySnap) => setSnap({
+        key,
+        contacts: querySnap.docs.map(d => ({ id: d.id, ...d.data() })),
+        error: false,
+      }),
+      // Read error (most often a rules rejection) — degrade gracefully rather
+      // than crashing every supplier/client picker in the app.
+      () => setSnap({ key, contacts: [], error: true }),
     )
     return unsubscribe
   }, [companyId])
+
+  // Derived, at render time: no synchronous setState in the effect. With no
+  // target we are idle (no data, not loading); with a target we are loading
+  // until the subscription reports for THAT target (`settled`), which also
+  // hides a previous company's contacts immediately.
+  const targetKey = companyId || null
+  const settled = targetKey !== null && snap.key === targetKey
+  const contacts = settled ? snap.contacts : []
+  const contactsLoading = targetKey !== null && !settled
 
   // Returns the new contact's document ID so callers (e.g. the PO supplier
   // quick-create) can select it immediately.

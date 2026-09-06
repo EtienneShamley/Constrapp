@@ -40,6 +40,15 @@ steps:
     displayName: Install dependencies
     workingDirectory: $(workingDirectory)
 
+  # Lint runs FIRST and is BLOCKING (ADR-41). It takes seconds, while the Rules
+  # suite boots the Firestore and Storage emulators under a JDK and takes
+  # minutes — so a lint failure should not cost a full emulator run. The script
+  # is `eslint . --max-warnings 0`: the standing policy is 0 errors AND
+  # 0 warnings, and `eslint` alone would not fail on warnings.
+  - script: npm run lint
+    displayName: Lint
+    workingDirectory: $(workingDirectory)
+
   - script: npm run test:unit
     displayName: Unit and behaviour tests
     workingDirectory: $(workingDirectory)
@@ -47,11 +56,6 @@ steps:
   - script: npm run test:rules
     displayName: Firestore and Storage Rules tests
     workingDirectory: $(workingDirectory)
-
-  - script: npm run lint
-    displayName: Lint
-    workingDirectory: $(workingDirectory)
-    continueOnError: true
 
   - script: npm run build
     displayName: Production build

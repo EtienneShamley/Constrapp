@@ -121,7 +121,16 @@ export default function ProjectRetention() {
     try { await fn() } catch (err) { setActionError(err?.message || 'Action failed.') }
   }
 
-  const dash = (value) => (figuresUnavailable ? '—' : value)
+  // ⚠️ LOADING IS NOT ZERO EITHER (ADR-41). `retentionSummary` reads two
+  // subscriptions; until BOTH have settled it is summing empty arrays, so every
+  // figure is arithmetically 0 while meaning "not known yet". Loading and
+  // unavailable are different facts that share one rendering — neither may show
+  // a number — so `dash` suppresses both. `figuresUnavailable` keeps its exact
+  // meaning (a FAILED read) and still drives the unavailable notice and the
+  // action disabling below; a settled, genuinely nil retention balance still
+  // renders a real 0.
+  const figuresLoading = supplierInvoicesLoading || retentionReleasesLoading
+  const dash = (value) => (figuresUnavailable || figuresLoading ? '—' : value)
 
   return (
     <div className="space-y-4">

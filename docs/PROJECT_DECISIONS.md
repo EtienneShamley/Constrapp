@@ -3184,3 +3184,202 @@ stays last-write-wins.
 `costCodes` are untouched and remain client-enforced (Deferred Controls 1 and 2).
 No UI change, no new status, no `cancelReason`, no backend, and the rules were
 **not published** — that remains a manual step, gated on the ordering above.
+
+## ADR-41: Subscription-Hook Standard and a Blocking Lint Gate (keyed snapshot / derived loading; a failed financial read stays UNAVAILABLE; narrowly-scoped react-refresh allowance; 0 errors / 0 warnings enforced in CI)
+
+**Context.** The repo carried an accepted lint baseline of **17 errors, 0
+warnings**, and Azure ran `npm run lint` with `continueOnError: true` — so the
+number could only ever grow. The 17 split into two unrelated groups.
+
+Eleven were `react-hooks/set-state-in-effect`, all reporting the same legacy
+subscription shape: an effect that synchronously calls `setLoading(true)` on the
+way into `onSnapshot`, and `setData([]) / setLoading(false)` on its early-return
+path. Fifteen sibling hooks (`useBoqItems`, `useCashFlowLines`,
+`useProjectActivities`, `useDrawings`, `useRfis` et al) had already been written
+in a different, compliant shape. The eleven stragglers were the app's oldest
+hooks — including the three root providers that gate sign-in, company context
+and the entire project route tree.
+
+The remaining six were `react-refresh/only-export-components` on the four
+context-provider files, each of which exports a Provider component alongside its
+consumer hook.
+
+**The legacy shape was not merely unlintable — it was wrong.** Its effect
+cleared state only when the target became *falsy*, never when it changed from
+one valid target to another. Switching from project A to project B therefore
+rendered **A's rows under B's header**, with `loading === true`, until B's first
+snapshot arrived; a stale `error` flag leaked across the same boundary. On a
+financial register that is the worst available failure: another project's money,
+displayed as this project's.
+
+**Decision 1 — the keyed-snapshot / derived-loading pattern is the standard for
+every Firestore subscription hook.** One piece of state, tagged with the target
+it belongs to; everything else derived at render time:
+
+```js
+const [snap, setSnap] = useState({ key: null, items: [], error: false })
+
+useEffect(() => {
+  if (!companyId || !projectId) return undefined
+  const key = `${companyId}/${projectId}`
+  return onSnapshot(q,
+    (querySnap) => setSnap({ key, items: querySnap.docs.map(…), error: false }),
+    ()          => setSnap({ key, items: [], error: true }),
+  )
+}, [companyId, projectId])
+
+const targetKey = companyId && projectId ? `${companyId}/${projectId}` : null
+const settled   = targetKey !== null && snap.key === targetKey
+const items        = settled ? snap.items : []
+const itemsLoading = targetKey !== null && !settled
+const itemsError   = settled ? snap.error : false
+```
+
+State is written **only** from the async `onSnapshot` callbacks — the sanctioned
+"subscribe to an external system" effect — so no render cascade, and the stale
+window closes structurally rather than by remembering to clear it.
+
+**Decision 2 — a failed financial read stays UNAVAILABLE, never a zero.** `error`
+is exposed as `settled ? snap.error : false`, and never raw. Gating on `settled`
+does two jobs at once: a denied read (most often a rules rejection for a
+non-financial role) surfaces as *unavailable* rather than as an empty,
+zero-value register (**ADR-24**), and a target switch cannot flash the previous
+target's error banner under the new one. `useBudgetLines`, `useForecastLines`,
+`usePurchaseOrders`, `useProgressClaims`, `useVariations` and
+`useSupplierInvoices` each expose such a flag, and `ProjectCashFlow`,
+`ProjectBoq`, `ProjectRetention` and `ProjectRfis` consume them.
+
+**Decision 3 — no hook's public API changed.** The migration is behavioural only.
+No property was renamed, no callback signature altered, no query or `orderBy`
+added or removed (`useForecastLines` still subscribes to its bare collection ref
+— its document id *is* the `costCodeId`). Hooks that did not previously expose an
+error still do not: `error` is tracked inside the snapshot tuple for pattern
+uniformity, but adding `costCodesError` / `contactsError` / `projectsError` /
+`companyError` / `profileError` would have been an API change, and is recorded
+below as available future work rather than smuggled in here.
+
+Three provider-specific invariants were preserved deliberately:
+
+- **`companyLoading` does not absorb `profileLoading`.** While the profile is
+  resolving there is no target, so `CompanyProvider` is *idle* — not loading.
+  `CompanySettings` compensates by gating on both; that is the existing contract.
+- **A settled `profile === null` means the membership document does not exist**
+  (`users/{uid}` is client-read-only and provisioned out of band, **ADR-27**) —
+  a distinct fact from "still loading". Eight financial pages gate role checks on
+  `profileLoading`, and `ProjectRetention` renders "no access" on
+  `!profileLoading && !canView`, so collapsing the two would flash false denials.
+- **`useProfile` keys on the signed-in `uid`** — the only non-company key in the
+  app. That is what makes an account switch safe: signing out of A and into B can
+  no longer show A's profile for even one frame.
+
+**Decision 4 — the pattern's own failure mode is pinned by a test.** The one bug
+the pattern makes possible is *key drift*: the `key` built inside the effect and
+the `targetKey` built for the render are two separate expressions, and if they
+ever diverge `settled` is permanently false and the page **loads forever**.
+`tests/unit/hookSubscriptionPattern.test.js` asserts they stay in step, along
+with the three behavioural contracts above, across all 26 subscriptions. It is a
+**structural source test** in the existing Node runner — no jsdom, no
+testing-library, no new dependency (**ADR-26**), following the precedent of
+`betaSurfaces.test.js` and `documentsResponsive.test.js`. It is written against
+*expressions*, not declaration forms or whitespace, so the several legitimate
+compliant spellings in the repo (one-, two- and three-segment targets; guards
+written `a && b ? … : null`, `a || null` or `?? null`; derived data plain or
+`useMemo`-wrapped; derivations as consts or inline in the returned object; a pure
+sort applied to the settled snapshot) all pass unmodified. A new legitimate
+variant should be taught to that file — never worked around by reshaping a hook
+that is already correct.
+
+**Decision 5 — `react-refresh/only-export-components` is narrowed, not
+disabled.** The rule validates one thing: whether the dev server can hot-update a
+module instead of reloading the page. It has **no runtime, production-build,
+correctness or security meaning** — `vite build` output is byte-identical either
+way. The four offending files are app-root providers, where any edit remounts the
+whole tree regardless, so the practical loss is nil.
+
+`eslint.config.js` therefore carries a final override scoped to those four exact
+files, allowing those six exact export names, with severity still `error`:
+
+```js
+{
+  files: ['src/hooks/useAuth.jsx', 'src/hooks/useProfile.jsx',
+          'src/hooks/useCompany.jsx', 'src/hooks/useProjects.jsx'],
+  rules: {
+    'react-refresh/only-export-components': ['error', {
+      allowConstantExport: true,
+      allowExportNames: ['useAuth', 'useProfile', 'useCompany', 'useProjects',
+                         'getInitials', 'getDisplayName'],
+    }],
+  },
+}
+```
+
+A **new** non-component export added to any of those four files still fails lint
+(proved by adding one and observing the failure), and every other file in the
+repo remains fully checked. `allowConstantExport: true` is re-stated because
+flat-config rule options **replace** rather than merge — omitting it would
+silently drop the value inherited from `reactRefresh.configs.vite`. Rejected
+alternatives: `'off'` for `src/hooks/**` (exempts thirty files, including future
+ones) and `eslint-disable` comments (invisible to a config review).
+
+*Available future work, deliberately not done here:* splitting each provider into
+a context module, a provider component and the hook is the only change that makes
+fast refresh genuinely work for these files — roughly twelve files plus `App.jsx`,
+with consumer import paths unchanged. A separate context module is required
+because the rule also flags an exported `createContext(…)` value. It buys nothing
+today and is recorded only so the option is not rediscovered from scratch.
+
+**Decision 6 — lint is blocking in CI, at 0 errors and 0 warnings.**
+`continueOnError: true` is removed, and the Lint step moves to immediately after
+`npm ci`: it takes seconds, while the Rules suite boots the Firestore and Storage
+emulators under a JDK and takes minutes, so a lint failure should not cost a full
+emulator run. The final order is `npm ci → lint → unit → rules → build`. The
+`lint` script becomes `eslint . --max-warnings 0`, because plain `eslint` exits
+zero on warnings and the policy is **both** numbers at zero. Node version, Java
+setup, triggers and the absence of any deploy stage are unchanged.
+
+**Consequences.** The accepted baseline is gone: **17 → 0 errors, 0 warnings**,
+now enforced rather than aspirational, and `docs/ENGINEERING_STANDARDS.md` §4
+("`npm run lint` … pass clean") is true for the first time. Project switching no
+longer shows the previous project's rows on any register. A denied financial read
+is structurally prevented from presenting as a zero. Two of the migrated hooks
+(`useProgressClaims`, `useSupplierInvoices`) and three others gained a `useMemo`
+around the derived list, because their write callbacks validate against the live
+list and `react-hooks/exhaustive-deps` — now blocking — reports the conditional's
+unstable identity; `useRetentionReleases` and `useSupplierCreditNotes` already did
+exactly this, so the fix was the repo's own precedent rather than a new idea.
+
+**Decision 7 — loading, unavailable and a genuine zero are three distinct
+renderings.** Hiding stale rows exposed a second, older defect: four pages
+derived summary figures from the now-empty arrays and printed them as currency,
+so the load window read **0** where it had read the previous project's totals.
+Both readings were wrong — a derivation over an unsettled subscription is
+arithmetically 0 while meaning *not known yet*, and on a cost register a
+fabricated zero is the most dangerous wrong answer available. The rule is now
+explicit and enforced:
+
+| state | rendering |
+|---|---|
+| loading | neutral — an em dash, or the page's loading placeholder |
+| read failed | "unavailable" — the existing error banners and notices |
+| settled and nil | a real `0` |
+
+Four **display-only** gates implement it. `ProjectBudget` derives a
+`summaryLoading` from the six sources its summary reads and routes all seven
+canonical/exposure figures through a `summaryMoney` helper (the progress bar
+renders empty rather than part-filled). `ProjectRetention` extends its existing
+`dash()` to cover loading as well as unavailability, leaving `figuresUnavailable`
+— which also drives the notice and the action disabling — meaning *failed read*
+exactly as before. `ProjectBoq` takes a `budgetLoading` prop alongside
+`budgetUnavailable`; both dash the Approved Budget and the Variance, but only the
+failed read keeps the red "budget failed to load" sub-line. `ProjectCashFlow`
+extends its early loading gate from four subscriptions to ten, adding the six
+cost-basis hooks whose absence let margin and cost figures render from empty
+arrays. **No calculation, map, `lib/` call or error path changed** — every
+removed line in the diff is a hook destructure widened to consume a flag the hook
+already exposed, a render expression, or a gate condition.
+`tests/unit/loadingNotZero.test.js` pins all four.
+
+*Scope held:* no Firestore or Storage rules change, no `firebase.json` change, no
+financial formula change, no hook API change, no new dependency, no state
+library, no test framework, no deployment. `useAuth.jsx` is byte-identical to
+before — it listens to Firebase Auth, not Firestore, and was never in scope.

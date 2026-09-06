@@ -104,14 +104,14 @@ export default function ProjectCashFlow() {
     createCashFlowLine, updateCashFlowLine, voidCashFlowLine,
   } = useCashFlowLines(mid)
   const { baseline, baselineError } = useProjectCommercial(mid)
-  const { budgetLines, budgetLinesError }           = useBudgetLines(mid)
+  const { budgetLines, budgetLinesLoading, budgetLinesError }           = useBudgetLines(mid)
   const { costCodes }                               = useCostCodes()
-  const { purchaseOrders, purchaseOrdersError }     = usePurchaseOrders(mid)
-  const { progressClaims, progressClaimsError }     = useProgressClaims(mid)
-  const { supplierInvoices, supplierInvoicesError } = useSupplierInvoices(mid)
+  const { purchaseOrders, purchaseOrdersLoading, purchaseOrdersError }     = usePurchaseOrders(mid)
+  const { progressClaims, progressClaimsLoading, progressClaimsError }     = useProgressClaims(mid)
+  const { supplierInvoices, supplierInvoicesLoading, supplierInvoicesError } = useSupplierInvoices(mid)
   const { supplierCreditNotes, supplierCreditNotesError } = useSupplierCreditNotes(mid)
-  const { variations, variationsError }             = useVariations(mid)
-  const { forecastLines, forecastLinesError }       = useForecastLines(mid)
+  const { variations, variationsLoading, variationsError }             = useVariations(mid)
+  const { forecastLines, forecastLinesLoading, forecastLinesError }       = useForecastLines(mid)
   const { retentionReleases, retentionReleasesError } = useRetentionReleases(mid)
 
   const nowMonth = currentMonthKey()
@@ -282,7 +282,18 @@ export default function ProjectCashFlow() {
     )
   }
   // No zero totals while any forecast-critical subscription is unresolved.
-  if (clientReceiptsLoading || supplierPaymentsLoading || clientInvoicesLoading || cashFlowLinesLoading) {
+  //
+  // ⚠️ THIS GATE COVERS THE CASH SIDE *AND* THE COST BASIS (ADR-41). The four
+  // cash subscriptions were always here; the six cost-side ones were not, so
+  // between their settling times the margin and cost figures were derived from
+  // empty arrays and rendered as authoritative zeros. An unsettled subscription
+  // means "not known yet", which is neither a read failure (the `…Error` flags
+  // and the unavailable banners below, untouched) nor a genuine zero.
+  if (
+    clientReceiptsLoading || supplierPaymentsLoading || clientInvoicesLoading || cashFlowLinesLoading
+    || budgetLinesLoading || forecastLinesLoading || purchaseOrdersLoading
+    || progressClaimsLoading || variationsLoading || supplierInvoicesLoading
+  ) {
     return <div className="text-[13px] text-brand-muted">Loading cash and forecast records…</div>
   }
   // The cash CORE failing blocks the page — nothing can be shown honestly.

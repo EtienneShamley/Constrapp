@@ -15,11 +15,24 @@
   `lib/supplierCreditNotes.js`), and the Documents & Drawings domain
   (`lib/files.js`, `lib/drawings.js`, `lib/projectDocuments.js`); the remaining
   pure `lib/` modules (`purchaseOrders.js`, `progressClaims.js`,
-  `clientInvoices.js`, …) are the natural next targets.
+  `clientInvoices.js`, …) are the natural next targets. This suite also holds a
+  small number of **structural source tests** — they read files under `src/` and
+  assert structure rather than rendering anything (`betaSurfaces.test.js`,
+  `documentsResponsive.test.js`, `hookSubscriptionPattern.test.js`,
+  `loadingNotZero.test.js`).
 
-Everything else is manual, and there is no CI. Verify application changes with
-the manual acceptance tests below, run against a dev Firebase project with the
-current rules published.
+**CI: Azure Pipelines** (`azure-pipelines.yml`, on `main` and every PR to it)
+runs `npm ci → lint → test:unit → test:rules → build`. **All four are blocking.**
+Lint runs first because it takes seconds while the Rules suite boots two
+emulators under a JDK; it is `eslint . --max-warnings 0`, and the standing policy
+is **0 errors and 0 warnings** (ADR-41). There is **no deploy stage** — and the
+CI build is not deployable in any case, because the pipeline sets none of the
+`VITE_FIREBASE_*` variables (see [DEPLOYMENT.md](DEPLOYMENT.md)).
+
+**There is no automated React/DOM coverage.** The unit runner is plain Node with
+no jsdom and no testing-library, and no hook or component is rendered by any
+test. Everything below is manual: verify application changes against a dev
+Firebase project with the current rules published.
 
 ## 0. Security Rules — automated (emulators)
 
@@ -4082,3 +4095,141 @@ Codes:
       block must not disturb it.
 - [ ] Nothing was deployed and no rules were published; the release steps live in
       [DEPLOYMENT.md](DEPLOYMENT.md) → Private-Beta Release Checklist.
+
+## 19. Subscription-Hook Migration — keyed snapshot / derived loading (ADR-41)
+
+Eleven hooks moved from the legacy `setLoading(true)`-in-an-effect shape to the
+keyed-snapshot pattern. **No page, layout or `lib/` file changed**, and no hook's
+public API changed — so anything that breaks here is a subscription-lifecycle
+regression, not a feature change.
+
+The two things being proved are: (a) nothing regressed, and (b) a project switch
+no longer shows the previous project's rows.
+
+**Migrated:** `useCostCodes`, `useContacts`, `useBudgetLines`, `useForecastLines`,
+`usePurchaseOrders`, `useProgressClaims`, `useVariations`, `useSupplierInvoices`,
+`useProjects`, `useCompany`, `useProfile`.
+
+⚠️ Run §19.4 (**Unavailable**) at least once. It is the ADR-24 invariant, and it
+is the only part of this checklist that a passing app can still silently fail.
+
+### 19.1 Auth / root
+
+- [ ] **Fresh sign in** from `/login` → lands on Dashboard. No white screen, no
+      console error.
+- [ ] **Company context** loads: company name renders; the Currency Setup Banner
+      shows or hides exactly as it did before.
+- [ ] **Project list** loads on Dashboard and on `/projects`.
+- [ ] **Refresh while signed in**, on `/` → spinner, then Dashboard. No bounce to
+      `/login`.
+- [ ] **Deep project refresh** — hard-refresh on `/projects/:id/budget` →
+      "Loading project…" then the Budget tab. **Never** "Project not found."
+- [ ] **Sign out** → `/login`. No stale name or initials in the top bar on the
+      way out; no console error.
+- [ ] **Sign back in as the same user** → same company, same project list.
+- [ ] **Sign in as a different user in a different company** → the previous
+      user's profile, company and projects never appear, **not even for one
+      frame**.
+- [ ] **Role gating** — sign in as `subcontractor` / `client`: the eight
+      `profileLoading`-gated pages (Commercial, Cash Flow, Client Invoices,
+      Client Receipts, Supplier Payments, Retention, BOQ, Tenders) reach the
+      correct access outcome and **never flash "Access denied" before
+      resolving**.
+
+### 19.2 Project switching
+
+- [ ] Open project **A** → Budget; note a distinctive figure. Switch to project
+      **B** → Budget. **A's rows must never appear under B's header**, not for
+      one frame. Expect: loading state, then B's rows.
+- [ ] Switch B → A again. Same.
+- [ ] Repeat A → B for **Forecast**, **Purchase Orders**, **Progress Claims**,
+      **Supplier Invoices** and **Variations**.
+- [ ] **Cost Codes stays company-scoped** — switching project must **not** put it
+      back into a loading state or re-fetch it.
+- [ ] With a read-error banner showing on A (see §19.4), switch to B → the banner
+      **clears**; it must not persist into B's load window.
+
+### 19.3 Financial reads — normal path
+
+Per module (Budget · Forecast · Progress Claims · Purchase Orders · Supplier
+Invoices · Variations):
+
+- [ ] The register shows the **same rows and totals as before** the change.
+- [ ] The loading indicator appears and then resolves. It never sticks — a stuck
+      spinner is the key-drift failure (ADR-41 Decision 4).
+- [ ] Creating a record makes it appear **live**, without a refresh (proves the
+      listener is attached, not just a one-shot read).
+- [ ] Editing a draft appears live.
+
+Cross-module:
+
+- [ ] **Project Cash Flow** — every derived figure matches its pre-change value;
+      the source-error banner list is empty.
+- [ ] **Commercial / Margin** — Current Contract Sum, Forecast Revenue, Forecast
+      Gross Profit and Forecast Margin % all match pre-change values.
+- [ ] **BOQ** — the BOQ-vs-Budget comparison matches pre-change.
+- [ ] **Retention** — held and released figures match pre-change.
+
+### 19.4 Unavailable path ⚠️ (the ADR-24 invariant)
+
+Sign in as a role whose rules deny the collection (e.g. `subcontractor` against
+`supplierInvoices`), or block the request in devtools.
+
+- [ ] **Project Cash Flow** names each failed source in its "unavailable" banner
+      — **not** a zero.
+- [ ] Forecast Gross Profit and Forecast Margin % render **`—`**, never `0`.
+- [ ] **BOQ** shows *budget unavailable*, not a zero budget.
+- [ ] **Retention** shows *invoices unavailable*, not zero retention held.
+- [ ] **RFI detail** shows *Linked variations: Unavailable*, not *None*.
+- [ ] The error state **persists** after settling — it must not clear itself back
+      into a zero-value register on a later render.
+- [ ] The error does **not** flash while switching projects (covered in §19.2).
+
+### 19.5 Other surfaces
+
+- [ ] **Contacts** — register loads; the project-assignment picker lists projects
+      and reports no false "unknown assignment".
+- [ ] **Cost Codes** — register loads; the picker populates in the PO, Claim,
+      Invoice, Variation, Budget, Forecast, BOQ and Cash Flow editors; the
+      duplicate-code check still fires on create and on edit.
+- [ ] **Dashboard** — the project table loads; "No projects yet" is not left
+      showing once data arrives.
+- [ ] **Project Overview** — loads for a project with data and for an empty one.
+- [ ] **Company Settings** — loads; the currency form's Save stays disabled while
+      `projectsLoading`, and the project list for pinning is **complete** before
+      Save enables (pinning against a partial list has a financial consequence).
+- [ ] 375px / 768px / 1280px spot-check on Budget and Cash Flow — no layout
+      change is expected; this confirms none happened.
+
+### 19.6 Loading is not a zero ⚠️
+
+**Three states, three renderings — they must never collapse into each other:**
+
+| state | expected |
+|---|---|
+| loading | **`—`** (or the page's loading placeholder) |
+| read failed | the **unavailable** notice / banner |
+| settled and genuinely nil | a real **`0`** |
+
+Watch the window *immediately after a project switch* (throttle the network in
+devtools to widen it). On each surface below, the figures must show **`—`**, then
+resolve to the correct value. **Seeing `0.00` first is a failure.**
+
+- [ ] **Project Budget** — Budgeted, Committed, Claimed, Actual, Remaining,
+      Approved Supplier Variations and Commitment Exposure all show `—` while
+      loading; the usage bar is **empty**, not part-filled.
+- [ ] **Project Retention** — Retention Held, Released to Date and Total Withheld
+      show `—` while loading.
+- [ ] **Project BOQ** — Approved Budget and Variance to Budget show `—` while
+      loading, with the sub-line "Loading the Approved Budget…".
+- [ ] **Project Cash Flow** — the page shows "Loading cash and forecast records…"
+      until **all ten** subscriptions settle; no figure renders before that.
+
+Then confirm the three states stay distinct:
+
+- [ ] **Settled and genuinely nil** — on a project with no budget lines,
+      Budgeted shows a real **`0`**, never `—`.
+- [ ] **Read failed** — as a denied role (§19.4), BOQ still shows the red
+      "Unavailable — budget failed to load" sub-line, and Retention still shows
+      its unavailable notice with actions disabled. Loading must not have
+      swallowed the error presentation.

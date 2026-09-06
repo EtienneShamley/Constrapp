@@ -18,43 +18,54 @@ import { stageProjectCurrencyLock } from './projectCurrencyLock'
 export function useForecastLines(projectId) {
   const { user }    = useAuth()
   const { company } = useCompany()
-  const [forecastLines, setForecastLines]               = useState([])
-  const [forecastLinesLoading, setForecastLinesLoading] = useState(true)
-  // True when the live read failed (connection loss or a rules rejection).
-  // Consumers deriving financial figures must treat a failed read as
-  // UNAVAILABLE — never as a genuine zero. Set only from the async snapshot
-  // callbacks; existing consumers may ignore it.
-  const [forecastLinesError, setForecastLinesError]     = useState(false)
+  // Live subscription state, tagged with the target (`key`) it belongs to —
+  // the keyed-snapshot pattern used by useProjectActivities / useDrawings. The
+  // effect is subscription-only: state is written ONLY from the async
+  // onSnapshot callbacks, never synchronously in the effect body, so
+  // forecastLines/loading/error are DERIVED at render time below
+  // (react-hooks/set-state-in-effect).
+  //
+  // `error` is true when the live read failed (connection loss or a rules
+  // rejection). Consumers deriving financial figures MUST treat a failed read
+  // as UNAVAILABLE — never as a genuine zero. It is exposed only once the
+  // CURRENT target has settled, so a project switch never flashes a stale
+  // unavailable banner under the new project.
+  const [snap, setSnap] = useState({ key: null, forecastLines: [], error: false })
 
   const companyId = company?.id ?? null
 
   useEffect(() => {
-    if (!companyId || !projectId) {
-      setForecastLines([])
-      setForecastLinesLoading(false)
-      return
-    }
+    if (!companyId || !projectId) return undefined
 
-    setForecastLinesLoading(true)
+    const key = `${companyId}/${projectId}`
     const ref = collection(db, 'companies', companyId, 'projects', projectId, 'forecastLines')
     // No orderBy — the document id is the costCodeId; ordering is applied in the
     // UI against the live cost-code list. A project with no forecastLines simply
     // yields an empty array (every relevant cost code then shows "Not forecast").
     const unsubscribe = onSnapshot(
       ref,
-      (snap) => {
-        setForecastLines(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-        setForecastLinesLoading(false)
-        setForecastLinesError(false)
-      },
-      () => {
-        setForecastLines([])
-        setForecastLinesLoading(false)
-        setForecastLinesError(true)
-      }
+      (querySnap) => setSnap({
+        key,
+        forecastLines: querySnap.docs.map(d => ({ id: d.id, ...d.data() })),
+        error: false,
+      }),
+      // A failed read must NOT look like an empty register — "none" and "we
+      // could not load them" are opposite facts, and confusing them on a
+      // financial register fabricates a zero.
+      () => setSnap({ key, forecastLines: [], error: true }),
     )
     return unsubscribe
   }, [companyId, projectId])
+
+  // Derived, at render time: no synchronous setState in the effect. With no
+  // target we are idle (no data, not loading); with a target we are loading
+  // until the subscription reports for THAT target (`settled`), which also
+  // hides the previous project's rows immediately.
+  const targetKey = companyId && projectId ? `${companyId}/${projectId}` : null
+  const settled = targetKey !== null && snap.key === targetKey
+  const forecastLines = settled ? snap.forecastLines : []
+  const forecastLinesLoading = targetKey !== null && !settled
+  const forecastLinesError = settled ? snap.error : false
 
   // Idempotent upsert keyed by costCodeId. A transaction sets createdAt/createdBy
   // only on first creation and always refreshes updatedAt/updatedBy, so audit

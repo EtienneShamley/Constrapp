@@ -49,9 +49,10 @@ modules** (screens exist, no functionality) are listed in the module-status tabl
 | State | React Context + hooks | No Redux/Zustand |
 | Charts | Recharts 3 | Cash Flow chart only (the Dashboard's charts were fabricated data and were removed) |
 | Backend | Firebase JS SDK 12 — Auth, Firestore, Storage | **Client SDK only** |
-| Lint | ESLint 10 (flat config) | `npm run lint` |
+| Lint | ESLint 10 (flat config) | `npm run lint` = `eslint . --max-warnings 0`. Standing policy **0 errors / 0 warnings**, blocking in CI (ADR-41) |
 | Rules tests | Vitest 4 + `@firebase/rules-unit-testing` + `firebase-tools` 13 (emulator) | `npm run test:rules` — **dev-only**. Requires JDK 17 |
-| Unit tests | Vitest 4 (Node, no emulator) | `npm run test:unit` — pure `lib/` domain logic (`tests/unit/`); separate config (`vitest.config.js`) |
+| Unit tests | Vitest 4 (Node, no emulator) | `npm run test:unit` — pure `lib/` domain logic plus a few structural source tests (`tests/unit/`); separate config (`vitest.config.js`). **No jsdom, no testing-library** |
+| CI | Azure Pipelines (`azure-pipelines.yml`) | `npm ci → lint → test:unit → test:rules → build`, all blocking. No deploy stage |
 
 ## Client-SDK-Only Backend
 
