@@ -3486,3 +3486,101 @@ no stored aggregate, no Cloud Function, no FX, no new dependency, no new
 financial formula, no write from the Dashboard. ADR-3's "cross-project dashboards
 will eventually need aggregation" remains true and is not resolved here — v1
 avoids needing it.
+
+---
+
+## ADR-43: One Forecast-Row Composer (the `projectForecastTotals` count defect; Cash Flow's incomplete-basis warning and peak-funding suppression now fire; three missed loading gates)
+
+**Context.** ADR-42 recorded a deferred defect: `lib/margin.js →
+projectForecastTotals` rebuilt each forecast row by hand and never set the
+per-row `unforecasted` / `overBudget` flags that `forecastRollups` counts, so on
+that path `unforecastedCount` and `overBudgetCount` were **always 0** (and
+`costToComplete`, which nothing yet read, was a silent 0 too). The Forecast tab
+was unaffected — it composed its own effective rows with both flags. Cash Flow
+was the only consumer of the count, and it fed `unforecastedCount` into
+`costCoverage`, so three documented behaviours could never occur: the *"Cost to
+Complete is incomplete — N cost codes are not forecast"* notice, the refusal to
+call a project **Complete** while codes remain unforecast, and the
+*"Cost to Complete is incomplete (unforecast cost codes)"* peak-funding
+suppression reason. TESTING.md §15m-ix asked testers to confirm the first of
+these; it could not have passed.
+
+The root cause was **three copies of one composition**: `ProjectForecast.jsx`
+(complete), `projectForecastTotals` (no flags, no `costToComplete`) and the
+`effective()` helper in `foundationEditInvariance.test.js` (no flags). Each was
+individually tested; nothing connected the saved path to its counts.
+
+**Decision 1 — one composer, three callers.** `lib/forecast.js` gains
+`composeForecastRow(row, uncommittedCostToComplete)`, which attaches
+`uncommittedCostToComplete`, `costToComplete`, `forecastFinalCost`,
+`varianceToBudget`, `remainingBudgetRef`, `unforecasted` and `overBudget` to a
+`buildForecastRows` row **using only the existing named functions**
+(`forecastCostToComplete`, `forecastFinalCost`, `varianceToBudget`,
+`remainingBudgetReference`, `isUnforecasted`, `isOverBudget`). It introduces no
+arithmetic. `projectForecastTotals` maps every row through it at the **saved**
+input; the Forecast page maps through it at the **effective** input and keeps
+only its input overlay (parse, `ctcInvalid`/`ctcNegative`, `dirty`, and the rule
+that an invalid entry is "invalid", never "Not forecast"); the invariance suite's
+helper is the composer itself. A structural test pins all three — none may call
+the component functions directly again.
+
+**Decision 2 — the established semantics are preserved, not redefined.**
+*Unforecasted* ⇔ the saved input is `null`/`undefined`; a saved **0 is a
+forecast**. Every row in the cost-code union is judged the same way — inactive,
+missing, unbudgeted, actual-only, variation-only and budget-only rows with no
+saved value all count. *Over budget* ⇔ the row **has a budget line** and
+Variance to Budget is negative at cent resolution; an unbudgeted row with cost is
+never "over budget". A malformed stored value keeps its pre-existing treatment:
+not unforecasted, contributes zero through `safeNumber`, carried uncoerced.
+`firestore.rules` still enforces no type on `uncommittedCostToComplete`; that
+remains a client-enforced shape (unchanged, not widened here).
+
+**Decision 3 — Cash Flow consumes the corrected count through the existing
+functions, unchanged.** `costCoverage`, `completenessState` and
+`peakFundingSuppression` were not edited. **The visible consequences are
+deliberate:** on any project with a cost code that has activity but no saved
+forecast line, the completeness card now shows the incomplete-basis notice, the
+badge drops from **Complete** to **Partially timed**, and the Peak Funding
+Requirement headline is **withheld** (*"Cannot be calculated reliably yet"*, with
+the reason listed) — the existing lower-bound figure still appears when the
+trough is negative. This is the safe direction: an unforecast code understates
+Cost to Complete, which makes the trough shallower than reality, so an unqualified
+headline would understate the funding need. **No monthly figure, chart value,
+timed percentage or funding arithmetic changed** — the `pct` returned by
+`costCoverage` is identical with or without the flag. A QS clears the suppression
+by saving a forecast (including an explicit **0**) on every cost code.
+
+One copy fix: when the cost basis is zero *and* codes are unforecast, the page
+no longer says *"No Cost to Complete remains to time"* beside the incomplete
+notice — a zero basis made of unforecast codes is incomplete, not empty.
+Completeness is then **Unavailable** and suppression lists both reasons.
+
+**Decision 4 — the three loading gates ADR-41 missed.** `ProjectCashFlow`'s
+*"Loading cash and forecast records…"* gate now also waits on
+`supplierCreditNotesLoading`, `retentionReleasesLoading` and `baselineLoading`.
+The hooks already exposed all three; the page did not destructure them. Each,
+while unsettled, rendered a specific wrong figure as authoritative: released
+retention absent from AP (Forecast Cash Out and the funding trough
+**understated** — the direction the error path already refuses, ADR-30);
+credits absent (Actual, FFC and open AP overstated, credit-only cost codes
+missing from the count); baseline absent (a false *"No commercial baseline"* and
+a false revenue-unavailable suppression reason). The loading / unavailable /
+genuine-zero / value distinction is unchanged — the `…Error` flags and banners
+are untouched, and no read error is hidden behind a zero.
+
+**Deferred (unchanged from ADR-42).** The Forecast tab itself still gates on no
+source flag (a failed read renders zeros, contrary to ADR-41 Decision 2) — a UI
+design change needing its own approval. The Cash Flow orchestration extraction
+into `lib/` remains follow-up 2. The Dashboard still consumes neither count
+(pinned by test).
+
+*Scope held:* no Firestore or Storage rules change, no hook change, no new
+collection or field, no stored aggregate, no new dependency, no new financial
+formula, no write anywhere. Automated proof: `tests/unit/forecast.test.js`
+(predicates and boundaries, the composer over every union row shape and an
+over-credited code, the counts on `projectForecastTotals`, saved-path ⇄
+Forecast-page parity including a malformed value, the count reaching
+`costCoverage` → `completenessState` → `peakFundingSuppression`, a fully
+forecast project with saved zeros, and the three-caller structure); the three
+gate flags in `loadingNotZero.test.js`; and a literal regression pin of the five
+Dashboard snapshot figures in `projectSnapshot.test.js`.

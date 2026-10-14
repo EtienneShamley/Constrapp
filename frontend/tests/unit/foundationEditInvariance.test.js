@@ -3,8 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { describe, it, expect } from 'vitest'
 import {
-  buildForecastRows, forecastRollups, forecastFinalCost,
-  varianceToBudget, remainingBudgetReference, remainingBudgetSuggestion,
+  buildForecastRows, composeForecastRow, forecastRollups, remainingBudgetSuggestion,
 } from '../../src/lib/forecast'
 import { computeMargin, projectForecastTotals } from '../../src/lib/margin'
 import { budgetedTotal, boqVsBudgetRows, boqVarianceToBudget, boqTotals } from '../../src/lib/boq'
@@ -289,21 +288,10 @@ describe('invariance — DEACTIVATING a cost code changes no numeric output', ()
 // 3 · A BUDGET-LINE `budgeted` EDIT — WHAT MOVES AND WHAT MUST NOT
 // ─────────────────────────────────────────────────────────────────────────────
 
-// The Forecast page's effective rows: the stored Uncommitted CTC applied, then
-// FFC/variance/reference derived. Mirrors ProjectForecast.jsx with no edits open.
-function effective(rows) {
-  return rows.map(r => {
-    const ctc = r.storedUncommittedCostToComplete
-    const ffc = forecastFinalCost(r.actual, r.remainingCommitted, ctc)
-    return {
-      ...r,
-      uncommittedCostToComplete: ctc,
-      forecastFinalCost: ffc,
-      varianceToBudget: varianceToBudget(r.budgeted ?? 0, ffc),
-      remainingBudgetRef: remainingBudgetReference(r.budgeted ?? 0, r.actual, r.remainingCommitted),
-    }
-  })
-}
+// The Forecast page's effective rows with no edits open: the stored Uncommitted
+// CTC applied through the SAME composer the page and projectForecastTotals use
+// (ADR-43) — this is the real composition, not a mirror of it.
+const effective = (rows) => rows.map(r => composeForecastRow(r, r.storedUncommittedCostToComplete))
 
 // The SAME project with cc1's approved budget corrected 100,000 → 112,500.
 const EDITED_BUDGET_LINES = [
