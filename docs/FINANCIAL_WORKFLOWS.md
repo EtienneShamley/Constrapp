@@ -1416,6 +1416,16 @@ Variance to Budget  = Budgeted − Forecast Final Cost                          
 - **`null` (not forecast) contributes zero** to totals for calculation while the
   row stays visibly *not forecast*; a project-level count of unforecasted cost
   codes is shown.
+- **One row composition (ADR-43).** `lib/forecast.js → composeForecastRow(row,
+  uncommittedCostToComplete)` attaches Cost to Complete, Forecast Final Cost,
+  Variance, the Remaining Budget Reference and the two flags — *unforecasted*
+  (input `null`/`undefined`; a saved `0` is a forecast) and *over budget* (budget
+  line present **and** Variance < 0; an unbudgeted row is never over budget) —
+  from the named functions above. The Forecast tab calls it with the
+  **effective** (possibly-edited) input; `lib/margin.js → projectForecastTotals`
+  calls it with the **saved** input for the Commercial, Overview, Dashboard and
+  Cash Flow pages. The two therefore always agree, and `unforecastedCount` on the
+  saved path is the figure Cash Flow's completeness relies on.
 
 **No automatic remaining-budget forecast.** A **Remaining Budget Reference**
 (`Budgeted − Actual − Remaining Committed`) is shown as information only and backs
@@ -1636,10 +1646,18 @@ Committed, and Available to Invoice is already net of issued invoices.
 Coverage percentages are **`null`** — displayed **"—"**, never a false 0% or
 100% — when the basis is unavailable: no commercial baseline, a fully or
 over-invoiced contract, no remaining cost, or a failed source read. When cost
-codes remain unforecast, the percentage is shown **with** an explicit
-*incomplete basis* warning. Completeness states: **Complete** (full coverage,
-no untimed AR/AP, complete basis) · **Partially timed** · **Incomplete
-forecast** · **Unavailable**.
+codes remain unforecast (`projectForecastTotals().unforecastedCount > 0` —
+any cost-code-union row with no saved Uncommitted CTC, a saved `0` counting as
+forecast), the percentage is shown **with** an explicit *incomplete basis*
+warning, the project cannot be **Complete**, and the Peak Funding Requirement
+headline is **suppressed** with the reason *"Cost to Complete is incomplete
+(unforecast cost codes)"* — the untimed cost makes the trough shallower than
+reality, so an unqualified figure would understate the funding need (ADR-43).
+The percentage itself and every monthly figure are unaffected by the flag. A
+zero cost basis made of unforecast codes is reported as *incomplete* and
+*unavailable*, never as "nothing left to time". Completeness states:
+**Complete** (full coverage, no untimed AR/AP, complete basis) · **Partially
+timed** · **Incomplete forecast** · **Unavailable**.
 
 **Untimed reporting uses three separate bases and never sums them:**
 

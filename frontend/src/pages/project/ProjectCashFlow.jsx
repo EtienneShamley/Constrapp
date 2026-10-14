@@ -103,16 +103,16 @@ export default function ProjectCashFlow() {
     cashFlowLines, cashFlowLinesLoading, cashFlowLinesError,
     createCashFlowLine, updateCashFlowLine, voidCashFlowLine,
   } = useCashFlowLines(mid)
-  const { baseline, baselineError } = useProjectCommercial(mid)
+  const { baseline, baselineLoading, baselineError } = useProjectCommercial(mid)
   const { budgetLines, budgetLinesLoading, budgetLinesError }           = useBudgetLines(mid)
   const { costCodes }                               = useCostCodes()
   const { purchaseOrders, purchaseOrdersLoading, purchaseOrdersError }     = usePurchaseOrders(mid)
   const { progressClaims, progressClaimsLoading, progressClaimsError }     = useProgressClaims(mid)
   const { supplierInvoices, supplierInvoicesLoading, supplierInvoicesError } = useSupplierInvoices(mid)
-  const { supplierCreditNotes, supplierCreditNotesError } = useSupplierCreditNotes(mid)
+  const { supplierCreditNotes, supplierCreditNotesLoading, supplierCreditNotesError } = useSupplierCreditNotes(mid)
   const { variations, variationsLoading, variationsError }             = useVariations(mid)
   const { forecastLines, forecastLinesLoading, forecastLinesError }       = useForecastLines(mid)
-  const { retentionReleases, retentionReleasesError } = useRetentionReleases(mid)
+  const { retentionReleases, retentionReleasesLoading, retentionReleasesError } = useRetentionReleases(mid)
 
   const nowMonth = currentMonthKey()
 
@@ -289,10 +289,19 @@ export default function ProjectCashFlow() {
   // empty arrays and rendered as authoritative zeros. An unsettled subscription
   // means "not known yet", which is neither a read failure (the `…Error` flags
   // and the unavailable banners below, untouched) nor a genuine zero.
+  //
+  // ADR-43 added the three ADR-41 missed. Unsettled, each of them is wrong in a
+  // specific direction: no releases yet → released retention absent from AP, so
+  // Forecast Cash Out and the funding trough are UNDERSTATED (the dangerous
+  // direction the error path already refuses); no credit notes yet → Actual, FFC
+  // and open AP overstated and credit-only cost codes missing from the forecast
+  // count; no baseline yet → a false "No commercial baseline" and a false
+  // revenue-unavailable suppression reason.
   if (
     clientReceiptsLoading || supplierPaymentsLoading || clientInvoicesLoading || cashFlowLinesLoading
     || budgetLinesLoading || forecastLinesLoading || purchaseOrdersLoading
     || progressClaimsLoading || variationsLoading || supplierInvoicesLoading
+    || supplierCreditNotesLoading || retentionReleasesLoading || baselineLoading
   ) {
     return <div className="text-[13px] text-brand-muted">Loading cash and forecast records…</div>
   }
@@ -512,7 +521,10 @@ export default function ProjectCashFlow() {
                     forecast, so coverage is measured against an understated basis.
                   </p>
                 )}
-                {cstCov.state === 'no_cost_basis' && (
+                {/* A zero basis with unforecast codes is an INCOMPLETE basis, not
+                    "nothing left to time" — the incomplete notice above already
+                    says so, and the two must never appear together. */}
+                {cstCov.state === 'no_cost_basis' && !cstCov.incompleteBasis && (
                   <p className="m-0 mt-1 text-[11px] text-brand-muted">No Cost to Complete remains to time.</p>
                 )}
                 {cstCov.state === 'source_error' && (

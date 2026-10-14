@@ -1,8 +1,8 @@
 import { roundMoney } from './purchaseOrders'
 import {
   buildForecastRows,
+  composeForecastRow,
   forecastRollups,
-  forecastFinalCost as rowForecastFinalCost,
   safeNumber,
 } from './forecast'
 import {
@@ -47,21 +47,16 @@ export const isFinancialRole = (role) => FINANCIAL_ROLES.includes(role)
 
 // Project-level Forecast Final Cost (and the supporting totals), composed from
 // the EXACT read-time Budget/Forecast derivations — no cost logic is duplicated
-// here. Uses each cost code's SAVED uncommittedCostToComplete (the margin page
-// has no unsaved forecast edits). Returns the full forecast rollup object; the
-// margin caller reads `forecastFinalCost` (plus `budgeted` for the current
-// Approved Budget reference).
+// here. Each row goes through the SAME composeForecastRow the Forecast page
+// uses, evaluated at the cost code's SAVED uncommittedCostToComplete (this path
+// has no unsaved edits), so the rollup carries the same flags and counts the
+// Forecast page shows — including unforecastedCount, which Cash Flow reads.
+// Returns the full forecast rollup object; the margin caller reads
+// `forecastFinalCost` (plus `budgeted` for the current Approved Budget reference).
 export function projectForecastTotals(sources) {
-  const baseRows = buildForecastRows(sources)
-  const rows = baseRows.map((r) => ({
-    ...r,
-    uncommittedCostToComplete: r.storedUncommittedCostToComplete,
-    forecastFinalCost: rowForecastFinalCost(
-      r.actual,
-      r.remainingCommitted,
-      r.storedUncommittedCostToComplete,
-    ),
-  }))
+  const rows = buildForecastRows(sources).map(
+    (r) => composeForecastRow(r, r.storedUncommittedCostToComplete),
+  )
   return forecastRollups(rows)
 }
 

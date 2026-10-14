@@ -427,6 +427,27 @@ npm run test:unit
   A final group covers correcting a budget to **zero**: the row survives with
   `hasBudgetLine` true, FFC still does not move, and the variance goes negative
   so an overrun is surfaced rather than hidden.
+- `frontend/tests/unit/forecast.test.js` — **47 tests** over the forecast-row
+  composition (ADR-43): `isUnforecasted` (null/undefined only; **0 is a
+  forecast**; malformed values are *not* unforecasted and contribute zero) and
+  `isOverBudget` at cent resolution (−0.005 rounds to zero, −0.006 does not);
+  `composeForecastRow` proven equal to the named functions it calls, over every
+  row shape the cost-code union produces — budgeted, saved-zero, **inactive**
+  actual-only, **missing** with a stored name, unbudgeted-with-cost (never over
+  budget), variation-only, budget-only — plus an **over-credited** code whose
+  negative Actual flows through unclamped; `projectForecastTotals` carrying the
+  counts and `costToComplete` it never did while its headline figures are
+  unchanged, a fully forecast project (zeros saved) at count 0, a budget edit
+  moving `overBudgetCount` but no cost figure, and rename/deactivation moving
+  neither count; **parity** between the Forecast page's no-edits overlay
+  (reproduced exactly) and the saved path, field by field, including a malformed
+  stored value; **end to end** — the count reaching `costCoverage` →
+  `completenessState` (never Complete) → `peakFundingSuppression` (exact reason
+  string), the timed percentage unchanged by the flag, Complete restored on a
+  fully forecast project, and a zero basis of unforecast codes reported as both
+  unavailable and incomplete; and the three-caller **structure** (margin, page
+  and invariance suite all compose through the one helper; the page calls none
+  of the pieces directly).
 - `frontend/tests/unit/cashFlow.test.js` — **131 tests** over `lib/cashFlow.js`
   and the cash-row adapters (`lib/clientReceipts.js → cashInRows()`,
   `lib/supplierPayments.js → cashOutRows()`): month-key validation and labels,
@@ -2668,6 +2689,35 @@ cumulative, peak funding, the boundary and no-past-month rules) is asserted by
 - [ ] The state badge reads Complete / Partially timed / Incomplete forecast /
   Unavailable correctly.
 
+**Incomplete cost basis (ADR-43)** — the count behind the warning is
+`projectForecastTotals().unforecastedCount`, the same figure the Forecast tab
+header shows as "N of M cost codes not yet forecast". Set up a project with full
+revenue and cost coverage lines, then:
+
+- [ ] With **one** cost code that has a PO or an actual but **no saved
+  forecast** (blank, "Not forecast" on the Forecast tab): the notice reads
+  *"Cost to Complete is incomplete — 1 cost code is not forecast…"*, the badge is
+  **Partially timed** (never Complete), and **Cost timed %** is the same number
+  it showed before the notice appeared.
+- [ ] On the Forecast tab save **0** on that code → the notice disappears and,
+  with everything else timed, the badge becomes **Complete**. A saved zero is a
+  forecast.
+- [ ] Clear the input back to blank and save → the notice returns. The Forecast
+  tab's "N of M not yet forecast" count and the Cash Flow notice's N **always
+  agree**.
+- [ ] A cost code with **only** an actual (e.g. a posted invoice line, finished
+  work) and no forecast line is counted — it is not exempt because nothing is
+  committed on it.
+- [ ] An **inactive** cost code that still carries activity and no forecast is
+  counted; deactivating it changes neither count.
+- [ ] A project whose only cost codes are **budget-only** (no PO, no actual, no
+  forecast) shows the incomplete notice, **"—"** for Cost timed, the badge
+  **Unavailable**, and does **not** also say *"No Cost to Complete remains to
+  time"* — the two notices never appear together.
+- [ ] A project with no cost codes at all (or every code forecast and nothing
+  left to time) still shows *"No Cost to Complete remains to time"* without the
+  incomplete notice.
+
 ### 15m-x. Peak funding
 
 - [ ] With everything timed and both bases available, the headline peak funding
@@ -2681,7 +2731,21 @@ cumulative, peak funding, the boundary and no-past-month rules) is asserted by
 - [ ] Retention withheld and unallocated cash produce warnings but do **not**
   suppress.
 
-### 15m-xi. Untimed panel — three bases
+**Unforecast cost codes suppress (ADR-43)** — using the project from §15m-ix:
+
+- [ ] With one cost code unforecast and **everything else timed**, the headline
+  reads **"Cannot be calculated reliably yet"** and the reason list contains
+  exactly *"Cost to Complete is incomplete (unforecast cost codes)"*.
+- [ ] If the projected position goes negative, the **lower bound** line still
+  appears beneath the reasons ("Lower bound only: at least … in …"); if it never
+  goes negative, no figure is shown.
+- [ ] Save **0** (or a value) on that code → the headline peak funding figure (or
+  "No funding shortfall projected") returns, and its **amount and month are
+  identical** to what the lower bound showed — suppression changes presentation,
+  never the computed trough.
+- [ ] The chart's peak marker follows the same rule: no authoritative marker
+  while suppressed, marker back once every code is forecast.
+- [ ] The monthly table's figures do not change at any point in this sequence.
 
 - [ ] The three columns are headed *Gross cash* · *Ex-GST source value* ·
   *Exposure — context only*, and **no total spans two bases**.
@@ -2707,6 +2771,24 @@ cumulative, peak funding, the boundary and no-past-month rules) is asserted by
   unavailable but leaves the cash layers working.
 - [ ] A **Client Receipts** or **Supplier Payments** failure blocks the whole
   page with the existing error card.
+
+**Loading is not a zero — the three late gates (ADR-43).** The page's single
+*"Loading cash and forecast records…"* placeholder now also waits on Supplier
+Credit Notes, Retention Releases and the Commercial Baseline. On a project that
+has a posted credit note, a posted retention release and an established
+baseline:
+
+- [ ] Throttle the network (DevTools → Slow 3G) and open Cash Flow. The
+  placeholder stays until **every** source settles; at no point does the page
+  flash a Forecast Cash Out, Remaining Payable, Actual or Forecast Final Cost
+  figure that then changes, nor a momentary *"No commercial baseline"* notice or
+  a *"revenue basis unavailable"* suppression reason that then disappears.
+- [ ] Switch between two projects from the Cash Flow tab: the placeholder shows
+  during the switch and the first figures rendered are the new project's final
+  figures.
+- [ ] The three **error** behaviours are unchanged: a failed credit-note,
+  release or baseline read still shows its named *unavailable* banner / notice
+  — never the loading placeholder forever, and never a zero.
 
 ### 15m-xiv. Currency & no mutation
 

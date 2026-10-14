@@ -15,10 +15,7 @@ import { useSupplierCreditNotes } from '../../hooks/useSupplierCreditNotes'
 import { useVariations } from '../../hooks/useVariations'
 import { useForecastLines } from '../../hooks/useForecastLines'
 import {
-  buildForecastRows, forecastRollups,
-  forecastCostToComplete, forecastFinalCost, varianceToBudget,
-  remainingBudgetReference, remainingBudgetSuggestion,
-  isUnforecasted, isOverBudget,
+  buildForecastRows, composeForecastRow, forecastRollups, remainingBudgetSuggestion,
 } from '../../lib/forecast'
 import { CREDIT_READ_ERROR_NOTICE } from '../../lib/supplierCreditNotes'
 
@@ -129,23 +126,16 @@ export default function ProjectForecast() {
     const ctcNegative = parsed !== null && Number.isFinite(parsed) && parsed < 0
     const ctcForCalc  = ctcInvalid ? null : parsed // junk contributes zero for display
 
-    const ffc      = forecastFinalCost(row.actual, row.remainingCommitted, ctcForCalc)
-    const ctcTotal = forecastCostToComplete(row.remainingCommitted, ctcForCalc)
-    const remRef   = remainingBudgetReference(row.budgeted ?? 0, row.actual, row.remainingCommitted)
-    const variance = varianceToBudget(row.budgeted ?? 0, ffc)
-
     const dirty = ctcStr !== storedCtcString(row.storedUncommittedCostToComplete) || notesStr !== (row.notes || '')
 
+    // The shared composer supplies every figure and flag (the same one
+    // projectForecastTotals uses with the SAVED input). Only the input-specific
+    // overlay lives here: an invalid entry is "invalid", never "Not forecast".
+    const composed = composeForecastRow(row, ctcForCalc)
     return {
-      ...row,
+      ...composed,
       ctcStr, notesStr,
-      uncommittedCostToComplete: ctcForCalc, // number | null, for rollups
-      costToComplete: ctcTotal,
-      forecastFinalCost: ffc,
-      varianceToBudget: variance,
-      remainingBudgetRef: remRef,
-      unforecasted: isUnforecasted(ctcForCalc) && trimmed === '',
-      overBudget: row.hasBudgetLine ? isOverBudget(variance) : false,
+      unforecasted: composed.unforecasted && trimmed === '',
       ctcInvalid, ctcNegative, dirty,
     }
   }), [baseRows, edits])

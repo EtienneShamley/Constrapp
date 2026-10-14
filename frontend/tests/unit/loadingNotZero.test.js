@@ -139,9 +139,27 @@ describe('ProjectCashFlow: no figure is derived before its sources settle', () =
       // from empty arrays while unsettled
       'budgetLinesLoading', 'forecastLinesLoading', 'purchaseOrdersLoading',
       'progressClaimsLoading', 'variationsLoading', 'supplierInvoicesLoading',
+      // the three ADR-41 missed, added by ADR-43: unsettled, each one fed a
+      // wrong figure (released retention absent from AP → trough understated;
+      // credits absent → Actual/FFC/AP overstated; baseline absent → a false
+      // "no baseline" and a false revenue-unavailable suppression reason)
+      'supplierCreditNotesLoading', 'retentionReleasesLoading', 'baselineLoading',
     ]) {
       expect(gate).toContain(flag)
     }
+  })
+
+  it('destructures the three late-gated loading flags from their hooks (not just names them)', () => {
+    expect(src).toMatch(/const \{ supplierCreditNotes, supplierCreditNotesLoading, supplierCreditNotesError \} = useSupplierCreditNotes\(mid\)/)
+    expect(src).toMatch(/const \{ retentionReleases, retentionReleasesLoading, retentionReleasesError \} = useRetentionReleases\(mid\)/)
+    expect(src).toMatch(/const \{ baseline, baselineLoading, baselineError \} = useProjectCommercial\(mid\)/)
+  })
+
+  it('never says "nothing left to time" over an incomplete cost basis', () => {
+    // A zero basis made of unforecast codes is INCOMPLETE, not empty — the two
+    // notices must be mutually exclusive in the source.
+    expect(src).toContain("cstCov.state === 'no_cost_basis' && !cstCov.incompleteBasis && (")
+    expect(src).not.toContain("cstCov.state === 'no_cost_basis' && (")
   })
 
   it('leaves the unavailable banners and their error flags untouched', () => {

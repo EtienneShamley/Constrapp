@@ -221,10 +221,44 @@ export function buildForecastRows({
   return rows
 }
 
+// ── Effective row composition (ONE definition, shared by every consumer) ─────
+//
+// Takes a base row from buildForecastRows plus the Uncommitted Cost to Complete
+// to evaluate it with (number | null) and returns the row with every
+// input-dependent output attached. Every figure comes from the authoritative
+// functions above — nothing is recomputed here — so the Forecast page (which
+// passes the effective, possibly-edited input), projectForecastTotals (which
+// passes the SAVED input) and the invariance tests all carry identical flags and
+// figures. Before this helper existed the saved path set none of the flags, so
+// unforecastedCount / overBudgetCount were always 0 downstream (ADR-43).
+//
+//   unforecasted ⇔ the input is null/undefined (a saved 0 IS a forecast)
+//   overBudget   ⇔ the row has a budget line AND Variance to Budget < 0
+//                  (an unbudgeted row is never "over budget")
+//
+// A malformed stored value (anything isUnforecasted() does not treat as blank)
+// is NOT redefined here: it is not unforecasted, and safeNumber() makes it
+// contribute zero — exactly the pre-existing behaviour.
+export function composeForecastRow(row, uncommittedCostToComplete) {
+  const ffc = forecastFinalCost(row.actual, row.remainingCommitted, uncommittedCostToComplete)
+  const variance = varianceToBudget(row.budgeted ?? 0, ffc)
+  return {
+    ...row,
+    uncommittedCostToComplete,
+    costToComplete: forecastCostToComplete(row.remainingCommitted, uncommittedCostToComplete),
+    forecastFinalCost: ffc,
+    varianceToBudget: variance,
+    remainingBudgetRef: remainingBudgetReference(row.budgeted ?? 0, row.actual, row.remainingCommitted),
+    unforecasted: isUnforecasted(uncommittedCostToComplete),
+    overBudget: row.hasBudgetLine ? isOverBudget(variance) : false,
+  }
+}
+
 // Project-level rollups from the effective (possibly-edited) rows. Each row is
 // expected to carry `uncommittedCostToComplete` (number | null), `costToComplete`,
-// `forecastFinalCost`, and `unforecasted`. Variance is recomputed from the rounded
-// project Budgeted and Forecast Final Cost so it reconciles to the headline figures.
+// `forecastFinalCost`, `unforecasted` and `overBudget` — i.e. to have passed
+// through composeForecastRow. Variance is recomputed from the rounded project
+// Budgeted and Forecast Final Cost so it reconciles to the headline figures.
 export function forecastRollups(rows) {
   const acc = {
     budgeted: 0,

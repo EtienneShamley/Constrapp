@@ -151,6 +151,20 @@ describe('invariance: every snapshot figure IS the existing selector output', ()
     }
   })
 
+  it('the five forecast figures are the literal values they were before ADR-43 (regression pin)', () => {
+    // Hand-derived from the fixtures above: cc1 actual 600 − 100 credit = 500,
+    // cc2 400, cc3 1000, cc4 claim 250 → Actual 2150; cc1 PO 800 − 600 invoiced
+    // → Remaining Committed 200; CTC 150; FFC 2500; budget 1500 → variance −1000.
+    // The composer change (ADR-43) added flags and counts to this path and may
+    // move NO money figure the Dashboard shows.
+    expect(s.approvedBudget.value).toBe(1500)
+    expect(s.actual.value).toBe(2150)
+    expect(s.remainingCommitted.value).toBe(200)
+    expect(s.forecastFinalCost.value).toBe(2500)
+    expect(s.varianceToBudget.value).toBe(-1000)
+    expect(s.costComposition.uncommittedCostToComplete).toBe(150)
+  })
+
   it('the fixtures exercise credit notes and released retention (both move a figure)', () => {
     const noCredits = snap({ ...SOURCES, supplierCreditNotes: [] })
     expect(noCredits.actual.value).not.toBe(s.actual.value)
@@ -524,7 +538,7 @@ describe('structure: role gate, no arithmetic, no writes, no chart library', () 
     ])
   })
 
-  it('the Forecast count bug is not consumed (unforecastedCount / overBudgetCount)', () => {
+  it('the forecast counts (unforecastedCount / overBudgetCount) are not consumed — Cash Flow owns them (ADR-43)', () => {
     for (const code of [dashboard, snapshotPage, snapshotLib]) {
       expect(code).not.toContain('unforecastedCount')
       expect(code).not.toContain('overBudgetCount')
