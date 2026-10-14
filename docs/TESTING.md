@@ -4025,20 +4025,27 @@ render test.
 - [ ] `/create-account` typed directly still renders its existing stub page —
       the route was kept deliberately.
 
-### 18c. Dashboard — nothing fabricated
+### 18c. Dashboard — nothing fabricated (updated by Dashboard Analytics, ADR-42)
 
-- [ ] **No charts at all.** No "Project Financial Overview" bar chart, no "Task
-      Progress" donut, no 72% figure anywhere.
+- [ ] **No fabricated chart.** No "Project Financial Overview" bar chart, no "Task
+      Progress" donut, no 72% figure anywhere. The only visual is the Project
+      Snapshot's cost-composition bar (§18h).
 - [ ] Exactly **two** KPI cards: **Active Projects** (with an "N total" sub) and
       **Total Projects**. No Pending POs, no Budget Utilization, no Upcoming
       Tasks, and no "placeholder data" caption.
 - [ ] Active Projects equals the number of projects whose status is
       **In Progress**; Total equals the full project count. Change a project's
       status → both update live.
+- [ ] **Projects by status** shows Planning / In Progress / Backlogged / On Hold /
+      Completed counts that sum to Total Projects. No money in the strip.
 - [ ] The table is headed **Projects** (not "Active Projects") and lists **every**
       project, which is what makes that heading honest.
-- [ ] Row values are real: name, location, status badge, budget in the
-      **project's** currency, start date. Loading and empty states still appear.
+- [ ] Row values are real: name, location, status badge, **Headline Budget** in
+      the **project's** currency, reported **Progress** bar + %, **Currency**
+      code, start date. No per-project financial column.
+- [ ] Loading shows "Loading projects…"; a genuinely empty company shows "No
+      projects yet"; a **failed** project read shows **"Projects unavailable"**
+      — never "No projects yet".
 - [ ] Welcome line shows the real profile name and company name.
 
 ### 18d. Responsive tables — 375 / 768 / 1280px
@@ -4095,6 +4102,47 @@ Codes:
       block must not disturb it.
 - [ ] Nothing was deployed and no rules were published; the release steps live in
       [DEPLOYMENT.md](DEPLOYMENT.md) → Private-Beta Release Checklist.
+
+### 18h. Dashboard Project Snapshot (ADR-42)
+
+Use **Gold Coast apartments** (or any project with budget lines, POs, claims,
+posted supplier invoices, a credit note, payments, a retention release and a
+commercial baseline). Open its Forecast, Commercial and Commercial → Supplier
+Payments tabs in a second tab for comparison. **Save** any Forecast edits first —
+the snapshot shows saved forecast inputs only.
+
+- [ ] Heading reads **Project Snapshot · Gold Coast apartments · {currency}**.
+- [ ] **Approved Budget, Actual, Remaining Committed, Forecast Final Cost,
+      Variance to Budget** equal the Forecast tab's summary cards exactly.
+- [ ] **Forecast Gross Profit** and the **Forecast Margin %** beneath it equal the
+      Commercial tab.
+- [ ] **Remaining Payable** equals Supplier Payments → Remaining Payable.
+- [ ] The cost-composition bar's labelled **Forecast Final Cost** equals the card;
+      its legend shows Actual / Remaining Committed / Uncommitted Cost to
+      Complete; the budget marker sits at the Approved Budget (inside the bar when
+      over budget, at its end when under).
+- [ ] Variance to Budget is red only when negative.
+- [ ] A project with no commercial baseline shows **"Contract value not set"** with
+      a **Set contract value →** link to its Commercial tab — never $0 or 0%.
+- [ ] A settled project with no records shows real **$0** figures (not "—").
+- [ ] Throttle the network (DevTools → Slow 3G) and switch project: figures show
+      **"—"** while loading, then settle. **Project A's figures never appear under
+      Project B's heading.**
+- [ ] Failed source (emulator with one collection denied, or a role change mid-
+      session): the dependent figures show **Unavailable** and name the source;
+      unrelated cards still show values.
+- [ ] **URL:** choosing a project in the picker, or a row's **Snapshot** action,
+      sets `?project=<id>` (Snapshot also scrolls to the panel). **Refresh** keeps
+      the same project. A bogus `?project=nope` falls back to the first In
+      Progress project; no `?project` does the same.
+- [ ] An **NZD** project's snapshot heading and every figure show **NZD**.
+- [ ] **No portfolio money** anywhere on the Dashboard — no total across
+      projects in any currency.
+- [ ] Signed in as **subcontractor** or **client**: no snapshot, no picker, no
+      Snapshot row action, and **no rules-denied read errors** in the console.
+- [ ] **375 / 768 / 1280px:** cards reflow (2 / 3 / 4 columns), the picker and
+      links are ≥44px tall, the bar spans the card width, and the register scrolls
+      horizontally inside its card with the Actions column reachable.
 
 ## 19. Subscription-Hook Migration — keyed snapshot / derived loading (ADR-41)
 

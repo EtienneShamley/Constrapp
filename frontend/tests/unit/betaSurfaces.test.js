@@ -45,7 +45,7 @@ const tableOffsets = (src) => {
 // The four tables the assessment found sitting bare inside a Card, with the
 // minimum width each needs so its Actions column is never crushed.
 const REGISTERS = [
-  { label: 'Dashboard projects',  src: read('pages/Dashboard.jsx'),                  minWidth: 820 },
+  { label: 'Dashboard projects',  src: read('pages/Dashboard.jsx'),                  minWidth: 1040 },
   { label: 'Projects register',   src: read('pages/Projects.jsx'),                   minWidth: 860 },
   { label: 'Project Budget',      src: read('pages/project/ProjectBudget.jsx'),      minWidth: 980 },
   { label: 'Project Cost Codes',  src: read('pages/project/ProjectCostCodes.jsx'),   minWidth: 820 },

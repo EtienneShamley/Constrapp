@@ -1249,6 +1249,38 @@ to Actual on its own — so material/direct costs that never had a progress clai
 now reach Actual, which the claims-only model could not do. The net effect: each
 cost is counted exactly once.
 
+## Dashboard Project Snapshot — no new figures (ADR-42)
+
+The Dashboard's Project Snapshot **defines no financial figure**. It shows, for
+**one selected project in that project's currency**, outputs already defined
+above and on the Forecast / Commercial / Supplier Payments tabs, via
+`lib/projectSnapshot.js`, which only composes existing selectors:
+
+| Card | Exact source |
+|---|---|
+| Approved Budget | `projectForecastTotals().budgeted` |
+| Actual | `projectForecastTotals().actual` |
+| Remaining Committed | `projectForecastTotals().remainingCommitted` |
+| Forecast Final Cost | `projectForecastTotals().forecastFinalCost` (SAVED uncommitted CTC only) |
+| Variance to Budget | `projectForecastTotals().varianceToBudget` |
+| Forecast Gross Profit · Margin % | `computeMargin().forecastGrossProfit` / `.forecastMarginPct` — "Set contract value" when `isBaselineEstablished` is false, never 0 |
+| Remaining Payable (gross) | `payablesSummary(SI, SP, SCN, releasedByInvoiceId(RR)).remaining` |
+
+The cost-composition bar draws `actual`, `remainingCommitted` and
+`uncommittedCostToComplete` from the same rollup; its displayed total is always
+`forecastFinalCost`, **never the sum of the segments**.
+
+Availability is per figure: a figure is "—" while any source it reads is
+loading and **Unavailable** if any of them failed — never 0. The Dashboard is
+deliberately **stricter** than some project tabs: a failed Supplier Credit Notes
+read makes Actual / FFC / Variance / margin unavailable (Forecast and Commercial
+show a warning beside the figure instead), and a failed Retention Releases read
+makes Remaining Payable unavailable (Supplier Payments still shows it).
+
+**There is no portfolio monetary figure.** Projects may carry different
+currencies and Constrapp never converts, so no amount is ever summed across
+projects.
+
 ## Planned Commercial Lifecycle (not yet implemented)
 
 The sections above describe **implemented** behaviour. The following extend the
