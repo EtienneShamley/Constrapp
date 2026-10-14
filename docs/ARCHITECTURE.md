@@ -47,7 +47,7 @@ modules** (screens exist, no functionality) are listed in the module-status tabl
 | Styling | Tailwind CSS v4 via `@tailwindcss/vite` | Tokens in `@theme` in `frontend/src/index.css`; no `tailwind.config.js` |
 | Routing | React Router 7 (`react-router-dom`) | `BrowserRouter` |
 | State | React Context + hooks | No Redux/Zustand |
-| Charts | Recharts 3 | Cash Flow chart only (the Dashboard's charts were fabricated data and were removed) |
+| Charts | Recharts 3 | Cash Flow chart only (the Dashboard's charts were fabricated data and were removed; its one cost-composition bar is plain SVG, no chart library) |
 | Backend | Firebase JS SDK 12 — Auth, Firestore, Storage | **Client SDK only** |
 | Lint | ESLint 10 (flat config) | `npm run lint` = `eslint . --max-warnings 0`. Standing policy **0 errors / 0 warnings**, blocking in CI (ADR-41) |
 | Rules tests | Vitest 4 + `@firebase/rules-unit-testing` + `firebase-tools` 13 (emulator) | `npm run test:rules` — **dev-only**. Requires JDK 17 |
@@ -103,7 +103,9 @@ frontend/                  The entire application (run all npm commands here)
                            Supplier Payments | Cash Flow),
                            ProjectDocumentsLayout (Documents sub-nav:
                            Drawings | General Documents)
-    pages/                 Login, CreateAccount, ForgotPassword, Dashboard, Projects,
+    pages/                 Login, CreateAccount, ForgotPassword, Dashboard (+ dashboard/
+                           ProjectSnapshot — the role-gated child that mounts the
+                           snapshot's financial hooks), Projects,
                            CompanySettings (country & base currency),
                            Contacts (company directory), Subcontractors (filtered
                            contacts view), Pulse, Shield
@@ -142,7 +144,11 @@ frontend/                  The entire application (run all npm commands here)
                            clientReceipts.js, supplierPayments.js, cashFlow.js
                            (pure monthly cash aggregation), cashFlowChart.js
                            (chart presentation transform — no arithmetic),
-                           variations.js, forecast.js, margin.js, contacts.js,
+                           variations.js, forecast.js, margin.js,
+                           projectSnapshot.js (Dashboard snapshot — COMPOSES
+                           projectForecastTotals / computeMargin / payablesSummary,
+                           plus per-figure availability; no formula of its own),
+                           contacts.js,
                            boq.js (pure BOQ arithmetic + read-time budget comparison),
                            projectTimeline.js (programme domain logic — NON-financial),
                            timelineGantt.js (Gantt geometry — no arithmetic),
@@ -257,7 +263,7 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Tenders (packages, bids, comparison, award) | Implemented (foundation) — cost-code + free-text scope (BOQ-independent), manual bids, read-time comparison, award as a decision record; **no stored totals, no PO creation, closing date informational** |
 | Forecast Cost to Complete | Implemented (foundation) — read-time, cost-side |
 | Project Margin (Commercial tab) | Implemented (foundation) — read-time, ex-GST; commercial baseline is the only stored input |
-| Dashboard | Minimal but wholly real — live project table and two derived project counts. The fabricated KPIs and charts were **removed**, not rederived; a portfolio financial rollup is later work |
+| Dashboard | Analytics v1 (ADR-42) — project counts, status breakdown and register from the existing projects subscription (no new listener, no money); plus a financial-role-only **Project Snapshot** for one selected project (`?project=<id>`). The snapshot child (`pages/dashboard/ProjectSnapshot.jsx`) mounts ten existing project-scoped hooks and renders `lib/projectSnapshot.js`, which only composes `projectForecastTotals` / `computeMargin` / `payablesSummary`. No portfolio money, no rules change |
 | Contacts | Implemented (foundation) — company-wide directory; supplier picker on POs |
 | Subcontractors | Implemented — filtered contacts view (the IQ™ "Coming Soon" card was removed for private beta) |
 | Documents & Drawings | Implemented (foundation) — drawing masters + **immutable** revisions with a transactional current-revision pointer, revision history, current/superseded/withdrawn lifecycle, explicit succession on withdrawal, and a flat general-document register with project/internal visibility. Bytes in Cloud Storage, metadata in Firestore, **uploads Storage-first**; **no photos, DWG, markup, OCR, AI or takeoff** |

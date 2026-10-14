@@ -91,7 +91,9 @@ frontend/
                     payments.js (shared, direction-agnostic),
                     clientReceipts.js, supplierPayments.js, variations.js,
                     tenders.js (packages, bids, validity gate, comparison, award),
-                    forecast.js, margin.js, cashFlow.js (pure monthly cash
+                    forecast.js, margin.js, projectSnapshot.js (Dashboard
+                    Project Snapshot — composes existing selectors + per-figure
+                    availability, NO formula of its own; ADR-42), cashFlow.js (pure monthly cash
                     aggregation + forecast layers), contacts.js, boq.js (pure
                     BOQ arithmetic + read-time budget comparison),
                     projectTimeline.js (programme domain logic — no financial

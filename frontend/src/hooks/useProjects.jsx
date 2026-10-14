@@ -26,10 +26,12 @@ export function ProjectsProvider({ children }) {
   // `targetKey`/`key` expressions below must stay identical — if they ever
   // diverge, `settled` never becomes true and every project page loads forever.
   //
-  // `error` is tracked here for pattern uniformity but deliberately NOT
-  // exposed: adding a `projectsError` would change this provider's public
-  // context value. A failed read therefore still presents as an empty list,
-  // exactly as it did before this migration.
+  // `error` is exposed as `projectsError` (Dashboard Analytics, ADR-42) — an
+  // ADDITIVE field on the context value; every existing field is unchanged. A
+  // failed read still yields an empty `projects` array (so every existing
+  // consumer behaves exactly as before), but a consumer that renders "no
+  // projects" must check `projectsError` first: "none" and "could not load
+  // them" are opposite facts.
   const [snap, setSnap] = useState({ key: null, projects: [], error: false })
 
   useEffect(() => {
@@ -66,6 +68,8 @@ export function ProjectsProvider({ children }) {
     [settled, snap.projects],
   )
   const projectsLoading = targetKey !== null && !settled
+  // Exposed only once the CURRENT target has settled, never raw (ADR-41).
+  const projectsError = settled ? snap.error : false
 
   const createProject = useCallback(async ({ name, status, budget, startDate, location, progress, currency }) => {
     if (!companyId || !user) throw new Error('Not authenticated')
@@ -220,7 +224,7 @@ export function ProjectsProvider({ children }) {
 
   return (
     <ProjectsContext.Provider
-      value={{ projects, projectsLoading, createProject, updateProject, updateProjectCurrency, lockProjectCurrency }}
+      value={{ projects, projectsLoading, projectsError, createProject, updateProject, updateProjectCurrency, lockProjectCurrency }}
     >
       {children}
     </ProjectsContext.Provider>

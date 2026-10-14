@@ -3383,3 +3383,106 @@ already exposed, a render expression, or a gate condition.
 financial formula change, no hook API change, no new dependency, no state
 library, no test framework, no deployment. `useAuth.jsx` is byte-identical to
 before — it listens to Firebase Auth, not Firestore, and was never in scope.
+
+## ADR-42: Dashboard Analytics (Option C — portfolio counts + ONE selected-project financial snapshot; no portfolio money; selector reuse only; URL selection; financial-role read gate)
+
+**Context.** Beta Launch Readiness removed the Dashboard's fabricated charts and
+KPIs rather than re-deriving them. Real analytics were wanted back, under three
+constraints: no financial figure may be hard-coded or re-derived by a second copy
+of business logic; projects carry their own currency and Constrapp never
+converts (AGENT.md → One currency per project); and every financial hook is a
+**project-scoped** `onSnapshot` subscription — there is no company-level
+financial read path and no collection-group rule in `firestore.rules`.
+
+**Options assessed.** (A) portfolio totals across all projects; (B) selected
+project only; (C) portfolio operational counts + one selected-project financial
+snapshot; (D) portfolio grouped by currency. A and D need 8–13 project-scoped
+listeners **per project** (reading every financial document in the company on
+each visit) or a new collection-group read path (new rules blocks, security
+review, indexes — and still every document read). A also sums mixed currencies
+unless guarded. B duplicates Project Overview without any company view.
+
+**Decision 1 — Option C.** Portfolio layer: Active/Total counts, a
+projects-by-status breakdown (`PROJECT_STATUSES`; out-of-vocabulary legacy
+statuses counted as "Other" so counts always sum to the total) and the project
+register — all from the existing `useProjects` subscription, **zero new
+listeners, no money**. Financial layer: one **Project Snapshot** for one
+selected project.
+
+**Decision 2 — no portfolio money, anywhere.** No amount is summed across
+projects; `company.baseCurrency` is never used as a portfolio or conversion
+currency. The snapshot is always ONE project in ONE currency
+(`resolveProjectCurrency`), stated in its heading:
+*Project Snapshot · {name} · {currency}*.
+
+**Decision 3 — bounded listener count.** The snapshot opens ten existing
+project-scoped subscriptions (budgetLines, purchaseOrders, progressClaims,
+supplierInvoices, supplierCreditNotes, variations, forecastLines, commercial
+baseline, supplierPayments, retentionReleases) for the selected project only.
+Cost codes are **not** subscribed — in `buildForecastRows` they supply display
+names and change no amount. The child is keyed by project id, and every hook is
+keyed-snapshot (ADR-41), so a switch never shows the previous project's figures.
+
+**Decision 4 — selector reuse, no formula duplication.** `lib/projectSnapshot.js`
+calls `projectForecastTotals`, `computeMargin` and `payablesSummary` (with
+`releasedByInvoiceId`, the Supplier Payments page's exact composition) and
+carries their outputs unchanged. It imports nothing else and contains no money
+arithmetic; the only computation it adds is per-figure **availability** and the
+**geometry** of the one cost-composition bar (segment shares of
+`max(FFC, Approved Budget)`), whose displayed total is always
+`forecastFinalCost`, never the sum of its segments. A component that is negative
+(e.g. an over-credited cost code) or a non-positive FFC is listed, not drawn.
+Plain SVG with percentage attributes — no Recharts, no inline style object.
+
+**Decision 5 — per-figure availability.** `figureState(dependencies,
+sourceStates)` is domain-neutral: any dependency failed → *Unavailable* (naming
+the sources); else any loading → "—"; else ready, where 0 is a genuine zero.
+A dependency with missing or non-boolean flags counts as **failed** — missing
+error information is never success. Each figure lists only the sources its
+selector actually reads, so one failed source never hides an unrelated card.
+The margin card has one extra state: a cleanly settled baseline with no Original
+Contract Value is **"Contract value not set"** with a link to the Commercial
+tab — never a zero margin. This is stricter than the Forecast/Commercial tabs on
+a failed credit-note read and than Supplier Payments on a failed release read;
+the Dashboard reports those figures unavailable.
+
+**Decision 6 — URL selection.** `?project=<id>`. A valid id selects that project;
+a missing or unknown id falls back to the first `In Progress` project in the
+**existing** `useProjects` order (no new ordering is invented), then to the first
+project, then none. The URL is written only when the user selects (picker or the
+register's Snapshot action, which also scrolls/focuses the snapshot), with
+`replace` and other query params preserved. No local-storage preference.
+
+**Decision 7 — financial-role READ gate.** Dashboard renders the
+`ProjectSnapshot` child only when `isFinancialRole(profile.role)`; the child, not
+the Dashboard, mounts the financial hooks — so subcontractor and client users
+never open those subscriptions (not opened-and-hidden). Firestore rules remain
+the enforced boundary; this is its UX mirror. No write callback is consumed.
+
+**Decision 8 — `projectsError` exposed (additive).** `ProjectsProvider` already
+tracked a read error but did not expose it, so a failed project read rendered
+*"No projects yet"* — a false fact. `projectsError` (settled-only, ADR-41) is now
+on the context value; every existing field is unchanged and a failed read still
+yields `projects: []`. The Dashboard distinguishes loading / unavailable /
+empty (`lib/projects.js → projectsListState`).
+
+**Decision 9 — register.** "Budget" → **"Headline Budget"** (creation-time
+metadata, not the Approved Budget — ADR-39); **Progress** (manually reported
+`project.progress`, not earned value) and **Currency** columns added; a
+Snapshot action per row for financial roles. No per-project financial column.
+
+**Deferred (recorded in ROADMAP → Known Gaps).** Project health indicators;
+Cash Flow analytics on the Dashboard (forecast cash, closing position, peak
+funding, cash pressure — their orchestration still lives in
+`ProjectCashFlow.jsx`); portfolio analytics grouped by currency; and the
+**`projectForecastTotals` count bug** — it never sets the per-row
+`unforecasted`/`overBudget` flags, so `unforecastedCount`/`overBudgetCount` are
+always 0 on that path, silencing Cash Flow's incomplete-cost-basis notice and
+suppression reason. The Dashboard consumes neither count; the fix changes Cash
+Flow behaviour and is its own change.
+
+*Scope held:* no Firestore or Storage rules change, no new collection or field,
+no stored aggregate, no Cloud Function, no FX, no new dependency, no new
+financial formula, no write from the Dashboard. ADR-3's "cross-project dashboards
+will eventually need aggregation" remains true and is not resolved here — v1
+avoids needing it.

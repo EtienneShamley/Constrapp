@@ -115,3 +115,40 @@ export function projectStartDateToInput(startDate) {
   const pad = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
+
+// ── Project register state (Dashboard) ───────────────────────────────────────
+//
+// Three facts the register must never collapse into each other:
+//   loading      → the subscription has not reported yet
+//   unavailable  → the read FAILED (most often a rules rejection) — this is NOT
+//                  "no projects", and saying so would state a false fact
+//   empty        → the read settled and the company genuinely has no projects
+export const PROJECTS_LIST_STATE = {
+  LOADING:     'loading',
+  UNAVAILABLE: 'unavailable',
+  EMPTY:       'empty',
+  READY:       'ready',
+}
+
+export function projectsListState({ loading, error, count }) {
+  if (loading) return PROJECTS_LIST_STATE.LOADING
+  if (error) return PROJECTS_LIST_STATE.UNAVAILABLE
+  return (Number(count) || 0) > 0 ? PROJECTS_LIST_STATE.READY : PROJECTS_LIST_STATE.EMPTY
+}
+
+// Count of projects per status, in PROJECT_STATUSES order. A project whose
+// stored status is outside the vocabulary (legacy data predating the rules
+// enum) is counted under `other` rather than dropped, so the counts always sum
+// to the project total. NON-financial — status is descriptive (ADR-39).
+export function projectStatusCounts(projects) {
+  const counts = Object.fromEntries(PROJECT_STATUSES.map(s => [s, 0]))
+  let other = 0
+  for (const p of projects ?? []) {
+    if (isProjectStatus(p?.status)) counts[p.status] += 1
+    else other += 1
+  }
+  return {
+    byStatus: PROJECT_STATUSES.map(status => ({ status, count: counts[status] })),
+    other,
+  }
+}
