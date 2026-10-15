@@ -578,15 +578,27 @@ export function buildCreditNoteLineItems(rows, costCodes) {
 // ⚠️ A FAILED CREDIT-NOTE READ IS UNKNOWN, NEVER ZERO. Posted credit notes
 // REDUCE Invoiced, Actual and each invoice's remaining payable. Treating an
 // unreadable list as empty would silently misstate every one of those figures,
-// so each consuming page surfaces this instead of rendering as though no
-// credits exist. On the cost side the error direction is conservative (cost
-// stays overstated, margin understated), which is why these pages warn rather
-// than blanking every figure; the payable side is the dangerous direction and
-// is handled by disabling actions and rendering balances unavailable.
+// so each consuming page must say so. Two treatments exist:
+//
+//   · CREDIT_READ_ERROR_NOTICE — the Budget page, which still prints its cost
+//     figures WITHOUT credits (the conservative direction: cost overstated)
+//     and warns. The notice says exactly that; it previously claimed the
+//     figures were "not shown as though no credits exist", which was false.
+//   · CREDIT_READ_UNAVAILABLE_NOTICE — Forecast, Commercial and Overview
+//     (ADR-44), and the Dashboard (ADR-42), where every credit-dependent figure
+//     renders Unavailable instead.
+//
+// The payable side is the dangerous direction everywhere and is handled by
+// disabling actions and rendering balances unavailable.
 export const CREDIT_READ_ERROR_NOTICE =
   'Supplier Credit Notes could not be loaded. Posted credit notes reduce Invoiced and Actual by cost code, so ' +
-  'the cost and margin figures below may be OVERSTATED by any credits that exist. They are not shown as though ' +
-  'no credits exist — reload the page, and check your connection and permissions if this persists.'
+  'the cost figures below are calculated WITHOUT them and may be OVERSTATED by any credits that exist — reload ' +
+  'the page, and check your connection and permissions if this persists.'
+
+export const CREDIT_READ_UNAVAILABLE_NOTICE =
+  'Supplier Credit Notes could not be loaded. Posted credit notes reduce Invoiced and Actual by cost code, so ' +
+  'every figure that depends on them is shown as Unavailable rather than as though no credits exist — reload ' +
+  'the page, and check your connection and permissions if this persists.'
 
 // Still honest about what is NOT enforced.
 export const CREDIT_NOTE_NOTICE =

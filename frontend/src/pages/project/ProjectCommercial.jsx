@@ -19,9 +19,12 @@ import { useContacts } from '../../hooks/useContacts'
 import { CONTACT_TYPE } from '../../lib/contacts'
 import { roundMoney } from '../../lib/purchaseOrders'
 import {
-  isFinancialRole, isBaselineEstablished, projectForecastTotals, computeMargin,
+  isFinancialRole, isBaselineEstablished, projectForecastTotals, computeMargin, resolveBaselineClient,
 } from '../../lib/margin'
-import { CREDIT_READ_ERROR_NOTICE } from '../../lib/supplierCreditNotes'
+import {
+  availableFigure, displayFigure, figureState, FIGURE_STATE, SNAPSHOT_SOURCE_LABELS,
+} from '../../lib/projectSnapshot'
+import { CREDIT_READ_UNAVAILABLE_NOTICE } from '../../lib/supplierCreditNotes'
 
 const inputCls = 'w-full bg-brand-bg border border-brand-border rounded-lg px-2.5 py-1.5 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
 const labelCls = 'block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1'
@@ -37,25 +40,30 @@ function tsToInput(ts) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
-function Metric({ label, value, help, danger }) {
+const failedLabel = (failedSources) =>
+  failedSources.map(src => SNAPSHOT_SOURCE_LABELS[src] ?? src).join(', ')
+
+// `cell` is { text, unavailable } from the page's show() helper: loading "—",
+// a failed source "Unavailable" (amber), otherwise the formatted value.
+function Metric({ label, cell, help, danger }) {
   return (
     <div>
       <p className={labelCls}>{label}</p>
-      <p className={`text-lg font-bold ${danger ? 'text-brand-red' : 'text-brand-text'}`}>{value}</p>
+      <p className={`text-lg font-bold ${cell.unavailable ? 'text-brand-amber' : danger ? 'text-brand-red' : 'text-brand-text'}`}>{cell.text}</p>
       {help && <p className="m-0 mt-0.5 text-[10.5px] text-brand-muted">{help}</p>}
     </div>
   )
 }
 
 // One line of a simple reconciliation (label on the left, amount on the right).
-function ReconRow({ label, value, op, strong, danger, muted }) {
+function ReconRow({ label, cell, op, strong, danger, muted }) {
   return (
     <div className="flex items-baseline justify-between gap-3 py-1.5">
       <span className={`text-[13px] ${muted ? 'text-brand-muted' : 'text-brand-text'}`}>
         {op && <span className="text-brand-muted mr-1.5">{op}</span>}{label}
       </span>
-      <span className={`text-[13px] tabular-nums ${strong ? 'font-bold' : ''} ${danger ? 'text-brand-red' : muted ? 'text-brand-muted' : 'text-brand-text'}`}>
-        {value}
+      <span className={`text-[13px] tabular-nums ${strong ? 'font-bold' : ''} ${cell.unavailable ? 'text-brand-amber' : danger ? 'text-brand-red' : muted ? 'text-brand-muted' : 'text-brand-text'}`}>
+        {cell.text}
       </span>
     </div>
   )
@@ -66,7 +74,12 @@ function ReconRow({ label, value, op, strong, danger, muted }) {
 // it a `key` tied to the baseline's last-saved time so a successful save (which
 // updates the snapshot) remounts the form on the freshly-saved values, while
 // unsaved edits persist as long as the baseline is unchanged.
-function BaselineForm({ baseline, saveBaseline, clientContacts, currentApprovedBudget, currencyCode, currentUserId, currentUserName, baselineError }) {
+//
+// Save is disabled (ADR-44) while the saved baseline could not be read — the
+// form would otherwise open blank and an upsert would overwrite the stored
+// baseline with those blanks — and while contacts are still loading. The live
+// Approved Budget is offered only once budget lines have settled cleanly.
+function BaselineForm({ baseline, saveBaseline, clientContacts, contactsLoading, currentApprovedBudget, budgetReady, budgetUnavailable, currencyCode, currentUserId, currentUserName, baselineError }) {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const [form, setForm] = useState(() => ({
@@ -85,20 +98,40 @@ function BaselineForm({ baseline, saveBaseline, clientContacts, currentApprovedB
   const ocvValid = form.ocv.trim() !== '' && Number.isFinite(ocvNum) && ocvNum >= 0
 
   const setField = (k) => (e) => { setForm(f => ({ ...f, [k]: e.target.value })); setSaved(false); setError('') }
-  const useCurrentBudget = () => { setForm(f => ({ ...f, oab: String(currentApprovedBudget) })); setSaved(false) }
+  const useCurrentBudget = () => {
+    if (!budgetReady) return
+    setForm(f => ({ ...f, oab: String(currentApprovedBudget) })); setSaved(false)
+  }
+
+  // The stored client when it is not among the loaded active client contacts —
+  // contacts still loading, a failed contacts read (useContacts exposes no
+  // error flag, so it looks empty), or a since-archived contact. Its stored
+  // name snapshot is kept rather than erased (snapshots are never rewritten
+  // from a lookup that did not resolve).
+  const storedClientUnresolved = !!baseline?.clientId
+    && !clientContacts.some(c => c.id === baseline.clientId)
+
+  const saveBlocked = baselineError || contactsLoading
 
   async function onSave() {
+    if (saveBlocked) return
     if (!ocvValid) { setError('Enter an Original Contract Value of 0 or more.'); return }
+    // Never erases the stored client name because its contact did not resolve
+    // (lib/margin.js → resolveBaselineClient).
+    const client = resolveBaselineClient({ clientId: form.clientId, baseline, clientContacts })
+    if (!client.ok) {
+      setError('The selected client could not be found. Reload the page and select the client again.')
+      return
+    }
     setSaving(true); setError(''); setSaved(false)
     try {
-      const client = clientContacts.find(c => c.id === form.clientId)
       await saveBaseline({
         originalContractValue:  form.ocv,
         originalApprovedBudget: form.oab,
         contractStartDate:      form.start,
         contractCompletionDate: form.completion,
-        clientId:               form.clientId || null,
-        clientName:             client ? client.displayName : null,
+        clientId:               client.clientId,
+        clientName:             client.clientName,
         notes:                  form.notes,
       })
       setSaved(true)
@@ -147,8 +180,18 @@ function BaselineForm({ baseline, saveBaseline, clientContacts, currentApprovedB
             onChange={setField('oab')}
           />
           <p className="m-0 mt-1 text-[11px] text-brand-muted">
-            Current Approved Budget (live): <span className="text-brand-text font-semibold">{money(currentApprovedBudget)}</span>{' '}
-            <button type="button" onClick={useCurrentBudget} className="text-brand-accent hover:underline cursor-pointer">Use current approved budget</button>
+            Current Approved Budget (live):{' '}
+            <span className={`font-semibold ${budgetUnavailable ? 'text-brand-amber' : 'text-brand-text'}`}>
+              {budgetReady ? money(currentApprovedBudget) : budgetUnavailable ? 'Unavailable' : '—'}
+            </span>{' '}
+            <button
+              type="button"
+              onClick={useCurrentBudget}
+              disabled={!budgetReady}
+              className="text-brand-accent hover:underline cursor-pointer disabled:text-brand-muted disabled:no-underline disabled:cursor-not-allowed"
+            >
+              Use current approved budget
+            </button>
             . Blank leaves the original budget baseline not established. Stays editable (server-enforced immutability is deferred).
           </p>
         </div>
@@ -167,6 +210,11 @@ function BaselineForm({ baseline, saveBaseline, clientContacts, currentApprovedB
           <label className={labelCls}>Client</label>
           <select className={inputCls} value={form.clientId} onChange={setField('clientId')}>
             <option value="">— None —</option>
+            {storedClientUnresolved && (
+              <option value={baseline.clientId}>
+                {baseline.clientName || 'Saved client'}{contactsLoading ? '' : ' (not an active client contact)'}
+              </option>
+            )}
             {clientContacts.map(c => (
               <option key={c.id} value={c.id}>{c.displayName}</option>
             ))}
@@ -181,41 +229,68 @@ function BaselineForm({ baseline, saveBaseline, clientContacts, currentApprovedB
       </div>
 
       <div className="flex items-center gap-3 mt-4">
-        <Btn onClick={onSave} disabled={saving || !ocvValid}>
+        <Btn onClick={onSave} disabled={saving || !ocvValid || saveBlocked}>
           {saving ? 'Saving…' : baseline ? 'Save baseline' : 'Create baseline'}
         </Btn>
         {saved && !saving && <Badge label="Saved" variant="completed" sm />}
         {error && <span className="text-[12px] text-brand-red">{error}</span>}
         {baselineError && !error && (
-          <span className="text-[12px] text-brand-amber">Couldn’t load the saved baseline — you can still enter one below.</span>
+          <span className="text-[12px] text-brand-amber">
+            Couldn’t load the saved baseline, so saving is disabled — a save could overwrite an existing baseline with
+            blank values. Reload the page, and check your connection and permissions if this persists.
+          </span>
+        )}
+        {!baselineError && contactsLoading && !error && (
+          <span className="text-[12px] text-brand-muted">Loading client contacts…</span>
         )}
       </div>
     </Card>
   )
 }
 
+// ── Role gate ────────────────────────────────────────────────────────────────
+//
+// The workspace (and so every commercially-sensitive subscription, including
+// contacts) is MOUNTED only for financial roles — subcontractor and client
+// users never open those reads. This is the UX mirror; Firestore rules remain
+// the enforced boundary.
 export default function ProjectCommercial() {
   const { projectId, currencyCode } = useOutletContext()
+  const { profile, profileLoading } = useProfile()
+
+  if (profileLoading) {
+    return <div className="text-[13px] text-brand-muted">Loading…</div>
+  }
+  if (!isFinancialRole(profile?.role)) {
+    return (
+      <Card>
+        <p className="text-[13px] text-brand-text font-semibold m-0">Commercial data is restricted</p>
+        <p className="text-[12.5px] text-brand-muted m-0 mt-1">
+          Contract value and project margin are visible to Company Admin, Project Manager, and QS roles only.
+          Access is enforced by Firestore Security Rules.
+        </p>
+      </Card>
+    )
+  }
+  return <CommercialWorkspace projectId={projectId} currencyCode={currencyCode} />
+}
+
+function CommercialWorkspace({ projectId, currencyCode }) {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const { user }    = useAuth()
-  const { profile, profileLoading } = useProfile()
+  const { profile } = useProfile()
 
-  const canView = isFinancialRole(profile?.role)
-  // Non-financial roles never trigger the commercially-sensitive reads (rules
-  // would deny them anyway — this is the UX mirror; rules are the boundary).
-  const mid = canView ? projectId : null
-
-  const { baseline, baselineLoading, baselineError, saveBaseline } = useProjectCommercial(mid)
-  const { budgetLines }      = useBudgetLines(mid)
-  const { costCodes }        = useCostCodes()
-  const { purchaseOrders }   = usePurchaseOrders(mid)
-  const { progressClaims }   = useProgressClaims(mid)
-  const { supplierInvoices } = useSupplierInvoices(mid)
-  const { supplierCreditNotes, supplierCreditNotesError } = useSupplierCreditNotes(mid)
-  const { variations }       = useVariations(mid)
-  const { forecastLines }    = useForecastLines(mid)
-  const { contacts }         = useContacts()
+  const { baseline, baselineLoading, baselineError, saveBaseline }                    = useProjectCommercial(projectId)
+  const { budgetLines, budgetLinesLoading, budgetLinesError }                         = useBudgetLines(projectId)
+  const { costCodes }                                                                 = useCostCodes()
+  const { purchaseOrders, purchaseOrdersLoading, purchaseOrdersError }                = usePurchaseOrders(projectId)
+  const { progressClaims, progressClaimsLoading, progressClaimsError }                = useProgressClaims(projectId)
+  const { supplierInvoices, supplierInvoicesLoading, supplierInvoicesError }          = useSupplierInvoices(projectId)
+  const { supplierCreditNotes, supplierCreditNotesLoading, supplierCreditNotesError } = useSupplierCreditNotes(projectId)
+  const { variations, variationsLoading, variationsError }                            = useVariations(projectId)
+  const { forecastLines, forecastLinesLoading, forecastLinesError }                   = useForecastLines(projectId)
+  const { contacts, contactsLoading }                                                 = useContacts()
 
   // Current (live) Approved Budget = Σ budget-line budgeted. Backs the explicit
   // "Use current approved budget" action; never auto-applied to the baseline.
@@ -239,26 +314,56 @@ export default function ProjectCommercial() {
     [contacts],
   )
 
-  const established = isBaselineEstablished(baseline)
-
-  // ── Permission / loading gates ─────────────────────────────────────────────
-  if (profileLoading) {
-    return <div className="text-[13px] text-brand-muted">Loading…</div>
-  }
-  if (!canView) {
-    return (
-      <Card>
-        <p className="text-[13px] text-brand-text font-semibold m-0">Commercial data is restricted</p>
-        <p className="text-[12.5px] text-brand-muted m-0 mt-1">
-          Contract value and project margin are visible to Company Admin, Project Manager, and QS roles only.
-          Access is enforced by Firestore Security Rules.
-        </p>
-      </Card>
-    )
-  }
   if (baselineLoading) {
     return <div className="text-[13px] text-brand-muted">Loading commercial baseline…</div>
   }
+
+  // Loading / error flags in the Dashboard snapshot's shape (ADR-42), so every
+  // figure's availability is decided by the same figureState over the sources
+  // its selector actually reads (lib/projectSnapshot.js → FIGURE_DEPENDENCIES).
+  const sourceStates = {
+    baseline:            { loading: baselineLoading,            error: baselineError },
+    budgetLines:         { loading: budgetLinesLoading,         error: budgetLinesError },
+    purchaseOrders:      { loading: purchaseOrdersLoading,      error: purchaseOrdersError },
+    progressClaims:      { loading: progressClaimsLoading,      error: progressClaimsError },
+    supplierInvoices:    { loading: supplierInvoicesLoading,    error: supplierInvoicesError },
+    supplierCreditNotes: { loading: supplierCreditNotesLoading, error: supplierCreditNotesError },
+    variations:          { loading: variationsLoading,          error: variationsError },
+    forecastLines:       { loading: forecastLinesLoading,       error: forecastLinesError },
+  }
+  const established = isBaselineEstablished(baseline)
+
+  // A figure's display: "—" while a dependency loads, "Unavailable" when one
+  // failed, otherwise the value. `needsBaseline` figures additionally render
+  // "—" when the baseline has settled cleanly but carries no Original Contract
+  // Value (not established) — a failed baseline read is Unavailable, never that.
+  const show = (key, value, { format = money, needsBaseline = false } = {}) => {
+    const f = availableFigure(key, value, sourceStates)
+    if (f.state !== FIGURE_STATE.READY) {
+      return { text: displayFigure(f, format), unavailable: f.state === FIGURE_STATE.UNAVAILABLE, ready: false }
+    }
+    if (needsBaseline && !established) return { text: '—', unavailable: false, ready: false }
+    return { text: format(value), unavailable: false, ready: true }
+  }
+  const negative = (c, value) => c.ready && value !== null && value < 0
+
+  const ocvCell      = show('contractBaseline', m.originalContractValue, { needsBaseline: true })
+  const ccsCell      = show('currentContractSum', m.currentContractSum, { needsBaseline: true })
+  const revenueCell  = show('currentContractSum', m.forecastRevenue, { needsBaseline: true })
+  const ffcCell      = show('forecastFinalCost', m.forecastFinalCost)
+  const profitCell   = show('margin', m.forecastGrossProfit, { needsBaseline: true })
+  const marginCell   = show('margin', m.forecastMarginPct, { format: pct, needsBaseline: true })
+  const oabCell      = show('contractBaseline', m.originalApprovedBudget)
+  const oppCell      = show('contractBaseline', m.originalPlannedProfit)
+  const opmCell      = show('contractBaseline', m.originalPlannedMarginPct, { format: pct })
+  const movementCell = show('marginMovement', m.marginMovement)
+  const acvCell      = show('clientVariations', m.approvedClientVariations)
+  const pcvCell      = show('clientVariations', m.pendingClientVariationExposure)
+  const asvCell      = show('supplierVariationExposure', m.approvedSupplierVariations)
+  const psvCell      = show('supplierVariationExposure', m.pendingSupplierVariationExposure)
+
+  const pageSources = figureState(Object.keys(sourceStates), sourceStates)
+  const budgetState = figureState(['budgetLines'], sourceStates)
 
   // A key tied to the last-saved time remounts the form on a fresh save while
   // preserving unsaved edits between saves.
@@ -266,29 +371,41 @@ export default function ProjectCommercial() {
 
   return (
     <div>
-      {supplierCreditNotesError && (
+      {pageSources.state === FIGURE_STATE.UNAVAILABLE && (
         <Card className="mb-3.5">
-          <p className="text-[13px] font-bold text-brand-amber m-0">Supplier Credit Notes unavailable</p>
-          <p className="m-0 mt-1 text-[12px] text-brand-muted">{CREDIT_READ_ERROR_NOTICE}</p>
+          <p className="text-[13px] font-bold text-brand-amber m-0">Some commercial records could not be loaded</p>
+          <p className="m-0 mt-1 text-[12px] text-brand-muted">
+            Could not load: {failedLabel(pageSources.failedSources)}. Figures that depend on them show Unavailable
+            rather than a partial total. Reload the page, and check your connection and permissions if this persists.
+          </p>
+          {supplierCreditNotesError && (
+            <p className="m-0 mt-1 text-[12px] text-brand-muted">{CREDIT_READ_UNAVAILABLE_NOTICE}</p>
+          )}
         </Card>
       )}
       {/* ── Margin summary ─────────────────────────────────────────────────── */}
       <Card className="mb-3.5">
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
-          <Metric label="Original Contract Value" value={established ? money(m.originalContractValue) : '—'} help="Ex-GST" />
-          <Metric label="Current Contract Sum" value={established ? money(m.currentContractSum) : '—'} help="Original + approved client variations" />
-          <Metric label="Forecast Revenue" value={established ? money(m.forecastRevenue) : '—'} help="= Current Contract Sum" />
-          <Metric label="Forecast Final Cost" value={money(m.forecastFinalCost)} help="Estimate at Completion (EAC)" />
-          <Metric label="Forecast Gross Profit" value={established ? money(m.forecastGrossProfit) : '—'} danger={established && m.forecastGrossProfit < 0} />
-          <Metric label="Forecast Margin %" value={established ? pct(m.forecastMarginPct) : '—'} danger={established && m.forecastMarginPct !== null && m.forecastMarginPct < 0} />
+          <Metric label="Original Contract Value" cell={ocvCell} help="Ex-GST" />
+          <Metric label="Current Contract Sum" cell={ccsCell} help="Original + approved client variations" />
+          <Metric label="Forecast Revenue" cell={revenueCell} help="= Current Contract Sum" />
+          <Metric label="Forecast Final Cost" cell={ffcCell} help="Estimate at Completion (EAC)" />
+          <Metric label="Forecast Gross Profit" cell={profitCell} danger={negative(profitCell, m.forecastGrossProfit)} />
+          <Metric label="Forecast Margin %" cell={marginCell} danger={negative(marginCell, m.forecastMarginPct)} />
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5 mt-4 pt-4 border-t border-brand-border">
-          <Metric label="Original Approved Budget" value={money(m.originalApprovedBudget)} help="Baseline (blank = not established)" />
-          <Metric label="Original Planned Profit" value={money(m.originalPlannedProfit)} danger={m.originalPlannedProfit !== null && m.originalPlannedProfit < 0} />
-          <Metric label="Original Planned Margin %" value={pct(m.originalPlannedMarginPct)} danger={m.originalPlannedMarginPct !== null && m.originalPlannedMarginPct < 0} />
-          <Metric label="Margin Movement" value={money(m.marginMovement)} help="Forecast vs original planned profit" danger={m.marginMovement !== null && m.marginMovement < 0} />
+          <Metric label="Original Approved Budget" cell={oabCell} help="Baseline (blank = not established)" />
+          <Metric label="Original Planned Profit" cell={oppCell} danger={negative(oppCell, m.originalPlannedProfit)} />
+          <Metric label="Original Planned Margin %" cell={opmCell} danger={negative(opmCell, m.originalPlannedMarginPct)} />
+          <Metric label="Margin Movement" cell={movementCell} help="Forecast vs original planned profit" danger={negative(movementCell, m.marginMovement)} />
         </div>
-        {!established && (
+        {baselineError && (
+          <p className="m-0 mt-3 text-[11px] text-brand-amber">
+            The commercial baseline could not be loaded, so contract value, revenue, profit and margin are unavailable.
+            This does not mean the contract value has not been set.
+          </p>
+        )}
+        {!baselineError && !established && (
           <p className="m-0 mt-3 text-[11px] text-brand-amber">
             Set and save an Original Contract Value below to calculate forecast revenue, profit, and margin.
           </p>
@@ -304,12 +421,12 @@ export default function ProjectCommercial() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5 mb-3.5">
         <Card>
           <p className="text-[13px] font-bold text-brand-text m-0 mb-1.5">Contract value</p>
-          <ReconRow label="Original Contract Value" value={established ? money(m.originalContractValue) : '—'} />
-          <ReconRow op="+" label="Approved Client Variations" value={money(m.approvedClientVariations)} />
+          <ReconRow label="Original Contract Value" cell={ocvCell} />
+          <ReconRow op="+" label="Approved Client Variations" cell={acvCell} />
           <div className="border-t border-brand-border my-1" />
-          <ReconRow op="=" label="Current Contract Sum" value={established ? money(m.currentContractSum) : '—'} strong />
+          <ReconRow op="=" label="Current Contract Sum" cell={ccsCell} strong />
           <div className="mt-2.5 pt-2.5 border-t border-brand-border">
-            <ReconRow label="Pending Client Variation Exposure" value={money(m.pendingClientVariationExposure)} muted />
+            <ReconRow label="Pending Client Variation Exposure" cell={pcvCell} muted />
             <p className="m-0 mt-1 text-[11px] text-brand-muted">
               Shown separately — pending client variations are revenue exposure and are <span className="font-semibold">not</span> included in Forecast Revenue.
             </p>
@@ -318,14 +435,14 @@ export default function ProjectCommercial() {
 
         <Card>
           <p className="text-[13px] font-bold text-brand-text m-0 mb-1.5">Margin</p>
-          <ReconRow label="Forecast Revenue" value={established ? money(m.forecastRevenue) : '—'} />
-          <ReconRow op="−" label="Forecast Final Cost" value={money(m.forecastFinalCost)} />
+          <ReconRow label="Forecast Revenue" cell={revenueCell} />
+          <ReconRow op="−" label="Forecast Final Cost" cell={ffcCell} />
           <div className="border-t border-brand-border my-1" />
-          <ReconRow op="=" label="Forecast Gross Profit" value={established ? money(m.forecastGrossProfit) : '—'} strong danger={established && m.forecastGrossProfit < 0} />
-          <ReconRow label="Forecast Margin %" value={established ? pct(m.forecastMarginPct) : '—'} muted />
+          <ReconRow op="=" label="Forecast Gross Profit" cell={profitCell} strong danger={negative(profitCell, m.forecastGrossProfit)} />
+          <ReconRow label="Forecast Margin %" cell={marginCell} muted />
           <div className="mt-2.5 pt-2.5 border-t border-brand-border">
-            <ReconRow label="Original Planned Profit" value={money(m.originalPlannedProfit)} muted />
-            <ReconRow label="Margin Movement" value={money(m.marginMovement)} danger={m.marginMovement !== null && m.marginMovement < 0} muted />
+            <ReconRow label="Original Planned Profit" cell={oppCell} muted />
+            <ReconRow label="Margin Movement" cell={movementCell} danger={negative(movementCell, m.marginMovement)} muted />
           </div>
         </Card>
       </div>
@@ -333,8 +450,8 @@ export default function ProjectCommercial() {
       {/* ── Supplier cost exposure (context) ───────────────────────────────── */}
       <Card className="mb-3.5">
         <div className="grid grid-cols-2 gap-3.5">
-          <Metric label="Approved Supplier Variation Exposure" value={money(m.approvedSupplierVariations)} />
-          <Metric label="Pending Supplier Variation Exposure" value={money(m.pendingSupplierVariationExposure)} />
+          <Metric label="Approved Supplier Variation Exposure" cell={asvCell} />
+          <Metric label="Pending Supplier Variation Exposure" cell={psvCell} />
         </div>
         <p className="m-0 mt-3 text-[11px] text-brand-muted">
           Supplier variation exposure is shown separately and is <span className="font-semibold">not</span> added to Forecast
@@ -350,7 +467,10 @@ export default function ProjectCommercial() {
         baseline={baseline}
         saveBaseline={saveBaseline}
         clientContacts={clientContacts}
+        contactsLoading={contactsLoading}
         currentApprovedBudget={currentApprovedBudget}
+        budgetReady={budgetState.state === FIGURE_STATE.READY}
+        budgetUnavailable={budgetState.state === FIGURE_STATE.UNAVAILABLE}
         currentUserId={user?.uid}
         currentUserName={profile?.name}
         baselineError={baselineError}

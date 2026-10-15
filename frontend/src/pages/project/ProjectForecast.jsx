@@ -17,7 +17,11 @@ import { useForecastLines } from '../../hooks/useForecastLines'
 import {
   buildForecastRows, composeForecastRow, forecastRollups, remainingBudgetSuggestion,
 } from '../../lib/forecast'
-import { CREDIT_READ_ERROR_NOTICE } from '../../lib/supplierCreditNotes'
+import { isFinancialRole } from '../../lib/margin'
+import {
+  availableFigure, displayFigure, figureState, FIGURE_DEPENDENCIES, FIGURE_STATE, SNAPSHOT_SOURCE_LABELS,
+} from '../../lib/projectSnapshot'
+import { CREDIT_READ_UNAVAILABLE_NOTICE } from '../../lib/supplierCreditNotes'
 
 const inputCls = 'w-full bg-brand-bg border border-brand-border rounded-lg px-2.5 py-1.5 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
 const thCls    = 'text-left px-3 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px] whitespace-nowrap'
@@ -32,31 +36,46 @@ const FILTERS = [
 
 const storedCtcString = (v) => (v === null || v === undefined ? '' : String(v))
 
-function SummaryCards({ rollups, currencyCode }) {
+const failedLabel = (failedSources) =>
+  failedSources.map(src => SNAPSHOT_SOURCE_LABELS[src] ?? src).join(', ')
+
+// One summary figure. Loading renders "—", a failed source "Unavailable" (and
+// names it), and only a READY figure prints money — a settled 0 is a real $0.
+function Figure({ label, figure, money, help, dangerWhenNegative = false }) {
+  const unavailable = figure.state === FIGURE_STATE.UNAVAILABLE
+  const danger = dangerWhenNegative && figure.state === FIGURE_STATE.READY && figure.value < 0
+  return (
+    <div>
+      <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">{label}</p>
+      <p className={`text-lg font-bold ${unavailable ? 'text-brand-amber' : danger ? 'text-brand-red' : 'text-brand-text'}`}>
+        {displayFigure(figure, money)}
+      </p>
+      {unavailable
+        ? <p className="m-0 mt-0.5 text-[10.5px] text-brand-muted">Could not load: {failedLabel(figure.failedSources)}</p>
+        : help && <p className="m-0 mt-0.5 text-[10.5px] text-brand-muted">{help}</p>}
+    </div>
+  )
+}
+
+// `figures` come from lib/projectSnapshot.js → availableFigure, each gated on
+// the sources its selector actually reads (FIGURE_DEPENDENCIES) — so one failed
+// source never hides an unrelated card.
+function SummaryCards({ figures, currencyCode }) {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const core = [
-    { label: 'Approved Budget',    value: money(rollups.budgeted) },
-    { label: 'Actual',             value: money(rollups.actual),             help: 'Cost to Date' },
-    { label: 'Remaining Committed', value: money(rollups.remainingCommitted) },
-    { label: 'Forecast Final Cost', value: money(rollups.forecastFinalCost), help: 'Estimate at Completion (EAC)' },
-    {
-      label: 'Variance to Budget',
-      value: money(rollups.varianceToBudget),
-      help: 'Variance at Completion (VAC)',
-      danger: rollups.varianceToBudget < 0,
-    },
+    { label: 'Approved Budget',     figure: figures.budgeted },
+    { label: 'Actual',              figure: figures.actual,             help: 'Cost to Date' },
+    { label: 'Remaining Committed', figure: figures.remainingCommitted },
+    { label: 'Forecast Final Cost', figure: figures.forecastFinalCost,  help: 'Estimate at Completion (EAC)' },
+    { label: 'Variance to Budget',  figure: figures.varianceToBudget,   help: 'Variance at Completion (VAC)', dangerWhenNegative: true },
   ]
   return (
     <>
       <Card className="mb-3.5">
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3.5">
           {core.map(c => (
-            <div key={c.label}>
-              <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">{c.label}</p>
-              <p className={`text-lg font-bold ${c.danger ? 'text-brand-red' : 'text-brand-text'}`}>{c.value}</p>
-              {c.help && <p className="m-0 mt-0.5 text-[10.5px] text-brand-muted">{c.help}</p>}
-            </div>
+            <Figure key={c.label} label={c.label} figure={c.figure} money={money} help={c.help} dangerWhenNegative={c.dangerWhenNegative} />
           ))}
         </div>
         <p className="m-0 mt-3 text-[11px] text-brand-muted">
@@ -68,14 +87,8 @@ function SummaryCards({ rollups, currencyCode }) {
 
       <Card className="mb-3.5">
         <div className="grid grid-cols-2 gap-3.5">
-          <div>
-            <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Approved Supplier Variation Exposure</p>
-            <p className="text-lg font-bold text-brand-text">{money(rollups.approvedSupplierVariations)}</p>
-          </div>
-          <div>
-            <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Pending Supplier Variation Exposure</p>
-            <p className="text-lg font-bold text-brand-text">{money(rollups.pendingSupplierVariationExposure)}</p>
-          </div>
+          <Figure label="Approved Supplier Variation Exposure" figure={figures.approvedSupplierVariations} money={money} />
+          <Figure label="Pending Supplier Variation Exposure" figure={figures.pendingSupplierVariationExposure} money={money} />
         </div>
         <p className="m-0 mt-3 text-[11px] text-brand-muted">
           Supplier variation exposure is shown separately because variations do not yet mature against claims or
@@ -87,20 +100,70 @@ function SummaryCards({ rollups, currencyCode }) {
   )
 }
 
+// ── Role gate ────────────────────────────────────────────────────────────────
+//
+// The Forecast reads supplier invoices, credit notes, variations and forecast
+// lines — all financial-role-only under Firestore Security Rules — alongside
+// budget lines, POs and claims, which rules let every company member read. A
+// non-financial user would therefore see a forecast built from PARTIAL records.
+// This wrapper renders the workspace (and so MOUNTS its subscriptions) only for
+// financial roles: subcontractor and client users never open them. This is the
+// UX mirror; Firestore rules remain the enforced boundary.
 export default function ProjectForecast() {
   const { projectId, currencyCode } = useOutletContext()
+  const { profile, profileLoading } = useProfile()
+
+  if (profileLoading) {
+    return <div className="text-[13px] text-brand-muted">Loading…</div>
+  }
+  if (!isFinancialRole(profile?.role)) {
+    return (
+      <Card>
+        <p className="text-[13px] text-brand-text font-semibold m-0">Forecast data is restricted</p>
+        <p className="text-[12.5px] text-brand-muted m-0 mt-1">
+          Forecast cost, commitments and actual cost are visible to Company Admin, Project Manager, and QS roles only.
+          Firestore Security Rules restrict the supplier invoice, credit note, variation and forecast records a
+          forecast needs to those roles.
+        </p>
+      </Card>
+    )
+  }
+  return <ForecastWorkspace projectId={projectId} currencyCode={currencyCode} />
+}
+
+function ForecastWorkspace({ projectId, currencyCode }) {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const { user }    = useAuth()
   const { profile } = useProfile()
-  const { budgetLines }     = useBudgetLines(projectId)
-  const { costCodes }       = useCostCodes()
-  const { purchaseOrders }  = usePurchaseOrders(projectId)
-  const { progressClaims }  = useProgressClaims(projectId)
-  const { supplierInvoices } = useSupplierInvoices(projectId)
-  const { supplierCreditNotes, supplierCreditNotesError } = useSupplierCreditNotes(projectId)
-  const { variations }      = useVariations(projectId)
-  const { forecastLines, forecastLinesLoading, upsertForecastLine } = useForecastLines(projectId)
+  const { budgetLines, budgetLinesLoading, budgetLinesError }                         = useBudgetLines(projectId)
+  const { costCodes, costCodesLoading }                                               = useCostCodes()
+  const { purchaseOrders, purchaseOrdersLoading, purchaseOrdersError }                = usePurchaseOrders(projectId)
+  const { progressClaims, progressClaimsLoading, progressClaimsError }                = useProgressClaims(projectId)
+  const { supplierInvoices, supplierInvoicesLoading, supplierInvoicesError }          = useSupplierInvoices(projectId)
+  const { supplierCreditNotes, supplierCreditNotesLoading, supplierCreditNotesError } = useSupplierCreditNotes(projectId)
+  const { variations, variationsLoading, variationsError }                            = useVariations(projectId)
+  const { forecastLines, forecastLinesLoading, forecastLinesError, upsertForecastLine } = useForecastLines(projectId)
+
+  // The loading / error flags of every source, in the Dashboard snapshot's
+  // shape (ADR-42), so availability is decided by the same figureState.
+  const sourceStates = {
+    budgetLines:         { loading: budgetLinesLoading,         error: budgetLinesError },
+    purchaseOrders:      { loading: purchaseOrdersLoading,      error: purchaseOrdersError },
+    progressClaims:      { loading: progressClaimsLoading,      error: progressClaimsError },
+    supplierInvoices:    { loading: supplierInvoicesLoading,    error: supplierInvoicesError },
+    supplierCreditNotes: { loading: supplierCreditNotesLoading, error: supplierCreditNotesError },
+    variations:          { loading: variationsLoading,          error: variationsError },
+    forecastLines:       { loading: forecastLinesLoading,       error: forecastLinesError },
+  }
+  // The table, its counts and every row figure depend on the full cost-code
+  // union. Cost codes add no row and no amount, but supply the live name a
+  // save stores — so editing also waits for them. (useCostCodes exposes no
+  // error flag: a failed read is indistinguishable from an empty list, and
+  // names then fall back to the stored snapshot — ADR-44 limitation.)
+  const rows = figureState(FIGURE_DEPENDENCIES.forecastRows, sourceStates)
+  const rowsReady = rows.state === FIGURE_STATE.READY
+  const editable = rowsReady && !costCodesLoading
 
   const [edits, setEdits]         = useState({})   // costCodeId → { ctc: string, notes: string }
   const [savingId, setSavingId]   = useState(null) // costCodeId | 'all' | null
@@ -143,6 +206,17 @@ export default function ProjectForecast() {
   const rollups   = useMemo(() => forecastRollups(effectiveRows), [effectiveRows])
   const dirtyRows = effectiveRows.filter(r => r.dirty)
 
+  const fig = (key, value) => availableFigure(key, value, sourceStates)
+  const figures = {
+    budgeted:                         fig('approvedBudget', rollups.budgeted),
+    actual:                           fig('actual', rollups.actual),
+    remainingCommitted:               fig('remainingCommitted', rollups.remainingCommitted),
+    forecastFinalCost:                fig('forecastFinalCost', rollups.forecastFinalCost),
+    varianceToBudget:                 fig('varianceToBudget', rollups.varianceToBudget),
+    approvedSupplierVariations:       fig('supplierVariationExposure', rollups.approvedSupplierVariations),
+    pendingSupplierVariationExposure: fig('supplierVariationExposure', rollups.pendingSupplierVariationExposure),
+  }
+
   const visibleRows = effectiveRows.filter(r => {
     if (search.trim() && !(r.costCodeName || '').toLowerCase().includes(search.trim().toLowerCase())) return false
     if (filter === 'not_forecast' && !r.unforecasted) return false
@@ -160,13 +234,15 @@ export default function ProjectForecast() {
     setEdits(e => ({ ...e, [row.costCodeId]: { ctc: value, notes: row.notesStr } }))
   const setNotes = (row, value) =>
     setEdits(e => ({ ...e, [row.costCodeId]: { ctc: row.ctcStr, notes: value } }))
-  const applyRemainingBudget = (row) =>
+  const applyRemainingBudget = (row) => editable &&
     setEdits(e => ({ ...e, [row.costCodeId]: { ctc: String(remainingBudgetSuggestion(row.remainingBudgetRef)), notes: row.notesStr } }))
 
   const clearError = (id) => setRowErrors(e => { const n = { ...e }; delete n[id]; return n })
   const clearEdit  = (id) => setEdits(e => { const n = { ...e }; delete n[id]; return n })
 
   async function persist(row) {
+    // Defence in depth — every save control is already disabled until then.
+    if (!editable) throw new Error('Forecast records are still loading or could not be loaded. Nothing was saved.')
     if (row.ctcInvalid)  throw new Error('Enter a valid number, or clear it to mark as not forecast')
     if (row.ctcNegative) throw new Error('Uncommitted Cost to Complete cannot be negative')
     const ctcValue = row.ctcStr.trim() === '' ? null : Number(row.ctcStr)
@@ -191,6 +267,7 @@ export default function ProjectForecast() {
   }
 
   async function saveAll() {
+    if (!editable) return
     // Validate every dirty row up front — never partially save past an invalid one.
     for (const r of dirtyRows) {
       if (r.ctcInvalid || r.ctcNegative) {
@@ -223,30 +300,41 @@ export default function ProjectForecast() {
 
   return (
     <div>
-      {supplierCreditNotesError && (
+      {rows.state === FIGURE_STATE.UNAVAILABLE && (
         <Card className="mb-3.5">
-          <p className="text-[13px] font-bold text-brand-amber m-0">Supplier Credit Notes unavailable</p>
-          <p className="m-0 mt-1 text-[12px] text-brand-muted">{CREDIT_READ_ERROR_NOTICE}</p>
+          <p className="text-[13px] font-bold text-brand-amber m-0">Some forecast records could not be loaded</p>
+          <p className="m-0 mt-1 text-[12px] text-brand-muted">
+            Could not load: {failedLabel(rows.failedSources)}. Figures that depend on them show Unavailable, and the
+            cost-code table and editing are disabled because every row depends on the full set of records. Unsaved
+            changes are kept. Reload the page, and check your connection and permissions if this persists.
+          </p>
+          {supplierCreditNotesError && (
+            <p className="m-0 mt-1 text-[12px] text-brand-muted">{CREDIT_READ_UNAVAILABLE_NOTICE}</p>
+          )}
         </Card>
       )}
-      <SummaryCards rollups={rollups} currencyCode={currencyCode} />
+      <SummaryCards figures={figures} currencyCode={currencyCode} />
 
       {/* Toolbar: unforecasted count + save-all */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3.5">
         <p className="text-[13px] text-brand-muted m-0">
-          {rollups.unforecastedCount > 0
-            ? `${rollups.unforecastedCount} of ${rollups.lineCount} cost code${rollups.lineCount === 1 ? '' : 's'} not yet forecast.`
-            : rollups.lineCount > 0
-              ? 'Every cost code has been forecast.'
-              : 'No cost codes or commercial activity yet.'}
+          {rows.state === FIGURE_STATE.LOADING
+            ? 'Loading forecast…'
+            : !rowsReady
+              ? 'Forecast coverage unavailable.'
+              : rollups.unforecastedCount > 0
+                ? `${rollups.unforecastedCount} of ${rollups.lineCount} cost code${rollups.lineCount === 1 ? '' : 's'} not yet forecast.`
+                : rollups.lineCount > 0
+                  ? 'Every cost code has been forecast.'
+                  : 'No cost codes or commercial activity yet.'}
         </p>
-        <Btn sm onClick={saveAll} disabled={dirtyRows.length === 0 || savingId !== null}>
+        <Btn sm onClick={saveAll} disabled={!editable || dirtyRows.length === 0 || savingId !== null}>
           {savingId === 'all' ? 'Saving…' : `Save all changes${dirtyRows.length ? ` (${dirtyRows.length})` : ''}`}
         </Btn>
       </div>
 
       {/* Search + filters */}
-      {baseRows.length > 0 && (
+      {editable && baseRows.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 mb-3.5">
           <input
             className={`${inputCls} max-w-[260px]`}
@@ -269,7 +357,11 @@ export default function ProjectForecast() {
       )}
 
       <Card padding={false}>
-        {forecastLinesLoading ? (
+        {rows.state === FIGURE_STATE.UNAVAILABLE ? (
+          <div className="px-5 py-12 text-center text-[13px] text-brand-amber">
+            Forecast unavailable — could not load: {failedLabel(rows.failedSources)}.
+          </div>
+        ) : !editable ? (
           <div className="px-5 py-12 text-center text-[13px] text-brand-muted">Loading forecast…</div>
         ) : baseRows.length === 0 ? (
           <div className="px-5 py-12 text-center text-[13px] text-brand-muted">
@@ -347,7 +439,8 @@ export default function ProjectForecast() {
                         <button
                           type="button"
                           onClick={() => applyRemainingBudget(row)}
-                          className="mt-1 text-[11px] text-brand-accent hover:underline cursor-pointer"
+                          disabled={!editable}
+                          className="mt-1 text-[11px] text-brand-accent hover:underline cursor-pointer disabled:text-brand-muted disabled:no-underline disabled:cursor-not-allowed"
                           title="Copy the Remaining Budget Reference into this input (0 if it is zero or negative). You can edit it afterward."
                         >
                           Use remaining budget
@@ -389,7 +482,7 @@ export default function ProjectForecast() {
                       {/* Save action */}
                       <td className={`${tdCls} min-w-[92px]`}>
                         {row.dirty ? (
-                          <Btn sm variant="success" onClick={() => saveRow(row)} disabled={rowSaving(row.costCodeId)}>
+                          <Btn sm variant="success" onClick={() => saveRow(row)} disabled={!editable || rowSaving(row.costCodeId)}>
                             {savingId === row.costCodeId ? 'Saving…' : 'Save'}
                           </Btn>
                         ) : row.hasForecastLine ? (

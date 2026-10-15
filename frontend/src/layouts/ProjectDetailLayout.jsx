@@ -58,7 +58,13 @@ export default function ProjectDetailLayout() {
         ))}
       </nav>
 
-      <Outlet context={{ project, projectId, currencyCode }} />
+      {/* Keyed by project (ADR-44): useProject derives from the already-loaded
+          projects list, so a project switch never passes through the loading
+          branch above — without the key, the same tab instance would carry its
+          local state (e.g. unsaved Forecast edits keyed by company-wide cost
+          code ids) into another project. Navigating between tabs or records
+          WITHIN a project never changes the key. */}
+      <Outlet key={projectId} context={{ project, projectId, currencyCode }} />
     </div>
   )
 }
