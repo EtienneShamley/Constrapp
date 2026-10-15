@@ -5,7 +5,7 @@ import Btn from '../../components/Btn'
 import ProgBar from '../../components/ProgBar'
 import { formatCurrency, percent, formatDate } from '../../lib/formatters'
 import {
-  CURRENCIES, currencyName, isProjectCurrencyLocked, monetaryLockReasons,
+  CURRENCIES, CURRENCY_LOCK_EVIDENCE_SOURCES, currencyName, isProjectCurrencyLocked, monetaryLockReasons,
 } from '../../lib/currency'
 import { useProjects } from '../../hooks/useProjects'
 import { useProfile } from '../../hooks/useProfile'
@@ -23,18 +23,40 @@ import { useVariations } from '../../hooks/useVariations'
 import { useTenderBids } from '../../hooks/useTenderBids'
 import { useForecastLines } from '../../hooks/useForecastLines'
 import { useBoqItems } from '../../hooks/useBoqItems'
+import { useCashFlowLines } from '../../hooks/useCashFlowLines'
 import {
   isFinancialRole, isBaselineEstablished, projectForecastTotals, computeMargin,
 } from '../../lib/margin'
-import { CREDIT_READ_ERROR_NOTICE } from '../../lib/supplierCreditNotes'
+import {
+  availableFigure, displayFigure, figureState, FIGURE_STATE, SNAPSHOT_SOURCE_LABELS,
+} from '../../lib/projectSnapshot'
+import { CREDIT_READ_UNAVAILABLE_NOTICE } from '../../lib/supplierCreditNotes'
 
 const pct   = (n) => (n === null || n === undefined ? '—' : percent(n))
+
+// Labels for every source this page reads — the Dashboard's labels plus the
+// currency-lock evidence the Dashboard never reads.
+const SOURCE_LABELS = {
+  ...SNAPSHOT_SOURCE_LABELS,
+  clientInvoices: 'Client Invoices',
+  clientReceipts: 'Client Receipts',
+  tenderBids:     'Tender Bids',
+  cashFlowLines:  'Cash Flow Lines',
+  boqItems:       'BOQ Items',
+}
+const failedLabel = (failedSources) =>
+  failedSources.map(src => SOURCE_LABELS[src] ?? src).join(', ')
 
 // Margin cards reuse the SAME lib/margin.js derivation as the Commercial tab —
 // no duplicated business logic. Shown only to financial roles (commercially
 // sensitive); the commercially-scoped reads are disabled for other roles so
 // they never trigger a rules-denied fetch. Firestore rules are the boundary.
-function MarginCards({ currencyCode, costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, supplierCreditNotesError, variations, forecastLines, baseline, baselineLoading }) {
+//
+// Each card is gated on the sources its selector reads (lib/projectSnapshot.js
+// → FIGURE_DEPENDENCIES — ADR-44): loading "—", failed "Unavailable", else the
+// value. A failed baseline read shows the card as unavailable rather than
+// hiding it; a cleanly settled baseline with no contract value still hides it.
+function MarginCards({ currencyCode, costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, supplierCreditNotesError, variations, forecastLines, baseline, baselineLoading, baselineError, sourceStates }) {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const forecastTotals = useMemo(
@@ -46,14 +68,28 @@ function MarginCards({ currencyCode, costCodes, budgetLines, purchaseOrders, pro
     [baseline, variations, forecastTotals.forecastFinalCost],
   )
 
-  if (baselineLoading || !isBaselineEstablished(baseline)) return null
+  if (baselineLoading) return null
+  if (!baselineError && !isBaselineEstablished(baseline)) return null
 
+  const card = (label, key, value, format = money) => {
+    const f = availableFigure(key, value, sourceStates)
+    return {
+      label,
+      text: displayFigure(f, format),
+      unavailable: f.state === FIGURE_STATE.UNAVAILABLE,
+      danger: f.state === FIGURE_STATE.READY && value !== null && value < 0,
+    }
+  }
   const cards = [
-    { label: 'Current Contract Sum', value: money(m.currentContractSum) },
-    { label: 'Forecast Final Cost',  value: money(m.forecastFinalCost) },
-    { label: 'Forecast Gross Profit', value: money(m.forecastGrossProfit), danger: m.forecastGrossProfit < 0 },
-    { label: 'Forecast Margin %',    value: pct(m.forecastMarginPct), danger: m.forecastMarginPct !== null && m.forecastMarginPct < 0 },
+    card('Current Contract Sum',  'currentContractSum', m.currentContractSum),
+    card('Forecast Final Cost',   'forecastFinalCost',  m.forecastFinalCost),
+    card('Forecast Gross Profit', 'margin',             m.forecastGrossProfit),
+    card('Forecast Margin %',     'margin',             m.forecastMarginPct, pct),
   ]
+  const failed = figureState(
+    ['baseline', 'variations', 'purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes', 'forecastLines'],
+    sourceStates,
+  )
 
   return (
     <Card className="mt-3.5">
@@ -62,13 +98,13 @@ function MarginCards({ currencyCode, costCodes, budgetLines, purchaseOrders, pro
         {cards.map(c => (
           <div key={c.label}>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">{c.label}</p>
-            <p className={`text-lg font-bold ${c.danger ? 'text-brand-red' : 'text-brand-text'}`}>{c.value}</p>
+            <p className={`text-lg font-bold ${c.unavailable ? 'text-brand-amber' : c.danger ? 'text-brand-red' : 'text-brand-text'}`}>{c.text}</p>
           </div>
         ))}
       </div>
       <p className="m-0 mt-3 text-[11px] text-brand-muted">
-        {supplierCreditNotesError
-          ? `⚠ ${CREDIT_READ_ERROR_NOTICE}`
+        {failed.state === FIGURE_STATE.UNAVAILABLE
+          ? `⚠ Could not load: ${failedLabel(failed.failedSources)}. Figures that depend on them are unavailable${baselineError ? ' — this does not mean the contract value has not been set' : ''}.${supplierCreditNotesError ? ` ${CREDIT_READ_UNAVAILABLE_NOTICE}` : ''}`
           : 'Ex-GST, derived at read time. Full detail on the Commercial tab.'}
       </p>
     </Card>
@@ -88,8 +124,23 @@ function MarginCards({ currencyCode, costCodes, budgetLines, purchaseOrders, pro
 // Firestore rules cannot make this determination — they cannot enumerate
 // random-id subcollections — so this check is CLIENT-enforced; the rules
 // enforce the one-way ratchet once the flag is set.
-function ProjectCurrencyCard({ project, projectId, currencyCode, sources }) {
+//
+// The selector is offered only once EVERY lock-evidence source has settled
+// without error (lib/currency.js → CURRENCY_LOCK_EVIDENCE_SOURCES — ADR-44):
+// an unsettled or failed source is an empty array, which would read as "this
+// project holds no money" and offer a relabel on a legacy project whose flag
+// was never set. Cash Flow Lines are lock evidence too, and only this card
+// needs them, so they are subscribed here (this card is rendered only for the
+// roles that may write the project — all financial roles).
+function ProjectCurrencyCard({ project, projectId, currencyCode, sources: sharedSources, sourceStates: sharedStates }) {
   const { updateProjectCurrency, lockProjectCurrency } = useProjects()
+  const { cashFlowLines, cashFlowLinesLoading, cashFlowLinesError } = useCashFlowLines(projectId)
+  const sources = useMemo(() => ({ ...sharedSources, cashFlowLines }), [sharedSources, cashFlowLines])
+  const evidence = figureState(CURRENCY_LOCK_EVIDENCE_SOURCES, {
+    ...sharedStates,
+    cashFlowLines: { loading: cashFlowLinesLoading, error: cashFlowLinesError },
+  })
+  const evidenceReady = evidence.state === FIGURE_STATE.READY
 
   const [choice, setChoice] = useState(currencyCode)
   const [saving, setSaving] = useState(false)
@@ -113,6 +164,8 @@ function ProjectCurrencyCard({ project, projectId, currencyCode, sources }) {
   }, [projectId, project?.currencyLocked, reasons.length, lockProjectCurrency])
 
   async function onSave() {
+    // Defence in depth — the selector and button are disabled until then.
+    if (!evidenceReady) return
     setSaving(true); setError(''); setSaved(false)
     try {
       await updateProjectCurrency(projectId, choice)
@@ -152,7 +205,8 @@ function ProjectCurrencyCard({ project, projectId, currencyCode, sources }) {
             <>
               <div className="flex flex-wrap items-center gap-2">
                 <select
-                  className="bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text focus:border-brand-accent focus:outline-none min-h-[44px]"
+                  className="bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text focus:border-brand-accent focus:outline-none min-h-[44px] disabled:text-brand-muted disabled:cursor-not-allowed"
+                  disabled={!evidenceReady}
                   value={choice}
                   onChange={(e) => { setChoice(e.target.value); setSaved(false); setError('') }}
                 >
@@ -160,7 +214,7 @@ function ProjectCurrencyCard({ project, projectId, currencyCode, sources }) {
                     <option key={c.code} value={c.code}>{c.code} — {c.name}</option>
                   ))}
                 </select>
-                <Btn sm onClick={onSave} disabled={saving || choice === currencyCode}>
+                <Btn sm onClick={onSave} disabled={!evidenceReady || saving || choice === currencyCode}>
                   {saving ? 'Saving…' : 'Save currency'}
                 </Btn>
                 {saved && !saving && <span className="text-[12px] text-brand-accent">Saved</span>}
@@ -171,6 +225,18 @@ function ProjectCurrencyCard({ project, projectId, currencyCode, sources }) {
                 commercial baseline — after that it locks, because changing it would relabel existing amounts
                 without converting them.
               </p>
+              {evidence.state === FIGURE_STATE.LOADING && (
+                <p className="m-0 mt-1.5 text-[12px] text-brand-muted">
+                  Checking this project&apos;s financial records before the currency can be changed…
+                </p>
+              )}
+              {evidence.state === FIGURE_STATE.UNAVAILABLE && (
+                <p className="m-0 mt-1.5 text-[12px] text-brand-amber max-w-[560px]">
+                  Currency cannot be changed right now: could not load {failedLabel(evidence.failedSources)}, so
+                  Constrapp cannot confirm this project holds no monetary records. Reload the page, and check your
+                  connection and permissions if this persists.
+                </p>
+              )}
               {error && <p className="m-0 mt-1.5 text-[12px] text-brand-red">{error}</p>}
             </>
           )}
@@ -190,20 +256,38 @@ const canEditProjectCurrency = (role) => role === 'company_admin' || role === 'p
 // financial roles, so non-financial roles never trigger a rules-denied fetch —
 // Firestore rules remain the boundary.
 function ProjectFinancialCards({ project, projectId, currencyCode, canEditCurrency }) {
-  const { budgetLines }      = useBudgetLines(projectId)
-  const { costCodes }        = useCostCodes()
-  const { purchaseOrders }   = usePurchaseOrders(projectId)
-  const { progressClaims }   = useProgressClaims(projectId)
-  const { supplierInvoices } = useSupplierInvoices(projectId)
-  const { supplierCreditNotes, supplierCreditNotesError } = useSupplierCreditNotes(projectId)
-  const { clientInvoices }   = useClientInvoices(projectId)
-  const { clientReceipts }   = useClientReceipts(projectId)
-  const { supplierPayments } = useSupplierPayments(projectId)
-  const { variations }       = useVariations(projectId)
-  const { tenderBids }       = useTenderBids(projectId)
-  const { forecastLines }    = useForecastLines(projectId)
-  const { boqItems }         = useBoqItems(projectId)
-  const { baseline, baselineLoading } = useProjectCommercial(projectId)
+  const { budgetLines, budgetLinesLoading, budgetLinesError }                         = useBudgetLines(projectId)
+  const { costCodes }                                                                 = useCostCodes()
+  const { purchaseOrders, purchaseOrdersLoading, purchaseOrdersError }                = usePurchaseOrders(projectId)
+  const { progressClaims, progressClaimsLoading, progressClaimsError }                = useProgressClaims(projectId)
+  const { supplierInvoices, supplierInvoicesLoading, supplierInvoicesError }          = useSupplierInvoices(projectId)
+  const { supplierCreditNotes, supplierCreditNotesLoading, supplierCreditNotesError } = useSupplierCreditNotes(projectId)
+  const { clientInvoices, clientInvoicesLoading, clientInvoicesError }                = useClientInvoices(projectId)
+  const { clientReceipts, clientReceiptsLoading, clientReceiptsError }                = useClientReceipts(projectId)
+  const { supplierPayments, supplierPaymentsLoading, supplierPaymentsError }          = useSupplierPayments(projectId)
+  const { variations, variationsLoading, variationsError }                            = useVariations(projectId)
+  const { tenderBids, tenderBidsLoading, tenderBidsError }                            = useTenderBids(projectId)
+  const { forecastLines, forecastLinesLoading, forecastLinesError }                   = useForecastLines(projectId)
+  const { boqItems, boqItemsLoading, boqItemsError }                                  = useBoqItems(projectId)
+  const { baseline, baselineLoading, baselineError }                                  = useProjectCommercial(projectId)
+
+  // Loading / error flags in the Dashboard snapshot's shape (ADR-42), shared by
+  // the margin cards and the currency card.
+  const sourceStates = {
+    budgetLines:         { loading: budgetLinesLoading,         error: budgetLinesError },
+    purchaseOrders:      { loading: purchaseOrdersLoading,      error: purchaseOrdersError },
+    progressClaims:      { loading: progressClaimsLoading,      error: progressClaimsError },
+    supplierInvoices:    { loading: supplierInvoicesLoading,    error: supplierInvoicesError },
+    supplierCreditNotes: { loading: supplierCreditNotesLoading, error: supplierCreditNotesError },
+    clientInvoices:      { loading: clientInvoicesLoading,      error: clientInvoicesError },
+    clientReceipts:      { loading: clientReceiptsLoading,      error: clientReceiptsError },
+    supplierPayments:    { loading: supplierPaymentsLoading,    error: supplierPaymentsError },
+    variations:          { loading: variationsLoading,          error: variationsError },
+    tenderBids:          { loading: tenderBidsLoading,          error: tenderBidsError },
+    forecastLines:       { loading: forecastLinesLoading,       error: forecastLinesError },
+    boqItems:            { loading: boqItemsLoading,            error: boqItemsError },
+    baseline:            { loading: baselineLoading,            error: baselineError },
+  }
 
   // Client invoices, client receipts, supplier payments, BOQ items and tender
   // bids are monetary data, so all of them are part of the currency-lock
@@ -230,6 +314,7 @@ function ProjectFinancialCards({ project, projectId, currencyCode, canEditCurren
           projectId={projectId}
           currencyCode={currencyCode}
           sources={sources}
+          sourceStates={sourceStates}
         />
       )}
       <MarginCards
@@ -245,6 +330,8 @@ function ProjectFinancialCards({ project, projectId, currencyCode, canEditCurren
         forecastLines={forecastLines}
         baseline={baseline}
         baselineLoading={baselineLoading}
+        baselineError={baselineError}
+        sourceStates={sourceStates}
       />
     </>
   )

@@ -109,6 +109,15 @@ const FFC_SOURCES = [
   'purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes', 'forecastLines',
 ]
 
+// Every source buildForecastRows reads to decide WHICH cost codes exist (the
+// row union) — so the Forecast table, its per-row figures and the
+// unforecasted / line counts depend on all of them. Cost codes are absent for
+// the same reason as above: they supply names, never a row or an amount.
+export const FORECAST_ROW_SOURCES = [
+  'budgetLines', 'purchaseOrders', 'progressClaims', 'supplierInvoices',
+  'supplierCreditNotes', 'variations', 'forecastLines',
+]
+
 export const FIGURE_DEPENDENCIES = {
   approvedBudget:     ['budgetLines'],
   actual:             ['progressClaims', 'supplierInvoices', 'supplierCreditNotes'],
@@ -118,6 +127,23 @@ export const FIGURE_DEPENDENCIES = {
   margin:             ['baseline', 'variations', ...FFC_SOURCES],
   remainingPayable:   ['supplierInvoices', 'supplierPayments', 'supplierCreditNotes', 'retentionReleases'],
   costComposition:    ['budgetLines', ...FFC_SOURCES],
+  // ── Project tabs (Forecast, Commercial, Overview — ADR-44) ──
+  // Traced through forecastRollups / computeMargin exactly as above:
+  //   · supplier variation exposure — approved/pending supplier variations only
+  //     (never in FFC)
+  //   · forecast rows — the cost-code union; see FORECAST_ROW_SOURCES
+  //   · contract baseline — Original Contract Value, Original Approved Budget,
+  //     Original Planned Profit / Margin % read the stored baseline only
+  //   · client variations — approved / pending client variation totals
+  //   · Current Contract Sum (= Forecast Revenue) — baseline + approved client
+  //     variations
+  //   · Margin Movement — Forecast Gross Profit − Original Planned Profit
+  supplierVariationExposure: ['variations'],
+  forecastRows:              FORECAST_ROW_SOURCES,
+  contractBaseline:          ['baseline'],
+  clientVariations:          ['variations'],
+  currentContractSum:        ['baseline', 'variations'],
+  marginMovement:            ['baseline', 'variations', ...FFC_SOURCES],
 }
 
 // The margin figure has one extra, figure-specific state: the commercial
@@ -126,10 +152,14 @@ export const FIGURE_DEPENDENCIES = {
 // prompt to set the contract value.
 export const MARGIN_NOT_ESTABLISHED = 'not_established'
 
-const figure = (key, value, sourceStates) => {
+// One figure: its availability from FIGURE_DEPENDENCIES[key], and its value
+// ONLY when ready — so a caller cannot print an unsettled number. Exported for
+// the project tabs, which compose the same selectors as the snapshot.
+export const availableFigure = (key, value, sourceStates) => {
   const s = figureState(FIGURE_DEPENDENCIES[key], sourceStates)
   return { ...s, value: s.state === FIGURE_STATE.READY ? value : null }
 }
+const figure = availableFigure
 
 // ── The snapshot ─────────────────────────────────────────────────────────────
 //

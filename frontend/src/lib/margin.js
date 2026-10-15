@@ -95,6 +95,22 @@ export function marginMovement(forecastGrossProfitValue, originalPlannedProfitVa
   return roundMoney(safeNumber(forecastGrossProfitValue) - safeNumber(originalPlannedProfitValue))
 }
 
+// The client identity a baseline save writes, from the form's selected id
+// (ADR-44). A client chosen from the loaded active client contacts snapshots
+// its live display name. The baseline's ALREADY-STORED client, when it is not
+// among those contacts (contacts still loading, a failed contacts read — which
+// useContacts cannot distinguish from an empty list — or a since-archived
+// contact), keeps its stored name snapshot: a lookup that did not resolve never
+// erases a snapshot. Any other unresolved id is refused (`ok: false`) rather
+// than written with no name. No selection clears both.
+export function resolveBaselineClient({ clientId, baseline, clientContacts = [] }) {
+  if (!clientId) return { ok: true, clientId: null, clientName: null }
+  const contact = clientContacts.find(c => c.id === clientId)
+  if (contact) return { ok: true, clientId, clientName: contact.displayName ?? null }
+  if (baseline?.clientId === clientId) return { ok: true, clientId, clientName: baseline.clientName ?? null }
+  return { ok: false, clientId, clientName: null }
+}
+
 // A baseline is "established" for margin purposes once it exists and carries a
 // numeric Original Contract Value. Everything else on the baseline is optional.
 export function isBaselineEstablished(baseline) {

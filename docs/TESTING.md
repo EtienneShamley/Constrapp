@@ -19,7 +19,7 @@
   small number of **structural source tests** — they read files under `src/` and
   assert structure rather than rendering anything (`betaSurfaces.test.js`,
   `documentsResponsive.test.js`, `hookSubscriptionPattern.test.js`,
-  `loadingNotZero.test.js`).
+  `loadingNotZero.test.js`, `financialReliability.test.js`).
 
 **CI: Azure Pipelines** (`azure-pipelines.yml`, on `main` and every PR to it)
 runs `npm ci → lint → test:unit → test:rules → build`. **All four are blocking.**
@@ -448,6 +448,26 @@ npm run test:unit
   unavailable and incomplete; and the three-caller **structure** (margin, page
   and invariance suite all compose through the one helper; the page calls none
   of the pieces directly).
+- `frontend/tests/unit/financialReliability.test.js` — **150 tests**, the
+  ADR-44 proof for Forecast, Commercial and Overview. **Dependencies verified by
+  perturbation** against the real selectors (`projectForecastTotals`,
+  `buildForecastRows`, `computeMargin`): for every figure key the tabs display,
+  emptying any declared source moves it and emptying any undeclared source does
+  not (mutation-checked in both directions). **Availability**: every
+  dependency loading → `—`, failed → Unavailable naming the source, settled
+  zero → a real `$0`, a failure never hiding an unrelated figure; **credit-note
+  failure** makes exactly the Actual-derived figures Unavailable and the
+  notices say so (Budget's notice no longer claims otherwise). **Dashboard
+  invariance**: the eight ADR-42 dependency lists byte-identical and the
+  snapshot shape unchanged. **Currency lock**: the evidence list equals
+  `monetaryLockReasons`' parameters, each source alone is evidence, and any
+  loading/failed source keeps the selector closed. **Baseline client name**
+  (`resolveBaselineClient`): an unresolved stored client keeps its name, any
+  other unresolved id is refused. **Structure**: the Forecast and Commercial
+  wrappers mount no financial or contacts hook for other roles; every figure
+  is routed through the availability helpers; Save / Save all / Use remaining
+  budget / Use current approved budget / baseline Save / currency Save are
+  gated; the project outlet is keyed by `projectId`.
 - `frontend/tests/unit/cashFlow.test.js` — **131 tests** over `lib/cashFlow.js`
   and the cash-row adapters (`lib/clientReceipts.js → cashInRows()`,
   `lib/supplierPayments.js → cashOutRows()`): month-key validation and labels,
@@ -1386,7 +1406,7 @@ Sign in as a financial-role user (`company_admin`/`project_manager`/`qs`).
 - [ ] A **closed** PO that still holds uninvoiced commitment shows an amber "incl. … on closed PO" indicator on Remaining Committed; the amount stays visible (not removed from the forecast).
 - [ ] Search matches cost-code code/name; the **Not forecast**, **Forecast over budget**, **Unbudgeted**, and **All** filters work and combine with search.
 - [ ] Saving a forecast line never changes any Budget Line, PO, Progress Claim, Supplier Invoice, or Variation (spot-check the Budget tab figures are unchanged).
-- [ ] Signed in as a `subcontractor` or `client` role user, the Forecast tab shows no data (reads are blocked by rules).
+- [ ] Signed in as a `subcontractor` or `client` role user, the Forecast tab shows **"Forecast data is restricted"** and no figures, and opens no financial subscription (ADR-44 — see §20.4). Rules block the financial-role-only reads regardless; budget lines, POs and claims remain readable by company members under rules, so the page gate is a UX mirror, not a control.
 
 ## 15g. Project Margin (Commercial tab)
 
@@ -1428,6 +1448,7 @@ one **approved** supplier variation of **+12,000**. On the Commercial tab with
 
 - [ ] On the **Overview** tab (financial role, baseline established) a **Commercial** card row shows Current Contract Sum, Forecast Final Cost, Forecast Gross Profit, and Forecast Margin %, matching the Commercial tab (one shared derivation).
 - [ ] With no baseline established, the Overview Commercial card row does not appear.
+- [ ] If the baseline **fails to load**, the card row **does** appear, with Current Contract Sum, Forecast Gross Profit and Forecast Margin % reading **Unavailable** and a note that this does not mean the contract value is unset (ADR-44 — §20.3).
 - [ ] Signed in as a `subcontractor` or `client` role user: the **Commercial tab** shows a "restricted" message and **no** contract or margin data (reads blocked by rules), and the **Overview** Commercial cards do not appear.
 - [ ] Saving or editing the baseline never changes any Budget Line, PO, Progress Claim, Supplier Invoice, Variation, or Forecast Line (spot-check the Budget and Forecast tabs before/after).
 - [ ] No client path can delete the baseline document (delete blocked by rules); editing overwrites in place and preserves `createdAt`/`createdBy`.
@@ -4363,3 +4384,140 @@ Then confirm the three states stay distinct:
       "Unavailable — budget failed to load" sub-line, and Retention still shows
       its unavailable notice with actions disabled. Loading must not have
       swallowed the error presentation.
+
+## 20. Financial Loading & Error Reliability (ADR-44)
+
+Forecast, Commercial and Project Overview must never present incomplete
+financial data as authoritative. **Every figure has four renderings:**
+
+| state | expected |
+|---|---|
+| a source it reads is still loading | **`—`** |
+| a source it reads failed | **Unavailable** (amber), naming the source |
+| settled, genuinely nil | a real **`$0`** |
+| settled | the figure, identical to before this change |
+
+Automated coverage: `tests/unit/financialReliability.test.js` (§0b). There is
+no DOM runner, so everything below is manual. Sign in as a financial role
+unless stated.
+
+**Simulating a failed read.** The Firestore SDK multiplexes every listener over
+one channel, so devtools request-blocking fails *every* source at once — useful
+for §20.2 "everything failed", not for single sources. To fail **one** source,
+use a local emulator launcher (e.g. `npm run test:credit-notes`) with a
+**temporary, local-only** edit to `frontend/firestore.rules` that denies `read`
+on that one collection; revert it with `git checkout -- frontend/firestore.rules`
+afterwards. **Never publish an edited rules file.**
+
+### 20.1 Loading is `—`, never `$0`
+
+Throttle the network (devtools → Slow 3G) and hard-refresh each tab.
+
+- [ ] **Forecast** — all five summary cards and both supplier-variation cards
+      show `—`; the toolbar reads "Loading forecast…" (never "No cost codes or
+      commercial activity yet"); the table shows "Loading forecast…"; **Save
+      all** is disabled; search/filters are hidden.
+- [ ] **Commercial** — after "Loading commercial baseline…", every figure that
+      reads a still-loading source shows `—`; no "$0.00" appears first. The
+      live Current Approved Budget reads `—` and **Use current approved budget**
+      is disabled until budget lines load; **Save baseline** is disabled with
+      "Loading client contacts…" until contacts load.
+- [ ] **Overview** (baseline established) — the Commercial card row shows `—`
+      until its sources settle; the margin never flashes an optimistic figure.
+- [ ] **Overview → Project currency** (admin / PM, project with **no**
+      `currencyLocked` flag) — the selector and **Save currency** are disabled
+      with "Checking this project's financial records…" until every evidence
+      source (including Cash Flow Lines) has loaded.
+
+### 20.2 A failed read is Unavailable, never a partial total
+
+For each row, deny ONE collection as described above.
+
+- [ ] **Supplier Credit Notes denied** — Forecast: Actual, Forecast Final Cost
+      and Variance read **Unavailable** ("Could not load: Supplier Credit
+      Notes"); Approved Budget, Remaining Committed and both variation cards
+      still show values; the banner lists the source and carries the credit
+      notice saying figures are shown as Unavailable; the table is replaced by
+      "Forecast unavailable — could not load: Supplier Credit Notes". Commercial:
+      Forecast Final Cost, Forecast Gross Profit, Forecast Margin % and Margin
+      Movement are Unavailable; Original Contract Value, Current Contract Sum and
+      the client/supplier variation lines still show values. Overview: FFC,
+      profit and margin Unavailable; Current Contract Sum still shows.
+- [ ] **Forecast Lines denied** — Forecast: FFC and Variance Unavailable, the
+      table replaced by the Unavailable panel, **Save all** disabled; no row is
+      shown as "Not forecast".
+- [ ] **Commercial baseline denied** — Commercial: Original Contract Value,
+      Current Contract Sum, Forecast Revenue, profit, margin, Original Approved
+      Budget, Original Planned Profit/Margin and Margin Movement read
+      **Unavailable**; the amber note says this does **not** mean the contract
+      value is unset; there is **no** "Set and save an Original Contract Value"
+      prompt; **Save baseline is disabled** with the explanation. Overview: the
+      Commercial card row **appears** with Unavailable figures and a note.
+- [ ] **Budget Lines denied** — Forecast: Approved Budget and Variance
+      Unavailable, table replaced; Commercial: live Current Approved Budget reads
+      **Unavailable** and *Use current approved budget* is disabled.
+- [ ] **Variations denied** — Forecast: both variation cards Unavailable, FFC
+      still shows; Commercial: Current Contract Sum, client and supplier
+      variation lines, profit, margin and Margin Movement Unavailable; FFC and
+      Original Contract Value still show.
+- [ ] **Any lock-evidence source denied** (e.g. BOQ Items) on an unflagged
+      project — Overview currency selector stays disabled, naming the source.
+- [ ] **Budget page** with credit notes denied — unchanged behaviour (figures
+      shown); the notice now says they are calculated **without** credits and
+      may be overstated.
+
+### 20.3 A settled zero is a real `$0`
+
+- [ ] On a new project with no records: Forecast shows `$0.00` for Approved
+      Budget, Actual, Remaining Committed, FFC and Variance and "No cost codes or
+      commercial activity yet."; Commercial shows `$0.00` for Forecast Final Cost
+      and the variation lines, and "—" plus the amber "Set and save…" prompt for
+      the contract figures (baseline cleanly absent).
+- [ ] Once every source settles on a populated project, every figure on all
+      three tabs matches its pre-change value (spot-check against the Dashboard
+      Project Snapshot, §18h, which is unchanged).
+
+### 20.4 Role gate — no subscription for other roles
+
+- [ ] Signed in as `subcontractor` and as `client`: Forecast shows "Forecast
+      data is restricted"; Commercial shows "Commercial data is restricted";
+      neither shows any figure.
+- [ ] In devtools → Network (or the Firestore emulator request log), opening
+      Forecast and Commercial as those roles issues **no** listen request for
+      budget lines, POs, claims, supplier invoices, credit notes, variations,
+      forecast lines, the baseline **or contacts**, and the console shows no
+      `permission-denied` error from these pages.
+- [ ] As `qs`: Forecast and Commercial work; Overview shows margin cards but no
+      currency card (unchanged).
+
+### 20.5 Project switching never carries unsaved state
+
+The in-app UI has no direct same-tab project switch; use the browser history.
+
+- [ ] Open project **A → Forecast**, type an Uncommitted CTC on a cost code that
+      also exists in project B, **do not save**. Navigate to Projects → **B →
+      Forecast**. Long-press the browser **Back** button and jump straight to
+      **A → Forecast**, then jump forward straight to **B → Forecast**: B shows
+      **no** dirty row and **Save all** reads with no count. Nothing was written
+      to B (check B's row "Last updated").
+- [ ] Same with **Overview → Project currency**: pick a different currency on A
+      without saving, jump to B's Overview via history — B's selector shows B's
+      own currency.
+- [ ] **Within one project**, unsaved Forecast edits survive switching the
+      search box and filters, and tab navigation still works as before.
+
+### 20.6 Editing actions wait for complete inputs
+
+- [ ] Forecast: while any row source is loading or failed, **Use remaining
+      budget**, row **Save** and **Save all** are unavailable (table hidden or
+      buttons disabled). After recovery (reload), unsaved edits made before a
+      failure are still present.
+- [ ] Commercial: a baseline whose client contact has since been **archived**
+      shows that client in the dropdown ("not an active client contact");
+      re-saving keeps the stored client name. With contacts denied, the stored
+      client still shows, Save is enabled once the read settles, and saving
+      keeps the stored client name (never blanks it).
+- [ ] Overview: on a project whose `currencyLocked` flag **is** set, the card is
+      locked as before regardless of loading (unchanged).
+- [ ] 375px / 768px / 1280px: the Unavailable banners, the restricted cards and
+      the currency notice wrap without horizontal scroll.

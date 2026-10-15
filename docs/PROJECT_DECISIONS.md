@@ -3584,3 +3584,147 @@ Forecast-page parity including a malformed value, the count reaching
 forecast project with saved zeros, and the three-caller structure); the three
 gate flags in `loadingNotZero.test.js`; and a literal regression pin of the five
 Dashboard snapshot figures in `projectSnapshot.test.js`.
+
+---
+
+## ADR-44: Financial Loading & Error Reliability (Forecast, Commercial and Overview gate every figure on its verified sources; failed credit notes are Unavailable; role-gated workspaces; keyed project outlet; currency selector waits for all lock evidence)
+
+**Context.** ADR-41 made every subscription hook report *loading* and *error*
+honestly, and ADR-41 Decision 7 / ADR-43 Decision 4 taught four pages
+(Budget, Retention, BOQ, Cash Flow) to consume those flags. The three surfaces
+that publish the project's headline commercial position did not:
+
+- **Forecast** consumed one flag (`forecastLinesLoading`, for the table). Its
+  summary, variation exposure and coverage message printed from unsettled
+  arrays — *"No cost codes or commercial activity yet"* during a slow load —
+  and a failed read printed a partial total as authoritative. *"Use remaining
+  budget"* could copy a suggestion derived from missing records into a saved
+  forecast input. It had **no role gate**: for a subcontractor, rules deny
+  supplier invoices, credit notes, variations and forecast lines but allow
+  budget lines, POs and claims, so the page showed a forecast built from part
+  of the records.
+- **Commercial** waited for the baseline only. Forecast Final Cost and every
+  margin figure printed while their sources loaded or after they failed; a
+  failed baseline read said *"Set and save an Original Contract Value"* (a
+  false fact) and offered a blank form whose save would overwrite the stored
+  baseline. *"Use current approved budget"* could copy a partial Σ budget
+  lines, and a save while contacts were unresolved wrote `clientName: null`
+  over the stored client snapshot.
+- **Overview** margin cards waited for the baseline only — during a load,
+  FFC was understated and margin **overstated**, the dangerous direction — and
+  a failed baseline read hid the card silently. The currency selector judged
+  "no monetary records" from evidence that might still be loading or failed.
+- The three pages printed credit-less figures under
+  `CREDIT_READ_ERROR_NOTICE`, which claimed those figures were *"not shown as
+  though no credits exist"* — the opposite of what they did. The Dashboard
+  (ADR-42 Decision 5) already reported them Unavailable.
+- `useProject` derives from the already-loaded projects list, so a project
+  switch never passes through `ProjectDetailLayout`'s loading branch, and the
+  unkeyed `<Outlet>` reused the same tab instance — carrying local state (e.g.
+  unsaved Forecast edits, keyed by **company-wide** cost-code ids) into
+  another project, where *Save all* would write them. Data never crossed
+  (hooks are keyed, ADR-41); local state did.
+
+**Decision 1 — one availability vocabulary, reused, with dependencies proved
+against the selectors.** The pages reuse `lib/projectSnapshot.js` —
+`figureState`, `displayFigure`, `FIGURE_STATE` and a newly exported
+`availableFigure` (the module's existing private `figure` helper). Six keys
+join `FIGURE_DEPENDENCIES`: `supplierVariationExposure` (variations),
+`forecastRows` (the seven sources that decide the cost-code union, exported as
+`FORECAST_ROW_SOURCES`), `contractBaseline` (baseline), `clientVariations`
+(variations), `currentContractSum` (baseline + variations) and
+`marginMovement` (baseline + variations + the FFC sources). The eight ADR-42
+entries are byte-identical. Every key is **verified by perturbation** against
+the real selectors (`projectForecastTotals`, `buildForecastRows`,
+`computeMargin`): emptying any *declared* source moves the figure and emptying
+any *undeclared* source does not — so a figure can neither wait on nor ignore
+the wrong source (mutation-checked in both directions). Rendering:
+
+| state | rendering |
+|---|---|
+| any dependency loading | `—` |
+| any dependency failed | **Unavailable**, amber, naming the sources |
+| settled, genuinely nil | a real `$0` |
+| settled | the selector value, unchanged |
+
+A failed source never hides a figure that does not read it.
+
+**Decision 2 — failed credit notes are Unavailable on these tabs (D1).**
+Actual, Forecast Final Cost, Variance, profit, margin %, Margin Movement and
+the Forecast table follow from Decision 1; Approved Budget, Remaining
+Committed, variation exposure and the contract-side figures stay ready.
+`CREDIT_READ_UNAVAILABLE_NOTICE` says so. The **Budget page is unchanged in
+behaviour** (it still prints credit-less cost figures and warns — a decision
+not reopened here), but its notice is corrected to say the figures are
+calculated *without* credits and may be overstated, instead of the false claim.
+
+**Decision 3 — Forecast: role gate, row-union gate, editing gate (D2).**
+`ProjectForecast` is now a wrapper: `profileLoading` → loading; a
+non-financial role → a restricted card; otherwise it renders
+`ForecastWorkspace`, which alone **mounts** the subscriptions — so other roles
+never open them (Commercial's pattern, made structural). Summary and exposure
+cards are per-figure. The coverage message, search/filters and the table wait
+for `forecastRows` (and cost codes, which supply the stored name); any
+row-source failure replaces the table with an Unavailable panel, because
+**which rows exist** depends on every source. Save, Save all and Use remaining
+budget are disabled — and `persist`/`saveAll`/`applyRemainingBudget` refuse —
+until every input is ready. Unsaved edits are kept across a transient failure.
+Once ready, the input overlay and `composeForecastRow` path are untouched
+(ADR-43).
+
+**Decision 4 — Commercial: per-figure figures, safe baseline form (D3).**
+The page is a wrapper over `CommercialWorkspace`, so `useContacts` — which
+previously opened a rules-denied read for every role — now mounts for
+financial roles only; the `mid` null-target pattern is retired here. Every
+figure goes through one `show()` helper: availability first, then the existing
+"not established → —" rule, so a **failed baseline read is Unavailable and
+never "contract value not set"**. Baseline **Save is disabled on a baseline
+read error and while contacts load**. *Use current approved budget* is enabled
+only once budget lines settle cleanly; the live figure renders `—` /
+Unavailable otherwise. Client identity resolves through
+`lib/margin.js → resolveBaselineClient`: a contact found in the loaded active
+client list snapshots its live name (unchanged); the **already-stored** client,
+if unresolved (loading, failed read — `useContacts` cannot tell that from
+empty — or a since-archived contact), **keeps its stored name**; any other
+unresolved id is refused rather than written nameless. The dropdown shows the
+stored client instead of silently displaying "— None —". No hook change was
+needed.
+
+**Decision 5 — Overview: cards follow dependencies; currency waits for all
+evidence (D5).** Margin cards render through `availableFigure`. A failed
+baseline read now shows the card with Unavailable figures and an explicit note
+(a cleanly settled, unestablished baseline still hides it, as before). The
+currency selector and Save are disabled until **every** source in
+`lib/currency.js → CURRENCY_LOCK_EVIDENCE_SOURCES` has settled without error —
+the exact parameter set of `monetaryLockReasons` (pinned by test). That list
+includes **Cash Flow Lines**, which Overview never subscribed to; the currency
+card now does (admin / project manager only — the roles that can change
+currency). The stored-flag lock, the self-heal ratchet and
+`updateProjectCurrency` are unchanged.
+
+**Decision 6 — the project outlet is keyed by project (D4).**
+`<Outlet key={projectId} …>` in `ProjectDetailLayout`. A project switch
+remounts the tab subtree; navigating between tabs or records within a project
+never changes the key. Unsaved drafts on *any* tab are discarded on a project
+switch — they belonged to the other project.
+
+**Honest limits.**
+- These are **client-side UX gates**. Firestore Security Rules remain the only
+  trust boundary; the Forecast/Commercial role gates mirror the rules and are
+  not controls. Budget lines, POs and claims stay readable by every company
+  member under rules, exactly as before.
+- `useCostCodes` and `useContacts` expose **no error flag** (ADR-41 Decision 3).
+  A failed read looks like an empty list. Cost codes change no amount (names
+  fall back to stored snapshots); contacts are handled by
+  `resolveBaselineClient`. Exposing those flags is an additive hook API change,
+  not made here.
+- The currency gate protects only projects whose flag was never set; every
+  monetary write since ADR-21 engages the ratchet atomically.
+- There is no DOM test runner (ADR-26): page wiring is pinned by structural
+  source tests and must be accepted manually (TESTING.md §20).
+
+*Scope held:* no Firestore or Storage rules change, no schema or field change,
+no hook change, no financial formula or currency change, no write path added,
+no Dashboard change (its snapshot figures and dependency lists are pinned
+unchanged), no new dependency. Automated proof:
+`tests/unit/financialReliability.test.js`.

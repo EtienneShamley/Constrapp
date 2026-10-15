@@ -290,6 +290,16 @@ export function resolveProjectCurrency(project, company) {
 // to false. A client can therefore decline to SET the lock, but no client can
 // unset it or change a locked currency. See docs/SECURITY.md → Deferred Controls.
 
+// Every live source monetaryLockReasons reads (all of its parameters except the
+// project document itself). The currency selector may only be offered once
+// EVERY one of them has settled without error: an unsettled or failed source is
+// an empty array, and an empty array would read as "no money here" (ADR-44).
+export const CURRENCY_LOCK_EVIDENCE_SOURCES = [
+  'budgetLines', 'purchaseOrders', 'progressClaims', 'supplierInvoices',
+  'clientInvoices', 'clientReceipts', 'supplierPayments', 'variations',
+  'tenderBids', 'forecastLines', 'cashFlowLines', 'boqItems', 'baseline',
+]
+
 // Human-readable reasons, in the order they are shown. Each entry is the
 // evidence that the project already holds money.
 export function monetaryLockReasons({
