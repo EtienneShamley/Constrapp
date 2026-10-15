@@ -45,7 +45,9 @@ const tableOffsets = (src) => {
 // The four tables the assessment found sitting bare inside a Card, with the
 // minimum width each needs so its Actions column is never crushed.
 const REGISTERS = [
-  { label: 'Dashboard projects',  src: read('pages/Dashboard.jsx'),                  minWidth: 1040 },
+  // Dashboard v2 (ADR-45): the register moved into its own component and the
+  // icon column was dropped (960px); below lg it renders as stacked cards.
+  { label: 'Dashboard projects',  src: read('pages/dashboard/ProjectRegister.jsx'),  minWidth: 960 },
   { label: 'Projects register',   src: read('pages/Projects.jsx'),                   minWidth: 860 },
   { label: 'Project Budget',      src: read('pages/project/ProjectBudget.jsx'),      minWidth: 980 },
   { label: 'Project Cost Codes',  src: read('pages/project/ProjectCostCodes.jsx'),   minWidth: 820 },
@@ -166,13 +168,23 @@ describe('the Dashboard presents no fabricated data', () => {
     }
   })
 
-  it('offers exactly the two KPIs that are really derived', () => {
-    expect(code).toContain("label: 'Active Projects', value: String(activeCount)")
-    expect(code).toContain("label: 'Total Projects',  value: String(totalCount)")
+  // Dashboard v2 (ADR-45): the two portfolio counts moved into
+  // lib/projects.js → portfolioSummary (null until the read settles) and are
+  // rendered by pages/dashboard/PortfolioSummary.jsx.
+  it('offers exactly the two portfolio counts that are really derived', () => {
+    const portfolio = stripComments(read('pages/dashboard/PortfolioSummary.jsx'))
+    expect(portfolio).toContain('<Count label="Active projects" value={active}')
+    expect(portfolio).toContain('<Count label="Total projects" value={total}')
+    for (const literal of ['Pending POs', 'Budget Utilization', 'Upcoming Tasks']) {
+      expect(portfolio).not.toContain(literal)
+      expect(code).not.toContain(literal)
+    }
   })
 
   it('still derives its counts from the live projects subscription', () => {
-    expect(code).toContain("projects.filter(p => p.status === 'In Progress').length")
-    expect(code).toContain('projects.length')
+    expect(code).toContain('portfolioSummary({ projects, loading: projectsLoading, error: projectsError })')
+    const lib = stripComments(read('lib/projects.js'))
+    expect(lib).toContain("list.filter(p => p?.status === 'In Progress').length")
+    expect(lib).toContain('total:        settled ? list.length : null')
   })
 })

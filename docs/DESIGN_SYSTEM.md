@@ -178,6 +178,31 @@ this records how existing tokens are used.**
 - Chart tooltips are ordinary Tailwind-classed elements (`bg-brand-surface`,
   `border-brand-border`) — not inline style objects.
 
+### Dashboard v2 patterns (ADR-45)
+
+- **Plain-SVG bars and donuts** where the data is a handful of values: shapes
+  use percentage `x`/`width` attributes and `fill-brand-*` / `stroke-brand-*`
+  classes; all geometry comes from a pure `lib/` function
+  (`performanceLayout`, `statusBarSegments`, `donutSegments`), never inline
+  arithmetic in JSX. Recharts stays for time series (Cash Flow).
+- **One scale per chart, exact figures listed beneath it** — the list is the
+  accessible equivalent and the record whenever a bar cannot be drawn honestly
+  (negative component, nothing recorded, failed source).
+- **Reference bars are neutral, composition bars carry hue**: Current Contract
+  Sum `brand-text-soft`, Approved Budget `brand-muted` (+ a `brand-text`
+  reference line across the cost bar); Actual `brand-accent`, Remaining
+  Committed `brand-blue`, Uncommitted CTC `brand-purple` (unchanged from v1).
+- **KPI card** (`pages/dashboard/KpiCard.jsx`): the prototype `Stat` motif
+  (quarter-circle `brand-accent/5` corner tint, 11px uppercase label, 26px/900
+  value) rebuilt with classes only. It receives formatted text, never a number.
+  Supporting lines state direction in **words** ("Over budget", "vs original
+  plan") — the ▲/▼ glyph and colour only reinforce them. The shared `Stat`
+  component keeps its recorded inline-style debt; migrate it separately.
+- **Hero panel**: `bg-linear-to-br from-brand-surface to-brand-bg` with a faint
+  `brand-accent/5` circle — tokens only, no new colour value.
+- **Programme donut colours follow `ACTIVITY_STATUS_BADGE`** so the Dashboard
+  and the Timeline tab agree; every status is named in the legend.
+
 ⚠️ Known deviation, recorded honestly: `brand-accent` (`#00C9A7`) sits above the
 lightness band a validator recommends for series fills on the dark chart surface
 (`brand-surface`), so it reads slightly hot. Colourblind separation and contrast

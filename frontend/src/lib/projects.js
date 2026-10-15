@@ -152,3 +152,44 @@ export function projectStatusCounts(projects) {
     other,
   }
 }
+
+// ── Portfolio summary (Dashboard v2, ADR-45) ─────────────────────────────────
+//
+// The Dashboard's company-wide layer: project COUNTS only, never money.
+// `active` / `total` / `statusCounts` are null until the projects read has
+// SETTLED cleanly — so a loading or failed read can never render as
+// "0 active projects" (the v1 defect this fixes). A settled empty company is a
+// genuine zero. `active` counts the descriptive 'In Progress' status (ADR-39).
+export function portfolioSummary({ projects, loading, error }) {
+  const list = Array.isArray(projects) ? projects : []
+  const listState = projectsListState({ loading, error, count: list.length })
+  const settled = listState === PROJECTS_LIST_STATE.READY || listState === PROJECTS_LIST_STATE.EMPTY
+  return {
+    listState,
+    active:       settled ? list.filter(p => p?.status === 'In Progress').length : null,
+    total:        settled ? list.length : null,
+    statusCounts: settled ? projectStatusCounts(list) : null,
+  }
+}
+
+// Geometry for the Dashboard's status distribution bar: each status's share of
+// the project COUNT, as percentage offsets/widths. Counts only — no money.
+// Zero-count statuses are omitted; an empty company draws nothing.
+export function statusBarSegments(statusCounts) {
+  if (!statusCounts) return []
+  const entries = [
+    ...statusCounts.byStatus.map(({ status, count }) => ({ status, label: status, count })),
+    ...(statusCounts.other > 0 ? [{ status: 'Other', label: 'Other status', count: statusCounts.other }] : []),
+  ]
+  const total = entries.reduce((s, e) => s + e.count, 0)
+  if (total <= 0) return []
+  let offset = 0
+  const out = []
+  for (const e of entries) {
+    if (e.count <= 0) continue
+    const widthPct = e.count / total * 100
+    out.push({ ...e, offsetPct: offset, widthPct })
+    offset += widthPct
+  }
+  return out
+}

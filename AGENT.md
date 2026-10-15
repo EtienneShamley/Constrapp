@@ -397,6 +397,7 @@ PULSE™, IQ™, Quant™, and SHIELD™ are reserved proprietary features.
 
 - Do not implement any AI, ML, scoring, or hashing logic for these features
 - If a screen references one, render a placeholder card: feature name, one-line description, "Coming Soon" badge — no data, calculations, or API calls behind it
+- **Placeholder cards live only on the module's own route**, which stays hidden from navigation until the feature ships (Beta Launch Readiness). **Never** add a Coming Soon card, reserved empty slot or mock widget for these features to the Dashboard or any navigation surface (ADR-45) — they join the Dashboard only with real data
 - Never import an AI/ML library (TensorFlow, OpenAI SDK, LangChain, etc.) without explicit instruction
 
 ## Git Workflow

@@ -383,6 +383,8 @@ cd frontend
 npm run test:unit
 ```
 
+- `frontend/tests/unit/dashboardV2.test.js` — **78 tests** over the Premium
+  Dashboard v2 (ADR-45): see §22.
 - `frontend/tests/unit/projects.test.js` — **26 tests** over `lib/projects.js`
   (ADR-39): the five-value status vocabulary and its rejection of legacy slugs
   (`'in_progress'`); the deliberate **absence** of a transition graph — every
@@ -4130,6 +4132,14 @@ render test.
 
 ### 18c. Dashboard — nothing fabricated (updated by Dashboard Analytics, ADR-42)
 
+> **Superseded in layout by Premium Dashboard v2 (ADR-45, §22).** The
+> "nothing fabricated" intent below still holds; the specifics changed: the two
+> counts now live in a Portfolio card (shown as "—"/Unavailable until projects
+> load), the snapshot adds a plain-SVG Budget, cost & revenue chart and a
+> Programme donut (activity counts, no %), and the register is a table from
+> `lg:` and cards below. Still: no Pending POs / Budget Utilization / Upcoming
+> Tasks, no 72%, no portfolio money.
+
 - [ ] **No fabricated chart.** No "Project Financial Overview" bar chart, no "Task
       Progress" donut, no 72% figure anywhere. The only visual is the Project
       Snapshot's cost-composition bar (§18h).
@@ -4583,3 +4593,38 @@ not a render test.
 - [ ] No planned module named or implied; no "world-first", "patent-pending",
       "only platform" or "100% Australian-owned" claims.
 - [ ] "No account?" guidance is plain text, not a link.
+
+## 22. Premium Dashboard v2 (ADR-45)
+
+Automated: `tests/unit/dashboardV2.test.js` (78 tests) — every new figure equals
+its selector (`projectForecastTotals` / `computeMargin`), per-figure loading /
+Unavailable / genuine-zero states, missing-baseline and no-original-budget
+handling, chart geometry (one scale, over/under budget, negative and zero
+cases, rounding clamp, nothing drawn from loading or failed cost sources, a
+failed contract removing only its own bar), programme counts equal
+`timelineSummary` with no completion %, portfolio counts null until settled,
+role gates and keyed children, exactly one added hook, no writes, no money
+arithmetic, no chart library / inline style / hex, responsive breakpoints and
+44px targets. The ADR-42 invariance and ADR-44 perturbation suites still pass
+(the latter now also verifies `uncommittedCostToComplete`).
+
+Manual — three checks only:
+
+- [ ] **Figures, chart and switching.** On a project with budget, POs, invoices,
+      a forecast and a commercial baseline (e.g. Gold Coast apartments): the four
+      KPIs and the strip equal the Forecast / Commercial / Supplier Payments tabs;
+      the chart's three labelled amounts equal Current Contract Sum, Approved
+      Budget and Forecast Final Cost, with the budget line inside the cost bar
+      when over budget; the Programme counts equal the Timeline tab's summary
+      cards. Then, with DevTools → Slow 3G, switch to a project in another
+      currency (e.g. NZD): only "—" appears, then that project's figures in its
+      currency — never the previous project's — and **Refresh** keeps it selected.
+- [ ] **Roles and states.** Signed in as **subcontractor** or **client**: portfolio
+      and register only — no snapshot, no chart, no Programme panel, no picker, and
+      **no permission-denied errors** in the console. On first load (any role) the
+      portfolio counts show "—", never 0, until projects arrive.
+- [ ] **Layout.** At **375px**, **768px**, **1280px** and a wide desktop (≥1600px):
+      no horizontal page scroll; KPIs reflow 1 → 2 → 4 columns; the chart sits
+      beside the Programme panel from 1024px and stacks above it below; the
+      register is cards below 1024px (actions ≥44px) and a table above it; the
+      picker is full width on mobile.

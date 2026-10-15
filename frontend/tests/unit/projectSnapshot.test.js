@@ -453,9 +453,12 @@ describe('the project register keeps loading, unavailable and empty distinct', (
     expect(code).toMatch(/value=\{\{ projects, projectsLoading, projectsError, createProject, updateProject, updateProjectCurrency, lockProjectCurrency \}\}/)
   })
 
+  // Dashboard v2 (ADR-45): the register moved into its own component; the
+  // Dashboard still passes it the projectsError-derived list state.
   it('the Dashboard checks UNAVAILABLE before it can say "No projects yet"', () => {
-    const code = stripComments(read('pages/Dashboard.jsx'))
-    expect(code).toContain('projectsError')
+    expect(stripComments(read('pages/Dashboard.jsx'))).toContain('projectsError')
+    expect(stripComments(read('pages/Dashboard.jsx'))).toContain('listState={portfolio.listState}')
+    const code = stripComments(read('pages/dashboard/ProjectRegister.jsx'))
     const unavailableAt = code.indexOf('PROJECTS_LIST_STATE.UNAVAILABLE ?')
     const emptyAt = code.indexOf('PROJECTS_LIST_STATE.EMPTY ?')
     expect(unavailableAt).toBeGreaterThan(-1)
@@ -552,17 +555,22 @@ describe('structure: role gate, no arithmetic, no writes, no chart library', () 
     }
   })
 
+  // Dashboard v2 (ADR-45): the register lives in pages/dashboard/ProjectRegister.jsx.
+  const register = stripComments(read('pages/dashboard/ProjectRegister.jsx'))
+
   it('the project table keeps its horizontal-overflow protection', () => {
-    const at = dashboard.indexOf('<table')
-    expect(dashboard.lastIndexOf('<div className="overflow-x-auto">', at)).toBeGreaterThan(-1)
-    expect(dashboard).toMatch(/<table className="[^"]*min-w-\[\d+px\]/)
+    const at = register.indexOf('<table')
+    expect(register.lastIndexOf('<div className="hidden lg:block overflow-x-auto', at)).toBeGreaterThan(-1)
+    expect(register).toMatch(/<table className="[^"]*min-w-\[\d+px\]/)
   })
 
   it('the table labels the headline budget honestly and adds no financial column', () => {
-    expect(dashboard).toContain("'Headline Budget'")
-    expect(dashboard).not.toContain("'Budget',")
-    for (const h of ['Approved Budget', 'Forecast Final Cost', 'Margin']) {
-      expect(dashboard).not.toContain(`'${h}'`)
+    expect(register).toContain("'Headline Budget'")
+    expect(register).not.toContain("'Budget',")
+    for (const code of [register, dashboard]) {
+      for (const h of ['Approved Budget', 'Forecast Final Cost', 'Margin']) {
+        expect(code).not.toContain(`'${h}'`)
+      }
     }
   })
 })

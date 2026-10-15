@@ -124,6 +124,7 @@ function evaluate(sources) {
     clientVariations:          [m.approvedClientVariations, m.pendingClientVariationExposure],
     currentContractSum:        [m.currentContractSum, m.forecastRevenue],
     marginMovement:            m.marginMovement,
+    uncommittedCostToComplete: totals.uncommittedCostToComplete,
   }
 }
 const PAGE_FIGURES = Object.keys(evaluate(SOURCES))
@@ -261,8 +262,9 @@ describe('Dashboard: ADR-42 snapshot figures and dependencies are unchanged', ()
     const states = Object.fromEntries(SNAPSHOT_SOURCES.map(s => [s, { loading: false, error: false }]))
     const s = projectSnapshot({ sources: { ...SOURCES, supplierPayments: [], retentionReleases: [] }, sourceStates: states, currencyCode: 'AUD' })
     expect(Object.keys(s).sort()).toEqual([
-      'actual', 'approvedBudget', 'costComposition', 'currencyCode', 'forecastFinalCost',
-      'margin', 'remainingCommitted', 'remainingPayable', 'varianceToBudget',
+      'actual', 'approvedBudget', 'costComposition', 'currencyCode', 'currentContractSum',
+      'forecastFinalCost', 'margin', 'marginMovement', 'remainingCommitted', 'remainingPayable',
+      'uncommittedCostToComplete', 'varianceToBudget',
     ])
     expect(s.forecastFinalCost.value).toBe(FULL.forecastFinalCost[0])
     expect(s.margin.grossProfit).toBe(FULL.margin[0])

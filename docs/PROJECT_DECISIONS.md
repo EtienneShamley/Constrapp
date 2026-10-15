@@ -3728,3 +3728,97 @@ no hook change, no financial formula or currency change, no write path added,
 no Dashboard change (its snapshot figures and dependency lists are pinned
 unchanged), no new dependency. Automated proof:
 `tests/unit/financialReliability.test.js`.
+
+---
+
+## ADR-45: Premium Dashboard v2 (presentation over ADR-42; one added subscription — programme activities; plain-SVG budget/cost/revenue bars; no Coming Soon surfaces)
+
+**Context.** Dashboard Analytics v1 (ADR-42) made every Dashboard figure real but
+presented them as a single flat card. The v5 prototype (`docs/Constrapp_v5.jsx`)
+remained the visual reference — but its Dashboard (greeting, four KPIs, a monthly
+Budget/Actual/Forecast bar chart, a "Task Progress" donut, a projects table) was
+**entirely mock data**, and two of its widgets cannot be built honestly: there is
+no time-phased budget or forecast (so no monthly bars), and "Budget Utilization"
+sums money across projects. The assessment (approved) concluded the prototype's
+*composition* — KPI row → chart beside a side panel → register — could be
+reproduced with figures the app already derives.
+
+**Decision 1 — presentation, not a new engine.** v2 re-lays-out the ADR-42
+composition. `lib/projectSnapshot.js` gains three carried figures — **Uncommitted
+Cost to Complete** (`projectForecastTotals`), **Current Contract Sum** and
+**Margin Movement** (`computeMargin`) — through the same `availableFigure` /
+`figureState` vocabulary. New dependency key: `uncommittedCostToComplete:
+['forecastLines']`, verified by the ADR-44 perturbation suite. `currentContractSum`
+and `marginMovement` reuse the existing ADR-44 keys. Like margin, both are
+**"not established"** when the baseline has settled without an Original Contract
+Value (never $0). Margin Movement carries `planned: false` when the Original
+Approved Budget is unset (computeMargin returns null) and is then not shown. The
+eight ADR-42 dependency lists and every ADR-42 figure are unchanged (pinned).
+
+**Decision 2 — layout.** Portfolio summary (counts only) → selected-project
+section (picker + hero panel of four KPIs — Approved Budget, Forecast Final Cost
+with Variance to Budget, Forecast Gross Profit with Margin % and movement vs the
+original plan, Remaining Payable (gross) — and a strip keeping Actual, Remaining
+Committed, Uncommitted CTC and Variance to Budget visible) → **Budget, cost &
+revenue** chart (`lg:col-span-2`) beside the **Programme** panel → register.
+No v1 figure was removed. No month-on-month trend is shown: no history is stored.
+
+**Decision 3 — the chart.** Three horizontal bars on **one** scale (the largest
+of Current Contract Sum, Approved Budget and FFC): the contract bar, the budget
+bar, and FFC stacked Actual · Remaining Committed · Uncommitted CTC with the
+Approved Budget as a reference line across it. Geometry is a new pure
+`performanceLayout()` beside `compositionLayout()` — layout only, no money
+arithmetic; displayed totals are always selector values, never segment sums.
+Availability: a failed **cost** source → nothing drawn (Unavailable, naming it);
+any cost or contract source loading → nothing drawn (the scale is not final);
+a failed or unset **contract** removes only the contract bar and leaves the
+scale, because the cost bars do not read those sources. Negative components and
+a non-positive contract sum are never drawn to scale; an all-zero project draws
+nothing. The exact figures are always listed beneath (the accessible equivalent).
+**Plain SVG, Tailwind classes, tokens — no Recharts** (keeps the ADR-42 pin).
+
+**Decision 4 — Programme panel, the only new subscription.** `useProjectActivities`
+for the selected project only, mounted by `pages/dashboard/ProgrammePanel.jsx`,
+rendered only when `canReadProgramme(role)` (company_admin / project_manager /
+qs — the `activities` rules read audience), keyed by project id. Figures are
+`timelineSummary` unchanged (completed, overdue, due in 14 days, milestones
+remaining) plus a per-status tally (`lib/dashboardProgramme.js`) for a count
+donut whose centre is the **activity total**. **No completion percentage
+anywhere** — "12 of 40 activities completed" is a count. The panel states that
+the data is manually maintained and a current plan, not an approved baseline;
+it implies no earned value, weighted progress, schedule performance or health
+score. Loading `—`, failed **Unavailable** ("not an empty programme"), settled
+empty "No programme activities yet".
+
+**Decision 5 — portfolio counts are never a false zero.** v1 rendered
+Active/Total as `0` while projects loaded or after a failed read.
+`lib/projects.js → portfolioSummary` returns null counts until the read settles;
+the card renders `—` / **Unavailable**; a settled empty company is a genuine 0.
+
+**Decision 6 — register.** Moved to `pages/dashboard/ProjectRegister.jsx`: a
+table from `lg:` (icon column dropped; `min-w-[960px]` in its own
+`overflow-x-auto` scroller) and stacked cards below `lg:` with 44px actions.
+Headline Budget (ADR-39), **Reported Progress** (manual `project.progress`),
+Currency, start date; still no per-project financial column.
+
+**Decision 7 — no Coming Soon surfaces on the Dashboard.** PULSE™, SHIELD™, IQ™
+and Quant™ get no placeholder card or reserved empty slot; they enter the
+Dashboard only with real data. AGENT.md's AI Feature Placeholder Rule is
+reconciled: a placeholder card is permitted only on the module's own (hidden)
+route, never on the Dashboard or in navigation (the Beta Launch Readiness
+decision). **Open product decision, deliberately not resolved here:** SHIELD™'s
+definition — PRODUCT.md says *commercial audit and assurance*; product
+discussion has described it as *safety*, which would collide with the HSEQ
+anti-goal.
+
+**Listener count.** `projects` + ten snapshot hooks (ADR-42) + **one**
+`activities` = 12 for a financial-role user; subcontractor/client open only
+`projects`. Cash Flow on the Dashboard stays blocked on ROADMAP follow-up 2.
+
+*Scope held:* no Firestore or Storage rules change, no hook change, no new
+collection or field, no stored aggregate, no new financial formula, no write
+from the Dashboard, no new dependency, no token value change. **Honest limits:**
+the role gates are client-side UX mirrors — Firestore rules remain the only
+trust boundary; there is still no DOM test runner, so wiring and responsive
+structure are pinned structurally (`tests/unit/dashboardV2.test.js`) and
+accepted manually (TESTING.md §22).
