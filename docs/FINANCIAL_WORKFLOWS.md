@@ -1271,11 +1271,24 @@ The cost-composition bar draws `actual`, `remainingCommitted` and
 `forecastFinalCost`, **never the sum of the segments**.
 
 Availability is per figure: a figure is "—" while any source it reads is
-loading and **Unavailable** if any of them failed — never 0. The Dashboard is
-deliberately **stricter** than some project tabs: a failed Supplier Credit Notes
-read makes Actual / FFC / Variance / margin unavailable (Forecast and Commercial
-show a warning beside the figure instead), and a failed Retention Releases read
-makes Remaining Payable unavailable (Supplier Payments still shows it).
+loading and **Unavailable** if any of them failed — never 0. A failed Supplier
+Credit Notes read makes Actual / FFC / Variance / margin **Unavailable** — the
+same treatment the Forecast, Commercial and Overview tabs have applied since
+ADR-44 (this paragraph previously described the Dashboard as stricter than those
+tabs; that stopped being true with ADR-44). The **Budget** page still prints
+credit-less cost figures with a warning (an unmade alignment decision — ROADMAP).
+A failed Retention Releases read makes Remaining Payable unavailable (Supplier
+Payments still shows it).
+
+**Dashboard v2 (ADR-45) adds no figure either.** It additionally carries
+`projectForecastTotals().uncommittedCostToComplete`, `computeMargin().currentContractSum`
+and `computeMargin().marginMovement` (shown only when the Original Approved
+Budget is set — never a month-on-month trend, because no history is stored).
+Its **Budget, cost & revenue** chart draws those selector values on one scale;
+the bar geometry (`performanceLayout`) computes no money, and nothing is drawn
+from a loading or failed cost source. Cost and margin are **ex-GST**; Remaining
+Payable is **gross** and is labelled so. The Programme panel is non-financial
+(activity counts only).
 
 **There is no portfolio monetary figure.** Projects may carry different
 currencies and Constrapp never converts, so no amount is ever summed across

@@ -144,6 +144,10 @@ export const FIGURE_DEPENDENCIES = {
   clientVariations:          ['variations'],
   currentContractSum:        ['baseline', 'variations'],
   marginMovement:            ['baseline', 'variations', ...FFC_SOURCES],
+  // ── Dashboard v2 (ADR-45) ──
+  //   · Uncommitted Cost to Complete — the saved forecast inputs only (every
+  //     forecast line is a row in the union, so no other source moves it)
+  uncommittedCostToComplete: ['forecastLines'],
 }
 
 // The margin figure has one extra, figure-specific state: the commercial
@@ -193,6 +197,19 @@ export function projectSnapshot({ sources = {}, sourceStates = {}, currencyCode 
   const composition = figureState(FIGURE_DEPENDENCIES.costComposition, sourceStates)
   const compositionReady = composition.state === FIGURE_STATE.READY
 
+  // Current Contract Sum (Dashboard v2, ADR-45): computeMargin's own figure.
+  // Like margin, a cleanly settled baseline with no Original Contract Value is
+  // "not established" — never a $0 contract.
+  const contract = figureState(FIGURE_DEPENDENCIES.currentContractSum, sourceStates)
+  const contractReady = !notEstablished && contract.state === FIGURE_STATE.READY
+
+  // Margin Movement (Forecast Gross Profit − Original Planned Profit, from
+  // computeMargin). `planned` is false when the Original Approved Budget was
+  // never set — computeMargin then returns null and nothing is shown as a
+  // movement. Never a comparison with a previous month: no history is stored.
+  const movement = figureState(FIGURE_DEPENDENCIES.marginMovement, sourceStates)
+  const movementReady = !notEstablished && movement.state === FIGURE_STATE.READY
+
   return {
     currencyCode,
     approvedBudget:     figure('approvedBudget', totals.budgeted, sourceStates),
@@ -208,6 +225,20 @@ export function projectSnapshot({ sources = {}, sourceStates = {}, currencyCode 
       marginPct:      marginReady ? m.forecastMarginPct : null,
     },
     remainingPayable:   figure('remainingPayable', payables.remaining, sourceStates),
+    uncommittedCostToComplete: figure('uncommittedCostToComplete', totals.uncommittedCostToComplete, sourceStates),
+    currentContractSum: {
+      ...contract,
+      state:         notEstablished ? MARGIN_NOT_ESTABLISHED : contract.state,
+      failedSources: notEstablished ? [] : contract.failedSources,
+      value:         contractReady ? m.currentContractSum : null,
+    },
+    marginMovement: {
+      ...movement,
+      state:         notEstablished ? MARGIN_NOT_ESTABLISHED : movement.state,
+      failedSources: notEstablished ? [] : movement.failedSources,
+      planned:       movementReady && m.marginMovement !== null,
+      value:         movementReady ? m.marginMovement : null,
+    },
     costComposition: {
       ...composition,
       actual:                    compositionReady ? totals.actual : null,
@@ -267,6 +298,110 @@ export function compositionLayout(c) {
     reason: null,
     segments,
     budgetMarkerPct: budget === null ? null : Math.min(100, budget / scale * 100),
+  }
+}
+
+// ── Budget, cost & revenue chart geometry (Dashboard v2, ADR-45) ─────────────
+//
+// Three horizontal bars on ONE shared scale:
+//
+//   Current Contract Sum   (computeMargin — the current contract value, NOT a
+//                           time-phased revenue forecast)
+//   Approved Budget        (Σ budget lines)
+//   Forecast Final Cost    (stacked: Actual · Remaining Committed · Uncommitted
+//                           Cost to Complete — the same three segments as the
+//                           v1 composition bar)
+//
+// LAYOUT ONLY, exactly like compositionLayout: no money figure is computed. The
+// scale is the largest of the three values taken as given; every width is a
+// value's share of that scale. Displayed totals are always the selector values
+// carried in, never the sum of drawn segments.
+//
+// Availability, in order:
+//   · any COST source failed      → UNAVAILABLE (no bar is drawn at all)
+//   · any cost or contract source still loading → LOADING (nothing is drawn
+//     until the scale is final, so bars never jump or briefly read as complete)
+//   · otherwise READY. The contract row is gated on its OWN sources: a failed
+//     baseline/variations read, or an unset contract value, removes ONLY the
+//     contract bar (and it is excluded from the scale), because the cost bars
+//     do not read those sources and remain authoritative.
+//
+// Not drawable while READY (the caller lists the exact figures instead):
+//   · 'negative'  — a cost component or the budget is negative (e.g. an
+//                   over-credited cost code); a negative bar cannot be drawn
+//                   honestly on a 0-based scale.
+//   · 'no_values' — every drawable value is zero (a settled, empty project).
+// A zero or negative Current Contract Sum (possible with negative approved
+// client variations) is reported as `not_drawable` on its row, never drawn.
+export const CONTRACT_ROW_STATE = {
+  READY:           'ready',
+  LOADING:         FIGURE_STATE.LOADING,
+  UNAVAILABLE:     FIGURE_STATE.UNAVAILABLE,
+  NOT_ESTABLISHED: MARGIN_NOT_ESTABLISHED,
+  NOT_DRAWABLE:    'not_drawable',
+}
+
+const pctOf = (value, scale) => Math.min(100, Math.max(0, Number(value) / scale * 100))
+
+export function performanceLayout({ costComposition, currentContractSum } = {}) {
+  const empty = { segments: [], contract: null, budget: null, cost: null, budgetMarkerPct: null }
+  const c = costComposition
+  const k = currentContractSum
+
+  if (!c || c.state === FIGURE_STATE.UNAVAILABLE) {
+    return { state: FIGURE_STATE.UNAVAILABLE, failedSources: c?.failedSources ?? [], drawable: false, reason: null, contractRow: null, ...empty }
+  }
+  if (c.state !== FIGURE_STATE.READY || !k || k.state === FIGURE_STATE.LOADING) {
+    return { state: FIGURE_STATE.LOADING, failedSources: [], drawable: false, reason: null, contractRow: null, ...empty }
+  }
+
+  // The contract row's own state.
+  let contractRow
+  if (k.state === MARGIN_NOT_ESTABLISHED) {
+    contractRow = { state: CONTRACT_ROW_STATE.NOT_ESTABLISHED, failedSources: [], value: null }
+  } else if (k.state !== FIGURE_STATE.READY) {
+    contractRow = { state: CONTRACT_ROW_STATE.UNAVAILABLE, failedSources: k.failedSources ?? [], value: null }
+  } else if (toCents(k.value) <= 0) {
+    contractRow = { state: CONTRACT_ROW_STATE.NOT_DRAWABLE, failedSources: [], value: k.value }
+  } else {
+    contractRow = { state: CONTRACT_ROW_STATE.READY, failedSources: [], value: k.value }
+  }
+
+  const base = { state: FIGURE_STATE.READY, failedSources: [], contractRow }
+
+  if (COMPOSITION_SEGMENTS.some(({ key }) => toCents(c[key]) < 0) || toCents(c.approvedBudget) < 0) {
+    return { ...base, drawable: false, reason: 'negative', ...empty }
+  }
+
+  const contractValue = contractRow.state === CONTRACT_ROW_STATE.READY ? Number(k.value) : 0
+  const budgetValue   = toCents(c.approvedBudget) > 0 ? Number(c.approvedBudget) : 0
+  const ffcValue      = toCents(c.forecastFinalCost) > 0 ? Number(c.forecastFinalCost) : 0
+  const scale = Math.max(contractValue, budgetValue, ffcValue)
+  if (!(scale > 0)) {
+    return { ...base, drawable: false, reason: 'no_values', ...empty }
+  }
+
+  let offset = 0
+  const segments = COMPOSITION_SEGMENTS.map(({ key, label }) => {
+    // Clamp so cent-level rounding can never push the bar past 100%.
+    const widthPct = Math.max(0, Math.min(pctOf(c[key], scale), 100 - offset))
+    const seg = { key, label, value: c[key], offsetPct: offset, widthPct }
+    offset += widthPct
+    return seg
+  })
+
+  return {
+    ...base,
+    drawable: true,
+    reason: null,
+    scale,
+    contract: contractValue > 0 ? { widthPct: pctOf(contractValue, scale), value: k.value } : null,
+    budget:   budgetValue > 0 ? { widthPct: pctOf(budgetValue, scale), value: c.approvedBudget } : null,
+    cost:     { widthPct: ffcValue > 0 ? pctOf(ffcValue, scale) : 0, value: c.forecastFinalCost },
+    segments,
+    // The Approved Budget drawn as a reference line ACROSS the cost bar, so an
+    // over-budget forecast reads at a glance against the same scale.
+    budgetMarkerPct: budgetValue > 0 ? pctOf(budgetValue, scale) : null,
   }
 }
 

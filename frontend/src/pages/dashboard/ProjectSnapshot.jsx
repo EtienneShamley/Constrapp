@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import Card from '../../components/Card'
+import Badge from '../../components/Badge'
 import { formatCurrency, percent } from '../../lib/formatters'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
@@ -13,11 +13,12 @@ import { useProjectCommercial } from '../../hooks/useProjectCommercial'
 import { useSupplierPayments } from '../../hooks/useSupplierPayments'
 import { useRetentionReleases } from '../../hooks/useRetentionReleases'
 import {
-  projectSnapshot, displayFigure, compositionLayout, COMPOSITION_SEGMENTS,
-  FIGURE_STATE, MARGIN_NOT_ESTABLISHED, SNAPSHOT_SOURCE_LABELS,
+  projectSnapshot, displayFigure, FIGURE_STATE, MARGIN_NOT_ESTABLISHED, SNAPSHOT_SOURCE_LABELS,
 } from '../../lib/projectSnapshot'
+import KpiCard, { KpiLine } from './KpiCard'
+import CostPerformanceChart from './CostPerformanceChart'
 
-// ── Dashboard · Project Snapshot ─────────────────────────────────────────────
+// ── Dashboard · Project Snapshot (Dashboard v2 — ADR-42, ADR-45) ─────────────
 //
 // ⚠️ THE ROLE GATE IS THE PARENT, NOT THIS FILE. Dashboard renders this
 // component only for financial roles (lib/margin.js → isFinancialRole), so the
@@ -30,21 +31,37 @@ import {
 // selectors (projectForecastTotals, computeMargin, payablesSummary). Nothing on
 // this page adds, subtracts, or re-derives money. Only data, loading and error
 // are taken from the hooks — no write callback is consumed here.
-
-const labelCls = 'text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] m-0 mb-1'
+//
+// Layout (ADR-45): a hero panel with the four headline KPIs and a strip of the
+// remaining established figures (nothing from v1 is dropped), then the Budget,
+// cost & revenue chart beside the `aside` slot — the Programme panel, which the
+// Dashboard passes in behind its OWN role gate. With no aside the chart spans
+// the full width.
 
 const pct = (n) => (n === null || n === undefined ? '—' : percent(n))
 
 const failedLabel = (failedSources) =>
-  failedSources.map(s => SNAPSHOT_SOURCE_LABELS[s] ?? s).join(', ')
+  (failedSources ?? []).map(s => SNAPSHOT_SOURCE_LABELS[s] ?? s).join(', ')
 
-function Metric({ label, figure, format, help, danger = false }) {
+// KPI tone from a figure's availability (and, for a ready figure, whether it is
+// a genuine negative).
+const toneOf = (figure, negative = false) =>
+  figure.state === FIGURE_STATE.UNAVAILABLE ? 'unavailable'
+    : figure.state === FIGURE_STATE.READY && negative ? 'danger'
+      : 'default'
+
+const unavailableLine = (figure) => (
+  <KpiLine tone="warning">Could not load: {failedLabel(figure.failedSources)}</KpiLine>
+)
+
+// One compact secondary metric (the v1 Metric, restyled).
+function Metric({ label, figure, money, help, danger = false }) {
   const unavailable = figure.state === FIGURE_STATE.UNAVAILABLE
   return (
     <div className="min-w-0">
-      <p className={labelCls}>{label}</p>
-      <p className={`text-lg font-bold m-0 ${unavailable ? 'text-brand-amber' : danger ? 'text-brand-red' : 'text-brand-text'}`}>
-        {displayFigure(figure, format)}
+      <p className="m-0 mb-1 text-[10.5px] font-bold uppercase tracking-[0.4px] text-brand-muted">{label}</p>
+      <p className={`m-0 text-[17px] font-bold tabular-nums ${unavailable ? 'text-brand-amber' : danger ? 'text-brand-red' : 'text-brand-text'}`}>
+        {displayFigure(figure, money)}
       </p>
       <p className="m-0 mt-0.5 text-[10.5px] text-brand-muted">
         {unavailable ? `Could not load: ${failedLabel(figure.failedSources)}` : help}
@@ -53,128 +70,48 @@ function Metric({ label, figure, format, help, danger = false }) {
   )
 }
 
-function MarginMetric({ margin, money, projectId }) {
+function MarginCard({ margin, movement, money, projectId }) {
+  const label = 'Forecast Gross Profit'
   if (margin.state === MARGIN_NOT_ESTABLISHED) {
     return (
-      <div className="min-w-0">
-        <p className={labelCls}>Forecast Gross Profit · Margin</p>
-        <p className="text-[13px] font-semibold text-brand-muted m-0 mt-1.5">Contract value not set</p>
+      <KpiCard label={label} value="Contract value not set" tone="muted">
         <Link
           to={`/projects/${projectId}/commercial`}
-          className="inline-flex items-center min-h-[44px] text-[12px] text-brand-accent hover:underline"
+          className="inline-flex min-h-[44px] items-center text-[12px] text-brand-accent hover:underline"
         >
           Set contract value →
         </Link>
-      </div>
+      </KpiCard>
     )
   }
   const ready = margin.state === FIGURE_STATE.READY
-  const unavailable = margin.state === FIGURE_STATE.UNAVAILABLE
   return (
-    <div className="min-w-0">
-      <p className={labelCls}>Forecast Gross Profit · Margin</p>
-      <p className={`text-lg font-bold m-0 ${unavailable ? 'text-brand-amber' : ready && margin.grossProfit < 0 ? 'text-brand-red' : 'text-brand-text'}`}>
-        {displayFigure({ state: margin.state, value: margin.grossProfit }, money)}
-      </p>
-      <p className="m-0 mt-0.5 text-[10.5px] text-brand-muted">
-        {unavailable
-          ? `Could not load: ${failedLabel(margin.failedSources)}`
-          : ready
-            ? `Forecast Margin ${pct(margin.marginPct)}`
-            : 'Forecast Margin —'}
-      </p>
-    </div>
-  )
-}
-
-// Fill classes for the three composition segments — existing tokens only.
-const SEGMENT_FILL = {
-  actual:                    'fill-brand-accent',
-  remainingCommitted:        'fill-brand-blue',
-  uncommittedCostToComplete: 'fill-brand-purple',
-}
-const SEGMENT_SWATCH = {
-  actual:                    'bg-brand-accent',
-  remainingCommitted:        'bg-brand-blue',
-  uncommittedCostToComplete: 'bg-brand-purple',
-}
-
-// The ONE Dashboard visual. Plain SVG with percentage geometry — no chart
-// library, no inline style object. The displayed total is the selector's
-// Forecast Final Cost, never the sum of the drawn segments.
-function CostComposition({ composition, money }) {
-  if (composition.state !== FIGURE_STATE.READY) {
-    return (
-      <p className="m-0 text-[12px] text-brand-muted">
-        {composition.state === FIGURE_STATE.LOADING
-          ? 'Cost composition —'
-          : `Cost composition unavailable — could not load: ${failedLabel(composition.failedSources)}`}
-      </p>
-    )
-  }
-
-  const layout = compositionLayout(composition)
-
-  return (
-    <div>
-      <div className="flex flex-wrap items-baseline justify-between gap-2 mb-2">
-        <p className={labelCls}>Forecast Final Cost composition</p>
-        <p className="m-0 text-[12px] text-brand-text-soft">
-          Forecast Final Cost <span className="font-bold text-brand-text">{money(composition.forecastFinalCost)}</span>
-          {composition.approvedBudget > 0 && (
-            <> · Approved Budget <span className="font-bold text-brand-text">{money(composition.approvedBudget)}</span></>
+    <KpiCard
+      label={label}
+      value={displayFigure({ state: margin.state, value: margin.grossProfit }, money)}
+      tone={toneOf(margin, ready && margin.grossProfit < 0)}
+    >
+      {margin.state === FIGURE_STATE.UNAVAILABLE ? unavailableLine(margin) : (
+        <>
+          <KpiLine tone="soft">Forecast Margin <span className="font-bold text-brand-text">{ready ? pct(margin.marginPct) : '—'}</span></KpiLine>
+          {/* Movement against the ORIGINAL PLAN only — never a month-on-month
+              trend (no history is stored). Shown only when its inputs exist. */}
+          {movement.state === FIGURE_STATE.LOADING && <KpiLine>Movement vs original plan —</KpiLine>}
+          {movement.state === FIGURE_STATE.READY && movement.planned && (
+            <KpiLine tone={movement.value < 0 ? 'danger' : 'good'}>
+              {movement.value < 0 ? '▼' : '▲'} {money(movement.value)} vs original plan
+            </KpiLine>
           )}
-        </p>
-      </div>
-
-      {layout.drawable ? (
-        <svg
-          className="block w-full h-7"
-          role="img"
-          aria-label={`Forecast Final Cost ${money(composition.forecastFinalCost)}: ${layout.segments.map(s => `${s.label} ${money(s.value)}`).join(', ')}${layout.budgetMarkerPct !== null ? `; Approved Budget ${money(composition.approvedBudget)}` : ''}`}
-        >
-          <rect x="0" y="4" width="100%" height="16" rx="3" className="fill-brand-border" />
-          {layout.segments.map(s => (
-            s.widthPct > 0 && (
-              <rect key={s.key} x={`${s.offsetPct}%`} y="4" width={`${s.widthPct}%`} height="16" className={SEGMENT_FILL[s.key]} />
-            )
-          ))}
-          {layout.budgetMarkerPct !== null && (
-            <line
-              x1={`${layout.budgetMarkerPct}%`} x2={`${layout.budgetMarkerPct}%`} y1="0" y2="24"
-              strokeWidth="2" className="stroke-brand-text"
-            />
+          {movement.state === FIGURE_STATE.READY && !movement.planned && (
+            <KpiLine>Original budget not set — no movement shown</KpiLine>
           )}
-        </svg>
-      ) : (
-        <p className="m-0 text-[12px] text-brand-muted">
-          {layout.reason === 'negative'
-            ? 'Not drawn to scale — a cost component is negative (for example, an over-credited cost code). Figures below are exact.'
-            : 'No forecast cost yet.'}
-        </p>
+        </>
       )}
-
-      <ul className="m-0 mt-2 p-0 list-none flex flex-wrap gap-x-4 gap-y-1">
-        {layout.drawable || layout.reason === 'negative'
-          ? COMPOSITION_SEGMENTS.map(s => (
-              <li key={s.key} className="flex items-center gap-1.5 text-[11.5px] text-brand-text-soft">
-                <span className={`inline-block w-2.5 h-2.5 rounded-sm ${SEGMENT_SWATCH[s.key]}`} aria-hidden="true" />
-                {s.label} <span className="font-semibold text-brand-text">{money(composition[s.key])}</span>
-              </li>
-            ))
-          : null}
-        {layout.budgetMarkerPct !== null && (
-          <li className="flex items-center gap-1.5 text-[11.5px] text-brand-text-soft">
-            <span className="inline-block w-0.5 h-3 bg-brand-text" aria-hidden="true" />
-            Approved Budget marker
-          </li>
-        )}
-      </ul>
-    </div>
+    </KpiCard>
   )
 }
 
-export default function ProjectSnapshot({ project, currencyCode }) {
+export default function ProjectSnapshot({ project, currencyCode, aside = null }) {
   const projectId = project.id
 
   const { budgetLines, budgetLinesLoading, budgetLinesError }                         = useBudgetLines(projectId)
@@ -217,53 +154,101 @@ export default function ProjectSnapshot({ project, currencyCode }) {
     supplierPaymentsLoading, supplierPaymentsError, retentionReleasesLoading, retentionReleasesError,
   ])
 
+
   const money = (n) => formatCurrency(n, snapshot.currencyCode)
-  const varianceNegative = snapshot.varianceToBudget.state === FIGURE_STATE.READY && snapshot.varianceToBudget.value < 0
+  const variance = snapshot.varianceToBudget
+  const varianceNegative = variance.state === FIGURE_STATE.READY && variance.value < 0
 
   return (
-    <Card>
-      <div className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between gap-1 mb-4">
-        <h3 className="text-[15px] font-bold text-brand-text m-0">
-          Project Snapshot · {project.name} · {snapshot.currencyCode}
-        </h3>
-        <Link
-          to={`/projects/${projectId}/forecasting`}
-          className="inline-flex items-center min-h-[44px] text-[12px] text-brand-accent hover:underline"
-        >
-          Open Forecast →
-        </Link>
+    <div className="space-y-3.5">
+      <div className="relative overflow-hidden rounded-xl border border-brand-border bg-linear-to-br from-brand-surface to-brand-bg p-4 sm:p-5">
+        <div className="pointer-events-none absolute -top-24 -right-24 h-56 w-56 rounded-full bg-brand-accent/5" aria-hidden="true" />
+
+        <div className="relative mb-4 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <p className="m-0 mb-1 text-[11px] font-bold uppercase tracking-[0.5px] text-brand-accent">Selected project</p>
+            <h3 className="m-0 text-[18px] font-bold leading-snug text-brand-text">
+              Project Snapshot · {project.name} · {snapshot.currencyCode}
+            </h3>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11.5px] text-brand-muted">
+              <Badge label={project.status} sm />
+              {project.location && <span>{project.location}</span>}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-x-4">
+            <Link
+              to={`/projects/${projectId}/forecasting`}
+              className="inline-flex min-h-[44px] items-center text-[12px] text-brand-accent hover:underline"
+            >
+              Open Forecast →
+            </Link>
+            <Link
+              to={`/projects/${projectId}/commercial`}
+              className="inline-flex min-h-[44px] items-center text-[12px] text-brand-accent hover:underline"
+            >
+              Open Commercial →
+            </Link>
+          </div>
+        </div>
+
+        <div className="relative grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <KpiCard label="Approved Budget" value={displayFigure(snapshot.approvedBudget, money)} tone={toneOf(snapshot.approvedBudget)}>
+            {snapshot.approvedBudget.state === FIGURE_STATE.UNAVAILABLE
+              ? unavailableLine(snapshot.approvedBudget)
+              : <KpiLine>Σ budget lines · ex-GST</KpiLine>}
+          </KpiCard>
+
+          <KpiCard label="Forecast Final Cost" value={displayFigure(snapshot.forecastFinalCost, money)} tone={toneOf(snapshot.forecastFinalCost)}>
+            {snapshot.forecastFinalCost.state === FIGURE_STATE.UNAVAILABLE ? unavailableLine(snapshot.forecastFinalCost) : (
+              <>
+                <KpiLine>Estimate at completion (saved forecast) · ex-GST</KpiLine>
+                {variance.state === FIGURE_STATE.READY && (
+                  <KpiLine tone={varianceNegative ? 'danger' : 'good'}>
+                    {varianceNegative ? 'Over budget' : 'Within budget'} · Variance {money(variance.value)}
+                  </KpiLine>
+                )}
+                {variance.state === FIGURE_STATE.LOADING && <KpiLine>Variance to Budget —</KpiLine>}
+                {variance.state === FIGURE_STATE.UNAVAILABLE && unavailableLine(variance)}
+              </>
+            )}
+          </KpiCard>
+
+          <MarginCard margin={snapshot.margin} movement={snapshot.marginMovement} money={money} projectId={projectId} />
+
+          <KpiCard label="Remaining Payable" value={displayFigure(snapshot.remainingPayable, money)} tone={toneOf(snapshot.remainingPayable)}>
+            {snapshot.remainingPayable.state === FIGURE_STATE.UNAVAILABLE
+              ? unavailableLine(snapshot.remainingPayable)
+              : <KpiLine>Posted supplier invoices after payments and credits · <span className="font-semibold text-brand-text-soft">gross</span></KpiLine>}
+          </KpiCard>
+        </div>
+
+        {/* The remaining established figures — kept visible, not dropped. */}
+        <div className="relative mt-4 grid grid-cols-2 gap-x-4 gap-y-4 border-t border-brand-border pt-4 lg:grid-cols-4">
+          <Metric label="Actual" figure={snapshot.actual} money={money} help="Cost to date · ex-GST" />
+          <Metric label="Remaining Committed" figure={snapshot.remainingCommitted} money={money} help="Open PO commitment not yet invoiced" />
+          <Metric label="Uncommitted Cost to Complete" figure={snapshot.uncommittedCostToComplete} money={money} help="Saved forecast inputs" />
+          <Metric
+            label="Variance to Budget"
+            figure={variance}
+            money={money}
+            help="Approved Budget − Forecast Final Cost"
+            danger={varianceNegative}
+          />
+        </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-3.5 gap-y-4">
-        <Metric label="Approved Budget"     figure={snapshot.approvedBudget}     format={money} help="Σ budget lines" />
-        <Metric label="Actual"              figure={snapshot.actual}             format={money} help="Cost to date" />
-        <Metric label="Remaining Committed" figure={snapshot.remainingCommitted} format={money} help="Open PO commitment not yet invoiced" />
-        <Metric label="Forecast Final Cost" figure={snapshot.forecastFinalCost}  format={money} help="Estimate at Completion (saved forecast)" />
-        <Metric
-          label="Variance to Budget"
-          figure={snapshot.varianceToBudget}
-          format={money}
-          help="Approved Budget − Forecast Final Cost"
-          danger={varianceNegative}
-        />
-        <MarginMetric margin={snapshot.margin} money={money} projectId={projectId} />
-        <Metric
-          label="Remaining Payable"
-          figure={snapshot.remainingPayable}
-          format={money}
-          help="Posted supplier invoices, after posted payments and credit notes · gross"
-        />
+      <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-3">
+        <div className={`min-w-0 rounded-xl border border-brand-border bg-brand-surface p-4 sm:p-5 ${aside ? 'lg:col-span-2' : 'lg:col-span-3'}`}>
+          <CostPerformanceChart snapshot={snapshot} money={money} projectId={projectId} />
+        </div>
+        {aside}
       </div>
 
-      <div className="mt-5 pt-4 border-t border-brand-border">
-        <CostComposition composition={snapshot.costComposition} money={money} />
-      </div>
-
-      <p className="m-0 mt-4 text-[11px] text-brand-muted">
+      <p className="m-0 text-[11px] text-brand-muted">
         One project, in its own currency ({snapshot.currencyCode}) — Constrapp never converts or sums currencies. Cost and
         margin figures are ex-GST and are the same read-time figures shown on the project&apos;s Forecast and Commercial
         tabs; Remaining Payable is gross, as on Supplier Payments. Unsaved forecast edits are not included.
       </p>
-    </Card>
+    </div>
   )
 }
