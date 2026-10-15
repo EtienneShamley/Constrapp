@@ -427,8 +427,12 @@ function ForecastWorkspace({ projectId, currencyCode }) {
                       {/* Remaining Budget Reference (informational) */}
                       <td className={tdCls}>{row.hasBudgetLine ? money(row.remainingBudgetRef) : '—'}</td>
 
-                      {/* Uncommitted Cost to Complete (editable) */}
-                      <td className={`${tdCls} min-w-[150px]`}>
+                      {/* Uncommitted Cost to Complete (editable). The cell must
+                          wrap: under the table's whitespace-nowrap the inline
+                          input and button share one line, so the button sat
+                          beside the full-width input and spilled across Cost to
+                          Complete. The button is block-level with a 44px target. */}
+                      <td className={`${tdCls} whitespace-normal min-w-[168px]`}>
                         <input
                           type="number" min="0" step="any"
                           className={`${inputCls} ${row.ctcNegative || row.ctcInvalid ? 'border-brand-red' : ''} ${row.unforecasted ? 'italic' : ''}`}
@@ -440,7 +444,7 @@ function ForecastWorkspace({ projectId, currencyCode }) {
                           type="button"
                           onClick={() => applyRemainingBudget(row)}
                           disabled={!editable}
-                          className="mt-1 text-[11px] text-brand-accent hover:underline cursor-pointer disabled:text-brand-muted disabled:no-underline disabled:cursor-not-allowed"
+                          className="mt-1 flex items-center w-full min-h-[44px] text-left text-[11px] text-brand-accent hover:underline cursor-pointer disabled:text-brand-muted disabled:no-underline disabled:cursor-not-allowed"
                           title="Copy the Remaining Budget Reference into this input (0 if it is zero or negative). You can edit it afterward."
                         >
                           Use remaining budget
