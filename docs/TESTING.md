@@ -883,7 +883,7 @@ project.
 - [ ] Visiting `/` signed out redirects to `/login`; visiting `/login` signed in redirects to `/`.
 - [ ] Wrong password shows a friendly error, not a crash.
 - [ ] After sign-in: sidebar/topbar show profile name, role label, and company name from Firestore (not just the Auth email).
-- [ ] `/create-account` and `/forgot-password` show "coming soon" stubs with a working back link.
+- [ ] `/forgot-password` is a working password-reset form (full acceptance in §18a); `/create-account` is still a "coming soon" stub. Both have a working **Back to sign in** link.
 - [ ] Sign out from the topbar menu returns to `/login`.
 - [ ] A user whose `users/{uid}` doc has a different `companyId` sees none of this company's data.
 
@@ -4521,3 +4521,65 @@ The in-app UI has no direct same-tab project switch; use the browser history.
       locked as before regardless of loading (unchanged).
 - [ ] 375px / 768px / 1280px: the Unavailable banners, the restricted cards and
       the currency notice wrap without horizontal scroll.
+
+## 21. Login Redesign — split-screen auth layout
+
+Manual acceptance for the split-screen auth shell (`layouts/AuthLayout.jsx`)
+that recreates the Constrapp v5 prototype's login. The redesign is **visual
+only**: sign-in, reset, session persistence, redirects and the enumeration
+protections are unchanged. The structural parts (Firebase calls, guards, routes,
+labels, alert role, responsive classes, no demo/pricing/planned-module copy, no
+hex) are pinned by `tests/unit/authSurface.test.js`, a source-structure guard,
+not a render test.
+
+### 21a. Layout
+
+- [ ] **1280px+**: product panel on the left (logo + wordmark, headline with a
+      teal second line, supporting text, five feature rows with icon tiles, the
+      Australian-built panel, two faint background circles) taking ≈55% of the
+      width; the sign-in panel (≈45%, left border) with the form centred at a
+      readable ~420px width. Check 1280px, 1440px and 1660px: no cramped form,
+      no large dead space, the teal headline line always on its own line. No horizontal scroll.
+- [ ] **1280×800**: the whole page fits without vertical scroll; at shorter
+      heights the page may scroll, but the sign-in form stays fully visible.
+- [ ] **≥ 900px tall**: spacing opens out to the prototype's rhythm.
+- [ ] **768px**: single column — compact logo + tagline, the form on a card,
+      footer line. The feature list is hidden. No cramped or clipped content.
+- [ ] **375px**: as 768px with 16px gutters. Inputs render at 16px (iOS Safari
+      does **not** zoom on focus). With the on-screen keyboard open the focused
+      field and the **Sign in** button remain reachable by scrolling.
+- [ ] `/forgot-password` and `/create-account` use the same shell at all widths.
+
+### 21b. Authentication unchanged
+
+- [ ] Correct credentials → Dashboard. Back button does not return to `/login`.
+- [ ] Wrong password **and** unknown email → the **same** "Incorrect email or
+      password." message.
+- [ ] Repeated failures → "Too many attempts. Please try again later."
+- [ ] Signed in, visit `/login` → redirected to `/`. Signed out, visit `/` →
+      `/login`. Refresh while signed in → spinner, never a flash of the login
+      page. Sign out → `/login`.
+- [ ] Close and reopen the browser → still signed in (persistence unchanged;
+      there is deliberately no "Remember me").
+- [ ] Re-run §18a (password reset, including the identical-success check for an
+      unknown address) and §18b.
+
+### 21c. Accessibility
+
+- [ ] Keyboard only: Tab order is Email → Password → Forgot password? → Sign in;
+      each shows a visible teal focus ring. Enter submits.
+- [ ] Screen reader: inputs announce their labels ("Email", "Password"); a
+      failed sign-in announces the error and the inputs report invalid.
+- [ ] One `<h1>` per page ("Sign in" / "Reset password" / "Create Account"); the
+      product panel is an "About Constrapp" landmark, the form is in `main`.
+- [ ] 200% browser zoom: no overlap, no horizontal scroll.
+- [ ] Forced-colors / high-contrast mode: input focus is still visible.
+- [ ] Password-manager autofill works for email and password.
+
+### 21d. Product boundaries
+
+- [ ] No demo access, demo-account quick-fill, membership, pricing, or
+      "Remember me" anywhere on the three auth routes.
+- [ ] No planned module named or implied; no "world-first", "patent-pending",
+      "only platform" or "100% Australian-owned" claims.
+- [ ] "No account?" guidance is plain text, not a link.

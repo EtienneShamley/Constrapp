@@ -112,6 +112,24 @@ code before raising purchase orders" + "Go to Cost Codes").
 `lg:` column steps; touch targets ≥44px; no hover-only interactions; verify at
 375px / 768px / 1280px.
 
+**Auth pages** — `layouts/AuthLayout.jsx` owns the shell for `/login`,
+`/forgot-password` and `/create-account` (a recreation of the v5 prototype's
+login): from `lg:` a flexible product panel (`<aside aria-label="About
+Constrapp">`, `brand-bg` under a `black/…` diagonal wash with two faint
+`brand-accent`/`brand-blue` circles) beside a `brand-sidebar` sign-in panel, split ≈55/45
+(`grid-cols-[minmax(0,55fr)_minmax(0,45fr)]`) with the form centred at
+`max-w-[420px]`; below
+`lg:` a compact logo + tagline above the form on a `brand-sidebar` card. Pages
+render **content only** — no card of their own — and own the single `<h1>`. Form
+controls come from `components/AuthField.jsx`: `AuthField` (label bound by
+`htmlFor`, `aria-invalid`/`aria-describedby` on error, 16px text below `sm:` so
+iOS does not zoom, `outline-hidden` + `focus:ring-2` so focus survives
+forced-colors), `AuthError` (`role="alert"`, icon + text) and `authLinkCls`
+(teal text link with a 44px target). Auth copy names only implemented modules —
+never a planned one, a price, a demo, or an unsupported claim (pinned by
+`tests/unit/authSurface.test.js`). Vertical rhythm uses an arbitrary
+`[@media(min-height:900px)]:` variant so a 1280×800 laptop does not scroll.
+
 ## Recorded Violations — Technical Debt
 
 The rules are "no inline style objects" and "no hard-coded colours", but the
@@ -125,7 +143,7 @@ touching these files:
 - ~~`pages/Dashboard.jsx` — chart tooltip styled inline with raw hexes; Recharts fills/ticks hard-coded~~ **resolved** — the Dashboard charts were fabricated data and were removed entirely (Beta Launch Readiness), taking the inline hexes with them
 - `pages/Projects.jsx` — `DOT_COLORS` hex map
 - `layouts/Sidebar.jsx` / `layouts/TopBar.jsx` — inline `height: 56`, inline NavLink active styles; **off-token colours `#FF6B9D` (PULSE™) and `#00D4FF` (SHIELD™)** also used in `pages/Pulse.jsx` / `pages/Shield.jsx` — if these brand colours are permanent they should become tokens
-- Logo SVGs (`Sidebar.jsx`, `AuthLayout.jsx`) — stroke `#00C9A7` hard-coded
+- Logo SVG (`Sidebar.jsx`) — stroke `#00C9A7` hard-coded. (`AuthLayout.jsx` was migrated to `stroke="currentColor"` + `text-brand-accent` by the Login Redesign — copy that.)
 - `frontend/src/index 2.css` — stray tracked duplicate of an old stylesheet, unused
 
 Recharts requires JS colour values for fills, so chart code may read tokens via

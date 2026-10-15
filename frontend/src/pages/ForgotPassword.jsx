@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { sendPasswordResetEmail } from 'firebase/auth'
 import { auth } from '../lib/firebase'
+import Btn from '../components/Btn'
+import { AuthField, AuthError, authLinkCls } from '../components/AuthField'
 
 // Firebase serves the reset-confirmation page itself, at the project's
 // authDomain. No `actionCodeSettings` is passed and no in-app route exists for
@@ -12,6 +14,8 @@ export default function ForgotPassword() {
   const [sent, setSent]       = useState(false)
   const [error, setError]     = useState('')
   const [loading, setLoading] = useState(false)
+  const uid                   = useId()
+  const errorId               = error ? `${uid}-error` : undefined
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -39,72 +43,57 @@ export default function ForgotPassword() {
   }
 
   return (
-    <div className="w-full max-w-sm">
-      <div className="bg-brand-surface border border-brand-border rounded-2xl p-8">
-        <h2 className="text-xl font-bold text-brand-text mb-1">Reset password</h2>
+    <>
+      <h1 className="text-2xl font-bold text-brand-text mb-1.5">Reset password</h1>
 
-        {sent ? (
-          <>
-            <p className="text-sm text-brand-muted mb-6">
-              If an account exists for that address, a reset link is on its way.
-              Check your inbox, and your spam folder.
-            </p>
-            <div className="text-center">
-              <Link
-                to="/login"
-                className="text-brand-accent text-sm font-semibold hover:opacity-80 transition-opacity"
-              >
-                ← Back to sign in
-              </Link>
-            </div>
-          </>
-        ) : (
-          <>
-            <p className="text-sm text-brand-muted mb-6">
-              Enter your email address and we&rsquo;ll send you a link to set a new password.
-            </p>
+      {sent ? (
+        <>
+          <p role="status" className="text-[13px] text-brand-text-soft leading-relaxed mb-4">
+            If an account exists for that address, a reset link is on its way.
+            Check your inbox, and your spam folder.
+          </p>
+          <Link to="/login" className={authLinkCls}>
+            ← Back to sign in
+          </Link>
+        </>
+      ) : (
+        <>
+          <p className="text-[13px] text-brand-text-soft leading-relaxed mb-7">
+            Enter your email address and we&rsquo;ll send you a link to set a new password.
+          </p>
 
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label className="block text-[11px] font-semibold text-brand-muted mb-1.5 uppercase tracking-wide">
-                  Email
-                </label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={e => { setEmail(e.target.value); setError('') }}
-                  required
-                  autoComplete="email"
-                  placeholder="you@company.com"
-                  className="w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2.5 text-brand-text text-sm outline-none focus:border-brand-accent transition-colors placeholder:text-brand-muted"
-                />
-              </div>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <AuthField
+              id={`${uid}-email`}
+              label="Email"
+              type="email"
+              value={email}
+              onChange={e => { setEmail(e.target.value); setError('') }}
+              required
+              autoComplete="email"
+              placeholder="you@company.com"
+              errorId={errorId}
+            />
 
-              {error && (
-                <p className="text-brand-red text-xs leading-snug">{error}</p>
-              )}
+            {error && <AuthError id={errorId}>{error}</AuthError>}
 
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full bg-brand-accent text-brand-bg font-bold text-sm rounded-lg py-2.5 min-h-[44px] hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer"
-              >
-                {loading ? 'Sending…' : 'Send reset link'}
-              </button>
-            </form>
+            <Btn
+              type="submit"
+              disabled={loading}
+              className="w-full rounded-[9px] py-[13px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-accent"
+            >
+              {loading ? 'Sending…' : 'Send reset link'}
+            </Btn>
+          </form>
 
-            <div className="mt-6 text-center">
-              <Link
-                to="/login"
-                className="text-xs text-brand-muted hover:text-brand-text transition-colors"
-              >
-                ← Back to sign in
-              </Link>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+          <div className="mt-3">
+            <Link to="/login" className={authLinkCls}>
+              ← Back to sign in
+            </Link>
+          </div>
+        </>
+      )}
+    </>
   )
 }
 
