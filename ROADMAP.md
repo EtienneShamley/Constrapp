@@ -115,7 +115,7 @@ Bring documentation in line with the implemented system:
 
 **UI polish backlog** (recorded, not scheduled — each is a small frontend-only fix):
 
-- **Forecast table — "Use remaining budget" overlaps nearby monetary figures.** The per-row text button under the Uncommitted Cost to Complete input (`pages/project/ProjectForecast.jsx`) extends into the neighbouring financial columns, reducing readability. The cell inherits the table's `whitespace-nowrap` inside a `min-w-[150px]` column, which is the likely cause; the button is also well under the 44px touch-target rule. Fix in a future frontend-polish task — **not** touched by the Login Redesign.
+- ~~**Forecast table — "Use remaining budget" overlaps nearby monetary figures.**~~ **Fixed — Forecast UI polish.** Root cause: the Uncommitted Cost to Complete cell inherited the table's `whitespace-nowrap`, which forbade the line break between the full-width input and the inline text button — so the button sat *beside* the input, past the cell edge, drawn over Cost to Complete (measured in headless Chrome at 375 / 768 / 1280px). The cell now wraps (`whitespace-normal`, `min-w-[168px]`) and the button is block-level with a **44px** touch target, on its own line under the input. Presentation only — no formula, selector, input, validation, save, hook, schema or rules change; every column kept; overflow stays inside the table's `overflow-x-auto`. Pinned by `tests/unit/forecastLayout.test.js`.
 
 **Deferred security hardening** (client-enforced today, server enforcement deferred — full list in [docs/SECURITY.md](docs/SECURITY.md)):
 

@@ -19,7 +19,8 @@
   small number of **structural source tests** — they read files under `src/` and
   assert structure rather than rendering anything (`betaSurfaces.test.js`,
   `documentsResponsive.test.js`, `hookSubscriptionPattern.test.js`,
-  `loadingNotZero.test.js`, `financialReliability.test.js`).
+  `loadingNotZero.test.js`, `financialReliability.test.js`,
+  `forecastLayout.test.js`).
 
 **CI: Azure Pipelines** (`azure-pipelines.yml`, on `main` and every PR to it)
 runs `npm ci → lint → test:unit → test:rules → build`. **All four are blocking.**
@@ -692,6 +693,14 @@ npm run test:unit
 
 - `frontend/tests/unit/documentsResponsive.test.js` — **16 tests** over the
   Documents register's responsive layout helpers.
+
+- `frontend/tests/unit/forecastLayout.test.js` — **6 tests** pinning the
+  Forecast table's **Use remaining budget** action (source structure, no
+  jsdom): its Uncommitted Cost to Complete cell wraps (`whitespace-normal`)
+  so the action can never again sit beside the input and draw over Cost to
+  Complete; the button is block-level, full-width and has a 44px touch target;
+  its `applyRemainingBudget` / `disabled={!editable}` wiring is unchanged; and
+  the table keeps its own `overflow-x-auto` container.
 
 - `frontend/tests/unit/betaSurfaces.test.js` — **28 tests** guarding the
   private-beta surfaces. Not domain logic: like `documentsResponsive.test.js`
