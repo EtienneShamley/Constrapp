@@ -105,6 +105,12 @@ Bring documentation in line with the implemented system:
 - **The Budget page still prints credit-less cost figures on a failed credit-note read** (with a now-accurate warning) rather than Unavailable. Aligning it with ADR-44 is a separate, deliberately unmade decision.
 - **No DOM test runner** — page wiring is pinned structurally and accepted manually (TESTING.md §20).
 
+**Login Redesign — done (visual only).** `/login`, `/forgot-password` and `/create-account` share a split-screen shell recreating the v5 prototype's login (`layouts/AuthLayout.jsx`, `components/AuthField.jsx`): ≈55/45 product panel (five implemented-module highlights) and sign-in panel with the form centred at 420px, collapsing to a compact single column below `lg:`; labelled inputs, announced errors, visible focus, 16px mobile inputs. Firebase sign-in, reset, persistence, redirects and enumeration protections unchanged. **Deliberately not carried over from the prototype:** demo access and quick-fill, membership/pricing, "Remember me", planned-module highlights, and unsupported marketing claims — membership tiers, payments and provisioning are a separate future phase. Pinned by `tests/unit/authSurface.test.js`; manual acceptance TESTING.md §21.
+
+**UI polish backlog** (recorded, not scheduled — each is a small frontend-only fix):
+
+- **Forecast table — "Use remaining budget" overlaps nearby monetary figures.** The per-row text button under the Uncommitted Cost to Complete input (`pages/project/ProjectForecast.jsx`) extends into the neighbouring financial columns, reducing readability. The cell inherits the table's `whitespace-nowrap` inside a `min-w-[150px]` column, which is the likely cause; the button is also well under the 44px touch-target rule. Fix in a future frontend-polish task — **not** touched by the Login Redesign.
+
 **Deferred security hardening** (client-enforced today, server enforcement deferred — full list in [docs/SECURITY.md](docs/SECURITY.md)):
 
 - Server-enforced lifecycle transitions and post-submission immutability — **now
