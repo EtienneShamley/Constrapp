@@ -461,8 +461,18 @@ describe('roles: each child mounts only behind its own gate', () => {
   })
 
   it('the panel opens exactly one subscription, for the project it is given', () => {
-    expect(panel.match(/use[A-Z]\w+\(/g).filter(h => h !== 'useMemo(')).toEqual(['useProjectActivities('])
+    // useLocalToday is a midnight timer, not a subscription — pinned below.
+    expect(panel.match(/use[A-Z]\w+\(/g).filter(h => h !== 'useMemo(' && h !== 'useLocalToday(')).toEqual(['useProjectActivities('])
     expect(panel).toContain('useProjectActivities(projectId)')
+  })
+
+  it('useLocalToday (the panel clock) opens no Firestore listener and reads nothing', () => {
+    const clock = stripComments(read('hooks/useLocalToday.jsx'))
+    expect(clock).not.toContain('onSnapshot')
+    expect(clock).not.toContain('firebase')
+    expect(clock).not.toMatch(/\bgetDocs?\(/)
+    expect(panel).toContain('const now = useLocalToday()')
+    expect(panel).toContain('programmeOverview(activities, now)')
   })
 
   it('the panel is rendered only behind canReadProgramme, keyed by the selected project', () => {
@@ -484,7 +494,7 @@ describe('roles: each child mounts only behind its own gate', () => {
       for (const m of stripComments(read(f)).matchAll(/\b(use[A-Z]\w+)\(/g)) hooks.add(m[1])
     }
     expect([...hooks].sort()).toEqual([
-      'useAuth', 'useBudgetLines', 'useCompany', 'useForecastLines', 'useMemo', 'useNavigate',
+      'useAuth', 'useBudgetLines', 'useCompany', 'useForecastLines', 'useLocalToday', 'useMemo', 'useNavigate',
       'useProfile', 'useProgressClaims', 'useProjectActivities', 'useProjectCommercial', 'useProjects',
       'usePurchaseOrders', 'useRef', 'useRetentionReleases', 'useSearchParams', 'useSupplierCreditNotes',
       'useSupplierInvoices', 'useSupplierPayments', 'useVariations',

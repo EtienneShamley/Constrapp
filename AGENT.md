@@ -80,7 +80,10 @@ frontend/
                     useClientReceipts, useSupplierPayments, useVariations,
                     useBoqItems, useTenderPackages, useTenderBids,
                     useForecastLines, useProjectCommercial, useCashFlowLines,
-                    useProjectActivities (project programme — NON-financial),
+                    useProjectActivities (project programme — NON-financial;
+                    quickUpdateActivity = the one guarded write, ADR-46),
+                    useLocalToday (viewer's calendar day, advanced at local
+                    midnight — a timer, NOT a subscription),
                     useStorageUpload (the ONLY place file bytes are written),
                     useDrawings, useDrawingRevisions, useProjectDocuments,
                     useRfis (RFI register — NON-financial; per-project counter)
@@ -97,7 +100,10 @@ frontend/
                     aggregation + forecast layers), contacts.js, boq.js (pure
                     BOQ arithmetic + read-time budget comparison),
                     projectTimeline.js (programme domain logic — no financial
-                    arithmetic), timelineGantt.js (Gantt geometry only),
+                    arithmetic; incl. due filters, quick-action planner,
+                    nextMilestone), activityQuickActions.js (guarded quick-
+                    action transaction — Firestore SDK injected, ADR-46),
+                    timelineGantt.js (Gantt geometry only),
                     files.js (file types, size ceilings, deterministic storage
                     paths), drawings.js, projectDocuments.js (pure domain logic),
                     rfis.js (RFI lifecycle, reference shape, overdue/response

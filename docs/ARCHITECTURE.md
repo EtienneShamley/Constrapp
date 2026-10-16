@@ -129,7 +129,8 @@ frontend/                  The entire application (run all npm commands here)
                            ProjectTimeline (project programme),
                            project/timeline/ (TimelineGantt, ActivityTable,
                            ActivityCards, ActivityEditorModal,
-                           ActivityCancelModal — page-local),
+                           ActivityCancelModal, ActivityQuickActions —
+                           page-local),
                            ProjectDrawings (register), ProjectDrawingDetail (route),
                            ProjectGeneralDocuments,
                            project/documents/ (DrawingViewer, RevisionUploadModal,
@@ -154,11 +155,13 @@ frontend/                  The entire application (run all npm commands here)
                            plus per-figure availability and SVG bar geometry
                            (compositionLayout / performanceLayout); no formula of
                            its own), dashboardProgramme.js (Dashboard programme
-                           panel — timelineSummary + status tally + donut geometry;
-                           NON-financial, no completion %),
+                           panel — timelineSummary + status tally + donut geometry
+                           + nextMilestone; NON-financial, no completion %),
                            contacts.js,
                            boq.js (pure BOQ arithmetic + read-time budget comparison),
                            projectTimeline.js (programme domain logic — NON-financial),
+                           activityQuickActions.js (guarded quick status write —
+                           injected SDK, no Firebase import; ADR-46),
                            timelineGantt.js (Gantt geometry — no arithmetic),
                            files.js (file types, size ceilings, deterministic
                            Storage paths), drawings.js, projectDocuments.js
@@ -219,9 +222,10 @@ ProtectedRoute (redirects to /login when signed out)
    │                          derived amounts, read-time BOQ-vs-budget comparison;
    │                          tab label stays "BOQ"; the Tenders tab follows it)
    │    timeline  (live — the project PROGRAMME: activities, milestones,
-   │      responsibility, manually entered progress, read-only Gantt.
-   │      Read: company_admin/project_manager/qs; write: company_admin/
-   │      project_manager only. Writes no financial document.)
+   │      responsibility, manually entered progress, read-only Gantt,
+   │      Due filter (overdue / due within 14 days), guarded quick status
+   │      actions (ADR-46). Read: company_admin/project_manager/qs; write:
+   │      company_admin/project_manager only. Writes no financial document.)
    │    documents  (live)
    │      (the `documents` route is a nested layout — index = the Drawings register,
    │       `documents/drawings/:drawingId` = the drawing detail ROUTE (not a modal:
@@ -277,7 +281,7 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Documents & Drawings | Implemented (foundation) — drawing masters + **immutable** revisions with a transactional current-revision pointer, revision history, current/superseded/withdrawn lifecycle, explicit succession on withdrawal, and a flat general-document register with project/internal visibility. Bytes in Cloud Storage, metadata in Firestore, **uploads Storage-first**; **no photos, DWG, markup, OCR, AI or takeoff** |
 | PULSE™, SHIELD™ | Placeholder screens — routes and pages live, **hidden from the sidebar** for private beta (`lib/nav.js`) |
 | BOQ (Bill of Quantities) | Implemented (foundation) — measured items with optional rates, rules-enforced derived amounts, read-time budget comparison; **feeds no financial figure**; Estimating and BOQ → Budget transfer are later branches |
-| Project Timeline (programme) | Implemented (foundation) — activities + milestones, date-only planned/actual dates, manual progress, read-time overdue/horizon derivation, read-only CSS/SVG Gantt (no new dependency), cancel-not-delete; **`qs` is read-only**, subcontractor/client denied; **no baseline, no dependencies, no financial effect** |
+| Project Timeline (programme) | Implemented (foundation) — activities + milestones, date-only planned/actual dates, manual progress, read-time overdue/horizon derivation, Due filter (overdue / due within 14 days), guarded quick status actions and a midnight-advancing clock (ADR-46), read-only CSS/SVG Gantt (no new dependency), cancel-not-delete; **`qs` is read-only**, subcontractor/client denied; **no baseline, no dependencies, no financial effect** |
 | Photos, Reports tabs | Placeholder (`ProjectPlaceholder`) — routes and pages live, **hidden from the project tab bar** for private beta (`lib/projectTabs.js`) |
 
 ## Hooks-Only Firestore Access

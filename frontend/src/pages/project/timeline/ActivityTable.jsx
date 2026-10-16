@@ -1,6 +1,7 @@
 import Badge from '../../../components/Badge'
 import Btn from '../../../components/Btn'
 import ProgBar from '../../../components/ProgBar'
+import ActivityQuickActions from './ActivityQuickActions'
 import {
   ACTIVITY_STATUS, ACTIVITY_STATUS_LABELS, ACTIVITY_STATUS_BADGE,
   formatIsoDate, durationLabel, dueLabel, isOverdue, isClosedStatus,
@@ -20,7 +21,7 @@ import {
 const thCls = 'px-3 py-2.5 text-left text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] whitespace-nowrap'
 const tdCls = 'px-3 py-2.5 text-[12px] text-brand-text align-top'
 
-export default function ActivityTable({ activities, canWrite, onEdit, onCancel, now }) {
+export default function ActivityTable({ activities, canWrite, onEdit, onCancel, onQuickAction, quickBusyId, now }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[1080px] border-collapse">
@@ -102,10 +103,17 @@ export default function ActivityTable({ activities, canWrite, onEdit, onCancel, 
                     {a.status === ACTIVITY_STATUS.CANCELLED ? (
                       <span className="text-[11px] text-brand-muted">Cancelled</span>
                     ) : (
-                      <>
-                        <Btn sm variant="ghost" onClick={() => onEdit(a)}>Edit</Btn>{' '}
+                      <span className="inline-flex items-center gap-1.5">
+                        <ActivityQuickActions
+                          activity={a}
+                          now={now}
+                          onQuickAction={onQuickAction}
+                          busyId={quickBusyId}
+                          compact
+                        />
+                        <Btn sm variant="ghost" onClick={() => onEdit(a)}>Edit</Btn>
                         <Btn sm variant="ghost" onClick={() => onCancel(a)}>Cancel</Btn>
-                      </>
+                      </span>
                     )}
                   </td>
                 )}

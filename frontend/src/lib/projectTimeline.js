@@ -395,8 +395,44 @@ export function nextSortOrder(activities) {
 
 // ── Filtering ────────────────────────────────────────────────────────────────
 //
-// Four controls, all client-side over the loaded snapshot. Deliberately NOT a
+// Five controls, all client-side over the loaded snapshot. Deliberately NOT a
 // filter builder (docs/PRODUCT.md → "What Constrapp Is Not").
+//
+// Every control NARROWS (logical AND) — adding a filter can only ever shrink
+// the list. The two date windows are ONE control (`due`), not two checkboxes,
+// because they are mutually exclusive by definition: an overdue activity's
+// planned finish is in the past, a due-soon activity's is today or later.
+// Offering both as independent toggles would let a user tick both and get a
+// list that is empty by construction.
+//
+//   due: ''         → no date window
+//        'overdue'  → isOverdue: OPEN and planned finish before today
+//        'due_soon' → isDueWithin(DUE_SOON_DAYS): OPEN and planned finish from
+//                     today to today + 14 (inclusive) — never overdue
+//
+// Completed and cancelled activities are never overdue and never due soon
+// (both predicates require an open status), so either window hides them
+// regardless of `hideClosed`. `overdueOnly` is the original boolean spelling,
+// kept for callers that already use it; it ANDs with `due` like everything
+// else.
+export const DUE_FILTER = {
+  ANY:      '',
+  OVERDUE:  'overdue',
+  DUE_SOON: 'due_soon',
+}
+
+export const DUE_FILTER_OPTIONS = [
+  { value: DUE_FILTER.ANY,      label: 'Any date' },
+  { value: DUE_FILTER.OVERDUE,  label: 'Overdue only' },
+  { value: DUE_FILTER.DUE_SOON, label: `Due within ${DUE_SOON_DAYS} days` },
+]
+
+export function matchesDueFilter(activity, due, now = new Date()) {
+  if (due === DUE_FILTER.OVERDUE)  return isOverdue(activity, now)
+  if (due === DUE_FILTER.DUE_SOON) return isDueWithin(activity, DUE_SOON_DAYS, now)
+  return true
+}
+
 export function filterActivities(activities, filters = {}, now = new Date()) {
   const {
     search = '',
@@ -404,6 +440,7 @@ export function filterActivities(activities, filters = {}, now = new Date()) {
     responsibleContactId = '',
     hideClosed = false,
     overdueOnly = false,
+    due = DUE_FILTER.ANY,
   } = filters
   const needle = search.trim().toLowerCase()
 
@@ -412,6 +449,7 @@ export function filterActivities(activities, filters = {}, now = new Date()) {
     if (status && a.status !== status) return false
     if (responsibleContactId && (a.responsibleContactId ?? '') !== responsibleContactId) return false
     if (overdueOnly && !isOverdue(a, now)) return false
+    if (!matchesDueFilter(a, due, now)) return false
     if (needle) {
       const haystack = [a.name, a.description, a.notes, a.responsibleName, a.costCodeName]
         .map(v => (v ?? '').toLowerCase())
@@ -600,4 +638,239 @@ export function durationLabel(activity) {
   if (days === null) return '—'
   if (days === 0) return 'Milestone'
   return days === 1 ? '1 day' : `${days} days`
+}
+
+// ── The viewer's calendar day (the stale-clock fix) ──────────────────────────
+//
+// Every derived programme figure is relative to TODAY in the viewer's local
+// timezone (todayIso(now)). A screen that captured `now` once at mount kept
+// showing yesterday's overdue state after midnight. hooks/useLocalToday.jsx
+// re-renders at the next local midnight using this helper, and also re-checks
+// on focus/visibility because browsers suspend timers in sleeping tabs.
+//
+// Milliseconds until the next LOCAL calendar day begins, plus a small margin
+// so the timer never fires a hair before midnight. Built from local date parts
+// (not now + 24h), so a DST change on the day is handled: the next local
+// midnight is whatever the platform says it is.
+export const MIDNIGHT_MARGIN_MS = 1000
+
+export function msUntilNextLocalDay(now = new Date()) {
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0)
+  return Math.max(0, next.getTime() - now.getTime()) + MIDNIGHT_MARGIN_MS
+}
+
+// True when two instants fall on different local calendar days.
+export const isDifferentLocalDay = (a, b) => todayIso(a) !== todayIso(b)
+
+// ── Quick status actions ─────────────────────────────────────────────────────
+//
+// Small one-click transitions on a row/card. They do NOT add a status, a
+// lifecycle path or a field: each produces a PARTIAL update that, merged onto
+// the stored activity, must pass validateActivityDraft — the same validator
+// (and therefore the same invariants as the `activities` rules block) that
+// guards the full editor.
+//
+//   start    not_started | on_hold → in_progress
+//            actualStart := TODAY only when none is recorded (the user
+//            explicitly chose "Start today"); an existing actualStart is
+//            kept — resuming from hold never rewrites when work began.
+//   hold     not_started | in_progress → on_hold          (no date touched)
+//   complete in_progress | on_hold → completed            (non-milestone)
+//            not_started | in_progress | on_hold → completed (milestone)
+//            percentComplete := 100, actualFinish := TODAY ("Complete today").
+//
+// ⚠️ NEVER FABRICATED HISTORY. A quick action only ever records TODAY, and only
+// for the event the user is clicking. It refuses — and sends the user to the
+// full editor — whenever the honest answer needs a date the click does not
+// supply:
+//   · completing a non-milestone with NO actual start (when did work begin?)
+//   · completing or starting an activity that already has an actual finish
+//     (overwriting or orphaning a recorded finish is a history edit)
+//   · completing when the recorded actual start is AFTER today
+//   · finishing on an earlier day — "Complete today" means today
+//
+// Milestones get only Complete ("Mark reached today"): a milestone is a point
+// in time, so start/hold have no quick meaning (the full editor still allows
+// any valid status). Cancelled is terminal and has no quick action; reopening
+// a completed activity stays an explicit full-editor correction.
+export const QUICK_ACTION = {
+  START:    'start',
+  HOLD:     'hold',
+  COMPLETE: 'complete',
+}
+
+export const QUICK_ACTION_ORDER = [QUICK_ACTION.START, QUICK_ACTION.HOLD, QUICK_ACTION.COMPLETE]
+
+export function quickActionLabel(action, activity) {
+  if (action === QUICK_ACTION.START) {
+    return activity?.actualStart ? 'Resume' : 'Start today'
+  }
+  if (action === QUICK_ACTION.HOLD) return 'Put on hold'
+  if (action === QUICK_ACTION.COMPLETE) {
+    return activity?.isMilestone ? 'Mark reached today' : 'Complete today'
+  }
+  return ''
+}
+
+// Returns { ok: true, changes } — ONLY the keys this transition sets (never the
+// audit stamps; the writer adds those) — or { ok: false, reason } with a
+// user-facing sentence.
+export function planQuickAction(activity, action, now = new Date()) {
+  if (!activity) return { ok: false, reason: 'This activity no longer exists.' }
+  const { status } = activity
+  if (status === ACTIVITY_STATUS.CANCELLED) {
+    return { ok: false, reason: 'A cancelled activity cannot be changed.' }
+  }
+  if (!isActivityStatus(status)) {
+    return { ok: false, reason: 'This activity has an unrecognised status — use Edit.' }
+  }
+  const today = todayIso(now)
+  let changes
+
+  if (action === QUICK_ACTION.START) {
+    if (activity.isMilestone) {
+      return { ok: false, reason: 'A milestone is reached, not started — use Mark reached.' }
+    }
+    if (status !== ACTIVITY_STATUS.NOT_STARTED && status !== ACTIVITY_STATUS.ON_HOLD) {
+      return { ok: false, reason: `An activity that is ${ACTIVITY_STATUS_LABELS[status].toLowerCase()} cannot be started.` }
+    }
+    if (activity.actualFinish) {
+      return { ok: false, reason: 'This activity already has an actual finish recorded — use Edit.' }
+    }
+    changes = { status: ACTIVITY_STATUS.IN_PROGRESS }
+    if (!activity.actualStart) changes.actualStart = today
+  } else if (action === QUICK_ACTION.HOLD) {
+    if (activity.isMilestone) {
+      return { ok: false, reason: 'A milestone cannot be put on hold from the list — use Edit.' }
+    }
+    if (status !== ACTIVITY_STATUS.NOT_STARTED && status !== ACTIVITY_STATUS.IN_PROGRESS) {
+      return { ok: false, reason: `An activity that is ${ACTIVITY_STATUS_LABELS[status].toLowerCase()} cannot be put on hold.` }
+    }
+    changes = { status: ACTIVITY_STATUS.ON_HOLD }
+  } else if (action === QUICK_ACTION.COMPLETE) {
+    const from = activity.isMilestone
+      ? [ACTIVITY_STATUS.NOT_STARTED, ACTIVITY_STATUS.IN_PROGRESS, ACTIVITY_STATUS.ON_HOLD]
+      : [ACTIVITY_STATUS.IN_PROGRESS, ACTIVITY_STATUS.ON_HOLD]
+    if (!from.includes(status)) {
+      return {
+        ok: false,
+        reason: status === ACTIVITY_STATUS.COMPLETED
+          ? 'This activity is already completed.'
+          : 'Start this activity before completing it, or use Edit to record when work began.',
+      }
+    }
+    if (activity.actualFinish) {
+      return { ok: false, reason: 'This activity already has an actual finish recorded — use Edit.' }
+    }
+    if (!activity.isMilestone && !activity.actualStart) {
+      return { ok: false, reason: 'No actual start is recorded — use Edit to record when work began.' }
+    }
+    if (activity.actualStart && activity.actualStart > today) {
+      return { ok: false, reason: 'The recorded actual start is after today — use Edit.' }
+    }
+    changes = { status: ACTIVITY_STATUS.COMPLETED, percentComplete: 100, actualFinish: today }
+  } else {
+    return { ok: false, reason: 'Unknown action.' }
+  }
+
+  // The merged result must satisfy every invariant the full editor enforces
+  // (and the rules block mirrors). A stored activity that is already invalid —
+  // e.g. an impossible calendar date written by a direct SDK call — is sent to
+  // the editor rather than patched around.
+  const error = validateActivityDraft({ ...activity, ...changes })
+  if (error) return { ok: false, reason: `${error} — use Edit.` }
+  return { ok: true, changes }
+}
+
+// The quick actions to OFFER for an activity: only those that would succeed
+// against it as currently loaded. The writer re-plans against the server copy.
+export function quickActionsFor(activity, now = new Date()) {
+  return QUICK_ACTION_ORDER
+    .filter(action => planQuickAction(activity, action, now).ok)
+    .map(action => ({ action, label: quickActionLabel(action, activity) }))
+}
+
+// ── Version check for guarded writes ─────────────────────────────────────────
+//
+// The `activities` documents carry no incrementing version (`revision` is
+// rules-pinned to 1 — changing that is out of scope for this release), but
+// EVERY write path stamps `updatedAt` with the server time (rules-enforced:
+// updatedAt == request.time). So the (updatedAt, updatedBy) pair identifies the
+// last write the viewer saw. A quick action compares it with the server copy
+// read inside its transaction and refuses if anything has written since.
+//
+// `updatedAt` is null on a locally-pending write (the server time is not yet
+// known), so an activity mid-save can never be confirmed unchanged.
+function sameTimestamp(a, b) {
+  if (!a || !b) return false
+  if (typeof a.isEqual === 'function') return a.isEqual(b)
+  return a.seconds === b.seconds && a.nanoseconds === b.nanoseconds
+}
+
+export function sameActivityVersion(seen, current) {
+  if (!seen || !current) return false
+  return sameTimestamp(seen.updatedAt, current.updatedAt)
+      && seen.updatedBy === current.updatedBy
+}
+
+export const QUICK_ACTION_ERROR = {
+  PENDING:    'pending',
+  MISSING:    'missing',
+  STALE:      'stale',
+  INVALID:    'invalid',
+  PERMISSION: 'permission',
+  OFFLINE:    'offline',
+  UNKNOWN:    'unknown',
+}
+
+export const QUICK_ACTION_ERROR_MESSAGES = {
+  [QUICK_ACTION_ERROR.PENDING]:    'This activity is still saving. Wait a moment and try again.',
+  [QUICK_ACTION_ERROR.MISSING]:    'This activity no longer exists. Nothing was changed.',
+  [QUICK_ACTION_ERROR.STALE]:      'Someone else changed this activity after it was loaded. Nothing was changed — review the latest version and try again.',
+  [QUICK_ACTION_ERROR.INVALID]:    'This change is no longer valid for the activity. Nothing was changed.',
+  [QUICK_ACTION_ERROR.PERMISSION]: 'You do not have permission to update the programme. Nothing was changed.',
+  [QUICK_ACTION_ERROR.OFFLINE]:    'You appear to be offline. Nothing was changed — reconnect and try again.',
+  [QUICK_ACTION_ERROR.UNKNOWN]:    'The activity could not be updated. Nothing was changed.',
+}
+
+// Maps a Firestore error code to a quick-action error kind. Quick actions run
+// in a transaction, which needs the server: offline they FAIL rather than
+// queue, so a status change can never land later against a different version.
+export function quickActionErrorKind(code) {
+  if (code === 'permission-denied' || code === 'unauthenticated') return QUICK_ACTION_ERROR.PERMISSION
+  if (code === 'unavailable' || code === 'deadline-exceeded') return QUICK_ACTION_ERROR.OFFLINE
+  if (code === 'aborted' || code === 'failed-precondition') return QUICK_ACTION_ERROR.STALE
+  if (code === 'not-found') return QUICK_ACTION_ERROR.MISSING
+  return QUICK_ACTION_ERROR.UNKNOWN
+}
+
+// ── Next milestone (Dashboard Programme panel) ───────────────────────────────
+//
+// The nearest OPEN milestone (not completed, not cancelled) with a usable date.
+//   · kind 'upcoming' — the earliest milestone due today or later
+//   · kind 'overdue'  — only when NO upcoming milestone exists: the OLDEST
+//                       overdue milestone (the longest-outstanding commitment)
+//   · kind null       — no open milestone with a usable date
+// `overdueCount` is always reported, so an upcoming milestone never hides the
+// fact that earlier ones were missed.
+//
+// Deterministic: ordered by date, then by compareActivities (sortOrder, name,
+// id) for equal dates. Against the CURRENT plan, not an approved baseline.
+export function nextMilestone(activities, now = new Date()) {
+  const open = (activities ?? []).filter(a =>
+    a?.isMilestone === true && isOpenStatus(a.status) && isValidIsoDate(a.plannedFinish))
+  const byDate = (a, b) => (a.plannedFinish === b.plannedFinish
+    ? compareActivities(a, b)
+    : (a.plannedFinish < b.plannedFinish ? -1 : 1))
+
+  const overdue  = open.filter(a => isOverdue(a, now)).sort(byDate)
+  const upcoming = open.filter(a => !isOverdue(a, now)).sort(byDate)
+
+  if (upcoming.length > 0) {
+    return { kind: 'upcoming', milestone: upcoming[0], daysUntil: daysUntilDue(upcoming[0], now), daysLate: null, overdueCount: overdue.length }
+  }
+  if (overdue.length > 0) {
+    return { kind: 'overdue', milestone: overdue[0], daysUntil: null, daysLate: daysLate(overdue[0], now), overdueCount: overdue.length }
+  }
+  return { kind: null, milestone: null, daysUntil: null, daysLate: null, overdueCount: 0 }
 }

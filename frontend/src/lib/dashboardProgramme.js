@@ -1,5 +1,5 @@
 import {
-  timelineSummary, isActivityStatus,
+  timelineSummary, isActivityStatus, nextMilestone,
   ACTIVITY_STATUS_ORDER, ACTIVITY_STATUS_LABELS,
 } from './projectTimeline'
 
@@ -38,10 +38,14 @@ export function activityStatusCounts(activities) {
 }
 
 // Everything the panel shows. `summary` IS timelineSummary's output, unchanged.
+// `nextMilestone` IS lib/projectTimeline.js → nextMilestone's output, unchanged:
+// a named, dated milestone (upcoming, or the oldest overdue one when nothing is
+// upcoming) — a date and a day count, never a percentage.
 export function programmeOverview(activities, now = new Date()) {
   return {
     summary: timelineSummary(activities, now),
     ...activityStatusCounts(activities),
+    nextMilestone: nextMilestone(activities, now),
   }
 }
 

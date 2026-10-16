@@ -58,7 +58,7 @@ That script runs
   inert here. The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **1236 in total across 20 files: 1190 Firestore + 46 Storage**:
+- Tests — **1252 in total across 20 files: 1206 Firestore + 46 Storage**:
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -167,8 +167,17 @@ That script runs
     asserts the documented **client-only** gap: malformed `lineItems`
     **elements** (non-numeric amounts, out-of-scope codes, non-object lines)
     are ACCEPTED by rules — the read-time validity gate is the mitigation.
-  - `frontend/tests/rules/activities.rules.test.js` — **66 tests** covering
-    every case in §15p-x below (the project programme, ADR-29). It is the only
+  - `frontend/tests/rules/activities.rules.test.js` — **82 tests** covering
+    every case in §15p-x below (the project programme, ADR-29), plus **16**
+    that run the app's own **guarded quick-action transaction** (ADR-46)
+    against the **unchanged** rules: admin/PM Start, Complete, Put on hold and
+    milestone Mark reached each change **only** the intended keys plus the
+    audit stamps; QS, subcontractor, client, super_admin and other-company
+    users are **denied by the rules** (nothing written); a write by another user
+    after the UI loaded the activity makes the action **stale** (nothing
+    written), as does a second action from the same stale view; a deleted
+    activity is refused as **missing**; a cancelled activity and a Complete with
+    no recorded actual start are refused (no history invented). It is the only
     suite where the **read and write audiences differ**: it asserts that `qs`
     can read but cannot create, edit or cancel, that `subcontractor`, `client`
     and `super_admin` are denied entirely, and that **no role can delete**. It
@@ -645,6 +654,31 @@ npm run test:unit
   wholly-out-of-window activities (**reported, never silently dropped**), the
   empty/single-activity/all-milestone cases, row order matching the table, and
   input purity.
+
+- `frontend/tests/unit/timelineScheduling.test.js` — **74 tests** for the
+  Timeline & Scheduling Enhancements (ADR-46): the **Due** filter (overdue
+  only; due within 14 days inclusive of today and day 14, excluding day 15),
+  completed/cancelled never overdue or due soon, both counts equal to the
+  summary cards, **combined filters only narrow**, the legacy `overdueOnly`
+  flag, desktop/mobile receiving the same filtered set; **date rollover**
+  (the same activity flips from due-soon to overdue across midnight,
+  `msUntilNextLocalDay` incl. month/year ends, the page and panel no longer
+  freezing `now`, `useLocalToday` re-arming and cleaning up); the **quick-action
+  planner** for every status × action (Start records today only when no actual
+  start exists; Complete never invents an actual start, never overwrites an
+  actual finish, refuses a future actual start; milestones get only Mark
+  reached; no audit/content/cancellation key ever written; already-invalid
+  stored data sent to the editor); author-only rendering; the **guarded
+  transaction** with a fake Firestore (only planned keys + stamps written;
+  stale by timestamp or writer; a contention re-run refused rather than
+  re-applied; re-validation against the server copy; missing; locally
+  pending; permission; offline; error-code mapping; no UI side effects in the
+  callback; the full editor documented as still unguarded); and
+  **nextMilestone** (nearest upcoming incl. today, overdue fallback to the
+  oldest, overdue count, deterministic ties, completed/cancelled/
+  non-milestone/invalid-date exclusions, none, midnight rollover) plus the
+  panel's loading/unavailable/no-milestone states, no percentage and keyed
+  project isolation.
 
   ⚠️ Neither Timeline suite retests the other's concern: geometry has one home
   and programme semantics have another. The Gantt **component** is not
@@ -3150,9 +3184,38 @@ progress bar must be **identical**.
   cost code, case-insensitively.
 - [ ] **Status** and **Responsible** filters work and combine with search.
 - [ ] **Hide completed & cancelled** removes both at once.
+- [ ] **Due → Overdue only** shows exactly the activities counted by the
+  **Overdue** card; no completed or cancelled activity appears, and an activity
+  due **today** does not appear.
+- [ ] **Due → Due within 14 days** shows exactly the **Due next 14 days** count;
+  it includes an activity due today and one due in 14 days, and excludes
+  overdue work. The hint under the filters explains the active window.
+- [ ] Due combines with Search, Status and Responsible (each narrows further);
+  **Due + Status = Completed** is empty by design.
 - [ ] With any filter active, a line reads *"Showing N of M activities"* with a
-  working **Clear filters** link.
-- [ ] There is **no filter builder** — exactly four controls.
+  working **Clear filters** link that also resets **Due**.
+- [ ] There is **no filter builder** — exactly five controls.
+- [ ] **Midnight rollover:** leave the Timeline (and the Dashboard) open across
+  local midnight, or put the laptop to sleep and wake it the next day — an
+  activity due "today" moves to **Overdue** without a reload (also on tab
+  refocus).
+
+### 15p-vii-b. Quick status actions (ADR-46)
+
+- [ ] As **admin/PM**, a not-started activity offers **Start today** and **Put
+  on hold**; Start sets *In progress* with today's actual start and nothing
+  else changes.
+- [ ] An on-hold activity with an actual start offers **Resume** (actual start
+  unchanged) and **Complete today**; one with **no** actual start offers only
+  **Start today** — completing requires Edit.
+- [ ] **Complete today** sets *Completed*, 100% and today's actual finish.
+- [ ] An open milestone offers only **Mark reached today**; completed milestones
+  show 100% and no actual start is added.
+- [ ] Completed and cancelled activities show **no** quick action.
+- [ ] As **QS**, no quick action appears (read-only).
+- [ ] Mobile (375px): the quick buttons sit above Edit/Cancel, ≥44px, wrap.
+- [ ] While one action saves, the buttons show *Saving…*/disabled; the outcome
+  is announced in the message strip (dismissible).
 
 ### 15p-viii. Gantt (read-only, desktop/tablet)
 
@@ -3203,8 +3266,14 @@ progress bar must be **identical**.
 
 - [ ] Open the same activity in two browsers, edit different fields in each and
   save both: the **second save wins outright**, including the first user's
-  field. This is expected (last-write-wins) — confirm `updatedAt`/`updatedBy`
-  reflect the second writer.
+  field. This is expected for the **full editor** (last-write-wins) — confirm
+  `updatedAt`/`updatedBy` reflect the second writer.
+- [ ] **Quick action guard:** open the Timeline in two browsers; in browser A
+  edit an activity; in browser B, *before* its list refreshes (e.g. offline
+  then online, or quickly), click a quick action on that activity — it is
+  refused with *"Someone else changed this activity…"* and nothing is written.
+- [ ] **Offline quick action:** go offline and click a quick action — it is
+  refused as offline and is **not** applied later on reconnect.
 - [ ] Simulate a read failure (e.g. sign in as a denied role): the page reports
   the programme as **unavailable, not empty**, and never shows a false "no
   activities" state.
@@ -3215,7 +3284,7 @@ progress bar must be **identical**.
   ≥44px; filters stack; modals scroll internally and fit; no horizontal page
   scroll.
 - [ ] **768px:** Gantt and table appear; filter grid goes two-up; modal centred.
-- [ ] **1280px:** four summary cards in one row; four filters in one row; table
+- [ ] **1280px:** four summary cards in one row; five filters in one row; table
   scrolls inside its card only.
 - [ ] No hover-only affordance anywhere — every action is reachable by tap.
 
