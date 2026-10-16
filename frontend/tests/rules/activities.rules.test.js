@@ -8,8 +8,11 @@ import {
   assertFails,
 } from '@firebase/rules-unit-testing'
 import {
-  doc, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, Timestamp,
+  doc, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, Timestamp, runTransaction,
 } from 'firebase/firestore'
+import { runActivityQuickAction } from '../../src/lib/activityQuickActions'
+import { QUICK_ACTION, QUICK_ACTION_ERROR } from '../../src/lib/projectTimeline'
+import { todayIso } from '../../src/lib/payments'
 
 // ── Project Timeline activity Security Rules — emulator tests (ADR-29) ───────
 //
@@ -24,7 +27,7 @@ import {
 //     terminal.
 //
 // ⚠️ What these tests deliberately PROVE IS NOT ENFORCED (the documented
-// client-only gaps — docs/SECURITY.md → Deferred Control 20): an impossible
+// client-only gaps — docs/SECURITY.md → Deferred Control 23): an impossible
 // calendar date of valid SHAPE is accepted, a responsibleContactId/costCodeId
 // naming nothing is accepted, and duplicate sortOrder values are accepted.
 //
@@ -742,5 +745,140 @@ describe('financial isolation', () => {
       doc(ctx(USERS.pm), `companies/${COMPANY_B}/projects/${PROJECT_A}/budgetLines`, 'bl1'),
       { costCodeId: 'cc1', budgeted: 1000 },
     ))
+  })
+})
+
+// ── Guarded quick status actions (Timeline & Scheduling Enhancements) ────────
+//
+// Runs the APP'S OWN quick-action writer (lib/activityQuickActions.js) against
+// the emulator with the real client transaction, so these prove that:
+//   · the partial write each quick action performs passes the UNCHANGED
+//     `activities` rules for admin/PM, and is still DENIED for qs/sub/client/
+//     super_admin/other-company (rules, not the UI, are the boundary)
+//   · a quick action refuses to write over a newer version, and refuses a
+//     deleted activity — nothing is written in either case
+//   · only the intended keys change
+// Rules and the `revision` schema are NOT modified by this release.
+
+describe('guarded quick status actions', () => {
+  const quick = (user, seen, action, id, db = ctx(user)) => runActivityQuickAction({
+    // ONE Firestore instance for the transaction and the reference.
+    db,
+    ref: actRef(db, id),
+    seen,
+    action,
+    uid: user.uid,
+    now: new Date(),
+    runTransaction,
+    serverTimestamp,
+  })
+  const load = async (id, user = USERS.admin) => {
+    const snap = await getDoc(actRef(ctx(user), id))
+    return { id: snap.id, ...snap.data() }
+  }
+  const raw = async (id) => {
+    let data = null
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      const snap = await getDoc(doc(c.firestore(), activitiesPath(), id))
+      data = snap.exists() ? snap.data() : null
+    })
+    return data
+  }
+  const changedKeys = (before, after) =>
+    Object.keys({ ...before, ...after }).filter(k => JSON.stringify(before[k]) !== JSON.stringify(after[k])).sort()
+
+  for (const user of WRITERS) {
+    it(`${user.role}: Start writes status + today's actual start + audit stamps only`, async () => {
+      // Seeded as last written by SOMEONE ELSE, so the audit stamp must move.
+      await seed('q1', { updatedBy: 'u_someone_else' })
+      const before = await raw('q1')
+      await quick(user, await load('q1', user), QUICK_ACTION.START, 'q1')
+      const after = await raw('q1')
+      expect(after.status).toBe('in_progress')
+      expect(after.actualStart).toBe(todayIso(new Date()))
+      expect(after.updatedBy).toBe(user.uid)
+      expect(changedKeys(before, after)).toEqual(['actualStart', 'status', 'updatedAt', 'updatedBy'])
+    })
+
+    it(`${user.role}: Complete writes completed / 100 / today's actual finish only`, async () => {
+      await seed('q2', { status: 'in_progress', actualStart: '2026-01-05', percentComplete: 40, updatedBy: 'u_someone_else' })
+      const before = await raw('q2')
+      await quick(user, await load('q2', user), QUICK_ACTION.COMPLETE, 'q2')
+      const after = await raw('q2')
+      expect(after).toMatchObject({ status: 'completed', percentComplete: 100, actualFinish: todayIso(new Date()), actualStart: '2026-01-05' })
+      expect(changedKeys(before, after)).toEqual(['actualFinish', 'percentComplete', 'status', 'updatedAt', 'updatedBy'])
+    })
+  }
+
+  it('Put on hold passes the rules and touches status only', async () => {
+    await seed('q3', { status: 'in_progress', actualStart: '2026-01-05', percentComplete: 40 })
+    const before = await raw('q3')
+    await quick(USERS.pm, await load('q3'), QUICK_ACTION.HOLD, 'q3')
+    expect(changedKeys(before, await raw('q3'))).toEqual(['status', 'updatedAt', 'updatedBy'])
+  })
+
+  it('Mark reached on a milestone satisfies the milestone rules (0/100, same day)', async () => {
+    await seed('q4', { isMilestone: true, plannedStart: '2026-10-20', plannedFinish: '2026-10-20' })
+    await quick(USERS.pm, await load('q4'), QUICK_ACTION.COMPLETE, 'q4')
+    const after = await raw('q4')
+    expect(after).toMatchObject({ status: 'completed', percentComplete: 100, actualStart: null })
+  })
+
+  for (const user of [USERS.qs, USERS.sub, USERS.client, USERS.super, USERS.other]) {
+    it(`${user.role}${user === USERS.other ? ' (other company)' : ''}: denied by the rules — PERMISSION, nothing written`, async () => {
+      await seed('q5')
+      const before = await raw('q5')
+      const seen = await load('q5')            // as admin: the UI copy is irrelevant to the rules
+      const err = await quick(user, seen, QUICK_ACTION.START, 'q5').catch(e => e)
+      expect(err.kind).toBe(QUICK_ACTION_ERROR.PERMISSION)
+      expect(await raw('q5')).toEqual(before)
+    })
+  }
+
+  it('CONCURRENT EDIT: a write after the UI loaded the activity makes the quick action STALE', async () => {
+    await seed('q6')
+    const seenByPm = await load('q6', USERS.pm)
+    // Another writer edits through the ordinary (full-editor) path.
+    await updateDoc(actRef(ctx(USERS.admin), 'q6'), edit(USERS.admin, { name: 'Renamed by admin' }))
+    const before = await raw('q6')
+    const err = await quick(USERS.pm, seenByPm, QUICK_ACTION.START, 'q6').catch(e => e)
+    expect(err.kind).toBe(QUICK_ACTION_ERROR.STALE)
+    expect(await raw('q6')).toEqual(before)
+  })
+
+  it('two quick actions from the same stale view: the second is refused', async () => {
+    await seed('q7')
+    const seen = await load('q7', USERS.pm)
+    await quick(USERS.pm, seen, QUICK_ACTION.HOLD, 'q7')
+    const err = await quick(USERS.admin, seen, QUICK_ACTION.START, 'q7').catch(e => e)
+    expect(err.kind).toBe(QUICK_ACTION_ERROR.STALE)
+    expect((await raw('q7')).status).toBe('on_hold')
+  })
+
+  it('a deleted / missing activity is refused as MISSING', async () => {
+    await seed('q8')
+    const seen = await load('q8', USERS.pm)
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await deleteDoc(doc(c.firestore(), activitiesPath(), 'q8'))
+    })
+    const err = await quick(USERS.pm, seen, QUICK_ACTION.START, 'q8').catch(e => e)
+    expect(err.kind).toBe(QUICK_ACTION_ERROR.MISSING)
+    expect(await raw('q8')).toBe(null)
+  })
+
+  it('a cancelled activity stays terminal: refused, nothing written', async () => {
+    await seed('q9', { status: 'cancelled', cancelReason: 'Descoped', cancelledAt: Timestamp.now(), cancelledBy: USERS.admin.uid })
+    const before = await raw('q9')
+    const err = await quick(USERS.pm, await load('q9'), QUICK_ACTION.START, 'q9').catch(e => e)
+    expect(err.kind).toBe(QUICK_ACTION_ERROR.INVALID)
+    expect(await raw('q9')).toEqual(before)
+  })
+
+  it('Complete with no recorded actual start is refused (no history invented)', async () => {
+    await seed('q10', { status: 'on_hold' })
+    const before = await raw('q10')
+    const err = await quick(USERS.pm, await load('q10'), QUICK_ACTION.COMPLETE, 'q10').catch(e => e)
+    expect(err.kind).toBe(QUICK_ACTION_ERROR.INVALID)
+    expect(await raw('q10')).toEqual(before)
   })
 })

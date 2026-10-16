@@ -1,6 +1,8 @@
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useProjectActivities } from '../../hooks/useProjectActivities'
+import { useLocalToday } from '../../hooks/useLocalToday'
+import { formatIsoDate } from '../../lib/projectTimeline'
 import { figureState, FIGURE_STATE } from '../../lib/projectSnapshot'
 import { programmeOverview, donutSegments } from '../../lib/dashboardProgramme'
 
@@ -52,13 +54,61 @@ function Fact({ label, value, tone = 'text-brand-text', hint }) {
   )
 }
 
+// Next milestone — the selected project's nearest OPEN milestone against the
+// current plan (lib/projectTimeline.js → nextMilestone). Overdue is always
+// stated in words, never by colour alone.
+function NextMilestone({ next }) {
+  if (!next || next.kind === null) {
+    return (
+      <div className="mt-2 rounded-lg bg-brand-bg/60 px-3 py-2.5">
+        <p className="m-0 text-[10.5px] font-bold uppercase tracking-[0.4px] text-brand-muted">Next milestone</p>
+        <p className="m-0 mt-0.5 text-[12.5px] text-brand-text-soft">No open milestones on the programme.</p>
+      </div>
+    )
+  }
+  const m = next.milestone
+  const overdue = next.kind === 'overdue'
+  const when = overdue
+    ? `Overdue · ${next.daysLate === 1 ? '1 day late' : `${next.daysLate} days late`}`
+    : next.daysUntil === 0 ? 'Due today'
+      : next.daysUntil === 1 ? 'Due tomorrow'
+        : `Due in ${next.daysUntil} days`
+  // Earlier milestones still open while a later one is "next".
+  const otherOverdue = overdue ? next.overdueCount - 1 : next.overdueCount
+
+  return (
+    <div className={`mt-2 rounded-lg px-3 py-2.5 ${overdue ? 'border border-brand-red/40 bg-brand-red/5' : 'bg-brand-bg/60'}`}>
+      <p className="m-0 text-[10.5px] font-bold uppercase tracking-[0.4px] text-brand-muted">
+        {overdue ? 'Overdue milestone' : 'Next milestone'}
+      </p>
+      <p className="m-0 mt-0.5 truncate text-[13px] font-bold text-brand-text" title={m.name}>
+        <span aria-hidden="true" className="mr-1.5">◆</span>{m.name}
+      </p>
+      <p className={`m-0 mt-0.5 text-[11.5px] font-semibold tabular-nums ${overdue ? 'text-brand-red' : 'text-brand-text-soft'}`}>
+        {formatIsoDate(m.plannedFinish)} · {when}
+      </p>
+      {otherOverdue > 0 && (
+        <p className="m-0 mt-0.5 text-[10.5px] text-brand-amber">
+          {otherOverdue === 1 ? '1 other milestone is' : `${otherOverdue} other milestones are`} overdue.
+        </p>
+      )}
+      {overdue && (
+        <p className="m-0 mt-0.5 text-[10.5px] text-brand-muted">No upcoming milestone is planned.</p>
+      )}
+    </div>
+  )
+}
+
 export default function ProgrammePanel({ projectId }) {
   const { activities, activitiesLoading, activitiesError } = useProjectActivities(projectId)
+  // The viewer's calendar day — advanced at local midnight, so a Dashboard left
+  // open overnight does not keep yesterday's overdue / next-milestone state.
+  const now = useLocalToday()
 
   const availability = figureState(['activities'], {
     activities: { loading: activitiesLoading, error: activitiesError },
   })
-  const overview = useMemo(() => programmeOverview(activities), [activities])
+  const overview = useMemo(() => programmeOverview(activities, now), [activities, now])
   const donut = donutSegments(overview.byStatus, overview.other)
   const s = overview.summary
 
@@ -85,6 +135,9 @@ export default function ProgrammePanel({ projectId }) {
           {['Completed', 'Overdue', 'Due in 14 days', 'Milestones left'].map(l => (
             <Fact key={l} label={l} value="—" tone="text-brand-muted" />
           ))}
+          <div className="col-span-2">
+            <Fact label="Next milestone" value="—" tone="text-brand-muted" />
+          </div>
         </div>
       )}
 
@@ -161,6 +214,7 @@ export default function ProgrammePanel({ projectId }) {
             <Fact label={`Due in ${s.dueSoonDays} days`} value={s.dueSoon} hint="open activities" />
             <Fact label="Milestones left" value={s.milestonesRemaining} hint="open milestones" />
           </div>
+          <NextMilestone next={overview.nextMilestone} />
         </>
       )}
     </section>

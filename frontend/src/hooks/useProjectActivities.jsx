@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   collection, doc, onSnapshot, query, orderBy,
-  setDoc, updateDoc, serverTimestamp,
+  setDoc, updateDoc, serverTimestamp, runTransaction,
 } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { useAuth } from './useAuth'
@@ -10,6 +10,7 @@ import {
   ACTIVITY_STATUS,
   normaliseActivityDraft, validateActivityDraft, validateCancelReason,
 } from '../lib/projectTimeline'
+import { runActivityQuickAction } from '../lib/activityQuickActions'
 
 // ── Project Timeline activities (the programme) — ADR-29 ─────────────────────
 //
@@ -28,12 +29,17 @@ import {
 // no counter, so there is nothing to make atomic and nothing to lock — engaging
 // the ratchet here would lock a project's currency on a scheduling write, which
 // would be wrong.
+// (The quick status actions DO use a transaction — not for atomicity across
+// documents, but to read-check-write one activity as a version guard. They
+// still stage no currency lock.)
 //
 // ⚠️ LAST-WRITE-WINS. There is no optimistic concurrency: two users editing one
 // activity will overwrite each other, including fields the second never looked
 // at. `updatedAt`/`updatedBy` record WHO last wrote, not WHAT changed. The UI
 // surfaces that metadata; compare-and-set is deferred (docs/SECURITY.md →
-// Deferred Control 20).
+// Deferred Control 23). The quick status actions below are the one GUARDED
+// path — they refuse to write over a newer version — but the full editor is
+// not, so the collection as a whole remains last-write-wins.
 //
 // The keyed-snapshot pattern below (state tagged with the target it belongs to,
 // loading DERIVED from it) is the one used by useCashFlowLines /
@@ -161,6 +167,28 @@ export function useProjectActivities(projectId) {
     })
   }, [companyId, projectId, user, collectionRef])
 
+  // QUICK STATUS ACTION (start / hold / complete) — a GUARDED write. Runs in a
+  // transaction that re-reads the activity, refuses if anyone has written it
+  // since `activityDoc` was rendered (updatedAt/updatedBy), re-plans the
+  // transition against the server copy, and writes only the planned keys plus
+  // the audit stamps. Throws a QuickActionError (`kind` + user message) on any
+  // refusal; nothing is written in that case. See lib/activityQuickActions.js
+  // for what this does and does NOT protect — the full editor above remains
+  // last-write-wins.
+  const quickUpdateActivity = useCallback(async (activityDoc, action) => {
+    if (!companyId || !projectId || !user) throw new Error('Not authenticated')
+    return runActivityQuickAction({
+      db,
+      ref: doc(collectionRef(), activityDoc.id),
+      seen: activityDoc,
+      action,
+      uid: user.uid,
+      now: new Date(),
+      runTransaction,
+      serverTimestamp,
+    })
+  }, [companyId, projectId, user, collectionRef])
+
   return {
     activities,
     activitiesLoading,
@@ -168,5 +196,6 @@ export function useProjectActivities(projectId) {
     createActivity,
     updateActivity,
     cancelActivity,
+    quickUpdateActivity,
   }
 }

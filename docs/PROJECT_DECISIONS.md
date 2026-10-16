@@ -3822,3 +3822,105 @@ the role gates are client-side UX mirrors — Firestore rules remain the only
 trust boundary; there is still no DOM test runner, so wiring and responsive
 structure are pinned structurally (`tests/unit/dashboardV2.test.js`) and
 accepted manually (TESTING.md §22).
+
+## ADR-46: Timeline & Scheduling Enhancements (extend activities, not a Tasks module; one Due filter; guarded quick status actions without a rules change; midnight-advancing clock; Next Milestone)
+
+**Context.** The Tasks & Scheduling assessment found that the candidate "task"
+capabilities (assignment, status, due date, overdue, filtering, milestones)
+already exist on the ADR-29 `activities` collection. The approved scope was a
+focused extension of the Timeline: **no new collection, no new listener, no
+new dependency, no Firestore/Storage rules change, no `revision` schema change,
+no financial change, no completion percentage**, Contact-based responsibility
+and the existing role matrix (QS read-only) unchanged. This is **not** a
+standalone Tasks module.
+
+**Decision 1 — one Due filter, not two checkboxes.** "Overdue only" and "Due
+within 14 days" are mutually exclusive by definition (overdue = open with a
+planned finish before today; due soon = open with a planned finish from today
+to today + 14), so they are one `due` control (`DUE_FILTER`:
+`'' | 'overdue' | 'due_soon'`) added to `filterActivities`. Every filter ANDs —
+adding one can only narrow the list. Both windows reuse `isOverdue` /
+`isDueWithin(DUE_SOON_DAYS)`, the predicates behind the summary cards, so the
+filtered count always equals the card. Closed work is never in either window,
+so `hideClosed` is a no-op under a window. The legacy `overdueOnly` flag is
+kept and ANDs with `due`. Gantt, table and mobile cards all receive the same
+filtered list.
+
+**Decision 2 — the stale clock.** The Timeline froze `now` with
+`useMemo(() => new Date(), [])`, so a tab left open past midnight kept
+yesterday's overdue state (the Dashboard panel used `new Date()` inside a memo
+keyed only on the activities, with the same effect). `hooks/useLocalToday.jsx`
+returns a `Date` that changes **only when the local calendar day changes**: a
+timer to the next local midnight (`msUntilNextLocalDay`, built from local date
+parts, so DST is handled) that re-arms itself, plus a re-check on
+`visibilitychange`/`focus` because browsers suspend timers in sleeping tabs. It
+is a timer, not a subscription (no Firestore). Storage conventions are
+unchanged: dates remain date-only strings; this only decides which day "today"
+is, in the viewer's timezone (the documented convention).
+
+**Decision 3 — quick status actions over the existing five-state lifecycle.**
+No status, field or transition was added. `planQuickAction` produces a
+**partial** update that, merged onto the stored activity, must pass
+`validateActivityDraft` (the full editor's validator, which mirrors the rules):
+
+| Action | From | Writes |
+|---|---|---|
+| Start today / Resume | not_started, on_hold (non-milestone, no actual finish) | `status: in_progress`; `actualStart: today` **only if none is recorded** |
+| Put on hold | not_started, in_progress (non-milestone) | `status: on_hold` |
+| Complete today | in_progress, on_hold (non-milestone, actual start recorded and ≤ today, no actual finish) | `status: completed`, `percentComplete: 100`, `actualFinish: today` |
+| Mark reached today | not_started, in_progress, on_hold (milestone, no actual finish) | same as Complete; **no actual start invented** |
+
+**No fabricated history:** a quick action records only *today*, only for the
+event clicked. Whenever the honest answer needs another date — completing work
+with no recorded actual start, work that finished on an earlier day, an
+existing actual finish, an actual start after today — the action is not
+offered and the full editor is the path. Cancelled stays terminal; reopening a
+completed activity stays an explicit editor correction; milestones get only
+Mark reached (a point in time). Buttons render only for
+`canAuthorProgramme` (admin/PM) — UX only; the unchanged rules are the
+boundary (proven in the emulator: QS, subcontractor, client, super_admin and
+other-company users are denied).
+
+**Decision 4 — concurrent-edit guard without rules or schema change.**
+`revision` is rules-pinned to 1, so there is no version counter. But every
+write path is rules-forced to stamp `updatedAt == request.time` and
+`updatedBy == caller`, so `(updatedAt, updatedBy)` identifies the last write.
+`lib/activityQuickActions.js → runActivityQuickAction` runs a **transaction**:
+read the activity → refuse if missing → refuse if `(updatedAt, updatedBy)`
+differs from the copy the button was rendered from (**stale**) → re-plan the
+transition against the server copy → write only the planned keys plus the two
+audit stamps. If the document changes between read and commit, Firestore
+re-runs the callback, the version check then fails, and the action is
+**refused, never silently re-applied**. A locally pending activity
+(`updatedAt` not yet known) is refused. Transactions require the server, so
+offline they **fail rather than queue** (reported as offline; nothing
+written). The callback returns an outcome and has no UI side effects; the page
+reacts after it settles. Firestore SDK functions are **injected**, so the
+module imports no Firebase code and the emulator suite runs the real
+transaction.
+
+**What this does NOT solve (stated in the UI and SECURITY.md DC-23):** the full
+editor is still an unconditioned `updateDoc`, so an editor save can overwrite a
+quick action (or anything else) — the collection remains **last-write-wins**;
+the guard is client-side and not rules-enforced (a direct SDK write bypasses
+it); and the `revision` compare-and-set remains deferred.
+
+**Decision 5 — Next Milestone on the Dashboard Programme panel.**
+`nextMilestone(activities, now)` (pure) over the panel's existing subscription:
+open milestones with a valid date; the earliest **upcoming** (due today or
+later) wins; only when none is upcoming, the **oldest overdue** milestone is
+shown as *Overdue milestone* with days late (in words, not colour alone); the
+overdue count is always reported so an upcoming milestone never hides missed
+ones. Ties on date break by `compareActivities` (sortOrder, name, id). Loading
+shows "—", failure keeps the single "Programme unavailable" state, a programme
+with no open milestones says so. A date and a day count — never a percentage.
+
+**Consequences.** No collection, listener, dependency, rules, `revision`,
+financial or navigation change; existing documents need no migration (quick
+actions write only existing fields). Added `tests/unit/timelineScheduling.test.js`
+(74) and 16 emulator tests in `tests/rules/activities.rules.test.js` exercising
+the real transaction against the unchanged rules; two `dashboardV2` pins were
+taught that `useLocalToday` is a timer, not a subscription, with a new pin
+proving it opens no listener. Totals: **2320 unit** (37 files), **1252 rules**
+(20 files). Wiring and responsive structure are pinned structurally (no DOM
+runner) and accepted manually (TESTING.md §15p-xi).

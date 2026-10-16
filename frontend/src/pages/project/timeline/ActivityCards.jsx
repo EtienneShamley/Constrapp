@@ -1,6 +1,7 @@
 import Badge from '../../../components/Badge'
 import Btn from '../../../components/Btn'
 import ProgBar from '../../../components/ProgBar'
+import ActivityQuickActions from './ActivityQuickActions'
 import {
   ACTIVITY_STATUS, ACTIVITY_STATUS_LABELS, ACTIVITY_STATUS_BADGE,
   ACTIVITY_GROUP, ACTIVITY_GROUP_ORDER, ACTIVITY_GROUP_LABELS, ACTIVITY_GROUP_HINTS,
@@ -20,7 +21,7 @@ import {
 //
 // Every tap target is at least 44px and nothing is hover-only.
 
-export default function ActivityCards({ activities, canWrite, onEdit, onCancel, now }) {
+export default function ActivityCards({ activities, canWrite, onEdit, onCancel, onQuickAction, quickBusyId, now }) {
   const groups = groupActivities(activities, now)
 
   return (
@@ -95,7 +96,18 @@ export default function ActivityCards({ activities, canWrite, onEdit, onCancel, 
                     </div>
 
                     {canWrite && a.status !== ACTIVITY_STATUS.CANCELLED && (
-                      <div className="mt-3 flex gap-2">
+                      <div className="mt-3 flex flex-wrap gap-2 empty:hidden">
+                        <ActivityQuickActions
+                          activity={a}
+                          now={now}
+                          onQuickAction={onQuickAction}
+                          busyId={quickBusyId}
+                        />
+                      </div>
+                    )}
+
+                    {canWrite && a.status !== ACTIVITY_STATUS.CANCELLED && (
+                      <div className="mt-2 flex gap-2">
                         <Btn variant="ghost" className="flex-1" onClick={() => onEdit(a)}>Edit</Btn>
                         <Btn variant="ghost" className="flex-1" onClick={() => onCancel(a)}>Cancel</Btn>
                       </div>

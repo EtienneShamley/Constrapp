@@ -1149,6 +1149,13 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     other including fields the second never looked at, and
     `updatedAt`/`updatedBy` record *who* wrote last, not *what* changed (no
     field-level history — Deferred Control 7 territory).
+    **Partial mitigation (ADR-46), client-side only:** the Timeline's quick
+    status actions run in a transaction that refuses to write when the
+    activity's `(updatedAt, updatedBy)` differs from the copy the user acted on.
+    This protects the *quick action* from overwriting a newer write; it does
+    **not** protect anything *from* the full editor, which remains an
+    unconditioned update, and it is **not rules-enforced** — a direct SDK write
+    bypasses it. The `revision` compare-and-set remains deferred.
     **Blast radius is deliberately bounded:** the programme writes no financial
     document and feeds no financial figure, so a fabricated programme misleads
     reporting but cannot move money — which is precisely why ADR-29 refuses to
@@ -1504,7 +1511,13 @@ from ADR-11): any non-cancelled status may move to any other, including
 backwards, because a programme is a plan that gets corrected rather than an
 audit record. This is a *design* decision, not a rules gap — but it does mean
 the rules cannot tell a legitimate correction from a cover-up (Deferred Control
-20).
+23).
+
+**Quick status actions (ADR-46) changed no rule.** Their writes are ordinary
+edits through the existing update branch, so the role matrix above applies
+unchanged (asserted in the emulator by running the app's own transaction as
+every role). Their stale-version check is **client-side** — see Deferred
+Control 23.
 
 ## RFIs — narrow reads, rules-enforced forward-only lifecycle, existence-verified references
 
