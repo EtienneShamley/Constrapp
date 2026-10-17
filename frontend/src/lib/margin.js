@@ -45,19 +45,29 @@ import {
 export const FINANCIAL_ROLES = ['company_admin', 'project_manager', 'qs']
 export const isFinancialRole = (role) => FINANCIAL_ROLES.includes(role)
 
-// Project-level Forecast Final Cost (and the supporting totals), composed from
-// the EXACT read-time Budget/Forecast derivations — no cost logic is duplicated
-// here. Each row goes through the SAME composeForecastRow the Forecast page
-// uses, evaluated at the cost code's SAVED uncommittedCostToComplete (this path
-// has no unsaved edits), so the rollup carries the same flags and counts the
-// Forecast page shows — including unforecastedCount, which Cash Flow reads.
-// Returns the full forecast rollup object; the margin caller reads
-// `forecastFinalCost` (plus `budgeted` for the current Approved Budget reference).
-export function projectForecastTotals(sources) {
-  const rows = buildForecastRows(sources).map(
+// The project's effective forecast rows at the SAVED input — the exact rows
+// projectForecastTotals rolls up, exposed so a read-only consumer (PULSE,
+// ADR-47) can list WHICH cost codes carry a flag without a fourth copy of the
+// composition. Each row goes through the SAME composeForecastRow the Forecast
+// page uses (ADR-43), evaluated at the cost code's saved
+// uncommittedCostToComplete (this path has no unsaved edits). No arithmetic is
+// added here; the rows are buildForecastRows output with the composer's
+// figures and flags attached.
+export function projectForecastRows(sources) {
+  return buildForecastRows(sources).map(
     (r) => composeForecastRow(r, r.storedUncommittedCostToComplete),
   )
-  return forecastRollups(rows)
+}
+
+// Project-level Forecast Final Cost (and the supporting totals), composed from
+// the EXACT read-time Budget/Forecast derivations — no cost logic is duplicated
+// here. The rows are projectForecastRows above, so the rollup carries the same
+// flags and counts the Forecast page shows — including unforecastedCount, which
+// Cash Flow reads. Returns the full forecast rollup object; the margin caller
+// reads `forecastFinalCost` (plus `budgeted` for the current Approved Budget
+// reference).
+export function projectForecastTotals(sources) {
+  return forecastRollups(projectForecastRows(sources))
 }
 
 // Current Contract Sum = Original Contract Value + Approved Client Variations.

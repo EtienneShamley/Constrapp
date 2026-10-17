@@ -12,7 +12,7 @@ Constrapp is **the connected commercial operating system for construction projec
 - **New commercial modules integrate with the existing lifecycle** (Drawing → Quantity → BOQ → Estimate → Tender → Award → Approved Budget → Commitment → PO → Variation → Progress Claim → Supplier Invoice → Actual Cost → Forecast → Cash Flow → Final Project Margin → Final Account) rather than operate as standalone tools.
 - **Field features must state their commercial input or output** (e.g. drawing measurement → BOQ quantity, site photo → progress/claim evidence, delay → forecast impact). A field feature with no commercial linkage is out of scope.
 - **Do not build generic form-first or HSEQ-first functionality** (no-code form builders, HSEQ template libraries, generic field reporting, payroll/workforce, fleet/equipment, or broad enterprise integrations before product-market fit) **without an approved strategy change.** See [PRODUCT.md](PRODUCT.md) → "What Constrapp Is Not".
-- **PULSE™, SHIELD™, IQ™, and Quant™ remain placeholders** until their planned sprint (see [ROADMAP.md](ROADMAP.md) and the AI Feature Placeholder Rule below).
+- **SHIELD™, IQ™, and Quant™ remain placeholders** until their planned sprint (see [ROADMAP.md](ROADMAP.md) and the AI Feature Placeholder Rule below). **PULSE™ 1A is live as a deterministic, read-only project tab (ADR-47)** — six explainable indicators composed from existing selectors. Everything PULSE™ does not yet do (scores, severity, trends, prediction, portfolio health, acknowledgement, notifications, any AI) stays under the placeholder rule.
 
 ## Engineering & Security Standards (mandatory)
 
@@ -72,7 +72,9 @@ frontend/
                     Drawings | General Documents)
     pages/          Top-level routes; pages/project/ holds Project Detail tabs;
                     pages/project/documents/ holds the Documents & Drawings
-                    modals, viewer and shared class strings
+                    modals, viewer and shared class strings;
+                    pages/project/pulse/ holds the PULSE™ indicator card
+                    (presentation only — formats lib/pulse.js output; ADR-47)
     hooks/          useAuth, useProfile, useCompany, useProjects, useProject,
                     useCostCodes, useContacts, useBudgetLines, usePurchaseOrders,
                     useProgressClaims, useSupplierInvoices, useSupplierCreditNotes,
@@ -96,7 +98,12 @@ frontend/
                     tenders.js (packages, bids, validity gate, comparison, award),
                     forecast.js, margin.js, projectSnapshot.js (Dashboard
                     Project Snapshot — composes existing selectors + per-figure
-                    availability, NO formula of its own; ADR-42), cashFlow.js (pure monthly cash
+                    availability, NO formula of its own; ADR-42), pulse.js
+                    (PULSE™ 1A — six read-only indicators that compose
+                    projectForecastRows / computeMargin / payablesSummary /
+                    isOverdue through figureState; comparisons with zero,
+                    counts and filters ONLY — no arithmetic, score, threshold,
+                    trend or prediction; ADR-47), cashFlow.js (pure monthly cash
                     aggregation + forecast layers), contacts.js, boq.js (pure
                     BOQ arithmetic + read-time budget comparison),
                     projectTimeline.js (programme domain logic — no financial
@@ -405,6 +412,7 @@ PULSE™, IQ™, Quant™, and SHIELD™ are reserved proprietary features.
 - If a screen references one, render a placeholder card: feature name, one-line description, "Coming Soon" badge — no data, calculations, or API calls behind it
 - **Placeholder cards live only on the module's own route**, which stays hidden from navigation until the feature ships (Beta Launch Readiness). **Never** add a Coming Soon card, reserved empty slot or mock widget for these features to the Dashboard or any navigation surface (ADR-45) — they join the Dashboard only with real data
 - Never import an AI/ML library (TensorFlow, OpenAI SDK, LangChain, etc.) without explicit instruction
+- **PULSE™ 1A exception (ADR-47), scoped exactly:** the project PULSE tab (`lib/pulse.js`, `pages/project/ProjectPulse.jsx`) may evaluate the six approved indicators — forecast over budget, cost codes not forecast, negative forecast gross profit, overdue programme activities, past-due supplier invoices, pending variation exposure — **only** by composing existing selectors and comparing with zero at cent resolution. Every indicator must resolve to loading / unavailable / needs data / finding / no issue, and a loading, failed or missing source can never yield "no issue". **Still prohibited for PULSE™:** any score, weighting, severity or risk threshold, trend or history, prediction, portfolio or cross-currency aggregation, acknowledgement/dismissal, notifications, automated commercial actions, Dashboard widgets, and any AI/ML. The top-level `/pulse` route stays hidden from the sidebar and is a pointer to the project tab, not a surface
 
 ## Git Workflow
 

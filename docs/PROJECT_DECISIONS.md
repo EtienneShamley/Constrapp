@@ -3924,3 +3924,181 @@ taught that `useLocalToday` is a timer, not a subscription, with a new pin
 proving it opens no listener. Totals: **2320 unit** (37 files), **1252 rules**
 (20 files). Wiring and responsive structure are pinned structurally (no DOM
 runner) and accepted manually (TESTING.md §15p-xi).
+
+---
+
+## ADR-47: Constrapp PULSE™ 1A (six deterministic, read-only project health indicators; composition of existing selectors; five honest states; no score, threshold, trend or prediction)
+
+**Context.** PULSE™ was a placeholder under the AI Feature Placeholder Rule, and
+ROADMAP follow-up 4 (ADR-42) deferred "project health indicators" to a bounded
+feature. The Lead Software Architect approved a first release — **PULSE 1A** —
+on strict terms: identify real conditions from authoritative existing records,
+explain each with evidence and a link to the workflow that resolves it,
+distinguish an actual problem from incomplete, unavailable or insufficient data,
+and invent nothing: no health score, severity threshold, history, trend,
+prediction, completion percentage, AI, notification, acknowledgement or
+automated action. No new backend, collection, Rules change, dependency,
+financial formula, stored aggregate or write.
+
+The readiness inspection found every approved indicator derivable from code
+that already exists and is already tested: `projectForecastTotals` /
+`composeForecastRow` (ADR-43), `computeMargin` (ADR-20), `payablesSummary` /
+`apAgeing` / `isPastDuePayable` (ADR-24/30/31), `isOverdue` / `daysLate`
+(ADR-29/46), the pending-variation totals (ADR-18/19), and the ADR-42
+availability vocabulary (`figureState`, `FIGURE_DEPENDENCIES`). Every
+collection PULSE reads already has a read rule for financial roles (activities:
+programme readers — the same three roles). The only gap was that the saved-path
+forecast composition exposed counts but not the rows carrying the flags.
+
+**Decision 1 — a project tab, not a Dashboard or portfolio surface.**
+`/projects/:projectId/pulse`, listed second in `lib/projectTabs.js` (after
+Overview). Every indicator is ONE project in ONE currency from THAT project's
+own subscriptions; a portfolio view would need the 11–13 listeners per project
+ADR-42 rejected, or a collection-group read path that does not exist. The
+Dashboard is untouched (its "no PULSE" pin still holds — ADR-45 Decision 7).
+The hidden top-level `/pulse` route stays hidden and becomes a **pointer** to
+the project tab; its former "living AI / world-first" copy is removed because
+nothing of the kind is operational. The tab bar wraps (`flex-wrap`), so a
+fifteenth tab remains usable at 375px.
+
+**Decision 2 — `projectForecastRows`: the narrow extraction.** `lib/margin.js`
+gains `projectForecastRows(sources)` = `buildForecastRows(sources)` mapped
+through `composeForecastRow(r, r.storedUncommittedCostToComplete)`, and
+`projectForecastTotals` becomes `forecastRollups(projectForecastRows(sources))`.
+No arithmetic moved or changed; `composeForecastRow` stays the one row
+composer (the ADR-43 three-caller structural pin still passes, and a new pin
+requires `margin.js` to call the composer exactly once). The 375 existing
+forecast / snapshot / reliability / dashboard tests pass unchanged, and
+`pulse.test.js` pins `projectForecastTotals` ≡ `forecastRollups(projectForecastRows)`.
+This is what lets PULSE list *which* cost codes are over budget or unforecast
+without a fourth copy of the composition.
+
+**Decision 3 — `lib/pulse.js` is composition, not an engine.** It imports
+selectors and compares their outputs with zero at cent resolution (`isOverBudget`
+reused as the one negative-money test), counts records and filters lists. A
+structural test strips string literals and then asserts: no `reduce`, no
+multiplication or division between operands, every `+` is string
+concatenation or `+= 1`, every binary minus is inside a sort comparator, and
+`roundMoney` appears once. No Firebase, no React, no currency formatting (the
+page formats with the project's resolved currency). No "score", "severity",
+"threshold", "trend", "predict" or "weight" vocabulary; no `Math.max/min`.
+
+**Decision 4 — five states, and what each means.** Through `figureState` over
+`INDICATOR_DEPENDENCIES[id]`:
+
+| state | meaning | rendering |
+|---|---|---|
+| `loading` | a dependency has not settled | badge, "Waiting for records…", no figure |
+| `unavailable` | a dependency failed **or is missing from `sourceStates`** | amber, names the sources, "not assessed" |
+| `needs_data` | sources settled, but an input the condition needs is absent (`reason`) | blue, says what to add and where |
+| `finding` | the records support the condition | red, headline, figures, evidence, caveats, link |
+| `no_issue` | complete, usable records were checked; the condition is absent | collapsed by default; says what was checked |
+
+A loading, failed or missing source can therefore never produce `no_issue`
+(pinned for every indicator × every dependency × all three failure modes). The
+page's summary strip is **counts by state** — never combined, weighted or
+thresholded. Presentation order is fixed (`INDICATOR_ORDER`), not a ranking.
+
+**Decision 5 — dependencies declared per indicator and verified by
+perturbation.** Each indicator declares the sources its selectors *and its
+caveats* read, and the ADR-44 technique proves it: emptying any declared source
+changes the indicator's outcome; emptying or **failing** any undeclared source
+changes nothing. Over-budget and incomplete read `FORECAST_ROW_SOURCES` (the
+row union — a variation-only cost code with no forecast line is unforecast);
+gross profit adds `baseline`; past due reads the ADR-42 `remainingPayable` set
+(a failed retention-release read makes it unavailable — never a "nothing
+released" guess, ADR-30); overdue reads `activities`; pending exposure reads
+`variations`. So one failed read never blocks an unrelated indicator.
+
+**Decision 6 — the incomplete forecast is "needs data", never healthy; a
+finding may still stand.** Where any cost code in the union has no saved
+`uncommittedCostToComplete` (a saved **0 is a forecast**, ADR-43 Decision 2):
+if Forecast Final Cost already exceeds the budget, or Forecast Gross Profit is
+already negative, the indicator is a `finding` with a caveat stating that the
+unforecast codes contribute no Uncommitted Cost to Complete and that completing
+them will change the figure — **it does not claim a lower bound**, because the
+non-negative input rule is client-validated, not rules-enforced; if the
+condition is absent, the indicator is `needs_data` (`forecast_incomplete`),
+not `no_issue`. A project with no budget lines is `needs_data` (`no_budget`);
+an unestablished Original Contract Value is `needs_data` (`contract_not_set`),
+never a $0 profit — and a loading / failed baseline is loading / unavailable,
+not "not set" (the ADR-44 rule). An unbudgeted cost code carrying forecast cost
+is listed beside the over-budget rows but is never itself "over budget".
+
+**Decision 7 — past due means remaining payable, and the wording stays
+honest.** Rows are `payablesSummary(...).rows` (posted invoices on the derived
+payable basis: `payableTotal` + posted releases, less posted allocations and
+posted valid-target credits) filtered by `isPastDuePayable`; the total is
+`apAgeing(...).pastDue`, and a test proves the listed rows sum to it. Fully
+settled, not-yet-due and draft invoices are never listed; a draft payment or
+draft release moves nothing; voiding a posted payment restores the balance.
+Caveats: a past-due balance is **not proof the supplier is unpaid**; unallocated
+posted payments (`paymentSummary().unallocated`) are named when present; posted
+invoices with a balance but **no due date** are counted and, if they are the
+only open balances, make the indicator `needs_data` (`due_dates_missing`);
+released retention ages from the original invoice due date (ADR-30 limitation).
+The words *paid* / *unpaid* are never used as a status (ADR-24).
+
+**Decision 8 — pending variations are exposure, not an error.** Indicator 6 is
+a `finding` whenever a draft or submitted variation exists, labelled exposure.
+Supplier and client are separated; draft and submitted are separated by
+applying the **same** pending-exposure selectors to a status-filtered list (so
+draft + submitted = pending by construction, no sum in PULSE). The caveat
+states that pending supplier amounts are not in Forecast Final Cost and pending
+client amounts are not in the Current Contract Sum — pinned by removing every
+pending variation and observing both figures unchanged. The optional,
+unvalidated `responseDueDate` is **not** used to call a variation overdue
+(deferred; it means a different party's deadline for client vs supplier
+variations and is frozen after submission).
+
+**Decision 9 — programme, as it is.** `isOverdue` / `daysLate` with the
+viewer's local day from `useLocalToday` (ADR-46 — a timer, not a subscription):
+open status and `plannedFinish < today`; due today is not overdue; completed and
+cancelled are never overdue; milestones are labelled. Figures are counts from
+`timelineSummary`; every card states the programme is a manually maintained
+current plan — no baseline slippage, completion % or schedule performance.
+
+**Decision 10 — one role gate, structurally pinned.** `ProjectPulse` renders the
+workspace — which alone mounts the eleven subscriptions (the ADR-42 ten plus
+`useProjectActivities`, each for `projectId`) — only after `profileLoading`
+settles and `isFinancialRole(role) && canReadProgramme(role)`. The two role
+lists are identical today (company_admin / project_manager / qs) and a test
+asserts it, so one gate covers every read; subcontractor and client users open
+nothing. `useCostCodes` is deliberately not mounted (names come from the stored
+snapshots in the rows). The keyed project outlet (ADR-44) remounts PULSE on a
+project switch. **Honest limit:** this gate is a client-side UX mirror;
+Firestore Security Rules remain the only trust boundary, and budget lines,
+POs and claims stay readable by every company member under rules as before.
+
+**Decision 11 — presentation.** Header (project currency, "ex-GST unless
+stated", the no-score statement) → state counts (2 → 5 columns) → Findings →
+Needs data → Unavailable → Loading → **No issue found collapsed** in a native
+`<details>`. Each card: title, state badge, headline, explanation, key figures
+(2 → 4 columns; the one legitimate percentage is Forecast Margin %), an
+evidence table (first five rows, "Show all N"; inside an `overflow-x-auto`
+scroller, never a direct child of `Card`), caveats, and a 44px tab-level link.
+Tokens only, no inline style, no hex, no chart library. Links are
+`/projects/:id/<tab>` — no page accepts a URL filter, so none is invented.
+
+**Consequences.** Files: `lib/pulse.js` (new), `pages/project/ProjectPulse.jsx`
+and `pages/project/pulse/IndicatorCard.jsx` (new), `lib/margin.js`
+(extraction), `lib/projectTabs.js` + `App.jsx` (tab and route),
+`pages/Pulse.jsx` (pointer copy), `tests/unit/pulse.test.js` (new, 281),
+`tests/unit/betaSurfaces.test.js` (`pulse` joins the shipped-tab list). No
+rules, schema, hook, dependency or Dashboard change; no write anywhere. Totals:
+**2601 unit** (38 files), rules suites unchanged. The pending-variation evidence
+column is labelled **"Amount (ex-GST)"**, not "Submitted": `submittedSubtotal`
+is the stored subtotal of the lines' submitted side, written at draft creation,
+so a draft carries an entered amount before anything is formally submitted —
+the status split (draft / submitted) in `values` carries that distinction. Wiring and responsive
+structure are pinned structurally (no DOM runner) and accepted manually
+(TESTING.md §23).
+
+**Deferred / not built (recorded, not promised):** past-due client invoices
+(`ageingByDueDate`), closed-PO residual, margin movement as an indicator,
+variation response-due overdue, any Dashboard or portfolio PULSE, acknowledgement
+or dismissal (needs a write path), notifications, trends (no history is
+stored), scores or severity of any kind, and any AI. README.md and
+DESIGN_SYSTEM.md still describe `/pulse` as a placeholder with an off-token
+colour; the colour remains (recorded debt) and both lines are left for the
+documentation pass that owns them.
