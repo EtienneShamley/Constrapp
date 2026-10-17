@@ -103,7 +103,7 @@ describe('project tabs offer no placeholder module', () => {
   // The tabs that must survive — so hiding two never quietly becomes hiding six.
   it('every shipped project module is still a tab', () => {
     for (const to of [
-      'overview', 'boq', 'tenders', 'budget', 'cost-codes', 'purchase-orders',
+      'overview', 'pulse', 'boq', 'tenders', 'budget', 'cost-codes', 'purchase-orders',
       'progress-claims', 'invoices', 'forecasting', 'variations', 'commercial',
       'documents', 'timeline', 'rfis',
     ]) {

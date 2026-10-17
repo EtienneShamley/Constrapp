@@ -4706,3 +4706,55 @@ Manual — three checks only:
       beside the Programme panel from 1024px and stacks above it below; the
       register is cards below 1024px (actions ≥44px) and a table above it; the
       picker is full width on mobile.
+
+## 23. Constrapp PULSE™ 1A (ADR-47)
+
+Automated: `tests/unit/pulse.test.js` (281 tests) — every indicator × every
+dependency × loading / failed / **missing** source → never "no issue";
+dependency isolation by perturbation (declared sources move the result,
+undeclared and even *failed* undeclared sources do not); every amount equals its
+selector (`projectForecastTotals`, `projectForecastRows`, `computeMargin`,
+`payablesSummary`, `apAgeing`, `paymentSummary`, the pending-variation totals,
+`timelineSummary`) and the Dashboard snapshot is byte-identical for the same
+fixture; the `projectForecastRows` extraction ≡ `projectForecastTotals`; saved
+0 is a forecast; cent boundaries on variance and profit; contract-not-set vs
+loading vs failed baseline; remaining payable with credits, retention
+held/released, draft and void payments, partial settlement, unallocated cash and
+missing due dates; due-today, completed and cancelled activities; clock
+sensitivity; draft vs submitted exposure with no double counting; the engine's
+no-arithmetic / no-Firebase / no-score structure; the page's role gate, exact
+eleven subscriptions, snapshot-shaped source states, `useLocalToday`, no write
+callback, project currency from the outlet, tab/route/pointer wiring, tokens
+only, 44px controls, scroller-wrapped tables and collapsed no-issue section.
+`npm run test:rules` is unchanged (no rules edit).
+
+Manual — three checks only:
+
+- [ ] **Findings equal their tabs.** On a project with budget, POs, posted
+      supplier invoices (at least one past its due date and partly paid), a
+      forecast with at least one cost code left blank, a commercial baseline,
+      a draft or submitted variation and an overdue Timeline activity: the
+      PULSE tab's Approved Budget / Forecast Final Cost / Variance equal the
+      Forecast tab; Forecast Gross Profit equals the Commercial tab; each
+      past-due row's Remaining payable equals the Supplier Payments register;
+      the overdue activities and days late equal the Timeline's **Overdue only**
+      filter; pending exposure equals the Variations tab's pending totals.
+      "Cost codes not yet forecast" lists exactly the Forecast tab's **Not
+      forecast** rows. Save a forecast of **0** on every blank code: that
+      indicator becomes *No issue found* and the over-budget / gross-profit
+      indicators leave *Needs data* (or keep their finding with the caveat
+      gone). Every link opens the named tab.
+- [ ] **States and roles.** With DevTools → Slow 3G, open PULSE: every indicator
+      shows *Loading* with "—" (no figure, no "no issue") until records arrive;
+      then switch to a project in another currency — only that project's
+      figures in its currency appear, never the previous project's. Signed in
+      as **subcontractor** or **client**: the tab shows "PULSE indicators are
+      restricted", no figures, and **no permission-denied errors** in the
+      console. Block the `retentionReleases` read (DevTools → network block):
+      only *Supplier invoices past due* becomes **Unavailable**, naming the
+      source; the other five are unaffected.
+- [ ] **Layout.** At **375px**, **768px** and **1280px**: no horizontal page
+      scroll; the project tab bar wraps and PULSE sits after Overview; state
+      counts reflow 2 → 5; key figures 2 → 4; evidence tables scroll inside
+      their card; "Show all N" and every link are ≥44px tall; *No issue found*
+      is collapsed until tapped.

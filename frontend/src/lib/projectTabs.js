@@ -6,6 +6,10 @@
 // Re-add the entry here when the module ships; do not delete the route.
 export const PROJECT_TABS = [
   { to: 'overview',         label: 'Overview' },
+  // PULSE™ 1A (ADR-47): deterministic project health indicators over the
+  // project's own records — read-only, financial roles. The hidden top-level
+  // /pulse route remains a pointer only.
+  { to: 'pulse',            label: 'PULSE' },
   { to: 'boq',              label: 'BOQ' },
   { to: 'tenders',          label: 'Tenders' },
   { to: 'budget',           label: 'Budget' },
