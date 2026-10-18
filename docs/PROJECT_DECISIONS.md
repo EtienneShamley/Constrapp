@@ -4102,3 +4102,93 @@ stored), scores or severity of any kind, and any AI. README.md and
 DESIGN_SYSTEM.md still describe `/pulse` as a placeholder with an off-token
 colour; the colour remains (recorded debt) and both lines are left for the
 documentation pass that owns them.
+
+---
+
+## ADR-48: Advanced Module Branding (v5 identity restored as presentation only; module brand tokens; static marks; one finite, motion-safe PULSE dot; no unbuilt module surfaced)
+
+**Context.** The v5 prototype (`docs/Constrapp_v5.jsx`) gave the advanced
+modules a distinct identity: a 💓 / 🛡 emoji, pink `#FF6B9D` for PULSE™ and cyan
+`#00D4FF` for SHIELD™, and small dots pulsing forever (`@keyframes pd`, scale
+1.35, `infinite`) in the sidebar and hero panels, plus a canvas heartbeat
+re-rendered every 80ms and score rings. Production kept only the colours, as
+recorded off-token debt in `pages/Pulse.jsx` / `pages/Shield.jsx`, and the PULSE
+1A tab (ADR-47) had a plain text heading. The Lead Software Architect approved
+restoring the identity as a small UI polish — without the sidebar architecture,
+scores, "LIVE" claims, the canvas, or any surface for an unbuilt module.
+
+**Decision 1 — names written once.** `lib/moduleBranding.js` exports
+`MODULE_NAMES` with the four approved full names: *Constrapp PULSE™*,
+*Constrapp SHIELD™*, *Constrapp Quant™*, *Constrapp IQ™*. Quant™ and IQ™ are
+reserved there only — no page, route, tab, mark or copy renders them. This is a
+constant map, not a module registry or feature framework.
+
+**Decision 2 — two module brand tokens.** `--color-brand-pulse` (`#FF6B9D`)
+and `--color-brand-shield` (`#00D4FF`) join `@theme`, replacing the hard-coded
+hexes and resolving that DESIGN_SYSTEM.md debt. They colour a module's **mark**
+and the PULSE dot only — **never a status**: PULSE findings stay `brand-red`,
+and `IndicatorCard` does not use the pink.
+
+**Decision 3 — static line marks, not emoji.** `components/ModuleMark.jsx`
+draws a 24-unit, 2px, round-capped `currentColor` SVG — PULSE a two-spike
+heartbeat line (the v5 canvas heartbeat as a still mark), SHIELD a shield
+outline. Marks are **decorative** (`aria-hidden="true"`, `focusable="false"`,
+no `<title>`): every one sits beside the module's name in text, so nothing is
+announced twice. `ModuleTile` reuses the v5 feature-tile motif (36px, 10px
+radius, token tint at 10% fill / 20% border). Quant™ and IQ™ marks are deferred
+to their milestones; emoji are not used (platform-inconsistent, cannot take a
+token colour).
+
+**Decision 4 — the PULSE tab shows the mark, not motion.** `lib/projectTabs.js`
+gives the PULSE entry `mark: 'pulse'`; `ProjectDetailLayout` renders a 14px
+static mark before the compact label "PULSE". The mark is always pink; the label
+and underline keep the shared tab states. **Nothing in the tab bar animates.**
+Tab padding is unchanged (the ≈34px tab touch target remains recorded debt —
+not redesigned here), the bar still wraps, and only PULSE carries a mark.
+
+**Decision 5 — the PULSE heading and its dot (revised before release).** The
+project tab's summary-card heading becomes `ModuleTile` + `<h2>Constrapp
+PULSE™</h2>` + "Project health indicators"; the project name stays the page
+`<h1>`, and every count, figure and indicator below is untouched. Only the
+**8px dot** at the tile's corner animates — never the mark. The Lead Architect
+first approved a three-beat entry animation, then — on review, before release —
+chose the original v5 behaviour: a **continuous** heartbeat.
+`--animate-module-beat` is a lub-dub of **1.8s per cycle, `infinite`**: scale
+1 → 1.25 → 1 → 1.12 → 1 with the glow growing 6px → 11px → 6px → 9px → 6px.
+**Opacity is never animated**, so the dot never fades or flashes. A permanent
+6px `brand-pulse` glow is on the dot itself and equals the rest frame, so the
+dot looks the same between beats, when paused and under reduced motion. Pure
+CSS: no timer, no frame loop, no re-render per beat.
+
+Because the motion lasts more than five seconds beside other content, WCAG
+2.2.2 (Pause, Stop, Hide) requires a pause mechanism. `BeatToggle` is a
+discreet muted 11px "Pause" / "Resume" text button with a small glyph, a 44px
+target and a visible `brand-accent` focus outline. Its `aria-label` names the
+action ("Pause heartbeat animation" / "Resume heartbeat animation") and
+contains the visible word (WCAG 2.5.3). Pausing removes the animation class, so
+the dot returns to its still, glowing rest state rather than freezing mid-beat.
+The pause state is a `useState` in a small `PulseHeading` component, kept out of
+`PulseWorkspace` so the subscription-owning workspace is unchanged. It is not
+persisted, so a new mount (including a project switch) starts beating again.
+Animation is applied only through `motion-safe:`. Under `prefers-reduced-motion:
+reduce` the dot is still with its glow, and the toggle is hidden
+(`motion-reduce:hidden`) because nothing moves. The tab-bar mark stays static.
+
+**Decision 6 — hidden pages, honestly branded.** `PageHeader` gains an optional
+`mark` slot (rendered exactly as before without one). `/pulse` (pointer) and
+`/shield` (placeholder) use it with a static tile and their full names; neither
+has a dot. SHIELD™'s copy drops "proprietary and patent-pending", describes
+**commercial audit and assurance** (not safety or HSEQ — confirmed by the Lead
+Architect for this copy), says "Not yet available", and keeps its **Coming
+Soon** badge. Both routes stay hidden from `lib/nav.js`.
+
+**Not changed.** `lib/pulse.js`, every financial selector, hook and
+subscription, Firestore/Storage Rules, schema, auth, App routes, `lib/nav.js`,
+the Dashboard, and dependencies. `Sidebar.jsx` still holds its unused
+PULSE/SHIELD accent branches and the infinite `pulse-dot` keyframe — never
+rendered because `nav.js` lists neither module — recorded, not removed.
+
+**Consequences.** Pinned by `tests/unit/moduleBranding.test.js` (36 tests); the ADR-47 tab
+pin in `pulse.test.js` now expects `mark: 'pulse'`. Manual acceptance TESTING.md
+§24. PRODUCT.md still records the SHIELD™ definition as an open product
+decision; that note belongs to the product owner and was not edited here.

@@ -14,7 +14,10 @@ is the `@theme` block in `frontend/src/index.css` — there is **no**
 - Google Fonts import (Sora 300–700, DM Sans 400/500); `--font-sans` makes Sora
   the default `font-sans`
 - Base styles: border-box reset, body background/colour/font, full-height
-  `#root`, and a `pulse-dot` keyframe used by the sidebar PULSE™/SHIELD™ dots
+  `#root`, and a `pulse-dot` keyframe referenced only by the sidebar's unused
+  PULSE™/SHIELD™ branches (neither module is in `lib/nav.js`)
+- `@theme` also defines the finite `--animate-module-beat` animation and its
+  `module-beat` keyframe (ADR-48) — see **Module Branding** below
 
 ## Design Tokens (complete)
 
@@ -34,9 +37,41 @@ is the `@theme` block in `frontend/src/index.css` — there is **no**
 | `brand-text` | `#E8F0F7` | Body copy |
 | `brand-text-soft` | `#94A9BE` | Secondary copy |
 | `brand-muted` | `#546E84` | Labels, metadata, disabled |
+| `brand-pulse` | `#FF6B9D` | Constrapp PULSE™ mark and indicator dot only — never a status (ADR-48) |
+| `brand-shield` | `#00D4FF` | Constrapp SHIELD™ mark only — never a status (ADR-48) |
 | `--font-sans` | Sora, DM Sans, system-ui | Default font stack |
 
-Do not add new colour values; map new needs onto these tokens.
+Do not add new colour values; map new needs onto these tokens. The two module
+brand tokens are the only exception, approved narrowly by ADR-48 to replace
+existing hard-coded module colours.
+
+## Module Branding (ADR-48)
+
+- **Names** come from `lib/moduleBranding.js` → `MODULE_NAMES`: *Constrapp
+  PULSE™*, *Constrapp SHIELD™*, *Constrapp Quant™*, *Constrapp IQ™*. Headers use
+  the full name; navigation uses a compact label ("PULSE", no ™).
+- **Marks** — `components/ModuleMark.jsx`: `ModuleMark` is a 24-unit, 2px,
+  round-capped `currentColor` line SVG (PULSE: heartbeat line; SHIELD: shield
+  outline), coloured by `text-brand-pulse` / `text-brand-shield`. Always
+  **decorative** — `aria-hidden="true"`, `focusable="false"`, no `<title>` —
+  and always beside the module name in text. No emoji. Quant™ and IQ™ have no
+  mark until their milestones.
+- **Tile** — `ModuleTile`: the v5 feature tile (36px, `rounded-[10px]`, token
+  fill at /10 and border at /20, 18px mark). Pass it to `PageHeader`'s optional
+  `mark` prop on a module page.
+- **Motion** — only the PULSE indicator dot moves (`<ModuleTile module="pulse"
+  beat paused={…} />`, the project PULSE tab heading). It uses
+  `motion-safe:animate-module-beat`, a gentle continuous lub-dub (1.8s,
+  `infinite`) that varies only scale (≤1.25) and glow (6–11px), never opacity.
+  The dot always carries a static 6px `brand-pulse` glow. A continuous beat
+  **must** sit beside a `BeatToggle` (WCAG 2.2.2): a muted 11px Pause / Resume
+  button with a 44px target, hidden under reduced motion. Never animate the
+  mark, never animate navigation, and never give an unbuilt module (SHIELD™,
+  Quant™, IQ™) a dot or any live-looking motion. Always gate motion with
+  `motion-safe:`.
+- **Tabs** — a project tab may carry `mark` in `lib/projectTabs.js`; the layout
+  renders a 14px static mark before the label and keeps the shared active
+  styling. Only PULSE has one.
 
 ## Shared Components (`frontend/src/components/`)
 
@@ -47,8 +82,9 @@ Do not add new colour values; map new needs onto these tokens.
 | `Badge` | Status chip — see below |
 | `Stat` | KPI tile (label, value, sub, icon, optional colour) — place inside a `Card` |
 | `ProgBar` | 1.5px-high track; `value` 0–100 clamped; `colour` = token name |
-| `PageHeader` | Title + optional sub + right-aligned actions |
+| `PageHeader` | Title + optional sub + optional leading `mark` (ADR-48) + right-aligned actions |
 | `ProtectedRoute` | Auth gate with spinner |
+| `ModuleMark` / `ModuleTile` | Decorative module line mark / v5 tile (+ optional PULSE dot) — see Module Branding |
 
 ### Status Badge usage
 
@@ -142,7 +178,8 @@ touching these files:
 - `components/ProgBar.jsx` — inline `style` for width (legitimately dynamic) and colour (via token CSS vars)
 - ~~`pages/Dashboard.jsx` — chart tooltip styled inline with raw hexes; Recharts fills/ticks hard-coded~~ **resolved** — the Dashboard charts were fabricated data and were removed entirely (Beta Launch Readiness), taking the inline hexes with them
 - `pages/Projects.jsx` — `DOT_COLORS` hex map
-- `layouts/Sidebar.jsx` / `layouts/TopBar.jsx` — inline `height: 56`, inline NavLink active styles; **off-token colours `#FF6B9D` (PULSE™) and `#00D4FF` (SHIELD™)** also used in `pages/Pulse.jsx` / `pages/Shield.jsx` — if these brand colours are permanent they should become tokens
+- `layouts/Sidebar.jsx` / `layouts/TopBar.jsx` — inline `height: 56`, inline NavLink active styles; `Sidebar.jsx` still hard-codes `#FF6B9D` / `#00D4FF` and an `infinite` `pulse-dot` animation in its **unused** PULSE™/SHIELD™ branches (never rendered — `lib/nav.js` lists neither). `pages/Pulse.jsx` / `pages/Shield.jsx` were migrated to the `brand-pulse` / `brand-shield` tokens by ADR-48
+- `layouts/ProjectDetailLayout.jsx` — project tabs are ≈34px tall (`px-3 py-2`), below the 44px touch-target rule; recorded, not redesigned by ADR-48
 - Logo SVG (`Sidebar.jsx`) — stroke `#00C9A7` hard-coded. (`AuthLayout.jsx` was migrated to `stroke="currentColor"` + `text-brand-accent` by the Login Redesign — copy that.)
 - `frontend/src/index 2.css` — stray tracked duplicate of an old stylesheet, unused
 

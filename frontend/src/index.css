@@ -17,7 +17,26 @@
   --color-brand-muted:     #546E84;
   --color-brand-text-soft: #94A9BE;
 
+  /* Module brand colours (ADR-48) — a module's mark and the PULSE indicator
+     dot only. Never a status colour: findings stay brand-red. */
+  --color-brand-pulse:     #FF6B9D;
+  --color-brand-shield:    #00D4FF;
+
   --font-sans: 'Sora', 'DM Sans', system-ui, sans-serif;
+
+  /* The PULSE header dot: a gentle, continuous lub-dub (ADR-48). Only scale
+     and glow vary — opacity is never animated, so the dot never fades out or
+     flashes. The rest frame equals the dot's static glow, so pausing or
+     reduced motion shows the same still, lit dot. Apply only through
+     `motion-safe:`, and only beside the pause control (WCAG 2.2.2). */
+  --animate-module-beat: module-beat 1.8s ease-in-out infinite;
+
+  @keyframes module-beat {
+    0%, 50%, 100% { transform: scale(1);    box-shadow: 0 0 6px  var(--color-brand-pulse); }
+    12%           { transform: scale(1.25); box-shadow: 0 0 11px var(--color-brand-pulse); }
+    24%           { transform: scale(1);    box-shadow: 0 0 6px  var(--color-brand-pulse); }
+    36%           { transform: scale(1.12); box-shadow: 0 0 9px  var(--color-brand-pulse); }
+  }
 }
 
 *, *::before, *::after { box-sizing: border-box; }

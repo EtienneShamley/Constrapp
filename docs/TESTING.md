@@ -393,6 +393,8 @@ cd frontend
 npm run test:unit
 ```
 
+- `frontend/tests/unit/moduleBranding.test.js` — **36 tests** over the
+  advanced module branding (ADR-48): see §24.
 - `frontend/tests/unit/dashboardV2.test.js` — **78 tests** over the Premium
   Dashboard v2 (ADR-45): see §22.
 - `frontend/tests/unit/projects.test.js` — **26 tests** over `lib/projects.js`
@@ -4758,3 +4760,54 @@ Manual — three checks only:
       counts reflow 2 → 5; key figures 2 → 4; evidence tables scroll inside
       their card; "Show all N" and every link are ≥44px tall; *No issue found*
       is collapsed until tapped.
+
+## 24. Advanced Module Branding (ADR-48)
+
+Automated: `tests/unit/moduleBranding.test.js` (36 tests) — the four exact full
+names (`MODULE_NAMES`); PULSE still the second of 15 tabs and the only one with
+a mark; no SHIELD / Quant / IQ tab, sidebar entry or route; `/pulse`, `/shield`
+and the project `pulse` route unchanged; the tab renders a static mark with the
+shared active styling, unchanged padding, still wrapping and with no animation;
+the project name stays the `<h1>` and the module heading an `<h2>`; pink and
+cyan exist only as `brand-pulse` / `brand-shield` tokens and no branded file
+carries a hex or inline style; pink is never a PULSE status colour; the SVG is
+`aria-hidden` + `focusable="false"` with no `<title>`, and the dot is
+`aria-hidden`; no emoji mark; the animation token is a continuous 1.8s
+heartbeat (the only `infinite` in `@theme`) that animates scale ≤1.25 and a
+6–11px token glow but never opacity, its rest frame equals the dot's permanent
+static glow, and it is applied once, only via `motion-safe:`, only while not
+paused, only to the dot, only on the project PULSE heading, beside its
+`BeatToggle`, with no React timer, frame loop or canvas; the toggle is a real
+`type="button"` with an action-naming `aria-label` that contains the visible
+word, a 44px target, a visible focus outline, a decorative glyph, and is
+hidden under reduced motion; the pause state lives in `PulseHeading`, not in
+the subscription-owning workspace; no
+LIVE / real-time / monitoring / patent / proprietary / AI / score claim; SHIELD
+keeps Coming Soon and describes commercial assurance, not safety; no hook,
+Firebase import or dependency added, and ProjectPulse still opens exactly
+eleven subscriptions. The ADR-47 tab pin in `pulse.test.js` now expects
+`mark: 'pulse'`. `npm run test:rules` is unchanged (no rules edit).
+
+Manual — three checks only:
+
+- [ ] **PULSE heading and dot.** Open a project's PULSE tab (financial role):
+      the heading reads *Constrapp PULSE™* / *Project health indicators* beside
+      a pink heartbeat-line tile; the small pink dot at the tile corner beats
+      gently and **continuously** (about one lub-dub every 1.8s), always softly
+      glowing and never vanishing or flashing; the heartbeat line itself never
+      moves. Every state count and indicator card is as before. Tab to the
+      muted **Pause** control and press Enter/Space: the dot stops, still lit,
+      and the control reads **Resume**; press again and the beat resumes.
+- [ ] **Reduced motion and assistive tech.** DevTools → Rendering → *Emulate
+      CSS prefers-reduced-motion: reduce*, reload the PULSE tab: the dot is
+      still but still glowing, and the Pause control is not shown. Then, with
+      reduced motion off and VoiceOver/NVDA running: the control is announced
+      "Pause heartbeat animation, button" (then "Resume heartbeat
+      animation"), the tab "PULSE, link" and the heading "Constrapp PULSE™,
+      heading level 2" — the mark and dot are not announced.
+- [ ] **Tabs and hidden pages at 375 / 768 / 1280px.** The tab bar wraps with
+      PULSE (mark + label) after Overview, nothing animates in it, the active
+      underline is teal like every other tab, and keyboard Tab/Enter reaches
+      and opens it. Typing `/shield` shows *Constrapp SHIELD™* with a static
+      cyan shield, "Commercial audit and assurance", **Coming Soon**, and no
+      animation; typing `/pulse` shows the static pointer page.

@@ -8,8 +8,9 @@ export const PROJECT_TABS = [
   { to: 'overview',         label: 'Overview' },
   // PULSE™ 1A (ADR-47): deterministic project health indicators over the
   // project's own records — read-only, financial roles. The hidden top-level
-  // /pulse route remains a pointer only.
-  { to: 'pulse',            label: 'PULSE' },
+  // /pulse route remains a pointer only. `mark` shows the static PULSE line
+  // mark beside the compact label (ADR-48) — no animation in the tab bar.
+  { to: 'pulse',            label: 'PULSE', mark: 'pulse' },
   { to: 'boq',              label: 'BOQ' },
   { to: 'tenders',          label: 'Tenders' },
   { to: 'budget',           label: 'Budget' },

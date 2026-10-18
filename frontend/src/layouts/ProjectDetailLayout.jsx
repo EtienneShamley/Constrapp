@@ -5,6 +5,7 @@ import { useProject } from '../hooks/useProject'
 import { useCompany } from '../hooks/useCompany'
 import { resolveProjectCurrency } from '../lib/currency'
 import { PROJECT_TABS } from '../lib/projectTabs'
+import { ModuleMark } from '../components/ModuleMark'
 
 export default function ProjectDetailLayout() {
   const { projectId } = useParams()
@@ -44,15 +45,16 @@ export default function ProjectDetailLayout() {
       </div>
 
       <nav className="flex flex-wrap gap-1 border-b border-brand-border mb-5">
-        {PROJECT_TABS.map(({ to, label }) => (
+        {PROJECT_TABS.map(({ to, label, mark }) => (
           <NavLink
             key={to}
             to={to}
             className={({ isActive }) =>
-              `px-3 py-2 text-[12.5px] font-semibold rounded-t-lg border-b-2 -mb-px transition-colors
+              `flex items-center gap-1.5 px-3 py-2 text-[12.5px] font-semibold rounded-t-lg border-b-2 -mb-px transition-colors
                ${isActive ? 'text-brand-accent border-brand-accent' : 'text-brand-muted border-transparent hover:text-brand-text'}`
             }
           >
+            {mark && <ModuleMark module={mark} />}
             {label}
           </NavLink>
         ))}

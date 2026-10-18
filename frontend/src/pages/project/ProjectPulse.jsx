@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import Card from '../../components/Card'
 import { useProfile } from '../../hooks/useProfile'
@@ -20,6 +20,8 @@ import {
   evaluatePulse, groupIndicators, PULSE_STATE, PULSE_STATE_ORDER, PULSE_STATE_LABELS,
 } from '../../lib/pulse'
 import IndicatorCard from './pulse/IndicatorCard'
+import { ModuleTile, BeatToggle } from '../../components/ModuleMark'
+import { MODULE_NAMES } from '../../lib/moduleBranding'
 
 // ── Constrapp PULSE™ · project health indicators (ADR-47) ────────────────────
 //
@@ -92,6 +94,30 @@ function Section({ title, intro, indicators, projectId, currencyCode }) {
   )
 }
 
+// The module heading (ADR-48). The project name stays the page's <h1>; this
+// stays an <h2>. Only the tile's dot animates — continuously — so its pause
+// control sits in the same header. A component of its own so that pause state
+// stays presentation-only and outside the workspace that owns the
+// subscriptions.
+function PulseHeading({ currencyCode }) {
+  const [beatPaused, setBeatPaused] = useState(false)
+  return (
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-center gap-3">
+        <ModuleTile module="pulse" beat paused={beatPaused} />
+        <div className="min-w-0">
+          <h2 className="m-0 text-[15px] font-bold text-brand-text">{MODULE_NAMES.pulse}</h2>
+          <p className="m-0 mt-0.5 text-[12px] text-brand-muted">Project health indicators</p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] font-semibold text-brand-muted">{currencyCode} · ex-GST unless stated</span>
+        <BeatToggle paused={beatPaused} onToggle={() => setBeatPaused(p => !p)} />
+      </div>
+    </div>
+  )
+}
+
 function PulseWorkspace({ projectId, currencyCode }) {
   const now = useLocalToday()
   const { budgetLines, budgetLinesLoading, budgetLinesError }                         = useBudgetLines(projectId)
@@ -144,10 +170,7 @@ function PulseWorkspace({ projectId, currencyCode }) {
   return (
     <div>
       <Card className="mb-3.5">
-        <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
-          <h2 className="m-0 text-[15px] font-bold text-brand-text">PULSE · project health indicators</h2>
-          <span className="text-[11px] font-semibold text-brand-muted">{currencyCode} · ex-GST unless stated</span>
-        </div>
+        <PulseHeading currencyCode={currencyCode} />
         <p className="m-0 mt-1.5 text-[12px] text-brand-text-soft">
           Six conditions checked against this project&apos;s current records — the same Forecast, Commercial, Supplier
           Payments, Variations and Timeline figures, read at this moment. No score, no prediction, no trend: an
