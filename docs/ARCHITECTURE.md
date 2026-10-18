@@ -192,7 +192,7 @@ ProjectsProvider), `useCostCodes()`, `useContacts()`, `useBudgetLines(projectId)
 `useClientInvoices(projectId)`,
 `useClientReceipts(projectId)`, `useSupplierPayments(projectId)`,
 `useVariations(projectId)`, `useForecastLines(projectId)`,
-`useProjectCommercial(projectId)`, `useProjectActivities(projectId)`.
+`useProjectCommercial(projectId)`, `useProjectActivities(projectId)`, `usePulseAcknowledgements(projectId)`.
 
 ## Routing Structure
 
@@ -208,7 +208,10 @@ ProtectedRoute (redirects to /login when signed out)
    │      (the `pulse` route renders PULSE™ 1A (ADR-47): six deterministic, read-only
    │       project health indicators from lib/pulse.js — financial roles only; the
    │       workspace mounts the ten Dashboard-snapshot hooks plus useProjectActivities
-   │       for THIS project; no write, no rules change, no score)
+   │       for THIS project; no score. Since PULSE™ 1B (ADR-49) it also mounts
+   │       usePulseAcknowledgements — NOT a PULSE source — and derives a needs-attention /
+   │       acknowledged status beside each finding from lib/pulseAttention.js; the only
+   │       PULSE writes are the two revision-guarded acknowledge / withdraw transactions)
    │      (the `forecasting` route renders the Forecast Cost to Complete page; the tab is labelled "Forecast".
    │       the `invoices` route renders SUPPLIER invoices (AP); the tab is labelled "Supplier Invoices".
    │       the `commercial` route is a nested layout — index = Project Margin,
@@ -285,7 +288,7 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Contacts | Implemented (foundation) — company-wide directory; supplier picker on POs |
 | Subcontractors | Implemented — filtered contacts view (the IQ™ "Coming Soon" card was removed for private beta) |
 | Documents & Drawings | Implemented (foundation) — drawing masters + **immutable** revisions with a transactional current-revision pointer, revision history, current/superseded/withdrawn lifecycle, explicit succession on withdrawal, and a flat general-document register with project/internal visibility. Bytes in Cloud Storage, metadata in Firestore, **uploads Storage-first**; **no photos, DWG, markup, OCR, AI or takeoff** |
-| Constrapp PULSE™ | **Implemented (1A, ADR-47)** — a project tab of six deterministic, explainable indicators (forecast over budget · cost codes not forecast · negative forecast gross profit · overdue programme activities · past-due supplier invoices · pending variation exposure), each in one of five states (loading / unavailable / needs data / finding / no issue), composed in `lib/pulse.js` from `projectForecastRows` / `computeMargin` / `payablesSummary` / `isOverdue` through the ADR-42 `figureState` vocabulary; evidence rows and tab-level links; **no score, threshold, trend, prediction, write, new listener type, rules change or Dashboard surface**. The top-level `/pulse` route is a hidden pointer to the tab |
+| Constrapp PULSE™ | **Implemented (1A, ADR-47)** — a project tab of six deterministic, explainable indicators (forecast over budget · cost codes not forecast · negative forecast gross profit · overdue programme activities · past-due supplier invoices · pending variation exposure), each in one of five states (loading / unavailable / needs data / finding / no issue), composed in `lib/pulse.js` from `projectForecastRows` / `computeMargin` / `payablesSummary` / `isOverdue` through the ADR-42 `figureState` vocabulary; evidence rows and tab-level links; **no score, threshold, trend, prediction or Dashboard surface**. **PULSE™ 1B (ADR-49)** adds the one PULSE write path: an acknowledgement per indicator (`…/pulseAcknowledgements/{indicatorId}`, new rules block) with a note and a required review-by date, withdrawable, derived *needs attention / acknowledged / no longer present / unknown* status beside each finding (`lib/pulseAttention.js`) — never a resolution, never a change to an indicator. The top-level `/pulse` route is a hidden pointer to the tab |
 | SHIELD™ | Placeholder screen — route and page live, **hidden from the sidebar** for private beta (`lib/nav.js`) |
 | BOQ (Bill of Quantities) | Implemented (foundation) — measured items with optional rates, rules-enforced derived amounts, read-time budget comparison; **feeds no financial figure**; Estimating and BOQ → Budget transfer are later branches |
 | Project Timeline (programme) | Implemented (foundation) — activities + milestones, date-only planned/actual dates, manual progress, read-time overdue/horizon derivation, Due filter (overdue / due within 14 days), guarded quick status actions and a midnight-advancing clock (ADR-46), read-only CSS/SVG Gantt (no new dependency), cancel-not-delete; **`qs` is read-only**, subcontractor/client denied; **no baseline, no dependencies, no financial effect** |

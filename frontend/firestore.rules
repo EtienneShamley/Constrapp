@@ -3836,6 +3836,168 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // PULSE™ acknowledgements — ONE document per PULSE indicator, keyed by the
+    // DETERMINISTIC indicator id (six permitted ids, so at most six documents
+    // per project). A MANAGEMENT record (ADR-49): a manager's note that a
+    // finding has been seen and what is being done, with a REQUIRED review-by
+    // date and the ids of the records the finding rested on when acknowledged.
+    //
+    // ⚠️ AN ACKNOWLEDGEMENT IS NOT A RESOLUTION, NOT A FINANCIAL APPROVAL AND
+    // NOT AUDIT CERTIFICATION. It holds no amount and no currency, writes
+    // nothing onto any other document, and changes no PULSE indicator state,
+    // count or figure — the page derives a separate "attention" status from it
+    // at read time (lib/pulseAttention.js). Resolution happens only when the
+    // underlying condition disappears from the records.
+    //
+    // Reads: the PULSE audience (financial roles — the note is commercial
+    // context). Writes: company_admin and project_manager ONLY — qs is
+    // READ-ONLY, as on the programme (activities). subcontractor / client /
+    // super_admin: nothing (not project-scoped roles — Deferred Control 5/10).
+    // Delete: blocked — withdrawing is a status change.
+    //
+    // Lifecycle (RULES-ENFORCED):
+    //   · create only as `active`, revision 1, null withdraw stamps,
+    //     acknowledgedBy == caller, acknowledgedAt == request.time
+    //   · RE-ACKNOWLEDGE (active or withdrawn → active): a fresh statement —
+    //     note / reviewBy / evidenceKeys replaced, acknowledgedBy == caller,
+    //     acknowledgedAt == request.time, withdraw stamps cleared
+    //   · WITHDRAW (active → withdrawn): touches only status / withdrawnAt /
+    //     withdrawnBy / revision / updatedAt / updatedBy, withdrawnBy == caller,
+    //     withdrawnAt == request.time; the acknowledged content is retained
+    //   · withdrawn → withdrawn is rejected; createdAt / createdBy / indicatorId
+    //     never change
+    //
+    // ⚠️ `revision` INCREMENTS here — unlike every other block, where it is
+    // pinned at 1. Every update must carry exactly resource.revision + 1: a
+    // blind overwrite that does not know the current revision is REJECTED,
+    // which is what lets the app's transaction refuse to overwrite another
+    // manager's acknowledgement unseen. This is rules-ASSISTED concurrency,
+    // not rules-PROVEN: a direct client can still read and write +1 itself.
+    //
+    // ⚠️ What is NOT enforced here (client-side only — NEVER describe as
+    // enforced; docs/SECURITY.md → Deferred Control 31):
+    //   · that a PULSE finding actually EXISTED for this indicator when it was
+    //     acknowledged — rules cannot evaluate the indicators
+    //   · that `evidenceKeys` are TRUTHFUL record ids (rules can bound the
+    //     list's size, not inspect its elements or check them against records)
+    //   · that `reviewBy` is not already in the past, or is a real calendar day
+    //   · the roles are not project-scoped (Deferred Control 20)
+    match /companies/{companyId}/projects/{projectId}/pulseAcknowledgements/{indicatorId} {
+      function memberRole() {
+        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+      }
+      function sameCompany() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
+      }
+      // Read audience — the PULSE tab's roles, includes qs.
+      function pulseReader() {
+        return sameCompany() && memberRole() in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Write audience — deliberately EXCLUDES qs.
+      function pulseWriter() {
+        return sameCompany() && memberRole() in ['company_admin', 'project_manager'];
+      }
+      // Keys this update changes.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // The document identity that no update of any kind may rewrite.
+      function corePreserved() {
+        return request.resource.data.indicatorId == resource.data.indicatorId
+            && request.resource.data.createdAt   == resource.data.createdAt
+            && request.resource.data.createdBy   == resource.data.createdBy;
+      }
+      // Every write path stamps the caller and the server time.
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // Every update carries exactly the next revision.
+      function nextRevision() {
+        return request.resource.data.revision is int
+            && request.resource.data.revision == resource.data.revision + 1;
+      }
+      // EXACT shape — hasOnly + hasAll together mean no field may be added,
+      // renamed, or omitted (the ADR-27 lesson).
+      function exactKeys() {
+        return request.resource.data.keys().hasOnly([
+                 'indicatorId', 'status', 'evidenceKeys', 'note', 'reviewBy',
+                 'acknowledgedAt', 'acknowledgedBy', 'withdrawnAt', 'withdrawnBy',
+                 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+               ])
+            && request.resource.data.keys().hasAll([
+                 'indicatorId', 'status', 'evidenceKeys', 'note', 'reviewBy',
+                 'acknowledgedAt', 'acknowledgedBy', 'withdrawnAt', 'withdrawnBy',
+                 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+               ]);
+      }
+      function isIsoDate(v) {
+        return v is string
+            && v.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$');
+      }
+      // The six PULSE 1A indicator ids (lib/pulse.js → INDICATOR) — the
+      // document id AND the stored field, which must agree.
+      function indicatorValid() {
+        return indicatorId in [
+                 'forecastOverBudget', 'forecastIncomplete', 'negativeGrossProfit',
+                 'overdueActivities', 'pastDueSupplierInvoices', 'pendingVariationExposure'
+               ]
+            && request.resource.data.indicatorId == indicatorId;
+      }
+      // The content of an ACTIVE acknowledgement — required at create and at
+      // every re-acknowledgement. Element types and truthfulness of
+      // evidenceKeys are NOT checkable here.
+      function activeShape() {
+        return exactKeys()
+            && indicatorValid()
+            && request.resource.data.status == 'active'
+            && request.resource.data.evidenceKeys is list
+            && request.resource.data.evidenceKeys.size() <= 200
+            && request.resource.data.note is string
+            && request.resource.data.note.trim().size() > 0
+            && request.resource.data.note.size() <= 500
+            && isIsoDate(request.resource.data.reviewBy)
+            && request.resource.data.acknowledgedBy == request.auth.uid
+            && request.resource.data.acknowledgedAt == request.time
+            && request.resource.data.withdrawnAt == null
+            && request.resource.data.withdrawnBy == null;
+      }
+
+      allow read: if pulseReader();
+
+      allow create: if pulseWriter()
+                  && activeShape()
+                  && request.resource.data.revision == 1
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped();
+
+      allow update: if pulseWriter() && corePreserved() && updateStamped() && nextRevision() && (
+                    // (a) RE-ACKNOWLEDGE — from active OR withdrawn. A fresh
+                    //     statement with fresh stamps; the previous one is
+                    //     replaced (no history is kept — ADR-49).
+                    (
+                      activeShape()
+                    )
+                    ||
+                    // (b) WITHDRAW — active → withdrawn. Stamps and status
+                    //     only, so the acknowledged content stays as the
+                    //     record of what was acknowledged and no edit can ride
+                    //     along. withdrawn → withdrawn is excluded.
+                    (
+                      resource.data.status == 'active'
+                      && request.resource.data.status == 'withdrawn'
+                      && changedKeys().hasOnly(['status', 'withdrawnAt', 'withdrawnBy', 'revision', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.withdrawnBy == request.auth.uid
+                      && request.resource.data.withdrawnAt == request.time
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
     // Project counters — PER-PROJECT sequential numbering. Today the only
     // document here is `rfis` ({ next }): every project numbers its RFIs from
     // RFI-0001 independently, the construction convention. Every FINANCIAL

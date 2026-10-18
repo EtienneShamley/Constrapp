@@ -12,7 +12,7 @@ Constrapp is **the connected commercial operating system for construction projec
 - **New commercial modules integrate with the existing lifecycle** (Drawing → Quantity → BOQ → Estimate → Tender → Award → Approved Budget → Commitment → PO → Variation → Progress Claim → Supplier Invoice → Actual Cost → Forecast → Cash Flow → Final Project Margin → Final Account) rather than operate as standalone tools.
 - **Field features must state their commercial input or output** (e.g. drawing measurement → BOQ quantity, site photo → progress/claim evidence, delay → forecast impact). A field feature with no commercial linkage is out of scope.
 - **Do not build generic form-first or HSEQ-first functionality** (no-code form builders, HSEQ template libraries, generic field reporting, payroll/workforce, fleet/equipment, or broad enterprise integrations before product-market fit) **without an approved strategy change.** See [PRODUCT.md](PRODUCT.md) → "What Constrapp Is Not".
-- **SHIELD™, IQ™, and Quant™ remain placeholders** until their planned sprint (see [ROADMAP.md](ROADMAP.md) and the AI Feature Placeholder Rule below). **PULSE™ 1A is live as a deterministic, read-only project tab (ADR-47)** — six explainable indicators composed from existing selectors. Everything PULSE™ does not yet do (scores, severity, trends, prediction, portfolio health, acknowledgement, notifications, any AI) stays under the placeholder rule.
+- **SHIELD™, IQ™, and Quant™ remain placeholders** until their planned sprint (see [ROADMAP.md](ROADMAP.md) and the AI Feature Placeholder Rule below). **PULSE™ 1A is live as a deterministic, read-only project tab (ADR-47)** — six explainable indicators composed from existing selectors — and **PULSE™ 1B (ADR-49) — implemented on `feature/pulse-acknowledgement`, NOT yet merged or deployed; its rules block is unpublished — adds a human acknowledgement workflow** on top of them (acknowledge a finding with a note and a required review-by date; withdraw; derived *needs attention / acknowledged* status — never a resolution). Everything PULSE™ does not yet do (scores, severity, trends, prediction, portfolio health, assignment, notifications, background monitoring, any AI) stays under the placeholder rule.
 
 ## Engineering & Security Standards (mandatory)
 
@@ -84,6 +84,9 @@ frontend/
                     useForecastLines, useProjectCommercial, useCashFlowLines,
                     useProjectActivities (project programme — NON-financial;
                     quickUpdateActivity = the one guarded write, ADR-46),
+                    usePulseAcknowledgements (PULSE™ 1B — one document per
+                    indicator; revision-guarded acknowledge/withdraw
+                    transactions; NOT a PULSE source, ADR-49),
                     useLocalToday (viewer's calendar day, advanced at local
                     midnight — a timer, NOT a subscription),
                     useStorageUpload (the ONLY place file bytes are written),
@@ -103,7 +106,12 @@ frontend/
                     projectForecastRows / computeMargin / payablesSummary /
                     isOverdue through figureState; comparisons with zero,
                     counts and filters ONLY — no arithmetic, score, threshold,
-                    trend or prediction; ADR-47), cashFlow.js (pure monthly cash
+                    trend or prediction; ADR-47), pulseAttention.js (PULSE™ 1B —
+                    stable evidence keys + derived needs-attention / acknowledged
+                    status BESIDE the evaluation; never changes an indicator;
+                    ADR-49), pulseAcknowledgementActions.js (the two
+                    revision-guarded transactions, SDK injected),
+                    cashFlow.js (pure monthly cash
                     aggregation + forecast layers), contacts.js, boq.js (pure
                     BOQ arithmetic + read-time budget comparison),
                     projectTimeline.js (programme domain logic — no financial
@@ -296,6 +304,16 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
                                              NO transaction, NO currency ratchet; reads company_admin/
                                              project_manager/qs, writes company_admin/project_manager ONLY
                                              (QS READ-ONLY); WRITES NO FINANCIAL VALUE ANYWHERE
+  …/pulseAcknowledgements/{indicatorId}      PULSE™ 1B MANAGEMENT RECORD (ADR-49): one doc per indicator, id ∈ the
+                                             six INDICATOR ids (rules allowlist; stored indicatorId must match),
+                                             status active|withdrawn, evidenceKeys (list of stable record ids,
+                                             ≤ 200), note (non-blank ≤ 500), reviewBy ('YYYY-MM-DD', REQUIRED),
+                                             acknowledgedAt/By, withdrawnAt/By, revision (INCREMENTS — every
+                                             update must be exactly +1), createdAt/By, updatedAt/By — EXACT KEYS;
+                                             NO amount, NO currency, NO name snapshot, NO history; an
+                                             acknowledgement is NOT a resolution and changes NO indicator state,
+                                             count or figure; reads company_admin/project_manager/qs, writes
+                                             company_admin/project_manager ONLY (QS READ-ONLY); delete blocked
   …/counters/rfis                            { next } — the ONLY PROJECT-SCOPED counter: every project numbers
                                              its RFIs from RFI-0001 independently (financial counters stay
                                              company-wide); same financial-role audience; delete blocked
@@ -412,7 +430,7 @@ PULSE™, IQ™, Quant™, and SHIELD™ are reserved proprietary features.
 - If a screen references one, render a placeholder card: feature name, one-line description, "Coming Soon" badge — no data, calculations, or API calls behind it
 - **Placeholder cards live only on the module's own route**, which stays hidden from navigation until the feature ships (Beta Launch Readiness). **Never** add a Coming Soon card, reserved empty slot or mock widget for these features to the Dashboard or any navigation surface (ADR-45) — they join the Dashboard only with real data
 - Never import an AI/ML library (TensorFlow, OpenAI SDK, LangChain, etc.) without explicit instruction
-- **PULSE™ 1A exception (ADR-47), scoped exactly:** the project PULSE tab (`lib/pulse.js`, `pages/project/ProjectPulse.jsx`) may evaluate the six approved indicators — forecast over budget, cost codes not forecast, negative forecast gross profit, overdue programme activities, past-due supplier invoices, pending variation exposure — **only** by composing existing selectors and comparing with zero at cent resolution. Every indicator must resolve to loading / unavailable / needs data / finding / no issue, and a loading, failed or missing source can never yield "no issue". **Still prohibited for PULSE™:** any score, weighting, severity or risk threshold, trend or history, prediction, portfolio or cross-currency aggregation, acknowledgement/dismissal, notifications, automated commercial actions, Dashboard widgets, and any AI/ML. The top-level `/pulse` route stays hidden from the sidebar and is a pointer to the project tab, not a surface
+- **PULSE™ 1A exception (ADR-47), scoped exactly:** the project PULSE tab (`lib/pulse.js`, `pages/project/ProjectPulse.jsx`) may evaluate the six approved indicators — forecast over budget, cost codes not forecast, negative forecast gross profit, overdue programme activities, past-due supplier invoices, pending variation exposure — **only** by composing existing selectors and comparing with zero at cent resolution. Every indicator must resolve to loading / unavailable / needs data / finding / no issue, and a loading, failed or missing source can never yield "no issue". **PULSE™ 1B exception (ADR-49), scoped exactly:** the same tab may hold ONE acknowledgement document per indicator (`…/pulseAcknowledgements/{indicatorId}`, `hooks/usePulseAcknowledgements.jsx`, `lib/pulseAttention.js`) — a human note plus a required review-by date, withdrawable, company_admin/project_manager only — and may derive a *needs attention / acknowledged / no longer present / unknown* management status **beside** each finding. An acknowledgement never changes an indicator's state, a count or a figure, is never a resolution, and is never a dismissal (a finding stays visible). **Still prohibited for PULSE™:** any score, weighting, severity or risk threshold, trend or history, prediction, portfolio or cross-currency aggregation, dismissal/hiding of findings, assignment to users, notifications or reminders, background monitoring or scheduled jobs, automated commercial actions, Dashboard widgets, and any AI/ML. The top-level `/pulse` route stays hidden from the sidebar and is a pointer to the project tab, not a surface
 
 ## Git Workflow
 

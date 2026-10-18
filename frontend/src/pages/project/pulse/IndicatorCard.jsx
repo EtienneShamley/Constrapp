@@ -5,6 +5,7 @@ import Badge from '../../../components/Badge'
 import { formatCurrency, percent } from '../../../lib/formatters'
 import { formatIsoDate } from '../../../lib/projectTimeline'
 import { PULSE_STATE, PULSE_SOURCE_LABELS, COLUMN, INDICATOR } from '../../../lib/pulse'
+import AcknowledgementPanel from './AcknowledgementPanel'
 
 // ── PULSE · one indicator card (ADR-47) ──────────────────────────────────────
 //
@@ -13,6 +14,10 @@ import { PULSE_STATE, PULSE_SOURCE_LABELS, COLUMN, INDICATOR } from '../../../li
 // through unchanged. This file formats; it never compares, sums or decides.
 // Money is formatted with the project's resolved currency, dates with the
 // Timeline's date-only formatter, and a loading figure is "—".
+//
+// Since ADR-49 the card ends with the acknowledgement panel — a separate,
+// derived MANAGEMENT status beneath the finding. It never changes the state
+// badge, the headline, the figures or the evidence above it.
 
 const STATE_BADGE = {
   [PULSE_STATE.FINDING]:     { label: 'Finding',        variant: 'danger' },
@@ -165,7 +170,10 @@ function Evidence({ indicator, currencyCode }) {
   )
 }
 
-export default function IndicatorCard({ indicator, projectId, currencyCode }) {
+export default function IndicatorCard({
+  indicator, projectId, currencyCode,
+  attention = null, canManage = false, currentUid = null, now, onAcknowledge, onWithdraw,
+}) {
   const badge = STATE_BADGE[indicator.state] ?? STATE_BADGE[PULSE_STATE.LOADING]
   const unavailable = indicator.state === PULSE_STATE.UNAVAILABLE
   const loading = indicator.state === PULSE_STATE.LOADING
@@ -220,6 +228,15 @@ export default function IndicatorCard({ indicator, projectId, currencyCode }) {
               ))}
             </ul>
           )}
+          <AcknowledgementPanel
+            indicator={indicator}
+            attention={attention}
+            canManage={canManage}
+            currentUid={currentUid}
+            now={now}
+            onAcknowledge={onAcknowledge}
+            onWithdraw={onWithdraw}
+          />
         </>
       )}
     </Card>

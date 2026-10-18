@@ -959,15 +959,29 @@ describe('ProjectPulse page — role gate, subscriptions, isolation', () => {
     expect(FINANCIAL_ROLES).not.toContain('client')
   })
 
-  it('the workspace mounts exactly the eleven PULSE sources, each for the given project, and no other subscription', () => {
+  // ADR-49 revised this pin EXPLICITLY: the eleven PULSE sources plus ONE
+  // acknowledgement subscription (usePulseAcknowledgements), which is NOT a
+  // source — see "acknowledgements are not a PULSE source" below.
+  it('the workspace mounts exactly the eleven PULSE sources plus the acknowledgement subscription, each for the given project, and no other subscription', () => {
     const hooks = [...workspace.matchAll(/\buse([A-Z]\w+)\(([^)]*)\)/g)].map(m => [m[1], m[2]])
     const subs = hooks.filter(([n]) => !['Memo', 'LocalToday'].includes(n))
     expect(subs.map(([n]) => n).sort()).toEqual([
-      'BudgetLines', 'ForecastLines', 'ProgressClaims', 'ProjectActivities', 'ProjectCommercial', 'PurchaseOrders',
-      'RetentionReleases', 'SupplierCreditNotes', 'SupplierInvoices', 'SupplierPayments', 'Variations',
+      'BudgetLines', 'ForecastLines', 'ProgressClaims', 'ProjectActivities', 'ProjectCommercial', 'PulseAcknowledgements',
+      'PurchaseOrders', 'RetentionReleases', 'SupplierCreditNotes', 'SupplierInvoices', 'SupplierPayments', 'Variations',
     ])
     for (const [, arg] of subs) expect(arg).toBe('projectId')
-    expect(workspace).not.toMatch(/useCostCodes|useContacts|useProjects\(/)
+    expect(workspace).not.toMatch(/useCostCodes|useContacts|useProjects\(|useAuth\(|useProfile\(/)
+  })
+
+  it('acknowledgements are not a PULSE source: never passed to evaluatePulse, never in sourceStates or the dependency map', () => {
+    const evalCall = workspace.slice(workspace.indexOf('evaluatePulse({'), workspace.indexOf('}), ['))
+    expect(evalCall).not.toContain('pulseAcknowledgements')
+    expect(evalCall).not.toContain('Acknowledgements')
+    expect(PULSE_SOURCES).not.toContain('pulseAcknowledgements')
+    for (const deps of Object.values(INDICATOR_DEPENDENCIES)) expect(deps).not.toContain('pulseAcknowledgements')
+    // The acknowledgement hook is mounted INSIDE the gated workspace only.
+    expect(wrapper).not.toContain('usePulseAcknowledgements(')
+    expect(workspace).toContain('usePulseAcknowledgements(projectId)')
   })
 
   it('every source state is passed in the snapshot shape, including activities', () => {
@@ -981,11 +995,19 @@ describe('ProjectPulse page — role gate, subscriptions, isolation', () => {
     expect(workspace).toMatch(/\bnow,\s*\n\s*currencyCode,/)
   })
 
-  it('consumes no write callback and imports no Firebase', () => {
-    for (const f of [code, cardCode]) {
+  // ADR-49 revised this pin EXPLICITLY. PULSE 1A consumed NO write callback;
+  // PULSE 1B consumes exactly two — acknowledgeFinding and
+  // withdrawAcknowledgement from usePulseAcknowledgements — and still no
+  // financial write callback and no Firebase import on any PULSE page file.
+  it('consumes exactly the two acknowledgement write callbacks, no financial write callback, and imports no Firebase', () => {
+    const panelCode = stripComments(read('pages/project/pulse/AcknowledgementPanel.jsx'))
+    for (const f of [code, cardCode, panelCode]) {
       expect(f).not.toMatch(/from 'firebase/)
-      expect(f).not.toMatch(/\b(create|update|upsert|cancel|post|void|approve|submit)[A-Z]\w*\b/)
+      expect(f).not.toMatch(/\b(create|update|upsert|cancel|post|void|approve|submit|issue|award)[A-Z]\w*\b/)
     }
+    const writes = [...workspace.matchAll(/\b(acknowledge|withdraw)[A-Z]\w*\b/g)].map(m => m[0])
+    expect(new Set(writes)).toEqual(new Set(['acknowledgeFinding', 'withdrawAcknowledgement']))
+    expect(workspace).toMatch(/acknowledgeFinding, withdrawAcknowledgement,\s*\} = usePulseAcknowledgements\(projectId\)/)
   })
 
   it('currency comes from the outlet context (the project\'s resolved currency) — nothing hard-coded', () => {
@@ -1039,7 +1061,10 @@ describe('ProjectPulse page — role gate, subscriptions, isolation', () => {
 // ── 13 · Design system and responsive structure ──────────────────────────────
 
 describe('ProjectPulse — design system and responsive structure', () => {
-  const files = ['pages/project/ProjectPulse.jsx', 'pages/project/pulse/IndicatorCard.jsx']
+  const files = [
+    'pages/project/ProjectPulse.jsx', 'pages/project/pulse/IndicatorCard.jsx',
+    'pages/project/pulse/AcknowledgementPanel.jsx', // ADR-49
+  ]
 
   it('Tailwind tokens only: no inline style object, no hex colour', () => {
     for (const f of files) {
