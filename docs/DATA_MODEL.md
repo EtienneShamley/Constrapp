@@ -29,6 +29,7 @@ companies/{companyId}
     forecastLines/{costCodeId}           (deterministic id = costCodeId)
     cashFlowLines/{lineId}               (authored Cash Flow timing inputs)
     activities/{activityId}              (project programme — NON-FINANCIAL)
+    pulseAcknowledgements/{indicatorId}  (PULSE™ 1B management record — deterministic id = indicator id; NON-FINANCIAL)
     counters/rfis                        (PER-PROJECT RFI numbering — the only project-scoped counter)
     rfis/{rfiId}                         (Requests for Information — NON-FINANCIAL evidence record)
     retentionReleases/{releaseId}        (authored retention-release authorisations)
@@ -1144,6 +1145,47 @@ coordinate are derived at read time (`lib/projectTimeline.js`,
 `lib/timelineGantt.js`) and never written back. **Deletion is blocked** — cancel
 via status. **No migration**: a project with no `activities` loads normally with
 an empty programme.
+
+## …/projects/{projectId}/pulseAcknowledgements/{indicatorId}
+
+**A PULSE™ management record (ADR-49)** — a manager's statement that a PULSE
+finding has been seen, what is being done about it, and when it must be looked
+at again. **Non-financial:** no amount, no currency, no counter, no currency
+ratchet, and it writes nothing onto any other document. The document id is the
+**indicator id** (`lib/pulse.js → INDICATOR`), so a project holds **at most six**
+of these. Access matrix (`qs` read-only, like `activities`): [SECURITY.md](SECURITY.md).
+
+⚠️ **An acknowledgement is NOT a resolution, a financial approval or an audit
+certification.** It changes no indicator state, no state count and no figure;
+the page derives a separate *attention* status from it at read time
+(`lib/pulseAttention.js`). Resolution occurs only when the underlying condition
+disappears from the records; **no `resolvedAt` exists or is invented.**
+
+| Field | Type | Notes |
+|---|---|---|
+| `indicatorId` | string | **Must equal the document id** and be one of `forecastOverBudget` \| `forecastIncomplete` \| `negativeGrossProfit` \| `overdueActivities` \| `pastDueSupplierInvoices` \| `pendingVariationExposure` (rules allowlist) |
+| `status` | string | `active` \| `withdrawn` — create as `active`; `active → withdrawn` (withdraw) and `active`/`withdrawn → active` (re-acknowledge) are the only transitions; `withdrawn → withdrawn` rejected (all rules-enforced) |
+| `evidenceKeys` | string[] | The **sorted, de-duplicated stable record ids** the finding rested on when acknowledged: cost-code ids (over budget — incl. the unbudgeted rows listed beside it — and incomplete forecast), activity / supplier-invoice / variation document ids; **empty for negative gross profit** (project-level). **`size() <= 200` rules-enforced**; a finding with more records cannot be acknowledged (never truncated). ⚠️ Element type and truthfulness are **not** rules-checkable (DC31) |
+| `note` | string | **Required non-whitespace, ≤ 500** (rules-enforced) |
+| `reviewBy` | string | `'YYYY-MM-DD'` **required** (shape rules-enforced). The app requires it to be **after today**; that, and calendar validity, are client-only (DC31). The finding returns to *Needs attention* when this day arrives |
+| `acknowledgedAt` / `acknowledgedBy` | timestamp / uid | Refreshed on every (re-)acknowledgement; rules require `acknowledgedBy == request.auth.uid` and `acknowledgedAt == request.time` |
+| `withdrawnAt` / `withdrawnBy` | timestamp / uid \| null | `null` while active; set by the withdraw transition (`== request.auth.uid` / `== request.time`); cleared again by a re-acknowledgement |
+| `revision` | number | **Increments** — `1` on create, and every update must carry **exactly `resource.revision + 1`** (rules-enforced). The app's transactions compare it with the version the user saw and refuse a stale write |
+| `createdAt` / `createdBy` | timestamp / uid | Set once; rules reject any later change |
+| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on every write |
+
+**Deliberately NOT stored:** any name snapshot (`acknowledgedByName` — the page
+shows **You / Another user**, ADR-27), any history or event log (re-acknowledging
+**replaces** the statement in place; withdrawing keeps the acknowledged content),
+`resolvedAt`, any amount or financial snapshot of the evidence (amounts can
+change without ids changing — the card says so and shows the current figures),
+severity/priority, assignee, and `companyId`/`projectId` (the path carries them).
+Delete is blocked. **No migration:** a project with no documents simply has no
+acknowledgements, and every finding reads *Needs attention*.
+
+**Stored vs derived.** Only the fields above are authored. Current evidence
+keys, *new since acknowledged*, *no longer present*, review-due, and the
+attention state are derived on every read and never written back.
 
 ## …/projects/{projectId}/counters/{counterId}
 

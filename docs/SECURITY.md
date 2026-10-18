@@ -83,6 +83,7 @@ to financial roles.**
 | `…/projects/{id}/cashFlowLines/{id}` | **financial roles only** | financial roles, **create active-only; transitions and post-void immutability rules-enforced** | blocked — void via status |
 | `…/projects/{id}/commercial/baseline` | **financial roles only** | financial roles | blocked — the single baseline doc is never deleted |
 | `…/projects/{id}/activities/{id}` | **`company_admin`, `project_manager`, `qs`** | **`company_admin`, `project_manager` ONLY — `qs` is READ-ONLY**; shape, closed status set, date/milestone/percentage invariants, cancellation branch and cancelled-terminality rules-enforced | blocked — cancel via status |
+| `…/projects/{id}/pulseAcknowledgements/{indicatorId}` | **`company_admin`, `project_manager`, `qs`** | **`company_admin`, `project_manager` ONLY — `qs` is READ-ONLY**; six-indicator id allowlist (id == stored `indicatorId`), exact keys, create active/revision 1, re-acknowledge and withdraw transitions, actor == caller, server stamps, non-blank `note` ≤ 500, `reviewBy` shape, `evidenceKeys` list ≤ 200, immutable `createdAt/By`, **`revision` must be exactly +1 on every update** — all rules-enforced (ADR-49) | blocked — withdraw via status |
 | `…/projects/{id}/drawings/{id}` | **any company member** — including `subcontractor` and `client` | **`company_admin`, `project_manager` only — QS excluded**; born-empty create, four `hasOnly` update shapes, +1 revision count, non-whitespace withdraw reason | blocked — withdraw via status |
 | `…/projects/{id}/drawings/{id}/revisions/{id}` | **any company member** | same drawing writers; **file and authored identity immutable**, exact `storagePath` required, legal transitions only | blocked — a revision is never deleted |
 | `…/projects/{id}/documents/{id}` | `internal` → financial roles; `project` → **any company member** | financial roles; **file identity immutable**, three `hasOnly` update shapes, non-whitespace withdraw reason | blocked — withdraw via status |
@@ -1476,6 +1477,36 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     only — which is a deliberate financial-model decision, not a hardening one,
     and is **out of scope for ADR-40**.
 
+31. **PULSE™ acknowledgements — what a management record cannot prove (ADR-49).**
+    The `pulseAcknowledgements` block enforces tenant, role (`qs` read-only),
+    the six-indicator allowlist, exact keys, transitions, actors, server stamps,
+    note/date/list shape, immutable creation stamps, `revision + 1` and no
+    delete. It **cannot** enforce, and the app checks only client-side:
+    - that a PULSE **finding actually existed** for the indicator when it was
+      acknowledged — rules cannot evaluate `lib/pulse.js`; a direct client can
+      acknowledge a condition that is not present;
+    - that `evidenceKeys` are **truthful record ids**, or strings at all —
+      rules bound the list's size (≤ 200) but cannot inspect its elements or
+      check them against other documents;
+    - that `reviewBy` is a **real calendar day** (`2026-02-30` passes the
+      shape) or **not already in the past** (the app requires strictly after
+      today; rules cannot compare a date string with `request.time`);
+    - **true concurrency safety** — the `+1` revision rule rejects a *blind*
+      overwrite, but a client that reads the document and writes `revision +
+      1` itself passes; the app's transaction refuses a stale write, the
+      rules merely assist it;
+    - project scoping of the writer roles (item 20) — any company PM can
+      acknowledge any project's findings.
+
+    **Consequence, bounded:** a forged or careless acknowledgement can change
+    only the derived *Management* label beneath a finding. It can never hide a
+    finding, change an indicator's state or count, or touch any financial
+    figure (the acknowledgement is not a PULSE source — pinned by test). An
+    acknowledgement must therefore never be described as server-certified
+    evidence of anything beyond *who wrote it and when*. Every item above is
+    proven unenforced by a passing test in
+    `frontend/tests/rules/pulseAcknowledgements.rules.test.js`.
+
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
 is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.
@@ -1518,6 +1549,47 @@ edits through the existing update branch, so the role matrix above applies
 unchanged (asserted in the emulator by running the app's own transaction as
 every role). Their stale-version check is **client-side** — see Deferred
 Control 23.
+
+## PULSE™ acknowledgements — a management record, `qs` read-only, revision-guarded
+
+The `pulseAcknowledgements` block (ADR-49) follows the `activities` audience
+split exactly:
+
+- **Read:** `company_admin`, `project_manager`, **`qs`** — the PULSE tab's
+  audience; the note is commercial context.
+- **Create/update:** `company_admin`, `project_manager` **only**. Acknowledging
+  a finding is a management statement, so `qs` is **read-only** (asserted by
+  test).
+- **`subcontractor`, `client`, `super_admin`, cross-tenant and orphaned users
+  are denied entirely.** The hook is mounted only inside the role-gated PULSE
+  workspace (UX mirror); the rules are the control.
+
+**Delete is blocked.** Withdrawing is a status change (`active → withdrawn`)
+restricted to `status`/`withdrawnAt`/`withdrawnBy`/`revision`/`updatedAt`/
+`updatedBy`, so no edit can ride along and the acknowledged content stays as
+the record. Re-acknowledging (`active` or `withdrawn → active`) replaces the
+statement in place — **no history is kept** (an append-only log was explicitly
+not approved; full audit logging is Trusted-Backend requirement 9).
+
+**`revision` increments here** — the one block where it is not pinned at 1.
+Every update must carry exactly `resource.data.revision + 1`, which rejects a
+blind overwrite and lets the app's transaction (`lib/pulseAcknowledgementActions.js`)
+refuse to overwrite another manager's acknowledgement unseen. This is
+rules-*assisted* concurrency, not rules-*proven* — see Deferred Control 31,
+which also records that rules cannot verify the finding existed, that the
+evidence ids are truthful, or that the review date is valid and future.
+
+⚠️ **An acknowledgement is not a resolution, a financial approval or an audit
+certification.** It changes no indicator state, count or figure; it is never
+a PULSE source; and the page shows the acknowledger only as **You / Another
+user** (`users/{uid}` is client-read-only — ADR-27; no name snapshot is
+stored).
+
+**Production rollout:** the block exists in `frontend/firestore.rules` and is
+covered by `npm run test:rules`, but **publishing it is a separate, manually
+approved step** (DEPLOYMENT.md). Until published, production reads and writes
+of the collection are denied by default: the PULSE tab shows *Management
+status unknown* beneath each finding and every indicator keeps working.
 
 ## RFIs — narrow reads, rules-enforced forward-only lifecycle, existence-verified references
 
@@ -1630,6 +1702,16 @@ the security-specific gate is:
       `direction in ['in','out']`, `amount > 0`, `revision == 1`, the
       `'YYYY-MM'` `monthKey` shape, and the costCodeId/costCodeName pairing,
       and still reject `void → *`.
+- [ ] The `pulseAcknowledgements` rules still restrict writes to
+      `company_admin`/`project_manager` (`qs` read-only), still accept only
+      the six PULSE indicator ids with `indicatorId == documentId`, still
+      require exact keys, create as `active`/`revision 1`/null withdraw
+      stamps, `acknowledgedBy`/`withdrawnBy`/`updatedBy == request.auth.uid`
+      with stamps `== request.time`, a **non-whitespace** `note` ≤ 500, a
+      `'YYYY-MM-DD'` `reviewBy`, `evidenceKeys` a list of ≤ 200, immutable
+      `createdAt`/`createdBy`/`indicatorId`, **`revision == resource.revision
+      + 1`** on every update, withdraw limited to its `hasOnly` key set, and
+      still reject `withdrawn → withdrawn` and every delete.
 - [ ] The `tenderPackages` lifecycle rules still permit exactly
       draft-edit / draft→issued / issued closingDate-and-notes-only edit /
       issued→awarded / draft|issued→cancelled, still require

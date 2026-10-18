@@ -4192,3 +4192,168 @@ rendered because `nav.js` lists neither module — recorded, not removed.
 pin in `pulse.test.js` now expects `mark: 'pulse'`. Manual acceptance TESTING.md
 §24. PRODUCT.md still records the SHIELD™ definition as an open product
 decision; that note belongs to the product owner and was not edited here.
+
+---
+
+## ADR-49: Constrapp PULSE™ 1B (acknowledgement & review of findings; one document per indicator; derived attention beside the evaluation; revision-guarded transactions; acknowledgement is not resolution)
+
+**Context.** PULSE 1A (ADR-47) shipped six deterministic, read-only
+indicators and recorded acknowledgement as "not built — needs a write path".
+In use, a manager who has seen a finding and is acting on it had no way to say
+so, and the tab could not tell a known, in-hand condition from one nobody had
+looked at. The Lead Software Architect reviewed the PULSE 1B inspection
+report and approved, with changes, a **human acknowledgement workflow**: a
+project manager can acknowledge a finding with a note and a **required
+review-by date**, see who last acknowledged it, withdraw an acknowledgement,
+and see when new evidence or an expired review needs renewed attention.
+Approved in the same decision: **no** name snapshot (You / Another user only),
+**no** separate history or audit-event collection, **no** notifications,
+scoring, assignment, background monitoring or AI. The AGENT.md placeholder
+rule and the ADR-47 "still prohibited" list are amended by this ADR for
+**acknowledgement only**; everything else on those lists stands.
+
+**Decision 1 — acknowledgement is a management statement, not a resolution.**
+An acknowledgement records that a named finding has been seen, what is being
+done (the note) and when it must be looked at again (the review-by date). It
+is **not** a resolution, a financial approval, an audit certification or a
+review of amounts. It changes **no** PULSE indicator state, no state count
+and no figure: `lib/pulse.js` is byte-for-byte unchanged, is never passed an
+acknowledgement, and the acknowledgement subscription is **not** in
+`INDICATOR_DEPENDENCIES` or `PULSE_SOURCES` (pinned). The finding, its
+headline, its key figures, its evidence table and its tab link stay exactly as
+PULSE 1A renders them; the acknowledgement appears **beneath** them as a
+separate *Management* status. Resolution happens only when the underlying
+condition disappears from the records — the existing evaluation — and no
+`resolvedAt` is ever written or invented.
+
+**Decision 2 — one document per indicator, keyed by the indicator id.**
+`companies/{companyId}/projects/{projectId}/pulseAcknowledgements/{indicatorId}`,
+at most six documents per project, document id ∈ the six `INDICATOR` ids
+(rules allowlist, and the stored `indicatorId` must equal the id). Fields:
+`status` (`active` | `withdrawn`), `evidenceKeys` (list ≤ 200), `note`
+(non-blank ≤ 500), `reviewBy` (`'YYYY-MM-DD'`), `acknowledgedAt/By`,
+`withdrawnAt/By` (null unless withdrawn), `revision`, `createdAt/By`,
+`updatedAt/By` — exact keys, rules-enforced. **No amount, no currency, no
+counter, no currency ratchet** (an acknowledgement holds no money). **No
+history:** re-acknowledging replaces the previous statement in place; a
+withdrawal keeps the acknowledged content as the record of what was
+acknowledged. Delete is blocked. No `acknowledgedByName`: `users/{uid}` is
+client-read-only (ADR-27), so the page shows **You / Another user**, the
+convention of the Forecast, Commercial and RFI pages.
+
+**Decision 3 — finding identity: the indicator, then the record ids.** The
+*condition* is the indicator id. The *evidence* is the sorted, de-duplicated
+set of stable record ids the finding rests on when acknowledged: cost-code ids
+for *over budget* (over-budget rows **plus** the unbudgeted rows listed beside
+them, since a negative total can come from unbudgeted cost alone) and
+*incomplete forecast*; activity, supplier-invoice and variation document ids
+for the other three; **no keys** for the project-level *negative gross
+profit*. Never list position, render order, a monetary value or a generated
+id (hashing is prohibited for PULSE; plain id lists are stored). A record's
+amount can change without its id changing, so an acknowledgement is always
+labelled with its recorded date and its review-by date and the card says it
+covers the records *as they stood on that date* — the current figures stay
+visible above it. No financial snapshot is stored to close that gap.
+
+**Decision 4 — attention is derived at read time (`lib/pulseAttention.js`).**
+For each indicator, from the evaluation, the acknowledgement document (or
+none) and the acknowledgement subscription's own `{loading, error}`:
+
+| attention | when |
+|---|---|
+| `needs_attention` · `no_acknowledgement` | a finding with no document |
+| `needs_attention` · `withdrawn` | a finding whose document is `withdrawn` |
+| `needs_attention` · `new_evidence` | a finding with a current record id not in the acknowledged set (wins over a due review) |
+| `needs_attention` · `review_due` | the review-by date is **today or earlier** (an unparseable stored date counts as due) |
+| `acknowledged` | an active document whose keys cover every current key and whose review date is still ahead |
+| `no_longer_present` | the indicator is *no issue* and an active document remains — shown, not deleted |
+| `not_applicable` | loading / unavailable / needs data, or no issue with nothing active |
+| `loading` / `unknown` | the acknowledgement read has not settled / **failed** — never "nobody acknowledged", and the indicator itself is untouched |
+
+The Findings section is split **Needs attention → Acknowledged → Management
+status unknown**, each in `INDICATOR_ORDER`; the state-count strip is the
+unchanged ADR-47 summary. Pending variation exposure — "exposure, not an
+error" — is worded **Reviewed / Mark as reviewed**.
+
+**Decision 5 — limits recorded, not papered over.** There is no history and
+no background clock, so a condition that clears and **reappears with the same
+record ids** between two visits cannot be told apart from one that persisted;
+the required review-by date (strictly after today) bounds that blind spot and
+is the only lapse a keyless finding has. The clock is `useLocalToday`
+(ADR-46) — the viewer's local day, no timezone normalisation.
+
+**Decision 6 — the evidence limit refuses, never truncates.** A finding resting
+on more than 200 record ids cannot be acknowledged: the card says so and why,
+nothing is truncated and no partial acknowledgement is saved. No pagination
+or batch architecture is introduced.
+
+**Decision 7 — revision-guarded transactions
+(`lib/pulseAcknowledgementActions.js`).** Acknowledge and withdraw each run as
+one transaction that reads the server copy, compares its `revision` with the
+one the user saw (`null` when they saw none), validates the expected state
+(withdraw needs `active`), and writes `revision + 1` with server stamps —
+`createdAt` / `createdBy` / `indicatorId` are never rewritten. A mismatch is
+refused as **stale** (another manager's acknowledgement is never overwritten
+unseen); an aborted transaction re-reads and refuses rather than re-applies;
+offline the transaction fails rather than queues; permission failures are
+reported; a resolved promise is the server's confirmation. Rules make
+`revision` **increment** — unlike every other block, where it is pinned at 1 —
+and require exactly `+1` on every update, so a blind overwrite is rejected.
+This is rules-*assisted*, not rules-*proven*, concurrency (Deferred Control
+31). SDK functions are injected, as in ADR-46, so the emulator suite runs the
+real transaction.
+
+**Decision 8 — roles.** Read: `company_admin`, `project_manager`, `qs` (the
+PULSE audience; the note is commercial context). Write: `company_admin` and
+`project_manager` **only** — `qs` is read-only, as on the programme.
+`subcontractor`, `client`, `super_admin`, cross-tenant and orphaned users:
+nothing. The hook is mounted only inside the role-gated PULSE workspace.
+Client-side gating is the UX mirror; the rules block is the control.
+
+**Decision 9 — what rules enforce and what they cannot.** Enforced: tenant and
+role; the six-id allowlist and id/field agreement; exact keys; create as
+`active` / revision 1 / null withdraw stamps; re-acknowledge and withdraw
+transitions with `hasOnly` key sets; actor == caller and stamps ==
+`request.time`; non-blank `note` ≤ 500; `reviewBy` shape; `evidenceKeys is
+list` and `size() <= 200`; immutable `createdAt/By`; `revision + 1`; no
+delete. **Not** enforced (client-only, Deferred Control 31): that a PULSE
+finding existed for the indicator when acknowledged; that `evidenceKeys` name
+real records or are strings; that `reviewBy` is a real calendar day or not
+already past; project scoping of roles (DC20). An acknowledgement is never to
+be described as server-certified evidence of anything but who wrote it and
+when.
+
+**Decision 10 — presentation.** Each finding card ends with a *Management*
+block: a badge (Needs attention · Acknowledged / Reviewed · No longer present
+· Status unknown), the reason line (new source records since… / review date
+arrived / withdrawn by…), *Acknowledged by You / Another user on dd/mm/yyyy ·
+review by dd/mm/yyyy*, the note, the covered-record count with the
+amounts-may-have-changed wording, and the actions a writer may take
+(Acknowledge / Mark as reviewed → an inline, labelled, `role="alert"`-errored
+form with a required note and a `type="date"` review-by; Withdraw). Tokens
+only, no hex, 44px controls, outcome messages in `role="status"`. Branding,
+the heartbeat dot and its pause control (ADR-48), the summary strip, the
+collapsed *No issue found* section and every ADR-47 pin are unchanged.
+
+**Consequences.** Files: `lib/pulseAttention.js`,
+`lib/pulseAcknowledgementActions.js`, `hooks/usePulseAcknowledgements.jsx`,
+`pages/project/pulse/AcknowledgementPanel.jsx` (new);
+`pages/project/ProjectPulse.jsx`, `pages/project/pulse/IndicatorCard.jsx`,
+`firestore.rules` (new block) modified. Tests: `tests/unit/pulseAttention.test.js`
+(new, 65), `tests/rules/pulseAcknowledgements.rules.test.js` (new, 37); the
+ADR-47 pins for "eleven subscriptions" and "no write callback" in
+`pulse.test.js` are revised **explicitly** (eleven sources + one acknowledgement
+subscription; exactly two acknowledgement callbacks, still no financial write
+and no Firebase import) — 282. No dependency, no Dashboard change, no
+notification surface. **The new rules block is not yet published**: production
+rollout needs the product owner's separate approval and `npm run test:rules`
+beforehand (DEPLOYMENT.md); until it is published, the production hook's read
+and writes are denied by default and the page shows *Management status
+unknown* while every indicator keeps working. Manual acceptance TESTING.md §25.
+
+**Deferred / not built (recorded, not promised):** assignment to a person (no
+readable user directory — ADR-27), notifications or reminders of any kind,
+acknowledgement history or audit trail (Trusted-Backend requirement 9),
+record-level deep links (no target page accepts a filter), acknowledging
+needs-data or unavailable states, Dashboard or portfolio surfaces, any
+severity, score or trend, and any AI.

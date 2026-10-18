@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import Card from '../../components/Card'
+import { useAuth } from '../../hooks/useAuth'
 import { useProfile } from '../../hooks/useProfile'
 import { useLocalToday } from '../../hooks/useLocalToday'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
@@ -14,16 +15,18 @@ import { useProjectCommercial } from '../../hooks/useProjectCommercial'
 import { useSupplierPayments } from '../../hooks/useSupplierPayments'
 import { useRetentionReleases } from '../../hooks/useRetentionReleases'
 import { useProjectActivities } from '../../hooks/useProjectActivities'
+import { usePulseAcknowledgements } from '../../hooks/usePulseAcknowledgements'
 import { isFinancialRole } from '../../lib/margin'
 import { canReadProgramme } from '../../lib/projectTimeline'
 import {
   evaluatePulse, groupIndicators, PULSE_STATE, PULSE_STATE_ORDER, PULSE_STATE_LABELS,
 } from '../../lib/pulse'
+import { attentionFor, splitFindings, canManageAcknowledgements } from '../../lib/pulseAttention'
 import IndicatorCard from './pulse/IndicatorCard'
 import { ModuleTile, BeatToggle } from '../../components/ModuleMark'
 import { MODULE_NAMES } from '../../lib/moduleBranding'
 
-// ── Constrapp PULSE™ · project health indicators (ADR-47) ────────────────────
+// ── Constrapp PULSE™ · project health indicators (ADR-47, ADR-49) ────────────
 //
 // ⚠️ THE ROLE GATE IS THIS WRAPPER. PULSE reads every financial-role-only
 // collection the Dashboard snapshot reads (supplier invoices, credit notes,
@@ -39,11 +42,21 @@ import { MODULE_NAMES } from '../../lib/moduleBranding'
 //
 // Every indicator is lib/pulse.js → evaluatePulse, which only composes
 // existing selectors. Nothing on this page adds, compares or re-derives a
-// figure; no write callback is consumed; nothing is stored. The page is
-// remounted per project by ProjectDetailLayout's keyed outlet (ADR-44).
+// figure. The page is remounted per project by ProjectDetailLayout's keyed
+// outlet (ADR-44).
+//
+// Since ADR-49 the workspace ALSO mounts usePulseAcknowledgements — the one
+// write path PULSE has. It is NOT a PULSE source: it is not passed to
+// evaluatePulse, it is not in INDICATOR_DEPENDENCIES, and a failed read makes
+// the MANAGEMENT status unknown (lib/pulseAttention.js) while every indicator
+// stays exactly as evaluated. Findings are split by that derived status into
+// Needs attention / Acknowledged; the state counts above are unchanged.
+// Acknowledging and withdrawing are restricted to company_admin /
+// project_manager — the UX mirror of the rules block.
 
 export default function ProjectPulse() {
   const { projectId, currencyCode } = useOutletContext()
+  const { user } = useAuth()
   const { profile, profileLoading } = useProfile()
 
   if (profileLoading) {
@@ -60,7 +73,14 @@ export default function ProjectPulse() {
       </Card>
     )
   }
-  return <PulseWorkspace projectId={projectId} currencyCode={currencyCode} />
+  return (
+    <PulseWorkspace
+      projectId={projectId}
+      currencyCode={currencyCode}
+      role={profile?.role}
+      currentUid={user?.uid ?? null}
+    />
+  )
 }
 
 function StateCount({ state, count }) {
@@ -79,16 +99,19 @@ function StateCount({ state, count }) {
   )
 }
 
-function Section({ title, intro, indicators, projectId, currencyCode }) {
+function Section({ title, intro, indicators, cardProps, as: Heading = 'h2' }) {
   if (indicators.length === 0) return null
+  const headingClass = Heading === 'h3'
+    ? 'm-0 mb-1 text-[12px] font-bold uppercase tracking-[0.4px] text-brand-text-soft'
+    : 'm-0 mb-1 text-[13px] font-bold uppercase tracking-[0.4px] text-brand-muted'
   return (
     <section className="mb-5">
-      <h2 className="m-0 mb-1 text-[13px] font-bold uppercase tracking-[0.4px] text-brand-muted">
+      <Heading className={headingClass}>
         {title} · {indicators.length}
-      </h2>
+      </Heading>
       {intro && <p className="m-0 mb-2.5 text-[12px] text-brand-text-soft">{intro}</p>}
       {indicators.map(ind => (
-        <IndicatorCard key={ind.id} indicator={ind} projectId={projectId} currencyCode={currencyCode} />
+        <IndicatorCard key={ind.id} indicator={ind} {...cardProps(ind)} />
       ))}
     </section>
   )
@@ -118,7 +141,7 @@ function PulseHeading({ currencyCode }) {
   )
 }
 
-function PulseWorkspace({ projectId, currencyCode }) {
+function PulseWorkspace({ projectId, currencyCode, role, currentUid }) {
   const now = useLocalToday()
   const { budgetLines, budgetLinesLoading, budgetLinesError }                         = useBudgetLines(projectId)
   const { purchaseOrders, purchaseOrdersLoading, purchaseOrdersError }                = usePurchaseOrders(projectId)
@@ -131,6 +154,12 @@ function PulseWorkspace({ projectId, currencyCode }) {
   const { supplierPayments, supplierPaymentsLoading, supplierPaymentsError }          = useSupplierPayments(projectId)
   const { retentionReleases, retentionReleasesLoading, retentionReleasesError }       = useRetentionReleases(projectId)
   const { activities, activitiesLoading, activitiesError }                            = useProjectActivities(projectId)
+  // NOT a PULSE source — see the file comment. Deliberately absent from
+  // `sources` and `sourceStates` below.
+  const {
+    pulseAcknowledgements, pulseAcknowledgementsLoading, pulseAcknowledgementsError,
+    acknowledgeFinding, withdrawAcknowledgement,
+  } = usePulseAcknowledgements(projectId)
 
   const pulse = useMemo(() => evaluatePulse({
     sources: {
@@ -165,7 +194,31 @@ function PulseWorkspace({ projectId, currencyCode }) {
     activitiesLoading, activitiesError, now, currencyCode,
   ])
 
+  // The MANAGEMENT status of each indicator, derived beside the evaluation
+  // from the acknowledgement documents — never fed back into it.
+  const attentionById = useMemo(() => {
+    const ackById = Object.fromEntries(pulseAcknowledgements.map(a => [a.id, a]))
+    const ackState = { loading: pulseAcknowledgementsLoading, error: pulseAcknowledgementsError }
+    return Object.fromEntries(pulse.indicators.map(ind => [
+      ind.id,
+      attentionFor({ indicator: ind, ack: ackById[ind.id] ?? null, ackState, now }),
+    ]))
+  }, [pulse, pulseAcknowledgements, pulseAcknowledgementsLoading, pulseAcknowledgementsError, now])
+
   const groups = groupIndicators(pulse.indicators)
+  const findings = splitFindings(pulse.indicators, attentionById)
+  const canManage = canManageAcknowledgements(role)
+
+  const cardProps = (ind) => ({
+    projectId,
+    currencyCode,
+    attention: attentionById[ind.id],
+    canManage,
+    currentUid,
+    now,
+    onAcknowledge: acknowledgeFinding,
+    onWithdraw: withdrawAcknowledgement,
+  })
 
   return (
     <div>
@@ -175,9 +228,11 @@ function PulseWorkspace({ projectId, currencyCode }) {
           Six conditions checked against this project&apos;s current records — the same Forecast, Commercial, Supplier
           Payments, Variations and Timeline figures, read at this moment. No score, no prediction, no trend: an
           indicator is a finding only when the records support it, and incomplete or unavailable records are
-          reported as exactly that.
+          reported as exactly that. A finding can be acknowledged with a note and a review-by date; that records
+          who has seen it, not that it is resolved.
         </p>
-        {/* Counts of indicators by state — never combined into a score. */}
+        {/* Counts of indicators by state — never combined into a score, and
+            unchanged by acknowledgement. */}
         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
           {PULSE_STATE_ORDER.map(s => (
             <StateCount key={s} state={s} count={pulse.summary.counts[s]} />
@@ -185,32 +240,53 @@ function PulseWorkspace({ projectId, currencyCode }) {
         </div>
       </Card>
 
-      <Section
-        title="Findings"
-        intro="Conditions the current records support. Each links to the workflow where it is investigated and resolved."
-        indicators={groups[PULSE_STATE.FINDING]}
-        projectId={projectId}
-        currencyCode={currencyCode}
-      />
+      {groups[PULSE_STATE.FINDING].length > 0 && (
+        <section className="mb-5">
+          <h2 className="m-0 mb-1 text-[13px] font-bold uppercase tracking-[0.4px] text-brand-muted">
+            Findings · {groups[PULSE_STATE.FINDING].length}
+          </h2>
+          <p className="m-0 mb-2.5 text-[12px] text-brand-text-soft">
+            Conditions the current records support. Each links to the workflow where it is investigated and
+            resolved. Acknowledging a finding does not resolve it — it returns to <em>Needs attention</em> when new
+            source records appear or its review-by date arrives.
+          </p>
+          <Section
+            as="h3"
+            title="Needs attention"
+            indicators={findings.needsAttention}
+            cardProps={cardProps}
+          />
+          <Section
+            as="h3"
+            title="Acknowledged"
+            indicators={findings.acknowledged}
+            cardProps={cardProps}
+          />
+          <Section
+            as="h3"
+            title="Management status unknown"
+            intro="The acknowledgement records are loading or could not be read. The findings themselves are unaffected."
+            indicators={findings.unknown}
+            cardProps={cardProps}
+          />
+        </section>
+      )}
       <Section
         title="Needs data"
         intro="Records loaded, but an input the condition depends on is missing or incomplete — so no conclusion is drawn."
         indicators={groups[PULSE_STATE.NEEDS_DATA]}
-        projectId={projectId}
-        currencyCode={currencyCode}
+        cardProps={cardProps}
       />
       <Section
         title="Unavailable"
         intro="A record read failed. These indicators were not assessed — unavailable is never reported as no issue."
         indicators={groups[PULSE_STATE.UNAVAILABLE]}
-        projectId={projectId}
-        currencyCode={currencyCode}
+        cardProps={cardProps}
       />
       <Section
         title="Loading"
         indicators={groups[PULSE_STATE.LOADING]}
-        projectId={projectId}
-        currencyCode={currencyCode}
+        cardProps={cardProps}
       />
 
       {groups[PULSE_STATE.NO_ISSUE].length > 0 && (
@@ -223,7 +299,7 @@ function PulseWorkspace({ projectId, currencyCode }) {
             Complete, usable records were checked and the condition is absent. Each card names what was checked.
           </p>
           {groups[PULSE_STATE.NO_ISSUE].map(ind => (
-            <IndicatorCard key={ind.id} indicator={ind} projectId={projectId} currencyCode={currencyCode} />
+            <IndicatorCard key={ind.id} indicator={ind} {...cardProps(ind)} />
           ))}
         </details>
       )}

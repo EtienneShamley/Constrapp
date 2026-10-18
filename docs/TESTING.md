@@ -58,7 +58,7 @@ That script runs
   inert here. The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **1252 in total across 20 files: 1206 Firestore + 46 Storage**:
+- Tests — **1289 in total across 21 files: 1243 Firestore + 46 Storage**:
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -187,6 +187,31 @@ That script runs
     date (`2026-02-30`), a `responsibleContactId`/`costCodeId` naming nothing,
     a duplicate `sortOrder`, and a full-document overwrite (last-write-wins)
     are all ACCEPTED by rules.
+  - `frontend/tests/rules/pulseAcknowledgements.rules.test.js` — **37 tests**
+    covering every case in §25-x below (PULSE™ 1B acknowledgements, ADR-49),
+    including **6** that run the app's own **revision-guarded transactions**
+    (`lib/pulseAcknowledgementActions.js`) against the real rules: a first
+    acknowledgement stores revision 1 with sorted keys; a re-acknowledgement
+    with the seen revision writes revision 2 while a **stale** one is refused
+    with nothing changed; a user who saw **no** acknowledgement cannot
+    overwrite one that appeared meanwhile; withdraw succeeds once, is
+    **invalid** a second time and **stale** from an old view; `qs`,
+    `subcontractor` and `client` are refused by the rules as **permission**
+    with nothing written; a disallowed indicator id is never written. The
+    matrix asserts `qs` **read-only**, `subcontractor`/`client`/`super_admin`/
+    cross-tenant/orphan/unauthenticated denied, and **no role can delete**.
+    Shape: the six-id allowlist and id/field agreement, every missing and
+    extra field (incl. `resolved`, `acknowledgedByName`, `amount`, `severity`),
+    create-as-active/revision-1/null-withdraw-stamps, forged actors and
+    skewed-clock stamps, blank/oversized notes, malformed review dates, 200
+    vs 201 evidence keys and non-list values; transitions: re-acknowledge
+    from active and from withdrawn, **revision conflicts** (same, +2, −1,
+    string, omitted), immutable `createdAt`/`createdBy`/`indicatorId`,
+    withdraw with a smuggled content edit or forged stamp, `withdrawn →
+    withdrawn`, and a bare status flip. It also asserts the documented
+    **client-only** gaps (Deferred Control 31): an impossible-but-well-shaped
+    review date, a **past** review date and non-string evidence keys are all
+    ACCEPTED by rules.
   - `frontend/tests/rules/retentionReleases.rules.test.js` — **62 tests**
     covering every case in §15q below (Retention Release, ADR-30). It asserts
     the `draft → posted → void` lifecycle with **void terminal**, delete blocked
@@ -393,6 +418,9 @@ cd frontend
 npm run test:unit
 ```
 
+- `frontend/tests/unit/pulseAttention.test.js` — **65 tests** over
+  `lib/pulseAttention.js` and `lib/pulseAcknowledgementActions.js` (PULSE™ 1B,
+  ADR-49): see §25.
 - `frontend/tests/unit/moduleBranding.test.js` — **36 tests** over the
   advanced module branding (ADR-48): see §24.
 - `frontend/tests/unit/dashboardV2.test.js` — **78 tests** over the Premium
@@ -4711,7 +4739,7 @@ Manual — three checks only:
 
 ## 23. Constrapp PULSE™ 1A (ADR-47)
 
-Automated: `tests/unit/pulse.test.js` (281 tests) — every indicator × every
+Automated: `tests/unit/pulse.test.js` (282 tests since ADR-49 — two ADR-47 pins revised explicitly, one added) — every indicator × every
 dependency × loading / failed / **missing** source → never "no issue";
 dependency isolation by perturbation (declared sources move the result,
 undeclared and even *failed* undeclared sources do not); every amount equals its
@@ -4811,3 +4839,82 @@ Manual — three checks only:
       and opens it. Typing `/shield` shows *Constrapp SHIELD™* with a static
       cyan shield, "Commercial audit and assurance", **Coming Soon**, and no
       animation; typing `/pulse` shows the static pointer page.
+
+## 25. Constrapp PULSE™ 1B — acknowledgement & review (ADR-49)
+
+Automated: `tests/unit/pulseAttention.test.js` (65 tests) — evidence keys per
+indicator (cost-code ids incl. the unbudgeted rows for *over budget*; record
+ids for activities / supplier invoices / variations; none for gross profit),
+sorted and de-duplicated, unchanged by list order, render order or amounts,
+empty for any non-finding, and a malformed stored document (non-list keys,
+non-string note or date, missing revision) never throws; the attention matrix (no acknowledgement · covered
+· new evidence (wins over a due review) · review date today / past / future ·
+clock crossing the review date · unparseable date counts as due · withdrawn ·
+keyless finding lapses only by date · cleared records reported but not
+reopening); resolution only when the condition disappears (*no longer
+present*, no `resolvedAt`; same-id reappearance before the review date reads
+as still acknowledged — the documented limitation — while a different record
+reopens at once); loading / unavailable / needs-data never acknowledgeable;
+**failed acknowledgement read → unknown, never "nobody acknowledged"**; the
+200-key limit refuses before any transaction and never truncates; **isolation
+— `evaluatePulse` output and `summarisePulse` counts are byte-identical with
+an acknowledgement source present and failed**, the hook is in no dependency
+list and `lib/pulse.js` never mentions the layer; input validation (note,
+500 chars, ISO date, strictly after today); write roles = programme writers
+(qs/sub/client excluded); the guarded transactions — first acknowledgement
+shape, re-acknowledgement `+1` preserving creation stamps, **stale on revision
+mismatch / vanished document / unseen appearance**, pending local revision
+never matches, permission / offline / aborted / not-found mapping, no
+success before the transaction resolves, withdraw refusals (stale, invalid,
+missing) with nothing written; structure (no Firebase / React / money
+arithmetic / currency lock / forbidden vocabulary; the rules block carries the
+allowlist, limits and `+1`); page wiring (attention derived after
+`evaluatePulse`, counts untouched, `canManageAcknowledgements(role)` from the
+gated wrapper, keyed-by-project hook, You / Another user, no notification or
+assignment surface). `tests/unit/pulse.test.js` (282) keeps every ADR-47 pin
+with two revised explicitly: the workspace mounts **eleven sources + the
+acknowledgement subscription** (never passed to `evaluatePulse`, mounted only
+after the role gate), and consumes **exactly two write callbacks**
+(`acknowledgeFinding`, `withdrawAcknowledgement`) with still no financial
+write and no Firebase import; the 44px and tokens-only pins now cover
+`AcknowledgementPanel.jsx`. Rules: `pulseAcknowledgements.rules.test.js`
+(37) — **AUTOMATED, see §0**.
+
+Manual — three checks only (no production commercial record is written; an
+acknowledgement is the only write, and it can be withdrawn):
+
+- [ ] **Acknowledge, renew, withdraw.** As **project_manager** on a project
+      with at least one PULSE finding: the Findings section shows *Needs
+      attention* with "No acknowledgement recorded" and an **Acknowledge**
+      button (on *Pending variation exposure*: **Mark as reviewed**). Submit
+      with a blank note, then with today's date: each is refused inline
+      (`role="alert"`), nothing saved. Save a note and a future date: the card
+      moves to **Acknowledged** showing *Acknowledged by You on dd/mm/yyyy ·
+      review by dd/mm/yyyy*, the note, the covered-record count — and the
+      state badge, headline, figures, evidence table, link and the **state
+      counts above are unchanged**. In a second browser as **company_admin**,
+      the same card reads *Another user*; **Withdraw** there, then back in the
+      first browser the card is *Needs attention — withdrawn by Another user*.
+      Re-acknowledge from the first browser; in the second, click **Withdraw**
+      on the (now stale) view: refused with "Someone else changed this
+      acknowledgement…", nothing changed, and the card refreshes to the
+      current acknowledgement.
+- [ ] **New evidence and the clock.** With an acknowledged *Programme
+      activities overdue*, add another activity with a planned finish before
+      today on the Timeline: the PULSE card returns to *Needs attention — 1
+      new source record since…* at once; acknowledge again. Set the review-by
+      date to tomorrow and change the machine date (or wait): the card reads
+      *Review date … has arrived*. Complete every overdue activity: the
+      indicator moves to *No issue found* and its management block reads
+      **Condition no longer present** with the acknowledgement still shown and
+      **no resolution date**. Signed in as **qs**: every management block is
+      visible but has **no** Acknowledge / Withdraw button; as
+      **subcontractor** or **client**: the tab is restricted as before and the
+      console shows no permission-denied error. Block the
+      `pulseAcknowledgements` read (DevTools → network block): every finding
+      shows **Status unknown** and all six indicators keep their state.
+- [ ] **Layout.** At **375px**, **768px** and **1280px**: the acknowledgement
+      form stacks (note over date) below `sm:` and sits side by side above;
+      every Acknowledge / Mark as reviewed / Withdraw / Save / Cancel control
+      is ≥44px tall; no horizontal page scroll; the heartbeat dot still beats
+      and **Pause / Resume** still works; *No issue found* stays collapsed.
