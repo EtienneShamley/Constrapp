@@ -1005,7 +1005,7 @@ describe('ProjectPulse page — role gate, subscriptions, isolation', () => {
     expect(app).toContain('<Route path="pulse" element={<ProjectPulse />} />')
     expect(app).toContain("import ProjectPulse from './pages/project/ProjectPulse'")
     expect(PROJECT_TABS[0].to).toBe('overview')
-    expect(PROJECT_TABS[1]).toEqual({ to: 'pulse', label: 'PULSE' })
+    expect(PROJECT_TABS[1]).toEqual({ to: 'pulse', label: 'PULSE', mark: 'pulse' }) // mark: ADR-48
     expect(read('lib/nav.js')).not.toMatch(/to:\s*'\/pulse'/)
     const top = stripComments(read('pages/Pulse.jsx'))
     expect(top).toContain('to="/projects"')

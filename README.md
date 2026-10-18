@@ -42,8 +42,11 @@ Today the delivery-and-cost-control middle of this lifecycle is implemented (bud
 
 The Dashboard is deliberately sparse: its fabricated KPIs and charts were
 removed rather than rederived, so every figure on it now comes from Firestore.
-PULSE™, SHIELD™, Photos and Reports remain placeholder screens with live routes
-but are **hidden from navigation** for private beta; Subcontractors lists live
+Constrapp PULSE™ 1A is a live project tab (ADR-47) — six deterministic,
+read-only health indicators — with its static mark in the tab (ADR-48); the
+top-level `/pulse` route is a hidden pointer to it. SHIELD™, Photos and Reports
+remain placeholder screens with live routes but are **hidden from navigation**
+for private beta; Quant™ and IQ™ have no screen. Subcontractors lists live
 contacts. See [PRODUCT.md](PRODUCT.md) for module-by-module status.
 
 ## Local Setup
