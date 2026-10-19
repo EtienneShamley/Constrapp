@@ -12,10 +12,11 @@ import { fileURLToPath } from 'node:url'
 //      narrow width. Four tables had this; the rest of the app already wraps.
 //      Same defect and same guard shape as documentsResponsive.test.js.
 //
-//   2. Navigation that offers an unbuilt placeholder. Photos, Reports, PULSE™
-//      and SHIELD™ are real routes with real placeholder pages, deliberately
-//      kept — but a beta user must not be handed a tab or sidebar item that
-//      leads to "Coming Soon".
+//   2. Navigation that offers an unbuilt placeholder. Photos and Reports are
+//      real routes with real placeholder pages, deliberately kept — but a beta
+//      user must not be handed a tab or sidebar item that leads to "Coming
+//      Soon". PULSE™ (ADR-47) and SHIELD™ (ADR-50) are now live project
+//      tabs; their top-level routes stay hidden pointers.
 //
 // These assert SOURCE STRUCTURE, not rendered DOM: the unit runner is plain
 // Node with no jsdom and no testing-library (the ADR-26 convention), and both
@@ -103,7 +104,7 @@ describe('project tabs offer no placeholder module', () => {
   // The tabs that must survive — so hiding two never quietly becomes hiding six.
   it('every shipped project module is still a tab', () => {
     for (const to of [
-      'overview', 'pulse', 'boq', 'tenders', 'budget', 'cost-codes', 'purchase-orders',
+      'overview', 'pulse', 'shield', 'boq', 'tenders', 'budget', 'cost-codes', 'purchase-orders',
       'progress-claims', 'invoices', 'forecasting', 'variations', 'commercial',
       'documents', 'timeline', 'rfis',
     ]) {
@@ -112,7 +113,7 @@ describe('project tabs offer no placeholder module', () => {
   })
 })
 
-describe('the sidebar offers no placeholder module', () => {
+describe('the sidebar offers no module pointer', () => {
   it('Constrapp PULSE™ is not in the sidebar', () => {
     expect(nav).not.toMatch(/to:\s*'\/pulse'/)
   })

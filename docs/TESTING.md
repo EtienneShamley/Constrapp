@@ -418,6 +418,8 @@ cd frontend
 npm run test:unit
 ```
 
+- `frontend/tests/unit/shield.test.js` — **202 tests** over `lib/shield.js`
+  and the SHIELD page wiring (SHIELD™ foundation, ADR-50): see §26.
 - `frontend/tests/unit/pulseAttention.test.js` — **65 tests** over
   `lib/pulseAttention.js` and `lib/pulseAcknowledgementActions.js` (PULSE™ 1B,
   ADR-49): see §25.
@@ -4837,10 +4839,15 @@ Manual — three checks only:
       PULSE (mark + label) after Overview, nothing animates in it, the active
       underline is teal like every other tab, and keyboard Tab/Enter reaches
       and opens it. Typing `/shield` shows *Constrapp SHIELD™* with a static
-      cyan shield, "Commercial audit and assurance", **Coming Soon**, and no
-      animation; typing `/pulse` shows the static pointer page.
+      cyan shield and no animation (since ADR-50 it is a pointer page naming
+      the five checks and linking to Projects — the **Coming Soon** badge this
+      step originally checked is gone; see §26); typing `/pulse` shows the
+      static pointer page.
 
 ## 25. Constrapp PULSE™ 1B — acknowledgement & review (ADR-49)
+
+*Released to production 19 October 2026 (rules published, Hosting deployed,
+live behaviour verified).*
 
 Automated: `tests/unit/pulseAttention.test.js` (65 tests) — evidence keys per
 indicator (cost-code ids incl. the unbudgeted rows for *over budget*; record
@@ -4918,3 +4925,89 @@ acknowledgement is the only write, and it can be withdrawn):
       every Acknowledge / Mark as reviewed / Withdraw / Save / Cancel control
       is ≥44px tall; no horizontal page scroll; the heartbeat dot still beats
       and **Pause / Resume** still works; *No issue found* stays collapsed.
+
+## 26. Constrapp SHIELD™ foundation — five commercial assurance checks (ADR-50)
+
+Automated: `tests/unit/shield.test.js` (202 tests) — the fixed five-check
+contract and currency carry-through; for every check and every declared source,
+loading → *loading*, failed → *unavailable* naming the source, missing from
+`sourceStates` → *unavailable*, and a failed source on an empty project still
+*unavailable* (never *needs data* or *no issue*); dependency isolation
+**verified by perturbation** (emptying a declared source changes the check;
+emptying, failing or loading an undeclared one changes nothing); the empty
+project is *needs data* on all five. Check 1: grouping by supplier id first and
+the frozen name only for legacy null-id documents (different ids never combined
+by name; a null-id never combined with an id), references normalised exactly as
+`duplicateInvoiceWarnings` (a hyphen is a different reference), cancelled
+invoices ignored, a draft still joins a group, blank references skipped and
+reported, all-blank is *needs data (references missing)*, malformed documents
+tolerated, wording "potential duplicates to review". Check 2: only counting
+invoices (an inconsistent draft and an approved invoice are never failures);
+`invoiceTotals` reconciliation field by field in cents (sub-cent floats pass,
+one cent fails); the create path's unrounded-GST artefact is not a finding;
+retention reconciles through the same composition; a counted line with no cost
+code lists its ex-GST amount; missing/non-numeric data is *malformed* and alone
+is *needs data*. Check 3: line and PO-level excess equal
+`postedInvoicedByPoLine` / `postedInvoicedByPo` against the PO, exact match is
+not excess and one cent is; separate totals never added; approved supplier
+variations on the PO are context from `approvedSupplierVariationsTotal`, never
+deducted, and submitted or client variations are never context; a ghost line
+index is excess against zero; a PO not in the project is "not comparable"
+rather than clean. Check 4: exactly the four approved conditions, one row per
+related record, draft/pending/cancelled POs with counted cost, closed/cancelled
+POs with open claims, two open claims per PO, two active invoices per claim
+(one cancelled clears it), rejected/cancelled/committed records raise nothing,
+a missing PO renders "Not found". Check 5: rows ARE `allocationExceptions` /
+`creditNoteExceptions` / `releaseExceptions` / `overReleasedRows` /
+`overReconciledPayableRows(payablesSummary)` outputs, one row per exception
+with its module; the invalid credit reduces nothing; voiding clears each
+exception. Financial consistency: the Dashboard snapshot is byte-identical
+before and after, inputs are never mutated, evaluation is deterministic, every
+money value is cent-rounded, every row has a unique id and a source number,
+the engine has no GST rate, formula, score, threshold, trend, Firebase or
+write. Page wiring (source structure): the financial-role gate wraps the
+workspace that alone mounts exactly the seven approved hooks; every source's
+loading and error flag reaches `evaluateShield`; no write callback, Firebase
+import, transaction or storage; currency from the outlet context only; keyed
+outlet and keyed-snapshot hooks; five distinct state renderings; five-row
+evidence preview with Show all; static branding and tokens only; the tab sits
+third with its mark and the `/shield` pointer opens no subscription.
+
+`moduleBranding.test.js` and `betaSurfaces.test.js` pins revised **explicitly**
+(16 tabs; marks `['pulse', 'shield']`; `/shield` is a pointer, no Coming Soon;
+`shield` in the shipped-tab list). No rules change, so no rules test.
+
+Manual — three checks only, all read-only (SHIELD writes nothing):
+
+- [ ] **Role gate and honest states.** As **qs** open a project's **SHIELD**
+      tab: the *Constrapp SHIELD™* heading with the cyan tile whose small dot
+      glows and gently beats (Pause / Resume beside it; still but lit when
+      paused or under reduced motion), five state counts, and five check cards
+      each with a state badge.
+      On a project with no supplier invoices the first two checks and the
+      exceptions check read **Needs data** (never *No issue found*). Block the
+      `supplierInvoices` read (DevTools → network block) and reload: every check
+      that reads invoices shows **Unavailable — Could not load: Supplier
+      Invoices**, and no count reads 0 as if clean. As **subcontractor** or
+      **client**: "SHIELD checks are restricted", and the console shows no
+      permission-denied error (no subscription was opened).
+- [ ] **Traceable findings.** On a project with real records: raise (or find)
+      two non-cancelled supplier invoices for one supplier with the same
+      supplier reference — *Potential duplicate supplier invoices* lists both
+      with their SI numbers, statuses, dates and gross totals, grouped, and the
+      caveat says a reissue can match legitimately; **Open Supplier Invoices**
+      lands on the register. On a PO whose posted invoices exceed a line,
+      *Purchase order over-invoicing exposure* lists the line and the PO total
+      separately with the PO value, posted invoiced and excess, and any approved
+      supplier variation on that PO in the context column — unchanged on the
+      Budget and Forecast pages. Close a sent PO that still has a submitted
+      claim: *Commitment records requiring reconciliation* lists the claim
+      against the closed PO. Nothing on the Budget, Forecast, Commercial or
+      Supplier Payments pages moves at any point.
+- [ ] **Layout.** At **375px**, **768px** and **1280px**: the tab bar wraps with
+      SHIELD (mark + label, static) after PULSE and the active underline is teal; every
+      card's module links and **Show all** / **Show fewer** controls are ≥44px
+      tall; each evidence table scrolls inside its own container with no
+      horizontal page scroll; *No issue found* stays collapsed; VoiceOver/NVDA
+      announces "Constrapp SHIELD™, heading level 2" and each check as a
+      level-3 heading, and the shield mark is not announced.

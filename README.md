@@ -42,11 +42,15 @@ Today the delivery-and-cost-control middle of this lifecycle is implemented (bud
 
 The Dashboard is deliberately sparse: its fabricated KPIs and charts were
 removed rather than rederived, so every figure on it now comes from Firestore.
-Constrapp PULSE™ 1A is a live project tab (ADR-47) — six deterministic,
-read-only health indicators — with its static mark in the tab (ADR-48); the
-top-level `/pulse` route is a hidden pointer to it. SHIELD™, Photos and Reports
-remain placeholder screens with live routes but are **hidden from navigation**
-for private beta; Quant™ and IQ™ have no screen. Subcontractors lists live
+Constrapp PULSE™ is a live project tab — 1A (ADR-47): six deterministic,
+read-only health indicators; 1B (ADR-49, in production since 19 October 2026):
+acknowledgement with a required review-by date — with its static mark in the
+tab (ADR-48); the top-level `/pulse` route is a hidden pointer to it. Constrapp
+SHIELD™ (ADR-50, implemented, **not yet deployed**) is a second project tab of
+five read-only commercial assurance checks over existing records; `/shield` is
+its hidden pointer. Photos and Reports remain placeholder screens with live
+routes but are **hidden from navigation** for private beta; Quant™ and IQ™ have
+no screen. Subcontractors lists live
 contacts. See [PRODUCT.md](PRODUCT.md) for module-by-module status.
 
 ## Local Setup
@@ -114,9 +118,9 @@ npm run test:rules
 
 `frontend/firebase.json` points the Firestore and Storage emulators at the two
 rules files for the automated suites, and carries a **Firebase Hosting** block
-(`public: dist`, SPA rewrite) that has **never been deployed**. There is no
-`.firebaserc`, so a deploy must name its project: `firebase deploy --only
-hosting --project constrapp-69b5d`. Rules publishing stays manual, and automated
+(`public: dist`, SPA rewrite), **first deployed by hand on 19 October 2026**.
+There is no `.firebaserc`, so a deploy must name its project: `firebase deploy
+--only hosting --project constrapp-69b5d`. Rules publishing stays manual, and automated
 deployment is still future work (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
 
 ## Repository Layout

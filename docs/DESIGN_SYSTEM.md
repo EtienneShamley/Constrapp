@@ -59,17 +59,28 @@ existing hard-coded module colours.
 - **Tile** — `ModuleTile`: the v5 feature tile (36px, `rounded-[10px]`, token
   fill at /10 and border at /20, 18px mark). Pass it to `PageHeader`'s optional
   `mark` prop on a module page.
-- **Motion** — only the PULSE indicator dot moves (`<ModuleTile module="pulse"
-  beat paused={…} />`, the project PULSE tab heading). It uses
-  `motion-safe:animate-module-beat`, a gentle continuous lub-dub (1.8s,
-  `infinite`) that varies only scale (≤1.25) and glow (6–11px), never opacity.
-  The dot always carries a static 6px `brand-pulse` glow. A continuous beat
-  **must** sit beside a `BeatToggle` (WCAG 2.2.2): a muted 11px Pause / Resume
-  button with a 44px target, hidden under reduced motion. Never animate the
-  mark, never animate navigation, and never give an unbuilt module (SHIELD™,
-  Quant™, IQ™) a dot or any live-looking motion. Always gate motion with
+- **Motion — the shared advanced-module convention.** Every *live* advanced
+  module's **page heading** carries the same luminous dot at its tile's corner
+  (`<ModuleTile module="…" beat paused={…} />`): PULSE™ in `brand-pulse`,
+  SHIELD™ in `brand-shield`, and Quant™ / IQ™ in their own tokens when they
+  ship. The dot uses `motion-safe:animate-module-beat`, a gentle continuous
+  lub-dub (1.8s, `infinite`) that varies only scale (≤1.25) and glow
+  (6–11px), never opacity, and always carries a static 6px glow so it stays lit
+  between pulses and when paused. There is **one** `module-beat` keyframe: its
+  colour is the `--module-glow` custom property, which each tile sets from its
+  own token through a Tailwind arbitrary-property class
+  (`[--module-glow:var(--color-brand-shield)]`), with `brand-pulse` as the
+  fallback — never a second keyframe per module. A continuous beat **must** sit
+  beside a `BeatToggle` (WCAG 2.2.2): a muted 11px Pause / Resume button with a
+  44px target, an accessible name that states its subject (`heartbeat
+  animation` for PULSE, `glow animation` for SHIELD), hidden under reduced
+  motion where the dot is still but lit. The beat is **decorative** and never
+  a claim of background monitoring. Never animate the mark itself, never
+  animate the tab bar or a pointer page, and never give an unbuilt module
+  (Quant™, IQ™) a dot before its page exists. Always gate motion with
   `motion-safe:`.
-- **Tabs** — a project tab may carry `mark` in `lib/projectTabs.js`; the layout
+- **Tabs** — a project tab may carry `mark` in `lib/projectTabs.js` (PULSE and,
+  since ADR-50, SHIELD — the only two); the layout
   renders a 14px static mark before the label and keeps the shared active
   styling. Only PULSE has one.
 
@@ -178,7 +189,7 @@ touching these files:
 - `components/ProgBar.jsx` — inline `style` for width (legitimately dynamic) and colour (via token CSS vars)
 - ~~`pages/Dashboard.jsx` — chart tooltip styled inline with raw hexes; Recharts fills/ticks hard-coded~~ **resolved** — the Dashboard charts were fabricated data and were removed entirely (Beta Launch Readiness), taking the inline hexes with them
 - `pages/Projects.jsx` — `DOT_COLORS` hex map
-- `layouts/Sidebar.jsx` / `layouts/TopBar.jsx` — inline `height: 56`, inline NavLink active styles; `Sidebar.jsx` still hard-codes `#FF6B9D` / `#00D4FF` and an `infinite` `pulse-dot` animation in its **unused** PULSE™/SHIELD™ branches (never rendered — `lib/nav.js` lists neither). `pages/Pulse.jsx` / `pages/Shield.jsx` were migrated to the `brand-pulse` / `brand-shield` tokens by ADR-48
+- `layouts/Sidebar.jsx` / `layouts/TopBar.jsx` — inline `height: 56`, inline NavLink active styles; `Sidebar.jsx` still hard-codes `#FF6B9D` / `#00D4FF` and an `infinite` `pulse-dot` animation in its **unused** PULSE™/SHIELD™ branches (never rendered — `lib/nav.js` lists neither). `pages/Pulse.jsx` / `pages/Shield.jsx` were migrated to the `brand-pulse` / `brand-shield` tokens by ADR-48 (`pages/Shield.jsx` became a pointer page under ADR-50; `pages/project/ProjectShield.jsx` and `pages/project/shield/ShieldCheckCard.jsx` use tokens only — cyan is the SHIELD mark, never a status colour)
 - `layouts/ProjectDetailLayout.jsx` — project tabs are ≈34px tall (`px-3 py-2`), below the 44px touch-target rule; recorded, not redesigned by ADR-48
 - Logo SVG (`Sidebar.jsx`) — stroke `#00C9A7` hard-coded. (`AuthLayout.jsx` was migrated to `stroke="currentColor"` + `text-brand-accent` by the Login Redesign — copy that.)
 - `frontend/src/index 2.css` — stray tracked duplicate of an old stylesheet, unused

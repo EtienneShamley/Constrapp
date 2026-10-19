@@ -41,6 +41,7 @@ import ProjectTenders from './pages/project/ProjectTenders'
 import ProjectTimeline from './pages/project/ProjectTimeline'
 import ProjectRfis from './pages/project/ProjectRfis'
 import ProjectPulse from './pages/project/ProjectPulse'
+import ProjectShield from './pages/project/ProjectShield'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
 
 export default function App() {
@@ -125,6 +126,12 @@ export default function App() {
                           forecast, margin, payables, variation and programme
                           records. No score, no prediction, no write. */}
                       <Route path="pulse" element={<ProjectPulse />} />
+                      {/* SHIELD™ foundation (ADR-50) — five deterministic
+                          commercial assurance checks evaluated READ-ONLY from
+                          the project's own PO, claim, supplier invoice, credit
+                          note, payment and retention records. No score, no
+                          prediction, no write. */}
+                      <Route path="shield" element={<ProjectShield />} />
                       {/* RFIs — Requests for Information (ADR-33). An
                           EVIDENCE register: numbered per project, forward-only,
                           pinned to drawing revisions / documents. Financially

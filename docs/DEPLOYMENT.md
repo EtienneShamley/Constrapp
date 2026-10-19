@@ -7,19 +7,27 @@ both rules paths, and (since the Beta Launch Readiness increment) a **Firebase
 Hosting block**. **Not implemented:** `.firebaserc`, Cloud Functions, and CI
 deployment — all future work.
 
-**Nothing has been deployed.** The hosting configuration is written but has
-never been run: no `.firebaserc` exists, so no Firebase project is targeted by
+**First production deployment: 19 October 2026** (the PULSE™ 1B release). The
+product owner merged to `main`, Azure CI passed, the full rules suite passed,
+`frontend/firestore.rules` was published through the console, Hosting was
+deployed by hand, and live behaviour was verified. Every deploy is still a
+manual action: no `.firebaserc` exists, so no Firebase project is targeted by
 default, and every deploy below must name its project explicitly with
 `--project`. Rules publishing is still **manual** (below) and is *not* wired to
 the CLI — do not add `firestore:rules` or `storage` to a deploy command.
+
+**Pending release — SHIELD™ foundation (ADR-50): Hosting-only.** It changes no
+rules file, adds no collection and needs no migration or backfill, so its release
+is `npm run build` + `firebase deploy --only hosting --project constrapp-69b5d`
+from the merged `main`. Nothing to publish in the console.
 
 ## Prerequisites
 
 - Node.js 20+
 - A Firebase project with **Authentication** (Email/Password), **Firestore**, and
   — since the Documents & Drawings foundation — **Cloud Storage** enabled.
-  (Hosting is configured in `frontend/firebase.json` but has never been
-  deployed.) See *Enabling Cloud Storage* below: enabling it in the
+  (Hosting is configured in `frontend/firebase.json` and was first deployed by
+  hand on 19 October 2026.) See *Enabling Cloud Storage* below: enabling it in the
   console installs a permissive starter ruleset that **must** be replaced with
   `frontend/storage.rules` in the same sitting.
 - Users provisioned manually: an Auth user plus a matching `users/{uid}`
@@ -77,7 +85,7 @@ npm run preview   # serve the build locally
 
 `frontend/dist/` can be served by any static host.
 
-## Firebase Hosting — configured, never deployed
+## Firebase Hosting — deployed by hand (no CI deploy)
 
 `frontend/firebase.json` now carries a `hosting` block:
 
@@ -241,12 +249,14 @@ no company, no projects, no error message, nothing to act on. Verify the
 membership document for every invited user individually; there is no in-app
 signal that it is missing.
 
-### ⚠️ Steps 5 and 6 — the Supplier Invoice rules gate is NOT closed
+### Steps 5 and 6 — the Supplier Invoice rules gate (closed 19 October 2026)
 
-**Merged code is not a published control.** The ADR-40 supplier-invoice
-hardening is in the codebase, but the hardened rules have not been published,
-so those invariants are **not enforced in production today**. Closing the gate
-is a three-part release action, in order:
+**Merged code is not a published control.** When this section was written the
+ADR-40 supplier-invoice hardening was in the codebase but the hardened rules had
+not been published, so those invariants were **not enforced in production**.
+The gate was closed on 19 October 2026 when the whole rules file was published
+with the PULSE™ 1B release. The ordering below is kept because it applies to
+every future rules change that tightens a write path:
 
 1. **Updated supplier-invoice application code deployed first.** The ADR-40
    rules require `updatedAt` / `updatedBy` on every write and `cancelledBy` on a
