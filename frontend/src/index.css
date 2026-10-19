@@ -24,18 +24,22 @@
 
   --font-sans: 'Sora', 'DM Sans', system-ui, sans-serif;
 
-  /* The PULSE header dot: a gentle, continuous lub-dub (ADR-48). Only scale
-     and glow vary — opacity is never animated, so the dot never fades out or
-     flashes. The rest frame equals the dot's static glow, so pausing or
-     reduced motion shows the same still, lit dot. Apply only through
-     `motion-safe:`, and only beside the pause control (WCAG 2.2.2). */
+  /* The advanced-module header dot: a gentle, continuous lub-dub (ADR-48),
+     shared by every branded module page (PULSE pink, SHIELD cyan, …). Only
+     scale and glow vary — opacity is never animated, so the dot never fades
+     out or flashes. The rest frame equals the dot's static glow, so pausing or
+     reduced motion shows the same still, lit dot. The ONE keyframe takes its
+     colour from `--module-glow`, which each ModuleTile sets from its own
+     token; PULSE's pink is the fallback so the original dot is unchanged.
+     Apply only through `motion-safe:`, and only beside the pause control
+     (WCAG 2.2.2). */
   --animate-module-beat: module-beat 1.8s ease-in-out infinite;
 
   @keyframes module-beat {
-    0%, 50%, 100% { transform: scale(1);    box-shadow: 0 0 6px  var(--color-brand-pulse); }
-    12%           { transform: scale(1.25); box-shadow: 0 0 11px var(--color-brand-pulse); }
-    24%           { transform: scale(1);    box-shadow: 0 0 6px  var(--color-brand-pulse); }
-    36%           { transform: scale(1.12); box-shadow: 0 0 9px  var(--color-brand-pulse); }
+    0%, 50%, 100% { transform: scale(1);    box-shadow: 0 0 6px  var(--module-glow, var(--color-brand-pulse)); }
+    12%           { transform: scale(1.25); box-shadow: 0 0 11px var(--module-glow, var(--color-brand-pulse)); }
+    24%           { transform: scale(1);    box-shadow: 0 0 6px  var(--module-glow, var(--color-brand-pulse)); }
+    36%           { transform: scale(1.12); box-shadow: 0 0 9px  var(--module-glow, var(--color-brand-pulse)); }
   }
 }
 

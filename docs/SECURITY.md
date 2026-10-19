@@ -1585,11 +1585,34 @@ a PULSE source; and the page shows the acknowledger only as **You / Another
 user** (`users/{uid}` is client-read-only — ADR-27; no name snapshot is
 stored).
 
-**Production rollout:** the block exists in `frontend/firestore.rules` and is
-covered by `npm run test:rules`, but **publishing it is a separate, manually
-approved step** (DEPLOYMENT.md). Until published, production reads and writes
-of the collection are denied by default: the PULSE tab shows *Management
-status unknown* beneath each finding and every indicator keeps working.
+**Production rollout — done.** The block was published to production on
+19 October 2026 with the rest of `frontend/firestore.rules`, after the full
+rules suite passed; live behaviour was verified by the product owner.
+
+## SHIELD™ — no new collection, no new rule; detection is not enforcement
+
+The SHIELD™ foundation (ADR-50) adds **no collection, no field and no rules
+change**. `pages/project/ProjectShield.jsx` mounts seven **existing**
+subscriptions — `purchaseOrders`, `progressClaims` (any-member reads),
+`supplierInvoices`, `supplierCreditNotes`, `supplierPayments`,
+`retentionReleases`, `variations` (financial-role reads) — only behind the
+`isFinancialRole` gate, so `subcontractor` and `client` users see a restricted
+card and open no subscription (the UX mirror; the per-collection rules above are
+the control). `lib/shield.js` is pure and has **no write path**: no transaction,
+no persistence, no acknowledgement, no notification.
+
+⚠️ **SHIELD detects; it enforces nothing.** Every condition it lists is one that
+Firestore rules deliberately cannot prevent and a direct SDK caller can still
+create: duplicate supplier references (Deferred Control 9), a stored header that
+disagrees with its lines or a counted line with no cost code (item 29),
+over-invoicing against a PO (item 29's aggregate gap), a PO closed or cancelled
+with claims or posted invoices against it (items 1 and 2), a second open claim
+or a second invoice per claim (item 3), and the payables exceptions (items 18,
+24 and 25). A clean SHIELD tab is a statement about the records it could read
+at that moment, not a certification — a loading, failed or empty source renders
+*unavailable* or *needs data*, never *no issue*. Findings name source document
+ids and numbers; they never name a user (`users/{uid}` is client-read-only,
+ADR-27) and never assert wrongdoing.
 
 ## RFIs — narrow reads, rules-enforced forward-only lifecycle, existence-verified references
 

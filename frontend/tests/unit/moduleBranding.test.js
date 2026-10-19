@@ -8,8 +8,8 @@ import { PROJECT_TABS } from '../../src/lib/projectTabs.js'
 //
 // Presentation only: the approved names, the PULSE mark in its tab, the PULSE
 // header dot (three CSS beats, motion-safe, then still), static SHIELD™
-// placeholder branding, brand colours through tokens, and no claim that an
-// unbuilt module is running. Source-level pins in the Node-only runner (no
+// branding (the tab mark and the /shield pointer — ADR-50), brand colours
+// through tokens, and no claim that an unbuilt module is running. Source-level pins in the Node-only runner (no
 // jsdom), like betaSurfaces.test.js and pulse.test.js.
 
 const read = (rel) =>
@@ -24,6 +24,7 @@ const mark      = stripComments(read('components/ModuleMark.jsx'))
 const header    = stripComments(read('components/PageHeader.jsx'))
 const layout    = stripComments(read('layouts/ProjectDetailLayout.jsx'))
 const pulsePage = stripComments(read('pages/project/ProjectPulse.jsx'))
+const shieldPage = stripComments(read('pages/project/ProjectShield.jsx'))
 const pointer   = stripComments(read('pages/Pulse.jsx'))
 const shield    = stripComments(read('pages/Shield.jsx'))
 const app       = read('App.jsx')
@@ -38,7 +39,7 @@ describe('exact module branding', () => {
     })
   })
 
-  it('the PULSE tab heading, the /pulse pointer and the /shield placeholder use the shared names', () => {
+  it('the PULSE tab heading, the /pulse pointer and the /shield pointer use the shared names', () => {
     expect(pulsePage).toContain('{MODULE_NAMES.pulse}</h2>')
     expect(pointer).toContain('title={MODULE_NAMES.pulse}')
     expect(shield).toContain('title={MODULE_NAMES.shield}')
@@ -67,13 +68,15 @@ describe('navigation — PULSE tab, no unbuilt module surfaces', () => {
     expect(PROJECT_TABS[1]).toEqual({ to: 'pulse', label: 'PULSE', mark: 'pulse' })
   })
 
-  it('PULSE is the only tab with a mark, and still 15 tabs', () => {
-    expect(PROJECT_TABS.filter(t => t.mark).map(t => t.to)).toEqual(['pulse'])
-    expect(PROJECT_TABS).toHaveLength(15)
+  // ADR-50: SHIELD joined as the third tab with its static mark (15 → 16 tabs).
+  it('PULSE and SHIELD are the only tabs with a mark, and there are 16 tabs', () => {
+    expect(PROJECT_TABS[2]).toEqual({ to: 'shield', label: 'SHIELD', mark: 'shield' })
+    expect(PROJECT_TABS.filter(t => t.mark).map(t => t.to)).toEqual(['pulse', 'shield'])
+    expect(PROJECT_TABS).toHaveLength(16)
   })
 
-  it('no SHIELD, Quant or IQ project tab, and no sidebar module entry', () => {
-    for (const t of PROJECT_TABS) expect(t.to).not.toMatch(/shield|quant|iq|takeoff/i)
+  it('no Quant or IQ project tab, and no sidebar module entry', () => {
+    for (const t of PROJECT_TABS) expect(t.to).not.toMatch(/quant|iq|takeoff/i)
     const nav = read('lib/nav.js')
     expect(nav).not.toMatch(/to:\s*'\/(pulse|shield|quant|iq)'/)
   })
@@ -86,8 +89,9 @@ describe('navigation — PULSE tab, no unbuilt module surfaces', () => {
     expect(layout).not.toMatch(/animate|animation|ModuleTile/)
   })
 
-  it('existing routes are unchanged: project pulse tab, hidden /pulse and /shield, no quant / iq route', () => {
+  it('existing routes are unchanged: project pulse and shield tabs, hidden /pulse and /shield, no quant / iq route', () => {
     expect(app).toContain('<Route path="pulse" element={<ProjectPulse />} />')
+    expect(app).toContain('<Route path="shield" element={<ProjectShield />} />')
     expect(app).toContain('<Route path="pulse"          element={<Pulse />} />')
     expect(app).toContain('<Route path="shield"         element={<Shield />} />')
     expect(app).not.toMatch(/path="(quant|iq)"/)
@@ -164,12 +168,23 @@ describe('the PULSE indicator dot — continuous, gentle, pausable, motion-safe,
     const glows = [...frames.matchAll(/0 0 (\d+)px/g)].map(m => Number(m[1]))
     expect(Math.min(...glows)).toBe(6)
     for (const g of glows) expect(g).toBeLessThanOrEqual(12)
-    for (const f of frames.match(/box-shadow:[^;]+;/g)) expect(f).toContain('var(--color-brand-pulse)')
+    // ONE keyframe for every advanced module: the glow colour is the
+    // `--module-glow` custom property each tile sets from its own token, and
+    // PULSE's pink is the fallback so the PULSE dot renders exactly as before.
+    for (const f of frames.match(/box-shadow:[^;]+;/g)) expect(f).toContain('var(--module-glow, var(--color-brand-pulse))')
+    expect(css.match(/@keyframes module-beat/g)).toHaveLength(1)
   })
 
-  it('the glow is permanent: the static dot carries the same glow as the rest frame', () => {
-    expect(tile).toContain('shadow-[0_0_6px_var(--color-brand-pulse)]')
-    expect(frames).toMatch(/0%, 50%, 100% \{ transform: scale\(1\);\s+box-shadow: 0 0 6px\s+var\(--color-brand-pulse\); \}/)
+  it('the glow is permanent: the static dot carries the same glow as the rest frame, in the module colour', () => {
+    expect(tile).toContain('shadow-[0_0_6px_var(--module-glow)]')
+    expect(frames).toMatch(/0%, 50%, 100% \{ transform: scale\(1\);\s+box-shadow: 0 0 6px\s+var\(--module-glow, var\(--color-brand-pulse\)\); \}/)
+  })
+
+  it('each module dot is its own token — PULSE pink, SHIELD cyan — set through the shared glow property', () => {
+    const dots = mark.slice(mark.indexOf('const DOT'), mark.indexOf('export function ModuleMark'))
+    expect(dots).toContain("pulse:  'bg-brand-pulse [--module-glow:var(--color-brand-pulse)]'")
+    expect(dots).toContain("shield: 'bg-brand-shield [--module-glow:var(--color-brand-shield)]'")
+    expect(dots).not.toMatch(/quant|iq:/i)
   })
 
   it('the dot animates only under motion-safe and only while not paused', () => {
@@ -182,23 +197,33 @@ describe('the PULSE indicator dot — continuous, gentle, pausable, motion-safe,
     expect(svg).not.toMatch(/animate|animation/)
   })
 
-  it('the beat is used once — the project PULSE heading, beside its pause control — never on SHIELD or the pointer', () => {
+  // The shared advanced-module convention: every branded module PAGE heading
+  // carries the beat beside its pause control — PULSE (pink) and SHIELD (cyan)
+  // — exactly once each; the pointer pages and the tab bar stay static.
+  it('the beat is used once per module page heading — PULSE and SHIELD — beside a pause control, never on a pointer', () => {
     expect(pulsePage).toContain('<ModuleTile module="pulse" beat paused={beatPaused} />')
     expect(pulsePage).toContain('<BeatToggle paused={beatPaused} onToggle={() => setBeatPaused(p => !p)} />')
     expect(pulsePage.match(/<ModuleTile[^>]*\bbeat\b/g)).toHaveLength(1)
+    expect(shieldPage).toContain('<ModuleTile module="shield" beat paused={beatPaused} />')
+    expect(shieldPage).toContain('<BeatToggle paused={beatPaused} onToggle={() => setBeatPaused(p => !p)} subject="glow animation" />')
+    expect(shieldPage.match(/<ModuleTile[^>]*\bbeat\b/g)).toHaveLength(1)
     expect(pointer).not.toMatch(/\bbeat\b|BeatToggle/)
     expect(shield).not.toMatch(/\bbeat\b|animate|BeatToggle/)
   })
 
-  it('the pause state lives in the heading, not in the workspace that owns the subscriptions', () => {
-    const heading = pulsePage.slice(pulsePage.indexOf('function PulseHeading'), pulsePage.indexOf('function PulseWorkspace'))
-    expect(heading).toContain('const [beatPaused, setBeatPaused] = useState(false)')
+  it('the pause state lives in each heading, not in the workspace that owns the subscriptions', () => {
+    const pulseHeading = pulsePage.slice(pulsePage.indexOf('function PulseHeading'), pulsePage.indexOf('function PulseWorkspace'))
+    expect(pulseHeading).toContain('const [beatPaused, setBeatPaused] = useState(false)')
     expect(pulsePage.slice(pulsePage.indexOf('function PulseWorkspace'))).not.toMatch(/useState|beatPaused/)
+    const shieldHeading = shieldPage.slice(shieldPage.indexOf('function ShieldHeading'), shieldPage.indexOf('function ShieldWorkspace'))
+    expect(shieldHeading).toContain('const [beatPaused, setBeatPaused] = useState(false)')
+    expect(shieldPage.slice(shieldPage.indexOf('function ShieldWorkspace'))).not.toMatch(/useState|beatPaused/)
   })
 
   it('no React timer, frame loop or canvas', () => {
     expect(mark).not.toMatch(/setInterval|setTimeout|requestAnimationFrame|useEffect|useState|<canvas/)
     expect(pulsePage).not.toMatch(/setInterval|setTimeout|requestAnimationFrame|<canvas/)
+    expect(shieldPage).not.toMatch(/setInterval|setTimeout|requestAnimationFrame|<canvas/)
   })
 })
 
@@ -212,10 +237,14 @@ describe('pause / resume control (WCAG 2.2.2)', () => {
     expect(toggle).not.toMatch(/tabIndex|onMouseDown|onPointerDown/)
   })
 
-  it('names its current action, with the visible word inside the accessible name', () => {
-    expect(toggle).toContain("aria-label={paused ? 'Resume heartbeat animation' : 'Pause heartbeat animation'}")
+  it('names its current action and subject, with the visible word inside the accessible name', () => {
+    // `subject` defaults to PULSE's wording, so the PULSE control is announced
+    // exactly as before; SHIELD passes "glow animation".
+    expect(toggle).toContain("subject = 'heartbeat animation'")
+    expect(toggle).toContain("aria-label={paused ? `Resume ${subject}` : `Pause ${subject}`}")
     expect(toggle).toContain("{paused ? 'Resume' : 'Pause'}")
     expect(toggle).not.toContain('aria-pressed') // label changes, so no pressed state as well
+    expect(pulsePage).toMatch(/<BeatToggle paused=\{beatPaused\} onToggle=\{\(\) => setBeatPaused\(p => !p\)\} \/>/)
   })
 
   it('is discreet but keeps the 44px touch target and a visible keyboard focus', () => {
@@ -237,7 +266,7 @@ describe('pause / resume control (WCAG 2.2.2)', () => {
 describe('no misleading claims', () => {
   const claims = /\bLIVE\b|real-time|realtime|monitoring|patent|proprietary|world-first|world's first|\bAI\b|\bscore\b/i
 
-  it('SHIELD placeholder, PULSE pointer and PULSE heading make no live or IP claim', () => {
+  it('SHIELD pointer, PULSE pointer and PULSE heading make no live or IP claim', () => {
     for (const [f, src] of [['Shield', shield], ['Pulse', pointer], ['ModuleMark', mark]]) {
       expect(src, f).not.toMatch(claims)
     }
@@ -245,9 +274,13 @@ describe('no misleading claims', () => {
     expect(heading).not.toMatch(claims)
   })
 
-  it('SHIELD keeps its Coming Soon status and describes commercial assurance, not safety', () => {
-    expect(shield).toContain('<Badge label="Coming Soon" variant="soon" />')
-    expect(shield).toContain('Commercial audit and assurance')
+  // ADR-50: the /shield route became a pointer to the project tab (the /pulse
+  // precedent). Coming Soon is gone; the copy names the five checks and still
+  // describes commercial assurance, never safety.
+  it('SHIELD is a pointer to the project tab, describes commercial assurance, not safety, and no longer says Coming Soon', () => {
+    expect(shield).not.toContain('Coming Soon')
+    expect(shield).toContain('to="/projects"')
+    expect(shield).toContain('Commercial assurance checks')
     expect(shield).not.toMatch(/safety|HSEQ|hazard|incident/i)
   })
 })

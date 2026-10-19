@@ -3183,7 +3183,9 @@ stays last-write-wins.
 *Scope held:* `purchaseOrders`, `progressClaims`, `variations`, `budgetLines` and
 `costCodes` are untouched and remain client-enforced (Deferred Controls 1 and 2).
 No UI change, no new status, no `cancelReason`, no backend, and the rules were
-**not published** — that remains a manual step, gated on the ordering above.
+**not published by this increment** — that remained a manual step, gated on the
+ordering above, and was completed on 19 October 2026 when the whole rules file
+was published with the PULSE™ 1B release (ADR-49).
 
 ## ADR-41: Subscription-Hook Standard and a Blocking Lint Gate (keyed snapshot / derived loading; a failed financial read stays UNAVAILABLE; narrowly-scoped react-refresh allowance; 0 errors / 0 warnings enforced in CI)
 
@@ -3809,7 +3811,7 @@ route, never on the Dashboard or in navigation (the Beta Launch Readiness
 decision). **Open product decision, deliberately not resolved here:** SHIELD™'s
 definition — PRODUCT.md says *commercial audit and assurance*; product
 discussion has described it as *safety*, which would collide with the HSEQ
-anti-goal.
+anti-goal. **Resolved by ADR-50: SHIELD™ is commercial assurance.**
 
 **Listener count.** `projects` + ten snapshot hooks (ADR-42) + **one**
 `activities` = 12 for a financial-role user; subcontractor/client open only
@@ -4345,11 +4347,10 @@ ADR-47 pins for "eleven subscriptions" and "no write callback" in
 `pulse.test.js` are revised **explicitly** (eleven sources + one acknowledgement
 subscription; exactly two acknowledgement callbacks, still no financial write
 and no Firebase import) — 282. No dependency, no Dashboard change, no
-notification surface. **The new rules block is not yet published**: production
-rollout needs the product owner's separate approval and `npm run test:rules`
-beforehand (DEPLOYMENT.md); until it is published, the production hook's read
-and writes are denied by default and the page shows *Management status
-unknown* while every indicator keeps working. Manual acceptance TESTING.md §25.
+notification surface. **Released to production on 19 October 2026**: merged to
+`main`, Azure CI passed, the full rules suite passed, the Firestore rules
+(including this block) were published, Hosting was deployed and the live
+behaviour verified by the product owner. Manual acceptance TESTING.md §25.
 
 **Deferred / not built (recorded, not promised):** assignment to a person (no
 readable user directory — ADR-27), notifications or reminders of any kind,
@@ -4357,3 +4358,114 @@ acknowledgement history or audit trail (Trusted-Backend requirement 9),
 record-level deep links (no target page accepts a filter), acknowledging
 needs-data or unavailable states, Dashboard or portfolio surfaces, any
 severity, score or trend, and any AI.
+
+## ADR-50: Constrapp SHIELD™ foundation (commercial assurance — five read-only, project-scoped checks over existing records; no persistence, no score, no AI; SHIELD is NOT HSEQ)
+
+**Context.** SHIELD™ had been a hidden Coming Soon placeholder since the
+Beta Launch Readiness increment, and its *definition* was an open product
+decision recorded by ADR-45 Decision 7: PRODUCT.md said *commercial audit and
+assurance*; product discussion had also described it as *safety management*,
+which collides with the HSEQ anti-goal (PRODUCT.md → What Constrapp Is Not).
+A read-only inspection of the commercial code found that every candidate
+assurance condition could be decided from selectors that already exist —
+`normaliseInvoiceRef`, `invoiceTotals`, `postedInvoicedByPoLine`,
+`postedInvoicedByPo`, the PO / claim / invoice status constants,
+`allocationExceptions`, `creditNoteExceptions` (through
+`creditTargetException`), `releaseExceptions`, `overReleasedRows` and
+`payablesSummary` — and that several of them are visible nowhere after the
+fact: the duplicate-reference and over-invoicing checks are authoring-time
+warnings only, `maturedCommittedByCostCode` floors an over-invoiced PO line at
+zero, and the PO and claim lifecycles are client-enforced so a PO can be closed
+or cancelled with claims and posted invoices still against it.
+
+**Decision 1 — SHIELD™ permanently means commercial assurance.** For this
+product roadmap SHIELD™ identifies **objective, evidence-backed commercial
+exceptions** in a project's existing commercial records. It is **not** HSEQ,
+workplace health and safety, fraud detection, regulatory or compliance
+certification, or AI prediction. The ADR-45 open decision is closed; the HSEQ
+anti-goal stands untouched.
+
+**Decision 2 — exactly five approved checks**, evaluated by a pure engine
+(`lib/shield.js → evaluateShield`) that composes existing selectors and status
+constants and adds **no financial formula**: (1) **potential duplicate supplier
+invoices** — non-cancelled invoices sharing the same supplier identity and the
+same non-blank normalised supplier reference; (2) **supplier invoice
+integrity** — a counting invoice's stored header totals against
+`invoiceTotals` of its own stored lines and retention, plus counted lines with
+no cost code; (3) **purchase order over-invoicing exposure** — posted ex-GST
+invoiced-to-date above a PO line value or the PO subtotal, with approved
+supplier variations on the PO as context; (4) **commitment records requiring
+reconciliation** — an uncommitted PO with counted cost, a closed/cancelled PO
+with an open claim, more than one open claim per PO, more than one active
+invoice per claim; (5) **existing financial exceptions** — a roll-up of the
+already-derived payables exceptions, unchanged, with their originating module.
+Everything else proposed in the inspection — missing approval evidence,
+single-actor segregation alerts, currency mismatch, duplicate payments,
+cost-code spine integrity beyond check 2, further commitment sub-conditions —
+is **deferred until separately approved**.
+
+**Decision 3 — read-only and project-scoped.** A project tab
+(`/projects/:id/shield`, immediately after PULSE, with the static SHIELD mark
+in the tab and — by a later architect decision — the shared advanced-module
+heading convention on the page: the tile's luminous dot beats continuously in
+`brand-shield` beside a Pause / Resume control, through the one `module-beat`
+keyframe parameterised by `--module-glow` (DESIGN_SYSTEM.md → Module Branding);
+the hidden top-level `/shield` route is a pointer like `/pulse`). The
+workspace mounts the seven existing hooks — purchase orders, progress claims,
+supplier invoices, supplier credit notes, supplier payments, retention releases,
+variations — only behind the financial-role gate (`company_admin`,
+`project_manager`, `qs`); other roles get the restricted card and open no
+subscription. **No write path, transaction, persistence, acknowledgement,
+notification, backend, collection, rules change or dependency.** One project in
+one currency; nothing is summed across projects.
+
+**Decision 4 — five honest states, declared dependencies.** Each check resolves
+to *loading / unavailable / needs data / finding / no issue* through the ADR-42
+`figureState` gate over its own `CHECK_DEPENDENCIES` (perturbation-verified), so
+a loading, failed or missing source can never read as *no issue*, and a failure
+of a source a check does not read never blocks it. An empty record set, or a
+set in which the only records found are malformed, is **needs data** — never a
+clean bill. Comparisons are in whole cents (`toCents`); per-line GST is never
+re-derived (the create path's unrounded-GST artefact is not a finding); drafts
+and approved-but-unposted invoices are never integrity failures.
+
+**Decision 5 — findings are exceptions or conditions needing review, not proof
+of wrongdoing.** Every card says so; check 3 is worded as *exposure* with
+approved supplier variations shown and never deducted; check 4 is *records
+requiring reconciliation* and infers no conduct; check 5 preserves every
+existing exception definition, lists one row per underlying exception with its
+module, and uses the existing credit-validity gate so an invalid credit note
+never reduces a valid liability. Evidence rows carry the source document ids
+and user-facing numbers; links are tab-level (no page accepts a record filter).
+
+**Decision 6 — no score, severity weighting, threshold, trend, history,
+prediction, portfolio or cross-currency aggregation, AI claim or compliance
+certification** — now or by extension of this engine. Counts by state are
+counts only.
+
+**Decision 7 — existing financial formulas and records are untouched.**
+`lib/pulse.js`, `lib/pulseAttention.js`, `lib/forecast.js`, `lib/margin.js`,
+`lib/cashFlow.js`, `lib/supplierPayments.js` and `lib/projectSnapshot.js` are
+unmodified; the engine imports and never re-implements. Firestore Security
+Rules remain the only security boundary: **SHIELD detects, it enforces
+nothing** — every condition it lists is one that rules deliberately cannot
+prevent (Deferred Controls 1–3, 9, 18, 24, 25, 29) and a direct SDK caller can
+still create it.
+
+**Consequences.** New: `lib/shield.js`, `pages/project/ProjectShield.jsx`,
+`pages/project/shield/ShieldCheckCard.jsx` (its own card — the PULSE
+`IndicatorCard` is deliberately not refactored into a shared abstraction),
+`tests/unit/shield.test.js` (202). Modified: `lib/projectTabs.js` (16 tabs; the
+SHIELD tab carries `mark: 'shield'`), `App.jsx` (project route),
+`pages/Shield.jsx` (placeholder → pointer); `moduleBranding.test.js` and
+`betaSurfaces.test.js` pins revised **explicitly** (tab count 15 → 16, marks
+`['pulse', 'shield']`, the Coming Soon pin replaced by a pointer pin).
+AGENT.md's AI Feature Placeholder Rule gains a SHIELD™ exception scoped to
+exactly these five checks. **Status: implemented — NOT YET DEPLOYED.** Release
+is Hosting-only (no rules change, no migration, no backfill). Manual acceptance
+TESTING.md §26.
+
+**Deferred / not built (recorded, not promised):** the deferred checks above,
+acknowledgement or any SHIELD persistence (the PULSE 1B pattern would apply),
+record-level deep links, a portfolio register, Dashboard surfaces, and any
+severity, score, trend or AI.

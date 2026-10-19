@@ -59,9 +59,9 @@ modules** (screens exist, no functionality) are listed in the module-status tabl
 There is **no backend code**: no Cloud Functions, no server, no `functions/`
 directory, and no `.firebaserc`. (`frontend/firebase.json` declares the Firestore
 and Storage emulators, the two rules-file paths for the automated Security Rules
-suites, and a **Firebase Hosting** block that has never been deployed — no
-functions target, and with no `.firebaserc` a deploy must name `--project`
-explicitly.) The browser talks directly to
+suites, and a **Firebase Hosting** block, first deployed by hand on 19 October
+2026 — no functions target, and with no `.firebaserc` a deploy must name
+`--project` explicitly.) The browser talks directly to
 Firebase Auth, Firestore **and Cloud Storage**, which since the Documents &
 Drawings foundation carries real file bytes. All business rules run client-side,
 backed by **two** rules files — `firestore.rules` and `storage.rules` — which are
@@ -112,8 +112,11 @@ frontend/                  The entire application (run all npm commands here)
                            only, ADR-45), Projects,
                            CompanySettings (country & base currency),
                            Contacts (company directory), Subcontractors (filtered
-                           contacts view), Pulse, Shield
-    pages/project/         ProjectOverview, ProjectBudget, ProjectCostCodes,
+                           contacts view), Pulse and Shield (hidden pointer
+                           pages to the project tabs — no subscription)
+    pages/project/         ProjectOverview, ProjectShield (SHIELD™ foundation,
+                           ADR-50; pages/project/shield/ShieldCheckCard.jsx is
+                           its presentation-only card), ProjectBudget, ProjectCostCodes,
                            ProjectPurchaseOrders, ProjectProgressClaims,
                            ProjectInvoices (supplier/AP), ProjectClientInvoices (client/AR),
                            ProjectClientReceipts (cash received),
@@ -159,6 +162,12 @@ frontend/                  The entire application (run all npm commands here)
                            + nextMilestone; NON-financial, no completion %),
                            contacts.js,
                            boq.js (pure BOQ arithmetic + read-time budget comparison),
+                           shield.js (SHIELD™ foundation — five read-only
+                           commercial assurance checks COMPOSING
+                           normaliseInvoiceRef / invoiceTotals /
+                           postedInvoicedByPoLine / postedInvoicedByPo / status
+                           constants / the payables exception selectors through
+                           figureState; no formula of its own; ADR-50),
                            projectTimeline.js (programme domain logic — NON-financial),
                            activityQuickActions.js (guarded quick status write —
                            injected SDK, no Firebase import; ADR-46),
@@ -204,7 +213,7 @@ ProtectedRoute (redirects to /login when signed out)
    ├─ /                        Dashboard
    ├─ /projects                Projects list
    ├─ /projects/:projectId     ProjectDetailLayout (tab bar; index → overview)
-   │    overview | pulse | boq | tenders | budget | cost-codes | purchase-orders | progress-claims | invoices | variations | forecasting | commercial  (live)
+   │    overview | pulse | shield | boq | tenders | budget | cost-codes | purchase-orders | progress-claims | invoices | variations | forecasting | commercial  (live)
    │      (the `pulse` route renders PULSE™ 1A (ADR-47): six deterministic, read-only
    │       project health indicators from lib/pulse.js — financial roles only; the
    │       workspace mounts the ten Dashboard-snapshot hooks plus useProjectActivities
@@ -212,6 +221,11 @@ ProtectedRoute (redirects to /login when signed out)
    │       usePulseAcknowledgements — NOT a PULSE source — and derives a needs-attention /
    │       acknowledged status beside each finding from lib/pulseAttention.js; the only
    │       PULSE writes are the two revision-guarded acknowledge / withdraw transactions)
+   │      (the `shield` route renders the SHIELD™ foundation (ADR-50): five deterministic,
+   │       read-only commercial assurance checks from lib/shield.js — financial roles only;
+   │       the workspace mounts seven existing hooks (POs, claims, supplier invoices,
+   │       credit notes, payments, retention releases, variations) for THIS project;
+   │       no write path, no persistence, no score)
    │      (the `forecasting` route renders the Forecast Cost to Complete page; the tab is labelled "Forecast".
    │       the `invoices` route renders SUPPLIER invoices (AP); the tab is labelled "Supplier Invoices".
    │       the `commercial` route is a nested layout — index = Project Margin,
@@ -247,8 +261,10 @@ ProtectedRoute (redirects to /login when signed out)
    ├─ /pulse                   PULSE™ pointer — route LIVE, sidebar entry HIDDEN; explains
    │                            that indicators live on each project's PULSE tab and links
    │                            to /projects (ADR-47). No portfolio health view exists
-   ├─ /shield                  Placeholder (SHIELD™) — route LIVE, sidebar entry HIDDEN
-   │                            (both absent from lib/nav.js for private beta)
+   ├─ /shield                  SHIELD™ pointer — route LIVE, sidebar entry HIDDEN; explains
+   │                            that the checks live on each project's SHIELD tab and links
+   │                            to /projects (ADR-50). No portfolio assurance view exists
+   │                            (both pointers absent from lib/nav.js for private beta)
    └─ *                        → /projects
 ```
 
@@ -288,8 +304,8 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Contacts | Implemented (foundation) — company-wide directory; supplier picker on POs |
 | Subcontractors | Implemented — filtered contacts view (the IQ™ "Coming Soon" card was removed for private beta) |
 | Documents & Drawings | Implemented (foundation) — drawing masters + **immutable** revisions with a transactional current-revision pointer, revision history, current/superseded/withdrawn lifecycle, explicit succession on withdrawal, and a flat general-document register with project/internal visibility. Bytes in Cloud Storage, metadata in Firestore, **uploads Storage-first**; **no photos, DWG, markup, OCR, AI or takeoff** |
-| Constrapp PULSE™ | **Implemented (1A, ADR-47)** — a project tab of six deterministic, explainable indicators (forecast over budget · cost codes not forecast · negative forecast gross profit · overdue programme activities · past-due supplier invoices · pending variation exposure), each in one of five states (loading / unavailable / needs data / finding / no issue), composed in `lib/pulse.js` from `projectForecastRows` / `computeMargin` / `payablesSummary` / `isOverdue` through the ADR-42 `figureState` vocabulary; evidence rows and tab-level links; **no score, threshold, trend, prediction or Dashboard surface**. **PULSE™ 1B (ADR-49)** adds the one PULSE write path: an acknowledgement per indicator (`…/pulseAcknowledgements/{indicatorId}`, new rules block) with a note and a required review-by date, withdrawable, derived *needs attention / acknowledged / no longer present / unknown* status beside each finding (`lib/pulseAttention.js`) — never a resolution, never a change to an indicator. The top-level `/pulse` route is a hidden pointer to the tab |
-| SHIELD™ | Placeholder screen — route and page live, **hidden from the sidebar** for private beta (`lib/nav.js`) |
+| Constrapp PULSE™ | **Implemented and live in production (1A ADR-47; 1B ADR-49, released 19 October 2026)** — a project tab of six deterministic, explainable indicators (forecast over budget · cost codes not forecast · negative forecast gross profit · overdue programme activities · past-due supplier invoices · pending variation exposure), each in one of five states (loading / unavailable / needs data / finding / no issue), composed in `lib/pulse.js` from `projectForecastRows` / `computeMargin` / `payablesSummary` / `isOverdue` through the ADR-42 `figureState` vocabulary; evidence rows and tab-level links; **no score, threshold, trend, prediction or Dashboard surface**. **PULSE™ 1B (ADR-49)** adds the one PULSE write path: an acknowledgement per indicator (`…/pulseAcknowledgements/{indicatorId}`, new rules block) with a note and a required review-by date, withdrawable, derived *needs attention / acknowledged / no longer present / unknown* status beside each finding (`lib/pulseAttention.js`) — never a resolution, never a change to an indicator. The top-level `/pulse` route is a hidden pointer to the tab |
+| Constrapp SHIELD™ | **Implemented (foundation, ADR-50) — NOT YET DEPLOYED.** Commercial assurance, never HSEQ. A project tab of five deterministic, read-only checks (potential duplicate supplier invoices · supplier invoice integrity · purchase order over-invoicing exposure · commitment records requiring reconciliation · existing financial exceptions), each in one of five states (loading / unavailable / needs data / finding / no issue), composed in `lib/shield.js` from existing selectors and status constants through the ADR-42 `figureState` vocabulary over declared dependencies; evidence rows with source ids and tab-level links; **no write path, persistence, score, severity, trend, prediction or Dashboard surface**. The top-level `/shield` route is a hidden pointer to the tab |
 | BOQ (Bill of Quantities) | Implemented (foundation) — measured items with optional rates, rules-enforced derived amounts, read-time budget comparison; **feeds no financial figure**; Estimating and BOQ → Budget transfer are later branches |
 | Project Timeline (programme) | Implemented (foundation) — activities + milestones, date-only planned/actual dates, manual progress, read-time overdue/horizon derivation, Due filter (overdue / due within 14 days), guarded quick status actions and a midnight-advancing clock (ADR-46), read-only CSS/SVG Gantt (no new dependency), cancel-not-delete; **`qs` is read-only**, subcontractor/client denied; **no baseline, no dependencies, no financial effect** |
 | Photos, Reports tabs | Placeholder (`ProjectPlaceholder`) — routes and pages live, **hidden from the project tab bar** for private beta (`lib/projectTabs.js`) |

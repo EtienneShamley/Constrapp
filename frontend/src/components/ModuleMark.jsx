@@ -21,6 +21,15 @@ const TILE = {
   shield: 'bg-brand-shield/10 border-brand-shield/20',
 }
 
+// The luminous dot's fill and its glow colour. `--module-glow` feeds the ONE
+// shared `module-beat` keyframe and the static rest glow, so each module beats
+// in its own token without a keyframe of its own. Quant™ and IQ™ join here
+// with their tokens when their pages ship.
+const DOT = {
+  pulse:  'bg-brand-pulse [--module-glow:var(--color-brand-pulse)]',
+  shield: 'bg-brand-shield [--module-glow:var(--color-brand-shield)]',
+}
+
 export function ModuleMark({ module, className = 'w-3.5 h-3.5' }) {
   return (
     <svg
@@ -40,10 +49,12 @@ export function ModuleMark({ module, className = 'w-3.5 h-3.5' }) {
 }
 
 // The v5 feature tile (36px, 10px radius, tinted fill and border) holding the
-// mark. `beat` adds the PULSE indicator dot at the tile's corner, always lit by
-// a soft token glow. Unless `paused`, it beats continuously — CSS only, and
-// only under motion-safe, so reduced-motion users get the still, glowing dot.
-// Every continuous beat MUST be rendered beside a BeatToggle (WCAG 2.2.2).
+// mark. `beat` adds the module's luminous dot at the tile's corner, always lit
+// by a soft glow in the module's own token. Unless `paused`, it beats
+// continuously — CSS only, and only under motion-safe, so reduced-motion users
+// get the still, glowing dot. The dot is decorative: it never means the module
+// is monitoring anything in the background. Every continuous beat MUST be
+// rendered beside a BeatToggle (WCAG 2.2.2).
 export function ModuleTile({ module, beat = false, paused = false }) {
   return (
     <span className={`relative inline-flex w-9 h-9 shrink-0 items-center justify-center rounded-[10px] border ${TILE[module]}`}>
@@ -51,7 +62,7 @@ export function ModuleTile({ module, beat = false, paused = false }) {
       {beat && (
         <span
           aria-hidden="true"
-          className={`absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-brand-pulse shadow-[0_0_6px_var(--color-brand-pulse)] ${paused ? '' : 'motion-safe:animate-module-beat'}`}
+          className={`absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full ${DOT[module]} shadow-[0_0_6px_var(--module-glow)] ${paused ? '' : 'motion-safe:animate-module-beat'}`}
         />
       )}
     </span>
@@ -60,13 +71,14 @@ export function ModuleTile({ module, beat = false, paused = false }) {
 
 // The pause / resume control for a continuous beat (WCAG 2.2.2 Pause, Stop,
 // Hide). Small and muted, but a real <button> with a 44px target and a label
-// that names its action. Hidden under reduced motion, where nothing moves.
-export function BeatToggle({ paused, onToggle }) {
+// that names its action and its subject (PULSE's heartbeat by default; SHIELD
+// passes "glow animation"). Hidden under reduced motion, where nothing moves.
+export function BeatToggle({ paused, onToggle, subject = 'heartbeat animation' }) {
   return (
     <button
       type="button"
       onClick={onToggle}
-      aria-label={paused ? 'Resume heartbeat animation' : 'Pause heartbeat animation'}
+      aria-label={paused ? `Resume ${subject}` : `Pause ${subject}`}
       className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center gap-1.5 rounded-lg px-2 text-[11px] font-semibold text-brand-muted transition-colors hover:text-brand-text focus-visible:outline-2 focus-visible:outline-brand-accent motion-reduce:hidden"
     >
       <svg viewBox="0 0 12 12" fill="currentColor" aria-hidden="true" focusable="false" className="w-2.5 h-2.5 shrink-0">

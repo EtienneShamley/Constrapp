@@ -11,6 +11,11 @@ export const PROJECT_TABS = [
   // /pulse route remains a pointer only. `mark` shows the static PULSE line
   // mark beside the compact label (ADR-48) — no animation in the tab bar.
   { to: 'pulse',            label: 'PULSE', mark: 'pulse' },
+  // SHIELD™ foundation (ADR-50): five deterministic commercial assurance checks
+  // over the project's own commitment and payables records — read-only,
+  // financial roles. The hidden top-level /shield route remains a pointer only.
+  // `mark` shows the static SHIELD line mark beside the compact label.
+  { to: 'shield',           label: 'SHIELD', mark: 'shield' },
   { to: 'boq',              label: 'BOQ' },
   { to: 'tenders',          label: 'Tenders' },
   { to: 'budget',           label: 'Budget' },
