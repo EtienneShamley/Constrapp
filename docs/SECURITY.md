@@ -87,6 +87,8 @@ to financial roles.**
 | `…/projects/{id}/drawings/{id}` | **any company member** — including `subcontractor` and `client` | **`company_admin`, `project_manager` only — QS excluded**; born-empty create, four `hasOnly` update shapes, +1 revision count, non-whitespace withdraw reason | blocked — withdraw via status |
 | `…/projects/{id}/drawings/{id}/revisions/{id}` | **any company member** | same drawing writers; **file and authored identity immutable**, exact `storagePath` required, legal transitions only | blocked — a revision is never deleted |
 | `…/projects/{id}/documents/{id}` | `internal` → financial roles; `project` → **any company member** | financial roles; **file identity immutable**, three `hasOnly` update shapes, non-whitespace withdraw reason | blocked — withdraw via status |
+| `…/projects/{id}/takeoffPages/{drawingId}_{revisionId}_{page}` | **`company_admin`, `project_manager`, `qs`** | same three roles; **id recomputed from the stored sheet identity; drawing + revision EXISTENCE and revision-not-withdrawn via `exists()`/`get()`; exact keys; source/rotation vocabularies; positive page dimensions; calibration shape or null; `calibrationRevision` 0 → exactly +1 per re-calibration; identity, geometry and creation stamps immutable; `revision` exactly +1** | blocked |
+| `…/projects/{id}/takeoffMeasurements/{id}` | **`company_admin`, `project_manager`, `qs`** | same three roles; **`takeoffPageId` recomputed and the page, drawing, revision and cost code must EXIST (revision not withdrawn); kind vocabulary; point-list SIZE by kind (≤ 500); label/name bounds; calibration snapshot for length/area, null for count; identity, kind and creation stamps immutable; `revision` exactly +1; active→void terminal with a non-whitespace reason** — point CONTENT is NOT checked | blocked — void via status |
 | `…/counters/{id}` | financial roles | financial roles | blocked |
 | `…/projects/{id}/counters/{id}` | financial roles | financial roles — **the per-project RFI counter** (`rfis`); +1 semantics NOT enforced | blocked |
 | `…/projects/{id}/rfis/{id}` | **`company_admin`, `project_manager`, `qs`** | same three roles; **create draft-only; the forward-only lifecycle (no reopen, answered cannot cancel, closed/cancelled terminal), the question-block freeze from `open`, the management freeze from `answered`, the raise gate (assignee + due date), `answerDate`/`dueDate >= raisedDate`, and referenced drawing + revision / document EXISTENCE are all rules-enforced** | blocked — cancel via status (draft/open only) |
@@ -1507,9 +1509,114 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     proven unenforced by a passing test in
     `frontend/tests/rules/pulseAcknowledgements.rules.test.js`.
 
+32. **Quant™ 1A takeoff — what a measurement record cannot prove (ADR-51).**
+    The `takeoffPages` / `takeoffMeasurements` blocks enforce tenant, the
+    three roles, exact keys, id ↔ fields agreement, drawing / revision / page /
+    cost-code existence, revision-not-withdrawn, vocabularies, list sizes,
+    label bounds, snapshot shape by kind, immutable identity and creation
+    stamps, actors, server stamps, `revision + 1`, reasoned void and no
+    delete. They **cannot** enforce, and the app checks only client-side:
+    - the **content of `points`** — rules cannot iterate a list, so an element
+      may be anything (`['a', 7]` passes); the app refuses non-finite points and
+      lists unreadable records without drawing or summing them;
+    - that points lie **on the page**, or that the geometry is
+      **non-degenerate** (zero length, collinear area);
+    - that `pageWidth`/`pageHeight`/`pageRotation` are the sheet's **real**
+      canonical geometry, and that `page` is **within the PDF's page count**;
+    - that a calibration's `pageDistance` **equals the distance between its two
+      points**, and — unknowable to any software — that the **real distance is
+      true**: every length and area on the page is a function of this one
+      ratio, which is why the dialog shows the implied drawing scale for
+      review and why nothing is ever re-scaled silently;
+    - that a measurement's calibration **snapshot** matches the page's current
+      or any past calibration — the app derives the *needs review* flag from
+      the stored revision numbers;
+    - that the cost code is **active** (existence is checked, activity is not);
+    - **true concurrency safety** — the `+1` revision rule rejects a *blind*
+      overwrite, but a client that reads the document and writes `revision +
+      1` itself passes; the app's transactions refuse a stale write, the rules
+      merely assist them;
+    - project scoping of the roles (item 20) — any company QS can measure on
+      any project's drawings.
+
+    **Consequence, bounded:** a forged or careless measurement can mislead the
+    reader of the Quant tab and nothing else — it reaches **no BOQ quantity and
+    no financial figure** (Quant 1A has no such write path; Quant 1B will add
+    an explicit, confirmed one). A measurement must therefore never be
+    described as server-verified evidence of anything beyond *who placed these
+    points on which sheet, under which stated calibration, and when*. Every
+    item above is proven unenforced by a passing test in
+    `frontend/tests/rules/takeoff.rules.test.js`.
+
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
 is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.
+
+## Quant™ 1A takeoff — two non-financial collections, `qs` is a full author
+
+The `takeoffPages` and `takeoffMeasurements` blocks (ADR-51) share one audience
+for reads AND writes: `company_admin`, `project_manager`, **`qs`** — a QS
+measures, so unlike the drawing register (where QS cannot write) the QS is a
+full author here. `subcontractor`, `client` and `super_admin` are denied both
+ways: a takeoff is the internal estimate's provenance. Cross-company and
+unauthenticated callers are denied.
+
+**Rules-enforced (proven by `tests/rules/takeoff.rules.test.js`, 56 tests):**
+
+- tenant via the path + `users/{uid}` lookup; the three roles
+- **exact keys** on both documents (`hasOnly` + `hasAll`)
+- a page's id **equals `{drawingId}_{revisionId}_{page}`** recomputed from its
+  stored fields; a measurement's `takeoffPageId` likewise
+- the **drawing and revision exist** and the **revision is not `withdrawn`**
+  (`exists()`/`get()` on the nested revisions path — the RFI precedent) for
+  pages and measurements alike; the **page document exists** and the **cost
+  code exists** for a measurement
+- `source ∈ {pdf, image}`, `pageWidth`/`pageHeight > 0`, `pageRotation ∈ {0,
+  90, 180, 270}`, `page` a positive integer
+- calibration **shape** — two `{x, y}` points, `pageDistance > 0`,
+  `realDistance > 0`, `unit ∈ {mm, m}` — or `null` with `calibrationRevision
+  0` and null stamps; a first calibration is `calibrationRevision 1`; every
+  re-calibration moves it by **exactly +1** and stamps the caller
+- measurement `kind ∈ {length, area, count}`; `points` is a **list** sized
+  ≥ 2 / ≥ 3 / ≥ 1 by kind and ≤ 500; label non-blank ≤ 120; cost-code name
+  non-blank ≤ 200; a calibration **snapshot** `{revision ≥ 1, pageDistance > 0,
+  realDistance > 0, unit}` for length/area and **`null` for a count**
+- immutable identity (sheet triple, page id, kind), geometry (pages) and
+  creation stamps; `updatedBy == request.auth.uid`, `updatedAt ==
+  request.time`; **`revision` exactly `resource.revision + 1`** on every update
+- `active → void` only, with a non-whitespace reason and caller/server void
+  stamps; a voided measurement is immutable; **delete blocked** on both
+
+**The exact sheet-status contract** (rules-enforced through `sourceLive()`,
+which `get()`s both the drawing master and the revision; the app mirrors it
+with `canMeasureOnRevision`):
+
+| Sheet state | Read | Create page / measurement | Re-calibrate | Edit (geometry · label · cost code · snapshot) | Void |
+|---|---|---|---|---|---|
+| Current revision | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Superseded revision | ✓ | ✓ (historical re-measure, warned) | ✓ | ✓ | ✓ |
+| **Withdrawn revision** | ✓ (history) | ✗ | ✗ | ✗ | ✓ (reasoned) |
+| **Withdrawn drawing** (any revision) | ✓ (history) | ✗ | ✗ | ✗ | ✓ (reasoned) |
+| Drawing or revision missing | ✓ | ✗ | ✗ | ✗ | ✓ |
+
+Reads are gated on role only — never on sheet status — so a takeoff taken on
+a sheet that was later superseded or withdrawn stays inspectable by the three
+roles (and by nobody else). The sheet identity (`drawingId`, `revisionId`,
+`page`, `takeoffPageId`) is immutable in every state, so a measurement can
+never be re-pointed from a withdrawn sheet to a live one. Void is the one
+write permitted on a withdrawn sheet: it is housekeeping with a reason, it
+leaves the geometry and label as recorded, and the record is immutable
+afterwards.
+
+**What Quant 1A does NOT do, by construction:** it has **no write path to a
+BOQ item, a budget line or any financial collection** — the hook writes only
+the two takeoff collections and stages no currency lock (pinned by
+`tests/unit/quant.test.js`). Storage Rules are unchanged: the viewer reads a
+drawing object through the existing `get` grant (bytes via the SDK for PDFs, a
+download URL for images) and persists neither.
+
+**What is NOT enforced** is listed in Deferred Control 32 — most notably the
+**content** of `points`, the **truth** of a calibration, and the page number.
 
 ## Project Timeline — the one collection where `qs` is read-only
 

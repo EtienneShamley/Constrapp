@@ -4461,11 +4461,213 @@ SHIELD tab carries `mark: 'shield'`), `App.jsx` (project route),
 `betaSurfaces.test.js` pins revised **explicitly** (tab count 15 → 16, marks
 `['pulse', 'shield']`, the Coming Soon pin replaced by a pointer pin).
 AGENT.md's AI Feature Placeholder Rule gains a SHIELD™ exception scoped to
-exactly these five checks. **Status: implemented — NOT YET DEPLOYED.** Release
-is Hosting-only (no rules change, no migration, no backfill). Manual acceptance
-TESTING.md §26.
+exactly these five checks. **Status: LIVE IN PRODUCTION since 19 October 2026** —
+merged to `main`, Azure CI passed, Hosting deployed by hand and the five checks
+verified in production (a Hosting-only release: no rules change, no migration,
+no backfill). Manual acceptance TESTING.md §26.
 
 **Deferred / not built (recorded, not promised):** the deferred checks above,
 acknowledgement or any SHIELD persistence (the PULSE 1B pattern would apply),
 record-level deep links, a portfolio register, Dashboard surfaces, and any
 severity, score, trend or AI.
+
+## ADR-51: Constrapp Quant™ 1A (manual drawing measurement foundation — calibrated lengths, areas and counts persisted as traceable records; one pinned PDF dependency; read-only BOQ boundary; AI deferred)
+
+**Context.** The commercial lifecycle begins at *Drawing → Quantity → BOQ*,
+and the drawing half of that first arrow has been in place since ADR-28:
+drawing masters, immutable revisions, Storage-first uploads, and a reserved
+takeoff identity of `{ drawingId, revisionId, page }` (Decision 9). The
+quantity half did not exist. A read-only inspection (October 2026) confirmed
+that the app renders a PDF only through the browser's own viewer in an
+`<iframe>`, which exposes no page geometry, that no PDF library, canvas,
+coordinate system or annotation code exists, and that the BOQ already allows
+any financial member to edit an active item's `quantity`. ROADMAP item 6 —
+*Manual QS Takeoff connected to BOQ quantities* — was the next preconstruction
+step, and PRODUCT.md described Quant™ only as a future *AI* takeoff.
+
+**Decision 1 — Quant™ is the drawing takeoff module; Quant 1A is MANUAL.**
+Constrapp Quant™ names the whole measurement capability. Its first release,
+Quant 1A, is a project-scoped takeoff workspace in which a user calibrates a
+sheet from one known distance and measures lengths, areas and counts by
+placing points. **AI-assisted recognition stays deferred** and under the
+placeholder rule; nothing in 1A detects, recognises or infers geometry, and
+the module never claims to. PRODUCT.md's Quant™ definition is re-stated
+accordingly (manual first; AI accelerates an established pipeline later).
+
+**Decision 2 — one approved runtime dependency: `pdfjs-dist`, pinned exactly.**
+`pdfjs-dist@6.4.299` (Apache-2.0) is the first runtime dependency added since
+Recharts. It is **lazily imported** inside the Quant tab together with its
+matching worker (`pdfjs-dist/build/pdf.worker.min.mjs?url`), so Vite emits a
+separate chunk and worker asset and no other page's bundle changes. The
+dependency pin test in `moduleBranding.test.js` lists it explicitly. The Node
+unit suite exercises the same adapter (`lib/pdfRender.js`) through the
+library's legacy build against a committed two-page fixture
+(`tests/unit/fixtures/quant-two-page.pdf`: a portrait page and a landscape page
+with `/Rotate 90` and a CropBox), with no canvas and no network.
+
+**Decision 3 — canonical coordinates are the page's own space.** Every stored
+point is in one canonical space per source page: for a PDF, **the PDF.js
+default viewport at scale 1** (`page.getViewport({ scale: 1 })`), which applies
+the page's intrinsic `/Rotate` and CropBox offset — origin top-left, y down,
+unit = PDF point; for a PNG/JPEG, **intrinsic pixels**. The on-screen canvas is
+that space multiplied by one number, and the SVG overlay uses
+`viewBox="0 0 pageWidth pageHeight"`, so stored geometry is independent of
+window size, CSS scaling, canvas resolution, zoom, pan and device pixel ratio
+by construction. Pointer positions convert through the overlay's rendered
+rectangle; **screen pixels are never stored.** The canvas backing store is
+bounded (8192 px edge / 32 MP desktop; 4096 px / 12 MP touch) and resources
+are released on every page, revision or unmount (render cancelled, page proxy
+cleaned up, document destroyed). User-driven rotation is deferred — a page's
+intrinsic rotation is honoured, nothing else rotates.
+
+**Decision 4 — metric calibration from one known distance; quantities are
+never stored.** A calibration is two canonical points plus the real distance
+between them in **mm or m** (`{ pointA, pointB, pageDistance, realDistance,
+unit }`); length and area need one, a count does not. Output is metres,
+square metres and units, displayed at three decimals through the existing
+`formatQuantity`. **No quantity is persisted anywhere.** Every quantity is
+reproduced from `points` × the applicable calibration
+(`lib/quant.js → measurementQuantity`), the read-time-derivation discipline
+applied to measurement. Zero-length calibration segments and non-positive,
+non-finite or non-numeric distances are refused; no tolerance is invented.
+
+**Decision 5 — calibration provenance and review.** The page document holds
+the **current** calibration and a `calibrationRevision` that moves by exactly
++1 on every re-calibration. Each length/area measurement carries a **snapshot**
+`{ revision, pageDistance, realDistance, unit }` of the calibration it was last
+saved or reviewed under (`null` for a count). At read time a measurement is
+*current* (snapshot revision = page revision), *needs review* (page
+re-calibrated since), *uncalibrated* or *not applicable*. The list shows the
+current quantity and, for a flagged measurement, the quantity it recorded
+under the previous scale (`originalQuantity`) — both reproducible, neither
+stored. Replacing a calibration that measurements depend on requires an
+explicit acknowledgement in the dialog; a rename or re-coding never refreshes
+the snapshot (nothing is silently treated as reviewed); saving edited geometry
+or pressing *Mark reviewed* does. This small schema was chosen over per-page
+calibration history because it explains every historical figure with one
+extra map per measurement and no second collection.
+
+**Decision 6 — two project-scoped collections, deterministic page identity.**
+`…/projects/{projectId}/takeoffPages/{drawingId}_{revisionId}_{page}` holds
+the sheet identity, source (`pdf|image`), canonical `pageWidth`/`pageHeight`/
+`pageRotation`, the calibration and its revision, stamps and `revision`.
+`…/projects/{projectId}/takeoffMeasurements/{id}` holds `takeoffPageId` + the
+identity triple, `kind` (`length|area|count`), `points`, `label`, **required**
+`costCodeId` + frozen `costCodeName` (the commercial spine, ADR-0a), the
+calibration snapshot, `status active|void` with reasoned void stamps, audit
+stamps and `revision`. Rules recompute the page id from the stored fields.
+Neither document carries an amount, a currency, a counter or a BOQ reference.
+
+**Decision 7 — roles and security.** Reads and writes for both collections:
+`company_admin`, `project_manager`, **`qs`** (the QS measures — unlike the
+drawing register, where QS cannot write). `subcontractor`, `client` and
+`super_admin` are denied; cross-company and unauthenticated callers are
+denied. Rules enforce exact keys, the id ↔ fields agreement, that the
+drawing, the revision, the page document and the cost code **exist** and the
+revision is **not withdrawn** (`exists()`/`get()`, the ADR-33 precedent), the
+kind and unit vocabularies, bounded point lists (≥2/≥3/≥1, ≤500), label and
+name bounds, calibration shape by kind, immutable identity/kind/geometry/
+creation stamps, actor ids and server stamps, `revision` exactly +1, the
+active→void transition with a non-whitespace reason, and no delete. **Not
+enforced, documented as Deferred Control 32:** the content of `points` (rules
+cannot iterate a list), geometry on the page or non-degenerate, the page
+number within the PDF, `pageDistance` matching the points, the truth of the
+real distance, the cost code being *active*, true concurrency (the +1 rule
+rejects blind overwrites only), and project-specific membership (item 20).
+Storage Rules are unchanged: the viewer reads a drawing object through the
+existing `get` grant and persists no download URL.
+
+**Decision 8 — revision handling.** A measurement is pinned to its
+`{ drawingId, revisionId, page }` and never moves. New measurements may be
+taken on a current or a **superseded** revision (re-measuring an issued sheet
+for the record is legitimate) and shown with the Documents register's wording
+plus a historical-measurement sentence; **nothing may be created on a
+withdrawn revision or a withdrawn drawing** (client and rules). Nothing
+transfers automatically to a newer revision; the QS re-measures and voids.
+*Release-readiness amendment (October 2026):* the same liveness test gates
+**re-calibration and every active edit** in rules (`sourceLive()` on the
+stored identity, checking both the revision and the drawing master), while
+**void stays permitted on a withdrawn sheet** (reasoned housekeeping) and
+**reads are never gated on sheet status**, so history stays inspectable by
+the three roles. The full table is in SECURITY.md → Quant™ 1A; the UI offers
+only *Show* and *Void* on a withdrawn sheet.
+
+**Decision 9 — revision-guarded concurrency.** Every write is one Firestore
+transaction in `lib/quantActions.js` (SDK injected, the ADR-46/49 pattern):
+read the server copy, compare its `revision` with the rendered copy (`seen`),
+refuse with a named *stale* error on any mismatch, validate the expected state
+on the server copy, write exactly +1 with server stamps. Creating a measurement
+also checks the **page's** revision, so a calibration changed underneath makes
+the save stale rather than silently saving a different quantity. A count on a
+never-calibrated page first creates the page document in its own commit (rules
+verify the page with `exists()`, which sees committed state only). Success is
+reported only after the transaction resolves; permission, offline and unknown
+failures are named and nothing is saved.
+
+**Decision 10 — the read-only BOQ boundary (Quant 1B).** Quant 1A **does not
+update any BOQ quantity, amount or rate, does not call `updateBoqItem`, does
+not transfer anything to Budget, and does not touch Forecast, Margin or Cash
+Flow.** It writes only the two takeoff collections and stages no currency
+lock. Cost-code `code — name` (and the code's unit, as reference) are shown
+read-only. **Quant 1B** is the approved future boundary for linking
+measurements to BOQ items, unit compatibility, reviewed-quantity aggregation
+and explicit BOQ application — a separate approval.
+
+**Decision 11 — production release needs two separately approved actions.**
+(1) The two new rules blocks must be **published** to the console after
+`npm run test:rules` passes (the ADR-40 ordering gate does not apply: no
+existing code writes these paths, so rules may be published before or after
+the build). (2) PDF bytes are fetched into the browser with
+`getBytes` (XHR), so the Storage bucket may need a **CORS rule for the Hosting
+origin**; this cannot be verified from the repository and must not be changed
+by an implementation task. The exact proposed configuration and the
+verification procedure are in DEPLOYMENT.md. Images never need it (they render
+through `<img>`). The viewer bounds the wait and names the prerequisite when a
+PDF cannot be fetched.
+
+**Decision 12 — branding.** The Quant tab sits immediately after SHIELD with
+the static Quant mark (a scale rule); the page heading reads *Constrapp Quant™
+/ Manual quantity takeoff* in the shared advanced-module convention (ADR-48):
+lime `brand-quant` token, the one `module-beat` keyframe through
+`--module-glow`, Pause/Resume, reduced-motion stillness. `/quant` is a hidden
+pointer like `/pulse` and `/shield`.
+
+**Consequences.** New: `lib/quant.js`, `lib/quantActions.js`,
+`lib/pdfRender.js`, `hooks/useTakeoff.jsx`, `pages/project/ProjectQuant.jsx`,
+`pages/project/quant/*` (TakeoffWorkspace, SourcePicker, PageViewer,
+MeasurementOverlay, MeasurementList, CalibrationModal, MeasurementEditorModal,
+MeasurementVoidModal, pdfjsLoader, styles), `pages/Quant.jsx`, two rules
+blocks, `tests/unit/quant.test.js` (105), `tests/rules/takeoff.rules.test.js`
+(56), the PDF fixture, and the `npm run test:quant` launcher + seed
+(`scripts/quant-dev.mjs`, `scripts/seed-quant-emulator.mjs`). Modified: `package.json` (+`pdfjs-dist` 6.4.299),
+`index.css` (+`brand-quant`), `ModuleMark.jsx`, `projectTabs.js` (17 tabs),
+`App.jsx`, `moduleBranding.js`, `hooks/useStorageUpload.jsx`
+(+`getFileBytes`), `moduleBranding.test.js` / `betaSurfaces.test.js` pins
+revised explicitly. AGENT.md's AI Feature Placeholder Rule gains a Quant™ 1A
+exception scoped to manual measurement. **Status: IMPLEMENTED — NOT YET
+DEPLOYED** (rules publish + CORS prerequisite + Hosting deploy are separate,
+approved release actions). Manual acceptance TESTING.md §27.
+
+**Local acceptance environment (release-readiness amendment).** `npm run
+test:quant` (`scripts/quant-dev.mjs` + `scripts/seed-quant-emulator.mjs`)
+starts the Firestore **and Cloud Storage** emulators in `exec` mode, seeds a
+tenant, project, cost codes, two drawings with real bytes (the committed
+two-page PDF fixture with known 4000 × 3000 mm / 6000 × 4000 mm rectangles,
+and generated 800 × 600 PNG sheets with a known 400 px = 4000 mm edge) plus
+takeoff history on a superseded and a withdrawn revision, and starts Vite
+with both emulator opt-ins set for the child process only. `lib/firebase.js`
+gained a Storage-emulator connection that requires every Firestore condition
+plus a fourth flag, so the older launchers are unchanged and Storage is never
+emulated without Firestore; the browser console prints one banner per
+emulator. Firebase Auth stays real (the supported arrangement). The PDF.js
+adapter and lazy loader were additionally verified in Chrome against the
+fixture through a throwaway harness: both sheets render, the worker loads from
+the Vite-served URL, and the canonical-space overlay coincides with the drawn
+rectangles on the portrait and the rotated/cropped page.
+
+**Deferred / not built (recorded, not promised):** BOQ linking and quantity
+application (Quant 1B), AI or automatic recognition, snapping and orthogonal
+constraints, user rotation, deductions/negative areas, volumes, imperial
+units, separate X/Y scales, cross-revision copy or overlay, creating BOQ items
+from Quant, export/printing, layers, text search, drag-to-pan beyond scrolling,
+and any Dashboard surface.

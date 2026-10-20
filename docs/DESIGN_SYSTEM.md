@@ -39,11 +39,14 @@ is the `@theme` block in `frontend/src/index.css` — there is **no**
 | `brand-muted` | `#546E84` | Labels, metadata, disabled |
 | `brand-pulse` | `#FF6B9D` | Constrapp PULSE™ mark and indicator dot only — never a status (ADR-48) |
 | `brand-shield` | `#00D4FF` | Constrapp SHIELD™ mark only — never a status (ADR-48) |
+| `brand-quant` | `#A3E635` | Constrapp Quant™ mark, header dot, active tool and saved-measurement geometry on the sheet — never a status (ADR-51); errors stay `brand-red`, review flags `brand-amber`, selection `brand-accent` |
 | `--font-sans` | Sora, DM Sans, system-ui | Default font stack |
 
-Do not add new colour values; map new needs onto these tokens. The two module
-brand tokens are the only exception, approved narrowly by ADR-48 to replace
-existing hard-coded module colours.
+Do not add new colour values; map new needs onto these tokens. The module
+brand tokens are the only exception: `brand-pulse` and `brand-shield` were
+approved narrowly by ADR-48 to replace existing hard-coded module colours, and
+`brand-quant` by ADR-51 when the Quant™ page shipped (the convention ADR-48
+recorded for a module's own token).
 
 ## Module Branding (ADR-48)
 
@@ -52,18 +55,19 @@ existing hard-coded module colours.
   the full name; navigation uses a compact label ("PULSE", no ™).
 - **Marks** — `components/ModuleMark.jsx`: `ModuleMark` is a 24-unit, 2px,
   round-capped `currentColor` line SVG (PULSE: heartbeat line; SHIELD: shield
-  outline), coloured by `text-brand-pulse` / `text-brand-shield`. Always
-  **decorative** — `aria-hidden="true"`, `focusable="false"`, no `<title>` —
-  and always beside the module name in text. No emoji. Quant™ and IQ™ have no
-  mark until their milestones.
+  outline; Quant: a diagonal scale rule with three graduations, ADR-51),
+  coloured by `text-brand-pulse` / `text-brand-shield` / `text-brand-quant`.
+  Always **decorative** — `aria-hidden="true"`, `focusable="false"`, no
+  `<title>` — and always beside the module name in text. No emoji. IQ™ has no
+  mark until its milestone.
 - **Tile** — `ModuleTile`: the v5 feature tile (36px, `rounded-[10px]`, token
   fill at /10 and border at /20, 18px mark). Pass it to `PageHeader`'s optional
   `mark` prop on a module page.
 - **Motion — the shared advanced-module convention.** Every *live* advanced
   module's **page heading** carries the same luminous dot at its tile's corner
   (`<ModuleTile module="…" beat paused={…} />`): PULSE™ in `brand-pulse`,
-  SHIELD™ in `brand-shield`, and Quant™ / IQ™ in their own tokens when they
-  ship. The dot uses `motion-safe:animate-module-beat`, a gentle continuous
+  SHIELD™ in `brand-shield`, Quant™ in `brand-quant` (ADR-51), and IQ™ in its
+  own token when it ships. The dot uses `motion-safe:animate-module-beat`, a gentle continuous
   lub-dub (1.8s, `infinite`) that varies only scale (≤1.25) and glow
   (6–11px), never opacity, and always carries a static 6px glow so it stays lit
   between pulses and when paused. There is **one** `module-beat` keyframe: its
@@ -73,16 +77,27 @@ existing hard-coded module colours.
   fallback — never a second keyframe per module. A continuous beat **must** sit
   beside a `BeatToggle` (WCAG 2.2.2): a muted 11px Pause / Resume button with a
   44px target, an accessible name that states its subject (`heartbeat
-  animation` for PULSE, `glow animation` for SHIELD), hidden under reduced
-  motion where the dot is still but lit. The beat is **decorative** and never
+  animation` for PULSE, `glow animation` for SHIELD and Quant), hidden under
+  reduced motion where the dot is still but lit. The beat is **decorative** and never
   a claim of background monitoring. Never animate the mark itself, never
   animate the tab bar or a pointer page, and never give an unbuilt module
-  (Quant™, IQ™) a dot before its page exists. Always gate motion with
+  (IQ™) a dot before its page exists. Always gate motion with
   `motion-safe:`.
-- **Tabs** — a project tab may carry `mark` in `lib/projectTabs.js` (PULSE and,
-  since ADR-50, SHIELD — the only two); the layout
+- **Tabs** — a project tab may carry `mark` in `lib/projectTabs.js` (PULSE,
+  SHIELD since ADR-50 and Quant since ADR-51 — the only three); the layout
   renders a 14px static mark before the label and keeps the shared active
-  styling. Only PULSE has one.
+  styling.
+- **Quant™ takeoff workspace (ADR-51).** The sheet is a `<canvas>` (PDF) or
+  `<img>` filling the box of an `<svg>` whose `viewBox` is the page in canonical
+  units and whose `width`/`height` attributes are the CSS size — so geometry
+  lines up at every zoom with no inline style. Saved geometry is
+  `stroke-brand-quant` with `vector-effect="non-scaling-stroke"`; the selected
+  measurement is `brand-accent`; the in-progress draft is dashed `brand-amber`;
+  the calibration segment is dashed `brand-blue`. Tool buttons are real
+  `<button>`s ≥44px with `aria-pressed`; the active tool is tinted
+  `brand-quant/15` and the label carries the meaning. A tap adds a point; the
+  scroller pans (`touch-pan-x touch-pan-y`). Enter finishes, Backspace undoes,
+  Escape cancels — on the focused viewer region only.
 
 ## Shared Components (`frontend/src/components/`)
 

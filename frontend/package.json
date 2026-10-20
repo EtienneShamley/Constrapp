@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "test:boq": "node scripts/boq-dev.mjs",
     "test:credit-notes": "node scripts/credit-notes-dev.mjs",
+    "test:quant": "node scripts/quant-dev.mjs",
     "test:tender": "node scripts/tender-dev.mjs",
     "test:unit": "vitest run --config vitest.config.js",
     "test:rules": "firebase emulators:exec --only firestore,storage --project constrapp-rules-test \"vitest run --config vitest.rules.config.js\""
@@ -17,6 +18,7 @@
   "dependencies": {
     "@tailwindcss/vite": "^4.3.1",
     "firebase": "^12.15.0",
+    "pdfjs-dist": "6.4.299",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-router-dom": "^7.18.0",

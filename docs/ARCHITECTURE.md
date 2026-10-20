@@ -14,7 +14,7 @@ Preconstruction → Procurement → Delivery → Cost Control → Forecasting �
 
 | Phase | What happens | Modules (status) |
 |---|---|---|
-| **Preconstruction** | Measure quantities, build the BOQ, estimate, transfer to an approved budget | Drawings/Takeoff *(planned)*; **BOQ** *(implemented — foundation)*; Estimating incl. BOQ → Budget transfer *(planned)*; **Cost Codes**, **Budgets** *(implemented)* |
+| **Preconstruction** | Measure quantities, build the BOQ, estimate, transfer to an approved budget | **Drawings** *(implemented — foundation)*; **Quant™ 1A manual takeoff** *(implemented — not yet deployed; measurement records only, no BOQ write — Quant 1B)*; **BOQ** *(implemented — foundation)*; Estimating incl. BOQ → Budget transfer *(planned)*; **Cost Codes**, **Budgets** *(implemented)* |
 | **Procurement** | Tender packages, subcontractor invitations, bid levelling, award, commitment | **Tender & Award** *(implemented — foundation)*; subcontractor invitations, bid levelling, and Award → PO transfer *(planned)* → **Purchase Orders** *(implemented)* |
 | **Delivery** | Scope variations, cumulative progress claims against commitments | **Variations** *(implemented — foundation)*; **Progress Claims** *(implemented)* |
 | **Cost Control** | Supplier invoices, actual cost, payments/credit notes | **Supplier Invoices**, **Supplier Payments**, **Supplier Credit Notes** *(implemented)*; Retention Release *(future)* |
@@ -84,7 +84,7 @@ frontend/                  The entire application (run all npm commands here)
   storage.rules            Cloud Storage security rules — the SECOND trust boundary,
                            also published manually
   firebase.json            Firestore + Storage EMULATORS, both rules paths, and a
-                           NEVER-DEPLOYED Hosting block (no functions, no .firebaserc)
+                           Hosting block, deployed by hand since 19 October 2026 (no functions, no .firebaserc)
   vitest.rules.config.js   Vitest config for the rules suite (Node, no app plugins)
   vitest.config.js         Vitest config for the UNIT suite (tests/unit/ only)
   tests/rules/             Firestore AND Storage Security Rules tests (both emulators)
@@ -112,11 +112,19 @@ frontend/                  The entire application (run all npm commands here)
                            only, ADR-45), Projects,
                            CompanySettings (country & base currency),
                            Contacts (company directory), Subcontractors (filtered
-                           contacts view), Pulse and Shield (hidden pointer
+                           contacts view), Pulse, Shield and Quant (hidden pointer
                            pages to the project tabs — no subscription)
     pages/project/         ProjectOverview, ProjectShield (SHIELD™ foundation,
                            ADR-50; pages/project/shield/ShieldCheckCard.jsx is
-                           its presentation-only card), ProjectBudget, ProjectCostCodes,
+                           its presentation-only card), ProjectQuant (Quant™ 1A
+                           role gate + branded heading, ADR-51),
+                           project/quant/ (TakeoffWorkspace — selection, tools,
+                           drafts, zoom; SourcePicker; PageViewer — PDF.js canvas
+                           or <img> under an SVG overlay in canonical page units;
+                           MeasurementOverlay; MeasurementList; CalibrationModal;
+                           MeasurementEditorModal; MeasurementVoidModal;
+                           pdfjsLoader — the only pdfjs-dist import, lazy;
+                           styles.js — page-local), ProjectBudget, ProjectCostCodes,
                            ProjectPurchaseOrders, ProjectProgressClaims,
                            ProjectInvoices (supplier/AP), ProjectClientInvoices (client/AR),
                            ProjectClientReceipts (cash received),
@@ -162,6 +170,17 @@ frontend/                  The entire application (run all npm commands here)
                            + nextMilestone; NON-financial, no completion %),
                            contacts.js,
                            boq.js (pure BOQ arithmetic + read-time budget comparison),
+                           quant.js (Quant™ 1A — pure geometry: distances,
+                           polyline length, shoelace area, counts; metric
+                           calibration; quantity derivation from points ×
+                           calibration; calibration-review state; validation;
+                           display-only render bounds; NO financial arithmetic;
+                           ADR-51), quantActions.js (the five revision-guarded
+                           takeoff transactions — injected SDK, no Firebase
+                           import), pdfRender.js (PDF.js adapter — the scale-1
+                           viewport IS the canonical page space; bounded render;
+                           the module is handed the loaded library, so the Node
+                           suite uses the legacy build against a fixture),
                            shield.js (SHIELD™ foundation — five read-only
                            commercial assurance checks COMPOSING
                            normaliseInvoiceRef / invoiceTotals /
@@ -201,7 +220,9 @@ ProjectsProvider), `useCostCodes()`, `useContacts()`, `useBudgetLines(projectId)
 `useClientInvoices(projectId)`,
 `useClientReceipts(projectId)`, `useSupplierPayments(projectId)`,
 `useVariations(projectId)`, `useForecastLines(projectId)`,
-`useProjectCommercial(projectId)`, `useProjectActivities(projectId)`, `usePulseAcknowledgements(projectId)`.
+`useProjectCommercial(projectId)`, `useProjectActivities(projectId)`, `usePulseAcknowledgements(projectId)`,
+`useTakeoffPages(projectId)` and `useTakeoffMeasurements(projectId)` (both in `hooks/useTakeoff.jsx`,
+Quant™ 1A — two keyed subscriptions plus the five revision-guarded takeoff writes).
 
 ## Routing Structure
 
@@ -213,7 +234,7 @@ ProtectedRoute (redirects to /login when signed out)
    ├─ /                        Dashboard
    ├─ /projects                Projects list
    ├─ /projects/:projectId     ProjectDetailLayout (tab bar; index → overview)
-   │    overview | pulse | shield | boq | tenders | budget | cost-codes | purchase-orders | progress-claims | invoices | variations | forecasting | commercial  (live)
+   │    overview | pulse | shield | quant | boq | tenders | budget | cost-codes | purchase-orders | progress-claims | invoices | variations | forecasting | commercial  (live)
    │      (the `pulse` route renders PULSE™ 1A (ADR-47): six deterministic, read-only
    │       project health indicators from lib/pulse.js — financial roles only; the
    │       workspace mounts the ten Dashboard-snapshot hooks plus useProjectActivities
@@ -226,6 +247,12 @@ ProtectedRoute (redirects to /login when signed out)
    │       the workspace mounts seven existing hooks (POs, claims, supplier invoices,
    │       credit notes, payments, retention releases, variations) for THIS project;
    │       no write path, no persistence, no score)
+   │      (the `quant` route renders Quant™ 1A (ADR-51): MANUAL drawing measurement —
+   │       pick a drawing revision and page from the existing Documents register, render it
+   │       (PDF via lazily loaded PDF.js, PNG/JPEG via <img>), calibrate from one known
+   │       metric distance, measure lengths / areas / counts, and persist them to
+   │       takeoffPages / takeoffMeasurements through revision-guarded transactions;
+   │       company_admin / project_manager / qs; NO BOQ quantity is written — Quant 1B)
    │      (the `forecasting` route renders the Forecast Cost to Complete page; the tab is labelled "Forecast".
    │       the `invoices` route renders SUPPLIER invoices (AP); the tab is labelled "Supplier Invoices".
    │       the `commercial` route is a nested layout — index = Project Margin,
@@ -264,7 +291,10 @@ ProtectedRoute (redirects to /login when signed out)
    ├─ /shield                  SHIELD™ pointer — route LIVE, sidebar entry HIDDEN; explains
    │                            that the checks live on each project's SHIELD tab and links
    │                            to /projects (ADR-50). No portfolio assurance view exists
-   │                            (both pointers absent from lib/nav.js for private beta)
+   ├─ /quant                   Quant™ pointer — route LIVE, sidebar entry HIDDEN; explains
+   │                            that measuring lives on each project's Quant tab and links
+   │                            to /projects (ADR-51). No portfolio takeoff view exists
+   │                            (all three pointers absent from lib/nav.js for private beta)
    └─ *                        → /projects
 ```
 
@@ -305,7 +335,8 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Subcontractors | Implemented — filtered contacts view (the IQ™ "Coming Soon" card was removed for private beta) |
 | Documents & Drawings | Implemented (foundation) — drawing masters + **immutable** revisions with a transactional current-revision pointer, revision history, current/superseded/withdrawn lifecycle, explicit succession on withdrawal, and a flat general-document register with project/internal visibility. Bytes in Cloud Storage, metadata in Firestore, **uploads Storage-first**; **no photos, DWG, markup, OCR, AI or takeoff** |
 | Constrapp PULSE™ | **Implemented and live in production (1A ADR-47; 1B ADR-49, released 19 October 2026)** — a project tab of six deterministic, explainable indicators (forecast over budget · cost codes not forecast · negative forecast gross profit · overdue programme activities · past-due supplier invoices · pending variation exposure), each in one of five states (loading / unavailable / needs data / finding / no issue), composed in `lib/pulse.js` from `projectForecastRows` / `computeMargin` / `payablesSummary` / `isOverdue` through the ADR-42 `figureState` vocabulary; evidence rows and tab-level links; **no score, threshold, trend, prediction or Dashboard surface**. **PULSE™ 1B (ADR-49)** adds the one PULSE write path: an acknowledgement per indicator (`…/pulseAcknowledgements/{indicatorId}`, new rules block) with a note and a required review-by date, withdrawable, derived *needs attention / acknowledged / no longer present / unknown* status beside each finding (`lib/pulseAttention.js`) — never a resolution, never a change to an indicator. The top-level `/pulse` route is a hidden pointer to the tab |
-| Constrapp SHIELD™ | **Implemented (foundation, ADR-50) — NOT YET DEPLOYED.** Commercial assurance, never HSEQ. A project tab of five deterministic, read-only checks (potential duplicate supplier invoices · supplier invoice integrity · purchase order over-invoicing exposure · commitment records requiring reconciliation · existing financial exceptions), each in one of five states (loading / unavailable / needs data / finding / no issue), composed in `lib/shield.js` from existing selectors and status constants through the ADR-42 `figureState` vocabulary over declared dependencies; evidence rows with source ids and tab-level links; **no write path, persistence, score, severity, trend, prediction or Dashboard surface**. The top-level `/shield` route is a hidden pointer to the tab |
+| Constrapp SHIELD™ | **Implemented and live in production (foundation, ADR-50, released 19 October 2026).** Commercial assurance, never HSEQ. A project tab of five deterministic, read-only checks (potential duplicate supplier invoices · supplier invoice integrity · purchase order over-invoicing exposure · commitment records requiring reconciliation · existing financial exceptions), each in one of five states (loading / unavailable / needs data / finding / no issue), composed in `lib/shield.js` from existing selectors and status constants through the ADR-42 `figureState` vocabulary over declared dependencies; evidence rows with source ids and tab-level links; **no write path, persistence, score, severity, trend, prediction or Dashboard surface**. The top-level `/shield` route is a hidden pointer to the tab |
+| Constrapp Quant™ | **Quant 1A implemented (ADR-51) — NOT YET DEPLOYED.** Manual drawing measurement: a project tab that renders one page of an existing drawing revision (PDF through the pinned, lazily loaded `pdfjs-dist`; PNG/JPEG through `<img>`), calibrates it from one known metric distance, measures lengths, areas and counts as canonical page-space geometry, and persists each as a traceable record (`takeoffPages`, `takeoffMeasurements` — two new rules blocks) with a required cost code and a calibration snapshot; quantities are **derived at read time, never stored**; re-calibration flags dependent measurements for review; superseded revisions stay inspectable with a warning; every write is a revision-guarded transaction. **Writes no BOQ quantity and no financial figure (Quant 1B owns BOQ linkage); no AI.** Release needs the rules published and, for PDFs, a bucket CORS rule (DEPLOYMENT.md). `/quant` is a hidden pointer |
 | BOQ (Bill of Quantities) | Implemented (foundation) — measured items with optional rates, rules-enforced derived amounts, read-time budget comparison; **feeds no financial figure**; Estimating and BOQ → Budget transfer are later branches |
 | Project Timeline (programme) | Implemented (foundation) — activities + milestones, date-only planned/actual dates, manual progress, read-time overdue/horizon derivation, Due filter (overdue / due within 14 days), guarded quick status actions and a midnight-advancing clock (ADR-46), read-only CSS/SVG Gantt (no new dependency), cancel-not-delete; **`qs` is read-only**, subcontractor/client denied; **no baseline, no dependencies, no financial effect** |
 | Photos, Reports tabs | Placeholder (`ProjectPlaceholder`) — routes and pages live, **hidden from the project tab bar** for private beta (`lib/projectTabs.js`) |

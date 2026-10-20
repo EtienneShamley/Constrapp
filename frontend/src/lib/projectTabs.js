@@ -16,6 +16,10 @@ export const PROJECT_TABS = [
   // financial roles. The hidden top-level /shield route remains a pointer only.
   // `mark` shows the static SHIELD line mark beside the compact label.
   { to: 'shield',           label: 'SHIELD', mark: 'shield' },
+  // Quant™ 1A (ADR-51): manual drawing measurement — calibrate a sheet,
+  // measure lengths, areas and counts, persist traceable measurement records.
+  // Writes NO BOQ quantity (Quant 1B). `mark` shows the static Quant line mark.
+  { to: 'quant',            label: 'Quant', mark: 'quant' },
   { to: 'boq',              label: 'BOQ' },
   { to: 'tenders',          label: 'Tenders' },
   { to: 'budget',           label: 'Budget' },

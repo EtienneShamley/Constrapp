@@ -52,13 +52,14 @@ That script runs
 - **Requires a JDK.** `firebase-tools` is pinned to `^13` because v14+ requires
   **JDK 21**, while the Firestore emulator under v13 runs on **JDK 17**. If you
   upgrade `firebase-tools`, you must also install JDK 21+.
-- Config: `frontend/firebase.json` (both emulators + both rules pointers, plus a
-  never-deployed Hosting block; no functions and **no `.firebaserc`**). The
+- Config: `frontend/firebase.json` (both emulators + both rules pointers, plus
+  the Hosting block first deployed by hand on 19 October 2026; no functions and
+  **no `.firebaserc`**). The
   emulator commands pass `--only firestore,storage`, so the Hosting block is
   inert here. The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **1289 in total across 21 files: 1243 Firestore + 46 Storage**:
+- Tests — **1345 in total across 22 files: 1299 Firestore + 46 Storage**:
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -187,6 +188,46 @@ That script runs
     date (`2026-02-30`), a `responsibleContactId`/`costCodeId` naming nothing,
     a duplicate `sortOrder`, and a full-document overwrite (last-write-wins)
     are all ACCEPTED by rules.
+  - `frontend/tests/rules/takeoff.rules.test.js` — **56 tests** covering the
+    two Quant™ 1A collections (ADR-51, §27): the three-role read/write matrix
+    with `subcontractor`/`client`/`super_admin`, cross-tenant, anonymous and
+    no-membership callers denied; page create — id ↔ fields agreement, the
+    drawing and revision must exist and the revision must not be withdrawn (a
+    superseded one is allowed), positive-integer page, source/geometry/rotation
+    vocabularies, calibration shape or null with `calibrationRevision` 0,
+    exact keys, caller stamps, server time, revision 1; page update —
+    recalibration only, `revision` and `calibrationRevision` exactly +1, blind
+    and skipped revisions refused, identity/geometry/creation stamps immutable,
+    no forged actor or client clock, delete blocked; measurement create — page
+    id recomputed and the page document, drawing, revision and cost code must
+    exist, kind vocabulary, point-list size by kind (≥2/≥3/≥1, ≤500 — the
+    500th passes, the 501st fails), label/name bounds, snapshot required for
+    length/area and null for count, born active, no forged void stamps, exact
+    keys (a `quantity`, `amount` or `boqItemId` field is refused); measurement
+    update — active edit of points/label/cost code/snapshot, blind overwrite
+    refused, identity/kind/creation immutable, content revalidated, void with a
+    non-whitespace reason and caller stamp only, voided records immutable, no
+    delete; **4 tests run the app's own revision-guarded transactions**
+    (`lib/quantActions.js`) against the real rules — first calibration,
+    recalibration from the seen copy, a **stale** recalibration refused with
+    nothing written, ensure-page then count, a length on an uncalibrated page
+    refused, a measurement save made **stale** by a recalibration underneath,
+    edit/void from a stale copy refused end to end, and a denied role refused
+    as **permission** with nothing written; and **6 tests prove the documented
+    client-only gaps** (Deferred Control 32): junk point elements, a
+    `pageDistance` that does not match the points, an absurd real distance, a
+    page number beyond any PDF, an inactive cost code and a snapshot unrelated
+    to the page all PASS, as does a read-then-write `+1`. **8 tests pin the
+    exact sheet-status contract** (SECURITY.md → Quant™ 1A table): pages and
+    measurements on superseded and withdrawn revisions, and on a withdrawn
+    drawing, stay READABLE by the three roles and unreadable by everyone else;
+    create is refused on a withdrawn drawing even though its revision reads
+    "current"; re-calibration and every active edit succeed on a superseded
+    sheet and are refused on a withdrawn revision or drawing; void succeeds on
+    all of them (still reasoned and revision-guarded, immutable afterwards);
+    no measurement or page can be re-pointed to a live sheet; and the real
+    guarded transactions get *permission* for an edit on a withdrawn sheet
+    while the void commits.
   - `frontend/tests/rules/pulseAcknowledgements.rules.test.js` — **37 tests**
     covering every case in §25-x below (PULSE™ 1B acknowledgements, ADR-49),
     including **6** that run the app's own **revision-guarded transactions**
@@ -423,8 +464,11 @@ npm run test:unit
 - `frontend/tests/unit/pulseAttention.test.js` — **65 tests** over
   `lib/pulseAttention.js` and `lib/pulseAcknowledgementActions.js` (PULSE™ 1B,
   ADR-49): see §25.
-- `frontend/tests/unit/moduleBranding.test.js` — **36 tests** over the
-  advanced module branding (ADR-48): see §24.
+- `frontend/tests/unit/quant.test.js` — **105 tests** over `lib/quant.js`,
+  `lib/quantActions.js`, `lib/pdfRender.js` and the Quant™ 1A page wiring
+  (ADR-51): see §27.
+- `frontend/tests/unit/moduleBranding.test.js` — **39 tests** over the
+  advanced module branding (ADR-48; pins revised by ADR-50 and ADR-51): see §24.
 - `frontend/tests/unit/dashboardV2.test.js` — **78 tests** over the Premium
   Dashboard v2 (ADR-45): see §22.
 - `frontend/tests/unit/projects.test.js` — **26 tests** over `lib/projects.js`
@@ -4975,7 +5019,8 @@ third with its mark and the `/shield` pointer opens no subscription.
 
 `moduleBranding.test.js` and `betaSurfaces.test.js` pins revised **explicitly**
 (16 tabs; marks `['pulse', 'shield']`; `/shield` is a pointer, no Coming Soon;
-`shield` in the shipped-tab list). No rules change, so no rules test.
+`shield` in the shipped-tab list — revised again by ADR-51 to 17 tabs and
+`['pulse', 'shield', 'quant']`). No rules change, so no rules test.
 
 Manual — three checks only, all read-only (SHIELD writes nothing):
 
@@ -5011,3 +5056,142 @@ Manual — three checks only, all read-only (SHIELD writes nothing):
       horizontal page scroll; *No issue found* stays collapsed; VoiceOver/NVDA
       announces "Constrapp SHIELD™, heading level 2" and each check as a
       level-3 heading, and the shield mark is not announced.
+
+## 27. Constrapp Quant™ 1A — manual drawing measurement (ADR-51)
+
+Automated: `tests/unit/quant.test.js` (105 tests) — lengths and areas against
+hand-calculated values (3-4-5 triangle, 3×4 rectangle in both windings, a right
+triangle, a concave L-shape), implicit polygon closure and degenerate shapes
+(collinear → zero area refused, coincident → zero length refused, bow-tie,
+minimum points per kind, the 500-point ceiling), counts without calibration,
+calibration in mm and m giving the same metres-per-unit, the implied drawing
+scale for PDF pages only, zoom independence (the same sheet position at two
+rendered sizes maps to one canonical point; rendered → canonical round trip
+leaves the quantity unchanged; fit/zoom bounds; backing-store bounds), the
+PDF.js adapter against the committed two-page fixture through the legacy Node
+build (two pages; page 1 = 612×792 rotation 0; **page 2 with `/Rotate 90` and a
+CropBox = canonical 500×750, rotation 90, origin at user-space (50, 50)**;
+scale-2 viewport = 2× canonical; backing store sized and bounded, CSS box
+untouched), image intrinsic coordinates, scale changes and review flags
+(current → needs review after a recalibration; current quantity doubles while
+the original stays explainable; uncalibrated is null never 0; the dialog
+demands an acknowledgement), metric conversion incl. squared areas, three-
+decimal display with no currency symbol, refusal of NaN/Infinity/zero/negative
+inputs, malformed stored records (unreadable → listed, never drawn or summed),
+the persisted lifecycle through an in-memory Firestore stand-in (create → edit
+geometry → rename → void, each exactly +1; a rename never refreshes the
+snapshot; drafts refused before any transaction; permission/offline/unknown
+kinds), stale concurrent edits (recalibration, create after recalibration,
+edit and void from a stale copy — refused, nothing written), drawing/revision/
+page isolation, keyed subscriptions and the keyed project outlet, superseded
+and withdrawn revisions (measure on current and superseded, never withdrawn;
+the Documents wording reused; a measurement never follows the current
+pointer), permission-gated subscriptions (the page gates, only the workspace
+mounts hooks), **no financial write and no BOQ quantity change** (no Quant file
+imports a financial hook, BOQ write, currency lock or money arithmetic; the
+hook touches only the two takeoff collections; the actions write no quantity
+field; the rules schema has no quantity/amount/boqItemId key), and PDF worker
+loading and cleanup (lazy import of library + matching worker from the same
+pinned package, worker wired once, failed load retried, nothing outside the
+Quant folder imports pdfjs-dist, render task cancelled / page cleaned up /
+document destroyed, bounded render by device class, bytes fetch bounded in
+time and naming the CORS prerequisite), the KNOWN rectangles of the
+acceptance fixture (page 1: 400 × 300 pt at canonical (100, 392)–(500, 692);
+page 2, rotated and cropped: user-space (100, 100)–(700, 500) → canonical
+(50, 50)–(450, 650); calibrating the 400 pt edge as 4000 mm gives 12 m² /
+14 m / 5 m and 24 m² / 20 m), the exact sheet-status contract in the rules
+text (read any; create, re-calibrate and edit only while live; void always),
+the viewer's fit-to-width measuring the scroller's content box and rendering
+only once measured, and the local acceptance environment (`npm run
+test:quant` starts both emulators in exec mode, the child-only opt-ins, the
+seed's loopback / credentials / probe refusals, the committed fixture, no BOQ
+seed, and the app's Storage-emulator gate that older launchers never set).
+Rules: `takeoff.rules.test.js` (56, §0).
+
+**Browser verification (October 2026).** The PDF.js adapter (`lib/pdfRender.js`)
+and the lazy loader (`pages/project/quant/pdfjsLoader.js`) were exercised in
+Chrome through a throwaway Vite harness outside the repo: the worker loaded
+from the Vite-served `?url`, both fixture pages rendered, and an SVG overlay
+in canonical units sat exactly on the drawn rectangles of the portrait sheet
+and of the rotated, cropped sheet (device pixel ratio 1.8, backing store
+660 × 855 and 539 × 809). This verifies the adapter and loader in a browser;
+the full Quant tab is verified by the manual checks below.
+
+**Local acceptance environment — `npm run test:quant`.** One command starts
+the Firestore AND Cloud Storage emulators (`firebase emulators:exec --only
+firestore,storage`, so both stop with it), seeds the fixture below with rules
+bypassed, and starts Vite on port 5178 with `--mode emulator` and BOTH opt-ins
+set for the child process only. Firebase Auth is REAL: sign in with your
+normal account (`TEST_USER_UID=<uid> npm run test:quant` seeds another
+tester; `TEST_USER_ROLE=qs` seeds the QS-as-author path). Open DevTools →
+Console FIRST: the app prints `FIRESTORE → LOCAL EMULATOR 127.0.0.1:8080` and
+`STORAGE → LOCAL EMULATOR 127.0.0.1:9199` the moment it loads — **no banners
+means you are not on the disposable environment; stop.** The seed refuses to
+run unless both emulator hosts are set, loopback and answering, and if
+`GOOGLE_APPLICATION_CREDENTIALS` is present. Nothing is written to a file; the
+older launchers never set the Storage flag and are unchanged.
+
+Seeded (all ids deterministic; tenant `2Vf3CVuYE8wWzg8hLjR5` "Apex Builders";
+project `quant-takeoff-test` "Quant Takeoff Test Project", AUD, no money):
+
+| Drawing | Revision | Status | File | Known dimension → expected result |
+|---|---|---|---|---|
+| A-101 Ground Floor Plan (`quant-drawing-a101`) | B (`quant-rev-a101-b`) | current | PDF, 2 pages (`quant-two-page.pdf`) | p.1: 400 × 300 pt rectangle labelled 4000 × 3000 mm — calibrate the bottom edge as 4000 mm → area **12 m²**, perimeter **14 m**, diagonal **5 m**. p.2 (rotated 90°, cropped): 600 × 400 pt rectangle, shown 400 wide × 600 tall — calibrate the short edge as 4000 mm → area **24 m²**, perimeter **20 m** |
+| A-101 | A (`quant-rev-a101-a`) | superseded | PNG 800 × 600 | calibrated (400 px = 4000 mm) with one seeded length — measurable, warned |
+| A-101 | P1 (`quant-rev-a101-p1`) | withdrawn | PNG 800 × 600 | calibrated with one seeded length — inspect or void only |
+| A-201 Site Plan (`quant-drawing-a201`) | A (`quant-rev-a201-a`) | current | PNG 800 × 600 | 400 × 300 px rectangle (outer edges x 200–600, y 150–450); bottom edge = 4000 mm → **12 m²**, **14 m** |
+
+Cost codes: 03-100 Concrete (m3) · 04-100 Formwork (m2) · 08-100 Doors (no).
+No BOQ item is seeded on purpose — the BOQ tab must stay empty throughout. `moduleBranding.test.js` and `betaSurfaces.test.js` pins revised
+**explicitly** (17 tabs; marks `['pulse', 'shield', 'quant']`; the `/quant`
+pointer; `brand-quant` token; `pdfjs-dist` the one added dependency, pinned).
+
+Manual — three checks only, on `npm run test:quant` (Quant writes measurement
+records; it never writes a BOQ item):
+
+- [ ] **Calibrate, measure, persist, return.** As **qs** open a project's
+      **Quant** tab: the *Constrapp Quant™ · Manual quantity takeoff* heading
+      with the lime tile whose dot glows and gently beats (Pause / Resume
+      beside it; still but lit when paused or under reduced motion). Choose a
+      drawing with a **PNG or JPEG** revision (needs no CORS) — the sheet
+      renders, Fit width / Fit page / − / + work and the overlay stays aligned
+      with the image at every zoom. **Calibrate**: tap two ends of a known
+      dimension, enter it (e.g. `3600` mm) — the dialog shows metres per page
+      unit; save. **Length**: tap two points, *Finish*, label it, choose a cost
+      code, save — it appears in the list with its quantity in **m** and
+      *Current scale*. **Area**: three or more taps, *Finish*, save — **m²**.
+      **Count**: three taps, *Finish*, save — **3 no.**, *No scale needed*.
+      Reload the page: all three are drawn and listed with the same
+      quantities. Open the **BOQ** tab: **no item's quantity changed** and the
+      BOQ total is identical. As **subcontractor**: "Quant takeoff is
+      restricted" and no permission-denied error in the console.
+- [ ] **Re-calibration review and stale refusal.** On that page press
+      **Calibrate** again, pick two points, enter a distance that halves the
+      scale — the dialog refuses to save until the acknowledgement box is
+      ticked; save. Every length and area now reads **Needs review — scale
+      changed** with its new quantity and *was …* the previous one; the count
+      is untouched. *Mark reviewed* on one measurement → *Current scale*. Edit
+      another's geometry (drag a handle, *Save geometry*) → re-measured under
+      the current scale. Open the same project in a **second tab**, rename a
+      measurement there, then in the first tab rename the same measurement:
+      the first tab reports *Another user changed this record since you loaded
+      it* and nothing is overwritten. Void a measurement with a reason — it
+      moves to *Voided* and is no longer drawn; without a reason the dialog
+      refuses.
+- [ ] **Revisions, PDFs and layout.** On A-101 select revision **A
+      (superseded)**: the SUPERSEDED banner (Documents wording plus the
+      historical sentence) shows, the seeded length is listed and *Details /
+      Geometry / Void* are offered; select **P1 (withdrawn)**: the banner says
+      measurements can be inspected or voided only, every tool is disabled, the
+      seeded length is listed with *Show* and *Void* only, and voiding it with
+      a reason succeeds. Select **B (current, PDF)**: page 1 renders upright;
+      ‹ › moves to page 2, which displays as a 400-wide × 600-tall sheet (the
+      PDF's rotation and CropBox applied) with its labels readable; calibrate
+      the short edge as 4000 mm and the rectangle measures **24 m²**. On a
+      production bucket without CORS the same revision reads *"The PDF could
+      not be downloaded for measuring…"* within 20 seconds and names
+      `docs/DEPLOYMENT.md` — PNG revisions still work. At **375px**, **768px** and
+      **1280px**: the tab bar wraps with **Quant** after SHIELD, tools are
+      ≥44px, one-finger scroll pans the sheet while a tap adds a point, the
+      list becomes cards below `md`, and VoiceOver/NVDA announces "Constrapp
+      Quant™, heading level 2" with the scale-rule mark not announced.

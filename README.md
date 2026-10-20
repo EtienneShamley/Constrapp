@@ -46,11 +46,16 @@ Constrapp PULSE™ is a live project tab — 1A (ADR-47): six deterministic,
 read-only health indicators; 1B (ADR-49, in production since 19 October 2026):
 acknowledgement with a required review-by date — with its static mark in the
 tab (ADR-48); the top-level `/pulse` route is a hidden pointer to it. Constrapp
-SHIELD™ (ADR-50, implemented, **not yet deployed**) is a second project tab of
-five read-only commercial assurance checks over existing records; `/shield` is
-its hidden pointer. Photos and Reports remain placeholder screens with live
-routes but are **hidden from navigation** for private beta; Quant™ and IQ™ have
-no screen. Subcontractors lists live
+SHIELD™ (ADR-50, **live in production since 19 October 2026**) is a second
+project tab of five read-only commercial assurance checks over existing records;
+`/shield` is its hidden pointer. Constrapp Quant™ 1A (ADR-51, implemented,
+**not yet deployed**) is a third module tab: manual drawing measurement —
+calibrate a drawing revision's page from a known distance, measure lengths,
+areas and counts, and keep each as a traceable record; it **writes no BOQ
+quantity** (that is Quant 1B) and adds the one pinned runtime dependency
+`pdfjs-dist`. `/quant` is its hidden pointer. Photos and Reports remain
+placeholder screens with live routes but are **hidden from navigation** for
+private beta; IQ™ has no screen. Subcontractors lists live
 contacts. See [PRODUCT.md](PRODUCT.md) for module-by-module status.
 
 ## Local Setup

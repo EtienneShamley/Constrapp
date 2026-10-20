@@ -32,6 +32,8 @@ companies/{companyId}
     pulseAcknowledgements/{indicatorId}  (PULSE™ 1B management record — deterministic id = indicator id; NON-FINANCIAL)
     counters/rfis                        (PER-PROJECT RFI numbering — the only project-scoped counter)
     rfis/{rfiId}                         (Requests for Information — NON-FINANCIAL evidence record)
+    takeoffPages/{drawingId}_{revisionId}_{page}  (Quant™ 1A sheet record — deterministic id; NON-FINANCIAL)
+    takeoffMeasurements/{measurementId}  (Quant™ 1A measurements — random id; NON-FINANCIAL; no stored quantity)
     retentionReleases/{releaseId}        (authored retention-release authorisations)
     commercial/baseline                  (single doc; deterministic id = "baseline")
     drawings/{drawingId}                 (drawing master — random id)
@@ -1186,6 +1188,78 @@ acknowledgements, and every finding reads *Needs attention*.
 **Stored vs derived.** Only the fields above are authored. Current evidence
 keys, *new since acknowledged*, *no longer present*, review-due, and the
 attention state are derived on every read and never written back.
+
+## …/projects/{projectId}/takeoffPages/{takeoffPageId}
+
+**A Quant™ 1A sheet record (ADR-51)** — one per (drawing, revision, page
+number). **Deterministic id `{drawingId}_{revisionId}_{page}`**, recomputed by
+rules from the stored fields, so a page can never claim a different sheet than
+it is filed under. Holds the page's **canonical geometry** and its **current**
+calibration. **Non-financial:** no amount, no currency, no counter, no BOQ or
+budget reference. Reads and writes: `company_admin`, `project_manager`, `qs`
+(the QS measures). See [SECURITY.md](SECURITY.md).
+
+| Field | Type | Notes |
+|---|---|---|
+| `drawingId` / `revisionId` | string | The pinned sheet (ADR-28 Decision 9 identity). Both must **exist** and the revision must not be `withdrawn` — rules-verified via `exists()`/`get()` |
+| `page` | int | Page number, ≥ 1. ⚠️ Not checked against the PDF's page count (client-only, DC32) |
+| `source` | string | `pdf` \| `image` |
+| `pageWidth` / `pageHeight` | number | **Canonical** page size: for a PDF the PDF.js **scale-1 default viewport** (applies `/Rotate` and CropBox; unit = PDF point); for an image its intrinsic pixels. `> 0`. ⚠️ Taken on trust (DC32) |
+| `pageRotation` | int | The page's intrinsic rotation already applied to the canonical space: `0` \| `90` \| `180` \| `270` |
+| `calibration` | map \| **null** | `{ pointA: {x,y}, pointB: {x,y}, pageDistance (> 0), realDistance (> 0), unit: 'mm' \| 'm' }` — two canonical points and the real distance between them. `null` until calibrated. Shape rules-enforced; ⚠️ that `pageDistance` equals the distance between the points, and that the real distance is true, are client-only (DC32) |
+| `calibrationRevision` | int | `0` while uncalibrated; **exactly +1** on every (re-)calibration (rules-enforced). Each length/area measurement snapshots the revision it was measured under |
+| `calibratedAt` / `calibratedBy` | timestamp / uid \| null | `null` until calibrated; then `== request.time` / `== request.auth.uid` |
+| `revision` | int | `1` on create; every update **exactly `resource.revision + 1`** (rules-enforced). The app's transactions compare it with the copy the user saw and refuse a stale write |
+| `createdAt` / `createdBy` | timestamp / uid | Immutable |
+| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on every write |
+
+**Two births.** `runEnsurePage` creates an **uncalibrated** page (`calibration:
+null`, `calibrationRevision: 0`) before the first *count* on a sheet nobody has
+calibrated — in its **own commit**, because the measurement rule verifies the
+page with `exists()`, which sees committed state only. `runSaveCalibration`
+creates a **calibrated** page (`calibrationRevision: 1`) or, on an existing
+page, replaces the calibration with `calibrationRevision + 1`. The only
+update is a re-calibration; identity, geometry and creation stamps never move,
+and a re-calibration is refused once the revision **or the drawing** is
+withdrawn (rules `get()` both — the sheet is history then). Reads are never
+gated on sheet status. Delete is blocked.
+
+## …/projects/{projectId}/takeoffMeasurements/{measurementId}
+
+**A Quant™ 1A measurement (ADR-51)** — a length (polyline), an area (polygon)
+or a count (points) on exactly one takeoff page. Random id. **Non-financial:**
+no amount, no currency, no BOQ reference. **No quantity is stored**: it is
+reproduced at read time from `points` × the applicable calibration
+(`lib/quant.js → measurementQuantity`). Reads and writes: `company_admin`,
+`project_manager`, `qs`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `takeoffPageId` | string | **Must equal `{drawingId}_{revisionId}_{page}`** of the fields below, and that page document must **exist** (rules-verified). Immutable — a measurement never moves to another sheet |
+| `drawingId` / `revisionId` / `page` | string / string / int | The pinned sheet; drawing + revision must exist, revision not withdrawn (rules). Immutable |
+| `kind` | string | `length` \| `area` \| `count`. **Immutable** — a different kind is a different measurement |
+| `points` | `{x,y}[]` | **Canonical** page coordinates. Size by kind: length ≥ 2, area ≥ 3, count ≥ 1; ≤ 500 — **size** rules-enforced. ⚠️ Element **content** is client-only (rules cannot iterate a list — DC32); unreadable records are listed as such, never drawn or summed |
+| `label` | string | Required non-whitespace, ≤ 120 |
+| `costCodeId` / `costCodeName` | string | **Required** — the commercial spine. The code must **exist** in the company (rules `exists()`); ⚠️ *active* is client-only. Frozen display snapshot, resolved live at read time (`resolveCostCodeName`) |
+| `calibration` | map \| **null** | **Snapshot** of the page calibration the measurement was last saved or reviewed under: `{ revision (int ≥ 1), pageDistance (> 0), realDistance (> 0), unit }`. **Required for length/area, `null` for count** (rules-enforced by kind). Drives the derived review state and keeps the previously recorded quantity explainable |
+| `status` | string | `active` \| `void` — `active → void` only (terminal), rules-enforced; void requires a **non-whitespace `voidReason`** and stamps `voidedAt == request.time`, `voidedBy == request.auth.uid` |
+| `voidReason` / `voidedAt` / `voidedBy` | string / timestamp / uid | `''` / `null` while active |
+| `revision` | int | `1` on create; every update **exactly +1** (rules-enforced); the app refuses stale writes |
+| `createdAt` / `createdBy` / `updatedAt` / `updatedBy` | timestamp / uid | Creation stamps immutable |
+
+**Sheet status.** Create and every active edit require the revision and the
+drawing to be live (not withdrawn); **void is the one write permitted on a
+withdrawn sheet**; reads are role-gated only, so history stays inspectable;
+the sheet identity is immutable in every state (SECURITY.md → Quant™ 1A has
+the full table).
+
+**Stored vs derived.** Only geometry, labels, the cost code and the calibration
+snapshot are stored. The quantity (m, m², no.), the quantity under the
+original snapshot, the calibration review state (*current / needs review /
+uncalibrated / not applicable*), page totals and the superseded-revision
+warning are all derived on every read and never written back. **Nothing here
+reaches a BOQ item** — Quant 1B will link and apply reviewed quantities through
+the existing BOQ hook; Quant 1A stores no `boqItemId`.
 
 ## …/projects/{projectId}/counters/{counterId}
 

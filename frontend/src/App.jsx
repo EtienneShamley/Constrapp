@@ -19,6 +19,7 @@ import CompanySettings from './pages/CompanySettings'
 import Subcontractors from './pages/Subcontractors'
 import Pulse          from './pages/Pulse'
 import Shield         from './pages/Shield'
+import Quant          from './pages/Quant'
 import ProjectOverview   from './pages/project/ProjectOverview'
 import ProjectBoq        from './pages/project/ProjectBoq'
 import ProjectBudget     from './pages/project/ProjectBudget'
@@ -42,6 +43,7 @@ import ProjectTimeline from './pages/project/ProjectTimeline'
 import ProjectRfis from './pages/project/ProjectRfis'
 import ProjectPulse from './pages/project/ProjectPulse'
 import ProjectShield from './pages/project/ProjectShield'
+import ProjectQuant from './pages/project/ProjectQuant'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
 
 export default function App() {
@@ -132,6 +134,12 @@ export default function App() {
                           note, payment and retention records. No score, no
                           prediction, no write. */}
                       <Route path="shield" element={<ProjectShield />} />
+                      {/* Quant™ 1A (ADR-51) — manual drawing measurement:
+                          calibrate a sheet, measure lengths, areas and counts,
+                          persist traceable measurement records pinned to a
+                          drawing revision and page. Writes NO BOQ quantity,
+                          no financial document (Quant 1B boundary). No AI. */}
+                      <Route path="quant" element={<ProjectQuant />} />
                       {/* RFIs — Requests for Information (ADR-33). An
                           EVIDENCE register: numbered per project, forward-only,
                           pinned to drawing revisions / documents. Financially
@@ -152,6 +160,7 @@ export default function App() {
                     <Route path="subcontractors" element={<Subcontractors />} />
                     <Route path="pulse"          element={<Pulse />} />
                     <Route path="shield"         element={<Shield />} />
+                    <Route path="quant"          element={<Quant />} />
 
                     {/* Legacy top-level module routes are retired — Budgets, BOQ, Forecasting, etc.
                         now live under Project Detail. Send anything unmatched back to Projects. */}

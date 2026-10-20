@@ -2,32 +2,37 @@
 //
 // Line marks drawn in currentColor on a 24-unit grid, coloured by the module
 // brand tokens. Marks are DECORATIVE: every one sits beside the module's name
-// in text, so the SVG is aria-hidden and never announced twice. Only PULSE™ and
-// SHIELD™ have a mark — Quant™ and IQ™ get theirs at their own milestones.
+// in text, so the SVG is aria-hidden and never announced twice. PULSE™,
+// SHIELD™ and Quant™ (ADR-51) have a mark — IQ™ gets its own at its milestone.
 
 const GLYPHS = {
   // Two-spike heartbeat line — the v5 canvas heartbeat, as a static mark.
   pulse:  'M2 12h4.5l2-5 4 10 2.5-7 1.5 2H22',
   shield: 'M12 3l7 3v5c0 4.4-2.9 8.3-7 10-4.1-1.7-7-5.6-7-10V6l7-3z',
+  // A diagonal scale rule with three graduations — measurement, not AI.
+  quant:  'M3 16l5 5L21 8l-5-5zM7.5 12.5l2 2M10.5 9.5l2 2M13.5 6.5l2 2',
 }
 
 const TONE = {
   pulse:  'text-brand-pulse',
   shield: 'text-brand-shield',
+  quant:  'text-brand-quant',
 }
 
 const TILE = {
   pulse:  'bg-brand-pulse/10 border-brand-pulse/20',
   shield: 'bg-brand-shield/10 border-brand-shield/20',
+  quant:  'bg-brand-quant/10 border-brand-quant/20',
 }
 
 // The luminous dot's fill and its glow colour. `--module-glow` feeds the ONE
 // shared `module-beat` keyframe and the static rest glow, so each module beats
-// in its own token without a keyframe of its own. Quant™ and IQ™ join here
-// with their tokens when their pages ship.
+// in its own token without a keyframe of its own. IQ™ joins here with its
+// token when its page ships.
 const DOT = {
   pulse:  'bg-brand-pulse [--module-glow:var(--color-brand-pulse)]',
   shield: 'bg-brand-shield [--module-glow:var(--color-brand-shield)]',
+  quant:  'bg-brand-quant [--module-glow:var(--color-brand-quant)]',
 }
 
 export function ModuleMark({ module, className = 'w-3.5 h-3.5' }) {

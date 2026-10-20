@@ -16,10 +16,26 @@ default, and every deploy below must name its project explicitly with
 `--project`. Rules publishing is still **manual** (below) and is *not* wired to
 the CLI — do not add `firestore:rules` or `storage` to a deploy command.
 
-**Pending release — SHIELD™ foundation (ADR-50): Hosting-only.** It changes no
-rules file, adds no collection and needs no migration or backfill, so its release
-is `npm run build` + `firebase deploy --only hosting --project constrapp-69b5d`
-from the merged `main`. Nothing to publish in the console.
+**SHIELD™ foundation (ADR-50): released 19 October 2026** as a Hosting-only
+deploy (no rules change, no migration, no backfill) — merged to `main`, Azure
+CI passed, Hosting deployed by hand, the five commercial checks verified in
+production.
+
+**Pending release — Quant™ 1A (ADR-51): Hosting + rules publish + a Storage
+CORS prerequisite.** Three separate actions, each needing its own approval:
+
+1. **Publish `frontend/firestore.rules`** — it gains the `takeoffPages` and
+   `takeoffMeasurements` blocks. Run `npm run test:rules` first. The ADR-40
+   ordering gate does **not** apply: no existing code writes these paths, so
+   the rules may be published before or after the build (publishing first
+   simply means the new tab works the moment the build lands).
+2. **Deploy Hosting**: `npm run build` + `firebase deploy --only hosting
+   --project constrapp-69b5d` from the merged `main`.
+3. **Confirm the Storage bucket allows browser downloads for the Hosting
+   origin** — see *Cloud Storage CORS for the Quant™ viewer* below. Until it
+   does, PDF revisions cannot be measured in production (the tab says so and
+   points here); PNG/JPEG revisions, and every other feature, are unaffected.
+   `frontend/storage.rules` is **unchanged** by Quant 1A.
 
 ## Prerequisites
 
@@ -214,6 +230,74 @@ Identical discipline to Firestore rules:
 3. Firebase console → **Storage → Rules**.
 4. Paste the full file contents over the editor content.
 5. **Publish.**
+
+## Cloud Storage CORS for the Quant™ viewer — Manual Process (one time)
+
+**Why.** Quant™ 1A (ADR-51) measures on a PDF by drawing the page itself, so
+it must read the file's **bytes** into the browser (`getBytes` in
+`hooks/useStorageUpload.jsx`, an XHR to `firebasestorage.googleapis.com`).
+Everything the app did before — `Open`, `Download`, the `<iframe>` preview,
+`<img>` — navigates to the file or embeds it, which browsers allow cross-origin.
+Reading bytes with script does not: the browser enforces **CORS**, and a Cloud
+Storage bucket serves no CORS headers until a rule is set on it. The Firebase
+documentation (*Download files on Web → CORS configuration*) requires this
+step for browser downloads.
+
+**Status: not verified from the repository.** No CORS configuration is
+recorded anywhere in this repo, and an implementation task **must not** change
+bucket configuration. Whether the production bucket already carries a rule can
+only be seen with the command in step 1.
+
+1. **Inspect the current rule** (replace `<bucket>` with the value of
+   `VITE_FIREBASE_STORAGE_BUCKET`, e.g. `constrapp-69b5d.appspot.com` or
+   `constrapp-69b5d.firebasestorage.app`):
+
+   ```bash
+   gsutil cors get gs://<bucket>
+   ```
+
+   `[]` or "has no CORS configuration" means step 2 is required.
+
+2. **Proposed configuration** — `cors.json` (keep it outside the repo; it is
+   bucket configuration, not source):
+
+   ```json
+   [
+     {
+       "origin": [
+         "https://constrapp-69b5d.web.app",
+         "https://constrapp-69b5d.firebaseapp.com"
+       ],
+       "method": ["GET"],
+       "responseHeader": ["Content-Type", "Content-Length", "Content-Range", "Range"],
+       "maxAgeSeconds": 3600
+     }
+   ]
+   ```
+
+   Add `http://localhost:5173` to `origin` **only** on a development bucket,
+   never on production. `GET` is the only method the viewer needs; uploads go
+   through the Firebase SDK's resumable protocol and are unaffected. Nothing
+   here widens *who* may read an object — Storage Rules still decide that; CORS
+   only lets the browser hand the bytes to the page once the rules allowed the
+   request.
+
+   ```bash
+   gsutil cors set cors.json gs://<bucket>
+   gsutil cors get gs://<bucket>     # confirm it echoes the rule
+   ```
+
+3. **Verify in production** (after the Hosting deploy and the rules publish):
+   as a QS, open a project's **Quant** tab, choose a drawing with a **PDF**
+   revision and wait for the sheet. *Pass:* the page renders and the Calibrate
+   tool enables. *Fail:* within 20 seconds the viewer reads *"The PDF could not
+   be downloaded for measuring… (CORS)"* and DevTools → Network shows the
+   `…/o/…?alt=media` request blocked with a CORS error — apply step 2 and
+   reload. A PNG/JPEG revision rendering while a PDF does not is the signature
+   of a missing CORS rule, not of a rules or permission problem.
+
+4. **Record the outcome** in this file (date, bucket, rule applied or already
+   present) so the prerequisite is never re-diagnosed.
 
 ## Private-Beta Release Checklist
 

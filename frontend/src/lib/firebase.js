@@ -1,7 +1,7 @@
 import { initializeApp } from 'firebase/app'
 import { getAuth } from 'firebase/auth'
 import { getFirestore, connectFirestoreEmulator } from 'firebase/firestore'
-import { getStorage } from 'firebase/storage'
+import { getStorage, connectStorageEmulator } from 'firebase/storage'
 
 const firebaseConfig = {
   apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
@@ -67,6 +67,33 @@ if (useFirestoreEmulator) {
   // looking at while doing manual financial acceptance.
   console.warn(
     `%c[Constrapp] FIRESTORE → LOCAL EMULATOR ${host}:${port} (project "${firebaseConfig.projectId}") — data is disposable and NOT production. Auth is real.`,
+    'background:#F5A623;color:#000;font-weight:bold;padding:2px 6px;border-radius:3px',
+  )
+}
+
+// ── Local Cloud Storage emulator — LAUNCHER-ONLY, and only WITH Firestore ─────
+//
+// The Quant™ 1A launcher (`npm run test:quant`, scripts/quant-dev.mjs) also
+// emulates FILE STORAGE, so the takeoff viewer can fetch a seeded drawing's
+// bytes without the production bucket (and without its CORS prerequisite —
+// docs/DEPLOYMENT.md). It requires EVERY Firestore condition above PLUS a
+// fourth explicit opt-in, so none of the older launchers (`test:boq`,
+// `test:tender`, `test:credit-notes`) change behaviour: they keep real
+// Storage, exactly as before, because they never set the fourth flag.
+//
+// Storage is never emulated on its own: a Firestore-on-production /
+// Storage-on-emulator split would let a real drawing record point at
+// throwaway bytes, which is the one ambiguity this file exists to prevent.
+const useStorageEmulator =
+  useFirestoreEmulator &&
+  import.meta.env.VITE_USE_STORAGE_EMULATOR === 'true'
+
+if (useStorageEmulator) {
+  const host = import.meta.env.VITE_STORAGE_EMULATOR_HOST || '127.0.0.1'
+  const port = Number(import.meta.env.VITE_STORAGE_EMULATOR_PORT || 9199)
+  connectStorageEmulator(storage, host, port)
+  console.warn(
+    `%c[Constrapp] STORAGE → LOCAL EMULATOR ${host}:${port} (bucket "${firebaseConfig.storageBucket}") — files are disposable and NOT production.`,
     'background:#F5A623;color:#000;font-weight:bold;padding:2px 6px;border-radius:3px',
   )
 }
