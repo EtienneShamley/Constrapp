@@ -104,7 +104,7 @@ describe('project tabs offer no placeholder module', () => {
   // The tabs that must survive — so hiding two never quietly becomes hiding six.
   it('every shipped project module is still a tab', () => {
     for (const to of [
-      'overview', 'pulse', 'shield', 'boq', 'tenders', 'budget', 'cost-codes', 'purchase-orders',
+      'overview', 'pulse', 'shield', 'quant', 'boq', 'tenders', 'budget', 'cost-codes', 'purchase-orders',
       'progress-claims', 'invoices', 'forecasting', 'variations', 'commercial',
       'documents', 'timeline', 'rfis',
     ]) {
@@ -139,9 +139,10 @@ describe('hidden surfaces keep their routes and pages', () => {
     expect(app).toContain('path="reports"')
   })
 
-  it('the pulse and shield routes still exist', () => {
+  it('the pulse, shield and quant routes still exist', () => {
     expect(app).toContain('path="pulse"')
     expect(app).toContain('path="shield"')
+    expect(app).toContain('path="quant"')
   })
 })
 

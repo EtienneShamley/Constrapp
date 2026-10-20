@@ -6,10 +6,11 @@ import { PROJECT_TABS } from '../../src/lib/projectTabs.js'
 
 // ── Advanced module branding (ADR-48) ───────────────────────────────────────
 //
-// Presentation only: the approved names, the PULSE mark in its tab, the PULSE
-// header dot (three CSS beats, motion-safe, then still), static SHIELD™
-// branding (the tab mark and the /shield pointer — ADR-50), brand colours
-// through tokens, and no claim that an unbuilt module is running. Source-level pins in the Node-only runner (no
+// Presentation only: the approved names, the module marks in their tabs, the
+// continuous header dot (CSS, motion-safe, pausable) on every live module page
+// — PULSE™ (ADR-47), SHIELD™ (ADR-50) and Quant™ 1A (ADR-51) — the hidden
+// pointer pages, brand colours through tokens, and no claim that an unbuilt
+// module (IQ™) is running. Source-level pins in the Node-only runner (no
 // jsdom), like betaSurfaces.test.js and pulse.test.js.
 
 const read = (rel) =>
@@ -25,8 +26,10 @@ const header    = stripComments(read('components/PageHeader.jsx'))
 const layout    = stripComments(read('layouts/ProjectDetailLayout.jsx'))
 const pulsePage = stripComments(read('pages/project/ProjectPulse.jsx'))
 const shieldPage = stripComments(read('pages/project/ProjectShield.jsx'))
+const quantPage  = stripComments(read('pages/project/ProjectQuant.jsx'))
 const pointer   = stripComments(read('pages/Pulse.jsx'))
 const shield    = stripComments(read('pages/Shield.jsx'))
+const quant     = stripComments(read('pages/Quant.jsx'))
 const app       = read('App.jsx')
 
 describe('exact module branding', () => {
@@ -39,10 +42,13 @@ describe('exact module branding', () => {
     })
   })
 
-  it('the PULSE tab heading, the /pulse pointer and the /shield pointer use the shared names', () => {
+  it('the module tab headings and the /pulse, /shield and /quant pointers use the shared names', () => {
     expect(pulsePage).toContain('{MODULE_NAMES.pulse}</h2>')
+    expect(shieldPage).toContain('{MODULE_NAMES.shield}</h2>')
+    expect(quantPage).toContain('{MODULE_NAMES.quant}</h2>')
     expect(pointer).toContain('title={MODULE_NAMES.pulse}')
     expect(shield).toContain('title={MODULE_NAMES.shield}')
+    expect(quant).toContain('title={MODULE_NAMES.quant}')
   })
 
   it('the project name stays the page <h1>; the PULSE module heading is an <h2> inside the tab', () => {
@@ -50,11 +56,13 @@ describe('exact module branding', () => {
     expect(pulsePage).not.toContain('<h1')
   })
 
-  it('only PULSE and SHIELD have a mark — Quant™ and IQ™ are deferred', () => {
+  // ADR-51: Quant™ gained its mark (a scale rule) with its page; IQ™ stays deferred.
+  it('PULSE, SHIELD and Quant have a mark — IQ™ is deferred', () => {
     const glyphs = mark.slice(mark.indexOf('const GLYPHS'), mark.indexOf('const TONE'))
     expect(glyphs).toMatch(/pulse:/)
     expect(glyphs).toMatch(/shield:/)
-    expect(glyphs).not.toMatch(/quant|iq:/i)
+    expect(glyphs).toMatch(/quant:/)
+    expect(glyphs).not.toMatch(/\biq:/i)
   })
 
   it('PageHeader renders exactly as before when no mark is passed', () => {
@@ -69,14 +77,16 @@ describe('navigation — PULSE tab, no unbuilt module surfaces', () => {
   })
 
   // ADR-50: SHIELD joined as the third tab with its static mark (15 → 16 tabs).
-  it('PULSE and SHIELD are the only tabs with a mark, and there are 16 tabs', () => {
+  // ADR-51: Quant joined as the fourth, immediately after SHIELD (16 → 17 tabs).
+  it('PULSE, SHIELD and Quant are the only tabs with a mark, and there are 17 tabs', () => {
     expect(PROJECT_TABS[2]).toEqual({ to: 'shield', label: 'SHIELD', mark: 'shield' })
-    expect(PROJECT_TABS.filter(t => t.mark).map(t => t.to)).toEqual(['pulse', 'shield'])
-    expect(PROJECT_TABS).toHaveLength(16)
+    expect(PROJECT_TABS[3]).toEqual({ to: 'quant', label: 'Quant', mark: 'quant' })
+    expect(PROJECT_TABS.filter(t => t.mark).map(t => t.to)).toEqual(['pulse', 'shield', 'quant'])
+    expect(PROJECT_TABS).toHaveLength(17)
   })
 
-  it('no Quant or IQ project tab, and no sidebar module entry', () => {
-    for (const t of PROJECT_TABS) expect(t.to).not.toMatch(/quant|iq|takeoff/i)
+  it('no IQ project tab, and no sidebar module entry for any module', () => {
+    for (const t of PROJECT_TABS) expect(t.to).not.toMatch(/\biq\b|takeoff/i)
     const nav = read('lib/nav.js')
     expect(nav).not.toMatch(/to:\s*'\/(pulse|shield|quant|iq)'/)
   })
@@ -89,24 +99,28 @@ describe('navigation — PULSE tab, no unbuilt module surfaces', () => {
     expect(layout).not.toMatch(/animate|animation|ModuleTile/)
   })
 
-  it('existing routes are unchanged: project pulse and shield tabs, hidden /pulse and /shield, no quant / iq route', () => {
+  it('routes: project pulse, shield and quant tabs, hidden /pulse, /shield and /quant pointers, no iq route', () => {
     expect(app).toContain('<Route path="pulse" element={<ProjectPulse />} />')
     expect(app).toContain('<Route path="shield" element={<ProjectShield />} />')
+    expect(app).toContain('<Route path="quant" element={<ProjectQuant />} />')
     expect(app).toContain('<Route path="pulse"          element={<Pulse />} />')
     expect(app).toContain('<Route path="shield"         element={<Shield />} />')
-    expect(app).not.toMatch(/path="(quant|iq)"/)
+    expect(app).toContain('<Route path="quant"          element={<Quant />} />')
+    expect(app).not.toMatch(/path="iq"/)
   })
 })
 
 describe('design tokens — module colours', () => {
-  it('pink and cyan are defined once, as module brand tokens', () => {
+  it('pink, cyan and lime are defined once, as module brand tokens', () => {
     expect(css).toContain('--color-brand-pulse:     #FF6B9D;')
     expect(css).toContain('--color-brand-shield:    #00D4FF;')
+    expect(css).toContain('--color-brand-quant:     #A3E635;')
+    expect(css.match(/--color-brand-quant:/g)).toHaveLength(1)
   })
 
   it('the branded files carry no hex colour and no inline style object', () => {
     for (const [f, src] of [['ModuleMark', mark], ['PageHeader', header], ['ProjectDetailLayout', layout],
-      ['ProjectPulse', pulsePage], ['Pulse', pointer], ['Shield', shield]]) {
+      ['ProjectPulse', pulsePage], ['Pulse', pointer], ['Shield', shield], ['ProjectQuant', quantPage], ['Quant', quant]]) {
       expect(src, f).not.toMatch(/#[0-9a-fA-F]{3,6}\b/)
       expect(src, f).not.toMatch(/style=\{\{/)
     }
@@ -115,8 +129,18 @@ describe('design tokens — module colours', () => {
   it('module colours come from the tokens', () => {
     expect(mark).toContain("pulse:  'text-brand-pulse'")
     expect(mark).toContain("shield: 'text-brand-shield'")
+    expect(mark).toContain("quant:  'text-brand-quant'")
     expect(pointer).toContain('text-brand-pulse')
     expect(shield).toContain('text-brand-shield')
+    expect(quant).toContain('text-brand-quant')
+  })
+
+  it('lime is never a Quant status colour — errors stay brand-red, review flags brand-amber', () => {
+    const list = stripComments(read('pages/project/quant/MeasurementList.jsx'))
+    const workspace = stripComments(read('pages/project/quant/TakeoffWorkspace.jsx'))
+    expect(list).not.toContain('brand-quant')
+    expect(quantPage.match(/brand-quant/g) ?? []).toHaveLength(0) // only via ModuleTile
+    expect(workspace).toContain("tone === 'error' ? 'text-brand-red'")
   })
 
   it('pink is never a PULSE status colour — findings stay brand-red', () => {
@@ -143,10 +167,11 @@ describe('decorative mark accessibility', () => {
   it('every mark sits beside its module name in text', () => {
     expect(pointer).toContain('{MODULE_NAMES.pulse}</h3>')
     expect(shield).toContain('{MODULE_NAMES.shield}</h3>')
+    expect(quant).toContain('{MODULE_NAMES.quant}</h3>')
   })
 
   it('no emoji stands in for a module mark', () => {
-    for (const src of [pointer, shield, pulsePage]) expect(src).not.toMatch(/💓|🛡|📐|🧠/u)
+    for (const src of [pointer, shield, quant, pulsePage, shieldPage, quantPage]) expect(src).not.toMatch(/💓|🛡|📐|🧠/u)
   })
 })
 
@@ -180,11 +205,12 @@ describe('the PULSE indicator dot — continuous, gentle, pausable, motion-safe,
     expect(frames).toMatch(/0%, 50%, 100% \{ transform: scale\(1\);\s+box-shadow: 0 0 6px\s+var\(--module-glow, var\(--color-brand-pulse\)\); \}/)
   })
 
-  it('each module dot is its own token — PULSE pink, SHIELD cyan — set through the shared glow property', () => {
+  it('each module dot is its own token — PULSE pink, SHIELD cyan, Quant lime — set through the shared glow property', () => {
     const dots = mark.slice(mark.indexOf('const DOT'), mark.indexOf('export function ModuleMark'))
     expect(dots).toContain("pulse:  'bg-brand-pulse [--module-glow:var(--color-brand-pulse)]'")
     expect(dots).toContain("shield: 'bg-brand-shield [--module-glow:var(--color-brand-shield)]'")
-    expect(dots).not.toMatch(/quant|iq:/i)
+    expect(dots).toContain("quant:  'bg-brand-quant [--module-glow:var(--color-brand-quant)]'")
+    expect(dots).not.toMatch(/\biq:/i)
   })
 
   it('the dot animates only under motion-safe and only while not paused', () => {
@@ -207,8 +233,12 @@ describe('the PULSE indicator dot — continuous, gentle, pausable, motion-safe,
     expect(shieldPage).toContain('<ModuleTile module="shield" beat paused={beatPaused} />')
     expect(shieldPage).toContain('<BeatToggle paused={beatPaused} onToggle={() => setBeatPaused(p => !p)} subject="glow animation" />')
     expect(shieldPage.match(/<ModuleTile[^>]*\bbeat\b/g)).toHaveLength(1)
+    expect(quantPage).toContain('<ModuleTile module="quant" beat paused={beatPaused} />')
+    expect(quantPage).toContain('<BeatToggle paused={beatPaused} onToggle={() => setBeatPaused(p => !p)} subject="glow animation" />')
+    expect(quantPage.match(/<ModuleTile[^>]*\bbeat\b/g)).toHaveLength(1)
     expect(pointer).not.toMatch(/\bbeat\b|BeatToggle/)
     expect(shield).not.toMatch(/\bbeat\b|animate|BeatToggle/)
+    expect(quant).not.toMatch(/\bbeat\b|animate|BeatToggle/)
   })
 
   it('the pause state lives in each heading, not in the workspace that owns the subscriptions', () => {
@@ -218,12 +248,19 @@ describe('the PULSE indicator dot — continuous, gentle, pausable, motion-safe,
     const shieldHeading = shieldPage.slice(shieldPage.indexOf('function ShieldHeading'), shieldPage.indexOf('function ShieldWorkspace'))
     expect(shieldHeading).toContain('const [beatPaused, setBeatPaused] = useState(false)')
     expect(shieldPage.slice(shieldPage.indexOf('function ShieldWorkspace'))).not.toMatch(/useState|beatPaused/)
+    // Quant's workspace is its own file; the page component holds no state at all.
+    const quantHeading = quantPage.slice(quantPage.indexOf('function QuantHeading'))
+    expect(quantHeading).toContain('const [beatPaused, setBeatPaused] = useState(false)')
+    expect(quantPage.slice(quantPage.indexOf('export default function ProjectQuant'), quantPage.indexOf('function QuantHeading'))).not.toMatch(/useState|beatPaused/)
   })
 
-  it('no React timer, frame loop or canvas', () => {
+  it('no React timer, frame loop or canvas on the branded headings', () => {
     expect(mark).not.toMatch(/setInterval|setTimeout|requestAnimationFrame|useEffect|useState|<canvas/)
     expect(pulsePage).not.toMatch(/setInterval|setTimeout|requestAnimationFrame|<canvas/)
     expect(shieldPage).not.toMatch(/setInterval|setTimeout|requestAnimationFrame|<canvas/)
+    // The Quant PAGE (gate + heading) has none either; the <canvas> that renders a
+    // PDF sheet lives in pages/project/quant/PageViewer.jsx, not beside the dot.
+    expect(quantPage).not.toMatch(/setInterval|setTimeout|requestAnimationFrame|<canvas/)
   })
 })
 
@@ -266,12 +303,25 @@ describe('pause / resume control (WCAG 2.2.2)', () => {
 describe('no misleading claims', () => {
   const claims = /\bLIVE\b|real-time|realtime|monitoring|patent|proprietary|world-first|world's first|\bAI\b|\bscore\b/i
 
-  it('SHIELD pointer, PULSE pointer and PULSE heading make no live or IP claim', () => {
-    for (const [f, src] of [['Shield', shield], ['Pulse', pointer], ['ModuleMark', mark]]) {
+  it('the pointers and headings make no live, AI or IP claim', () => {
+    for (const [f, src] of [['Shield', shield], ['Pulse', pointer], ['Quant', quant], ['ModuleMark', mark]]) {
       expect(src, f).not.toMatch(claims)
     }
     const heading = pulsePage.slice(pulsePage.indexOf('<ModuleTile'), pulsePage.indexOf('ex-GST unless stated'))
     expect(heading).not.toMatch(claims)
+    const quantHeading = quantPage.slice(quantPage.indexOf('function QuantHeading'))
+    expect(quantHeading).not.toMatch(claims)
+  })
+
+  // ADR-51: Quant™ 1A is MANUAL measurement. Its pointer and page say so and
+  // never describe recognition, detection or automation.
+  it('Quant describes manual takeoff, never AI or automatic recognition, and no BOQ write', () => {
+    expect(quant).toContain('Manual quantity takeoff')
+    expect(quantPage).toContain('Manual quantity takeoff')
+    for (const src of [quant, quantPage]) {
+      expect(src).not.toMatch(/\bAI\b|automatic|recogni[sz]e|detect|machine learning/i)
+    }
+    expect(quantPage).toMatch(/does not change BOQ quantities/)
   })
 
   // ADR-50: the /shield route became a pointer to the project tab (the /pulse
@@ -287,7 +337,7 @@ describe('no misleading claims', () => {
 
 describe('no new data flow or dependency', () => {
   it('branding files read no data: no hook, no Firebase, no subscription', () => {
-    for (const src of [mark, header, read('lib/moduleBranding.js'), pointer, shield]) {
+    for (const src of [mark, header, read('lib/moduleBranding.js'), pointer, shield, quant]) {
       expect(src).not.toMatch(/from 'firebase|onSnapshot|from '\.\.\/hooks\/|from '\.\.\/\.\.\/hooks\//)
     }
   })
@@ -297,10 +347,12 @@ describe('no new data flow or dependency', () => {
     expect(calls).toHaveLength(11)
   })
 
-  it('no dependency was added', () => {
+  // ADR-51 approved exactly ONE runtime dependency for Quant™: pdfjs-dist, pinned.
+  it('the only added runtime dependency is the pinned pdfjs-dist (ADR-51)', () => {
     const pkg = JSON.parse(readRoot('package.json'))
     expect(Object.keys(pkg.dependencies).sort()).toEqual([
-      '@tailwindcss/vite', 'firebase', 'react', 'react-dom', 'react-router-dom', 'recharts', 'tailwindcss',
+      '@tailwindcss/vite', 'firebase', 'pdfjs-dist', 'react', 'react-dom', 'react-router-dom', 'recharts', 'tailwindcss',
     ])
+    expect(pkg.dependencies['pdfjs-dist']).toMatch(/^\d+\.\d+\.\d+$/) // exact pin, no range
   })
 })

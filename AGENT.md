@@ -12,7 +12,7 @@ Constrapp is **the connected commercial operating system for construction projec
 - **New commercial modules integrate with the existing lifecycle** (Drawing → Quantity → BOQ → Estimate → Tender → Award → Approved Budget → Commitment → PO → Variation → Progress Claim → Supplier Invoice → Actual Cost → Forecast → Cash Flow → Final Project Margin → Final Account) rather than operate as standalone tools.
 - **Field features must state their commercial input or output** (e.g. drawing measurement → BOQ quantity, site photo → progress/claim evidence, delay → forecast impact). A field feature with no commercial linkage is out of scope.
 - **Do not build generic form-first or HSEQ-first functionality** (no-code form builders, HSEQ template libraries, generic field reporting, payroll/workforce, fleet/equipment, or broad enterprise integrations before product-market fit) **without an approved strategy change.** See [PRODUCT.md](PRODUCT.md) → "What Constrapp Is Not".
-- **IQ™ and Quant™ remain placeholders** until their planned sprint (see [ROADMAP.md](ROADMAP.md) and the AI Feature Placeholder Rule below). **PULSE™ 1A is live in production as a deterministic, read-only project tab (ADR-47)** — six explainable indicators composed from existing selectors — and **PULSE™ 1B (ADR-49) is live in production since 19 October 2026**, adding a human acknowledgement workflow on top of them (acknowledge a finding with a note and a required review-by date; withdraw; derived *needs attention / acknowledged* status — never a resolution). **SHIELD™ is commercial assurance — never HSEQ (ADR-50)** — and its foundation is **implemented, NOT YET DEPLOYED**: a read-only, project-scoped tab of exactly five checks (`lib/shield.js`) composed from existing selectors, with no persistence. Everything PULSE™ and SHIELD™ do not yet do (scores, severity, trends, prediction, portfolio views, assignment, notifications, background monitoring, any AI) stays under the placeholder rule.
+- **IQ™ remains a placeholder** until its planned sprint (see [ROADMAP.md](ROADMAP.md) and the AI Feature Placeholder Rule below). **Quant™ 1A (ADR-51) is implemented — NOT YET DEPLOYED**: a project-scoped MANUAL drawing-measurement tab (calibrate a sheet from one known distance; measure lengths, areas and counts; persist traceable measurement records in two new collections) that **writes no BOQ quantity and no financial document** — BOQ linkage is Quant 1B; AI takeoff stays under the placeholder rule. **PULSE™ 1A is live in production as a deterministic, read-only project tab (ADR-47)** — six explainable indicators composed from existing selectors — and **PULSE™ 1B (ADR-49) is live in production since 19 October 2026**, adding a human acknowledgement workflow on top of them (acknowledge a finding with a note and a required review-by date; withdraw; derived *needs attention / acknowledged* status — never a resolution). **SHIELD™ is commercial assurance — never HSEQ (ADR-50)** — and its foundation is **live in production since 19 October 2026**: a read-only, project-scoped tab of exactly five checks (`lib/shield.js`) composed from existing selectors, with no persistence. Everything PULSE™ and SHIELD™ do not yet do (scores, severity, trends, prediction, portfolio views, assignment, notifications, background monitoring, any AI) stays under the placeholder rule.
 
 ## Engineering & Security Standards (mandatory)
 
@@ -76,7 +76,12 @@ frontend/
                     pages/project/pulse/ holds the PULSE™ indicator card
                     (presentation only — formats lib/pulse.js output; ADR-47);
                     pages/project/shield/ holds the SHIELD™ check card
-                    (presentation only — formats lib/shield.js output; ADR-50)
+                    (presentation only — formats lib/shield.js output; ADR-50);
+                    pages/project/quant/ holds the Quant™ 1A takeoff workspace
+                    (TakeoffWorkspace, SourcePicker, PageViewer + SVG overlay,
+                    MeasurementList, calibration / editor / void modals,
+                    pdfjsLoader — the ONLY place pdfjs-dist is imported, lazily;
+                    ADR-51)
     hooks/          useAuth, useProfile, useCompany, useProjects, useProject,
                     useCostCodes, useContacts, useBudgetLines, usePurchaseOrders,
                     useProgressClaims, useSupplierInvoices, useSupplierCreditNotes,
@@ -91,7 +96,12 @@ frontend/
                     transactions; NOT a PULSE source, ADR-49),
                     useLocalToday (viewer's calendar day, advanced at local
                     midnight — a timer, NOT a subscription),
-                    useStorageUpload (the ONLY place file bytes are written),
+                    useStorageUpload (the ONLY place file bytes are written —
+                    and read: getFileUrl / getFileBytes),
+                    useTakeoff (Quant™ 1A — useTakeoffPages +
+                    useTakeoffMeasurements; revision-guarded transactions via
+                    lib/quantActions.js; writes ONLY the two takeoff
+                    collections, never a BOQ item; ADR-51),
                     useDrawings, useDrawingRevisions, useProjectDocuments,
                     useRfis (RFI register — NON-financial; per-project counter)
     lib/            firebase.js, formatters.js, currency.js, nav.js, projectTabs.js,
@@ -131,7 +141,12 @@ frontend/
                     files.js (file types, size ceilings, deterministic storage
                     paths), drawings.js, projectDocuments.js (pure domain logic),
                     rfis.js (RFI lifecycle, reference shape, overdue/response
-                    derivation — NON-financial)
+                    derivation — NON-financial), quant.js (Quant™ 1A — pure
+                    geometry, metric calibration, quantity derivation, review
+                    state, validation; NO financial arithmetic; ADR-51),
+                    quantActions.js (the five revision-guarded takeoff
+                    transactions, SDK injected), pdfRender.js (the PDF.js
+                    adapter — canonical scale-1 viewport, bounded render)
   tests/unit/       Unit tests for pure lib/ logic (npm run test:unit — no emulator)
   tests/rules/      Firestore AND Storage security-rules suites
                     (npm run test:rules — starts both emulators)
@@ -323,6 +338,30 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
                                              acknowledgement is NOT a resolution and changes NO indicator state,
                                              count or figure; reads company_admin/project_manager/qs, writes
                                              company_admin/project_manager ONLY (QS READ-ONLY); delete blocked
+  …/takeoffPages/{drawingId}_{revisionId}_{page}  QUANT™ 1A SHEET RECORD (ADR-51, NON-FINANCIAL): drawingId,
+                                             revisionId, page (int ≥ 1) — the id is RECOMPUTED by rules from
+                                             these; source pdf|image; canonical pageWidth/pageHeight (PDF.js
+                                             scale-1 viewport points, or intrinsic pixels) + pageRotation
+                                             (0|90|180|270); calibration {pointA, pointB, pageDistance,
+                                             realDistance, unit mm|m} | null; calibrationRevision (0 while
+                                             uncalibrated, EXACTLY +1 per re-calibration); calibratedAt/By;
+                                             revision (EXACTLY +1 per update); createdAt/By, updatedAt/By —
+                                             EXACT KEYS; drawing + revision EXISTENCE and revision not
+                                             withdrawn rules-verified; NO amount, NO currency, NO BOQ ref;
+                                             reads AND writes company_admin/project_manager/qs; delete blocked
+  …/takeoffMeasurements/{measurementId}      QUANT™ 1A MEASUREMENT (ADR-51, NON-FINANCIAL): takeoffPageId +
+                                             drawingId/revisionId/page (consistent, rules-recomputed; the page
+                                             doc must EXIST), kind length|area|count, points [{x,y}] in the
+                                             page's CANONICAL space (≥2/≥3/≥1, ≤500 — element CONTENT is
+                                             client-only), label (non-blank ≤120), REQUIRED costCodeId (must
+                                             EXIST) + costCodeName snapshot, calibration SNAPSHOT {revision,
+                                             pageDistance, realDistance, unit} for length/area | null for
+                                             count, status active|void (void terminal, reasoned, RULES-
+                                             ENFORCED), revision (EXACTLY +1), stamps — EXACT KEYS; A QUANTITY
+                                             IS NEVER STORED (derived from points × calibration at read time);
+                                             writes NO BOQ quantity and NO financial value anywhere (Quant 1B
+                                             boundary); reads AND writes company_admin/project_manager/qs;
+                                             delete blocked
   …/counters/rfis                            { next } — the ONLY PROJECT-SCOPED counter: every project numbers
                                              its RFIs from RFI-0001 independently (financial counters stay
                                              company-wide); same financial-role audience; delete blocked
@@ -439,7 +478,7 @@ PULSE™, IQ™, Quant™, and SHIELD™ are reserved proprietary features. **SH
 - If a screen references one, render a placeholder card: feature name, one-line description, "Coming Soon" badge — no data, calculations, or API calls behind it
 - **Placeholder cards live only on the module's own route**, which stays hidden from navigation until the feature ships (Beta Launch Readiness). **Never** add a Coming Soon card, reserved empty slot or mock widget for these features to the Dashboard or any navigation surface (ADR-45) — they join the Dashboard only with real data
 - Never import an AI/ML library (TensorFlow, OpenAI SDK, LangChain, etc.) without explicit instruction
-- **PULSE™ 1A exception (ADR-47), scoped exactly:** the project PULSE tab (`lib/pulse.js`, `pages/project/ProjectPulse.jsx`) may evaluate the six approved indicators — forecast over budget, cost codes not forecast, negative forecast gross profit, overdue programme activities, past-due supplier invoices, pending variation exposure — **only** by composing existing selectors and comparing with zero at cent resolution. Every indicator must resolve to loading / unavailable / needs data / finding / no issue, and a loading, failed or missing source can never yield "no issue". **PULSE™ 1B exception (ADR-49), scoped exactly:** the same tab may hold ONE acknowledgement document per indicator (`…/pulseAcknowledgements/{indicatorId}`, `hooks/usePulseAcknowledgements.jsx`, `lib/pulseAttention.js`) — a human note plus a required review-by date, withdrawable, company_admin/project_manager only — and may derive a *needs attention / acknowledged / no longer present / unknown* management status **beside** each finding. An acknowledgement never changes an indicator's state, a count or a figure, is never a resolution, and is never a dismissal (a finding stays visible). **Still prohibited for PULSE™:** any score, weighting, severity or risk threshold, trend or history, prediction, portfolio or cross-currency aggregation, dismissal/hiding of findings, assignment to users, notifications or reminders, background monitoring or scheduled jobs, automated commercial actions, Dashboard widgets, and any AI/ML. The top-level `/pulse` route stays hidden from the sidebar and is a pointer to the project tab, not a surface. **SHIELD™ foundation exception (ADR-50), scoped exactly:** the project SHIELD tab (`lib/shield.js`, `pages/project/ProjectShield.jsx`, `pages/project/shield/ShieldCheckCard.jsx`) may evaluate **exactly five** checks — potential duplicate supplier invoices, supplier invoice integrity, purchase order over-invoicing exposure, commitment records requiring reconciliation, existing financial exceptions — **only** by composing existing selectors and status constants, comparing in whole cents, grouping and counting; every check resolves to loading / unavailable / needs data / finding / no issue through declared dependencies, and a loading, failed, missing or empty source can never yield "no issue". It reads the seven existing hooks (POs, claims, supplier invoices, credit notes, payments, retention releases, variations) behind the financial-role gate and **has no write path, persistence, acknowledgement, rules change or dependency**. A finding is an exception or a condition needing review, never proof of wrongdoing. **Still prohibited for SHIELD™:** any further check without a separate approval (missing approval evidence, segregation-of-duties alerts, currency mismatch, duplicate payments, further cost-code or commitment conditions), any score, severity, threshold, trend, prediction, portfolio or cross-currency view, compliance or regulatory claim, fraud wording, notification, persistence, Dashboard widget, and any AI/ML. The top-level `/shield` route stays hidden and is a pointer to the project tab
+- **PULSE™ 1A exception (ADR-47), scoped exactly:** the project PULSE tab (`lib/pulse.js`, `pages/project/ProjectPulse.jsx`) may evaluate the six approved indicators — forecast over budget, cost codes not forecast, negative forecast gross profit, overdue programme activities, past-due supplier invoices, pending variation exposure — **only** by composing existing selectors and comparing with zero at cent resolution. Every indicator must resolve to loading / unavailable / needs data / finding / no issue, and a loading, failed or missing source can never yield "no issue". **PULSE™ 1B exception (ADR-49), scoped exactly:** the same tab may hold ONE acknowledgement document per indicator (`…/pulseAcknowledgements/{indicatorId}`, `hooks/usePulseAcknowledgements.jsx`, `lib/pulseAttention.js`) — a human note plus a required review-by date, withdrawable, company_admin/project_manager only — and may derive a *needs attention / acknowledged / no longer present / unknown* management status **beside** each finding. An acknowledgement never changes an indicator's state, a count or a figure, is never a resolution, and is never a dismissal (a finding stays visible). **Still prohibited for PULSE™:** any score, weighting, severity or risk threshold, trend or history, prediction, portfolio or cross-currency aggregation, dismissal/hiding of findings, assignment to users, notifications or reminders, background monitoring or scheduled jobs, automated commercial actions, Dashboard widgets, and any AI/ML. The top-level `/pulse` route stays hidden from the sidebar and is a pointer to the project tab, not a surface. **SHIELD™ foundation exception (ADR-50), scoped exactly:** the project SHIELD tab (`lib/shield.js`, `pages/project/ProjectShield.jsx`, `pages/project/shield/ShieldCheckCard.jsx`) may evaluate **exactly five** checks — potential duplicate supplier invoices, supplier invoice integrity, purchase order over-invoicing exposure, commitment records requiring reconciliation, existing financial exceptions — **only** by composing existing selectors and status constants, comparing in whole cents, grouping and counting; every check resolves to loading / unavailable / needs data / finding / no issue through declared dependencies, and a loading, failed, missing or empty source can never yield "no issue". It reads the seven existing hooks (POs, claims, supplier invoices, credit notes, payments, retention releases, variations) behind the financial-role gate and **has no write path, persistence, acknowledgement, rules change or dependency**. A finding is an exception or a condition needing review, never proof of wrongdoing. **Still prohibited for SHIELD™:** any further check without a separate approval (missing approval evidence, segregation-of-duties alerts, currency mismatch, duplicate payments, further cost-code or commitment conditions), any score, severity, threshold, trend, prediction, portfolio or cross-currency view, compliance or regulatory claim, fraud wording, notification, persistence, Dashboard widget, and any AI/ML. The top-level `/shield` route stays hidden and is a pointer to the project tab. **Quant™ 1A exception (ADR-51), scoped exactly:** the project Quant tab (`lib/quant.js`, `lib/quantActions.js`, `lib/pdfRender.js`, `hooks/useTakeoff.jsx`, `pages/project/ProjectQuant.jsx`, `pages/project/quant/*`) may render a drawing revision's PDF page or image, let a company_admin / project_manager / qs calibrate the page from ONE known metric distance, place points to measure lengths, areas and counts, and persist those records in `takeoffPages` / `takeoffMeasurements` through revision-guarded transactions — **manual measurement only.** Every quantity is reproduced from stored geometry × calibration at read time; none is stored. **Still prohibited for Quant™:** writing or suggesting any BOQ quantity, amount or rate (`updateBoqItem` is never called — Quant 1B), any Budget/Forecast/Margin/Cash Flow effect, automatic or AI-assisted recognition, detection, snapping or inference of geometry, OCR, drawing comparison, portfolio views, Dashboard surfaces, notifications, and any claim that a measurement is verified beyond who placed its points and when
 
 ## Git Workflow
 

@@ -21,6 +21,7 @@
      dot only. Never a status colour: findings stay brand-red. */
   --color-brand-pulse:     #FF6B9D;
   --color-brand-shield:    #00D4FF;
+  --color-brand-quant:     #A3E635;
 
   --font-sans: 'Sora', 'DM Sans', system-ui, sans-serif;
 

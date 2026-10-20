@@ -3998,6 +3998,348 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // ── Constrapp Quant™ 1A — takeoff pages (ADR-51) ─────────────────────────
+    //
+    // One document per (drawing, revision, page number). The id is
+    // `{drawingId}_{revisionId}_{page}` and is RECOMPUTED here from the stored
+    // fields, so a page can never claim a different sheet than it is filed
+    // under. Holds the page's canonical geometry (PDF.js scale-1 viewport, or
+    // intrinsic image pixels) and its CURRENT calibration. NON-FINANCIAL: no
+    // amount, no currency, no counter, no BOQ or budget reference.
+    //
+    // Reads AND writes: company_admin / project_manager / qs — the QS measures.
+    // subcontractor / client / super_admin denied: a takeoff is the internal
+    // estimate's provenance.
+    //
+    // Enforced here: tenant; role; exact keys; id ↔ fields agreement; the
+    // drawing and the revision EXIST and the revision is not withdrawn (via
+    // exists()/get() on the nested revisions path — the RFI precedent); the
+    // source and rotation vocabularies; positive page dimensions; calibration
+    // shape (two {x,y} points, positive distances, metric unit) or null;
+    // `calibrationRevision` 0 while uncalibrated and exactly +1 per
+    // calibration; immutable identity, geometry and creation stamps; actor
+    // and server stamps; `revision` exactly +1 on every update; NO
+    // re-calibration once the revision or drawing is withdrawn; delete blocked.
+    // READS are role-gated only, so superseded and withdrawn sheets stay
+    // inspectable as history.
+    //
+    // NOT enforced (client-only — docs/SECURITY.md → Deferred Control 32):
+    // that pageWidth/pageHeight/pageRotation are the sheet's REAL geometry,
+    // that `page` is within the PDF's page count, that `pageDistance` equals
+    // the distance between pointA and pointB, that the real distance is TRUE,
+    // true concurrency safety (the +1 rule rejects a BLIND overwrite only),
+    // and project-specific membership (item 20).
+    match /companies/{companyId}/projects/{projectId}/takeoffPages/{takeoffPageId} {
+      function memberRole() {
+        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+      }
+      function sameCompany() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
+      }
+      function quantMember() {
+        return sameCompany() && memberRole() in ['company_admin', 'project_manager', 'qs'];
+      }
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      function nextRevision() {
+        return request.resource.data.revision is int
+            && request.resource.data.revision == resource.data.revision + 1;
+      }
+      // EXACT shape — hasOnly + hasAll (the ADR-27 lesson).
+      function exactKeys(d) {
+        return d.keys().hasOnly([
+                 'drawingId', 'revisionId', 'page', 'source', 'pageWidth', 'pageHeight', 'pageRotation',
+                 'calibration', 'calibrationRevision', 'calibratedAt', 'calibratedBy',
+                 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+               ])
+            && d.keys().hasAll([
+                 'drawingId', 'revisionId', 'page', 'source', 'pageWidth', 'pageHeight', 'pageRotation',
+                 'calibration', 'calibrationRevision', 'calibratedAt', 'calibratedBy',
+                 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+               ]);
+      }
+      // The document id IS the sheet identity.
+      function identityValid(d) {
+        return d.drawingId is string && d.drawingId.size() > 0
+            && d.revisionId is string && d.revisionId.size() > 0
+            && d.page is int && d.page >= 1
+            && takeoffPageId == d.drawingId + '_' + d.revisionId + '_' + string(d.page);
+      }
+      // The referenced drawing and revision must exist and NEITHER may be
+      // withdrawn — nothing is ever measured, or re-calibrated, on a recalled
+      // sheet. Evaluated on the INCOMING document at create and on the STORED
+      // identity at update (identity is immutable, so they are the same sheet).
+      // Reads are deliberately NOT gated on this: a withdrawn sheet's takeoff
+      // stays inspectable as history.
+      function sourceLive(d) {
+        return exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/drawings/$(d.drawingId))
+            && get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/drawings/$(d.drawingId)).data.status != 'withdrawn'
+            && exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/drawings/$(d.drawingId)/revisions/$(d.revisionId))
+            && get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/drawings/$(d.drawingId)/revisions/$(d.revisionId)).data.status != 'withdrawn';
+      }
+      function geometryValid(d) {
+        return d.source in ['pdf', 'image']
+            && d.pageWidth is number && d.pageWidth > 0
+            && d.pageHeight is number && d.pageHeight > 0
+            && d.pageRotation in [0, 90, 180, 270];
+      }
+      function pointValid(p) {
+        return p is map && p.keys().hasOnly(['x', 'y']) && p.x is number && p.y is number;
+      }
+      function calibrationValid(c) {
+        return c is map
+            && c.keys().hasOnly(['pointA', 'pointB', 'pageDistance', 'realDistance', 'unit'])
+            && c.keys().hasAll(['pointA', 'pointB', 'pageDistance', 'realDistance', 'unit'])
+            && pointValid(c.pointA) && pointValid(c.pointB)
+            && c.pageDistance is number && c.pageDistance > 0
+            && c.realDistance is number && c.realDistance > 0
+            && c.unit in ['mm', 'm'];
+      }
+      // Identity, geometry and creation stamps never move.
+      function corePreserved() {
+        return request.resource.data.drawingId    == resource.data.drawingId
+            && request.resource.data.revisionId   == resource.data.revisionId
+            && request.resource.data.page         == resource.data.page
+            && request.resource.data.source       == resource.data.source
+            && request.resource.data.pageWidth    == resource.data.pageWidth
+            && request.resource.data.pageHeight   == resource.data.pageHeight
+            && request.resource.data.pageRotation == resource.data.pageRotation
+            && request.resource.data.createdAt    == resource.data.createdAt
+            && request.resource.data.createdBy    == resource.data.createdBy;
+      }
+
+      allow read: if quantMember();
+
+      allow create: if quantMember()
+                  && exactKeys(request.resource.data)
+                  && identityValid(request.resource.data)
+                  && sourceLive(request.resource.data)
+                  && geometryValid(request.resource.data)
+                  && request.resource.data.revision == 1
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  && (
+                       // (a) UNCALIBRATED BIRTH — made before the first count
+                       //     on a page nobody has calibrated.
+                       (
+                         request.resource.data.calibration == null
+                         && request.resource.data.calibrationRevision == 0
+                         && request.resource.data.calibratedAt == null
+                         && request.resource.data.calibratedBy == null
+                       )
+                       ||
+                       // (b) FIRST CALIBRATION.
+                       (
+                         calibrationValid(request.resource.data.calibration)
+                         && request.resource.data.calibrationRevision == 1
+                         && request.resource.data.calibratedBy == request.auth.uid
+                         && request.resource.data.calibratedAt == request.time
+                       )
+                     );
+
+      // The ONLY update is a (re-)calibration: the calibration moves, its
+      // revision moves by exactly +1, and nothing else may ride along. A sheet
+      // whose revision or drawing has since been withdrawn can no longer be
+      // re-calibrated — its measurements are history, not a live takeoff.
+      allow update: if quantMember()
+                  && exactKeys(request.resource.data)
+                  && corePreserved()
+                  && sourceLive(resource.data)
+                  && updateStamped()
+                  && nextRevision()
+                  && changedKeys().hasOnly(['calibration', 'calibrationRevision', 'calibratedAt', 'calibratedBy', 'revision', 'updatedAt', 'updatedBy'])
+                  && calibrationValid(request.resource.data.calibration)
+                  && request.resource.data.calibrationRevision == resource.data.calibrationRevision + 1
+                  && request.resource.data.calibratedBy == request.auth.uid
+                  && request.resource.data.calibratedAt == request.time;
+
+      allow delete: if false;
+    }
+
+    // ── Constrapp Quant™ 1A — takeoff measurements (ADR-51) ──────────────────
+    //
+    // One measurement: a length (polyline), an area (polygon) or a count
+    // (points) in the CANONICAL coordinates of exactly one takeoff page. The
+    // quantity is NEVER stored — it is reproduced from `points` and the
+    // measurement's calibration SNAPSHOT (the page calibration it was last
+    // saved or reviewed under; null for a count). NON-FINANCIAL: no amount,
+    // no currency, no BOQ reference — Quant 1B owns BOQ linkage (ADR-51).
+    //
+    // Reads AND writes: company_admin / project_manager / qs.
+    //
+    // Enforced here: tenant; role; exact keys; `takeoffPageId` recomputed from
+    // the stored sheet identity; the page document, the drawing, the revision
+    // and the cost code EXIST and neither the revision nor the drawing is
+    // withdrawn (create AND active edit — once withdrawn, VOID is the only
+    // permitted write; reads are never gated, so history stays inspectable); the kind
+    // vocabulary; `points` a list bounded by kind (≥2 length, ≥3 area, ≥1
+    // count, ≤500); non-blank bounded label and cost-code name; calibration
+    // snapshot shape for length/area and null for count; immutable sheet
+    // identity, kind and creation stamps; actor and server stamps; `revision`
+    // exactly +1 on every update; active→void terminal with a non-whitespace
+    // reason; delete blocked.
+    //
+    // NOT enforced (client-only — docs/SECURITY.md → Deferred Control 32):
+    // the CONTENT of `points` (rules cannot iterate a list — an element may
+    // be anything), that the points lie on the page, that the geometry is
+    // non-degenerate, that the calibration snapshot matches the page's current
+    // or any past calibration, that the cost code is ACTIVE, true concurrency
+    // safety, and project-specific membership (item 20).
+    match /companies/{companyId}/projects/{projectId}/takeoffMeasurements/{measurementId} {
+      function memberRole() {
+        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+      }
+      function sameCompany() {
+        return request.auth != null
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
+      }
+      function quantMember() {
+        return sameCompany() && memberRole() in ['company_admin', 'project_manager', 'qs'];
+      }
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      function nextRevision() {
+        return request.resource.data.revision is int
+            && request.resource.data.revision == resource.data.revision + 1;
+      }
+      function exactKeys(d) {
+        return d.keys().hasOnly([
+                 'takeoffPageId', 'drawingId', 'revisionId', 'page', 'kind', 'points', 'label',
+                 'costCodeId', 'costCodeName', 'calibration',
+                 'status', 'voidReason', 'voidedAt', 'voidedBy',
+                 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+               ])
+            && d.keys().hasAll([
+                 'takeoffPageId', 'drawingId', 'revisionId', 'page', 'kind', 'points', 'label',
+                 'costCodeId', 'costCodeName', 'calibration',
+                 'status', 'voidReason', 'voidedAt', 'voidedBy',
+                 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+               ]);
+      }
+      // The drawing and revision exist and NEITHER is withdrawn. Checked on the
+      // incoming document at create and on the STORED identity for an active
+      // edit; never for a read or a void.
+      function sourceLive(d) {
+        return exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/drawings/$(d.drawingId))
+            && get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/drawings/$(d.drawingId)).data.status != 'withdrawn'
+            && exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/drawings/$(d.drawingId)/revisions/$(d.revisionId))
+            && get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/drawings/$(d.drawingId)/revisions/$(d.revisionId)).data.status != 'withdrawn';
+      }
+      // The sheet identity: consistent with the page id, every referenced
+      // document real and the sheet live. The page must ALREADY exist (exists()
+      // sees committed state), which is why the app creates a page in its own
+      // commit first.
+      function sourceValid(d) {
+        return d.drawingId is string && d.drawingId.size() > 0
+            && d.revisionId is string && d.revisionId.size() > 0
+            && d.page is int && d.page >= 1
+            && d.takeoffPageId == d.drawingId + '_' + d.revisionId + '_' + string(d.page)
+            && exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/takeoffPages/$(d.takeoffPageId))
+            && sourceLive(d);
+      }
+      function snapshotValid(c) {
+        return c is map
+            && c.keys().hasOnly(['revision', 'pageDistance', 'realDistance', 'unit'])
+            && c.keys().hasAll(['revision', 'pageDistance', 'realDistance', 'unit'])
+            && c.revision is int && c.revision >= 1
+            && c.pageDistance is number && c.pageDistance > 0
+            && c.realDistance is number && c.realDistance > 0
+            && c.unit in ['mm', 'm'];
+      }
+      // The editable content, validated identically at create and at edit.
+      function contentValid(d) {
+        return d.kind in ['length', 'area', 'count']
+            && d.points is list
+            && d.points.size() <= 500
+            && (
+                 (d.kind == 'length' && d.points.size() >= 2)
+              || (d.kind == 'area'   && d.points.size() >= 3)
+              || (d.kind == 'count'  && d.points.size() >= 1)
+               )
+            && d.label is string && d.label.trim().size() > 0 && d.label.size() <= 120
+            && d.costCodeId is string && d.costCodeId.size() > 0
+            && exists(/databases/$(database)/documents/companies/$(companyId)/costCodes/$(d.costCodeId))
+            && d.costCodeName is string && d.costCodeName.trim().size() > 0 && d.costCodeName.size() <= 200
+            && (
+                 (d.kind == 'count' && d.calibration == null)
+              || (d.kind != 'count' && snapshotValid(d.calibration))
+               );
+      }
+      function corePreserved() {
+        return request.resource.data.takeoffPageId == resource.data.takeoffPageId
+            && request.resource.data.drawingId     == resource.data.drawingId
+            && request.resource.data.revisionId    == resource.data.revisionId
+            && request.resource.data.page          == resource.data.page
+            && request.resource.data.kind          == resource.data.kind
+            && request.resource.data.createdAt     == resource.data.createdAt
+            && request.resource.data.createdBy     == resource.data.createdBy;
+      }
+
+      allow read: if quantMember();
+
+      allow create: if quantMember()
+                  && exactKeys(request.resource.data)
+                  && sourceValid(request.resource.data)
+                  && contentValid(request.resource.data)
+                  && request.resource.data.status == 'active'
+                  && request.resource.data.voidReason == ''
+                  && request.resource.data.voidedAt == null
+                  && request.resource.data.voidedBy == null
+                  && request.resource.data.revision == 1
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped();
+
+      allow update: if quantMember()
+                  && exactKeys(request.resource.data)
+                  && corePreserved()
+                  && updateStamped()
+                  && nextRevision()
+                  && (
+                    // (a) ACTIVE EDIT — geometry, label, cost code and the
+                    //     calibration snapshot may change; the status may not,
+                    //     no void stamp may be forged, and the sheet must still
+                    //     be LIVE (revision and drawing not withdrawn).
+                    (
+                      resource.data.status == 'active'
+                      && request.resource.data.status == 'active'
+                      && changedKeys().hasOnly(['points', 'label', 'costCodeId', 'costCodeName', 'calibration', 'revision', 'updatedAt', 'updatedBy'])
+                      && sourceLive(resource.data)
+                      && contentValid(request.resource.data)
+                    )
+                    ||
+                    // (b) ACTIVE → VOID (terminal, reasoned). Stamps and status
+                    //     only, so a voided measurement is immutable history.
+                    //     Permitted whatever the revision's status: voiding a
+                    //     measurement on a withdrawn sheet is housekeeping.
+                    (
+                      resource.data.status == 'active'
+                      && request.resource.data.status == 'void'
+                      && changedKeys().hasOnly(['status', 'voidReason', 'voidedAt', 'voidedBy', 'revision', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.voidedBy == request.auth.uid
+                      && request.resource.data.voidedAt == request.time
+                      && request.resource.data.voidReason is string
+                      && request.resource.data.voidReason.trim().size() > 0
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
     // Project counters — PER-PROJECT sequential numbering. Today the only
     // document here is `rfis` ({ next }): every project numbers its RFIs from
     // RFI-0001 independently, the construction convention. Every FINANCIAL

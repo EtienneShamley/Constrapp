@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
-import { ref as storageRef, uploadBytesResumable, getDownloadURL } from 'firebase/storage'
+import { ref as storageRef, uploadBytesResumable, getDownloadURL, getBytes } from 'firebase/storage'
 import { storage } from '../lib/firebase'
-import { uploadErrorMessage } from '../lib/files'
+import { uploadErrorMessage, DRAWING_MAX_BYTES } from '../lib/files'
 
 // ── Firebase Storage uploads ─────────────────────────────────────────────────
 //
@@ -102,5 +102,46 @@ export async function getFileUrl(storagePath) {
       throw new Error('You do not have permission to open this file.', { cause: err })
     }
     throw new Error('Could not open this file. Check your connection and try again.', { cause: err })
+  }
+}
+
+// Fetches a stored object's BYTES into memory — the Quant™ takeoff viewer
+// needs the PDF itself, not a link to it (a cross-origin <iframe> exposes no
+// page geometry). Same rules-protected `get` the download URL uses; nothing
+// is persisted and the buffer lives only in the viewer.
+//
+// ⚠️ OPERATIONAL PREREQUISITE. The SDK fetches with XHR, so the browser
+// enforces CORS on the Storage endpoint. If the production bucket has no CORS
+// rule for the Hosting origin, this fails — the SDK then retries silently for
+// up to two minutes, so the wait is bounded here and the failure is named
+// (docs/DEPLOYMENT.md → Cloud Storage CORS for the Quant viewer). Images are
+// unaffected: they render through <img> from a download URL.
+export const FILE_BYTES_TIMEOUT_MS = 20_000
+
+export async function getFileBytes(storagePath, { maxBytes = DRAWING_MAX_BYTES, timeoutMs = FILE_BYTES_TIMEOUT_MS } = {}) {
+  if (!storagePath) throw new Error('This file is not available')
+  let timer
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error('timeout'), { code: 'constrapp/timeout' })), timeoutMs)
+  })
+  try {
+    return await Promise.race([getBytes(storageRef(storage, storagePath), maxBytes), timeout])
+  } catch (err) {
+    if (err?.code === 'storage/object-not-found') {
+      throw new Error('The file for this revision is missing from storage.', { cause: err })
+    }
+    if (err?.code === 'storage/unauthorized') {
+      throw new Error('You do not have permission to open this file.', { cause: err })
+    }
+    if (err?.code === 'constrapp/timeout' || err?.code === 'storage/retry-limit-exceeded' || err?.code === 'storage/unknown') {
+      throw new Error(
+        'The PDF could not be downloaded for measuring. This usually means the Storage bucket is not configured for '
+        + 'browser downloads (CORS) — see docs/DEPLOYMENT.md. Use Open in the Documents tab to view the sheet.',
+        { cause: err },
+      )
+    }
+    throw new Error('Could not download this file. Check your connection and try again.', { cause: err })
+  } finally {
+    clearTimeout(timer)
   }
 }

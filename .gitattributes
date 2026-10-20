@@ -1,0 +1,3 @@
+# PDF fixtures are binary: the PDF cross-reference table REQUIRES a trailing space
+# on every 20-byte xref entry, which `git diff --check` would otherwise flag.
+*.pdf binary

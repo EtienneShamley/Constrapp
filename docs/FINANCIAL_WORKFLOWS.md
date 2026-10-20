@@ -1327,6 +1327,30 @@ estimate, and the **BOQ → Budget transfer** into budget lines. The cost code
 remains the join from measurement all the way to budget. Manual quantity entry
 precedes any AI takeoff.
 
+### Quant™ 1A — measurement provenance *(implemented — not yet deployed; ADR-51)*
+
+Quant™ 1A is the **measurement half** of *Drawing → Quantity*. It records, per
+drawing revision and page, a metric calibration (`takeoffPages`) and the
+lengths, areas and counts a QS places on the sheet (`takeoffMeasurements`),
+each with a **required cost code** — the same spine every BOQ item carries.
+
+**It is not a financial document and it writes no financial value.** A
+measurement stores canonical geometry and the calibration it was measured
+under; its quantity (m, m², no.) is **derived at read time** from those two
+things and never persisted — exactly as every financial figure in this file
+is derived rather than stored. Quant 1A **does not write a BOQ `quantity`,
+`rate` or `amount`**, never calls `updateBoqItem`, transfers nothing to Budget
+Lines, and touches no Committed, Actual, Invoiced, Forecast, Margin or Cash
+Flow figure. Page totals shown on the Quant tab are a read-time summary of
+that page only.
+
+**The boundary to the BOQ is Quant 1B** (separate approval): linking
+measurements to BOQ items, checking unit compatibility between a measurement's
+unit and the item's `unit`, aggregating reviewed quantities per item, and an
+**explicit, confirmed** write of that aggregate into the item's `quantity`
+through the existing BOQ hook — the only path by which a measurement will ever
+reach a BOQ line. Even then the BOQ keeps feeding no financial figure (ADR-32).
+
 ### Tender and Award *(implemented — foundation; see the Tenders section above)*
 
 Tender packages, manual bid capture, read-time Tender Comparison, and the award
