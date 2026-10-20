@@ -21,21 +21,47 @@ deploy (no rules change, no migration, no backfill) — merged to `main`, Azure
 CI passed, Hosting deployed by hand, the five commercial checks verified in
 production.
 
-**Pending release — Quant™ 1A (ADR-51): Hosting + rules publish + a Storage
-CORS prerequisite.** Three separate actions, each needing its own approval:
+**Quant™ 1A (ADR-51): Hosting DEPLOYED (October 2026) — PRODUCTION
+VERIFICATION BLOCKED.** The Quant merge was built and deployed to Hosting and
+a rules publish was attempted, but production verification failed: the Quant
+tab reported *Takeoff records are unavailable*, PDF sheets did not load, and a
+*Revision not found* banner appeared with no drawing selected. The diagnosis
+(ADR-51 hotfix amendment) found three separate causes, two of them confirmed
+in code and one inferred from the symptoms:
 
-1. **Publish `frontend/firestore.rules`** — it gains the `takeoffPages` and
-   `takeoffMeasurements` blocks. Run `npm run test:rules` first. The ADR-40
-   ordering gate does **not** apply: no existing code writes these paths, so
-   the rules may be published before or after the build (publishing first
-   simply means the new tab works the moment the build lands).
-2. **Deploy Hosting**: `npm run build` + `firebase deploy --only hosting
-   --project constrapp-69b5d` from the merged `main`.
-3. **Confirm the Storage bucket allows browser downloads for the Hosting
-   origin** — see *Cloud Storage CORS for the Quant™ viewer* below. Until it
-   does, PDF revisions cannot be measured in production (the tab says so and
-   points here); PNG/JPEG revisions, and every other feature, are unaffected.
-   `frontend/storage.rules` is **unchanged** by Quant 1A.
+- **Rules source size (inferred, highly likely).** `frontend/firestore.rules`
+  had grown to **264,907 UTF-8 bytes**, above Firestore's **256 KB (262,144
+  byte) limit on published source text**. The console refuses a ruleset over
+  that limit and the *previous* ruleset stays active — which, having no
+  `takeoffPages` / `takeoffMeasurements` blocks, denies every read of them by
+  default. The hotfix branch trims comment text to **192,616 bytes** with the
+  non-comment rules byte-identical, and adds `tests/unit/rulesSize.test.js` so
+  CI fails before a publish can. **Verify which ruleset is actually live
+  before republishing** — see *Verifying which rules version is published*
+  below. Neither the emulator suite nor the size test proves what is deployed.
+- **Storage CORS (confirmed in code).** The installed SDK's `getBytes` sends
+  `Authorization`, `Range`, `X-Firebase-Storage-Version` and
+  `X-Firebase-GMPID` request headers and expects a **206** response; the saved
+  bucket rule allowed only `Content-Type`. See the corrected configuration and
+  the two-part verification in *Cloud Storage CORS for the Quant™ viewer*.
+- **Revision banner (confirmed in code, fixed).** The workspace showed the
+  missing-revision warning when no drawing was selected and while revisions
+  were still loading. Fixed in `pages/project/quant/TakeoffWorkspace.jsx`.
+
+Release of the hotfix, in order, each a separate approved action:
+
+1. **Confirm the live ruleset** (procedure below) and record what it is.
+2. **Publish the trimmed `frontend/firestore.rules`** after `npm run test:rules`
+   and `npm run test:unit` pass (the unit suite now enforces the size budget).
+   The ADR-40 ordering gate does not apply: nothing in the previous bundle
+   writes these paths.
+3. **Apply the corrected bucket CORS rule** and verify the OPTIONS preflight
+   and the GET separately (below).
+4. **Deploy Hosting** with the hotfix build: `npm run build` + `firebase deploy
+   --only hosting --project constrapp-69b5d`.
+5. **Verify in production** per TESTING.md §27 and record the outcome here.
+
+`frontend/storage.rules` is **unchanged**; no Storage read permission widens.
 
 ## Prerequisites
 
@@ -154,12 +180,44 @@ manual:
    [SECURITY.md](SECURITY.md)).
 2. **Run `npm run test:rules`** and confirm it passes — the emulator suite loads
    this exact file (see [TESTING.md](TESTING.md) §0).
-3. Open Firebase console → Firestore Database → **Rules**.
-4. Paste the full file contents over the editor content.
-5. **Publish.**
+3. **Run `npm run test:unit`** — `tests/unit/rulesSize.test.js` fails if the
+   file exceeds the approved budget of **245,000 UTF-8 bytes** (Firestore's
+   hard limit is **262,144 bytes**; a larger file is REFUSED by the console and
+   the previous ruleset silently stays active — the Quant™ 1A incident). To
+   check by hand: `wc -c frontend/firestore.rules` (bytes, not characters).
+4. Open Firebase console → Firestore Database → **Rules**.
+5. Paste the full file contents over the editor content.
+6. **Publish** — and read the result. A red error banner (for example *Rules
+   are too large* or a compile error) means **nothing was published**: the
+   previous ruleset remains in force.
+7. **Confirm the live version** (next section) before telling anyone the rules
+   are out.
 
 Keep the console and the repo file identical — the repo copy is the reviewed
 artifact; the console copy is what actually enforces.
+
+### Verifying which rules version is published
+
+The emulator suite proves the repo file; the size test proves it can be
+published; **only the console shows what is live.** To confirm:
+
+1. Firebase console → Firestore Database → **Rules**. The editor shows the
+   **active** ruleset. Use the version/history selector beside it (labelled by
+   publish timestamp) — the newest entry is the live one, and its timestamp
+   must be after the publish you performed.
+2. In the editor search (Ctrl/Cmd-F) for `takeoffPages`. If absent, the
+   Quant™ blocks are not live, whatever the repo contains.
+3. For an exact comparison, copy the editor contents to the clipboard and run
+   `diff <(pbpaste) frontend/firestore.rules` (macOS) — an empty diff means
+   the live ruleset is the repo file. Any difference (or a different byte count
+   from `wc -c`) means the repo and production have diverged.
+4. Cross-check from the app: in DevTools → Network, open the long-running
+   `Listen/channel` request and read its response stream; a target rejected by
+   rules carries `"status": "PERMISSION_DENIED"` with the collection path.
+   A channel that fails at the network level shows no such body and affects
+   every tab of the app, not one collection — do not read it as a denial.
+5. Record the live timestamp, the byte count and the outcome in this file
+   with the release note.
 
 ### ⚠️ ORDERING GATE — application code first, rules second (ADR-40)
 
@@ -258,8 +316,20 @@ only be seen with the command in step 1.
 
    `[]` or "has no CORS configuration" means step 2 is required.
 
-2. **Proposed configuration** — `cors.json` (keep it outside the repo; it is
-   bucket configuration, not source):
+2. **Required configuration** — `cors.json` (keep it outside the repo; it is
+   bucket configuration, not source). It is derived from what the **installed
+   SDK (`firebase` 12 / `@firebase/storage`) actually sends** for
+   `getBytes(ref, maxDownloadSizeBytes)`: a `GET …?alt=media` with the request
+   headers `Authorization: Firebase <token>`, `Range: bytes=0-<max>`,
+   `X-Firebase-Storage-Version` and `X-Firebase-GMPID` (sent because the app is
+   configured with `VITE_FIREBASE_APP_ID`; `X-Firebase-AppCheck` would be added
+   only if App Check were enabled, which it is not), and a **206 Partial
+   Content** response that the SDK accepts as success. Those request headers
+   are not CORS-safelisted, so the browser **preflights** with OPTIONS, and
+   Cloud Storage answers the preflight's `Access-Control-Allow-Headers` from
+   the bucket rule's `responseHeader` list. The rule saved during the incident
+   listed only `Content-Type`, which is why the preflight could not authorise
+   the request headers and the 206 arrived without `Access-Control-Allow-Origin`.
 
    ```json
    [
@@ -269,32 +339,56 @@ only be seen with the command in step 1.
          "https://constrapp-69b5d.firebaseapp.com"
        ],
        "method": ["GET"],
-       "responseHeader": ["Content-Type", "Content-Length", "Content-Range", "Range"],
+       "responseHeader": [
+         "Authorization",
+         "Range",
+         "X-Firebase-Storage-Version",
+         "X-Firebase-GMPID",
+         "Content-Type",
+         "Content-Length",
+         "Content-Range"
+       ],
        "maxAgeSeconds": 3600
      }
    ]
    ```
 
-   Add `http://localhost:5173` to `origin` **only** on a development bucket,
-   never on production. `GET` is the only method the viewer needs; uploads go
-   through the Firebase SDK's resumable protocol and are unaffected. Nothing
-   here widens *who* may read an object — Storage Rules still decide that; CORS
-   only lets the browser hand the bytes to the page once the rules allowed the
-   request.
+   Nothing else is required: `GET` is the only method (OPTIONS preflights are
+   answered by Cloud Storage itself and need no entry), uploads go through the
+   SDK's resumable protocol and are unaffected, and `maxAgeSeconds` only caches
+   a *successful* preflight. Add `http://localhost:5173` to `origin` **only**
+   on a development bucket, never on production. Nothing here widens *who* may
+   read an object — Storage Rules still decide that; CORS only lets the browser
+   hand the bytes to the page once the rules allowed the request. The
+   authenticated SDK download, its 50 MB bound and the Storage Rules boundary
+   are all kept; no token-bearing download URL is used for bytes.
 
    ```bash
    gsutil cors set cors.json gs://<bucket>
    gsutil cors get gs://<bucket>     # confirm it echoes the rule
    ```
 
-3. **Verify in production** (after the Hosting deploy and the rules publish):
-   as a QS, open a project's **Quant** tab, choose a drawing with a **PDF**
-   revision and wait for the sheet. *Pass:* the page renders and the Calibrate
-   tool enables. *Fail:* within 20 seconds the viewer reads *"The PDF could not
-   be downloaded for measuring… (CORS)"* and DevTools → Network shows the
-   `…/o/…?alt=media` request blocked with a CORS error — apply step 2 and
-   reload. A PNG/JPEG revision rendering while a PDF does not is the signature
-   of a missing CORS rule, not of a rules or permission problem.
+3. **Verify in production — the preflight and the GET are two separate
+   checks.** First **hard-reload with DevTools open and "Disable cache"
+   ticked**: a failed preflight is cached by the browser for up to
+   `maxAgeSeconds`, so a stale failure can outlive the fix. Then, as a QS, open
+   a project's **Quant** tab and choose a drawing with a **PDF** revision. In
+   DevTools → Network filter on `alt=media`:
+   - **OPTIONS (preflight)** — status 200; response headers must include
+     `Access-Control-Allow-Origin: https://constrapp-69b5d.web.app` (or the
+     `.firebaseapp.com` origin you used) and `Access-Control-Allow-Headers`
+     listing `authorization`, `range`, `x-firebase-storage-version` and
+     `x-firebase-gmpid`. A missing header here means the bucket rule is wrong
+     or not yet propagated (allow a few minutes after `gsutil cors set`).
+   - **GET (actual)** — status **206** (expected: the SDK sends `Range`), and
+     the response headers must include `Access-Control-Allow-Origin` for the
+     same origin. A 206 **without** that header is the incident signature.
+   *Pass:* both requests carry the origin header and the sheet renders with
+   the Calibrate tool enabled. *Fail:* within 20 seconds the viewer reads
+   *"The PDF could not be downloaded for measuring… (CORS)"*; the SDK will
+   keep retrying in the background for up to two minutes, which is expected
+   and harmless. A PNG/JPEG revision rendering while a PDF does not is the
+   signature of a CORS problem, not of a rules or permission problem.
 
 4. **Record the outcome** in this file (date, bucket, rule applied or already
    present) so the prerequisite is never re-diagnosed.

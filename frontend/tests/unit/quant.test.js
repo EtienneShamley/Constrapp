@@ -943,6 +943,35 @@ describe('superseded and withdrawn revisions', () => {
     expect(read('lib/quantActions.js')).not.toMatch(/currentRevisionId/)
   })
 
+  // Production incident (October 2026): the banner showed "REVISION NOT FOUND"
+  // with no drawing selected, and flashed while revisions were still loading.
+  it('the missing-revision banner is computed only for a selected drawing whose revisions have settled', () => {
+    const workspace = stripComments(read('pages/project/quant/TakeoffWorkspace.jsx'))
+    expect(workspace).toContain('const revisionsSettled = !!drawing && !revisionsLoading && !revisionsError')
+    expect(workspace).toContain('const warning = revisionsSettled ? sourceWarning(revision, drawing) : null')
+    expect(workspace).not.toMatch(/revision \|\| !drawing \? sourceWarning/)
+    // A failed revisions read is its own unavailable banner — never "not found".
+    expect(workspace).toContain('{drawing && revisionsError && (')
+    expect(workspace).toMatch(/This drawing&apos;s revisions are unavailable/)
+    // The picker owns the loading state; the workspace does not invent one.
+    const picker = stripComments(read('pages/project/quant/SourcePicker.jsx'))
+    expect(picker).toContain("revisionsLoading ? 'Loading revisions…'")
+    expect(picker).toContain("revisionsError ? 'Revisions unavailable'")
+  })
+
+  it('sourceWarning itself still names a genuinely missing revision, and nothing else, for a selected drawing', () => {
+    expect(sourceWarning(null, drawing).title).toBe('REVISION NOT FOUND')
+    expect(sourceWarning(current, drawing)).toBeNull()
+    // Every input to the banner derives from the current drawingId, so a switch
+    // cannot carry a stale banner: the choice is reset and the revisions hook is
+    // keyed on the new drawing.
+    const workspace = stripComments(read('pages/project/quant/TakeoffWorkspace.jsx'))
+    expect(workspace).toContain('useDrawingRevisions(projectId, drawingId)')
+    expect(workspace).toMatch(/const changeDrawing = \(id\) => \{ resetDrafts\(\); setDrawingId\(id\); setRevisionChoice\(null\)/)
+    const hook = stripComments(read('hooks/useDrawingRevisions.jsx'))
+    expect(hook).toContain('const key = `${companyId}/${projectId}/${drawingId}`')
+  })
+
   it('the picker preselects the current revision, lists superseded/withdrawn ones, and never offers a withdrawn drawing', () => {
     const picker = stripComments(read('pages/project/quant/SourcePicker.jsx'))
     expect(picker).toContain('filter(d => !isWithdrawnDrawing(d))')

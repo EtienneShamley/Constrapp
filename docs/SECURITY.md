@@ -21,6 +21,33 @@ are never sufficient authorisation — any authenticated, authorized client can
 bypass them with direct SDK calls. The only thing standing between a client and
 the data is the rules file.
 
+## Ruleset source-size limit — a publish can silently fail
+
+Firestore refuses to publish a ruleset whose **source text exceeds 256 KB
+(262,144 bytes)**. In the console that is an error banner and **nothing
+changes: the previous ruleset stays active**, so every collection added since
+is denied by Firestore's default-deny and the app reports it as *unavailable*.
+This is what blocked Quant™ 1A production verification in October 2026: the
+file had reached 264,907 bytes.
+
+Controls now in place:
+
+- `tests/unit/rulesSize.test.js` fails the unit suite (and CI) if
+  `frontend/firestore.rules` exceeds the approved budget of **245,000 UTF-8
+  bytes** — measured in bytes, not characters, because the file contains
+  multi-byte characters. Raising the budget is an explicit decision.
+- The explanatory comment blocks that preceded each `match` were trimmed
+  (October 2026) to the collection's one-paragraph summary plus a pointer
+  here; the **non-comment rule text is byte-identical** before and after
+  (verified by normalised comparison and by the full emulator suite). The
+  rationale, the enforced controls and the client-only gaps for every
+  collection live in this document's per-collection sections, the Deferred
+  Controls list and the ADRs — nothing was dropped, only de-duplicated.
+- **Size compliance is not deployment proof.** The emulator suite proves the
+  repo file; the size test proves it can be published; only the console shows
+  what is live — see [DEPLOYMENT.md](DEPLOYMENT.md) → *Verifying which rules
+  version is published*.
+
 ## Authentication & Membership — Implemented
 
 - Firebase Auth **email/password** sign-in only. The Create Account and Forgot
