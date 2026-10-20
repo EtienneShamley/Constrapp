@@ -97,7 +97,15 @@ export default function TakeoffWorkspace({ projectId }) {
   const takeoffPage = takeoffPages.find(p => p.id === pageId) ?? null
   const pageMeasurements = measurementsForPage(takeoffMeasurements, pageId)
   const activeOnPage = activeMeasurements(pageMeasurements).filter(isReadableMeasurement)
-  const warning = revision || !drawing ? sourceWarning(revision, drawing) : null
+  // The sheet banner is computed ONLY for a selected drawing whose revisions
+  // have actually loaded. With no drawing there is nothing to warn about; while
+  // revisions load the picker shows its loading state; a failed revisions read
+  // is reported as unavailable (never as "revision not found"). Only a drawing
+  // that genuinely has no loadable revision — or a superseded / withdrawn one —
+  // gets the warning. Each value here derives from the CURRENT drawingId, so a
+  // drawing switch can never carry a stale banner across.
+  const revisionsSettled = !!drawing && !revisionsLoading && !revisionsError
+  const warning = revisionsSettled ? sourceWarning(revision, drawing) : null
   // `measurable` — new measurements, geometry edits, details, review and
   // re-calibration: the sheet must be LIVE (revision and drawing not withdrawn).
   // `voidable` — void only: permitted on a withdrawn sheet too (the one write
@@ -288,6 +296,15 @@ export default function TakeoffWorkspace({ projectId }) {
         <div role="alert" className={`rounded-lg border-2 px-4 py-3 ${warning.tone === 'withdrawn' ? 'border-brand-red bg-brand-red/10' : 'border-brand-amber bg-brand-amber/10'}`}>
           <p className={`text-[13px] font-bold tracking-[0.5px] m-0 ${warning.tone === 'withdrawn' ? 'text-brand-red' : 'text-brand-amber'}`}>{warning.title}</p>
           <p className="text-[13px] font-semibold text-brand-text mt-1 mb-0">{warning.body}</p>
+        </div>
+      )}
+
+      {drawing && revisionsError && (
+        <div role="alert" className="rounded-lg border-2 border-brand-red bg-brand-red/10 px-4 py-3">
+          <p className="text-[13px] font-bold text-brand-red m-0">This drawing&apos;s revisions are unavailable.</p>
+          <p className="text-[12.5px] text-brand-text mt-1 mb-0">
+            The revision list could not be loaded, so no sheet can be shown. Check your connection and refresh.
+          </p>
         </div>
       )}
 

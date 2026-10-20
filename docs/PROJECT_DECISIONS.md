@@ -4644,9 +4644,32 @@ blocks, `tests/unit/quant.test.js` (105), `tests/rules/takeoff.rules.test.js`
 `App.jsx`, `moduleBranding.js`, `hooks/useStorageUpload.jsx`
 (+`getFileBytes`), `moduleBranding.test.js` / `betaSurfaces.test.js` pins
 revised explicitly. AGENT.md's AI Feature Placeholder Rule gains a Quant™ 1A
-exception scoped to manual measurement. **Status: IMPLEMENTED — NOT YET
-DEPLOYED** (rules publish + CORS prerequisite + Hosting deploy are separate,
-approved release actions). Manual acceptance TESTING.md §27.
+exception scoped to manual measurement. **Status: DEPLOYED to Hosting
+(October 2026) — PRODUCTION VERIFICATION BLOCKED** pending the hotfix below;
+see DEPLOYMENT.md. Manual acceptance TESTING.md §27.
+
+**Production-incident hotfix amendment (October 2026).** Verification after
+the deploy failed with *Takeoff records are unavailable*, a PDF sheet that
+never loaded, and a spurious *Revision not found* banner. Three separate
+causes: (1) **inferred, highly likely** — `frontend/firestore.rules` had
+reached 264,907 UTF-8 bytes, above Firestore's 262,144-byte limit on published
+source text, so the console would have refused the publish and left the
+pre-Quant ruleset active (which denies the two new collections by default);
+the block-header comments were trimmed to 192,616 bytes with the non-comment
+text byte-identical, a 245,000-byte budget is now enforced by
+`tests/unit/rulesSize.test.js`, and the live version must be confirmed in the
+console before republishing (DEPLOYMENT.md); (2) **confirmed in code** — the
+SDK's `getBytes` sends `Authorization`, `Range`, `X-Firebase-Storage-Version`
+and `X-Firebase-GMPID` and expects a 206, so the bucket CORS rule must allow
+those request headers (only `Content-Type` had been allowed); the
+authenticated download, its 50 MB bound and the Storage Rules boundary are
+unchanged, and no token-bearing download URL is used for bytes; (3)
+**confirmed in code, fixed** — the workspace computed the missing-revision
+banner with no drawing selected and while revisions loaded; it is now
+computed only for a selected drawing whose revisions have settled, with a
+failed revisions read reported as unavailable. The 20-second UI timeout and
+the SDK's two-minute background retry are recorded as follow-up debt, not
+defects.
 
 **Local acceptance environment (release-readiness amendment).** `npm run
 test:quant` (`scripts/quant-dev.mjs` + `scripts/seed-quant-emulator.mjs`)

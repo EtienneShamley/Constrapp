@@ -3,44 +3,9 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // Membership documents — a user may READ THEIR OWN PROFILE AND NOTHING ELSE.
-    //
-    // ⚠️ ALL CLIENT WRITES ARE BLOCKED. This is the most security-critical
-    // document in the database: every other block in this file authorises by
-    // `get()`-ing it and reading `companyId` (the multi-tenancy anchor) and
-    // `role` (every write gate). A client-writable profile therefore means
-    // SELF-PROMOTION (`role: 'company_admin'` grants every write and every
-    // financial-role read) and TENANT ESCAPE (`companyId` grants access to
-    // another company's entire dataset). `write` also expands to `delete`,
-    // which would let a user orphan themselves against every rule here.
-    //
-    // Blocking writes removes attack surface WITHOUT removing behaviour: no
-    // hook, page, or component writes this document. The only `users/`
-    // reference in frontend/src is the READ in hooks/useProfile.jsx, and the
-    // app never reads another user's profile (ProjectForecast.jsx and
-    // ProjectCommercial.jsx render the literal 'Another user' instead).
-    //
-    // CREATE is blocked too. Profiles are provisioned OUT OF BAND (Firebase
-    // console / admin tooling using admin credentials, which bypass rules
-    // entirely). Opening `create` would make a Firebase Auth account alone
-    // sufficient to mint a membership with any company and any role — the
-    // Firestore document would be self-service rather than a second gate.
-    //
-    // There is deliberately NO harmless-field allow-list
-    // (`hasOnly(['name', 'avatarInitials'])`). That pattern belongs where a
-    // genuine editable surface exists — as on the company document below,
-    // where saveCompanyCurrency really does write four fields. No
-    // profile-editing feature exists, so an allow-list would authorise a
-    // caller that does not exist. If profile editing is built later, adding a
-    // narrowly-scoped `update` is a small change with its own security review.
-    //
-    // Admin management of OTHER users is deliberately NOT introduced here:
-    // `company_admin` has no special power over this collection. That needs
-    // invites/user management and a trusted backend (docs/SECURITY.md →
-    // Trusted-Backend Activation Requirements 3).
-    //
-    // What this does NOT do: it prevents FUTURE tampering, it does not revert
-    // PAST tampering. Any role/companyId already stored stays authoritative.
-    // See docs/SECURITY.md → Deferred Control 8 and ADR-27.
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /users/{uid} {
       allow read: if request.auth != null && request.auth.uid == uid;
       allow create, update, delete: if false;
@@ -80,96 +45,9 @@ service cloud.firestore {
     // read `currency` and render amounts with the correct label).
     // Create/update: company_admin or project_manager role within the same company.
     // Delete: blocked for Sprint 1.
-    //
-    // CURRENCY RATCHET. `currency` is the display authority for every money
-    // figure on the project; changing it after amounts exist would RELABEL them
-    // without converting them. Firestore rules CANNOT determine whether a
-    // project holds financial records — rules offer get()/exists() on a known
-    // document path only, with no list, query, or count, and budget lines, POs,
-    // claims, invoices, and variations all use random document ids. Detecting
-    // financial activity is therefore CLIENT-enforced (lib/currency.js →
-    // monetaryLockReasons; see docs/SECURITY.md → Deferred Controls).
-    // What IS enforced here, once `currencyLocked` is true:
-    //   · a well-formed stored `currency` can never change (and can never be
-    //     deleted or blanked), and
-    //   · `currencyLocked` can never return to false.
-    // A client can decline to SET the lock; no client can unset it or relabel a
-    // locked currency.
-    //
-    // LEGACY INITIALISATION (the one carve-out). `currencyLocked` and `currency`
-    // are separate fields and the lock write is deliberately a lone
-    // `currencyLocked: true` (see the QS RATCHET note below), so a project that
-    // predates the Company Country & Currency foundation can legitimately be
-    // LOCKED while storing NO currency at all — it renders through the company
-    // base currency instead. Company Settings exists to repair exactly that
-    // state by pinning the label the project is ALREADY displaying, and a
-    // strict `request.currency == resource.currency` comparison rejected that
-    // repair as if it were a relabel ('' -> 'AUD' failed with "Missing or
-    // insufficient permissions"), leaving those projects permanently unpinnable
-    // and their amounts floating on the company base currency.
-    // So `currency` is frozen while locked EXCEPT when the stored value is not
-    // a well-formed ISO 4217 code, in which case the FIRST explicit code may be
-    // written. This cannot become a relabel: the carve-out's precondition is a
-    // property of the STORED document, and the only write it permits is the one
-    // that destroys that precondition. The moment a well-formed code lands, the
-    // equality branch takes over for every subsequent write — 'AUD' -> 'NZD',
-    // and 'AUD' -> deleted/blank, are both rejected. It is strictly one-way,
-    // like the lock itself.
-    // It is NOT a general "locked projects may edit currency" exception: a
-    // locked project that already stores a valid code has no path to another
-    // one. And it grants no new AUDIENCE — the carve-out lives inside branch
-    // (a), so only `company_admin`/`project_manager` can use it; the `qs`
-    // branch below still permits `currencyLocked` and nothing else.
-    //
-    // QS RATCHET. `qs` deliberately has NO general project write access (it may
-    // write cost codes, budget lines, POs, claims, invoices, variations and
-    // forecast lines, but not projects). Because those financial writes engage
-    // the lock, `qs` is granted one narrowly-scoped permission: flipping
-    // `currencyLocked` from false/absent to true and changing NOTHING else. The
-    // `hasOnly(['currencyLocked'])` diff is what prevents a qs user from
-    // touching currency, name, budget, status, dates, or any other field.
-    //
-    // ── METADATA CORRECTION (ADR-39) ──────────────────────────────────────
-    // Branch (a) previously validated ONLY the currency fields, so any
-    // company_admin / project_manager write could rewrite every other key
-    // including provenance. Projects are now correctable through the UI, so the
-    // branch additionally enforces:
-    //
-    //   · `budget` IS IMMUTABLE. The headline budget is creation-time reporting
-    //     metadata that feeds NO financial derivation (the live Approved Budget
-    //     is the sum of the project's budget lines), but it IS currency-lock
-    //     evidence — `createProject` sets `currencyLocked: budget > 0`. Editing
-    //     it up would have to engage the one-way ratchet atomically, and
-    //     editing it down could never release it, leaving a permanently locked
-    //     project whose lock has no visible reason. So it is frozen here rather
-    //     than routed through an editor.
-    //   · `createdAt` / `createdBy` are IMMUTABLE provenance.
-    //   · `status`, `name`, `progress`, `location` and `startDate` are
-    //     shape-validated.
-    //
-    // ⚠️ VALIDATED ON CHANGE, NOT ON PRESENCE — and this is load-bearing, not a
-    // convenience. Projects predating the current vocabulary store statuses
-    // outside the five-value enum (`'in_progress'` rather than `'In Progress'`;
-    // the rules suite's LEGACY_PROJECT fixture is exactly such a document).
-    // Every field condition below therefore reads "UNCHANGED, or valid":
-    // an untouched legacy value passes through, while any WRITE to that field
-    // must land on a valid one. Requiring validity unconditionally would make
-    // every legacy project permanently unwritable — including by the Company
-    // Settings currency pin, which updates `currency` alone and would drag the
-    // whole document through validation. The constraint is strictly one-way
-    // toward the current vocabulary and locks nobody out, the same shape as the
-    // LEGACY INITIALISATION carve-out above.
-    //
-    // Everything reads through `.get(key, default)` for the same reason: a bare
-    // `request.resource.data.name` errors on a document that has no such key.
-    //
-    // What these rules DO NOT enforce (client-side only — NEVER describe as
-    // enforced; see docs/SECURITY.md → Deferred Control 28):
-    //   · status TRANSITION legality — there is none to enforce. `status` is
-    //     descriptive: it gates no order, claim, invoice, variation or payment
-    //     anywhere in the app, and any value may move to any other.
-    //   · that a project's metadata is accurate, or that concurrent editors do
-    //     not overwrite one another (last-write-wins, no version guard).
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId} {
       // The five-value project status vocabulary, mirroring
       // frontend/src/lib/projects.js → PROJECT_STATUSES. Unlike the ISO 4217
@@ -280,33 +158,9 @@ service cloud.firestore {
     // Reads: any authenticated user belonging to this company.
     // Create/update: company_admin, project_manager, or qs (owns budgets/forecasting per PRODUCT.md).
     // Delete: blocked — use isActive: false instead.
-    //
-    // ── CORRECTION (ADR-39) ───────────────────────────────────────────────
-    // `create, update` was one unconstrained rule; update is now split out so a
-    // correction cannot rewrite provenance or invent fields. An update may
-    // touch ONLY `code`, `name`, `category`, `unit`, `isActive` and the audit
-    // stamps, and `createdAt`/`createdBy` are frozen.
-    //
-    // Renaming is SAFE by construction and needs no further guard: every
-    // financial derivation in the app groups by the DOCUMENT ID, never by
-    // `code` or `name`, and the historical `costCodeName` snapshots on budget
-    // lines, PO/claim/invoice/credit-note/variation lines, BOQ items, forecast
-    // lines and cash-flow lines are never rewritten — the current name is
-    // resolved at READ time instead. A rename therefore moves no figure.
-    //
-    // `isActive` is freely reversible in both directions: deactivation is
-    // administrative (it removes a code from NEW authoring only), not a
-    // financial lifecycle, so there is no terminal state to enforce.
-    //
-    // What these rules DO NOT enforce (client-side only — NEVER describe as
-    // enforced; see docs/SECURITY.md → Deferred Control 28):
-    //   · `code` UNIQUENESS. Rules have no list, query or count and cannot see
-    //     sibling documents. The duplicate check lives in lib/costCodes.js and
-    //     is bypassable by a direct SDK call and by concurrent writers. Nothing
-    //     breaks when a duplicate lands — the id remains the financial key —
-    //     but list ordering becomes ambiguous.
-    //   · that deactivating a code in use is safe. It always is, and it is
-    //     deliberately never blocked.
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/costCodes/{costCodeId} {
       function costCodeWriter() {
         return request.auth != null
@@ -344,45 +198,9 @@ service cloud.firestore {
 
     // Budget Lines — project-scoped allocations against a company cost code.
     // Same role set as Cost Codes; delete blocked.
-    //
-    // ── CORRECTION (ADR-39) ───────────────────────────────────────────────
-    // `create, update` was one unconstrained rule; update is now split out and
-    // is the NARROWEST write path in this file that is not a lifecycle
-    // transition. An existing budget line may change EXACTLY `budgeted` and
-    // `notes`.
-    //
-    //   · `costCodeId` IS IMMUTABLE — the cost-code spine. Re-pointing a line
-    //     would relocate an approved budget to another cost code underneath
-    //     existing commitments and actuals, with no record that it moved.
-    //   · `costCodeName` IS IMMUTABLE — the frozen display snapshot. It is
-    //     deliberately NOT re-snapshotted on edit (diverging from the ADR-36 PO
-    //     editor, whose line cost code CAN change in the same write): rewriting
-    //     it during an edit made only to a number would silently rewrite the
-    //     line's recorded history. Screens resolve the CURRENT name at read
-    //     time instead.
-    //   · `committed` / `actual` / `invoiced` are VESTIGIAL ZEROS written once
-    //     at creation and read by no consumer in the app — every one of those
-    //     figures is derived at read time from POs, claims, invoices and credit
-    //     notes. The `hasOnly` allow-list freezes them so an edit can never
-    //     revive them as a second, stale source of truth.
-    //   · `createdAt` / `createdBy` are immutable provenance.
-    //   · `budgeted` must be a NUMBER >= 0. Zero is valid (a reviewed
-    //     allocation of nothing); a negative or non-numeric allocation would
-    //     flow straight into Remaining, Variance to Budget and the BOQ
-    //     comparison as a silently wrong figure.
-    //   · The audit stamps are verified against the caller and the server
-    //     clock, so a client cannot forge who corrected a budget or when.
-    //
-    // What these rules DO NOT enforce (client-side only — NEVER describe as
-    // enforced; see docs/SECURITY.md → Deferred Control 28):
-    //   · that `costCodeId` names a REAL, ACTIVE cost code in this company —
-    //     validated by SHAPE only on create, matching the boqItems posture
-    //     (Deferred Control 26). A forged id surfaces as an "Unknown cost code"
-    //     row, never as a corrupted total.
-    //   · one-line-per-cost-code, or agreement with the BOQ — rules cannot
-    //     query siblings.
-    //   · concurrent-edit safety. Two editors are last-write-wins; there is no
-    //     transaction and no version guard.
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/budgetLines/{lineId} {
       function budgetLineWriter() {
         return request.auth != null
@@ -422,55 +240,9 @@ service cloud.firestore {
     // BOQ items — the project's measured Bill of Quantities: description,
     // quantity, unit, cost code (mandatory spine, frozen name snapshot), and —
     // once priced — a rate with a DERIVED amount (ADR-32 Part 1).
-    //
-    // They are preconstruction records, not transactions: no counter, no
-    // sequential number, no posted status (`itemNumber` is a user-authored
-    // label, never a sequence). They feed NO financial figure — Budgeted,
-    // Committed, Actual, Invoiced, Forecast, Margin, and Cash Flow are all
-    // unreadable from and unwritable by a BOQ item, and the BOQ-vs-budget
-    // comparison is derived at read time in lib/boq.js, never stored.
-    //
-    // ⚠️ NULL MEANS UNPRICED. `rate: null` pairs with `amount: null` — a BOQ
-    // is measured before it is priced, and 0 would silently mean "priced at
-    // nothing". The pairing is enforced both ways below.
-    //
-    // THE ONE ARITHMETIC GUARANTEE rules CAN give: a priced item may never
-    // carry an amount that disagrees with its own quantity × rate. Compared in
-    // whole cents via math.round (the clientReceipts cents() idiom — exactly
-    // equivalent to a half-cent tolerance, so fractional quantities like
-    // 12.5 m³ are fine while any discrepancy of one cent or more fails).
-    // lib/boq.js → boqLineAmount() rounds through lib/payments.js → toCents(),
-    // which mirrors this precisely, so a write the client considers valid is
-    // never rejected here (or vice versa).
-    //
-    // Reads: restricted to internal financial roles — a BOQ is the project's
-    // internal estimate, so subcontractor and client users must NOT read it
-    // (a bidder who can read the estimate prices against it). A future tender
-    // or bidder-facing surface must never expose BOQ rates at all.
-    // Delete: blocked — voiding is a status change; voided items are retained
-    // BOQ history (and currency-lock evidence when priced).
-    //
-    // Lifecycle is RULES-ENFORCED, the two-state cashFlowLines shape (a BOQ
-    // item has no financial commit point):
-    //   · create only with status 'active', null void stamps,
-    //     createdBy == caller, createdAt == server request time
-    //   · active edits may change content (including pricing an unpriced item
-    //     and un-pricing a priced one) but not the status, must satisfy the
-    //     full shape, and may not forge a void stamp
-    //   · active -> void touches only status/voidedAt/voidedBy/voidReason/
-    //     updatedAt/updatedBy, with voidedBy == caller, voidedAt == server
-    //     request time, and a NON-WHITESPACE voidReason
-    //   · void is terminal; there is no void -> active and no void edit
-    //
-    // What is NOT enforced here (client-side only — NEVER describe as
-    // enforced; see docs/SECURITY.md → Deferred Control 26):
-    //   · that costCodeId names a real, active cost code in this company —
-    //     validated by SHAPE only (bounded non-empty string)
-    //   · that unit matches the cost code's unit, or any unit convention
-    //   · duplicate items (same code/section/itemNumber) across siblings —
-    //     rules have no list, query, or count
-    //   · that the BOQ agrees with the Approved Budget — deliberately none:
-    //     the two are independent by design and only COMPARED at read time
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/boqItems/{itemId} {
       function financialMember() {
         return request.auth != null
@@ -613,121 +385,9 @@ service cloud.firestore {
 
     // Supplier Invoices — project-scoped accounts-payable bills against a sent/
     // closed PO, optionally sourced from one approved progress claim.
-    //
-    // Reads: restricted to internal financial roles — the AP register exposes
-    // supplier billing detail, so subcontractor and client users must NOT read
-    // it (tighter than the POs/claims read pattern, matching Contacts).
-    // Delete: blocked — cancellation is a status change; posted invoices are
-    // immutable audit records (corrections are Supplier Credit Notes).
-    //
-    // ⚠️ HARDENED (ADR-40). This block previously enforced ROLE AND TENANCY AND
-    // NOTHING ELSE, and was the highest-risk financial collection in the
-    // database: three other blocks `get()` these documents and trust what they
-    // find — supplierCreditNotes (status/supplierId/currency/retentionTotal/
-    // payableTotal), retentionReleases (status/retention), and supplierPayments
-    // (payableTotal, via unverifiable array allocations). A forged
-    // `status: 'posted'` with an inflated `payableTotal` therefore unlocked
-    // valid-looking credit notes and payment allocations against an invoice that
-    // never existed. It now follows the ADR-22 standard set by clientInvoices /
-    // clientReceipts / supplierPayments / supplierCreditNotes / retentionReleases.
-    //
-    // ⚠️ TWO LIFECYCLE POINTS, NOT ONE. Every earlier hardened collection has a
-    // single commit point (issued / posted). A supplier invoice has two, and the
-    // branches below keep them distinct:
-    //   · `approved` is the AUTHORING FREEZE POINT — content stops changing;
-    //   · `posted`  is the FINANCIAL COMMIT POINT — the invoice starts counting
-    //     toward Invoiced, Actual, Committed maturation and Remaining Payable.
-    // An approved invoice is therefore frozen but NOT yet financial, and the only
-    // updates it accepts are `posted` and `cancelled`.
-    //
-    // What is enforced here:
-    //   · create only with status 'draft', docType 'invoice', a source in
-    //     {direct_po, progress_claim}, createdBy == caller, createdAt == server
-    //     request time, updatedBy/updatedAt likewise, and NULL lifecycle stamps
-    //     (approvedAt/By, postedAt/By, cancelledAt/By) plus null paidAt and
-    //     adjustsInvoiceId — none can be forged at creation
-    //   · SOURCE-DOCUMENT VALIDATION AT CREATE (the Tier-2 get()s): `poId` must
-    //     name a purchase order IN THIS PROJECT whose status is 'sent' or
-    //     'closed', and a `progress_claim` invoice's `progressClaimId` must name
-    //     a progress claim IN THIS PROJECT whose status is 'approved'. A
-    //     `direct_po` invoice must carry progressClaimId == null, so it can never
-    //     silently displace a claim from Actual (invoicedClaimIds).
-    //     ⚠️ CREATE-ONLY, DELIBERATELY. These references are core-preserved and
-    //     therefore can never change, so re-checking them on a draft edit or a
-    //     lifecycle transition would only trap a legitimate invoice whose PO was
-    //     later closed or cancelled — the ADR-34 "an UNCHANGED reference is NEVER
-    //     revalidated" rule. An invoice must never become permanently unwritable
-    //     because its source document moved on.
-    //   · the DOCUMENT IDENTITY is immutable for life (corePreserved below) —
-    //     invoiceNumber, docType, source, currency, revision, createdAt/By, the
-    //     supplier snapshot, the PO and claim references, paymentTerms, and the
-    //     deprecated paidAt / superseded adjustsInvoiceId, which are pinned at
-    //     null forever (ADR-24 / ADR-31)
-    //   · the SCALAR HEADER ARITHMETIC (moneyValid below) — five whole-cent
-    //     identities plus the exact retention-GST formula, so a document can
-    //     never claim totals that disagree with each other
-    //   · draft-only editing, split BY SOURCE. A `progress_claim` invoice is
-    //     HEADER-ONLY by rules — the certified line amounts, tax codes, retention
-    //     and every total are unreachable, which makes the claim-reconciliation
-    //     invariant structurally unbreakable rather than merely hook-checked
-    //     (ADR-38 D1). A `direct_po` invoice may re-author its line money, but
-    //     the stored line COUNT is fixed
-    //   · legal transitions only — draft→approved, draft→cancelled,
-    //     approved→posted, approved→cancelled. Each is a SEPARATE operation
-    //     carrying no content change, stamping the caller and the server time
-    //   · `posted` and `cancelled` are TERMINAL: no branch matches them, so a
-    //     posted or cancelled invoice is completely immutable and cannot be
-    //     unposted, uncancelled, reopened, or rewritten
-    //   · the reserved statuses `received`, `under_review` and `disputed`, and
-    //     the deprecated `paid`, are NOT AUTHORABLE from any path. That closes
-    //     the documented ADR-24 hole in which a direct-SDK caller could forge
-    //     `status: 'paid'` on a real invoice. Activating a reserved status later
-    //     needs a rules change — which is the point (the drawings `pageCount`
-    //     precedent). NOTE: this prevents FUTURE forgery and does not revert PAST
-    //     forgery, which is exactly why 'paid' stays in SI_COUNTING_STATUSES
-    //   · delete stays blocked for every role and every status
-    //
-    // What is NOT enforced here (client-side only — NEVER describe as enforced;
-    // docs/SECURITY.md → Deferred Control 29):
-    //   · the SHAPE OF EACH lineItems[] ELEMENT — rules can neither iterate nor
-    //     map an array, so poLineIndex / costCodeId / costCodeName / description
-    //     / amount / taxCode / gstAmount are wholly unverified. A per-line
-    //     NEGATIVE amount, a BOGUS cost code, an INVALID tax code, and a
-    //     gstAmount that disagrees with its own amount and tax code are all
-    //     writable. What IS enforced is the SCALAR header invariant
-    //   · subtotal/gstTotal MATCHING the sum of lineItems[] — same limitation. A
-    //     document whose headers and lines disagree is WRITEABLE
-    //   · TAX-CODE MEMBERSHIP of the app's enum — validated nowhere in rules,
-    //     because an enum duplicated into this manually-published file would
-    //     drift out of sync with lib/supplierInvoices.js (the ADR-21 precedent)
-    //   · the CLAIM RECONCILIATION ITSELF — rules freeze a claim-sourced
-    //     invoice's money (above) but cannot verify it equals the claim's
-    //     certified approvedGst/approvedTotal
-    //   · ONE ACTIVE INVOICE PER APPROVED CLAIM, and CUMULATIVE over-invoicing
-    //     against a PO line or a PO total: rules have no list, query, or count,
-    //     so no rule can sum sibling invoices. Two users CAN invoice the same
-    //     claim or the same remaining PO value concurrently and both succeed
-    //   · DUPLICATE (supplierId + supplierInvoiceNumber) detection — needs a
-    //     query (Deferred Control 9); it stays a warn-only client check
-    //   · company-wide SI-#### uniqueness independently of the client
-    //     transaction (the counter is client-writable — Deferred Control 6)
-    //   · creator != approver != poster segregation (Deferred Control 4)
-    //   · CALENDAR VALIDITY of a date — '2026-02-30' matches the shape — and
-    //     future-dating
-    //   · that costCodeId names a real cost code, or that the invoice's cost
-    //     codes are confined to the source PO/claim lines
-    //   · CONCURRENCY — two draft editors remain last-write-wins
-    //   · BUSINESS TRUTH — that the supplier issued this invoice at all
-    //
-    // ⚠️ DEFERRED DOMAIN ISSUE, NOT A RULES GAP. Under the CURRENT financial
-    // model `payableGst` and `payableTotal` can legitimately be NEGATIVE: both
-    // subtract a retention-derived figure that carries 10% GST, while `gstTotal`
-    // may be zero on an invoice whose lines are all gst_free / input_taxed. A
-    // `payableGst >= 0` or `payableTotal >= 0` floor here would therefore REJECT
-    // app-reachable documents, so neither is applied. The same reasoning excludes
-    // any `gstTotal <= 10% of subtotal` ceiling: gstTotal is a SUM OF PER-LINE
-    // roundings, which can legitimately exceed one rounding of the sum. See
-    // docs/SECURITY.md → Deferred Control 30.
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/supplierInvoices/{invoiceId} {
       function financialMember() {
         return request.auth != null
@@ -1124,34 +784,9 @@ service cloud.firestore {
     // submit/post-approval immutability, creator != approver segregation, and
     // (counterparty + external reference) uniqueness here rather than only in
     // the client hook.
-    //
-    // ORIGINATING RFI (ADR-34) — the ONE rules-enforced content control on
-    // this collection, and DELIBERATELY the only one. A Variation may cite
-    // ZERO OR ONE RFI in three scalar fields: originRfiId + the frozen
-    // originRfiNumber / originRfiTitle snapshots. The RFI stores nothing back.
-    //   · The triple is ALL-NULL (or, on legacy documents, ABSENT — every
-    //     read below uses get(key, null)) or FULLY POPULATED. Never partial.
-    //   · When a populated triple is CREATED or CHANGED, the RFI must exist at
-    //     companies/{companyId}/projects/{projectId}/rfis/{originRfiId} — so
-    //     another project's or another company's RFI id simply is not there —
-    //     with status open | answered | closed (a draft has not been asked;
-    //     a cancelled question cannot originate work), and both snapshots
-    //     must EQUAL the RFI's rfiNumber and title. That is honest to verify:
-    //     the rfis block keeps rfiNumber in corePreserved() and freezes the
-    //     title for life at raise, so for every eligible RFI both are
-    //     immutable at the source.
-    //   · An UNCHANGED triple is NEVER revalidated. "Changed" is a VALUE
-    //     comparison (absent == null), not a key diff, so an RFI cancelled
-    //     AFTER it was linked cannot poison later draft edits or lifecycle
-    //     transitions on the Variation — the link is historical evidence and
-    //     survives.
-    //   · A change is permitted ONLY while the stored status is 'draft' (the
-    //     existing client-side freeze point). From 'submitted' onward the
-    //     triple is immutable BY RULES; nothing else on the document is.
-    // What this does NOT do — never describe it as doing so: it does not
-    // validate any other field, any status transition, post-submit
-    // immutability of amounts/lines/text, or that the RFI genuinely caused
-    // the variation (Deferred Controls 1 and 2 still apply in full).
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/variations/{variationId} {
       function financialMember() {
         return request.auth != null
@@ -1254,52 +889,9 @@ service cloud.firestore {
     // the head-contract client. CI-#### from the company-wide
     // counters/clientInvoices document (covered by the counters block below —
     // no separate rule needed).
-    //
-    // Reads: restricted to internal financial roles — client invoices expose
-    // contract revenue, client PII/ABN, and (read against the Current Contract
-    // Sum) the project's implied margin position, so subcontractor and client
-    // users must NOT read them. A client portal is separate, future work.
-    // Delete: blocked — voiding is a status change; invoices are audit records.
-    //
-    // ⚠️ THE FIRST COLLECTION HARDENED THIS WAY, AND THE STANDARD THE OTHERS
-    // FOLLOW. When this block was written, every financial collection enforced
-    // lifecycle legality and post-issue immutability in the client hook only
-    // (docs/SECURITY.md → Deferred Controls 1 and 2). Here both are enforced BY
-    // RULES, because the client-invoice lifecycle is small enough to express
-    // without any cross-document read, and an invoice issued to a client is an
-    // outward-facing revenue document. That posture was declared the INTENDED
-    // FUTURE STANDARD (ADR-22) and has since been adopted by clientReceipts,
-    // supplierPayments, supplierCreditNotes, retentionReleases and — as of
-    // ADR-40 — supplierInvoices. STILL CLIENT-ENFORCED ONLY: purchaseOrders,
-    // progressClaims and variations (Deferred Controls 1 and 2 in full).
-    //
-    // What is enforced here:
-    //   · create only with status 'draft', docType 'invoice', null lifecycle
-    //     stamps, createdBy == caller, createdAt == server request time
-    //   · draft edits must preserve invoiceNumber, currency, createdAt,
-    //     createdBy, docType and revision, and may not forge lifecycle stamps
-    //   · issuing is a SEPARATE operation, touching only
-    //     status/issuedAt/issuedBy/updatedAt/updatedBy, with issuedBy == caller
-    //     and issuedAt == server request time
-    //   · voiding (from draft or issued) touches only
-    //     status/voidedAt/voidedBy/voidReason/updatedAt/updatedBy, with
-    //     voidedBy == caller, voidedAt == server request time, and a
-    //     NON-WHITESPACE voidReason (trimmed, matching clientReceipts /
-    //     supplierPayments / supplierCreditNotes / retentionReleases / boqItems
-    //     — a reason of '   ' is an unanswered question, not an audit record)
-    //   · void is terminal; there is no issued -> draft and no void -> anything
-    //   · there is no 'paid' or 'partially_paid' status — a payment status
-    //     without a Receipt record would be fabricated
-    //
-    // What is NOT enforced here (client-side only — never describe as enforced):
-    //   · line-total consistency (rules cannot iterate or aggregate an array)
-    //   · company-wide invoice-number uniqueness (no queries; the counter is
-    //     client-writable — Deferred Control 6)
-    //   · Available-to-Invoice and per-variation limits (rules cannot sum
-    //     sibling documents), so concurrent users can consume the same
-    //     remaining availability
-    //   · approved-variation linkage validity
-    //   · creator != issuer segregation
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/clientInvoices/{invoiceId} {
       function financialMember() {
         return request.auth != null
@@ -1388,53 +980,9 @@ service cloud.firestore {
     // head-contract client, with EMBEDDED allocations against issued Client
     // Invoices. CR-#### from the company-wide counters/clientReceipts document
     // (covered by the counters block below — no separate rule needed).
-    //
-    // Reads: restricted to internal financial roles — receipts expose cash
-    // position, bank references, and unallocated balances, so subcontractor and
-    // client users must NOT read them. A client portal must never expose a
-    // receipt's allocations, unallocated amount, bank reference, or notes.
-    // Delete: blocked — voiding is a status change; receipts are audit records.
-    //
-    // Lifecycle is RULES-ENFORCED, following the clientInvoices block as the
-    // standard (ADR-22):
-    //   · create only with status 'draft', docType 'receipt', null lifecycle
-    //     stamps, createdBy == caller, createdAt == server request time
-    //   · draft edits may change content but not the status, and may not forge
-    //     a lifecycle stamp
-    //   · posting is a SEPARATE operation touching only
-    //     status/postedAt/postedBy/updatedAt/updatedBy, with postedBy == caller
-    //     and postedAt == server request time
-    //   · voiding (from draft or posted) touches only
-    //     status/voidedAt/voidedBy/voidReason/updatedAt/updatedBy, with
-    //     voidedBy == caller, voidedAt == server request time, and a voidReason
-    //     containing NON-WHITESPACE text
-    //   · posted receipt content is consequently immutable — voiding is the only
-    //     permitted update
-    //   · void is terminal; there is no posted -> draft and no void -> anything
-    //
-    // What is NOT enforced here (client-side only — NEVER describe as enforced):
-    //   · the SHAPE OF EACH allocations[] ELEMENT — rules cannot iterate or
-    //     index into an array, so clientInvoiceId / invoiceNumber /
-    //     allocatedAmount are unverified, as is the > 0 rule on each amount and
-    //     the no-duplicate-invoice rule
-    //   · allocatedTotal MATCHING the sum of allocations[] — same limitation.
-    //     What IS enforced is the SCALAR invariant below, which prevents a
-    //     document CLAIMING more allocation than the receipt amount
-    //   · that an allocated invoice EXISTS, is ISSUED (not draft/void), and
-    //     belongs to the SELECTED CLIENT — each would need a get() per array
-    //     element
-    //   · the REMAINING BALANCE of any invoice, and therefore over-allocation:
-    //     rules have no list, query, or count, so no rule can sum sibling
-    //     receipt documents. Two users CAN allocate the same remaining balance
-    //     concurrently and both writes succeed
-    //   · that the receipt date is not in the FUTURE — only the YYYY-MM-DD shape
-    //     is checked; posting a future-dated receipt is blocked in the client only
-    //   · payment-method MEMBERSHIP of the app's enum — validated by shape only,
-    //     because an enum duplicated into this manually-published file would
-    //     drift out of sync with lib/payments.js (the ADR-21 precedent)
-    //   · company-wide receipt-number uniqueness (the counter is client-writable
-    //     — Deferred Control 6)
-    //   · BUSINESS TRUTH — that the money was genuinely received at all
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/clientReceipts/{receiptId} {
       function financialMember() {
         return request.auth != null
@@ -1570,72 +1118,9 @@ service cloud.firestore {
     // supplier or subcontractor, with EMBEDDED allocations against POSTED
     // Supplier Invoices. SP-#### from the company-wide counters/supplierPayments
     // document (covered by the counters block below — no separate rule needed).
-    //
-    // The money-OUT mirror of clientReceipts, and deliberately built to the same
-    // standard. Reads: restricted to internal financial roles — payments expose
-    // the project's cash position, bank and remittance references, supplier
-    // pricing, and unallocated balances, so subcontractor and client users must
-    // NOT read them. A future client or subcontractor portal must never expose a
-    // payment at all, and never its allocations, unallocatedAmount,
-    // bankReference, remittanceReference, or notes.
-    // Delete: blocked — voiding is a status change; payments are audit records.
-    //
-    // ⚠️ THE supplierInvoices ASYMMETRY IS CLOSED (ADR-40). This block was
-    // written when the supplierInvoices block above enforced neither lifecycle
-    // legality nor post-`posted` immutability, and the consequence documented
-    // here was that a direct SDK call could cancel a posted supplier invoice a
-    // payment had already settled. That block is now hardened to the same
-    // standard: `posted` matches no update branch at all, so a posted supplier
-    // invoice can no longer be cancelled, unposted, or rewritten by any caller.
-    // What has NOT changed is this block's own ceiling — an allocation's target
-    // still cannot be verified from here, because allocations live in an ARRAY
-    // and rules can neither iterate it nor get() per element. The app therefore
-    // still surfaces a broken allocation as an exception at read time rather
-    // than auto-reversing (ADR-24), and every allocation limitation listed
-    // below stands unchanged.
-    //
-    // Lifecycle is RULES-ENFORCED, following clientInvoices/clientReceipts:
-    //   · create only with status 'draft', docType 'payment', null lifecycle
-    //     stamps, createdBy == caller, createdAt == server request time
-    //   · draft edits may change content but not the status, and may not forge
-    //     a lifecycle stamp
-    //   · posting is a SEPARATE operation touching only
-    //     status/postedAt/postedBy/updatedAt/updatedBy, with postedBy == caller
-    //     and postedAt == server request time
-    //   · voiding (from draft or posted) touches only
-    //     status/voidedAt/voidedBy/voidReason/updatedAt/updatedBy, with
-    //     voidedBy == caller, voidedAt == server request time, and a voidReason
-    //     containing NON-WHITESPACE text
-    //   · posted payment content is consequently immutable — voiding is the only
-    //     permitted update
-    //   · void is terminal; there is no posted -> draft and no void -> anything
-    //
-    // What is NOT enforced here (client-side only — NEVER describe as enforced):
-    //   · the SHAPE OF EACH allocations[] ELEMENT — rules cannot iterate or
-    //     index into an array, so supplierInvoiceId / invoiceNumber /
-    //     supplierInvoiceNumber / allocatedAmount are unverified, as is the > 0
-    //     rule on each amount and the no-duplicate-invoice rule
-    //   · allocatedTotal MATCHING the sum of allocations[] — same limitation.
-    //     What IS enforced is the SCALAR invariant below, which prevents a
-    //     document CLAIMING more allocation than the payment amount
-    //   · that an allocated invoice EXISTS, is POSTED (not draft/approved/
-    //     cancelled), belongs to THIS PROJECT, and belongs to the SELECTED
-    //     SUPPLIER — each would need a get() per array element. The legacy
-    //     supplierId-null name match is likewise unverified
-    //   · that allocations use payableTotal rather than grossTotal, and that
-    //     RETENTION is excluded — rules cannot read the invoice at all
-    //   · the REMAINING PAYABLE of any invoice, and therefore over-
-    //     reconciliation: rules have no list, query, or count, so no rule can
-    //     sum sibling payment documents. Two users CAN allocate the same
-    //     remaining payable concurrently and both writes succeed
-    //   · that the payment date is not in the FUTURE — only the YYYY-MM-DD shape
-    //     is checked; posting a future-dated payment is blocked in the client only
-    //   · payment-method MEMBERSHIP of the app's enum — validated by shape only,
-    //     because an enum duplicated into this manually-published file would
-    //     drift out of sync with lib/payments.js (the ADR-21 precedent)
-    //   · company-wide SP-number uniqueness independently of the client
-    //     transaction (the counter is client-writable — Deferred Control 6)
-    //   · BUSINESS TRUTH — that the money genuinely left the bank account
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/supplierPayments/{paymentId} {
       function financialMember() {
         return request.auth != null
@@ -1775,93 +1260,9 @@ service cloud.firestore {
     // back-charges, negotiated reductions). SCN-#### from the company-wide
     // counters/supplierCreditNotes document (covered by the counters block
     // below — no separate rule needed).
-    //
-    // Reads: restricted to internal financial roles — credit notes expose
-    // supplier pricing and the project's cost corrections, so subcontractor and
-    // client users must NOT read them.
-    // Delete: blocked — voiding is a status change; credit notes are audit
-    // records (ADR-12).
-    //
-    // Lifecycle is RULES-ENFORCED, following clientInvoices/clientReceipts/
-    // supplierPayments (the ADR-22 standard):
-    //   · create only with status 'draft', docType 'credit_note', null
-    //     lifecycle stamps, createdBy == caller, createdAt == server request
-    //     time
-    //   · draft edits may change content but not the status, must satisfy the
-    //     full shape AND the target checks, and may not forge a lifecycle stamp
-    //   · the TARGET IS FROZEN AT CREATION: supplierInvoiceId and its snapshot
-    //     fields (invoiceNumber, supplierInvoiceNumber, supplierId,
-    //     supplierName) are core-preserved on every update — retargeting is a
-    //     void plus a new credit note
-    //   · posting is a SEPARATE operation touching only
-    //     status/postedAt/postedBy/updatedAt/updatedBy, with postedBy == caller
-    //     and postedAt == server request time
-    //   · voiding (from draft or posted) touches only
-    //     status/voidedAt/voidedBy/voidReason/updatedAt/updatedBy, with
-    //     voidedBy == caller, voidedAt == server request time, and a voidReason
-    //     containing NON-WHITESPACE text
-    //   · posted credit-note content is consequently immutable — voiding is the
-    //     only permitted update
-    //   · void is terminal; there is no posted -> draft and no void -> anything
-    //
-    // ⚠️ FIRST CROSS-DOCUMENT get() IN A FINANCIAL BLOCK. Every earlier
-    // financial collection validates only its own document (the deliberate
-    // posture recorded on supplierPayments). A credit note is different: a
-    // forged credit ERASES cost and flatters margin — the one direction the
-    // payable modules must never fail toward — and its target is a SINGLE
-    // scalar reference, not an array, so ONE get() can validate it. What the
-    // target get() enforces on create, on every draft edit, AND on the
-    // draft -> posted transition (the financial commit point — a stale draft
-    // must never post against a target that has since changed):
-    //   · the target supplier invoice EXISTS in this project
-    //   · its status is 'posted' (the financial commit point — not draft,
-    //     approved, cancelled, or the deprecated forgeable 'paid')
-    //   · its supplierId equals the credit note's frozen supplierId
-    //   · its currency equals the credit note's currency
-    //   · its retentionTotal is ZERO — retained invoices cannot be credited in
-    //     this foundation (crediting them is ambiguous while retention release
-    //     is unmodelled)
-    //   · THIS credit note's grossTotal does not exceed the target's
-    //     payableTotal (whole-cent comparison)
-    //
-    // What is NOT enforced here (client-side only — NEVER describe as
-    // enforced; see docs/SECURITY.md → Deferred Control 25):
-    //   · the SHAPE OF EACH lineItems[] ELEMENT — rules cannot iterate or index
-    //     into an array, so costCodeId / costCodeName / description / amount /
-    //     taxCode / gstAmount are unverified, as are the > 0 rule on each
-    //     amount and the cost-codes-must-appear-on-the-target-invoice rule
-    //   · subtotal/gstTotal MATCHING the sum of lineItems[] — same limitation.
-    //     What IS enforced is the SCALAR header invariant below. A document
-    //     whose headers and lines disagree is therefore WRITEABLE; the app
-    //     excludes it from every figure at READ TIME and reports it as an
-    //     exception (lib/supplierCreditNotes.js → creditTargetException). That
-    //     read-time gate is an additional correctness guard for what this app
-    //     renders — it is NOT a substitute for these rules and protects nothing
-    //     outside the app
-    //   · the CUMULATIVE credit cap: rules have no list, query, or count, so no
-    //     rule can sum SIBLING credit notes against the same invoice. The
-    //     app HARD-BLOCKS a cumulative total above payableTotal, but two users
-    //     can post credits against the same invoice concurrently and both
-    //     writes succeed — only the single-document cap above is guaranteed
-    //   · the target staying valid AFTER posting — no rule fires again on this
-    //     document once it is posted. ⚠️ ADR-40 MATERIALLY NARROWED THIS, and
-    //     the honest statement changed with it: a POSTED supplier invoice is now
-    //     RULES-IMMUTABLE and RULES-TERMINAL (it matches no update branch at
-    //     all), so the target can no longer be cancelled, unposted, have
-    //     retention added, or have its payableTotal reduced by ANY caller —
-    //     which is precisely the drift this bullet used to describe. What
-    //     remains is not a lifecycle gap but the array limitation below: the
-    //     target's own LINE data is still unverifiable, so a target whose
-    //     headers and lines disagree can still underlie a credit. The app keeps
-    //     its read-time answer either way — a broken target excludes the credit
-    //     from every figure and surfaces it as an exception (safe failure: cost
-    //     stays visible)
-    //   · GST correctness per line (per-line tax codes make a flat check
-    //     unreliable — the ADR-21 no-enum precedent)
-    //   · company-wide SCN-number uniqueness independently of the client
-    //     transaction (the counter is client-writable — Deferred Control 6)
-    //   · creator != poster segregation (Deferred Control 4)
-    //   · BUSINESS TRUTH — that the supplier genuinely issued the credit
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/supplierCreditNotes/{creditNoteId} {
       function financialMember() {
         return request.auth != null
@@ -2051,50 +1452,9 @@ service cloud.firestore {
     // are planning records, not transactions: no counter, no number, no posted
     // status. They never reference or mutate any other financial document —
     // the cost-side link is the cost-code spine (costCodeId + frozen name).
-    //
-    // Reads: restricted to internal financial roles — timing lines expose the
-    // project's expected cash profile and funding position, so subcontractor
-    // and client users must NOT read them. A future portal must never expose
-    // Cash Flow at all.
-    // Delete: blocked — voiding is a status change; voided lines are retained
-    // forecast history (and currency-lock evidence).
-    //
-    // Lifecycle is RULES-ENFORCED, simpler than the cash collections (two
-    // states — a forecast line has no financial commit point):
-    //   · create only with status 'active', basis 'gross', null void stamps,
-    //     createdBy == caller, createdAt == server request time
-    //   · active edits may change content but not the status, must satisfy the
-    //     full shape, and may not forge a void stamp
-    //   · active -> void touches only status/voidedAt/voidedBy/voidReason/
-    //     updatedAt/updatedBy, with voidedBy == caller, voidedAt == server
-    //     request time, and a NON-WHITESPACE voidReason
-    //   · void is terminal; there is no void -> active and no void edit
-    //
-    // `direction` and `basis` are validated as literal closed sets — a
-    // deliberate exception to the no-enum-in-rules precedent (ADR-21):
-    // two-value and one-value sets that structurally determine which cash
-    // column an amount lands in, and whether it is a cash figure at all.
-    // `sourceType` is validated by SHAPE only (bounded non-empty string) —
-    // that list will grow, and an enum duplicated into this manually-published
-    // file would drift out of sync with lib/cashFlow.js.
-    //
-    // What is NOT enforced here (client-side only — NEVER describe as
-    // enforced):
-    //   · that monthKey is not a PAST month — rules validate the YYYY-MM shape
-    //     but have no calendar to compare against the caller's local date
-    //   · sourceType membership of the app's list, and the per-type
-    //     conditionals (costCodeId required for cost-side types, coverage
-    //     required for coverage types, null for manual)
-    //   · that costCodeId names a real cost code in this company
-    //   · any source REMAINING BALANCE or aggregate coverage — rules have no
-    //     list, query, or count, so several lines can together claim more
-    //     coverage than a source holds, and two users can time the same
-    //     balance concurrently (warned with acknowledgement, never blocked)
-    //   · duplicate source timing across sibling lines
-    //   · that `amount` is a correct GROSS of `sourceAmountExGst` — per-line
-    //     tax codes make a flat conversion unreliable, so gross is authored
-    //   · timing realism, forecast completeness, period locking, and business
-    //     truth — an active line is freely rewritable after being reported
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/cashFlowLines/{lineId} {
       function financialMember() {
         return request.auth != null
@@ -2201,57 +1561,9 @@ service cloud.firestore {
     // the company-wide counters/tenderPackages document (covered by the counters
     // block below — no separate rule needed). A package holds NO amounts and NO
     // currency field — the money lives on Tender Bids.
-    //
-    // Reads: restricted to internal financial roles — a package reveals what is
-    // out to tender and, beside its bids, competitor pricing context, so
-    // subcontractor and client users must NOT read it. A bidder portal is
-    // separate, future work (Deferred Control 10 posture).
-    // Delete: blocked — cancellation is a status change; packages are the audit
-    // trail of the award decision.
-    //
-    // Lifecycle is RULES-ENFORCED (the clientInvoices standard, ADR-22):
-    //   · create only with status 'draft', revision 1, ≥1 cost code, null
-    //     lifecycle stamps and award/cancel fields, createdBy == caller,
-    //     createdAt == server request time
-    //   · draft edits may change commercial content but not the status, and may
-    //     not forge stamps or award/cancel fields
-    //   · draft -> issued is a SEPARATE stamp-only operation — issuing FREEZES
-    //     name/description/scope/costCodes
-    //   · issued edits may touch ONLY closingDate and notes (the deliberate
-    //     carve-out: extending an informational closing date is routine and must
-    //     not force cancel-and-recreate)
-    //   · issued -> awarded may touch only the award fields, requires
-    //     awardedBy == caller and awardedAt == server request time, and — via
-    //     get() on the bid document — that the awarded bid EXISTS in THIS
-    //     project, BELONGS to this package, is RECEIVED (not void), and that
-    //     awardedBidderName equals the bid's own bidderName snapshot. Because
-    //     this branch requires resource.data.status == 'issued', a SECOND award
-    //     is rejected: Firestore serialises writes per document, so the loser of
-    //     a concurrent-award race evaluates against the already-awarded state
-    //   · draft|issued -> cancelled touches only the cancel fields, with a
-    //     NON-WHITESPACE cancelReason
-    //   · awarded and cancelled are terminal
-    //
-    // ⚠️ NO STORED TOTALS. There is deliberately NO awardTotal (and bids store
-    // no bidTotal): rules cannot iterate or sum an embedded array, so a stored
-    // header total would be an unverifiable second copy of the lines (the
-    // Credit Notes header-vs-lines problem). The award display value is derived
-    // at read time from the awarded bid's lineItems, which THIS block freezes by
-    // ending the parent's 'issued' state (see tenderBids below).
-    //
-    // What is NOT enforced here (client-only — never describe as enforced; see
-    // docs/SECURITY.md → Deferred Control 26):
-    //   · the SHAPE OF EACH costCodes[] ELEMENT — rules cannot iterate an
-    //     array, so costCodeId/costCodeName pairs are unverified beyond the
-    //     list's existence and size
-    //   · that each costCodeId names a REAL, ACTIVE company cost code
-    //   · that closingDate has passed or not — INFORMATIONAL ONLY by design;
-    //     nothing anywhere blocks a bid after the closing date
-    //   · that the awarded bid's line items are WELL-FORMED — the award rule
-    //     verifies package/status/identity via get(), but cannot iterate the
-    //     bid's lineItems; the client refuses to award a malformed bid and the
-    //     read-time validity gate (lib/tenders.js → assessBid) makes a forged
-    //     one fail safely rather than be trusted
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/tenderPackages/{packageId} {
       function financialMember() {
         return request.auth != null
@@ -2412,55 +1724,9 @@ service cloud.firestore {
     // its bidder and package. Project-level with a tenderPackageId reference —
     // the progressClaims→PO idiom — NOT a subcollection, so one subscription
     // serves the register and rules still verify containment via get().
-    //
-    // Reads: restricted to internal financial roles — a bid IS competitor
-    // pricing, so subcontractor and client users must NOT read any bid, least
-    // of all a competitor's. Delete: blocked — voiding is a status change; bids
-    // are the audit trail behind the award decision.
-    //
-    // Lifecycle is RULES-ENFORCED, two states (received → void): a bid is a
-    // TRANSCRIPTION of an external document, not an authored document with a
-    // commit point, so it is created directly as 'received' — a deliberate,
-    // documented deviation from the create-draft-only standard, analogous to
-    // cashFlowLines' two-state simplification.
-    //   · create only with status 'received', revision 1, null void stamps,
-    //     createdBy == caller, createdAt == server request time, AND — via
-    //     get() — a parent package IN THIS PROJECT whose status is 'issued', a
-    //     tenderNumber equal to that package's own (snapshot cannot be forged),
-    //     and a bidderContactId naming a REAL contact in this company whose
-    //     contactTypes include supplier or subcontractor, with bidderName equal
-    //     to that contact's displayName (snapshot cannot be forged). This
-    //     deliberately exceeds the supplierPayments precedent (which leaves
-    //     supplierId existence unverified): a fabricated bidder in a
-    //     competitive record is worth the extra get().
-    //   · received edits (transcription corrections: bidDate, bidderRef,
-    //     lineItems, exclusions, notes) are allowed ONLY while the parent
-    //     package is still 'issued'; bidder identity, package linkage, and the
-    //     tenderNumber snapshot are immutable
-    //   · received -> void touches only the void audit fields, with a
-    //     NON-WHITESPACE voidReason, ONLY while the parent package is 'issued'
-    //   · once the package is awarded or cancelled, EVERY bid write is rejected
-    //     — bids freeze, which is exactly what makes the awarded bid's derived
-    //     total trustworthy without a stored copy
-    //   · void is terminal
-    //
-    // What is NOT enforced here (client-only — never describe as enforced; see
-    // docs/SECURITY.md → Deferred Control 26):
-    //   · the SHAPE OF EACH lineItems[] ELEMENT — rules cannot iterate or index
-    //     into an array, so costCodeId / costCodeName / description / amount
-    //     are unverified per line, including finite-number and ≥ 0 checks. A
-    //     malicious direct-SDK caller CAN store malformed embedded line data;
-    //     the read-time validity gate (lib/tenders.js → assessBid) is what
-    //     makes such a bid fail safely — flagged invalid, excluded from totals,
-    //     comparison, and award — rather than silently influence a figure
-    //   · line cost-code CONTAINMENT within the package's costCodes, and that
-    //     any costCodeId names a real, active cost code
-    //   · ONE ACTIVE BID PER BIDDER PER PACKAGE — bid ids are random and rules
-    //     have no queries, so uniqueness is a client-side check; two
-    //     simultaneous creators can duplicate (the Deferred Control 9 posture)
-    //   · that bidDate is realistic, or before the package's closingDate — the
-    //     closing date is INFORMATIONAL ONLY and blocks nothing anywhere
-    //   · BUSINESS TRUTH — that the transcribed prices match the paper bid
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/tenderBids/{bidId} {
       function financialMember() {
         return request.auth != null
@@ -2580,62 +1846,9 @@ service cloud.firestore {
     }
 
     // Project Timeline activities — the project programme (ADR-29).
-    //
-    // An activity is a PLANNING record, not a financial document: it holds no
-    // money, no currency, no counter and no sequential number, and it writes
-    // NOTHING to Forecast, Cash Flow, Margin, Progress Claims, Budget Lines, or
-    // projects/{projectId}.progress. The optional costCodeId + frozen
-    // costCodeName are the commercial spine link ONLY — a join key a future
-    // read-time "delay → forecast impact" derivation can use. No figure here
-    // ever reaches a financial figure.
-    //
-    // Reads: company_admin, project_manager AND qs — the QS needs the programme
-    // for commercial context.
-    // Create/update: company_admin and project_manager ONLY. Programme
-    // authorship is operational PM/admin responsibility, so QS IS READ-ONLY
-    // here — the one place its access is narrower than the other financial
-    // roles.
-    // subcontractor and client are DENIED entirely: those roles are not scoped
-    // to their own projects (docs/SECURITY.md → Deferred Control 5/10), so a
-    // read grant would expose EVERY programme in the company. Sharing a
-    // programme externally is a client-portal feature with its own scoping
-    // design, not a flag on this document.
-    // Delete: blocked — cancelling is a status change; a cancelled activity is
-    // retained programme history.
-    //
-    // ⚠️ LIFECYCLE IS DELIBERATELY NOT FORWARD-ONLY — an explicit departure
-    // from ADR-11. Financial lifecycles are forward-only because those
-    // documents are an audit record; a programme is a PLAN, so an activity
-    // ticked complete by mistake, or reopened for a defect, must be
-    // correctable. Any non-cancelled status may move to any other
-    // non-cancelled status, INCLUDING BACKWARDS. Only `cancelled` is terminal,
-    // and it is reachable only through its own branch below (reason + audit
-    // stamps required), never through an ordinary edit.
-    //
-    // `status` is validated as a closed literal set — the same justified
-    // exception as `direction`/`basis` on cashFlowLines: five values that
-    // structurally determine whether an activity counts as outstanding work.
-    //
-    // What is NOT enforced here (CLIENT-SIDE ONLY — never describe as
-    // enforced; docs/SECURITY.md → Deferred Control 23):
-    //   · that responsibleContactId names a real contact in this company, or
-    //     that responsibleName matches it — rules have no list/query and the
-    //     name is a frozen snapshot by design
-    //   · that costCodeId names a real cost code in this company
-    //   · that percentComplete reflects physical progress — it is a manually
-    //     authored, unverifiable assertion
-    //   · that actual dates reflect what happened on site, or are plausible
-    //     against the planned dates
-    //   · that a date is a REAL calendar date — the regex accepts 2026-02-30
-    //     and 2026-04-31 (rules have no calendar); the client rejects them
-    //   · sortOrder uniqueness — rules have no query or count, and concurrent
-    //     creation can tie (the app breaks ties deterministically instead)
-    //   · that a BACKWARDS status transition is legitimate rather than a
-    //     cover-up — permitting correction is the deliberate design
-    //   · freedom from dependency cycles — no dependency model exists in V1
-    //   · concurrent edits: this collection is LAST-WRITE-WINS. Two users
-    //     editing one activity will overwrite each other, including fields the
-    //     second never looked at. There is no revision compare-and-set.
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/activities/{activityId} {
       function memberRole() {
         return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
@@ -2810,78 +2023,9 @@ service cloud.firestore {
     // ALREADY WITHHELD on a posted Supplier Invoice payable. RR-#### from the
     // company-wide counters/retentionReleases document (covered by the counters
     // block below — no separate rule needed).
-    //
-    // ⚠️ A RETENTION RELEASE IS NOT A SUPPLIER INVOICE, NOT A TAX INVOICE, NOT A
-    // CREDIT NOTE, AND NOT A PAYMENT. It is an internal commercial
-    // authorisation. It creates no taxable supply, no cost, and no cash
-    // movement — only a posted Supplier Payment moves cash.
-    //
-    // ⚠️ NOTHING IS WRITTEN ONTO THE SUPPLIER INVOICE. `retention`,
-    // `retentionGst`, and `retentionTotal` are immutable for the life of that
-    // document; the released amount is DERIVED at read time from these
-    // documents (lib/retention.js → releasedByInvoiceId), which is why voiding
-    // a release restores every payable balance with no reversal record.
-    //
-    // Reads: restricted to internal financial roles — retention exposes
-    // supplier pricing and the project's cash position, so subcontractor and
-    // client users must NOT read it (matching supplierInvoices/supplierPayments).
-    // Delete: blocked — voiding is a status change; releases are audit records.
-    //
-    // ⚠️ THIS BLOCK ENFORCES MORE THAN THE ALLOCATION BLOCKS CAN. Payment
-    // allocations live in an array, and rules can neither iterate an array nor
-    // get() per element — so allocation targets are wholly unverified.
-    // `supplierInvoiceId` here is a SCALAR field, so the target invoice CAN be
-    // read, and the per-document cap and the exact GST formula CAN be enforced.
-    //
-    // Lifecycle is RULES-ENFORCED, following clientInvoices/clientReceipts/
-    // supplierPayments (ADR-22):
-    //   · create only with status 'draft', docType 'retention_release', null
-    //     lifecycle stamps, createdBy == caller, createdAt == server request time
-    //   · draft edits may change the money/date/reason/notes but not the status,
-    //     not the target invoice, and may not forge a lifecycle stamp
-    //   · posting is a SEPARATE operation touching only
-    //     status/postedAt/postedBy/updatedAt/updatedBy, with postedBy == caller
-    //     and postedAt == server request time
-    //   · voiding (from draft or posted) touches only
-    //     status/voidedAt/voidedBy/voidReason/updatedAt/updatedBy, with
-    //     voidedBy == caller, voidedAt == server request time, and a voidReason
-    //     containing NON-WHITESPACE text
-    //   · posted release content is consequently immutable — voiding is the only
-    //     permitted update
-    //   · void is terminal; there is no posted -> draft and no void -> anything
-    //   · there is deliberately NO 'paid' status — payment state derives from
-    //     Supplier Payment allocations and must not have a second source of
-    //     truth (ADR-24)
-    //
-    // What IS enforced here:
-    //   · the target supplier invoice EXISTS and is POSTED (create + draft edit
-    //     + post). Deliberately NOT re-checked on VOID: voiding must remain
-    //     possible even after the target invoice has been cancelled, which is
-    //     precisely when a release most needs withdrawing
-    //   · the PER-DOCUMENT cap: previouslyReleasedAmount + amount <=
-    //     invoice.retention (ex-GST), in whole cents
-    //   · the EXACT GST formula — gstAmount is the cumulative rounding delta
-    //     round((prev+amount)*10%) − round(prev*10%), so an arbitrary gstAmount
-    //     is REJECTED rather than tolerated, and the legitimate final rounding
-    //     remainder is accepted because the remainder IS this formula's output
-    //   · releaseTotal == amount + gstAmount, in whole cents
-    //
-    // ⚠️ What is NOT enforced here (client-side only — NEVER describe as
-    // enforced; docs/SECURITY.md → Deferred Control 24):
-    //   · that `previouslyReleasedAmount` is TRUTHFUL. Rules have no list,
-    //     query, or count, so they cannot sum sibling release documents. Two
-    //     documents can each claim previouslyReleasedAmount 0 and each pass the
-    //     per-document cap, so the CUMULATIVE cap across siblings is NOT
-    //     enforced and an invoice CAN be over-released
-    //   · that the cumulative snapshots are CONTIGUOUS (no gaps/overlaps), on
-    //     which the GST telescoping to invoice.retentionGst depends
-    //   · concurrent release safety — two users can compute the same remaining
-    //     retention and both writes succeed
-    //   · that the release was GENUINELY AGREED with the supplier — a release
-    //     asserts a commercial authorisation, not a bank movement
-    //   · company-wide RR-number uniqueness independently of the client
-    //     transaction (the counter is client-writable — Deferred Control 6)
-    //   · creator != poster segregation (Deferred Control 7 territory)
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/retentionReleases/{releaseId} {
       function financialMember() {
         return request.auth != null
@@ -3072,73 +2216,12 @@ service cloud.firestore {
     }
 
     // ── Drawings ─────────────────────────────────────────────────────────────
-    //
     // A DRAWING MASTER is the stable identity of a sheet; its `revisions`
     // subcollection holds the immutable issues. The master carries a POINTER to
     // the authored current revision plus mirrored display fields.
-    //
-    // READS ARE DELIBERATELY BROAD. Every provisioned member of the company may
-    // read drawings — including `subcontractor` and `client` — because a drawing
-    // is operational site information and withholding the current sheet is the
-    // real safety risk. This is the FIRST project-scoped collection with a
-    // membership-only read (the financial collections all gate on role), and it
-    // is intentional. Note what it is NOT: it is not project-specific. A
-    // provisioned member reads the drawings of EVERY project in their company —
-    // see docs/SECURITY.md → Deferred Control 20.
-    //
-    // WRITES are company_admin / project_manager only. QS is excluded on
-    // purpose: a QS measures from drawings but does not control which revision
-    // the site builds from. (QS does have general-document write, below.)
-    //
-    // What is enforced here:
-    //   · a master is BORN EMPTY — status 'active', currentRevisionId null,
-    //     currentRevisionCode '', revisionCount 0. A master can therefore never
-    //     be created already advertising a revision whose bytes never uploaded
-    //   · exactly four update shapes, each restricted with `hasOnly` — identity
-    //     edit, promotion, reinstatement, withdrawal — so nothing else moves
-    //   · promotion increments revisionCount by EXACTLY 1 and must set a
-    //     non-empty pointer, code, and 'YYYY-MM-DD' issue date
-    //   · reinstatement moves the pointer to a DIFFERENT revision and may NOT
-    //     touch revisionCount (reinstating is not issuing)
-    //   · withdrawal is terminal, clears the pointer, stamps the caller and the
-    //     server time, and requires a NON-WHITESPACE reason
-    //   · every revision is created as 'current', with a positive integer
-    //     revisionSequence, an allowed content type, a size within the 50 MB
-    //     ceiling, a content type that AGREES with fileExt, and — decisively —
-    //     a `storagePath` that must equal the EXACT derived path for this
-    //     company/project/drawing/revision. A revision can never point at
-    //     another tenant's bytes, at another drawing's bytes, or at a filename
-    //     of the caller's choosing
-    //   · a revision's file identity and authored identity are IMMUTABLE: every
-    //     update branch is `hasOnly`-restricted to its own lifecycle stamps, so
-    //     revisionCode, revisionSequence, revisionDate, fileName, fileExt,
-    //     fileSize, contentType and storagePath can never be rewritten
-    //   · legal revision transitions only — current→superseded,
-    //     current→withdrawn, superseded→current, superseded→withdrawn.
-    //     'withdrawn' is terminal
-    //   · pageCount stays null and sheetSize stays '' (reserved for a future
-    //     takeoff module; populating them will need a rules change, which is
-    //     the point — they are not free-text today)
-    //   · delete is blocked everywhere. There is no hard delete of a drawing or
-    //     a revision, ever
-    //
-    // What is NOT enforced here (client/business-only — never describe as
-    // enforced):
-    //   · drawingNumber uniqueness within a project, and revisionCode
-    //     uniqueness within a drawing — rules cannot query siblings. Both are
-    //     WARNED in the UI and both can be defeated by concurrent creates
-    //   · EXACTLY-ONE-CURRENT-REVISION. The promotion transaction supersedes
-    //     the previous current in the same commit, but a direct SDK caller with
-    //     a writer role can create a second 'current' sibling, because rules
-    //     cannot see sibling documents
-    //   · that `currentRevisionId` names a revision that EXISTS. It is created
-    //     in the SAME transaction, so a rules `exists()` would evaluate against
-    //     pre-transaction state and reject every legitimate promotion
-    //   · that the Storage object at `storagePath` exists, or that its bytes
-    //     are the file the metadata describes. Rules see metadata, never bytes
-    //   · that the promoted revision's code/date match the mirrored fields on
-    //     the master (no cross-document read at write time)
-    //   · project-specific membership, and malware/AV scanning
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/drawings/{drawingId} {
       // Any provisioned member of THIS company, regardless of role.
       function companyMember() {
@@ -3373,47 +2456,13 @@ service cloud.firestore {
     }
 
     // ── General Project Documents ────────────────────────────────────────────
-    //
     // The flat, non-drawing register: specifications, contracts, subcontracts,
     // reports, certificates, safety documents, programmes, manuals,
     // correspondence. No folders, no revision subcollection — a replacement is a
     // NEW record and the old one is superseded with a forward link.
-    //
-    // VISIBILITY is the read gate:
-    //   · 'project'  → every provisioned member of the company
-    //   · 'internal' → company_admin / project_manager / qs only
-    //
-    // ⚠️ RULES ARE NOT FILTERS. A subcontractor or client issuing an UNFILTERED
-    // collection query is rejected outright the moment one internal document
-    // exists — Firestore evaluates this rule against every document in the
-    // result set and fails the whole query. hooks/useProjectDocuments.jsx
-    // therefore subscribes with `where('visibility','==','project')` for those
-    // roles. That filter is a QUERY REQUIREMENT, not a security control; the
-    // rule below is the control.
-    //
-    // What is enforced here:
-    //   · membership-and-visibility reads, exactly as described above
-    //   · writes restricted to company_admin / project_manager / qs
-    //   · create shape — allowed category, allowed visibility, status 'active',
-    //     no forged supersede/withdraw stamps, allowed content type within the
-    //     25 MB ceiling, a content type that AGREES with fileExt, and a
-    //     `storagePath` equal to the EXACT derived path for this
-    //     company/project/document
-    //   · three update shapes, each `hasOnly`-restricted — metadata edit,
-    //     supersession, withdrawal — so the file identity (fileName, fileExt,
-    //     fileSize, contentType, storagePath) is IMMUTABLE after creation
-    //   · legal transitions only — active→superseded, active→withdrawn,
-    //     superseded→withdrawn. 'withdrawn' is terminal
-    //   · withdrawal requires a NON-WHITESPACE reason and stamps the caller and
-    //     the server time
-    //   · delete is blocked. Nothing here is ever hard-deleted
-    //
-    // What is NOT enforced here (client/business-only):
-    //   · that `supersededByDocumentId` names a document that exists, belongs to
-    //     this project, or is itself active — rules cannot read siblings
-    //   · that the Storage object exists or that its bytes match the metadata
-    //   · name/category uniqueness
-    //   · project-specific membership, and malware/AV scanning
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/documents/{documentId} {
       function companyMember() {
         return request.auth != null
@@ -3528,79 +2577,9 @@ service cloud.firestore {
     // question that needed clarification: who asked what, of whom, against
     // which drawing revision or document, when it was due, what the answer was
     // and when it arrived.
-    //
-    // ⚠️ AN RFI IS FINANCIALLY INERT. It carries no amount, no currency and no
-    // GST, feeds NO financial figure, and its create path must NEVER engage the
-    // project currency ratchet. The optional `costCodeId` + frozen
-    // `costCodeName` is a JOIN KEY reserved for future read-time analysis
-    // (RFI ageing → delay → EOT / variation / forecast evidence) — never an
-    // authored commercial value. Cost impact, time impact and variation
-    // origination are explicitly deferred.
-    //
-    // Reads AND writes: company_admin / project_manager / qs — the same three
-    // roles, deliberately NARROW. RFI content routinely carries contractual
-    // positions, so `subcontractor` and `client` must not read it (this is NOT
-    // the drawings read model), and there is no external RFI portal.
-    // `super_admin` gains nothing, matching every other collection.
-    // Delete: blocked at every status — cancellation is a status change.
-    //
-    // Lifecycle is RULES-ENFORCED and FORWARD-ONLY (the ADR-11 default — an RFI
-    // is an audit record, not a plan, so unlike `activities` it is never
-    // corrected backwards and there is NO REOPEN):
-    //   · create only with status 'draft', every lifecycle stamp null/empty,
-    //     createdBy == caller, createdAt == server request time
-    //   · DRAFT EDIT may change the question block, the reference, the cost
-    //     code, the assignee and the due date — but not the status and not
-    //     the number, and may not forge a stamp
-    //   · RAISE (draft → open) requires an assignee AND a due date, stamps
-    //     raisedAt/raisedBy, and touches nothing else. From this point the
-    //     QUESTION BLOCK (title, question, raisedDate, raisedByName, every
-    //     reference field, costCodeId/costCodeName) is FROZEN FOR LIFE
-    //   · OPEN MANAGEMENT EDIT may change ONLY the assignee pair and the due
-    //     date — and may NEVER clear them. Once open, an RFI always carries
-    //     an assignee and a due date (accountability fields); the raise gate
-    //     is a permanent invariant of the open state, not a one-off check
-    //   · ANSWER (open → answered) requires a NON-WHITESPACE answer and an
-    //     authored answerDate >= raisedDate, stamps answeredAt/answeredBy,
-    //     and touches nothing else. From this point the MANAGEMENT BLOCK is
-    //     frozen too
-    //   · CLOSE (answered → closed) stamps closedAt/closedBy with an optional
-    //     closeOutNote, and touches nothing else
-    //   · CANCEL is permitted from draft and open ONLY — NOT from answered
-    //     (an answered question was not a mistake to ask; close it with a note
-    //     instead). Requires a NON-WHITESPACE cancelReason, stamps
-    //     cancelledAt/cancelledBy, and touches nothing else
-    //   · closed and cancelled are TERMINAL — no update of any kind
-    //
-    // THE REFERENCE is ZERO OR ONE, held in SCALAR fields (never an array —
-    // rules cannot iterate an array or get() per element, the credit-note
-    // lesson), and its target's EXISTENCE IS VERIFIED HERE at create and at
-    // draft edit:
-    //   · 'drawing'  → BOTH drawings/{referenceDrawingId} AND
-    //                  drawings/{referenceDrawingId}/revisions/{referenceRevisionId}
-    //                  must exist. The nested path is what proves the revision
-    //                  belongs to that drawing. A master-only reference is NOT
-    //                  accepted: the RFI stays pinned to exactly the sheet as
-    //                  issued when the question was asked
-    //   · 'document' → documents/{referenceDocumentId} must exist
-    //   · 'none'     → all three ids null, both labels ''
-    // Labels are FROZEN display snapshots. No bytes, no storagePath and no
-    // download URL are ever stored on an RFI.
-    //
-    // What is NOT enforced here (client-side only — NEVER describe as
-    // enforced; see docs/SECURITY.md → Deferred Control 27):
-    //   · rfiNumber uniqueness within the project, and +1 counter semantics —
-    //     rules have no list, query or count (Deferred Control 6)
-    //   · that `raisedByName` is the caller's real profile name. It is a
-    //     client-authored snapshot; rules validate SHAPE only. It is NOT
-    //     compared against users/{uid} (a blank provisioned name would then
-    //     reject every create in that company)
-    //   · that assignedToContactId / costCodeId name real records — shape only
-    //   · that the frozen referenceLabel / referenceRevisionCode match the
-    //     referenced documents (existence is checked, content is not)
-    //   · an impossible calendar date of valid shape (2026-02-31)
-    //   · last-write-wins on concurrent draft edits; creator ≠ answerer
-    //     segregation; project-specific membership (Deferred Control 20)
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/rfis/{rfiId} {
       function memberRole() {
         return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
@@ -3841,47 +2820,9 @@ service cloud.firestore {
     // per project). A MANAGEMENT record (ADR-49): a manager's note that a
     // finding has been seen and what is being done, with a REQUIRED review-by
     // date and the ids of the records the finding rested on when acknowledged.
-    //
-    // ⚠️ AN ACKNOWLEDGEMENT IS NOT A RESOLUTION, NOT A FINANCIAL APPROVAL AND
-    // NOT AUDIT CERTIFICATION. It holds no amount and no currency, writes
-    // nothing onto any other document, and changes no PULSE indicator state,
-    // count or figure — the page derives a separate "attention" status from it
-    // at read time (lib/pulseAttention.js). Resolution happens only when the
-    // underlying condition disappears from the records.
-    //
-    // Reads: the PULSE audience (financial roles — the note is commercial
-    // context). Writes: company_admin and project_manager ONLY — qs is
-    // READ-ONLY, as on the programme (activities). subcontractor / client /
-    // super_admin: nothing (not project-scoped roles — Deferred Control 5/10).
-    // Delete: blocked — withdrawing is a status change.
-    //
-    // Lifecycle (RULES-ENFORCED):
-    //   · create only as `active`, revision 1, null withdraw stamps,
-    //     acknowledgedBy == caller, acknowledgedAt == request.time
-    //   · RE-ACKNOWLEDGE (active or withdrawn → active): a fresh statement —
-    //     note / reviewBy / evidenceKeys replaced, acknowledgedBy == caller,
-    //     acknowledgedAt == request.time, withdraw stamps cleared
-    //   · WITHDRAW (active → withdrawn): touches only status / withdrawnAt /
-    //     withdrawnBy / revision / updatedAt / updatedBy, withdrawnBy == caller,
-    //     withdrawnAt == request.time; the acknowledged content is retained
-    //   · withdrawn → withdrawn is rejected; createdAt / createdBy / indicatorId
-    //     never change
-    //
-    // ⚠️ `revision` INCREMENTS here — unlike every other block, where it is
-    // pinned at 1. Every update must carry exactly resource.revision + 1: a
-    // blind overwrite that does not know the current revision is REJECTED,
-    // which is what lets the app's transaction refuse to overwrite another
-    // manager's acknowledgement unseen. This is rules-ASSISTED concurrency,
-    // not rules-PROVEN: a direct client can still read and write +1 itself.
-    //
-    // ⚠️ What is NOT enforced here (client-side only — NEVER describe as
-    // enforced; docs/SECURITY.md → Deferred Control 31):
-    //   · that a PULSE finding actually EXISTED for this indicator when it was
-    //     acknowledged — rules cannot evaluate the indicators
-    //   · that `evidenceKeys` are TRUTHFUL record ids (rules can bound the
-    //     list's size, not inspect its elements or check them against records)
-    //   · that `reviewBy` is not already in the past, or is a real calendar day
-    //   · the roles are not project-scoped (Deferred Control 20)
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/pulseAcknowledgements/{indicatorId} {
       function memberRole() {
         return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
@@ -3999,36 +2940,15 @@ service cloud.firestore {
     }
 
     // ── Constrapp Quant™ 1A — takeoff pages (ADR-51) ─────────────────────────
-    //
     // One document per (drawing, revision, page number). The id is
     // `{drawingId}_{revisionId}_{page}` and is RECOMPUTED here from the stored
     // fields, so a page can never claim a different sheet than it is filed
     // under. Holds the page's canonical geometry (PDF.js scale-1 viewport, or
     // intrinsic image pixels) and its CURRENT calibration. NON-FINANCIAL: no
     // amount, no currency, no counter, no BOQ or budget reference.
-    //
-    // Reads AND writes: company_admin / project_manager / qs — the QS measures.
-    // subcontractor / client / super_admin denied: a takeoff is the internal
-    // estimate's provenance.
-    //
-    // Enforced here: tenant; role; exact keys; id ↔ fields agreement; the
-    // drawing and the revision EXIST and the revision is not withdrawn (via
-    // exists()/get() on the nested revisions path — the RFI precedent); the
-    // source and rotation vocabularies; positive page dimensions; calibration
-    // shape (two {x,y} points, positive distances, metric unit) or null;
-    // `calibrationRevision` 0 while uncalibrated and exactly +1 per
-    // calibration; immutable identity, geometry and creation stamps; actor
-    // and server stamps; `revision` exactly +1 on every update; NO
-    // re-calibration once the revision or drawing is withdrawn; delete blocked.
-    // READS are role-gated only, so superseded and withdrawn sheets stay
-    // inspectable as history.
-    //
-    // NOT enforced (client-only — docs/SECURITY.md → Deferred Control 32):
-    // that pageWidth/pageHeight/pageRotation are the sheet's REAL geometry,
-    // that `page` is within the PDF's page count, that `pageDistance` equals
-    // the distance between pointA and pointB, that the real distance is TRUE,
-    // true concurrency safety (the +1 rule rejects a BLIND overwrite only),
-    // and project-specific membership (item 20).
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/takeoffPages/{takeoffPageId} {
       function memberRole() {
         return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
@@ -4165,34 +3085,15 @@ service cloud.firestore {
     }
 
     // ── Constrapp Quant™ 1A — takeoff measurements (ADR-51) ──────────────────
-    //
     // One measurement: a length (polyline), an area (polygon) or a count
     // (points) in the CANONICAL coordinates of exactly one takeoff page. The
     // quantity is NEVER stored — it is reproduced from `points` and the
     // measurement's calibration SNAPSHOT (the page calibration it was last
     // saved or reviewed under; null for a count). NON-FINANCIAL: no amount,
     // no currency, no BOQ reference — Quant 1B owns BOQ linkage (ADR-51).
-    //
-    // Reads AND writes: company_admin / project_manager / qs.
-    //
-    // Enforced here: tenant; role; exact keys; `takeoffPageId` recomputed from
-    // the stored sheet identity; the page document, the drawing, the revision
-    // and the cost code EXIST and neither the revision nor the drawing is
-    // withdrawn (create AND active edit — once withdrawn, VOID is the only
-    // permitted write; reads are never gated, so history stays inspectable); the kind
-    // vocabulary; `points` a list bounded by kind (≥2 length, ≥3 area, ≥1
-    // count, ≤500); non-blank bounded label and cost-code name; calibration
-    // snapshot shape for length/area and null for count; immutable sheet
-    // identity, kind and creation stamps; actor and server stamps; `revision`
-    // exactly +1 on every update; active→void terminal with a non-whitespace
-    // reason; delete blocked.
-    //
-    // NOT enforced (client-only — docs/SECURITY.md → Deferred Control 32):
-    // the CONTENT of `points` (rules cannot iterate a list — an element may
-    // be anything), that the points lie on the page, that the geometry is
-    // non-degenerate, that the calibration snapshot matches the page's current
-    // or any past calibration, that the cost code is ACTIVE, true concurrency
-    // safety, and project-specific membership (item 20).
+    // Rationale, the enforced controls and the client-only gaps are recorded in
+    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
+    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/takeoffMeasurements/{measurementId} {
       function memberRole() {
         return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;

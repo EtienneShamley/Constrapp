@@ -464,7 +464,13 @@ npm run test:unit
 - `frontend/tests/unit/pulseAttention.test.js` — **65 tests** over
   `lib/pulseAttention.js` and `lib/pulseAcknowledgementActions.js` (PULSE™ 1B,
   ADR-49): see §25.
-- `frontend/tests/unit/quant.test.js` — **105 tests** over `lib/quant.js`,
+- `frontend/tests/unit/rulesSize.test.js` — **5 tests** pinning the
+  `firestore.rules` SOURCE-SIZE budget (ADR-51 hotfix): under the approved
+  **245,000 UTF-8 bytes** and under Firestore's **262,144-byte** publish limit,
+  measured in bytes (the file is not pure ASCII), with real headroom between
+  the two; `storage.rules` far below. Passing proves the file CAN be published —
+  not that it IS (DEPLOYMENT.md → *Verifying which rules version is published*).
+- `frontend/tests/unit/quant.test.js` — **112 tests** over `lib/quant.js`,
   `lib/quantActions.js`, `lib/pdfRender.js` and the Quant™ 1A page wiring
   (ADR-51): see §27.
 - `frontend/tests/unit/moduleBranding.test.js` — **39 tests** over the
@@ -5059,7 +5065,7 @@ Manual — three checks only, all read-only (SHIELD writes nothing):
 
 ## 27. Constrapp Quant™ 1A — manual drawing measurement (ADR-51)
 
-Automated: `tests/unit/quant.test.js` (105 tests) — lengths and areas against
+Automated: `tests/unit/quant.test.js` (112 tests) — lengths and areas against
 hand-calculated values (3-4-5 triangle, 3×4 rectangle in both windings, a right
 triangle, a concave L-shape), implicit polygon closure and degenerate shapes
 (collinear → zero area refused, coincident → zero length refused, bow-tie,
@@ -5106,7 +5112,13 @@ only once measured, and the local acceptance environment (`npm run
 test:quant` starts both emulators in exec mode, the child-only opt-ins, the
 seed's loopback / credentials / probe refusals, the committed fixture, no BOQ
 seed, and the app's Storage-emulator gate that older launchers never set).
-Rules: `takeoff.rules.test.js` (56, §0).
+Rules: `takeoff.rules.test.js` (56, §0). **Production-incident regressions
+(October 2026):** the missing-revision banner is computed only for a selected
+drawing whose revisions have settled (no drawing → no banner; loading → the
+picker's loading state; a failed revisions read → its own *unavailable*
+banner, never *not found*; a genuinely missing revision on a selected drawing
+still warns; every input derives from the current drawing id so a switch
+carries no stale banner), and `rulesSize.test.js` guards the publish limit.
 
 **Browser verification (October 2026).** The PDF.js adapter (`lib/pdfRender.js`)
 and the lazy loader (`pages/project/quant/pdfjsLoader.js`) were exercised in
