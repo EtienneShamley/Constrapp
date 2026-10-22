@@ -3,11 +3,14 @@ import { useOutletContext, useNavigate } from 'react-router-dom'
 import Card from '../../components/Card'
 import Btn from '../../components/Btn'
 import Badge from '../../components/Badge'
-import { formatCurrency } from '../../lib/formatters'
+import { formatCurrency, formatDate } from '../../lib/formatters'
+import { useAuth } from '../../hooks/useAuth'
 import { useProfile } from '../../hooks/useProfile'
 import { useBoqItems } from '../../hooks/useBoqItems'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
+import { useDrawings } from '../../hooks/useDrawings'
+import { useTakeoffPages, useTakeoffMeasurements } from '../../hooks/useTakeoff'
 import { isFinancialRole } from '../../lib/margin'
 import {
   BOQ_STATUS, BOQ_STATUS_LABELS, BOQ_BADGE_VARIANTS,
@@ -15,8 +18,11 @@ import {
   boqTotals, budgetedTotal, boqVarianceToBudget, boqVsBudgetRows,
   sortBoqItems, formatQuantity,
 } from '../../lib/boq'
+import { MEASUREMENT_STATUS, measurementBoqItemId } from '../../lib/quant'
+import { isReadableQuantApplied } from '../../lib/quantBoq'
 import BoqItemEditorModal from './boq/BoqItemEditorModal'
 import BoqItemVoidModal from './boq/BoqItemVoidModal'
+import BoqQuantityApplyModal from './boq/BoqQuantityApplyModal'
 
 // ── Bill of Quantities ───────────────────────────────────────────────────────
 //
@@ -26,6 +32,12 @@ import BoqItemVoidModal from './boq/BoqItemVoidModal'
 // untouched); the only derived output is the read-time BOQ-vs-Approved-Budget
 // comparison on this page (lib/boq.js, ADR-32 Part 1). Estimating (margin /
 // overheads) and BOQ → Budget transfer are later branches.
+//
+// Quant 1B (ADR-52): this page also reads the project's takeoff measurements,
+// takeoff pages and drawings so an active item with LINKED measurements offers
+// "Quant (n)" — a review-and-apply dialog whose only write is the guarded
+// `applyBoqQuantity` on that one item. A failed takeoff read hides nothing
+// behind a zero: the action is simply not offered and the dialog says why.
 
 const thCls = 'text-left px-3 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px] whitespace-nowrap'
 const tdCls = 'px-3 py-3 text-[13px] text-brand-text whitespace-nowrap'
@@ -147,16 +159,40 @@ export default function ProjectBoq() {
   // would deny them anyway — this is the UX mirror; rules are the boundary).
   const mid = canView ? projectId : null
 
+  const { user } = useAuth()
   const {
     boqItems, boqItemsLoading, boqItemsError,
-    createBoqItem, updateBoqItem, voidBoqItem,
+    createBoqItem, updateBoqItem, voidBoqItem, applyBoqQuantity,
   } = useBoqItems(mid)
   const { costCodes, costCodesLoading } = useCostCodes()
   const { budgetLines, budgetLinesLoading, budgetLinesError } = useBudgetLines(mid)
+  // Quant 1B sources (ADR-52) — read-only here; same three roles as the BOQ.
+  const { takeoffMeasurements, takeoffMeasurementsLoading, takeoffMeasurementsError } = useTakeoffMeasurements(mid)
+  const { takeoffPages, takeoffPagesLoading, takeoffPagesError } = useTakeoffPages(mid)
+  const { drawings, drawingsLoading, drawingsError } = useDrawings(mid)
 
   const [editing, setEditing] = useState(null)      // item | 'new' | null
   const [voiding, setVoiding] = useState(null)      // item | null
+  const [applying, setApplying] = useState(null)    // item id | null — resolved to the LIVE item on every render
   const [showVoided, setShowVoided] = useState(false)
+
+  // Active linked measurements per item — the "(n)" on the Quant action.
+  const linkedCounts = useMemo(() => {
+    const counts = new Map()
+    for (const m of takeoffMeasurements) {
+      if (m?.status !== MEASUREMENT_STATUS.ACTIVE) continue
+      const id = measurementBoqItemId(m)
+      if (id) counts.set(id, (counts.get(id) ?? 0) + 1)
+    }
+    return counts
+  }, [takeoffMeasurements])
+  const quantSources = {
+    measurements: { loading: takeoffMeasurementsLoading, error: takeoffMeasurementsError },
+    pages:        { loading: takeoffPagesLoading,        error: takeoffPagesError },
+    drawings:     { loading: drawingsLoading,            error: drawingsError },
+    boq:          { loading: boqItemsLoading,            error: boqItemsError },
+  }
+  const applyingItem = applying ? boqItems.find(i => i.id === applying) ?? null : null
 
   const active = useMemo(() => sortBoqItems(activeBoqItems(boqItems)), [boqItems])
   const voided = useMemo(() => sortBoqItems(voidBoqItems(boqItems)), [boqItems])
@@ -196,7 +232,14 @@ export default function ProjectBoq() {
         <td className={tdCls}>{item.section || '—'}</td>
         <td className={`${tdCls} !whitespace-normal min-w-[180px] font-semibold`}>{item.description}</td>
         <td className={tdCls}>{item.costCodeName || '—'}</td>
-        <td className={`${tdCls} text-right`}>{formatQuantity(item.quantity)}</td>
+        <td className={`${tdCls} text-right`}>
+          {formatQuantity(item.quantity)}
+          {isReadableQuantApplied(item.quantApplied) && (
+            <span className="block text-[10.5px] font-normal text-brand-muted">
+              Quant applied {item.quantApplied.at ? formatDate(item.quantApplied.at) : ''}
+            </span>
+          )}
+        </td>
         <td className={tdCls}>{item.unit}</td>
         <td className={`${tdCls} text-right`}>
           {isPriced(item.rate)
@@ -212,6 +255,11 @@ export default function ProjectBoq() {
         <td className={`${tdCls} text-right`}>
           {!isVoid && (
             <span className="inline-flex gap-1.5">
+              {(linkedCounts.get(item.id) ?? 0) > 0 && (
+                <Btn variant="ghost" sm onClick={() => setApplying(item.id)} aria-label={`Review ${linkedCounts.get(item.id)} linked Quant measurements for ${item.description}`}>
+                  Quant ({linkedCounts.get(item.id)})
+                </Btn>
+              )}
               <Btn variant="ghost" sm onClick={() => setEditing(item)}>Edit</Btn>
               <Btn variant="ghost" sm onClick={() => setVoiding(item)}>Void</Btn>
             </span>
@@ -240,6 +288,15 @@ export default function ProjectBoq() {
       </div>
 
       {/* ── Source-failure banner (never shown as zeros) ──────────────────── */}
+      {!boqItemsError && takeoffMeasurementsError && (
+        <Card className="mb-3.5">
+          <p className="text-[13px] font-bold text-brand-red m-0">Quant measurements are unavailable</p>
+          <p className="text-[11.5px] text-brand-text m-0 mt-1">
+            Linked measurements could not be loaded, so the Quant review action is not offered — this is not &quot;no
+            measurements&quot;. BOQ items and totals are unaffected.
+          </p>
+        </Card>
+      )}
       {boqItemsError && (
         <Card className="mb-3.5">
           <p className="text-[13px] font-bold text-brand-red m-0">The BOQ failed to load</p>
@@ -329,6 +386,19 @@ export default function ProjectBoq() {
           currencyCode={currencyCode}
           onClose={() => setVoiding(null)}
           onConfirm={(reason) => voidBoqItem(voiding, reason)}
+        />
+      )}
+      {applyingItem && (
+        <BoqQuantityApplyModal
+          item={applyingItem}
+          measurements={takeoffMeasurements}
+          takeoffPages={takeoffPages}
+          drawings={drawings}
+          sources={quantSources}
+          currencyCode={currencyCode}
+          currentUid={user?.uid ?? null}
+          onClose={() => setApplying(null)}
+          onApply={(item, change) => applyBoqQuantity(item, change)}
         />
       )}
     </div>

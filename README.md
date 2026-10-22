@@ -17,7 +17,7 @@ Drawing → Quantity → BOQ → Estimate → Tender → Award → Approved Budg
   → Final Project Margin → Final Account
 ```
 
-Today the delivery-and-cost-control middle of this lifecycle is implemented (budgets → POs → variations → claims → supplier invoices → forecasting → margin → cash flow), and the preconstruction front has begun with the **BOQ foundation** (measured quantities by cost code; the BOQ feeds no financial figure). Estimating, tender & award, and takeoff remain planned. See [PRODUCT.md](PRODUCT.md) and [ROADMAP.md](ROADMAP.md) for module-by-module status, and [PRODUCT.md](PRODUCT.md) → "What Constrapp Is Not" for the strategic boundaries.
+Today the delivery-and-cost-control middle of this lifecycle is implemented (budgets → POs → variations → claims → supplier invoices → forecasting → margin → cash flow), and the preconstruction front has begun with the **BOQ foundation** (measured quantities by cost code; the BOQ feeds no financial figure), **Tenders**, and **Constrapp Quant™** manual takeoff (1A live; 1B — linking measurements to BOQ items and explicitly applying their total — implemented, not yet deployed). Estimating remains planned. See [PRODUCT.md](PRODUCT.md) and [ROADMAP.md](ROADMAP.md) for module-by-module status, and [PRODUCT.md](PRODUCT.md) → "What Constrapp Is Not" for the strategic boundaries.
 
 ## What Works Today
 
@@ -48,12 +48,15 @@ acknowledgement with a required review-by date — with its static mark in the
 tab (ADR-48); the top-level `/pulse` route is a hidden pointer to it. Constrapp
 SHIELD™ (ADR-50, **live in production since 19 October 2026**) is a second
 project tab of five read-only commercial assurance checks over existing records;
-`/shield` is its hidden pointer. Constrapp Quant™ 1A (ADR-51, implemented,
-**not yet deployed**) is a third module tab: manual drawing measurement —
-calibrate a drawing revision's page from a known distance, measure lengths,
-areas and counts, and keep each as a traceable record; it **writes no BOQ
-quantity** (that is Quant 1B) and adds the one pinned runtime dependency
-`pdfjs-dist`. `/quant` is its hidden pointer. Photos and Reports remain
+`/shield` is its hidden pointer. Constrapp Quant™ 1A (ADR-51, **live in
+production since October 2026**) is a third module tab: manual drawing
+measurement — calibrate a drawing revision's page from a known distance,
+measure lengths, areas and counts, and keep each as a traceable record; the tab
+itself **writes no BOQ quantity** and adds the one pinned runtime dependency
+`pdfjs-dist`. Quant™ 1B (ADR-52, implemented, **not yet deployed**) links a
+measurement to one BOQ item on the same cost code and lets the BOQ tab's
+*Quant (n)* dialog review the linked measurements and **explicitly apply** their
+total to that item's quantity — no automatic sync. `/quant` is its hidden pointer. Photos and Reports remain
 placeholder screens with live routes but are **hidden from navigation** for
 private beta; IQ™ has no screen. Subcontractors lists live
 contacts. See [PRODUCT.md](PRODUCT.md) for module-by-module status.
@@ -88,8 +91,11 @@ npm run build
 Vitest over the pure `lib/` modules — no Firebase, no emulator. Covers the Cash
 Flow arithmetic (`lib/cashFlow.js` + the cash-row adapters): actual grouping,
 invoice-based forecasting, coverage, completeness, and peak funding; the chart
-presentation transform (`lib/cashFlowChart.js`); and the Documents & Drawings
-domain (`lib/files.js`, `lib/drawings.js`, `lib/projectDocuments.js`).
+presentation transform (`lib/cashFlowChart.js`); the Documents & Drawings
+domain (`lib/files.js`, `lib/drawings.js`, `lib/projectDocuments.js`); the
+Quant™ geometry and takeoff transactions (`lib/quant.js`, `lib/quantActions.js`);
+and the Quant 1B unit table, aggregate and guarded BOQ writes
+(`lib/quantBoq.js`, `lib/boqActions.js`) — see docs/TESTING.md for the full list.
 
 ```bash
 cd frontend

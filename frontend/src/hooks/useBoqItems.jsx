@@ -12,6 +12,7 @@ import { resolveProjectCurrency } from '../lib/currency'
 import {
   BOQ_STATUS, normalizeRate, boqLineAmount, validateBoqItemDraft,
 } from '../lib/boq'
+import { runUpdateBoqItem, runApplyBoqQuantity } from '../lib/boqActions'
 
 // ── BOQ items (measured schedule; provenance for the Approved Budget) ────────
 //
@@ -25,10 +26,12 @@ import {
 // both rules-enforced; delete is blocked.
 //
 // This hook writes ONLY boqItem documents (plus the project currency ratchet,
-// inside the create transaction). It NEVER mutates budget lines, POs, claims,
-// invoices, variations, forecast lines, cash-flow lines, or the commercial
-// baseline — the BOQ feeds no financial figure, and the BOQ-vs-budget
-// comparison is derived at read time in lib/boq.js (ADR-32).
+// inside the create/edit/apply transactions). It NEVER mutates budget lines,
+// POs, claims, invoices, variations, forecast lines, cash-flow lines, or the
+// commercial baseline — the BOQ feeds no financial figure, and the
+// BOQ-vs-budget comparison is derived at read time in lib/boq.js (ADR-32).
+// Since ADR-52 the edit and the Quant apply are version-guarded transactions
+// in lib/boqActions.js.
 export function useBoqItems(projectId) {
   const { user }    = useAuth()
   const { company } = useCompany()
@@ -162,6 +165,12 @@ export function useBoqItems(projectId) {
   // then relabels that amount without converting it. Un-pricing stages a
   // no-op, as does an already-locked project — which keeps the narrow `qs`
   // rule (currencyLocked false→true only) satisfied for QS users.
+  //
+  // GUARDED since ADR-52 (lib/boqActions.js → runUpdateBoqItem): the server
+  // copy is read inside the transaction and compared with `itemDoc` — the
+  // version the editor opened. A newer quantity, rate, unit or cost code saved
+  // by someone else is refused as STALE, never overwritten. Behaviour is
+  // otherwise the ADR-32 edit unchanged.
   const updateBoqItem = useCallback(async (itemDoc, input) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (itemDoc.status !== BOQ_STATUS.ACTIVE) throw new Error('Only active BOQ items can be edited')
@@ -172,17 +181,26 @@ export function useBoqItems(projectId) {
     const ref = doc(db, 'companies', companyId, 'projects', projectId, 'boqItems', itemDoc.id)
     const fields = buildFields(input)
 
-    await runTransaction(db, async (tx) => {
-      const commitLock = fields.rate === null
-        ? () => {}
-        : await stageProjectCurrencyLock(tx, companyId, projectId)
+    await runUpdateBoqItem({
+      db, itemRef: ref, seen: itemDoc, fields,
+      uid: user.uid, runTransaction, serverTimestamp,
+      stageLock: (tx) => stageProjectCurrencyLock(tx, companyId, projectId),
+    })
+  }, [companyId, projectId, user])
 
-      tx.update(ref, {
-        ...fields,
-        updatedAt: serverTimestamp(),
-        updatedBy: user.uid,
-      })
-      commitLock()
+  // Quant 1B (ADR-52): apply a REVIEWED, user-confirmed measured total to one
+  // active item. Writes the item's quantity, its derived amount
+  // (lib/boq.js → boqLineAmount, from the SERVER rate), the `quantApplied`
+  // provenance map and the stamps — and stages the ratchet when the item is
+  // priced. Same version guard as the editor. Nothing else is written: no
+  // budget line, forecast line, PO, claim, invoice or cash-flow line.
+  const applyBoqQuantity = useCallback(async (itemDoc, { quantity, measurementCount, evidence }) => {
+    if (!companyId || !projectId || !user) throw new Error('Not authenticated')
+    const ref = doc(db, 'companies', companyId, 'projects', projectId, 'boqItems', itemDoc.id)
+    return runApplyBoqQuantity({
+      db, itemRef: ref, seen: itemDoc, quantity, measurementCount, evidence,
+      uid: user.uid, runTransaction, serverTimestamp,
+      stageLock: (tx) => stageProjectCurrencyLock(tx, companyId, projectId),
     })
   }, [companyId, projectId, user])
 
@@ -214,5 +232,6 @@ export function useBoqItems(projectId) {
     createBoqItem,
     updateBoqItem,
     voidBoqItem,
+    applyBoqQuantity,
   }
 }

@@ -1,12 +1,14 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Card from '../../../components/Card'
 import Btn from '../../../components/Btn'
 import { useProfile } from '../../../hooks/useProfile'
 import { useDrawings } from '../../../hooks/useDrawings'
 import { useDrawingRevisions } from '../../../hooks/useDrawingRevisions'
 import { useCostCodes } from '../../../hooks/useCostCodes'
+import { useBoqItems } from '../../../hooks/useBoqItems'
 import { useTakeoffPages, useTakeoffMeasurements } from '../../../hooks/useTakeoff'
 import { currentRevision } from '../../../lib/drawings'
+import { readSelection, writeSelection, selectableDrawing, effectivePage } from '../../../lib/quantSelection'
 import {
   MEASUREMENT_KIND, KIND_LABELS, MIN_POINTS, MAX_POINTS, ZOOM_STEP, clampZoom, FIT_MODE,
   canUseQuant, canMeasureOnRevision, sourceWarning, takeoffPageId, measurementsForPage,
@@ -24,10 +26,12 @@ import MeasurementVoidModal from './MeasurementVoidModal'
 // ── The takeoff workspace (Quant 1A, ADR-51) ─────────────────────────────────
 //
 // Owns the selection (drawing → revision → page), the active tool, the
-// in-progress geometry and the zoom; mounts the drawing, revision, cost-code
-// and takeoff subscriptions; and routes every save through the hooks'
-// revision-guarded transactions. It never computes a quantity itself and never
-// touches a BOQ item, budget line or any financial record.
+// in-progress geometry and the zoom; mounts the drawing, revision, cost-code,
+// takeoff and (READ-ONLY, ADR-52) BOQ-item subscriptions; and routes every
+// save through the hooks' revision-guarded transactions. It never computes a
+// quantity itself and never WRITES a BOQ item, budget line or any financial
+// record: the BOQ items are read so a measurement can be LINKED to one, and
+// applying a measured quantity is the BOQ tab's explicit step.
 //
 // Interaction model (desktop and touch alike):
 //   · pick a tool, tap the sheet to add points; Finish (or Enter) completes a
@@ -37,6 +41,15 @@ import MeasurementVoidModal from './MeasurementVoidModal'
 //   · Geometry: drag a measurement's handles, then Save geometry
 // Everything that changes a record asks for confirmation inside a dialog and
 // reports success only after the transaction has committed.
+//
+// The selection is REMEMBERED per project in sessionStorage (lib/quantSelection.js):
+// the project layout remounts this workspace on every tab change and on
+// refresh, and without it the user was sent back to "Choose a drawing…". The
+// saved ids are only INTENT — the drawing must be in the loaded register and
+// not withdrawn, the revision must be in the loaded list — and nothing is
+// written back until those records have settled, so a slow or failed read can
+// never erase a good selection or restore a bad one. Measurability is decided
+// exactly as before, from the live records, never from what was saved.
 
 const TOOL = {
   SELECT:    'select',
@@ -48,12 +61,20 @@ const TOOL = {
 
 const isKindTool = (tool) => tool === TOOL.LENGTH || tool === TOOL.AREA || tool === TOOL.COUNT
 
+// The browser's per-tab storage, or null where there is none (lib/quantSelection.js
+// treats null as "remember nothing"). Read inside the initialiser and the
+// effect only — never during render.
+const browserStorage = () => (typeof window !== 'undefined' ? window.sessionStorage : null)
+
 export default function TakeoffWorkspace({ projectId }) {
   const { profile } = useProfile()
   const canWrite = canUseQuant(profile?.role)
 
   const { drawings, drawingsLoading, drawingsError } = useDrawings(projectId)
   const { costCodes } = useCostCodes()
+  // Read-only here: the picker in the editor and the BOQ column in the list.
+  // The hook's write functions are deliberately not destructured.
+  const { boqItems, boqItemsLoading, boqItemsError } = useBoqItems(projectId)
   const { takeoffPages, takeoffPagesLoading, takeoffPagesError, saveCalibration } = useTakeoffPages(projectId)
   const {
     takeoffMeasurements, takeoffMeasurementsLoading, takeoffMeasurementsError,
@@ -61,14 +82,39 @@ export default function TakeoffWorkspace({ projectId }) {
   } = useTakeoffMeasurements(projectId)
 
   // ── Selection ─────────────────────────────────────────────────────────────
-  const [drawingId, setDrawingId]   = useState(null)
-  const [revisionChoice, setRevisionChoice] = useState(null) // null → the current revision
-  const [page, setPage]             = useState(1)
-  const { revisions, revisionsLoading, revisionsError } = useDrawingRevisions(projectId, drawingId)
+  // Initial values come from the remembered selection for THIS project (null
+  // when nothing is remembered or the browser has no usable sessionStorage).
+  const [saved] = useState(() => readSelection(browserStorage(), projectId))
+  const [drawingChoice, setDrawingChoice] = useState(saved?.drawingId ?? null)
+  const [revisionChoice, setRevisionChoice] = useState(saved?.revisionId ?? null) // null → the current revision
+  const [pageChoice, setPageChoice] = useState(saved?.page ?? 1)
 
-  const drawing  = drawings.find(d => d.id === drawingId) ?? null
-  const revision = (revisionChoice && revisions.find(r => r.id === revisionChoice)) || currentRevision(drawing, revisions)
+  // A choice counts only once the records that vouch for it have loaded: the
+  // drawing must be in the register and not withdrawn (what the picker offers),
+  // the revision must be in the drawing's list. Until then nothing is selected
+  // and no revision subscription is opened for an unverified id.
+  const drawingsSettled = !drawingsLoading && !drawingsError
+  const drawing = selectableDrawing(drawings, drawingChoice, { settled: drawingsSettled })
+  const drawingId = drawing?.id ?? null
+  const { revisions, revisionsLoading, revisionsError } = useDrawingRevisions(projectId, drawingId)
+  const revisionsSettled = !!drawing && !revisionsLoading && !revisionsError
+  // An explicit choice counts only if the loaded list contains it (withdrawn and
+  // superseded revisions ARE listed — they stay inspectable; a deleted or
+  // foreign id is not). Inlined: the React Compiler could not preserve the
+  // callbacks' memoisation when this lookup went through an imported helper.
+  const chosen = (revisionsSettled && revisionChoice && revisions.find(r => r.id === revisionChoice)) || null
+  const revision = chosen || currentRevision(drawing, revisions)
   const revisionId = revision?.id ?? null
+  const page = effectivePage({ page: pageChoice, revisionId: revisionChoice, chosen, settled: revisionsSettled })
+
+  // Remember the EFFECTIVE selection — only once the records have settled, so
+  // a loading or failed register never overwrites what was remembered. A
+  // cleared drawing clears the entry. sessionStorage only; never Firestore.
+  useEffect(() => {
+    if (!drawingsSettled) return
+    if (drawingId && !revisionsSettled) return
+    writeSelection(browserStorage(), projectId, { drawingId, revisionId: chosen?.id ?? null, page })
+  }, [projectId, drawingsSettled, revisionsSettled, drawingId, chosen, page])
 
   // ── Sheet geometry (reported by the viewer) ───────────────────────────────
   const [sheet, setSheet] = useState({ geometry: null, numPages: 0 })
@@ -104,7 +150,6 @@ export default function TakeoffWorkspace({ projectId }) {
   // that genuinely has no loadable revision — or a superseded / withdrawn one —
   // gets the warning. Each value here derives from the CURRENT drawingId, so a
   // drawing switch can never carry a stale banner across.
-  const revisionsSettled = !!drawing && !revisionsLoading && !revisionsError
   const warning = revisionsSettled ? sourceWarning(revision, drawing) : null
   // `measurable` — new measurements, geometry edits, details, review and
   // re-calibration: the sheet must be LIVE (revision and drawing not withdrawn).
@@ -127,10 +172,10 @@ export default function TakeoffWorkspace({ projectId }) {
   // Changing sheet clears every draft — a half-drawn polygon must never be
   // saved onto a different page. Done in the change handlers (the only paths
   // that move the selection), never in an effect.
-  const changeDrawing = (id) => { resetDrafts(); setDrawingId(id); setRevisionChoice(null); setPage(1); setSelectedId(null); setNotice(null) }
-  const changeRevision = (id) => { resetDrafts(); setRevisionChoice(id); setPage(1); setSelectedId(null); setNotice(null) }
+  const changeDrawing = (id) => { resetDrafts(); setDrawingChoice(id); setRevisionChoice(null); setPageChoice(1); setSelectedId(null); setNotice(null) }
+  const changeRevision = (id) => { resetDrafts(); setRevisionChoice(id); setPageChoice(1); setSelectedId(null); setNotice(null) }
   const changePage = (n) => {
-    if (Number.isInteger(n) && n >= 1 && (!sheet.numPages || n <= sheet.numPages)) { resetDrafts(); setPage(n); setSelectedId(null) }
+    if (Number.isInteger(n) && n >= 1 && (!sheet.numPages || n <= sheet.numPages)) { resetDrafts(); setPageChoice(n); setSelectedId(null) }
   }
 
   const chooseTool = (next) => {
@@ -205,22 +250,22 @@ export default function TakeoffWorkspace({ projectId }) {
     } catch (err) { report(err, 'The calibration could not be saved.') }
   }
 
-  const handleSaveMeasurement = async ({ label, costCodeId, costCodeName }) => {
+  const handleSaveMeasurement = async ({ label, costCodeId, costCodeName, boqItemId }) => {
     try {
       await createMeasurement({
         identity, geometry,
-        draft: { kind: saveDialog.kind, points: saveDialog.points, label, costCodeId, costCodeName },
+        draft: { kind: saveDialog.kind, points: saveDialog.points, label, costCodeId, costCodeName, boqItemId: boqItemId ?? null },
         seenPage: takeoffPage,
       })
       setDraftPoints([])
-      setNotice({ tone: 'ok', text: `${KIND_LABELS[saveDialog.kind]} saved.` })
+      setNotice({ tone: 'ok', text: `${KIND_LABELS[saveDialog.kind]} saved${boqItemId ? ' and linked to the BOQ item' : ''}.` })
     } catch (err) { report(err, 'The measurement could not be saved.') }
   }
 
-  const handleSaveDetails = async ({ label, costCodeId, costCodeName }) => {
+  const handleSaveDetails = async ({ label, costCodeId, costCodeName, boqItemId }) => {
     try {
-      await updateMeasurement({ seen: detailsDialog, changes: { label, costCodeId, costCodeName } })
-      setNotice({ tone: 'ok', text: 'Measurement details saved.' })
+      const result = await updateMeasurement({ seen: detailsDialog, changes: { label, costCodeId, costCodeName, boqItemId: boqItemId ?? null } })
+      setNotice({ tone: 'ok', text: result?.linkCleared ? 'Measurement details saved. The BOQ item link was cleared because the cost code changed.' : 'Measurement details saved.' })
     } catch (err) { report(err, 'The details could not be saved.') }
   }
 
@@ -418,8 +463,8 @@ export default function TakeoffWorkspace({ projectId }) {
             ))}
           </div>
           <p className="m-0 mt-2 text-[11px] text-brand-muted">
-            Page totals are a read-time summary of this page only. Quant 1A writes no BOQ quantity — linking and
-            applying reviewed quantities to BOQ items is Quant 1B.
+            Page totals are a read-time summary of this page only. Quant writes no BOQ quantity by itself — link a
+            measurement to a BOQ item here, then review and apply the measured total on the BOQ tab.
           </p>
         </Card>
       )}
@@ -437,6 +482,9 @@ export default function TakeoffWorkspace({ projectId }) {
                 measurements={pageMeasurements}
                 page={takeoffPage}
                 costCodes={costCodes}
+                boqItems={boqItems}
+                boqItemsLoading={boqItemsLoading}
+                boqItemsError={boqItemsError}
                 selectedId={selectedId}
                 canEdit={measurable}
                 canVoid={voidable}
@@ -468,6 +516,9 @@ export default function TakeoffWorkspace({ projectId }) {
           measurement={{ kind: saveDialog.kind, points: saveDialog.points }}
           calibration={takeoffPage?.calibration ?? null}
           costCodes={costCodes}
+          boqItems={boqItems}
+          boqItemsLoading={boqItemsLoading}
+          boqItemsError={boqItemsError}
           onSave={handleSaveMeasurement}
           onClose={() => setSaveDialog(null)}
         />
@@ -478,6 +529,9 @@ export default function TakeoffWorkspace({ projectId }) {
           measurement={detailsDialog}
           calibration={takeoffPage?.calibration ?? null}
           costCodes={costCodes}
+          boqItems={boqItems}
+          boqItemsLoading={boqItemsLoading}
+          boqItemsError={boqItemsError}
           onSave={handleSaveDetails}
           onClose={() => setDetailsDialog(null)}
         />

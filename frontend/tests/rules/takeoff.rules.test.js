@@ -619,9 +619,12 @@ describe('MEASUREMENT CREATE — references, kinds, bounds, snapshot by kind', (
     }
   })
 
-  it('30. exact keys — no extra field (quantity, amount, boqItemId…) and no missing field', async () => {
+  // ADR-52 revision: `boqItemId` is now the ONE optional key (see the Quant 1B
+  // section below for its own contract); a quantity, amount or currency is
+  // still refused, as is a wrongly typed link.
+  it('30. exact keys — no extra field (quantity, amount, currency…), no mistyped boqItemId, and no missing field', async () => {
     const qs = ctx(USERS.qs)
-    for (const extra of [{ quantity: 5 }, { amount: 100 }, { boqItemId: 'b1' }, { currency: 'AUD' }]) {
+    for (const extra of [{ quantity: 5 }, { amount: 100 }, { currency: 'AUD' }, { boqItemId: 5 }, { boqItemId: '' }, { boqItemId: { id: 'b1' } }]) {
       await assertFails(setDoc(measRef(qs), measurementPayload(USERS.qs, extra)))
     }
     const { label: _omit, ...missing } = measurementPayload(USERS.qs) // eslint-disable-line no-unused-vars
@@ -811,6 +814,154 @@ describe('GUARDED TRANSACTIONS — lib/quantActions.js against the emulator', ()
     await expectKind(runSaveCalibration({ ...sub, pageRef: pageRef(sub.db), identity, geometry, draft: { ...draftCal, realDistance: 9 }, seenPage: { revision: 1 } }), QUANT_ERROR.PERMISSION)
     await testEnv.withSecurityRulesDisabled(async (c) => { stored = (await getDoc(doc(c.firestore(), pagesPath(), PAGE_ID))).data() })
     expect(stored.calibration.realDistance).toBe(1)
+  })
+})
+
+// ── Quant 1B — the BOQ link (ADR-52) ─────────────────────────────────────────
+//
+// `boqItemId` is OPTIONAL (hasOnly, not hasAll): a Quant 1A document without
+// the key stays valid for every write; a 1B document carries null or an id.
+// When the link is set — at create, or whenever the link OR the cost code
+// changes on an active edit — rules `get()` the target: same project path,
+// exists, active, same cost code. Unit compatibility and the aggregate are
+// client-only (Deferred Control 33) and are NOT checked here.
+
+describe('QUANT 1B — the BOQ link (ADR-52)', () => {
+  const BOQ_OK = 'boqOk'            // active, COST_CODE
+  const BOQ_VOID = 'boqVoid'        // void, COST_CODE
+  const BOQ_OTHER = 'boqOtherCode'  // active, a different cost code
+  const BOQ_ELSEWHERE = 'boqElsewhere' // active, COST_CODE — but in ANOTHER project of company A
+  const boqPath = (projectId = PROJECT_A) => `companies/${COMPANY_A}/projects/${projectId}/boqItems`
+  const boqDoc = (overrides = {}) => ({
+    itemNumber: '2.1', section: 'Substructure', description: 'Formwork to slab edge', unit: 'm', quantity: 10, rate: 85, amount: 850,
+    costCodeId: COST_CODE, costCodeName: '03-100 — Concrete', notes: '', status: 'active', currency: 'AUD', revision: 1,
+    attachments: [], externalRefs: {}, voidReason: '', voidedAt: null, voidedBy: null,
+    createdAt: Timestamp.now(), createdBy: USERS.qs.uid, updatedAt: Timestamp.now(), updatedBy: USERS.qs.uid, ...overrides,
+  })
+
+  beforeEach(async () => {
+    await seedPage()
+    await seed(async (db) => {
+      await setDoc(doc(db, boqPath(), BOQ_OK), boqDoc())
+      await setDoc(doc(db, boqPath(), BOQ_VOID), boqDoc({ status: 'void', voidReason: 'Measured in error', voidedAt: Timestamp.now(), voidedBy: USERS.qs.uid }))
+      await setDoc(doc(db, boqPath(), BOQ_OTHER), boqDoc({ costCodeId: COST_CODE_INACTIVE, costCodeName: '99 — Retired' }))
+      await setDoc(doc(db, `companies/${COMPANY_A}/projects`, 'projectB'), { name: 'Project B' })
+      await setDoc(doc(db, boqPath('projectB'), BOQ_ELSEWHERE), boqDoc())
+    })
+  })
+
+  it('57. CREATE — the 1A shape (no key), boqItemId null, and a VALID link all pass, for each role', async () => {
+    for (const user of WRITERS) {
+      await assertSucceeds(setDoc(measRef(ctx(user), `legacy-${user.uid}`), measurementPayload(user)))
+      await assertSucceeds(setDoc(measRef(ctx(user), `null-${user.uid}`), measurementPayload(user, { boqItemId: null })))
+      await assertSucceeds(setDoc(measRef(ctx(user), `linked-${user.uid}`), measurementPayload(user, { boqItemId: BOQ_OK })))
+    }
+    const stored = (await getDoc(measRef(ctx(USERS.qs), `linked-${USERS.qs.uid}`))).data()
+    expect(stored.boqItemId).toBe(BOQ_OK)
+  })
+
+  it('58. CREATE — a link to a MISSING, VOID, DIFFERENT-COST-CODE or OTHER-PROJECT item is refused; so is a blank or oversized id', async () => {
+    const qs = ctx(USERS.qs)
+    for (const bad of [BOQ_VOID, BOQ_OTHER, BOQ_ELSEWHERE, 'ghost', '', 'x'.repeat(129)]) {
+      await assertFails(setDoc(measRef(qs), measurementPayload(USERS.qs, { boqItemId: bad })))
+    }
+    // The same id in ANOTHER COMPANY's identical project path is unreachable too.
+    await seed(async (db) => { await setDoc(doc(db, `companies/${COMPANY_B}/projects/${PROJECT_A}/boqItems`, 'onlyInB'), boqDoc()) })
+    await assertFails(setDoc(measRef(qs), measurementPayload(USERS.qs, { boqItemId: 'onlyInB' })))
+  })
+
+  it('59. UPDATE — link, re-link and unlink are active edits with revision +1; a legacy document gains the key', async () => {
+    await seedMeasurement() // 1A shape: no boqItemId key at all
+    const qs = ctx(USERS.qs)
+    await assertSucceeds(updateDoc(measRef(qs), stamps(USERS.qs, 2, { boqItemId: BOQ_OK })))
+    expect((await getDoc(measRef(qs))).data().boqItemId).toBe(BOQ_OK)
+    // Re-link to another valid target is just another link.
+    await seed(async (db) => { await setDoc(doc(db, boqPath(), 'boqOk2'), boqDoc({ itemNumber: '2.2' })) })
+    await assertSucceeds(updateDoc(measRef(qs), stamps(USERS.qs, 3, { boqItemId: 'boqOk2' })))
+    await assertSucceeds(updateDoc(measRef(qs), stamps(USERS.qs, 4, { boqItemId: null })))
+    expect((await getDoc(measRef(qs))).data().boqItemId).toBeNull()
+    // Without the +1 the link write is a blind overwrite and fails like any other.
+    await assertFails(updateDoc(measRef(qs), stamps(USERS.qs, 4, { boqItemId: BOQ_OK })))
+  })
+
+  it('60. UPDATE — linking to a void, other-code, other-project or missing item is refused; a label edit still passes when the EXISTING link has since gone void', async () => {
+    await seedMeasurement({ boqItemId: BOQ_OK })
+    const qs = ctx(USERS.qs)
+    for (const bad of [BOQ_VOID, BOQ_OTHER, BOQ_ELSEWHERE, 'ghost', '', 7]) {
+      await assertFails(updateDoc(measRef(qs), stamps(USERS.qs, 2, { boqItemId: bad })))
+    }
+    // The target is voided AFTER linking: the stored link is history, and an
+    // edit that does not touch the link or the cost code is not punished.
+    await seed(async (db) => { await updateDoc(doc(db, boqPath(), BOQ_OK), { status: 'void', voidReason: 'Superseded', voidedAt: Timestamp.now(), voidedBy: USERS.pm.uid }) })
+    await assertSucceeds(updateDoc(measRef(qs), stamps(USERS.qs, 2, { label: 'renamed while the item is void' })))
+    await assertSucceeds(updateDoc(measRef(qs), stamps(USERS.qs, 3, { points: [{ x: 0, y: 0 }, { x: 10, y: 10 }], calibration: SNAP })))
+    // …but MOVING the link re-verifies the new target (a void one is refused), and clearing it passes.
+    await assertFails(updateDoc(measRef(qs), stamps(USERS.qs, 4, { boqItemId: BOQ_VOID })))
+    await assertSucceeds(updateDoc(measRef(qs), stamps(USERS.qs, 4, { boqItemId: null })))
+  })
+
+  it('61. UPDATE — a cost-code change on a LINKED measurement is refused unless the link is cleared or re-pointed in the SAME write', async () => {
+    await seedMeasurement({ boqItemId: BOQ_OK })
+    const qs = ctx(USERS.qs)
+    const recode = { costCodeId: COST_CODE_INACTIVE, costCodeName: '99 — Retired' }
+    await assertFails(updateDoc(measRef(qs), stamps(USERS.qs, 2, recode)))
+    await assertFails(updateDoc(measRef(qs), stamps(USERS.qs, 2, { ...recode, boqItemId: BOQ_OK })))
+    // Re-pointed to an item on the NEW code in the same write: passes.
+    await assertSucceeds(updateDoc(measRef(qs), stamps(USERS.qs, 2, { ...recode, boqItemId: BOQ_OTHER })))
+    await seedMeasurement({ boqItemId: BOQ_OK })
+    await assertSucceeds(updateDoc(measRef(qs), stamps(USERS.qs, 2, { ...recode, boqItemId: null })))
+    // An UNLINKED measurement re-codes freely, as in 1A.
+    await seedMeasurement()
+    await assertSucceeds(updateDoc(measRef(qs), stamps(USERS.qs, 2, recode)))
+  })
+
+  it('62. VOID keeps the link as history and may not change it; the denied roles still cannot link', async () => {
+    await seedMeasurement({ boqItemId: BOQ_OK })
+    const qs = ctx(USERS.qs)
+    await assertFails(updateDoc(measRef(qs), voidWrite(USERS.qs, 2, 'done', { boqItemId: null })))
+    await assertSucceeds(updateDoc(measRef(qs), voidWrite(USERS.qs, 2)))
+    expect((await getDoc(measRef(qs))).data()).toMatchObject({ status: 'void', boqItemId: BOQ_OK })
+    for (const user of DENIED) {
+      await assertFails(setDoc(measRef(ctx(user), 'denied'), measurementPayload(user, { boqItemId: BOQ_OK })))
+    }
+    await assertFails(setDoc(measRef(ctx(USERS.other), 'other'), measurementPayload(USERS.other, { boqItemId: BOQ_OK })))
+  })
+
+  it('63. GUARDED TRANSACTIONS — create writes boqItemId null by default or the chosen link; re-coding through runUpdateMeasurement clears a link in the same commit', async () => {
+    const identity = { drawingId: DRAWING_A, revisionId: REV_CURRENT, page: 1 }
+    const qs = { db: ctx(USERS.qs), uid: USERS.qs.uid, runTransaction, serverTimestamp }
+    const page = (await getDoc(pageRef(qs.db))).data()
+    const base = { ...qs, pageRef: pageRef(qs.db), identity, seenPage: page }
+    const draft = { kind: 'length', points: [{ x: 0, y: 0 }, { x: 300, y: 400 }], label: 'L', costCodeId: COST_CODE, costCodeName: 'C' }
+
+    await runCreateMeasurement({ ...base, measurementRef: measRef(qs.db, 't1'), draft })
+    expect((await getDoc(measRef(qs.db, 't1'))).data().boqItemId).toBeNull()
+    await runCreateMeasurement({ ...base, measurementRef: measRef(qs.db, 't2'), draft: { ...draft, boqItemId: BOQ_OK } })
+    expect((await getDoc(measRef(qs.db, 't2'))).data().boqItemId).toBe(BOQ_OK)
+
+    // A link to a void item is refused by RULES → the transaction reports PERMISSION and writes nothing.
+    let caught = null
+    try { await runCreateMeasurement({ ...base, measurementRef: measRef(qs.db, 't3'), draft: { ...draft, boqItemId: BOQ_VOID } }) } catch (err) { caught = err }
+    expect(caught).toBeInstanceOf(QuantError)
+    expect(caught.kind).toBe(QUANT_ERROR.PERMISSION)
+    expect((await getDoc(measRef(qs.db, 't3'))).exists()).toBe(false)
+
+    // Re-code without a link decision: the link is cleared in the same write and reported.
+    const seen = { id: 't2', ...(await getDoc(measRef(qs.db, 't2'))).data() }
+    const out = await runUpdateMeasurement({ ...qs, ref: measRef(qs.db, 't2'), seen, changes: { costCodeId: COST_CODE_INACTIVE, costCodeName: '99 — Retired' } })
+    expect(out).toEqual({ kind: null, revision: 2, linkCleared: true })
+    expect((await getDoc(measRef(qs.db, 't2'))).data()).toMatchObject({ costCodeId: COST_CODE_INACTIVE, boqItemId: null, revision: 2 })
+
+    // Explicit unlink / link through the same action.
+    const seen2 = { id: 't2', ...(await getDoc(measRef(qs.db, 't2'))).data() }
+    const out2 = await runUpdateMeasurement({ ...qs, ref: measRef(qs.db, 't2'), seen: seen2, changes: { boqItemId: BOQ_OTHER } })
+    expect(out2).toEqual({ kind: null, revision: 3, linkCleared: false })
+    expect((await getDoc(measRef(qs.db, 't2'))).data().boqItemId).toBe(BOQ_OTHER)
+  })
+
+  it('64. NOT ENFORCED (DC33) — unit compatibility: a LENGTH links to an item measured in m³, because rules cannot normalise units', async () => {
+    await seed(async (db) => { await setDoc(doc(db, boqPath(), 'boqM3'), boqDoc({ unit: 'm3' })) })
+    await assertSucceeds(setDoc(measRef(ctx(USERS.qs)), measurementPayload(USERS.qs, { boqItemId: 'boqM3' })))
   })
 })
 

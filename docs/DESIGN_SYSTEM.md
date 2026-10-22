@@ -158,7 +158,13 @@ panel: `bg-brand-surface`, `border-brand-border`, `rounded-xl`, `max-h-[90vh]
 overflow-y-auto` for tall forms; header row with title + 44px `×` close button;
 footer actions right-aligned above a top border (`ghost` Cancel + primary
 submit); labels are 11px bold uppercase muted; required fields marked with a red
-`*`; inline error text in `text-brand-red`.
+`*`; inline error text in `text-brand-red`. Form dialogs `autoFocus` their first
+field. A dialog with no field (the Quant 1B *Apply Quant measurements* dialog)
+gives its panel `tabIndex={-1}` and focuses it on open, returns focus to the
+opening control on close, closes on Escape (not while saving) and contains
+Tab / Shift+Tab with `lib/dialogFocus.js` — a pure helper (`tabbableWithin`,
+`tabTarget`) rather than a focus-trap dependency; reuse it for any new dialog
+instead of adding one.
 
 **Tables** — inside `<Card padding={false}>`; header row `bg-brand-card` with
 11px bold uppercase muted headers; body rows `border-b border-brand-border

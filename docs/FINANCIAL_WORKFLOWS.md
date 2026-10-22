@@ -1327,7 +1327,7 @@ estimate, and the **BOQ → Budget transfer** into budget lines. The cost code
 remains the join from measurement all the way to budget. Manual quantity entry
 precedes any AI takeoff.
 
-### Quant™ 1A — measurement provenance *(implemented — not yet deployed; ADR-51)*
+### Quant™ 1A — measurement provenance *(live in production — October 2026; ADR-51)*
 
 Quant™ 1A is the **measurement half** of *Drawing → Quantity*. It records, per
 drawing revision and page, a metric calibration (`takeoffPages`) and the
@@ -1344,12 +1344,62 @@ Lines, and touches no Committed, Actual, Invoiced, Forecast, Margin or Cash
 Flow figure. Page totals shown on the Quant tab are a read-time summary of
 that page only.
 
-**The boundary to the BOQ is Quant 1B** (separate approval): linking
-measurements to BOQ items, checking unit compatibility between a measurement's
-unit and the item's `unit`, aggregating reviewed quantities per item, and an
-**explicit, confirmed** write of that aggregate into the item's `quantity`
-through the existing BOQ hook — the only path by which a measurement will ever
-reach a BOQ line. Even then the BOQ keeps feeding no financial figure (ADR-32).
+### Quant™ 1B — measurement → BOQ quantity *(implemented — not yet deployed; ADR-52)*
+
+Quant 1B is the **only path by which a measurement reaches a BOQ line**, and it
+is a human step, never a sync:
+
+1. **Link.** A measurement may carry `boqItemId` — one ACTIVE BOQ item on the
+   SAME cost code (rules `get()` the target). The link is an identity. Writing
+   it changes nothing on the BOQ item.
+2. **Unit compatibility** (`lib/quantBoq.js`, client-side, factor 1 only): a
+   length applies to `m`/`lm`/metre(s)/linear metre(s); an area to
+   `m2`/`m²`/`sqm`/square metre(s); a count to `no`/`nr`/`number`/`ea`/`each`/
+   `count` — judged against the **BOQ item's own `unit`**. `m³`, `mm`, `cm`,
+   `kg`, `t`, `hr`, lump sums, `%`, blanks and unknowns are refused; no
+   dimension is crossed; nothing is scaled.
+3. **Aggregate** (`aggregateLinkedQuantity`, read-time): every ACTIVE linked
+   measurement must be readable, on the item's cost code, of a compatible
+   kind, on a drawing and takeoff page that exist, on the drawing's **current
+   revision**, calibrated where scale is needed, **not flagged needs review**,
+   and derivable. Eligible values are summed **unrounded** and rounded **once**
+   with `roundQuantity` (3 dp). **One blocked measurement means no total** —
+   nothing is omitted silently. Voided measurements are history, never summed.
+   No quantity ledger is stored.
+4. **Preview.** Existing → proposed `quantity` and the difference; for a priced
+   item, existing → proposed `amount = boqLineAmount(quantity, rate)` at the
+   **unchanged rate** — the same function the BOQ editor uses; an unpriced item
+   shows that **no monetary amount is calculated**.
+5. **Apply** (`lib/boqActions.js → runApplyBoqQuantity`): read the server item;
+   require it active; refuse **STALE** when it differs from the copy the user
+   reviewed (equal `updatedAt`, or equal guarded content when a legacy record
+   has no stamp); refuse an unchanged quantity (apply **sets**, never adds);
+   derive `amount` from the **server** rate; stage the project currency ratchet
+   when priced; write `quantity`, `amount`, `quantApplied {at, by, quantity,
+   measurementCount, evidence}` and stamps. Nothing else is written. `evidence`
+   is a deterministic fingerprint of the eligible measurements (ids, revisions,
+   geometry, calibration, source state) — so a later read can tell whether the
+   SAME evidence still stands; a total and a count cannot (5 + 7 and 4 + 8 are
+   both 12 from 2).
+
+**What changes financially: the item's `amount` and therefore the BOQ priced
+total and the read-time BOQ-vs-budget rows — exactly what a manual quantity
+edit changes, computed the same way.** Budgeted, Committed, Actual, Invoiced,
+Forecast, Margin and Cash Flow are untouched; no budget line, forecast line,
+PO, claim, invoice, payment, variation, cash-flow line or baseline is written;
+the BOQ-to-Budget separation of ADR-32 stands. `quantApplied` records the
+**latest** explicit application and is shown beside the item's current state
+with a derived status — *matches* only when the item still holds the applied
+quantity AND the fingerprint recomputed from today's measurements equals the
+stored one; *outdated* when either moved; *cannot verify* for a record without
+a fingerprint; *cannot be assessed* while any source loads or fails. It is not
+a certification and never means the item is still in step with the drawings.
+
+The manual BOQ editor's save goes through the same version guard
+(`runUpdateBoqItem`), so a stale editor can no longer overwrite a newer save.
+Because the BOQ `revision` is frozen at 1, this guard — like unit
+compatibility and the aggregate — is **client-enforced**
+(SECURITY.md → Deferred Control 33).
 
 ### Tender and Award *(implemented — foundation; see the Tenders section above)*
 

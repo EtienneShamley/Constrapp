@@ -22,6 +22,7 @@ import {
   QuantError, runEnsurePage, runSaveCalibration, runCreateMeasurement, runUpdateMeasurement, runVoidMeasurement,
 } from '../../src/lib/quantActions.js'
 import { openPdf, pageGeometry, canonicalToRendered, renderedToCanonical, canonicalToPdfUserSpace, renderPage, isRenderCancelled } from '../../src/lib/pdfRender.js'
+import { boqLineAmount } from '../../src/lib/boq.js'
 
 // ── Constrapp Quant™ 1A — unit suite (ADR-51) ────────────────────────────────
 //
@@ -893,7 +894,8 @@ describe('project switching — keyed subscriptions', () => {
     // Changing the sheet inside a project clears every draft in the change handlers.
     expect(workspace).toMatch(/const changeDrawing = \(id\) => \{ resetDrafts\(\)/)
     expect(workspace).toMatch(/const changeRevision = \(id\) => \{ resetDrafts\(\)/)
-    expect(workspace).toMatch(/resetDrafts\(\); setPage\(n\)/)
+    // Quant 1B correction renamed the setters (drawingChoice / pageChoice — the CHOICE, validated before use).
+    expect(workspace).toMatch(/resetDrafts\(\); setPageChoice\(n\)/)
   })
 
   it('a failed takeoff read is UNAVAILABLE in the UI — never "not calibrated" or "no measurements"', () => {
@@ -967,7 +969,7 @@ describe('superseded and withdrawn revisions', () => {
     // keyed on the new drawing.
     const workspace = stripComments(read('pages/project/quant/TakeoffWorkspace.jsx'))
     expect(workspace).toContain('useDrawingRevisions(projectId, drawingId)')
-    expect(workspace).toMatch(/const changeDrawing = \(id\) => \{ resetDrafts\(\); setDrawingId\(id\); setRevisionChoice\(null\)/)
+    expect(workspace).toMatch(/const changeDrawing = \(id\) => \{ resetDrafts\(\); setDrawingChoice\(id\); setRevisionChoice\(null\)/)
     const hook = stripComments(read('hooks/useDrawingRevisions.jsx'))
     expect(hook).toContain('const key = `${companyId}/${projectId}/${drawingId}`')
   })
@@ -1060,6 +1062,31 @@ describe('permission-gated subscriptions', () => {
     expect(list).toContain('{canEdit && <button type="button" className={actionCls} onClick={() => onEditDetails(m)}>Details</button>}')
     expect(list).toContain('{canVoid && <button type="button" className={`${actionCls} text-brand-red`} onClick={() => onVoid(m)}>Void</button>}')
   })
+
+  it('mobile cards use the compact action group: review indicator beside Mark reviewed, equal 44px cells for the rest, table row unchanged', () => {
+    const list = stripComments(read('pages/project/quant/MeasurementList.jsx'))
+    // Both class variants keep the 44px target and a visible focus state.
+    for (const name of ['rowActionCls', 'compactActionCls']) {
+      const m = list.match(new RegExp(`const ${name} = '([^']+)'`))
+      expect(m, name).not.toBeNull()
+      expect(m[1]).toContain('min-h-[44px]')
+      expect(m[1]).toContain('focus-visible:outline-2 focus-visible:outline-brand-accent')
+    }
+    expect(list).toContain('const actionCls = compact ? compactActionCls : rowActionCls')
+    expect(list).toMatch(/compactActionCls = '[^']*\bw-full\b[^']*\bjustify-center\b[^']*\bwhitespace-nowrap\b/)
+    // The compact group: the indicator (Needs review badge) and Mark reviewed share a line; the rest are equal cells.
+    expect(list).toContain('role="group" aria-label={`Actions for ${m.label}`}')
+    expect(list).toContain('{indicator}')
+    expect(list).toContain('<div className="grid grid-flow-col auto-cols-fr gap-1 border-t border-brand-border pt-1">')
+    expect(list.match(/>Mark reviewed<\/button>/g)).toHaveLength(1)
+    expect(list.match(/>Show<\/button>/g)).toHaveLength(2)
+    expect(list.match(/>Void<\/button>/g)).toHaveLength(2)
+    // The mobile card passes the badge as the indicator; the table does not use compact.
+    expect(list).toContain('indicator={<Badge label={CALIBRATION_REVIEW_LABELS[review]} variant={REVIEW_BADGE[review]} sm />}')
+    expect(list.match(/<Actions\s+compact/g)).toHaveLength(1)
+    expect(list.match(/<Actions\b/g)).toHaveLength(2)
+    expect(list).toContain('<div className="flex flex-wrap gap-1">')
+  })
 })
 
 // ── 19 & 20. No financial writes, no BOQ quantity changes ───────────────────
@@ -1076,11 +1103,25 @@ describe('no financial write and no BOQ quantity change (the Quant 1B boundary)'
   const quantDir = fileURLToPath(new URL('../../src/pages/project/quant/', import.meta.url))
   for (const f of readdirSync(quantDir)) sources[`pages/project/quant/${f}`] = read(`pages/project/quant/${f}`)
 
-  const FORBIDDEN = /updateBoqItem|createBoqItem|voidBoqItem|useBoqItems|useBudgetLines|useForecastLines|useCashFlowLines|useProjectCommercial|usePurchaseOrders|useProgressClaims|useSupplierInvoices|useVariations|stageProjectCurrencyLock|budgetLines|forecastLines|cashFlowLines|'boqItems'|formatCurrency|GST_RATE|roundMoney|toCents\(/
+  // ADR-52 revision: the workspace may READ BOQ items (`useBoqItems`, so a
+  // measurement can be linked and the list can name the item), but no Quant
+  // file may call a BOQ WRITE (`updateBoqItem`, `createBoqItem`, `voidBoqItem`,
+  // `applyBoqQuantity`), any other financial hook, the currency lock or money
+  // arithmetic. The BOQ write lives in lib/boqActions.js behind the BOQ tab.
+  const FORBIDDEN = /updateBoqItem|createBoqItem|voidBoqItem|applyBoqQuantity|runApplyBoqQuantity|runUpdateBoqItem|boqActions|useBudgetLines|useForecastLines|useCashFlowLines|useProjectCommercial|usePurchaseOrders|useProgressClaims|useSupplierInvoices|useVariations|stageProjectCurrencyLock|budgetLines|forecastLines|cashFlowLines|'boqItems'|formatCurrency|GST_RATE|roundMoney|toCents\(/
 
   it('no Quant file imports or calls a financial hook, a BOQ write, a currency lock or money arithmetic', () => {
     for (const [name, src] of Object.entries(sources)) {
       expect(stripComments(src), name).not.toMatch(FORBIDDEN)
+    }
+  })
+
+  it('ONLY the workspace reads BOQ items, read-only: the three data fields are destructured and no write function is', () => {
+    const workspace = stripComments(sources['pages/project/quant/TakeoffWorkspace.jsx'])
+    expect(workspace).toContain('const { boqItems, boqItemsLoading, boqItemsError } = useBoqItems(projectId)')
+    for (const [name, src] of Object.entries(sources)) {
+      if (name === 'pages/project/quant/TakeoffWorkspace.jsx') continue
+      expect(stripComments(src), name).not.toMatch(/useBoqItems/)
     }
   })
 
@@ -1099,19 +1140,35 @@ describe('no financial write and no BOQ quantity change (the Quant 1B boundary)'
     expect(src).not.toMatch(/amount|rate\b|budget/i)
   })
 
-  it('the workspace shows cost-code names read-only and states that BOQ linking is Quant 1B', () => {
+  it('the workspace shows cost-code names read-only and states that applying to the BOQ is a later, explicit step (ADR-52)', () => {
     const editor = stripComments(sources['pages/project/quant/MeasurementEditorModal.jsx'])
     expect(editor).toContain('costCodeDisplayName(cc)')
-    expect(editor).toMatch(/later, explicit step/)
+    expect(editor).toMatch(/later, explicit step on the BOQ tab/)
+    // The picker offers only linkable items and never a money figure.
+    expect(editor).toContain("linkableBoqItems(boqItems, { kind: measurement?.kind, costCodeId })")
+    expect(editor).not.toMatch(/\brate\b|\bamount\b|formatCurrency/i)
     const workspace = stripComments(sources['pages/project/quant/TakeoffWorkspace.jsx'])
-    expect(workspace).toMatch(/Quant 1A writes no BOQ quantity/)
+    expect(workspace).toMatch(/Quant writes no BOQ quantity by itself/)
   })
 
-  it('a measurement document has no quantity, amount, unit-price or BOQ field in its schema', () => {
+  // ADR-52: exactly ONE key joined the measurement schema — the optional
+  // `boqItemId` link (hasOnly, not hasAll). Still no quantity, amount, rate,
+  // budget or currency field: a measurement never stores a number of its own.
+  it('a measurement document has no quantity, amount, unit-price, budget or currency field in its schema; boqItemId is optional', () => {
     const rules = readRoot('firestore.rules')
     const meas = rules.slice(rules.indexOf('match /companies/{companyId}/projects/{projectId}/takeoffMeasurements/'), rules.indexOf('// Project counters — PER-PROJECT'))
-    const keys = meas.slice(meas.indexOf('function exactKeys'), meas.indexOf('function sourceValid'))
-    expect(keys).not.toMatch(/quantity|amount|rate|boqItemId|budget|currency/)
+    const keys = meas.slice(meas.indexOf('function exactKeys'), meas.indexOf('function linkValid'))
+    expect(keys).not.toMatch(/quantity|amount|rate|budget|currency/)
+    const [hasOnly, hasAll] = keys.split('hasAll(')
+    expect(hasOnly).toContain("'boqItemId'")
+    expect(hasAll).not.toContain("'boqItemId'")
+    // The link target is verified by rules: same project path, exists, active, same cost code.
+    const link = meas.slice(meas.indexOf('function linkValid'), meas.indexOf('function sourceLive'))
+    expect(link).toContain('/projects/$(projectId)/boqItems/$(d.boqItemId))')
+    expect(link).toContain(".data.status == 'active'")
+    expect(link).toContain('.data.costCodeId == d.costCodeId')
+    // Re-verified only when the link or the cost code moves.
+    expect(meas).toContain("(!changedKeys().hasAny(['boqItemId', 'costCodeId']) || linkValid(request.resource.data))")
   })
 })
 
@@ -1215,6 +1272,87 @@ describe('measurement draft validation', () => {
 })
 
 
+// ── The remembered selection (Quant 1B correction; lib/quantSelection.js) ───
+
+describe('the workspace remembers its sheet per project — sessionStorage only, validated against loaded records', () => {
+  const workspace = stripComments(read('pages/project/quant/TakeoffWorkspace.jsx'))
+  const lib = stripComments(read('lib/quantSelection.js'))
+
+  it('the ROOT CAUSE is the remount: the project layout keys its Outlet by project, so every tab change unmounts the workspace', () => {
+    const layout = stripComments(read('layouts/ProjectDetailLayout.jsx'))
+    expect(layout).toContain('<Outlet key={projectId}')
+  })
+
+  it('the initial choice comes from the remembered selection for THIS project, read once, from sessionStorage', () => {
+    expect(workspace).toContain("import { readSelection, writeSelection, selectableDrawing, effectivePage } from '../../../lib/quantSelection'")
+    expect(workspace).toContain("const browserStorage = () => (typeof window !== 'undefined' ? window.sessionStorage : null)")
+    expect(workspace).toContain('const [saved] = useState(() => readSelection(browserStorage(), projectId))')
+    expect(workspace).toContain('const [drawingChoice, setDrawingChoice] = useState(saved?.drawingId ?? null)')
+    expect(workspace).toContain('const [revisionChoice, setRevisionChoice] = useState(saved?.revisionId ?? null)')
+    expect(workspace).toContain('const [pageChoice, setPageChoice] = useState(saved?.page ?? 1)')
+    expect(workspace).not.toMatch(/localStorage/)
+    expect(lib).not.toMatch(/localStorage|firebase|firestore/i)
+  })
+
+  it('a saved id is VALIDATED against the loaded records before anything uses it, and the revision subscription opens only for a validated drawing', () => {
+    expect(workspace).toContain('const drawingsSettled = !drawingsLoading && !drawingsError')
+    expect(workspace).toContain('const drawing = selectableDrawing(drawings, drawingChoice, { settled: drawingsSettled })')
+    expect(workspace).toContain("const drawingId = drawing?.id ?? null")
+    expect(workspace).toContain('useDrawingRevisions(projectId, drawingId)')
+    expect(workspace).toContain('const chosen = (revisionsSettled && revisionChoice && revisions.find(r => r.id === revisionChoice)) || null')
+    expect(workspace).toContain('const revision = chosen || currentRevision(drawing, revisions)')
+    expect(workspace).toContain('const page = effectivePage({ page: pageChoice, revisionId: revisionChoice, chosen, settled: revisionsSettled })')
+    // The picker and the identity see only the VALIDATED id.
+    expect(workspace).toContain('drawingId={drawingId} onDrawingChange={changeDrawing}')
+    expect(workspace).toContain('const identity = drawingId && revisionId ? { drawingId, revisionId, page } : null')
+    // The picker only offers non-withdrawn drawings; the lib restores on the same rule.
+    expect(lib).toContain('return d && !isWithdrawnDrawing(d) ? d : null')
+  })
+
+  it('the EFFECTIVE selection is written back only once the records have settled — a loading or failed read never erases a remembered sheet', () => {
+    expect(workspace).toMatch(/useEffect\(\(\) => \{\s*if \(!drawingsSettled\) return\s*if \(drawingId && !revisionsSettled\) return\s*writeSelection\(browserStorage\(\), projectId, \{ drawingId, revisionId: chosen\?\.id \?\? null, page \}\)\s*\}, \[projectId, drawingsSettled, revisionsSettled, drawingId, chosen, page\]\)/)
+  })
+
+  it('measurability is still decided from the LIVE records — nothing restored bypasses the sheet protections', () => {
+    expect(workspace).toContain('const sheetLive = canMeasureOnRevision(revision, drawing)')
+    expect(workspace).toContain('const measurable = !!identity && !!geometry && sheetLive && canWrite')
+    expect(workspace).not.toMatch(/saved\?\.(drawingId|revisionId|page)[^\n]*(measurable|sheetLive|canMeasure)/)
+    // The change handlers still reset drafts and the page — restore never calls them.
+    expect(workspace).toContain('const changeDrawing = (id) => { resetDrafts(); setDrawingChoice(id); setRevisionChoice(null); setPageChoice(1); setSelectedId(null); setNotice(null) }')
+    expect(workspace).toContain('const changeRevision = (id) => { resetDrafts(); setRevisionChoice(id); setPageChoice(1); setSelectedId(null); setNotice(null) }')
+  })
+})
+
+// ── Mobile action availability (MeasurementList) ─────────────────────────────
+
+describe('which actions a measurement card offers — Show always, Details/Geometry while the sheet is live, Mark reviewed only when needed, Void while the role may write', () => {
+  const list = stripComments(read('pages/project/quant/MeasurementList.jsx'))
+  const workspace = stripComments(read('pages/project/quant/TakeoffWorkspace.jsx'))
+
+  it('the gates are exactly canEdit (Details, Geometry), canEdit && needsReview (Mark reviewed), canVoid (Void) — in BOTH layouts', () => {
+    expect(list.match(/\{canEdit && <button type="button" className=\{actionCls\} onClick=\{\(\) => onEditDetails\(m\)\}>Details<\/button>\}/g)).toHaveLength(2)
+    expect(list.match(/\{canEdit && <button type="button" className=\{actionCls\} onClick=\{\(\) => onEditGeometry\(m\)\}>Geometry<\/button>\}/g)).toHaveLength(2)
+    expect(list).toContain("const review = canEdit && needsReview && <button type=\"button\" className={actionCls} onClick={() => onReview(m)}>Mark reviewed</button>")
+    expect(list.match(/<button type="button" className=\{actionCls\} onClick=\{\(\) => onSelect\(m\)\}>Show<\/button>/g)).toHaveLength(2)
+    expect(list.match(/\{canVoid && <button type="button" className=\{`\$\{actionCls\} text-brand-red`\} onClick=\{\(\) => onVoid\(m\)\}>Void<\/button>\}/g)).toHaveLength(2)
+  })
+
+  it('canEdit is the workspace\'s `measurable` — so a WITHDRAWN sheet, a sheet still loading its geometry, or a read-only role legitimately shows Show and Void only', () => {
+    expect(workspace).toContain('canEdit={measurable}')
+    expect(workspace).toContain('canVoid={voidable}')
+    expect(workspace).toContain('const measurable = !!identity && !!geometry && sheetLive && canWrite')
+    expect(workspace).toContain('const voidable = !!identity && canWrite && !takeoffPagesError && !takeoffMeasurementsError')
+  })
+
+  it('the compact group never clips or hides a control: no overflow-hidden, equal visible cells, labels never broken', () => {
+    const group = list.match(/<div className="grid grid-flow-col auto-cols-fr gap-1 border-t border-brand-border pt-1">[\s\S]*?<\/div>/)
+    expect(group).not.toBeNull()
+    expect(group[0]).not.toMatch(/overflow-hidden|hidden\b|sr-only|truncate/)
+    expect(list).toMatch(/compactActionCls = '[^']*\bwhitespace-nowrap\b/)
+    expect(list).not.toMatch(/compactActionCls = '[^']*\b(hidden|truncate|overflow-hidden)\b/)
+  })
+})
+
 // ── The local acceptance environment (npm run test:quant) ───────────────────
 
 describe('local acceptance environment — both emulators, never production', () => {
@@ -1249,14 +1387,42 @@ describe('local acceptance environment — both emulators, never production', ()
     expect(seed).toContain('context.storage(`gs://${BUCKET}`)')
   })
 
-  it('the seed uses the committed fixture, writes drawings + revisions + bytes + takeoff history, and no BOQ item', () => {
+  // ADR-52: the seed now ALSO writes three BOQ items (a matching m² item, an
+  // incompatible m³ item, an unpriced count item) so linking and applying can
+  // be exercised — still no budget line, and no other financial collection.
+  it('the seed uses the committed fixture, writes drawings + revisions + bytes + takeoff history + the three Quant 1B BOQ items, and no budget line', () => {
     expect(seed).toContain("tests/unit/fixtures/quant-two-page.pdf")
     for (const key of ['a101P1', 'a101A', 'a101B', 'a201A']) expect(seed).toContain(key)
     expect(seed).toContain("status: 'withdrawn'")
     expect(seed).toContain("status: 'superseded'")
     expect(seed).toContain('historyMeasurement(')
-    expect(seed).not.toMatch(/boqItems|budgetLines/)
+    for (const key of ['formworkM2', 'concreteM3', 'doorsCount']) expect(seed).toContain(key)
+    expect(seed).not.toMatch(/budgetLines|forecastLines|purchaseOrders|progressClaims|supplierInvoices|cashFlowLines/)
     expect(seed).toMatch(/4000 mm/)
+  })
+
+  // The deterministic Quant 1B case: A-201 Rev A calibrated, one ACTIVE area
+  // (the 12 m² rectangle) linked to BOQ 2.1 (qty 10 m² @ $85.00).
+  it('the seed writes the ready-made Quant 1B case — A-201 calibrated, a 12 m² area linked to 2.1 — and every restart resets to it', () => {
+    expect(seed).toContain("a201Area:   'quant-seed-m-a201-area'")
+    expect(seed).toContain('seedPage(a201.id, R.a201A),')
+    expect(seed).toMatch(/seedMeasurement\(SEED\.measurements\.a201Area, \{\s*drawingId: a201\.id, revisionId: R\.a201A, kind: 'area', points: A201_RECT,\s*label: '[^']+', boqItemId: B\.formworkM2,/)
+    expect(seed).toContain("export const A201_RECT = [{ x: 200, y: 150 }, { x: 600, y: 150 }, { x: 600, y: 450 }, { x: 200, y: 450 }]")
+    expect(seed).toContain("const CAL_PNG = { pointA: { x: 200, y: 450 }, pointB: { x: 600, y: 450 }, pageDistance: 400, realDistance: 4000, unit: 'mm' }")
+    expect(seed).toContain("const SNAP_PNG = { revision: 1, pageDistance: 400, realDistance: 4000, unit: 'mm' }")
+    // The same rectangle under the same calibration, through the app's own arithmetic: 4 m × 3 m = 12 m².
+    const rect = [{ x: 200, y: 150 }, { x: 600, y: 150 }, { x: 600, y: 450 }, { x: 200, y: 450 }]
+    const cal = buildCalibration({ pointA: { x: 200, y: 450 }, pointB: { x: 600, y: 450 }, realDistance: 4000, unit: 'mm' })
+    expect(measurementQuantity({ kind: 'area', points: rect }, cal)).toMatchObject({ value: 12, unit: 'm²', state: 'ok' })
+    expect(boqLineAmount(12, 85)).toBe(1020)
+    expect(boqLineAmount(10, 85)).toBe(850)
+    // The 2.1 item is seeded with the quantity and rate the dialog must show as "existing".
+    expect(seed).toMatch(/itemNumber: '2\.1'[\s\S]*?quantity: 10, rate: 85, amount: 850,/)
+    // Shape: a seeded measurement carries every key quantActions writes, including the link, so the app READS it as linked.
+    expect(seed).toMatch(/takeoffPageId: pageId\(drawingId, revisionId, 1\), drawingId, revisionId, page: 1,\s*kind, points, label,\s*costCodeId: CC\.formwork, costCodeName: costCodeName\('04-100', 'Formwork'\),\s*calibration: SNAP_PNG, status: 'active', voidReason: '', voidedAt: null, voidedBy: null,\s*boqItemId,/)
+    // Restart semantics: exec mode, in memory, no import / export flags anywhere in the launcher.
+    expect(launcher).not.toMatch(/--import|--export-on-exit/)
+    expect(seed).toMatch(/Ctrl\+C discards EVERYTHING \(fixture and your work\); the next start re-seeds exactly this/)
   })
 
   it('the app emulates Storage only WITH Firestore, only under the launcher gate, and announces both endpoints', () => {

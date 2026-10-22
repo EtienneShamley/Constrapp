@@ -18,9 +18,10 @@ import TakeoffWorkspace from './quant/TakeoffWorkspace'
 // opened-and-hidden). Firestore Security Rules remain the enforced boundary;
 // this is the UX mirror.
 //
-// Quant 1A WRITES NO BOQ QUANTITY and no financial document of any kind: it
-// writes only takeoffPages and takeoffMeasurements, through revision-guarded
-// transactions (lib/quantActions.js). BOQ linkage is Quant 1B.
+// The Quant tab WRITES NO BOQ QUANTITY and no financial document of any kind:
+// it writes only takeoffPages and takeoffMeasurements, through revision-guarded
+// transactions (lib/quantActions.js). Quant 1B (ADR-52) lets a measurement
+// carry a LINK to a BOQ item; the quantity is applied on the BOQ tab, explicitly.
 
 export default function ProjectQuant() {
   const { projectId } = useOutletContext()
@@ -47,8 +48,9 @@ export default function ProjectQuant() {
         <p className="m-0 mt-1.5 text-[12px] text-brand-text-soft">
           Pick a drawing revision and page, calibrate it from one known distance, then measure lengths, areas
           and counts. Every measurement is saved with its sheet, page, cost code and the scale it was measured
-          under, and its quantity is recomputed from that record. Quant does not change BOQ quantities — that
-          is a later, explicit step.
+          under, and its quantity is recomputed from that record. A measurement can be linked to a BOQ item on the
+          same cost code; Quant never changes a BOQ quantity by itself — applying the measured total is an explicit,
+          confirmed step on the BOQ tab.
         </p>
       </Card>
       <TakeoffWorkspace projectId={projectId} />

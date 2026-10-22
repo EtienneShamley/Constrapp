@@ -321,7 +321,10 @@ describe('no misleading claims', () => {
     for (const src of [quant, quantPage]) {
       expect(src).not.toMatch(/\bAI\b|automatic|recogni[sz]e|detect|machine learning/i)
     }
-    expect(quantPage).toMatch(/does not change BOQ quantities/)
+    // ADR-52: a measurement may be LINKED to a BOQ item, but the Quant tab still
+    // never changes a BOQ quantity itself — that is the BOQ tab's explicit step.
+    expect(quantPage).toMatch(/never changes a BOQ quantity by itself/)
+    expect(quantPage).toMatch(/explicit,\s*confirmed step on the BOQ tab/)
   })
 
   // ADR-50: the /shield route became a pointer to the project tab (the /pulse

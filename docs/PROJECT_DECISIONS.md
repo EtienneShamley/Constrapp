@@ -4644,9 +4644,11 @@ blocks, `tests/unit/quant.test.js` (105), `tests/rules/takeoff.rules.test.js`
 `App.jsx`, `moduleBranding.js`, `hooks/useStorageUpload.jsx`
 (+`getFileBytes`), `moduleBranding.test.js` / `betaSurfaces.test.js` pins
 revised explicitly. AGENT.md's AI Feature Placeholder Rule gains a Quant™ 1A
-exception scoped to manual measurement. **Status: DEPLOYED to Hosting
-(October 2026) — PRODUCTION VERIFICATION BLOCKED** pending the hotfix below;
-see DEPLOYMENT.md. Manual acceptance TESTING.md §27.
+exception scoped to manual measurement. **Status: LIVE IN PRODUCTION (October
+2026)** — the hotfix below was released (trimmed rules published, bucket CORS
+corrected, Hosting deployed) and the core functionality verified in production
+per TESTING.md §27; the repository records the month, not the day. Manual
+acceptance TESTING.md §27. BOQ linkage followed as Quant 1B (ADR-52).
 
 **Production-incident hotfix amendment (October 2026).** Verification after
 the deploy failed with *Takeoff records are unavailable*, a PDF sheet that
@@ -4694,3 +4696,221 @@ constraints, user rotation, deductions/negative areas, volumes, imperial
 units, separate X/Y scales, cross-revision copy or overlay, creating BOQ items
 from Quant, export/printing, layers, text search, drag-to-pan beyond scrolling,
 and any Dashboard surface.
+
+## ADR-52: Constrapp Quant™ 1B (measurement → BOQ linkage; explicit review-and-apply of a measured total; unit compatibility by alias table; version-guarded BOQ writes; latest-application provenance; no automation, no AI)
+
+**Context.** Quant™ 1A (ADR-51) is live in production: calibrated lengths,
+areas and counts persist as traceable records with a required cost code, and
+every quantity is reproduced from geometry × calibration at read time. The BOQ
+foundation (ADR-32 Part 1) holds the project's measured items, each with a
+free-text `unit`, a `quantity`, an optional `rate` and a rules-enforced derived
+`amount`. Nothing connected the two: a QS measured on the Quant tab and typed
+the number into the BOQ. A read-only inspection (October 2026) also found that
+the BOQ editor's save — a transaction staged only for the currency ratchet —
+**never read the item inside the transaction**, so two editors could silently
+overwrite each other, and that the BOQ `revision` is frozen at `1` by rules,
+so a `+1` counter cannot assist any guard without changing every BOQ write.
+
+**Decision 1 — a measurement may LINK to one BOQ item; the link is an
+identity, never a quantity.** `takeoffMeasurements` gains ONE optional field,
+`boqItemId: string | null`. It joins the rules' `hasOnly` key list but **not**
+`hasAll`, so every Quant 1A document (which has no such key) stays valid for
+every write with **no migration and no backfill**; Quant 1B writes `null` or
+an id on every new document. When the link is set — at create, and on an
+active edit whenever the link **or the cost code** changes — rules `get()` the
+target and require that it is in the **same project path**, **exists**, is
+**active** and **shares the measurement's `costCodeId`**. A label, geometry or
+snapshot edit on a measurement whose item was voided *later* is not refused
+(the stored link is history); moving the link re-verifies the new target.
+Changing a measurement's cost code clears an existing link **in the same
+write** — in the editor (with a visible notice) and inside
+`runUpdateMeasurement` against the server copy, so a link can never dangle on
+the wrong cost code. Voided measurements keep their link as historical metadata
+and are never summed. The five revision-guarded takeoff transactions are
+otherwise unchanged. No `boqItemId` lives on `takeoffPages`; no array of
+measurement ids lives on the BOQ item (rules cannot validate an array, and a
+BOQ write per measurement edit would invert the ownership).
+
+**Decision 2 — unit compatibility is an allow-list with a factor of exactly
+1.** `lib/quantBoq.js` normalises a BOQ `unit` (lower-case; `²` and `^2` →
+`2`; whitespace and full stops removed) and accepts only: **length** `m`,
+`lm`, `linm`, `metre(s)`, `meter(s)`, `linear metre(s)`, `lineal metre(s)`;
+**area** `m2`/`m²`, `sqm`, `square metre(s)`; **count** `no`, `no.`, `nr`,
+`num`, `number`, `ea`, `each`, `count`. Everything else is **refused** — `m³`,
+`mm`, `cm`, `km`, `kg`, `t`, `hr`, `ls`, `sum`, `item`, `%`, blanks and
+unknowns — and no dimension is ever crossed: an area cannot link or apply to a
+length, volume or count item. Compatibility is judged against the **BOQ
+item's own `unit`**, not the cost code's. The alias table is deliberately not
+duplicated into the rules file (the ADR-21 enum-drift reasoning); it is
+client-only and recorded as such (Deferred Control 33).
+
+**Decision 3 — the aggregate is derived on every read; one ineligible
+measurement blocks the whole apply.** `aggregateLinkedQuantity` takes the
+item and the project's measurements, takeoff pages and drawings — the three
+existing subscriptions — and classifies every ACTIVE linked measurement: it
+must be readable, on the item's cost code, of a compatible kind, on a drawing
+and takeoff page that exist, on the drawing's **current** revision (a
+superseded or withdrawn revision, or a withdrawn drawing, blocks), calibrated
+where scale is needed, **not flagged needs review**, and able to derive a
+quantity. Eligible values are summed **unrounded** and rounded **once** with
+the existing `roundQuantity` (3 dp — the BOQ display convention). Any blocked
+measurement yields **no total**: nothing is silently omitted, every blocker
+names its remedy, and every remedy already exists in Quant 1A (Mark reviewed,
+re-measure on the current revision, calibrate, unlink, void). Voided
+measurements are listed as history and excluded explicitly; a measurement is
+counted once; inputs are one project's subscriptions, so nothing can mix across
+projects or units. **No quantity ledger is stored anywhere.**
+
+**Decision 4 — review-and-apply is explicit, on the BOQ tab.** Linking lives
+in Quant (the editor's optional *BOQ item* picker, which offers only active
+items on the same cost code with a compatible unit, and a *BOQ item* column in
+the list that warns when a link is no longer valid). Reviewing and applying
+lives on the BOQ page: an active item with linked measurements offers
+**Quant (n)**, opening a dialog that shows the item, every linked measurement
+with its source (drawing · revision · page), quantity and status, the blockers
+with remedies, the eligible total, existing → proposed quantity and the
+difference, the **unchanged rate** and existing → proposed amount through
+`boqLineAmount` (or, for an unpriced item, the statement that **no monetary
+amount is calculated**), the latest Quant application and its current state,
+and one confirmation. Apply is disabled while any source is **loading or
+unavailable** (never "no issue"), the item is void, the unit is unsupported,
+any measurement is blocked, nothing is eligible, or the total already equals
+the BOQ quantity. The confirmation is bound to an **evidence key** over every
+input; if the measurements or the item change while the dialog is open the
+confirmation is withdrawn and the changed result must be reviewed again.
+Readiness is recomputed from the latest snapshots immediately before the
+write. It is a user-confirmed quantity application, not an audit certification.
+
+**Decision 5 — version-guarded BOQ writes; the BOQ `revision` stays frozen.**
+`lib/boqActions.js` (SDK injected, the quantActions convention) holds two
+transactions. `runApplyBoqQuantity` reads the server item, requires it active,
+compares it with the copy the user reviewed — equal `updatedAt` stamps, or,
+when either side lacks a usable stamp (a legacy or incomplete record), equal
+`status`/`quantity`/`unit`/`rate`/`amount`/`costCodeId`/`costCodeName`/
+`description`/labels — refuses `STALE` on any difference (never an unguarded
+overwrite), refuses an unchanged quantity (apply **sets**, never adds), derives
+the amount from the **server** rate through `boqLineAmount`, stages the
+existing project currency ratchet when the item is priced, and writes
+`quantity`, `amount`, `quantApplied` and the stamps — nothing else. The
+**existing manual editor's save** (`updateBoqItem`) now goes through
+`runUpdateBoqItem` with the same read-compare-refuse discipline and its ADR-32
+behaviour otherwise intact (active-only, full content, ratchet when priced).
+Because `revision` must remain `1` on every BOQ write, this guard is
+**client-enforced**: the transaction re-runs on contention, re-reads, and the
+comparison fails — the write is refused, never re-applied — but a direct-SDK
+client can still overwrite blindly (Deferred Control 33). Missing, stale,
+invalid, permission and offline failures are named; success is reported only
+after the transaction resolves.
+
+**Decision 6 — provenance is the LATEST explicit application, with an
+evidence fingerprint, nothing more.** `boqItems` gains an optional map
+`quantApplied: { at, by, quantity, measurementCount, evidence }`. Rules refuse
+it at create; on an active edit it must be either **preserved verbatim** (the
+editor's full-content save carries it along) or **fresh** — exact keys,
+`by == request.auth.uid`, `at == request.time`, `quantity == the quantity
+being written`, `measurementCount` a positive integer, `evidence` a non-blank
+string ≤ 128; the void branch's `hasOnly` leaves it untouched. **Why a
+fingerprint (review correction):** a total and a count cannot identify
+evidence — 5 m + 7 m and 4 m + 8 m are both 12 m from two measurements — so
+comparing today's total with the applied quantity would have called changed
+evidence "matching". `evidence` is `v1:` + a 64-bit FNV-1a digest of the
+ELIGIBLE rows' canonical text, sorted by measurement id: id, revision, kind,
+cost code, sheet identity, every stored point, the calibration snapshot, the
+page's calibration and `calibrationRevision`, the drawing's current-revision
+pointer and status, plus the item id, unit and the eligible count
+(`lib/quantBoq.js → evidenceFingerprint`). The dialog's confirmation key is
+built from the SAME canonical row text, so what the user confirmed is what is
+persisted and later compared. The dialog shows the record beside, never
+instead of, the item's current state, with a derived status: *matches* only
+when the item still holds the applied quantity AND the recomputed fingerprint
+equals the stored one; *outdated — the BOQ quantity was changed*; *outdated —
+the linked measurements changed* (also whenever anything is blocked, so no
+fingerprint exists today); *cannot verify the original evidence* for a record
+without a fingerprint; *cannot be assessed* while any source loads or fails —
+never *matches* on total alone, never while loading. The fingerprint is
+client-computed and shape-checked only (rules cannot read a list), not a
+cryptographic hash, not an immutable history, not an audit certificate and not
+server-verified financial evidence (Deferred Control 33).
+
+**Decision 7 — roles and boundaries.** Linking is a measurement write (the
+three Quant roles); reading BOQ items from the Quant tab and applying are BOQ
+operations (`financialMember`, the same three roles). No gate loosens;
+subcontractor and client users remain denied both collections; the drawing
+register's open reads are unchanged. Quant 1B may update **only** the selected
+BOQ item's `quantity`, its derived `amount`, `quantApplied`, the stamps, and
+the project `currencyLocked` ratchet. It writes no budget line, forecast line,
+PO, claim, invoice, payment, variation, cash-flow line or baseline; the BOQ
+still feeds no financial figure (ADR-32) and the BOQ-to-Budget separation
+stands. No automatic sync, no background job, no AI.
+
+**Decision 8 — production release needs the rules published FIRST.** The new
+bundle writes `boqItemId` on every measurement save, and the live ruleset's
+`hasOnly` rejects an unknown key, so deploying Hosting before the rules would
+break every measurement save. The reverse order is safe: the new rules accept
+documents with or without the key, and the live bundle never sends it. Order:
+`npm run test:rules` and `npm run test:unit` (the size budget: 196,034 bytes
+against 245,000) → publish `frontend/firestore.rules` and confirm the live
+version → deploy Hosting → verify per TESTING.md §28. `storage.rules` is
+unchanged. The rules publish and the deploy remain separately approved actions.
+
+**Decision 9 — the workspace remembers its sheet, per project, in
+sessionStorage; restored ids are intent, validated against loaded records.**
+Pre-merge review found that selecting A-201 on the Quant tab, visiting the
+BOQ tab and returning reset the selection. Root cause: `ProjectDetailLayout`
+renders every tab through `<Outlet key={projectId}>`, so leaving the tab
+unmounts `TakeoffWorkspace`, whose drawing → revision → page lived only in
+React state; a refresh had the same effect. There is no existing
+project-state mechanism for UI selection (the project context carries only
+the project, its id and currency; the Dashboard uses URL search params for
+its own filters, which would not survive the tab links), so the smallest
+robust fix is `lib/quantSelection.js`: a pure, storage-injected module that
+keeps `{ v, drawingId, revisionId, page }` under
+`constrapp.quant.selection.<projectId>` in the browser's **sessionStorage**
+(per tab, dies with it; nothing personal or financial, three ids and a page
+number). `revisionId` is the user's EXPLICIT choice or null for "current",
+so a user who was on the current revision follows a newly issued one.
+Restoration is **validation, not trust**: the saved drawing counts only once
+the register has settled and lists it as not withdrawn (what the picker
+offers); the saved revision only if the loaded list contains it (withdrawn
+and superseded are listed — inspectable — a deleted or foreign id is not,
+and then the page resets to 1); nothing is written back until those records
+have settled, so a slow or failed read can never erase a good selection or
+restore a bad one; the revision subscription opens only for a validated
+drawing. Measurability (`canMeasureOnRevision`, the banner, the
+revision-guarded transactions) is decided exactly as before from the live
+records — a restored withdrawn revision is as inspect-or-void-only as a
+chosen one. No Firestore write, no global state library, no URL change; the
+project layout's keyed Outlet plus the per-project key mean nothing leaks
+between projects. One implementation note: the React Compiler could not
+preserve the workspace's manual memoisation when the explicit-revision
+lookup went through an imported helper, so that one `find` is inlined in
+the workspace and pinned; the drawing validation and page rule stay in the
+lib. The same review made the `test:quant` seed carry a ready-made 1B case
+(A-201 calibrated, a 12 m² area linked to 2.1) and documented that every
+emulator restart resets to exactly that fixture (TESTING.md §27).
+
+**Consequences.** New: `lib/quantBoq.js`, `lib/boqActions.js`,
+`pages/project/boq/BoqQuantityApplyModal.jsx`, `tests/unit/quantBoq.test.js`,
+`tests/unit/boqActions.test.js`, `lib/dialogFocus.js`, `tests/unit/dialogFocus.test.js`,
+`lib/quantSelection.js`, `tests/unit/quantSelection.test.js`. Modified: `lib/quant.js` (optional link in
+validation and readability), `lib/quantActions.js` (link on create/update,
+clear-on-recode), `hooks/useBoqItems.jsx` (guarded edit, `applyBoqQuantity`),
+`pages/project/quant/MeasurementEditorModal.jsx`, `MeasurementList.jsx`,
+`TakeoffWorkspace.jsx` (read-only `useBoqItems`; remembered selection, Decision 9), `pages/project/ProjectQuant.jsx`,
+`pages/project/ProjectBoq.jsx`, `firestore.rules` (two blocks),
+`scripts/seed-quant-emulator.mjs` (three BOQ items; the calibrated, linked A-201 area), `tests/rules/takeoff.rules.test.js`
+(+8), `tests/rules/boqItems.rules.test.js` (+12), `tests/unit/quant.test.js` and
+`tests/unit/moduleBranding.test.js` (pins revised explicitly). No dependency
+added. **Status: IMPLEMENTED — NOT YET DEPLOYED** (rules publish and Hosting
+deploy are separate, approved release actions; Decision 8). Manual acceptance
+TESTING.md §28.
+
+**Deferred / not built (recorded, not promised):** AI or automatic takeoff;
+automatic syncing of BOQ quantities when measurements change; creating BOQ
+items from measurements; drawing-revision reconciliation automation (carrying
+links or quantities to a new revision); bulk apply across items; conversion
+factors other than 1 (mm, cm, imperial); revision-code display for non-current
+revisions on the BOQ page (the dialog says "not the current revision" and links
+to the Quant tab); an audit-history collection; a rules-assisted BOQ revision
+counter; server-side enforcement of unit compatibility, the aggregate and
+cross-record concurrency (Cloud Functions — ADR-14).
