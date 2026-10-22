@@ -14,7 +14,7 @@ Preconstruction → Procurement → Delivery → Cost Control → Forecasting �
 
 | Phase | What happens | Modules (status) |
 |---|---|---|
-| **Preconstruction** | Measure quantities, build the BOQ, estimate, transfer to an approved budget | **Drawings** *(implemented — foundation)*; **Quant™ 1A manual takeoff** *(implemented — not yet deployed; measurement records only, no BOQ write — Quant 1B)*; **BOQ** *(implemented — foundation)*; Estimating incl. BOQ → Budget transfer *(planned)*; **Cost Codes**, **Budgets** *(implemented)* |
+| **Preconstruction** | Measure quantities, build the BOQ, estimate, transfer to an approved budget | **Drawings** *(implemented — foundation)*; **Quant™ 1A manual takeoff** *(live in production — measurement records)*; **Quant™ 1B** *(implemented — not yet deployed; link a measurement to a BOQ item and explicitly apply the reviewed total, ADR-52)*; **BOQ** *(implemented — foundation)*; Estimating incl. BOQ → Budget transfer *(planned)*; **Cost Codes**, **Budgets** *(implemented)* |
 | **Procurement** | Tender packages, subcontractor invitations, bid levelling, award, commitment | **Tender & Award** *(implemented — foundation)*; subcontractor invitations, bid levelling, and Award → PO transfer *(planned)* → **Purchase Orders** *(implemented)* |
 | **Delivery** | Scope variations, cumulative progress claims against commitments | **Variations** *(implemented — foundation)*; **Progress Claims** *(implemented)* |
 | **Cost Control** | Supplier invoices, actual cost, payments/credit notes | **Supplier Invoices**, **Supplier Payments**, **Supplier Credit Notes** *(implemented)*; Retention Release *(future)* |
@@ -118,11 +118,15 @@ frontend/                  The entire application (run all npm commands here)
                            ADR-50; pages/project/shield/ShieldCheckCard.jsx is
                            its presentation-only card), ProjectQuant (Quant™ 1A
                            role gate + branded heading, ADR-51),
-                           project/quant/ (TakeoffWorkspace — selection, tools,
+                           project/quant/ (TakeoffWorkspace — selection (remembered
+                           per project in sessionStorage via lib/quantSelection.js,
+                           ADR-52 Decision 9), tools,
                            drafts, zoom; SourcePicker; PageViewer — PDF.js canvas
                            or <img> under an SVG overlay in canonical page units;
-                           MeasurementOverlay; MeasurementList; CalibrationModal;
-                           MeasurementEditorModal; MeasurementVoidModal;
+                           MeasurementOverlay; MeasurementList (+ BOQ-item
+                           column, ADR-52); CalibrationModal;
+                           MeasurementEditorModal (+ optional BOQ-item link
+                           picker, ADR-52); MeasurementVoidModal;
                            pdfjsLoader — the only pdfjs-dist import, lazy;
                            styles.js — page-local), ProjectBudget, ProjectCostCodes,
                            ProjectPurchaseOrders, ProjectProgressClaims,
@@ -170,6 +174,14 @@ frontend/                  The entire application (run all npm commands here)
                            + nextMilestone; NON-financial, no completion %),
                            contacts.js,
                            boq.js (pure BOQ arithmetic + read-time budget comparison),
+                           boqActions.js (Quant™ 1B, ADR-52 — the two
+                           version-guarded BOQ transactions: the manual edit
+                           and the Quant apply; injected SDK, no Firebase import),
+                           quantBoq.js (Quant™ 1B, ADR-52 — pure unit alias
+                           table with factor 1 only, link state, the per-item
+                           aggregate of eligible linked measurements summed
+                           unrounded and rounded once, blockers, readiness,
+                           preview through boqLineAmount, latest-application state),
                            quant.js (Quant™ 1A — pure geometry: distances,
                            polyline length, shoelace area, counts; metric
                            calibration; quantity derivation from points ×
@@ -222,7 +234,11 @@ ProjectsProvider), `useCostCodes()`, `useContacts()`, `useBudgetLines(projectId)
 `useVariations(projectId)`, `useForecastLines(projectId)`,
 `useProjectCommercial(projectId)`, `useProjectActivities(projectId)`, `usePulseAcknowledgements(projectId)`,
 `useTakeoffPages(projectId)` and `useTakeoffMeasurements(projectId)` (both in `hooks/useTakeoff.jsx`,
-Quant™ 1A — two keyed subscriptions plus the five revision-guarded takeoff writes).
+Quant™ 1A — two keyed subscriptions plus the five revision-guarded takeoff writes; since ADR-52 a
+measurement save may carry the optional `boqItemId` link). `useBoqItems(projectId)` exposes
+`createBoqItem`, the version-guarded `updateBoqItem`, `voidBoqItem` and the Quant 1B
+`applyBoqQuantity` (ADR-52; the last two writes live in `lib/boqActions.js`). The BOQ page mounts
+the two takeoff hooks and `useDrawings` read-only; the Quant workspace mounts `useBoqItems` read-only.
 
 ## Routing Structure
 
@@ -252,7 +268,8 @@ ProtectedRoute (redirects to /login when signed out)
    │       (PDF via lazily loaded PDF.js, PNG/JPEG via <img>), calibrate from one known
    │       metric distance, measure lengths / areas / counts, and persist them to
    │       takeoffPages / takeoffMeasurements through revision-guarded transactions;
-   │       company_admin / project_manager / qs; NO BOQ quantity is written — Quant 1B)
+   │       company_admin / project_manager / qs; a measurement may LINK to one active BOQ
+   │       item on the same cost code (ADR-52) but the tab writes NO BOQ quantity)
    │      (the `forecasting` route renders the Forecast Cost to Complete page; the tab is labelled "Forecast".
    │       the `invoices` route renders SUPPLIER invoices (AP); the tab is labelled "Supplier Invoices".
    │       the `commercial` route is a nested layout — index = Project Margin,
@@ -268,6 +285,11 @@ ProtectedRoute (redirects to /login when signed out)
    │        Tender Comparison, and the award decision record; financial roles only)
    │    boq                  Bill of Quantities (ProjectBoq — measured items,
    │                          derived amounts, read-time BOQ-vs-budget comparison;
+   │                          since ADR-52 an active item with linked Quant
+   │                          measurements offers "Quant (n)" → BoqQuantityApplyModal:
+   │                          review the linked measurements, blockers and eligible
+   │                          total, then EXPLICITLY apply it to that one item's
+   │                          quantity through a version-guarded write;
    │                          tab label stays "BOQ"; the Tenders tab follows it)
    │    timeline  (live — the project PROGRAMME: activities, milestones,
    │      responsibility, manually entered progress, read-only Gantt,
@@ -336,8 +358,8 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Documents & Drawings | Implemented (foundation) — drawing masters + **immutable** revisions with a transactional current-revision pointer, revision history, current/superseded/withdrawn lifecycle, explicit succession on withdrawal, and a flat general-document register with project/internal visibility. Bytes in Cloud Storage, metadata in Firestore, **uploads Storage-first**; **no photos, DWG, markup, OCR, AI or takeoff** |
 | Constrapp PULSE™ | **Implemented and live in production (1A ADR-47; 1B ADR-49, released 19 October 2026)** — a project tab of six deterministic, explainable indicators (forecast over budget · cost codes not forecast · negative forecast gross profit · overdue programme activities · past-due supplier invoices · pending variation exposure), each in one of five states (loading / unavailable / needs data / finding / no issue), composed in `lib/pulse.js` from `projectForecastRows` / `computeMargin` / `payablesSummary` / `isOverdue` through the ADR-42 `figureState` vocabulary; evidence rows and tab-level links; **no score, threshold, trend, prediction or Dashboard surface**. **PULSE™ 1B (ADR-49)** adds the one PULSE write path: an acknowledgement per indicator (`…/pulseAcknowledgements/{indicatorId}`, new rules block) with a note and a required review-by date, withdrawable, derived *needs attention / acknowledged / no longer present / unknown* status beside each finding (`lib/pulseAttention.js`) — never a resolution, never a change to an indicator. The top-level `/pulse` route is a hidden pointer to the tab |
 | Constrapp SHIELD™ | **Implemented and live in production (foundation, ADR-50, released 19 October 2026).** Commercial assurance, never HSEQ. A project tab of five deterministic, read-only checks (potential duplicate supplier invoices · supplier invoice integrity · purchase order over-invoicing exposure · commitment records requiring reconciliation · existing financial exceptions), each in one of five states (loading / unavailable / needs data / finding / no issue), composed in `lib/shield.js` from existing selectors and status constants through the ADR-42 `figureState` vocabulary over declared dependencies; evidence rows with source ids and tab-level links; **no write path, persistence, score, severity, trend, prediction or Dashboard surface**. The top-level `/shield` route is a hidden pointer to the tab |
-| Constrapp Quant™ | **Quant 1A implemented (ADR-51) — NOT YET DEPLOYED.** Manual drawing measurement: a project tab that renders one page of an existing drawing revision (PDF through the pinned, lazily loaded `pdfjs-dist`; PNG/JPEG through `<img>`), calibrates it from one known metric distance, measures lengths, areas and counts as canonical page-space geometry, and persists each as a traceable record (`takeoffPages`, `takeoffMeasurements` — two new rules blocks) with a required cost code and a calibration snapshot; quantities are **derived at read time, never stored**; re-calibration flags dependent measurements for review; superseded revisions stay inspectable with a warning; every write is a revision-guarded transaction. **Writes no BOQ quantity and no financial figure (Quant 1B owns BOQ linkage); no AI.** Release needs the rules published and, for PDFs, a bucket CORS rule (DEPLOYMENT.md). `/quant` is a hidden pointer |
-| BOQ (Bill of Quantities) | Implemented (foundation) — measured items with optional rates, rules-enforced derived amounts, read-time budget comparison; **feeds no financial figure**; Estimating and BOQ → Budget transfer are later branches |
+| Constrapp Quant™ | **Quant 1A live in production (ADR-51, October 2026); Quant 1B implemented (ADR-52) — NOT YET DEPLOYED.** Manual drawing measurement: a project tab that renders one page of an existing drawing revision (PDF through the pinned, lazily loaded `pdfjs-dist`; PNG/JPEG through `<img>`), calibrates it from one known metric distance, measures lengths, areas and counts as canonical page-space geometry, and persists each as a traceable record (`takeoffPages`, `takeoffMeasurements` — two new rules blocks) with a required cost code and a calibration snapshot; quantities are **derived at read time, never stored**; re-calibration flags dependent measurements for review; superseded revisions stay inspectable with a warning; every write is a revision-guarded transaction. **The tab writes no BOQ quantity and no financial figure; no AI.** **Quant 1B (ADR-52):** a measurement may carry an optional `boqItemId` link to one ACTIVE BOQ item on the SAME cost code (rules `get()` the target; unit compatibility — length `m`/`lm`, area `m2`/`m²`/`sqm`, count `no`/`nr`/`each`, factor 1 only — is client-side); the BOQ tab's *Quant (n)* dialog derives the eligible total from the existing subscriptions (current revision, reviewed, calibrated, compatible — any blocked measurement blocks the apply), previews existing → proposed quantity and amount through `boqLineAmount`, and on one explicit confirmation writes that item's `quantity`, derived `amount` and a `quantApplied` record through a version-guarded transaction (`lib/boqActions.js`) that also now guards the manual editor. Release: publish the rules **before** Hosting. `/quant` is a hidden pointer |
+| BOQ (Bill of Quantities) | Implemented (foundation) — measured items with optional rates, rules-enforced derived amounts, read-time budget comparison; **feeds no financial figure**; since ADR-52 the edit is version-guarded and an item can receive a reviewed Quant total explicitly (`quantApplied` records the latest application); Estimating and BOQ → Budget transfer are later branches |
 | Project Timeline (programme) | Implemented (foundation) — activities + milestones, date-only planned/actual dates, manual progress, read-time overdue/horizon derivation, Due filter (overdue / due within 14 days), guarded quick status actions and a midnight-advancing clock (ADR-46), read-only CSS/SVG Gantt (no new dependency), cancel-not-delete; **`qs` is read-only**, subcontractor/client denied; **no baseline, no dependencies, no financial effect** |
 | Photos, Reports tabs | Placeholder (`ProjectPlaceholder`) — routes and pages live, **hidden from the project tab bar** for private beta (`lib/projectTabs.js`) |
 

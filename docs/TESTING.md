@@ -59,7 +59,7 @@ That script runs
   inert here. The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **1345 in total across 22 files: 1299 Firestore + 46 Storage**:
+- Tests — **1365 in total across 22 files: 1319 Firestore + 46 Storage**:
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -138,7 +138,7 @@ That script runs
     It also asserts the one documented **client-only** gap honestly: a second
     credit whose CUMULATIVE total exceeds the target's payable is ACCEPTED by
     rules (Deferred Control 25 — the app hard-blocks it).
-  - `frontend/tests/rules/boqItems.rules.test.js` — **50 tests** covering every
+  - `frontend/tests/rules/boqItems.rules.test.js` — **62 tests** covering every
     case in §15s-v below: the two-state lifecycle (active edit / active → void
     terminal, reasoned), the whole-cent `amount == quantity × rate` invariant
     for priced items, the `rate: null ⟺ amount: null` unpriced pairing (0 can
@@ -146,6 +146,27 @@ That script runs
     forged-stamp rejection. It also asserts the two documented **client-only**
     gaps (Deferred Control 26): a `costCodeId` of valid shape naming NO real
     cost code and a duplicate of an existing item are both ACCEPTED by rules.
+    **Quant 1B (ADR-52, §28) adds 12:** the optional `quantApplied` map —
+    accepted when fresh (caller actor, server time, `quantity == the written
+    quantity`, integer count ≥ 1, a non-blank `evidence` string ≤ 128) for
+    each financial role; refused for another actor, a client clock, a
+    disagreeing quantity, a zero or fractional count, a missing or extra key,
+    a missing, null, blank, oversized or non-string `evidence`, a non-map, or
+    at CREATE; preserved verbatim through a manual edit, refused when altered
+    without a fresh stamp, kept by void; a LEGACY record whose map has no
+    `evidence` key is still preserved verbatim through an edit and a void and
+    replaced by a fresh application; a legacy item without the map still takes
+    every write — and **5 tests run
+    the REAL `lib/boqActions.js` transactions** against the rules: an apply
+    from the reviewed copy writes the derived amount and provenance and
+    **engages the currency ratchet for a `qs` user**; a STALE copy (re-priced
+    underneath) is refused end to end and the fresh copy applies at the new
+    rate; an unpriced item changes quantity only and leaves the project
+    unlocked; a void item and a denied role are refused with nothing written;
+    the manual editor's save is refused as STALE after a concurrent save and
+    prices with the ratchet from the fresh copy. **1 test proves the DC33
+    gap**: a direct-SDK valid payload written without reading first passes —
+    the version guard is the app's, not the rules'.
   - `frontend/tests/rules/tenderPackages.rules.test.js` — **38 tests** covering
     the Tender Package cases in §15s below: draft create/edit for every
     financial role, the stamp-only issue, the issued **closingDate/notes
@@ -188,8 +209,8 @@ That script runs
     date (`2026-02-30`), a `responsibleContactId`/`costCodeId` naming nothing,
     a duplicate `sortOrder`, and a full-document overwrite (last-write-wins)
     are all ACCEPTED by rules.
-  - `frontend/tests/rules/takeoff.rules.test.js` — **56 tests** covering the
-    two Quant™ 1A collections (ADR-51, §27): the three-role read/write matrix
+  - `frontend/tests/rules/takeoff.rules.test.js` — **64 tests** covering the
+    two Quant™ 1A collections (ADR-51, §27) and the Quant 1B link (ADR-52, §28): the three-role read/write matrix
     with `subcontractor`/`client`/`super_admin`, cross-tenant, anonymous and
     no-membership callers denied; page create — id ↔ fields agreement, the
     drawing and revision must exist and the revision must not be withdrawn (a
@@ -203,7 +224,8 @@ That script runs
     exist, kind vocabulary, point-list size by kind (≥2/≥3/≥1, ≤500 — the
     500th passes, the 501st fails), label/name bounds, snapshot required for
     length/area and null for count, born active, no forged void stamps, exact
-    keys (a `quantity`, `amount` or `boqItemId` field is refused); measurement
+    keys (a `quantity`, `amount` or `currency` field is refused, as is a
+    mistyped `boqItemId` — the one OPTIONAL key since ADR-52); measurement
     update — active edit of points/label/cost code/snapshot, blind overwrite
     refused, identity/kind/creation immutable, content revalidated, void with a
     non-whitespace reason and caller stamp only, voided records immutable, no
@@ -223,6 +245,25 @@ That script runs
     drawing, stay READABLE by the three roles and unreadable by everyone else;
     create is refused on a withdrawn drawing even though its revision reads
     "current"; re-calibration and every active edit succeed on a superseded
+    **…and 8 tests (#57–#64) pin the Quant 1B BOQ link (ADR-52):** the 1A
+    shape (no key), `boqItemId: null` and a VALID link all create for each
+    role; a link to a MISSING, VOID, different-cost-code or OTHER-PROJECT item
+    (same company, and the same id in another company's identical path) is
+    refused, as is a blank or oversized id; link / re-link / unlink are active
+    edits with `revision` +1 and a legacy document gains the key; a label or
+    geometry edit still passes when the EXISTING link's item has since been
+    voided, while moving the link to a void item is refused and clearing it
+    passes; a cost-code change on a LINKED measurement is refused unless the
+    link is cleared or re-pointed to an item on the new code in the SAME
+    write (an unlinked measurement re-codes freely); void keeps the link and
+    may not change it; the denied roles and another company cannot link; the
+    REAL `runCreateMeasurement` writes `boqItemId: null` by default or the
+    chosen link, a link to a void item comes back as PERMISSION with nothing
+    written, and `runUpdateMeasurement` clears a link on re-code in the same
+    commit (`linkCleared: true`) and links/unlinks explicitly; and **1 test
+    proves the DC33 gap**: a LENGTH links to an item measured in m³ — rules
+    cannot normalise units. Earlier pins revised explicitly: #30 now refuses a
+    mistyped `boqItemId` rather than the key itself. On the 1A side,
     sheet and are refused on a withdrawn revision or drawing; void succeeds on
     all of them (still reasoned and revision-guarded, immutable afterwards);
     no measurement or page can be re-pointed to a live sheet; and the real
@@ -470,9 +511,85 @@ npm run test:unit
   measured in bytes (the file is not pure ASCII), with real headroom between
   the two; `storage.rules` far below. Passing proves the file CAN be published —
   not that it IS (DEPLOYMENT.md → *Verifying which rules version is published*).
-- `frontend/tests/unit/quant.test.js` — **112 tests** over `lib/quant.js`,
+- `frontend/tests/unit/quant.test.js` — **118 tests** over `lib/quant.js`,
   `lib/quantActions.js`, `lib/pdfRender.js` and the Quant™ 1A page wiring
-  (ADR-51): see §27.
+  (ADR-51): see §27. (The count is the runner's — an earlier figure of 112
+  was a hand count; ADR-52 revised four 1A boundary pins explicitly and added
+  one: the workspace may READ BOQ items, no Quant file may call a BOQ write.
+  The Quant 1B UI polish added one more: the mobile measurement card's compact
+  action group — review badge beside *Mark reviewed*, the rest as equal 44px
+  cells with a visible focus state — while the table row is unchanged. The
+  workspace-persistence correction added nine and revised two 1A pins
+  explicitly (the selection setters are now `setDrawingChoice` /
+  `setPageChoice`): the keyed Outlet as the root cause, the remembered
+  selection read once from sessionStorage, validated before use, written back
+  only once the records have settled, measurability still from live records;
+  which actions a measurement card offers and why a withdrawn sheet shows
+  *Show* and *Void* only; the compact group clips nothing; and the
+  deterministic seed — A-201 calibrated, the 12 m² area linked to 2.1, the
+  rectangle re-derived through `measurementQuantity` and `boqLineAmount`,
+  no `--import` / `--export-on-exit` in the launcher.)
+- `frontend/tests/unit/quantSelection.test.js` — **14 tests** over
+  `lib/quantSelection.js` (Quant 1B correction; ADR-52 Decision 9): the
+  per-project sessionStorage key and versioned shape (junk, wrong version,
+  slash-bearing or over-long ids and bad pages are null or defaulted);
+  Quant → BOQ → Quant and refresh read back what was written; last write wins
+  and "no drawing" clears the entry; project switching never leaks (two
+  projects, two keys; clearing one leaves the other); a missing or throwing
+  storage reads null and writes false without an exception; a saved drawing
+  is restored only from a SETTLED register and only when not withdrawn; an
+  explicit revision only from the loaded list (withdrawn and superseded are
+  listed, deleted is not); the page follows the saved revision and resets to
+  1 when that revision could not be honoured; the valid default when nothing
+  is saved; and an end-to-end restore / withdrawn / deleted-revision walk.
+- `frontend/tests/unit/quantBoq.test.js` — **59 tests** over `lib/quantBoq.js`
+  (Quant™ 1B, ADR-52): see §28 — unit normalisation and every accepted alias
+  per dimension, the refused units (m³, mm, cm, kg, t, hr, lump sums, %,
+  blanks, unknowns, imperial) and no dimension ever crossed, linkable items
+  (active · same cost code · compatible unit), link state, aggregation
+  (sum-unrounded-round-once proven on three ⅓ strips → 1.000 not 0.999,
+  dedupe, void excluded, cross-page/cross-drawing within one project), every
+  blocker in isolation and "one blocked = no total", readiness (loading and
+  unavailable first, then void / unsupported unit / blocked / none / unchanged),
+  the preview through `boqLineAmount` (priced, zero rate, unpriced),
+  `quantApplied` readability and state, **the evidence fingerprint** (review
+  correction: deterministic, order-independent, versioned, bounded even for a
+  500-point polygon; **5 + 7 → 4 + 8 — same total, same count, changed
+  geometry — is DIFFERENT evidence and reads *outdated***; a changed
+  measurement revision alone is detected; a swapped id, a re-calibrated page,
+  a moved current-revision pointer and a snapshot change all change it; no
+  fingerprint while anything is blocked; a LEGACY record without one is
+  *cannot verify*, never *matches*; loading, unavailable, a missing drawing
+  or page and an absent aggregate are never *matches*), the evidence key
+  (built from the same canonical row text as the fingerprint), and structural pins
+  (no Firebase import; the only money derivation is `boqLineAmount`; the BOQ
+  page mounts the existing hooks read-only; the dialog binds confirmation to
+  the evidence key; the editor clears the link on re-code; the dialog closes on
+  Escape unless saving, contains Tab / Shift+Tab through `lib/dialogFocus.js`
+  with no focus-trap dependency, and shows existing and proposed amounts with
+  `{ precise: true }` — cents — like the BOQ editor and void dialogs).
+- `frontend/tests/unit/dialogFocus.test.js` — **11 tests** over
+  `lib/dialogFocus.js`, the pure keyboard-containment helper first used by the
+  Quant 1B apply dialog: `isTabbable` (disabled, hidden, `tabindex="-1"`,
+  hidden inputs and `aria-hidden` are skipped), `tabbableWithin` (document
+  order, filtered), and `tabTarget` — Tab from the last control wraps to the
+  first, Shift+Tab from the first wraps to the last, focus between the edges is
+  NOT intercepted (null), focus on the panel itself or behind the overlay is
+  pulled to the first / last control, a lone control always receives focus,
+  and a panel with nothing tabbable keeps focus on the fallback.
+- `frontend/tests/unit/boqActions.test.js` — **21 tests** over
+  `lib/boqActions.js` (ADR-52) against an in-memory Firestore stand-in:
+  `sameStamp` / `boqVersionMatches` (stamps decide when both sides have one;
+  a LEGACY record without one is guarded field by field — never "match"),
+  the error vocabulary and SDK-code mapping, the manual edit (fields + stamps,
+  ratchet only when priced, STALE refused, legacy content guard, missing /
+  void / invalid / no actor), and the Quant apply (priced writes quantity +
+  amount from the SERVER rate + provenance + stamps and nothing else; unpriced
+  leaves amount null with no ratchet; zero rate is a price; STALE on a changed
+  rate / unit / cost code / quantity; unchanged refused — set, never add;
+  applying twice does not accumulate; a bounded `evidence` fingerprint is
+  required — missing, blank, oversized or non-string refused before any write;
+  a zero total is legitimate).
 - `frontend/tests/unit/moduleBranding.test.js` — **39 tests** over the
   advanced module branding (ADR-48; pins revised by ADR-50 and ADR-51): see §24.
 - `frontend/tests/unit/dashboardV2.test.js` — **78 tests** over the Premium
@@ -5065,7 +5182,7 @@ Manual — three checks only, all read-only (SHIELD writes nothing):
 
 ## 27. Constrapp Quant™ 1A — manual drawing measurement (ADR-51)
 
-Automated: `tests/unit/quant.test.js` (112 tests) — lengths and areas against
+Automated: `tests/unit/quant.test.js` (108 tests) — lengths and areas against
 hand-calculated values (3-4-5 triangle, 3×4 rectangle in both windings, a right
 triangle, a concave L-shape), implicit polygon closure and degenerate shapes
 (collinear → zero area refused, coincident → zero length refused, bow-tie,
@@ -5110,9 +5227,10 @@ text (read any; create, re-calibrate and edit only while live; void always),
 the viewer's fit-to-width measuring the scroller's content box and rendering
 only once measured, and the local acceptance environment (`npm run
 test:quant` starts both emulators in exec mode, the child-only opt-ins, the
-seed's loopback / credentials / probe refusals, the committed fixture, no BOQ
-seed, and the app's Storage-emulator gate that older launchers never set).
-Rules: `takeoff.rules.test.js` (56, §0). **Production-incident regressions
+seed's loopback / credentials / probe refusals, the committed fixture, the
+three Quant 1B BOQ items and no budget line, and the app's Storage-emulator
+gate that older launchers never set).
+Rules: `takeoff.rules.test.js` (64, §0). **Production-incident regressions
 (October 2026):** the missing-revision banner is computed only for a selected
 drawing whose revisions have settled (no drawing → no banner; loading → the
 picker's loading state; a failed revisions read → its own *unavailable*
@@ -5143,6 +5261,34 @@ run unless both emulator hosts are set, loopback and answering, and if
 `GOOGLE_APPLICATION_CREDENTIALS` is present. Nothing is written to a file; the
 older launchers never set the Storage flag and are unchanged.
 
+**What a restart resets — everything.** `emulators:exec` runs both emulators
+in memory with no `--import` / `--export-on-exit`: Ctrl+C discards every
+Firestore document and every Storage object — the fixture AND whatever you
+calibrated, measured, linked, applied or voided — and the next start re-seeds
+exactly the fixture below (deterministic ids; `setDoc` overwrites, so a
+re-run against live emulators resets the seeded documents and leaves other
+documents alone). This is deliberate: every acceptance run starts from a
+known state, and nothing can be mistaken for production. The only state that
+survives is in your browser: the Quant tab remembers its sheet per project in
+sessionStorage (ADR-52 Decision 9) — a restored id that the fresh seed does
+not contain is simply not selected. *Assessed, not implemented (needs
+approval):* the smallest safe opt-in for a resumable session is an
+environment variable, e.g. `QUANT_STATE_DIR=.emulator-state npm run
+test:quant`, under which the launcher adds `--import=<dir>
+--export-on-exit=<dir>` and skips the seed when the directory already holds
+an export (so a resumed session is exactly what you left, and a fresh
+directory is exactly the fixture); the directory must be git-ignored and
+the default, with the variable unset, must stay disposable.
+
+**If a sheet stays at *Loading sheet…*** (and a measurement card offers only
+*Show* and *Void*), the Storage emulator is not answering: the viewer's
+`getDownloadURL` retries for up to two minutes before it reports an error, and
+without the sheet's geometry nothing is measurable, so *Details*, *Geometry*
+and the tools stay hidden by design. Seen in a `test:quant` session left
+running for a day: the Storage emulator had exited while Firestore and Vite
+kept serving, and its port answered the CORS preflight with 503 and then
+refused connections. Stop with Ctrl+C and start `npm run test:quant` again.
+
 Seeded (all ids deterministic; tenant `2Vf3CVuYE8wWzg8hLjR5` "Apex Builders";
 project `quant-takeoff-test` "Quant Takeoff Test Project", AUD, no money):
 
@@ -5151,10 +5297,13 @@ project `quant-takeoff-test` "Quant Takeoff Test Project", AUD, no money):
 | A-101 Ground Floor Plan (`quant-drawing-a101`) | B (`quant-rev-a101-b`) | current | PDF, 2 pages (`quant-two-page.pdf`) | p.1: 400 × 300 pt rectangle labelled 4000 × 3000 mm — calibrate the bottom edge as 4000 mm → area **12 m²**, perimeter **14 m**, diagonal **5 m**. p.2 (rotated 90°, cropped): 600 × 400 pt rectangle, shown 400 wide × 600 tall — calibrate the short edge as 4000 mm → area **24 m²**, perimeter **20 m** |
 | A-101 | A (`quant-rev-a101-a`) | superseded | PNG 800 × 600 | calibrated (400 px = 4000 mm) with one seeded length — measurable, warned |
 | A-101 | P1 (`quant-rev-a101-p1`) | withdrawn | PNG 800 × 600 | calibrated with one seeded length — inspect or void only |
-| A-201 Site Plan (`quant-drawing-a201`) | A (`quant-rev-a201-a`) | current | PNG 800 × 600 | 400 × 300 px rectangle (outer edges x 200–600, y 150–450); bottom edge = 4000 mm → **12 m²**, **14 m** |
+| A-201 Site Plan (`quant-drawing-a201`) | A (`quant-rev-a201-a`) | current | PNG 800 × 600 | **calibrated** (400 px = 4000 mm); one **active area** seeded (`quant-seed-m-a201-area`, *Slab edge formwork (seeded, linked to 2.1)*) — the 400 × 300 px rectangle (outer edges x 200–600, y 150–450) = **12 m²**, on 04-100 Formwork, **linked to BOQ 2.1**; the perimeter drawn as a length = **14 m** |
 
 Cost codes: 03-100 Concrete (m3) · 04-100 Formwork (m2) · 08-100 Doors (no).
-No BOQ item is seeded on purpose — the BOQ tab must stay empty throughout. `moduleBranding.test.js` and `betaSurfaces.test.js` pins revised
+Since Quant 1B (ADR-52) three BOQ items are seeded (§28 lists them) and the
+A-201 area above is already linked to 2.1; measuring on the Quant tab still
+changes none of them — the §27 checks below hold unchanged (use A-101 Rev B,
+the PDF, or draw further measurements on A-201). `moduleBranding.test.js` and `betaSurfaces.test.js` pins revised
 **explicitly** (17 tabs; marks `['pulse', 'shield', 'quant']`; the `/quant`
 pointer; `brand-quant` token; `pdfjs-dist` the one added dependency, pinned).
 
@@ -5207,3 +5356,100 @@ records; it never writes a BOQ item):
       ≥44px, one-finger scroll pans the sheet while a tap adds a point, the
       list becomes cards below `md`, and VoiceOver/NVDA announces "Constrapp
       Quant™, heading level 2" with the scale-rule mark not announced.
+
+## 28. Constrapp Quant™ 1B — measurement → BOQ linkage and explicit apply (ADR-52)
+
+Automated: `tests/unit/quantBoq.test.js` (59), `tests/unit/boqActions.test.js`
+(21), `tests/unit/dialogFocus.test.js` (11) and `tests/unit/quantSelection.test.js`
+(14) — see §0b; `tests/rules/takeoff.rules.test.js` #57–#64 and the twelve
+Quant 1B tests in `tests/rules/boqItems.rules.test.js` — see §0, including the
+REAL `lib/boqActions.js` transactions against the emulator (stale refused, the
+ratchet engaged for a QS, a denied role, legacy stamps) and the two DC33
+gap-proofs. Four Quant 1A pins were revised explicitly (`quant.test.js`,
+`moduleBranding.test.js`): the workspace may READ BOQ items; no Quant file may
+call a BOQ write; the measurement schema gained exactly `boqItemId`; the copy
+now says applying is the BOQ tab's explicit step. Lint 0/0.
+
+**Seeded BOQ items (`npm run test:quant`, in addition to §27's fixture; 2.1 is
+already linked from the seeded 12 m² area on A-201 Rev A — the deterministic
+Quant 1B case — the other two are unlinked; the project is seeded with
+`currencyLocked: false` although a priced item exists, so the first priced BOQ
+write engages the ratchet — itself a check):**
+
+| Item | Cost code | Unit | Qty | Rate | Expected behaviour |
+|---|---|---|---|---|---|
+| 2.1 Formwork to slab edge (`quant-boq-formwork-m2`) | 04-100 Formwork | m2 | 10 | $85.00 → $850.00 | **Quant (1)** from the start: the seeded 12 m² area; the dialog proposes **12 m² / $1,020.00**. Offered to further AREA measurements on 04-100 |
+| 2.2 Concrete in slab on ground (`quant-boq-concrete-m3`) | 03-100 Concrete | m3 | 24 | $310.40 | **never offered** — m³ is incompatible with every Quant kind |
+| 8.1 Internal doors, flush panel (`quant-boq-doors-no`) | 08-100 Doors | no | 0 | unpriced | offered to COUNT measurements on 08-100; applying changes the quantity only, no amount |
+
+Manual — three checks only, all on the emulators (nothing here touches
+production; Quant 1B writes exactly one BOQ item per confirmed apply):
+
+- [ ] **Link and apply.** As **qs** open A-201 Rev A (PNG, current): it is
+      already calibrated and lists *Slab edge formwork (seeded, linked to
+      2.1)* — **12 m²**, *Current scale*, **BOQ item** column *2.1 · Formwork
+      to slab edge*. Open its **Details**: the *BOQ item* select shows **2.1 ·
+      Formwork to slab edge · m2 · qty 10** and nothing on another cost code
+      (choosing 03-100 lists no item because 2.2 is m³); cancel. Switch to the
+      **BOQ** tab and back to **Quant**: A-201 Rev A page 1 is still selected
+      (ADR-52 Decision 9); reload the browser tab: still selected. On the
+      **BOQ** tab row 2.1 offers **Quant (1)**; the dialog
+      lists the measurement with *A-201 · Rev A · p.1*, **12 m²**, *Current
+      scale*; Proposed change reads existing **10 m2** → proposed **12 m2**,
+      difference **+2 m2**, rate **$85.00 (unchanged)**, amount **$850.00 →
+      $1,020.00**; *Latest Quant application: No Quant application recorded*.
+      Tick the confirmation, **Apply 12 m2**: the row now shows **12** with
+      *Quant applied <today>*, BOQ Total (priced) rises by $170.00 and the
+      Formwork comparison row moves by the same; **Budget, Forecast, Cash
+      Flow and Commercial pages are unchanged**; the project document is now
+      `currencyLocked: true`. Reopen *Quant (1)*: *Matches the current
+      measurements*, confirmation disabled with *The measured total already
+      equals the BOQ quantity*. Now drag one corner of the rectangle so the
+      area stays 12 m² but the shape differs (e.g. 300 × 400 → 400 × 300 px),
+      *Save geometry*: the dialog reads **Outdated — the linked measurements
+      changed** although existing and proposed quantity are both 12 — the
+      fingerprint, not the total, decides. Draw a **Count** of 3 on 08-100 Doors linked
+      to **8.1**; apply → quantity **3**, *Unpriced — no monetary amount is
+      calculated*, BOQ total unchanged.
+- [ ] **Blockers, evidence change and stale refusal.** On A-201 re-calibrate
+      with a halved distance (tick the acknowledgement): the BOQ dialog for
+      2.1 now shows the measurement as **Needs review — scale changed**, lists
+      it under *1 measurement blocks applying* with its remedy, and the
+      confirmation is disabled (*Resolve every blocker below*). *Mark reviewed*
+      on the Quant tab → the dialog (left open in another tab, or reopened)
+      shows the eligible total again; if it was open and confirmed, the amber
+      *changed while this dialog was open — review the updated result and
+      confirm again* notice appears and the box is unticked. On A-101 select
+      Rev **A (superseded)** and link its seeded length to a new `lm` item on
+      04-100 (create one first): the dialog says **Not on the current
+      revision** and blocks. Edit the linked area's **cost code** to 03-100 in
+      the Quant editor: the picker clears with *The BOQ item link was cleared
+      because the cost code changed*; save — the BOQ column reads *—* and 2.1
+      loses its *Quant (n)*. Finally open 2.1's dialog in **two tabs**, apply
+      in the first, then apply in the second: the second reports *Another user
+      changed this BOQ item since you loaded it* and nothing is written; the
+      same message appears if a manual **Edit** was saved in another tab first.
+- [ ] **Roles and layout.** As **project_manager** and **company_admin** the
+      link picker and *Quant (n)* behave exactly as for qs. As
+      **subcontractor**: *Quant takeoff is restricted*, *The BOQ is
+      restricted*, and **no permission-denied error** in the console. With the
+      BOQ read failing (deny `boqItems` reads in the emulator rules
+      temporarily): the Quant editor's picker reads *BOQ unavailable — linking
+      disabled*, the list column reads *BOQ unavailable* (never *—*), and the
+      BOQ tab shows its failed-to-load card rather than zeros. At **375px**,
+      **768px** and **1280px** the apply dialog scrolls within the viewport,
+      its measurement table scrolls horizontally, every control is ≥ 44 px,
+      the confirmation checkbox is reachable by keyboard (Tab → Space → Enter
+      on Apply), the dialog panel takes focus when it opens, **Tab from the
+      Apply button lands on the × close button and Shift+Tab from × lands on
+      Apply** (focus never reaches the page behind the overlay), **Escape
+      closes the dialog** and the *Quant (1)* button has focus again after
+      Escape or Cancel (while *Applying…* is shown Escape does nothing, like
+      the disabled Cancel), *Existing amount* and *Proposed amount* read with
+      cents (**$850.00 → $1,062.50** for 10 → 12.5 m² at $85), and
+      VoiceOver/NVDA announces *Apply Quant measurements · 2.1 · Formwork to
+      slab edge, dialog*. On the Quant tab at **375px** a measurement card with
+      *Needs review* shows the badge and *Mark reviewed* on one line and
+      *Show · Details · Geometry · Void* as one row of equal 44px cells (no
+      wrapped third line; Void in red; a visible outline when tabbed to); at
+      **768px** and **1280px** the table row's inline actions are unchanged.

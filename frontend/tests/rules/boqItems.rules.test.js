@@ -8,8 +8,9 @@ import {
   assertFails,
 } from '@firebase/rules-unit-testing'
 import {
-  doc, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, Timestamp,
+  doc, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, Timestamp, runTransaction,
 } from 'firebase/firestore'
+import { runApplyBoqQuantity, runUpdateBoqItem, BoqWriteError, BOQ_WRITE_ERROR } from '../../src/lib/boqActions'
 
 // ── BOQ item Security Rules — emulator tests ─────────────────────────────────
 //
@@ -526,5 +527,225 @@ describe('create → price → void sequence', () => {
     const snap = await getDoc(itemRef(ctx(USERS.admin), 'seq1'))
     expect(snap.data().status).toBe('void')
     expect(snap.data().voidReason).toBe('Superseded by revised takeoff')
+  })
+})
+
+// ── Quant 1B — provenance map and the guarded transactions (ADR-52) ──────────
+//
+// `quantApplied` is OPTIONAL. Rules enforce: absent at create; on an active
+// edit either PRESERVED exactly as stored (a manual edit carries it along) or
+// FRESH — exact keys, `by == request.auth.uid`, `at == request.time`,
+// `quantity == the quantity being written`, `measurementCount` a positive
+// integer. The void branch's `hasOnly` keeps it untouched. The last tests run
+// the REAL lib/boqActions.js transactions against the rules: stale refusals,
+// the ratchet, and a denied role.
+
+// A fingerprint exactly as lib/quantBoq.js → evidenceFingerprint shapes it.
+const EV = 'v1:0123456789abcdef'
+
+describe('QUANT 1B — quantApplied provenance (ADR-52)', () => {
+  // The exact apply payload lib/boqActions.js writes: 12 m² × $310.40.
+  const applyWrite = (user, quantity = 12, extra = {}) => activeEdit(user, {
+    quantity, amount: Math.round(quantity * 310.4 * 100) / 100,
+    quantApplied: { at: serverTimestamp(), by: user.uid, quantity, measurementCount: 1, evidence: EV },
+    ...extra,
+  })
+
+  it('accepts a fresh, caller-stamped application whose quantity equals the written quantity, for each financial role', async () => {
+    for (const user of [USERS.admin, USERS.pm, USERS.qs]) {
+      await seed(`qa-${user.uid}`, 'active')
+      await assertSucceeds(updateDoc(itemRef(ctx(user), `qa-${user.uid}`), applyWrite(user)))
+      const stored = (await getDoc(itemRef(ctx(user), `qa-${user.uid}`))).data()
+      expect(stored.quantApplied).toMatchObject({ by: user.uid, quantity: 12, measurementCount: 1 })
+      expect(stored.quantity).toBe(12)
+    }
+  })
+
+  it('refuses a forged or malformed map: another actor, a client clock, a quantity that disagrees with the write, bad shape', async () => {
+    await seed('qb', 'active')
+    const pm = ctx(USERS.pm)
+    const bad = (q) => activeEdit(USERS.pm, { quantity: 12, amount: 3724.8, quantApplied: q })
+    const ok = { at: serverTimestamp(), by: USERS.pm.uid, quantity: 12, measurementCount: 1, evidence: EV }
+    await assertFails(updateDoc(itemRef(pm, 'qb'), bad({ ...ok, by: USERS.admin.uid })))
+    for (const clock of CLIENT_CLOCKS) {
+      await assertFails(updateDoc(itemRef(pm, 'qb'), bad({ ...ok, at: clock() })))
+    }
+    await assertFails(updateDoc(itemRef(pm, 'qb'), bad({ ...ok, quantity: 11 })))
+    await assertFails(updateDoc(itemRef(pm, 'qb'), bad({ ...ok, measurementCount: 0 })))
+    await assertFails(updateDoc(itemRef(pm, 'qb'), bad({ ...ok, measurementCount: 1.5 })))
+    const { measurementCount: _omitCount, ...noCount } = ok // eslint-disable-line no-unused-vars
+    await assertFails(updateDoc(itemRef(pm, 'qb'), bad(noCount)))
+    await assertFails(updateDoc(itemRef(pm, 'qb'), bad({ ...ok, certified: true })))
+    await assertFails(updateDoc(itemRef(pm, 'qb'), bad({ ...ok, by: '' })))
+    await assertFails(updateDoc(itemRef(pm, 'qb'), bad('applied')))
+    // The evidence fingerprint is REQUIRED on a fresh application and bounded: no key, null, blank, oversized or non-string is refused.
+    const { evidence: _omitEvidence, ...noEvidence } = ok // eslint-disable-line no-unused-vars
+    await assertFails(updateDoc(itemRef(pm, 'qb'), bad(noEvidence)))
+    for (const evidence of [null, '', 'x'.repeat(129), 7, { v: 1 }]) {
+      await assertFails(updateDoc(itemRef(pm, 'qb'), bad({ ...ok, evidence })))
+    }
+    await assertSucceeds(updateDoc(itemRef(pm, 'qb'), bad({ ...ok, evidence: 'x'.repeat(128) })))
+    // The amount invariant still binds the apply write.
+    await assertFails(updateDoc(itemRef(pm, 'qb'), activeEdit(USERS.pm, { quantity: 13, amount: 3880, quantApplied: { ...ok, quantity: 13 } })))
+  })
+
+  it('a LEGACY record whose quantApplied has NO evidence key is still preserved verbatim through a manual edit and a void — rules cannot recompute a fingerprint', async () => {
+    const legacy = { at: Timestamp.now(), by: USERS.qs.uid, quantity: 12.5, measurementCount: 1 }
+    await seed('ql', 'active', USERS.admin, { quantApplied: legacy })
+    const qs = ctx(USERS.qs)
+    await assertSucceeds(updateDoc(itemRef(qs, 'ql'), activeEdit(USERS.qs, { notes: 'edited around a legacy record' })))
+    expect((await getDoc(itemRef(qs, 'ql'))).data().quantApplied).toEqual(legacy)
+    // Re-stamping it without evidence is neither preserved nor fresh.
+    await assertFails(updateDoc(itemRef(qs, 'ql'), activeEdit(USERS.qs, { quantApplied: { ...legacy, at: serverTimestamp(), by: USERS.qs.uid } })))
+    // A fresh application with evidence replaces it.
+    await assertSucceeds(updateDoc(itemRef(qs, 'ql'), applyWrite(USERS.qs, 20)))
+    expect((await getDoc(itemRef(qs, 'ql'))).data().quantApplied.evidence).toBe(EV)
+    await seed('ql2', 'active', USERS.admin, { quantApplied: legacy })
+    await assertSucceeds(updateDoc(itemRef(qs, 'ql2'), voidWrite(USERS.qs)))
+    expect((await getDoc(itemRef(qs, 'ql2'))).data().quantApplied).toEqual(legacy)
+  })
+
+  it('is never written at CREATE', async () => {
+    await assertFails(setDoc(itemRef(ctx(USERS.qs), 'qc'), pricedPayload(USERS.qs, {
+      quantApplied: { at: serverTimestamp(), by: USERS.qs.uid, quantity: 12.5, measurementCount: 1 },
+    })))
+    await assertFails(setDoc(itemRef(ctx(USERS.qs), 'qc2'), pricedPayload(USERS.qs, { quantApplied: null })))
+  })
+
+  it('a later MANUAL edit preserves the stored map verbatim; altering it without a fresh stamp is refused; void leaves it in place', async () => {
+    await seed('qd', 'active')
+    const qs = ctx(USERS.qs)
+    await assertSucceeds(updateDoc(itemRef(qs, 'qd'), applyWrite(USERS.qs)))
+    const applied = (await getDoc(itemRef(qs, 'qd'))).data().quantApplied
+    // The editor's full-content save does not name quantApplied — the merged document carries it unchanged.
+    await assertSucceeds(updateDoc(itemRef(qs, 'qd'), activeEdit(USERS.qs, { quantity: 15, amount: 4656 })))
+    expect((await getDoc(itemRef(qs, 'qd'))).data().quantApplied).toEqual(applied)
+    // Rewriting the stored map with a different quantity but the OLD stamp is neither preserved nor fresh.
+    await assertFails(updateDoc(itemRef(qs, 'qd'), activeEdit(USERS.qs, { quantApplied: { ...applied, quantity: 15 } })))
+    await assertFails(updateDoc(itemRef(qs, 'qd'), activeEdit(USERS.qs, { quantApplied: { ...applied, by: USERS.pm.uid } })))
+    // A fresh re-application replaces it.
+    await assertSucceeds(updateDoc(itemRef(ctx(USERS.pm), 'qd'), applyWrite(USERS.pm, 20)))
+    expect((await getDoc(itemRef(qs, 'qd'))).data().quantApplied).toMatchObject({ by: USERS.pm.uid, quantity: 20 })
+    // Void may not touch it, and keeps it.
+    await assertFails(updateDoc(itemRef(qs, 'qd'), voidWrite(USERS.qs, 'done', { quantApplied: null })))
+    await assertSucceeds(updateDoc(itemRef(qs, 'qd'), voidWrite(USERS.qs, 'done')))
+    expect((await getDoc(itemRef(qs, 'qd'))).data().quantApplied).toMatchObject({ by: USERS.pm.uid, quantity: 20 })
+  })
+
+  it('a legacy item without the key still takes every write it always did', async () => {
+    await seed('qe', 'active')
+    await assertSucceeds(updateDoc(itemRef(ctx(USERS.pm), 'qe'), activeEdit(USERS.pm, { notes: 'still editable' })))
+    await assertSucceeds(updateDoc(itemRef(ctx(USERS.pm), 'qe'), voidWrite(USERS.pm)))
+  })
+})
+
+describe('QUANT 1B — the guarded BOQ transactions (lib/boqActions.js) against the emulator', () => {
+  const projectRef = (db) => doc(db, `companies/${COMPANY_A}/projects`, PROJECT_A)
+  // The app's ratchet (hooks/projectCurrencyLock.js), re-stated on the test SDK.
+  const stageLock = (db) => async (tx) => {
+    const snap = await tx.get(projectRef(db))
+    if (!snap.exists() || snap.data().currencyLocked === true) return () => {}
+    return () => tx.update(projectRef(db), { currencyLocked: true })
+  }
+  const sdk = (user) => {
+    const db = ctx(user)
+    return { db, uid: user.uid, runTransaction, serverTimestamp, stageLock: stageLock(db) }
+  }
+  const expectKind = async (promise, kind) => {
+    let caught = null
+    try { await promise } catch (err) { caught = err }
+    expect(caught).toBeInstanceOf(BoqWriteError)
+    expect(caught.kind).toBe(kind)
+  }
+  const readItem = async (id) => {
+    let data = null
+    await testEnv.withSecurityRulesDisabled(async (c) => { data = (await getDoc(doc(c.firestore(), itemsPath(), id))).data() })
+    return data
+  }
+  const seenCopy = async (user, id) => ({ id, ...(await getDoc(itemRef(ctx(user), id))).data() })
+
+  it('apply: from the reviewed copy succeeds, writes the derived amount and provenance, and ENGAGES the ratchet for a qs user', async () => {
+    await seed('t1', 'active') // priced 12.5 × 310.40 on an UNLOCKED project
+    const qs = sdk(USERS.qs)
+    const seen = await seenCopy(USERS.qs, 't1')
+    const out = await runApplyBoqQuantity({ ...qs, itemRef: itemRef(qs.db, 't1'), seen, quantity: 12, measurementCount: 2, evidence: EV })
+    expect(out).toEqual({ kind: null, quantity: 12, amount: 3724.8 })
+    const stored = await readItem('t1')
+    expect(stored).toMatchObject({ quantity: 12, amount: 3724.8, updatedBy: USERS.qs.uid, revision: 1 })
+    expect(stored.quantApplied).toMatchObject({ by: USERS.qs.uid, quantity: 12, measurementCount: 2, evidence: EV })
+    expect(stored.quantApplied.at).toBeInstanceOf(Timestamp)
+    let project = null
+    await testEnv.withSecurityRulesDisabled(async (c) => { project = (await getDoc(doc(c.firestore(), `companies/${COMPANY_A}/projects`, PROJECT_A))).data() })
+    expect(project.currencyLocked).toBe(true)
+  })
+
+  it('apply: a STALE copy (someone saved underneath) is refused end to end and nothing changes', async () => {
+    await seed('t2', 'active')
+    const qs = sdk(USERS.qs)
+    const stale = await seenCopy(USERS.qs, 't2')
+    // Another user re-prices the item.
+    await assertSucceeds(updateDoc(itemRef(ctx(USERS.pm), 't2'), activeEdit(USERS.pm, { rate: 400, amount: 5000 })))
+    await expectKind(runApplyBoqQuantity({ ...qs, itemRef: itemRef(qs.db, 't2'), seen: stale, quantity: 12, measurementCount: 1, evidence: EV }), BOQ_WRITE_ERROR.STALE)
+    const stored = await readItem('t2')
+    expect(stored).toMatchObject({ quantity: 12.5, rate: 400, amount: 5000 })
+    expect(stored.quantApplied).toBeUndefined()
+    // The fresh copy applies at the NEW rate.
+    const fresh = await seenCopy(USERS.qs, 't2')
+    const out = await runApplyBoqQuantity({ ...qs, itemRef: itemRef(qs.db, 't2'), seen: fresh, quantity: 12, measurementCount: 1, evidence: EV })
+    expect(out.amount).toBe(4800)
+  })
+
+  it('apply: an unpriced item changes quantity only — amount stays null and the project stays UNLOCKED', async () => {
+    await seed('t3', 'active', USERS.admin, { rate: null, amount: null })
+    const pm = sdk(USERS.pm)
+    const seen = await seenCopy(USERS.pm, 't3')
+    const out = await runApplyBoqQuantity({ ...pm, itemRef: itemRef(pm.db, 't3'), seen, quantity: 7, measurementCount: 3, evidence: EV })
+    expect(out).toEqual({ kind: null, quantity: 7, amount: null })
+    expect(await readItem('t3')).toMatchObject({ quantity: 7, rate: null, amount: null, quantApplied: { quantity: 7, measurementCount: 3 } })
+    let project = null
+    await testEnv.withSecurityRulesDisabled(async (c) => { project = (await getDoc(doc(c.firestore(), `companies/${COMPANY_A}/projects`, PROJECT_A))).data() })
+    expect(project.currencyLocked).toBeUndefined()
+  })
+
+  it('apply: a void item and a denied role are refused with nothing written', async () => {
+    await seed('t4', 'void')
+    const qs = sdk(USERS.qs)
+    await expectKind(runApplyBoqQuantity({ ...qs, itemRef: itemRef(qs.db, 't4'), seen: { id: 't4', ...pricedPayload(USERS.admin), status: 'void' }, quantity: 12, measurementCount: 1, evidence: EV }), BOQ_WRITE_ERROR.INVALID)
+    await seed('t5', 'active')
+    const sub = sdk(USERS.sub)
+    // A denied role cannot even READ the item: the transaction's own read is refused → PERMISSION.
+    await expectKind(runApplyBoqQuantity({ ...sub, itemRef: itemRef(sub.db, 't5'), seen: { id: 't5', ...pricedPayload(USERS.admin), updatedAt: null }, quantity: 12, measurementCount: 1, evidence: EV }), BOQ_WRITE_ERROR.PERMISSION)
+    expect((await readItem('t5')).quantity).toBe(12.5)
+  })
+
+  it('manual edit (runUpdateBoqItem): the editor’s save succeeds from the reviewed copy, is refused as STALE after a concurrent save, and still prices with the ratchet', async () => {
+    await seed('t6', 'active', USERS.admin, { rate: null, amount: null })
+    const qs = sdk(USERS.qs)
+    const fields = (q, rate) => ({
+      itemNumber: '2.1', section: 'Substructure', description: 'Concrete in slab on ground, N32', unit: 'm3',
+      quantity: q, rate, amount: rate === null ? null : Math.round(q * rate * 100) / 100,
+      costCodeId: 'cc1', costCodeName: '03-100 — Concrete Slab', notes: '',
+    })
+    const seen = await seenCopy(USERS.qs, 't6')
+    // Someone else edits first.
+    await assertSucceeds(updateDoc(itemRef(ctx(USERS.pm), 't6'), activeEdit(USERS.pm, { quantity: 13, notes: 'pm' })))
+    await expectKind(runUpdateBoqItem({ ...qs, itemRef: itemRef(qs.db, 't6'), seen, fields: fields(14, null) }), BOQ_WRITE_ERROR.STALE)
+    expect(await readItem('t6')).toMatchObject({ quantity: 13, notes: 'pm' })
+    // The fresh copy saves, and PRICING engages the ratchet in the same transaction.
+    const fresh = await seenCopy(USERS.qs, 't6')
+    await runUpdateBoqItem({ ...qs, itemRef: itemRef(qs.db, 't6'), seen: fresh, fields: fields(14, 20) })
+    expect(await readItem('t6')).toMatchObject({ quantity: 14, rate: 20, amount: 280, updatedBy: USERS.qs.uid })
+    let project = null
+    await testEnv.withSecurityRulesDisabled(async (c) => { project = (await getDoc(doc(c.firestore(), `companies/${COMPANY_A}/projects`, PROJECT_A))).data() })
+    expect(project.currencyLocked).toBe(true)
+    // An apply after a manual edit preserves nothing stale: the manual edit left no quantApplied, the apply writes one.
+    const again = await seenCopy(USERS.qs, 't6')
+    await runApplyBoqQuantity({ ...qs, itemRef: itemRef(qs.db, 't6'), seen: again, quantity: 9, measurementCount: 1, evidence: EV })
+    expect(await readItem('t6')).toMatchObject({ quantity: 9, amount: 180, quantApplied: { quantity: 9 } })
+  })
+
+  it('NOT ENFORCED (DC33) — a direct-SDK client that writes a valid payload without reading first still passes: the version guard is the app’s, not the rules’', async () => {
+    await seed('t7', 'active')
+    await assertSucceeds(updateDoc(itemRef(ctx(USERS.pm), 't7'), activeEdit(USERS.pm, { quantity: 1, amount: 310.4 })))
   })
 })

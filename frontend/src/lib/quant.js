@@ -8,8 +8,10 @@ import {
 // Pure geometry, calibration and validation for the takeoff workspace. No
 // React, no Firebase, no Firestore reads, and — deliberately — NO financial
 // arithmetic: a measurement is a quantity in metres, square metres or units,
-// never money. Quant 1A writes nothing onto a BOQ item, a budget line or any
-// other commercial document (the Quant 1B boundary, ADR-51).
+// never money. Nothing in this module writes onto a BOQ item, a budget line or
+// any other commercial document. Quant 1B (ADR-52) adds an OPTIONAL `boqItemId`
+// link on a measurement — an identity, validated here by shape only — and the
+// explicit review-and-apply step lives in lib/quantBoq.js + lib/boqActions.js.
 //
 // ⚠️ CANONICAL COORDINATES. Every stored point is in the PAGE'S OWN space:
 //   · PDF  — the PDF.js default viewport at scale 1 (`page.getViewport({
@@ -380,14 +382,26 @@ export function validatePoints(kind, points) {
   return null
 }
 
+// The optional BOQ link (Quant 1B, ADR-52): absent, null, or a non-blank
+// document id. Nothing else — the link is an identity, never a quantity.
+export const isValidBoqLink = (boqItemId) =>
+  boqItemId === undefined || boqItemId === null
+  || (typeof boqItemId === 'string' && boqItemId.trim().length > 0)
+
+export function validateBoqLink(boqItemId) {
+  return isValidBoqLink(boqItemId) ? null : 'The BOQ item link is not valid.'
+}
+
 // Error string or null for a measurement about to be created or edited.
-export function validateMeasurementDraft({ kind, points, label, costCodeId, costCodeName } = {}) {
+export function validateMeasurementDraft({ kind, points, label, costCodeId, costCodeName, boqItemId } = {}) {
   const pointsError = validatePoints(kind, points)
   if (pointsError) return pointsError
   const labelError = validateLabel(label)
   if (labelError) return labelError
   if (!String(costCodeId ?? '').trim()) return 'Choose the cost code this measurement belongs to.'
   if (!String(costCodeName ?? '').trim()) return 'The chosen cost code has no display name.'
+  const linkError = validateBoqLink(boqItemId)
+  if (linkError) return linkError
   return null
 }
 
@@ -403,7 +417,13 @@ export function isReadableMeasurement(m) {
     && (m.status === MEASUREMENT_STATUS.ACTIVE || m.status === MEASUREMENT_STATUS.VOID)
     && typeof m.takeoffPageId === 'string'
     && (m.calibration === null || isValidCalibrationSnapshot(m.calibration))
+    // Quant 1A documents have no `boqItemId` key at all; 1B writes null or an id.
+    && isValidBoqLink(m.boqItemId)
 }
+
+// The link a stored measurement carries, normalised: null for a 1A document.
+export const measurementBoqItemId = (m) =>
+  typeof m?.boqItemId === 'string' && m.boqItemId.length > 0 ? m.boqItemId : null
 
 export function isReadablePage(p) {
   return !!p && typeof p === 'object'

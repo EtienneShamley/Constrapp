@@ -21,13 +21,16 @@ deploy (no rules change, no migration, no backfill) — merged to `main`, Azure
 CI passed, Hosting deployed by hand, the five commercial checks verified in
 production.
 
-**Quant™ 1A (ADR-51): Hosting DEPLOYED (October 2026) — PRODUCTION
-VERIFICATION BLOCKED.** The Quant merge was built and deployed to Hosting and
-a rules publish was attempted, but production verification failed: the Quant
-tab reported *Takeoff records are unavailable*, PDF sheets did not load, and a
-*Revision not found* banner appeared with no drawing selected. The diagnosis
-(ADR-51 hotfix amendment) found three separate causes, two of them confirmed
-in code and one inferred from the symptoms:
+**Quant™ 1A (ADR-51): LIVE IN PRODUCTION (October 2026).** The first Hosting
+deploy of the Quant merge could not be verified: the Quant tab reported
+*Takeoff records are unavailable*, PDF sheets did not load, and a *Revision
+not found* banner appeared with no drawing selected. The hotfix below was then
+released in the order listed (trimmed rules published and confirmed live,
+bucket CORS corrected, Hosting deployed) and the core functionality — rules,
+Storage CORS, calibration and measurement — was **verified in production**.
+The repository records the month, not the day, of that verification. The
+diagnosis (ADR-51 hotfix amendment) found three separate causes, two of them
+confirmed in code and one inferred from the symptoms:
 
 - **Rules source size (inferred, highly likely).** `frontend/firestore.rules`
   had grown to **264,907 UTF-8 bytes**, above Firestore's **256 KB (262,144
@@ -48,7 +51,8 @@ in code and one inferred from the symptoms:
   missing-revision warning when no drawing was selected and while revisions
   were still loading. Fixed in `pages/project/quant/TakeoffWorkspace.jsx`.
 
-Release of the hotfix, in order, each a separate approved action:
+Release of the hotfix (completed — kept as the record of the order used), each
+a separate approved action:
 
 1. **Confirm the live ruleset** (procedure below) and record what it is.
 2. **Publish the trimmed `frontend/firestore.rules`** after `npm run test:rules`
@@ -59,9 +63,37 @@ Release of the hotfix, in order, each a separate approved action:
    and the GET separately (below).
 4. **Deploy Hosting** with the hotfix build: `npm run build` + `firebase deploy
    --only hosting --project constrapp-69b5d`.
-5. **Verify in production** per TESTING.md §27 and record the outcome here.
+5. **Verify in production** per TESTING.md §27 — done (October 2026; see above).
 
 `frontend/storage.rules` is **unchanged**; no Storage read permission widens.
+
+**Quant™ 1B (ADR-52): IMPLEMENTED — NOT YET DEPLOYED. ⚠️ RULES FIRST, HOSTING
+SECOND — the reverse of the ADR-40 gate.** The 1B bundle writes a new key,
+`boqItemId`, on **every** measurement save (null or an id), and the LIVE
+`takeoffMeasurements` block's `hasOnly` **rejects any unknown key** — so a
+Hosting deploy ahead of the rules would break every measurement save on the
+Quant tab with *You do not have permission to save measurements*. The reverse
+order is safe: the revised rules accept measurement documents **with or
+without** the key (it is in `hasOnly`, not `hasAll`), and the live bundle never
+sends it; the `boqItems` change is likewise additive (`quantApplied` optional,
+refused at create, preserved or fresh on edit). Release, in order, each a
+separate approved action:
+
+1. `cd frontend && npm run test:unit && npm run test:rules` — green, and the
+   size test passes (`firestore.rules` is **196,034 bytes** against the
+   245,000-byte budget; `wc -c frontend/firestore.rules`).
+2. **Publish `frontend/firestore.rules`** (procedure below) and **confirm the
+   live version** (*Verifying which rules version is published*). From this
+   moment the live 1A bundle keeps working unchanged.
+3. `npm run build` + `firebase deploy --only hosting --project constrapp-69b5d`.
+4. **Verify in production** per TESTING.md §28 (link, review, apply; stale
+   refusal; roles) and record the outcome here.
+
+`frontend/storage.rules` is **unchanged**; no bucket CORS change is needed (the
+dialog reads no file bytes). **Rollback:** redeploying the previous Hosting
+build is sufficient and needs no rules change — the revised rules accept every
+write the 1A bundle makes. Rolling the *rules* back to the pre-1B version
+while the 1B bundle is live would re-break measurement saves; do not.
 
 ## Prerequisites
 
@@ -241,7 +273,8 @@ Reversing those steps breaks **create, draft edit, approve, post and cancel** on
 the Supplier Invoices register for every user until the build catches up.
 
 The general rule: **if a rules change adds a required field, the code that writes
-it ships first.** Existing documents are unaffected either way — the ADR-40
+it ships first. If a code change adds a key that the LIVE rules' `hasOnly`
+would reject, the rules ship first** (Quant™ 1B, ADR-52 — above). Existing documents are unaffected either way — the ADR-40
 block reads `cancelledBy` through `get(key, null)` on both sides and requires the
 audit stamps only of the INCOMING document, so a pre-ADR-40 invoice stays
 editable and acquires the new fields on its next valid write.

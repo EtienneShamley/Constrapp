@@ -4,9 +4,21 @@
 // Seeds the LOCAL Firestore emulator AND the LOCAL Cloud Storage emulator with
 // one tenant, one project, three cost codes, two drawings with real file bytes
 // (the committed two-page PDF fixture with KNOWN dimensions, plus generated PNG
-// sheets), and a little takeoff history on a superseded and a withdrawn
-// revision — so every path in the Quant tab can be exercised by hand with the
-// UNPUBLISHED takeoff rules loaded from disk.
+// sheets), a little takeoff history on a superseded and a withdrawn revision,
+// and — since Quant 1B (ADR-52) — three BOQ items (matching m², incompatible
+// m³, unpriced count) so linking and apply can be exercised by hand with the
+// UNPUBLISHED rules loaded from disk, plus ONE ready-made 1B case: A-201 Rev A
+// calibrated, with an active 12 m² area measurement already LINKED to BOQ item
+// 2.1 (qty 10 m², $85.00), so the apply dialog proposes 12 m² / $1,020.00 the
+// moment the environment is up.
+//
+// EVERY RESTART RESETS EVERYTHING. `firebase emulators:exec` runs both
+// emulators in memory with no --import / --export-on-exit: Ctrl+C discards all
+// Firestore documents and all Storage objects — the fixture AND whatever the
+// tester calibrated, measured, linked, applied or voided — and the next start
+// re-seeds exactly this fixture (deterministic ids, setDoc overwrites). That is
+// deliberate: acceptance runs start from a known state. See TESTING.md §27 for
+// the (unimplemented, opt-in) state-directory assessment.
 //
 // Run via `npm run test:quant` (scripts/quant-dev.mjs). It can also be run
 // alone against already-running emulators:
@@ -78,6 +90,21 @@ export const SEED = {
     a101A:  'quant-rev-a101-a',    // superseded (PNG)  — measurable, warned
     a101B:  'quant-rev-a101-b',    // current    (PDF, 2 pages, known dimensions)
     a201A:  'quant-rev-a201-a',    // current    (PNG)
+  },
+  // Quant 1B (ADR-52) — three BOQ items so linking and apply can be exercised:
+  // a MATCHING priced m² item on Formwork, an INCOMPATIBLE m³ item on Concrete
+  // (never offered to an area measurement), and an UNPRICED count item on
+  // Doors (the no-amount path). No budget line, no other financial record.
+  boqItems: {
+    formworkM2: 'quant-boq-formwork-m2',
+    concreteM3: 'quant-boq-concrete-m3',
+    doorsCount: 'quant-boq-doors-no',
+  },
+  // The ready-made Quant 1B case (TESTING.md §28): the seeded area on A-201.
+  measurements: {
+    a201Area:   'quant-seed-m-a201-area',
+    superseded: 'quant-seed-m-superseded',
+    withdrawn:  'quant-seed-m-withdrawn',
   },
 }
 
@@ -203,24 +230,50 @@ const R = SEED.revisions
 const CC = SEED.costCodes
 const costCodeName = (code, name) => `${code} — ${name}`
 
-// A tiny takeoff history on the two non-current revisions of A-101, so the
-// "inspectable but not editable" behaviour is visible without first creating it.
+// Takeoff records, exactly as lib/quantActions.js writes them (every key the
+// rules' exactKeys list names; `boqItemId` null for an unlinked measurement).
+// The PNG sheets share one calibration: the 400 px bottom edge of the
+// rectangle is 4000 mm, so the rectangle is 4 m × 3 m — area 12 m².
 const pageId = (d, r, p) => `${d}_${r}_${p}`
 const CAL_PNG = { pointA: { x: 200, y: 450 }, pointB: { x: 600, y: 450 }, pageDistance: 400, realDistance: 4000, unit: 'mm' }
 const SNAP_PNG = { revision: 1, pageDistance: 400, realDistance: 4000, unit: 'mm' }
-const historyPage = (revisionId) => [`${proj}/takeoffPages/${pageId(a101.id, revisionId, 1)}`, {
-  drawingId: a101.id, revisionId, page: 1,
+// The rectangle's OUTER edges on every PNG sheet — as an AREA, 4 m × 3 m = 12 m².
+export const A201_RECT = [{ x: 200, y: 150 }, { x: 600, y: 150 }, { x: 600, y: 450 }, { x: 200, y: 450 }]
+const seedPage = (drawingId, revisionId) => [`${proj}/takeoffPages/${pageId(drawingId, revisionId, 1)}`, {
+  drawingId, revisionId, page: 1,
   source: 'image', pageWidth: 800, pageHeight: 600, pageRotation: 0,
   calibration: CAL_PNG, calibrationRevision: 1, calibratedAt: now, calibratedBy: UID,
   revision: 1, createdAt: now, createdBy: UID, updatedAt: now, updatedBy: UID,
 }]
-const historyMeasurement = (id, revisionId, label) => [`${proj}/takeoffMeasurements/${id}`, {
-  takeoffPageId: pageId(a101.id, revisionId, 1), drawingId: a101.id, revisionId, page: 1,
-  kind: 'length', points: [{ x: 200, y: 150 }, { x: 600, y: 150 }], label,
+const seedMeasurement = (id, { drawingId, revisionId, kind, points, label, boqItemId = null }) => [`${proj}/takeoffMeasurements/${id}`, {
+  takeoffPageId: pageId(drawingId, revisionId, 1), drawingId, revisionId, page: 1,
+  kind, points, label,
   costCodeId: CC.formwork, costCodeName: costCodeName('04-100', 'Formwork'),
   calibration: SNAP_PNG, status: 'active', voidReason: '', voidedAt: null, voidedBy: null,
+  boqItemId,
   revision: 1, createdAt: now, createdBy: UID, updatedAt: now, updatedBy: UID,
 }]
+// A tiny takeoff history on the two non-current revisions of A-101, so the
+// "inspectable but not editable" behaviour is visible without first creating it.
+const historyPage = (revisionId) => seedPage(a101.id, revisionId)
+const historyMeasurement = (id, revisionId, label) =>
+  seedMeasurement(id, { drawingId: a101.id, revisionId, kind: 'length', points: [{ x: 200, y: 150 }, { x: 600, y: 150 }], label })
+
+// The three BOQ items (ADR-52), exactly as hooks/useBoqItems.jsx writes them.
+// The priced m² item carries a known quantity and rate so the apply preview
+// can be checked by hand: 10 m² × $85.00 = $850.00; the seeded, LINKED 12 m²
+// rectangle on A-201 gives 12 × 85 = $1,020.00. Note the project is seeded
+// UNLOCKED although a priced item exists — the first priced BOQ write (a Quant
+// apply or an edit) engages the currency ratchet, which is itself a check.
+const boqItem = (id, fields) => [`${proj}/boqItems/${id}`, {
+  itemNumber: '', section: '', description: '', unit: '', quantity: 0, rate: null, amount: null,
+  costCodeId: '', costCodeName: '', notes: '',
+  status: 'active', currency: 'AUD', revision: 1, attachments: [], externalRefs: {},
+  voidReason: '', voidedAt: null, voidedBy: null,
+  createdAt: now, createdBy: UID, updatedAt: now, updatedBy: UID,
+  ...fields,
+}]
+const B = SEED.boqItems
 
 const DOCS = [
   ...SEEDED_UIDS.map(uid => [`users/${uid}`, {
@@ -261,9 +314,34 @@ const DOCS = [
 
   // Takeoff history on the superseded and the withdrawn revision.
   historyPage(R.a101A),
-  historyMeasurement('quant-seed-m-superseded', R.a101A, 'Top edge (superseded rev A)'),
+  historyMeasurement(SEED.measurements.superseded, R.a101A, 'Top edge (superseded rev A)'),
   historyPage(R.a101P1),
-  historyMeasurement('quant-seed-m-withdrawn', R.a101P1, 'Top edge (withdrawn rev P1)'),
+  historyMeasurement(SEED.measurements.withdrawn, R.a101P1, 'Top edge (withdrawn rev P1)'),
+
+  // The ready-made Quant 1B case: A-201 Rev A (current) calibrated, one ACTIVE
+  // area — the 12 m² rectangle — on 04-100 Formwork, LINKED to BOQ item 2.1.
+  seedPage(a201.id, R.a201A),
+  seedMeasurement(SEED.measurements.a201Area, {
+    drawingId: a201.id, revisionId: R.a201A, kind: 'area', points: A201_RECT,
+    label: 'Slab edge formwork (seeded, linked to 2.1)', boqItemId: B.formworkM2,
+  }),
+
+  // Quant 1B BOQ items (ADR-52). 2.1 has the seeded link above; the others are unlinked.
+  boqItem(B.formworkM2, {
+    itemNumber: '2.1', section: 'Substructure', description: 'Formwork to slab edge', unit: 'm2',
+    quantity: 10, rate: 85, amount: 850,
+    costCodeId: CC.formwork, costCodeName: costCodeName('04-100', 'Formwork'),
+  }),
+  boqItem(B.concreteM3, {
+    itemNumber: '2.2', section: 'Substructure', description: 'Concrete in slab on ground, N32', unit: 'm3',
+    quantity: 24, rate: 310.4, amount: 7449.6,
+    costCodeId: CC.concrete, costCodeName: costCodeName('03-100', 'Concrete'),
+  }),
+  boqItem(B.doorsCount, {
+    itemNumber: '8.1', section: 'Architectural', description: 'Internal doors, flush panel', unit: 'no',
+    quantity: 0, rate: null, amount: null,
+    costCodeId: CC.doors, costCodeName: costCodeName('08-100', 'Doors'),
+  }),
 ]
 
 const FILES = [
@@ -310,11 +388,21 @@ console.log(`
     Rev A   SUPERSEDED  PNG 800 × 600  (${R.a101A}) — calibrated, one length seeded; measurable with the warning
     Rev P1  WITHDRAWN   PNG 800 × 600  (${R.a101P1}) — calibrated, one length seeded; inspect or void ONLY
   Drawing A-201 Site Plan  (${a201.id})
-    Rev A   CURRENT     PNG 800 × 600  (${R.a201A})
+    Rev A   CURRENT     PNG 800 × 600  (${R.a201A}) — CALIBRATED (400 px = 4000 mm)
             400 × 300 px rectangle (outer edges x 200–600, y 150–450); bottom edge = 4000 mm
-                    → calibrate it; perimeter 14 m, area 12 m²
+            one ACTIVE AREA seeded on it (${SEED.measurements.a201Area}) = 12 m², LINKED to BOQ 2.1
 
-  No BOQ items are seeded on purpose: Quant 1A writes none, and the BOQ tab should stay empty throughout.
+  BOQ items (Quant 1B, ADR-52):
+    2.1  Formwork to slab edge         m2   qty 10   rate $85.00   → amount $850.00   (${B.formworkM2})
+         LINKED to the seeded 12 m² area → BOQ tab shows Quant (1); apply proposes 12 m² / $1,020.00
+         (link a further AREA on 04-100 Formwork to see Quant (2) and the summed total)
+    2.2  Concrete in slab on ground    m3   qty 24   rate $310.40                      (${B.concreteM3})
+         INCOMPATIBLE with every Quant kind — never offered in the picker
+    8.1  Internal doors, flush panel   no   qty 0    UNPRICED                           (${B.doorsCount})
+         link a COUNT on 08-100 Doors → apply changes the quantity only, no amount
+  The project is seeded with currencyLocked false: the first priced BOQ write engages the ratchet.
+
+  ⟳ Ctrl+C discards EVERYTHING (fixture and your work); the next start re-seeds exactly this.
 ${TESTER_UID ? '' : `
   ℹ Only Etienne's UID was seeded. Another tester signs in with their OWN Firebase Auth
     account, so they must seed their own UID:   TEST_USER_UID=<uid> npm run test:quant

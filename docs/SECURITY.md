@@ -95,7 +95,7 @@ to financial roles.**
 | `…/costCodes/{id}` | company member | financial roles | blocked — deactivate via `isActive` |
 | `…/contacts/{id}` | **financial roles only** | financial roles | blocked — archive via `isActive` |
 | `…/projects/{id}/budgetLines/{id}` | company member | financial roles | blocked |
-| `…/projects/{id}/boqItems/{id}` | **financial roles only** | financial roles, **create active-only; transitions, post-void immutability and the `amount == quantity × rate` invariant rules-enforced** | blocked — void via status |
+| `…/projects/{id}/boqItems/{id}` | **financial roles only** | financial roles, **create active-only; transitions, post-void immutability and the `amount == quantity × rate` invariant rules-enforced; the optional `quantApplied` map (ADR-52) absent at create and, on an edit, preserved verbatim or fresh — exact keys, `by == caller`, `at == request.time`, `quantity == the written quantity`** — the version guard on edits and the Quant apply is CLIENT-only (DC33) | blocked — void via status |
 | `…/projects/{id}/purchaseOrders/{id}` | company member | financial roles | blocked — cancel via status |
 | `…/projects/{id}/progressClaims/{id}` | company member | financial roles | blocked — reject via status |
 | `…/projects/{id}/supplierInvoices/{id}` | **financial roles only** | financial roles | blocked — cancel via status |
@@ -115,7 +115,7 @@ to financial roles.**
 | `…/projects/{id}/drawings/{id}/revisions/{id}` | **any company member** | same drawing writers; **file and authored identity immutable**, exact `storagePath` required, legal transitions only | blocked — a revision is never deleted |
 | `…/projects/{id}/documents/{id}` | `internal` → financial roles; `project` → **any company member** | financial roles; **file identity immutable**, three `hasOnly` update shapes, non-whitespace withdraw reason | blocked — withdraw via status |
 | `…/projects/{id}/takeoffPages/{drawingId}_{revisionId}_{page}` | **`company_admin`, `project_manager`, `qs`** | same three roles; **id recomputed from the stored sheet identity; drawing + revision EXISTENCE and revision-not-withdrawn via `exists()`/`get()`; exact keys; source/rotation vocabularies; positive page dimensions; calibration shape or null; `calibrationRevision` 0 → exactly +1 per re-calibration; identity, geometry and creation stamps immutable; `revision` exactly +1** | blocked |
-| `…/projects/{id}/takeoffMeasurements/{id}` | **`company_admin`, `project_manager`, `qs`** | same three roles; **`takeoffPageId` recomputed and the page, drawing, revision and cost code must EXIST (revision not withdrawn); kind vocabulary; point-list SIZE by kind (≤ 500); label/name bounds; calibration snapshot for length/area, null for count; identity, kind and creation stamps immutable; `revision` exactly +1; active→void terminal with a non-whitespace reason** — point CONTENT is NOT checked | blocked — void via status |
+| `…/projects/{id}/takeoffMeasurements/{id}` | **`company_admin`, `project_manager`, `qs`** | same three roles; **`takeoffPageId` recomputed and the page, drawing, revision and cost code must EXIST (revision not withdrawn); kind vocabulary; point-list SIZE by kind (≤ 500); label/name bounds; calibration snapshot for length/area, null for count; identity, kind and creation stamps immutable; `revision` exactly +1; active→void terminal with a non-whitespace reason; the OPTIONAL `boqItemId` (ADR-52) — when set, the target item is `get()`: same project, exists, active, same `costCodeId`, re-verified whenever the link or the cost code changes** — point CONTENT and unit compatibility are NOT checked | blocked — void via status |
 | `…/counters/{id}` | financial roles | financial roles | blocked |
 | `…/projects/{id}/counters/{id}` | financial roles | financial roles — **the per-project RFI counter** (`rfis`); +1 semantics NOT enforced | blocked |
 | `…/projects/{id}/rfis/{id}` | **`company_admin`, `project_manager`, `qs`** | same three roles; **create draft-only; the forward-only lifecycle (no reopen, answered cannot cancel, closed/cancelled terminal), the question-block freeze from `open`, the management freeze from `answered`, the raise gate (assignee + due date), `answerDate`/`dueDate >= raisedDate`, and referenced drawing + revision / document EXISTENCE are all rules-enforced** | blocked — cancel via status (draft/open only) |
@@ -668,10 +668,30 @@ app to date, and **any future tender or bidder-facing surface must never expose
 BOQ rates at all.**
 
 BOQ items feed **no financial figure**. The hook writes only `boqItems` (plus
-the currency ratchet inside the create transaction); Budgeted, Committed,
-Actual, Invoiced, Forecast, Margin, and Cash Flow are untouched, and the
-BOQ-vs-budget comparison is derived at read time in `lib/boq.js`, never stored
-(ADR-32 Part 1).
+the currency ratchet inside the create, edit and Quant-apply transactions);
+Budgeted, Committed, Actual, Invoiced, Forecast, Margin, and Cash Flow are
+untouched, and the BOQ-vs-budget comparison is derived at read time in
+`lib/boq.js`, never stored (ADR-32 Part 1).
+
+**Quant 1B (ADR-52) adds two things to this block and nothing to its
+audience.** (1) An optional `quantApplied: { at, by, quantity,
+measurementCount, evidence }` map — the LATEST explicit application of a
+measured total. Rules refuse it at create; on an active edit it must be
+**preserved verbatim** (the editor's full-content save carries it along) or
+**fresh**: exact keys, `by == request.auth.uid`, `at == request.time`,
+`quantity == the quantity being written`, `measurementCount` an integer ≥ 1,
+`evidence` a non-blank string ≤ 128; the void branch's `hasOnly` leaves it
+untouched. `evidence` is the client's deterministic fingerprint of the
+eligible measurements (shape-checked only — rules cannot recompute it). It is
+a record of one confirmed action, never a certification. (2) Both the **manual edit** and the **Quant apply** now run
+through `lib/boqActions.js`, which reads the server item inside the
+transaction and refuses a copy that differs from the one the user reviewed.
+**That version guard is CLIENT-ENFORCED** — the BOQ `revision` is frozen at
+`1`, so rules cannot assist it — and a direct-SDK client can still overwrite
+blindly (Deferred Control 33). `boqItems` still has no key allow-list
+(`hasOnly`): an unknown extra key on an active edit is accepted by rules
+(pre-existing, DC26) — `quantApplied` is validated precisely because it is
+named.
 
 **The `boqItems` lifecycle is rules-enforced** — the two-state `cashFlowLines`
 shape (a BOQ item is a preconstruction record with no financial commit point):
@@ -1567,13 +1587,71 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       any project's drawings.
 
     **Consequence, bounded:** a forged or careless measurement can mislead the
-    reader of the Quant tab and nothing else — it reaches **no BOQ quantity and
-    no financial figure** (Quant 1A has no such write path; Quant 1B will add
-    an explicit, confirmed one). A measurement must therefore never be
-    described as server-verified evidence of anything beyond *who placed these
-    points on which sheet, under which stated calibration, and when*. Every
-    item above is proven unenforced by a passing test in
-    `frontend/tests/rules/takeoff.rules.test.js`.
+    reader of the Quant tab, and — since Quant 1B — a person reviewing the BOQ
+    apply dialog, who must still confirm before anything reaches a BOQ
+    quantity (ADR-52; item 33). It reaches **no financial figure** either way.
+    A measurement must therefore never be described as server-verified
+    evidence of anything beyond *who placed these points on which sheet, under
+    which stated calibration, and when*. Every item above is proven unenforced
+    by a passing test in `frontend/tests/rules/takeoff.rules.test.js`.
+
+33. **Quant™ 1B — what the BOQ link and the apply cannot prove (ADR-52).**
+    Rules enforce the link target (same project, exists, active, same cost
+    code — re-verified when the link or the cost code moves) and the
+    `quantApplied` map's shape, actor, server time and agreement with the
+    written quantity. They **cannot** enforce, and the app checks only
+    client-side (`lib/quantBoq.js`, `lib/boqActions.js`):
+    - **unit compatibility** — that the item's free-text `unit` accepts the
+      measurement's kind (a length linked to an m³ item passes rules); the
+      alias table is deliberately not duplicated into the rules file (the
+      ADR-21 enum-drift reasoning), and the app never offers an incompatible
+      item;
+    - **the aggregate** — that the applied `quantity` equals the sum of the
+      eligible linked measurements, that every linked active measurement was
+      eligible (current revision, reviewed, calibrated, compatible), and that
+      `measurementCount` is the real count: rules cannot read a list, so the
+      total is computed in the browser and **confirmed by a person**, and the
+      written `quantity` is validated only as a non-negative number whose
+      `amount` reconciles; a client-computed total must never be described as
+      independently verified by Firestore Security Rules;
+    - **cross-record concurrency** — the manual edit and the apply refuse a
+      copy whose `updatedAt` (or, for a legacy record without one, whose
+      guarded content) differs from the server's, but the BOQ `revision` is
+      frozen at `1`, so a direct-SDK client that writes a valid payload without
+      reading first still passes (`boqItems.rules.test.js`, the DC33 test);
+      the guard is the app's, not the rules'. Two *different* users applying
+      the same evidence to the same item race on the transaction and the
+      second is refused as stale — by the client, again;
+    - **legacy and incomplete records** — a BOQ item without a usable
+      `updatedAt` is guarded by field comparison, never by nothing; but a
+      stale copy that happens to match every guarded field is accepted;
+    - **provenance truth** — `quantApplied.quantity` must equal the quantity
+      written and `by`/`at` are the caller and the server clock, but nothing
+      proves the application was *reviewed* or that the count is honest. The
+      `evidence` fingerprint (`v1:` + a 64-bit FNV-1a digest of the eligible
+      measurements' ids, revisions, geometry, calibration and source state) is
+      **client-computed and shape-checked only**: rules cannot recompute it, a
+      direct-SDK client can write any string, it is not a cryptographic hash
+      (collisions are vanishingly unlikely for this purpose but possible), and
+      a record without one — or one written by a client that chose a stale
+      fingerprint — yields *cannot verify* or a false *matches* respectively.
+      What it does honestly is distinguish "the same evidence" from "the same
+      total": 5 + 7 and 4 + 8 are both 12 from two measurements and now read
+      as outdated. It is the LATEST confirmed action, not a history and not a
+      certificate, and the UI never calls an item "synchronised" or "approved"
+      from it, never *matches* while a source is loading or unavailable, and
+      never *matches* on total and count alone;
+    - **BOQ-side drift** — a BOQ item re-coded or re-united after linking is
+      not visible to rules (no child reads); the app detects the mismatch at
+      read time and blocks the apply.
+
+    **Consequence, bounded:** a wrong link or a wrong total changes one BOQ
+    item's `quantity` and derived `amount` — exactly what any financial-role
+    user could already type by hand — and therefore the BOQ priced total and
+    the read-time BOQ-vs-budget comparison, and nothing else: no budget,
+    forecast, commitment, actual, margin or cash figure. Every item above is
+    proven unenforced by a passing test in `takeoff.rules.test.js` (#64) or
+    `boqItems.rules.test.js` (the DC33 test).
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
@@ -1635,15 +1713,35 @@ write permitted on a withdrawn sheet: it is housekeeping with a reason, it
 leaves the geometry and label as recorded, and the record is immutable
 afterwards.
 
-**What Quant 1A does NOT do, by construction:** it has **no write path to a
-BOQ item, a budget line or any financial collection** — the hook writes only
-the two takeoff collections and stages no currency lock (pinned by
+**What the Quant tab does NOT do, by construction:** it has **no write path to
+a BOQ item, a budget line or any financial collection** — the takeoff hook
+writes only the two takeoff collections and stages no currency lock (pinned by
 `tests/unit/quant.test.js`). Storage Rules are unchanged: the viewer reads a
 drawing object through the existing `get` grant (bytes via the SDK for PDFs, a
 download URL for images) and persists neither.
 
-**What is NOT enforced** is listed in Deferred Control 32 — most notably the
-**content** of `points`, the **truth** of a calibration, and the page number.
+**Quant 1B — the BOQ link (ADR-52).** `takeoffMeasurements` gains ONE
+optional key, `boqItemId` (string | null). It sits in `hasOnly` but **not**
+`hasAll`, so every 1A document stays valid for every write (no migration, no
+backfill). **Rules-enforced** (`linkValid()`, proven by
+`tests/rules/takeoff.rules.test.js` #57–#63): when the link is non-null the
+item must be in the **same project path**, **exist**, be **`active`** and
+share the measurement's **`costCodeId`** — checked at create and on an active
+edit whenever `boqItemId` **or** `costCodeId` is among the changed keys; a
+cost-code change on a linked measurement is therefore refused unless the link
+is cleared or re-pointed in the same write (the app does this itself). A label,
+geometry or snapshot edit on a measurement whose item was voided *later* is
+not refused — the stored link is history. Void keeps the link and may not
+change it. Linking is a measurement write: the three Quant roles; a
+subcontractor or client still cannot read or write either collection, and
+reading BOQ items from the Quant tab is the existing `financialMember` grant
+(the same three roles). **Not enforced** (#64, DC33): unit compatibility — a
+length may link to an item measured in m³ as far as rules can tell; the app
+never offers it.
+
+**What is NOT enforced** is listed in Deferred Controls 32 and 33 — most
+notably the **content** of `points`, the **truth** of a calibration, the page
+number, unit compatibility, the aggregate, and cross-record concurrency.
 
 ## Project Timeline — the one collection where `qs` is read-only
 

@@ -2,8 +2,8 @@ import {
   QUANT_ERROR, QUANT_ERROR_MESSAGES, quantErrorKind, sameRevision,
   MEASUREMENT_KIND, MEASUREMENT_STATUS,
   buildCalibration, calibrationSnapshot, isValidCalibration,
-  takeoffPageId, validatePageGeometry, validateMeasurementDraft, validatePoints, validateLabel,
-  normalisePoints,
+  takeoffPageId, validatePageGeometry, validateMeasurementDraft, validatePoints, validateLabel, validateBoqLink,
+  normalisePoints, measurementBoqItemId,
 } from './quant'
 
 // ── Guarded takeoff writes (Quant 1A, ADR-51) ────────────────────────────────
@@ -33,6 +33,11 @@ import {
 // ⚠️ NOTHING HERE TOUCHES A FINANCIAL DOCUMENT. No BOQ item, budget line,
 // forecast line, cash-flow line, baseline, PO, claim or invoice is read or
 // written, and no currency lock is staged (a measurement holds no money).
+// Quant 1B (ADR-52) adds ONE optional field, `boqItemId` — a LINK to a BOQ item
+// (string | null). Writing the link is still a measurement write; rules verify
+// that the target exists in the same project, is active and shares the cost
+// code. Applying a quantity to that item is a separate, explicitly confirmed
+// BOQ write in lib/boqActions.js — never a side effect of anything here.
 //
 // Firestore SDK functions are INJECTED (`runTransaction`, `serverTimestamp`)
 // so this module imports no Firebase code: the hook passes the app SDK and the
@@ -207,6 +212,9 @@ export async function runCreateMeasurement({
       label:  String(draft.label).trim(),
       costCodeId:   draft.costCodeId,
       costCodeName: String(draft.costCodeName).trim(),
+      // Optional BOQ link (ADR-52) — an identity only; written explicitly as
+      // null when absent so every 1B document carries the key.
+      boqItemId: measurementBoqItemId(draft),
       calibration,
       status: MEASUREMENT_STATUS.ACTIVE,
       voidReason: '',
@@ -223,10 +231,17 @@ export async function runCreateMeasurement({
 }
 
 // Edit an ACTIVE measurement. `changes` may carry `points`, `label`,
-// `costCodeId` + `costCodeName`. `calibration` is the page's CURRENT snapshot
+// `costCodeId` + `costCodeName`, and `boqItemId` (a string to link or re-link,
+// null to unlink — ADR-52). `calibration` is the page's CURRENT snapshot
 // and is written ONLY when the caller passes it — a geometry edit or an
 // explicit "reviewed under the current scale"; a rename or re-coding leaves
 // the snapshot alone, so nothing is silently treated as reviewed.
+//
+// A cost-code change always invalidates an existing link (rules require the
+// linked item to share the measurement's cost code). When the caller changes
+// the code without saying what the link should become, the link is CLEARED in
+// the same write — decided against the SERVER copy inside the transaction, so a
+// link that appeared underneath is cleared too, never left dangling.
 export async function runUpdateMeasurement({
   db, ref, seen, changes = {}, calibration, uid, runTransaction, serverTimestamp,
 }) {
@@ -249,6 +264,11 @@ export async function runUpdateMeasurement({
     if (!String(changes.costCodeName ?? '').trim()) throw new QuantError(QUANT_ERROR.INVALID, 'The chosen cost code has no display name.')
     next.costCodeId = changes.costCodeId
     next.costCodeName = String(changes.costCodeName).trim()
+  }
+  if (changes.boqItemId !== undefined) {
+    const linkError = validateBoqLink(changes.boqItemId)
+    if (linkError) throw new QuantError(QUANT_ERROR.INVALID, linkError)
+    next.boqItemId = changes.boqItemId === null ? null : String(changes.boqItemId).trim()
   }
   if (calibration !== undefined) {
     if (seen.kind === MEASUREMENT_KIND.COUNT) {
@@ -273,9 +293,14 @@ export async function runUpdateMeasurement({
     const current = snap.data()
     if (!sameRevision(seen, current)) return { kind: QUANT_ERROR.STALE }
     if (current.status !== MEASUREMENT_STATUS.ACTIVE) return { kind: QUANT_ERROR.INVALID }
+    // Re-coding a LINKED measurement with no explicit link decision: clear
+    // the link in this same write (see the block comment above).
+    const write = { ...next }
+    const recoded = write.costCodeId !== undefined && write.costCodeId !== current.costCodeId
+    if (recoded && write.boqItemId === undefined && measurementBoqItemId(current)) write.boqItemId = null
     const revision = current.revision + 1
-    tx.update(ref, { ...next, revision, updatedAt: serverTimestamp(), updatedBy: uid })
-    return { kind: null, revision }
+    tx.update(ref, { ...write, revision, updatedAt: serverTimestamp(), updatedBy: uid })
+    return { kind: null, revision, linkCleared: write.boqItemId === null && measurementBoqItemId(current) !== null && next.boqItemId === undefined }
   })
 }
 

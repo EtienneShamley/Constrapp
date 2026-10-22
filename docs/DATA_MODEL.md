@@ -300,11 +300,12 @@ roles** — the BOQ is the internal estimate.
 | `status` | string | `active` \| `void` — lifecycle **rules-enforced**; void terminal, reasoned |
 | `voidedAt` / `voidedBy` / `voidReason` | | Null / `''` until voided |
 | `currency` | string | Audit snapshot; the project currency remains the display authority |
-| `revision` | number | Always `1` (reserved) |
+| `revision` | number | Always `1` (reserved — frozen by rules, so concurrency guards are client-side, DC33) |
 | `notes` | string | |
 | `attachments` | array | Reserved `[]` — no uploads (no Storage rules exist) |
 | `externalRefs` | map | Reserved `{}` |
-| `createdAt/By`, `updatedAt/By` | | Rules-verified stamps |
+| `quantApplied` | map \| absent | **Quant 1B (ADR-52), OPTIONAL — the LATEST explicit application of a measured total:** `{ at (timestamp), by (uid), quantity (number ≥ 0), measurementCount (int ≥ 1), evidence (string 1–128) }`, exact keys. `evidence` is the client's deterministic fingerprint (`v1:` + 64-bit FNV-1a hex) of the ELIGIBLE measurements that made the total — per row: id, revision, kind, cost code, sheet identity, every stored point, calibration snapshot, the page's calibration and `calibrationRevision`, the drawing's `currentRevisionId` and status — plus the item id, unit and count, rows sorted by id (`lib/quantBoq.js → evidenceFingerprint`). Rules: **absent at create**; on an active edit either **preserved verbatim** (the editor's save carries it along) or **fresh** — `by == request.auth.uid`, `at == request.time`, `quantity == the quantity being written`, `evidence` a non-blank string ≤ 128 (shape only — rules cannot recompute it); the void branch leaves it untouched. A record of one confirmed action, never a certification or server-verified evidence; the BOQ page recomputes the fingerprint from the live subscriptions and derives *matches / outdated (item edited since) / outdated (measurements changed) / cannot verify (no fingerprint) / cannot be assessed (sources loading or unavailable)* beside it — the same total from different measurements reads as outdated |
+| `createdAt/By`, `updatedAt/By` | | Rules-verified stamps. Since ADR-52 `updatedAt` is also the **version** the edit and apply transactions compare against (a legacy record without one is compared field by field) |
 
 ### Stored vs derived
 
@@ -313,7 +314,12 @@ count, and the **BOQ vs Approved Budget** comparison (per cost code, union of
 both sides, variance suppressed while any contributing item is unpriced) are
 derived at read time in `lib/boq.js` and never written anywhere. **BOQ items
 feed no financial figure** — Budgeted, Committed, Actual, Invoiced, Forecast,
-Margin, and Cash Flow are untouched. Estimating (margin/overheads), BOQ →
+Margin, and Cash Flow are untouched. **Quant 1B (ADR-52)** may set an item's
+`quantity` (and therefore its derived `amount`) to the reviewed total of its
+linked measurements — explicitly, on the BOQ tab, through
+`lib/boqActions.js → runApplyBoqQuantity`; the measured total itself is
+derived on every read from the measurements and **never stored** anywhere but
+in that one confirmed `quantity`. Estimating (margin/overheads), BOQ →
 Budget transfer, and Tender entities are NOT modelled (see Planned Commercial
 Entities below).
 
@@ -1228,8 +1234,9 @@ gated on sheet status. Delete is blocked.
 
 **A Quant™ 1A measurement (ADR-51)** — a length (polyline), an area (polygon)
 or a count (points) on exactly one takeoff page. Random id. **Non-financial:**
-no amount, no currency, no BOQ reference. **No quantity is stored**: it is
-reproduced at read time from `points` × the applicable calibration
+no amount, no currency; since Quant 1B (ADR-52) an OPTIONAL `boqItemId` LINK
+to one BOQ item — an identity, never a quantity. **No quantity is stored**: it
+is reproduced at read time from `points` × the applicable calibration
 (`lib/quant.js → measurementQuantity`). Reads and writes: `company_admin`,
 `project_manager`, `qs`.
 
@@ -1242,6 +1249,7 @@ reproduced at read time from `points` × the applicable calibration
 | `label` | string | Required non-whitespace, ≤ 120 |
 | `costCodeId` / `costCodeName` | string | **Required** — the commercial spine. The code must **exist** in the company (rules `exists()`); ⚠️ *active* is client-only. Frozen display snapshot, resolved live at read time (`resolveCostCodeName`) |
 | `calibration` | map \| **null** | **Snapshot** of the page calibration the measurement was last saved or reviewed under: `{ revision (int ≥ 1), pageDistance (> 0), realDistance (> 0), unit }`. **Required for length/area, `null` for count** (rules-enforced by kind). Drives the derived review state and keeps the previously recorded quantity explainable |
+| `boqItemId` | string \| null \| **absent** | **Quant 1B (ADR-52), OPTIONAL** — the ONE BOQ item this measurement is linked to. Quant 1A documents have **no such key and stay valid for every write** (`hasOnly`, not `hasAll`; no migration, no backfill); 1B writes `null` or an id. When set, rules `get()` the item: **same project path, exists, `status == 'active'`, `costCodeId == this measurement's costCodeId`** — at create and whenever the link OR the cost code changes (a label/geometry edit on a measurement whose item was voided later is not refused). A cost-code change clears the link in the same write. Void keeps it as history. ⚠️ Unit compatibility (the item's `unit` must accept this `kind`) is **client-only** (DC33) |
 | `status` | string | `active` \| `void` — `active → void` only (terminal), rules-enforced; void requires a **non-whitespace `voidReason`** and stamps `voidedAt == request.time`, `voidedBy == request.auth.uid` |
 | `voidReason` / `voidedAt` / `voidedBy` | string / timestamp / uid | `''` / `null` while active |
 | `revision` | int | `1` on create; every update **exactly +1** (rules-enforced); the app refuses stale writes |
@@ -1257,9 +1265,11 @@ the full table).
 snapshot are stored. The quantity (m, m², no.), the quantity under the
 original snapshot, the calibration review state (*current / needs review /
 uncalibrated / not applicable*), page totals and the superseded-revision
-warning are all derived on every read and never written back. **Nothing here
-reaches a BOQ item** — Quant 1B will link and apply reviewed quantities through
-the existing BOQ hook; Quant 1A stores no `boqItemId`.
+warning are all derived on every read and never written back. **A measurement
+write never changes a BOQ item.** The per-item aggregate of linked, eligible
+measurements (Quant 1B, `lib/quantBoq.js → aggregateLinkedQuantity`) is
+likewise derived on every read; it reaches a BOQ `quantity` only through the
+BOQ tab's explicit, confirmed apply (ADR-52).
 
 ## …/projects/{projectId}/counters/{counterId}
 
@@ -1690,7 +1700,8 @@ a design assessment, a hook, and (where a new collection is introduced) a manual
 ## Relationships & Denormalisation Summary
 
 - Budget lines, PO lines, claim lines → cost codes via `costCodeId`; each carries a `costCodeName` snapshot.
-- BOQ items → cost codes via a **required** `costCodeId` (with a `costCodeName` snapshot). BOQ items reference **nothing else** and are referenced **by nothing**: no budget line, PO, claim, invoice, variation, forecast line, or cash figure reads or writes them, and the BOQ-vs-budget comparison is derived at read time (`lib/boq.js`) — never stored.
+- Takeoff measurements → BOQ items via the **optional** `boqItemId` (ADR-52): many measurements → one item, same project, same cost code, rules-verified at link time. The BOQ item stores no back-reference — its `quantApplied` map records only the latest confirmed application (quantity, count, actor, time).
+- BOQ items → cost codes via a **required** `costCodeId` (with a `costCodeName` snapshot). BOQ items reference **nothing else** and are referenced only by takeoff measurements' `boqItemId` (above): no budget line, PO, claim, invoice, variation, forecast line, or cash figure reads or writes them, and the BOQ-vs-budget comparison is derived at read time (`lib/boq.js`) — never stored.
 - Contacts → projects via `projectAssignments[].projectId` (with derived `projectIds`) — administrative preference only; no name snapshot, and financial documents never read it. The PO supplier picker groups project-assigned contacts first but any active supplier remains selectable.
 - POs → contacts via `supplierId`, with `supplierName` snapshotted at write time (same pattern as `costCodeName`). Null `supplierId` = pre-Contacts PO; render from the snapshot.
 - Claims → POs via `poId`, with `poNumber`/`supplierName`/`supplierId`/`poLineTotal` snapshotted. Claims inherit supplier identity from the PO — they never reference contacts directly.

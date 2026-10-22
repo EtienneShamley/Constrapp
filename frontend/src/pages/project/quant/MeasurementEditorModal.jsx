@@ -3,25 +3,39 @@ import Btn from '../../../components/Btn'
 import { inputCls, labelCls, modalShellCls, modalCardCls } from './styles'
 import { activeCostCodes, costCodeDisplayName } from '../../../lib/costCodes'
 import {
-  KIND_LABELS, LABEL_MAX, formatMeasurementQuantity, measurementQuantity, validateLabel,
+  KIND_LABELS, LABEL_MAX, formatMeasurementQuantity, measurementQuantity, validateLabel, measurementBoqItemId,
 } from '../../../lib/quant'
+import {
+  linkableBoqItems, boqItemPickerLabel, measurementLinkState, LINK_STATE, LINK_STATE_LABELS, UNIT_DIMENSION_LABELS,
+} from '../../../lib/quantBoq'
 
-// ── Name a measurement and give it a cost code ───────────────────────────────
+// ── Name a measurement, give it a cost code — and optionally link a BOQ item ─
 //
 // One modal for both saving a freshly drawn measurement (`measurement` carries
-// no id) and editing an existing one's label / cost code. Geometry is never
-// edited here — the quantity is PREVIEWED from the geometry and the page's
-// current calibration, exactly as the list computes it, and is never typed.
+// no id) and editing an existing one's label / cost code / link. Geometry is
+// never edited here — the quantity is PREVIEWED from the geometry and the
+// page's current calibration, exactly as the list computes it, and is never
+// typed.
 //
 // The cost code is the commercial spine (ADR-0a): required, chosen from the
 // company's ACTIVE codes (an inactive code already on the record stays
-// selectable so a rename does not strand it). Only `code — name` is shown;
-// Quant 1A never reads a BOQ item or writes a quantity anywhere (Quant 1B).
+// selectable so a rename does not strand it).
+//
+// The BOQ link (ADR-52) is OPTIONAL and offers only ACTIVE items on the SAME
+// cost code whose unit accepts this measurement's kind (lib/quantBoq.js).
+// Linking writes an identity onto the measurement and nothing onto the BOQ
+// item: applying the measured quantity is a later, explicit step on the BOQ
+// tab. Changing the cost code clears the link, with a visible notice.
 
-export default function MeasurementEditorModal({ measurement, calibration, costCodes, onSave, onClose }) {
+export default function MeasurementEditorModal({
+  measurement, calibration, costCodes, boqItems, boqItemsLoading, boqItemsError, onSave, onClose,
+}) {
   const isNew = !measurement?.id
+  const initialLink = measurementBoqItemId(measurement)
   const [label, setLabel] = useState(measurement?.label ?? '')
   const [costCodeId, setCostCodeId] = useState(measurement?.costCodeId ?? '')
+  const [boqItemId, setBoqItemId] = useState(initialLink ?? '')
+  const [linkNotice, setLinkNotice] = useState(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
 
@@ -33,6 +47,25 @@ export default function MeasurementEditorModal({ measurement, calibration, costC
 
   const quantity = measurementQuantity(measurement, calibration)
 
+  // BOQ items this measurement may link to under the CHOSEN cost code.
+  const linkable = linkableBoqItems(boqItems, { kind: measurement?.kind, costCodeId })
+  // The existing link, judged against the items as loaded — shown even when
+  // it is no longer a valid target, so the user can see it and clear it.
+  const existing = measurementLinkState(measurement, boqItems)
+  const existingShown = !!initialLink && boqItemId === initialLink && !linkable.some(i => i.id === initialLink)
+  const boqUnavailable = !!boqItemsError
+  const linkDisabled = boqUnavailable || boqItemsLoading || !costCodeId
+
+  const changeCostCode = (nextId) => {
+    setCostCodeId(nextId)
+    // A link is only valid on the SAME cost code: moving the code clears it,
+    // visibly, in this same save (lib/quantActions.js does the same server-side).
+    if (boqItemId && nextId !== costCodeId) {
+      setBoqItemId('')
+      setLinkNotice('The BOQ item link was cleared because the cost code changed. Choose an item on the new cost code to link again.')
+    }
+  }
+
   async function submit(e) {
     e.preventDefault()
     const labelError = validateLabel(label)
@@ -41,7 +74,7 @@ export default function MeasurementEditorModal({ measurement, calibration, costC
     if (!costCodeName) { setError('The chosen cost code has no display name.'); return }
     setSaving(true); setError(null)
     try {
-      await onSave({ label: label.trim(), costCodeId, costCodeName })
+      await onSave({ label: label.trim(), costCodeId, costCodeName, boqItemId: boqItemId || null })
       onClose()
     } catch (err) {
       setError(err?.message || 'The measurement could not be saved. Nothing was saved.')
@@ -94,7 +127,7 @@ export default function MeasurementEditorModal({ measurement, calibration, costC
           />
 
           <label className={`${labelCls} mt-4`} htmlFor="quant-cost-code">Cost code *</label>
-          <select id="quant-cost-code" className={inputCls} value={costCodeId} onChange={e => setCostCodeId(e.target.value)}>
+          <select id="quant-cost-code" className={inputCls} value={costCodeId} onChange={e => changeCostCode(e.target.value)}>
             <option value="">Choose a cost code…</option>
             {options.map(cc => (
               <option key={cc.id} value={cc.id}>{costCodeDisplayName(cc)}{cc.isActive === false ? ' (inactive)' : ''}</option>
@@ -103,9 +136,46 @@ export default function MeasurementEditorModal({ measurement, calibration, costC
           {selected?.unit && (
             <p className="m-0 mt-1.5 text-[11.5px] text-brand-muted">
               Cost code unit: <span className="font-semibold text-brand-text">{selected.unit}</span> — shown for reference. Quant records
-              the measurement in {quantity.unit || 'its own unit'}; matching it to a BOQ item is a later, explicit step.
+              the measurement in {quantity.unit || 'its own unit'}; the link below is checked against the BOQ item&apos;s own unit.
             </p>
           )}
+
+          <label className={`${labelCls} mt-4`} htmlFor="quant-boq-item">BOQ item (optional)</label>
+          <select
+            id="quant-boq-item"
+            className={inputCls}
+            value={boqItemId}
+            onChange={e => { setBoqItemId(e.target.value); setLinkNotice(null) }}
+            disabled={linkDisabled}
+            aria-describedby="quant-boq-item-help"
+          >
+            <option value="">
+              {boqUnavailable ? 'BOQ unavailable — linking disabled'
+                : boqItemsLoading ? 'Loading BOQ items…'
+                : !costCodeId ? 'Choose a cost code first'
+                : linkable.length === 0 ? `No active ${UNIT_DIMENSION_LABELS[measurement?.kind] ?? ''} items on this cost code`
+                : 'Not linked'}
+            </option>
+            {existingShown && existing.item && (
+              <option value={initialLink}>{boqItemPickerLabel(existing.item)} — {LINK_STATE_LABELS[existing.state].toLowerCase()}</option>
+            )}
+            {existingShown && !existing.item && (
+              <option value={initialLink}>Linked item not found ({initialLink})</option>
+            )}
+            {linkable.map(item => (
+              <option key={item.id} value={item.id}>{boqItemPickerLabel(item)}</option>
+            ))}
+          </select>
+          <p id="quant-boq-item-help" className="m-0 mt-1.5 text-[11.5px] text-brand-muted">
+            Only active items on the same cost code with a compatible unit are offered. Linking records the connection;
+            applying the measured quantity to the BOQ is a later, explicit step on the BOQ tab.
+          </p>
+          {existingShown && existing.state !== LINK_STATE.OK && existing.state !== LINK_STATE.NONE && (
+            <p className="m-0 mt-1.5 text-[11.5px] text-brand-amber" role="status">
+              {LINK_STATE_LABELS[existing.state]}. Choose “Not linked” to clear it, or pick a valid item.
+            </p>
+          )}
+          {linkNotice && <p className="m-0 mt-1.5 text-[11.5px] text-brand-amber" role="status">{linkNotice}</p>}
 
           {error && <p className="m-0 mt-3 text-[12px] text-brand-red" role="alert">{error}</p>}
 

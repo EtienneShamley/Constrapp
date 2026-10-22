@@ -307,6 +307,32 @@ service cloud.firestore {
             && request.resource.data.currency is string
             && request.resource.data.currency.matches('^[A-Z]{3}$');
       }
+      // Quant 1B provenance (ADR-52): the LATEST explicit application of a
+      // measured total. Optional. Either preserved exactly as stored (a manual
+      // edit carries it along) or freshly written by the caller, now, with the
+      // quantity being written. It records one confirmed action, nothing more.
+      // `evidence` is the client's deterministic fingerprint of the reviewed
+      // measurements (shape-checked only — rules cannot recompute it).
+      function quantAppliedShape(q) {
+        return q is map
+            && q.keys().hasOnly(['at', 'by', 'quantity', 'measurementCount', 'evidence'])
+            && q.keys().hasAll(['at', 'by', 'quantity', 'measurementCount', 'evidence'])
+            && q.at is timestamp
+            && q.by is string && q.by.size() > 0
+            && q.quantity is number && q.quantity >= 0
+            && q.measurementCount is int && q.measurementCount >= 1
+            && q.evidence is string && q.evidence.size() > 0 && q.evidence.size() <= 128;
+      }
+      function quantAppliedPreserved() {
+        return !('quantApplied' in request.resource.data)
+            || (('quantApplied' in resource.data) && request.resource.data.quantApplied == resource.data.quantApplied);
+      }
+      function quantAppliedFresh() {
+        return quantAppliedShape(request.resource.data.quantApplied)
+            && request.resource.data.quantApplied.by == request.auth.uid
+            && request.resource.data.quantApplied.at == request.time
+            && request.resource.data.quantApplied.quantity == request.resource.data.quantity;
+      }
 
       allow read: if financialMember();
 
@@ -318,19 +344,23 @@ service cloud.firestore {
                   && updateStamped()
                   // Void stamps cannot be forged at creation.
                   && request.resource.data.voidedAt == null
-                  && request.resource.data.voidedBy == null;
+                  && request.resource.data.voidedBy == null
+                  // Provenance is written only by an application to an existing item.
+                  && !('quantApplied' in request.resource.data);
 
       allow update: if financialMember() && corePreserved() && updateStamped() && (
                     // (a) ACTIVE EDIT — content (measurement, pricing, cost
                     //     code, labels) is freely editable while active, but
                     //     the status may not move and no void stamp may be
-                    //     forged.
+                    //     forged. `quantApplied` is either untouched or a
+                    //     fresh, caller-stamped record of THIS write.
                     (
                       resource.data.status == 'active'
                       && request.resource.data.status == 'active'
                       && shapeValid()
                       && request.resource.data.voidedAt == resource.data.voidedAt
                       && request.resource.data.voidedBy == resource.data.voidedBy
+                      && (quantAppliedPreserved() || quantAppliedFresh())
                     )
                     ||
                     // (b) ACTIVE -> VOID (terminal). Voiding is the only exit:
@@ -3117,10 +3147,12 @@ service cloud.firestore {
         return request.resource.data.revision is int
             && request.resource.data.revision == resource.data.revision + 1;
       }
+      // `boqItemId` (ADR-52) is OPTIONAL: present on every Quant 1B write
+      // (null or an id), absent on Quant 1A documents, which stay valid.
       function exactKeys(d) {
         return d.keys().hasOnly([
                  'takeoffPageId', 'drawingId', 'revisionId', 'page', 'kind', 'points', 'label',
-                 'costCodeId', 'costCodeName', 'calibration',
+                 'costCodeId', 'costCodeName', 'calibration', 'boqItemId',
                  'status', 'voidReason', 'voidedAt', 'voidedBy',
                  'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
                ])
@@ -3130,6 +3162,19 @@ service cloud.firestore {
                  'status', 'voidReason', 'voidedAt', 'voidedBy',
                  'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
                ]);
+      }
+      // The BOQ link (ADR-52): absent or null, or an id naming an item IN THIS
+      // PROJECT that exists, is active and shares the measurement's cost code.
+      // Unit compatibility and the aggregate are client-only (DC33).
+      function linkValid(d) {
+        return !('boqItemId' in d)
+            || d.boqItemId == null
+            || (
+                 d.boqItemId is string && d.boqItemId.size() > 0 && d.boqItemId.size() <= 128
+                 && exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/boqItems/$(d.boqItemId))
+                 && get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/boqItems/$(d.boqItemId)).data.status == 'active'
+                 && get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/boqItems/$(d.boqItemId)).data.costCodeId == d.costCodeId
+               );
       }
       // The drawing and revision exist and NEITHER is withdrawn. Checked on the
       // incoming document at create and on the STORED identity for an active
@@ -3196,6 +3241,7 @@ service cloud.firestore {
                   && exactKeys(request.resource.data)
                   && sourceValid(request.resource.data)
                   && contentValid(request.resource.data)
+                  && linkValid(request.resource.data)
                   && request.resource.data.status == 'active'
                   && request.resource.data.voidReason == ''
                   && request.resource.data.voidedAt == null
@@ -3211,16 +3257,20 @@ service cloud.firestore {
                   && updateStamped()
                   && nextRevision()
                   && (
-                    // (a) ACTIVE EDIT — geometry, label, cost code and the
-                    //     calibration snapshot may change; the status may not,
-                    //     no void stamp may be forged, and the sheet must still
-                    //     be LIVE (revision and drawing not withdrawn).
+                    // (a) ACTIVE EDIT — geometry, label, cost code, the
+                    //     calibration snapshot and the BOQ link may change; the
+                    //     status may not, no void stamp may be forged, and the
+                    //     sheet must still be LIVE (revision and drawing not
+                    //     withdrawn). The link target is re-verified whenever
+                    //     the link OR the cost code moves — a label edit on a
+                    //     measurement whose item was voided later still passes.
                     (
                       resource.data.status == 'active'
                       && request.resource.data.status == 'active'
-                      && changedKeys().hasOnly(['points', 'label', 'costCodeId', 'costCodeName', 'calibration', 'revision', 'updatedAt', 'updatedBy'])
+                      && changedKeys().hasOnly(['points', 'label', 'costCodeId', 'costCodeName', 'calibration', 'boqItemId', 'revision', 'updatedAt', 'updatedBy'])
                       && sourceLive(resource.data)
                       && contentValid(request.resource.data)
+                      && (!changedKeys().hasAny(['boqItemId', 'costCodeId']) || linkValid(request.resource.data))
                     )
                     ||
                     // (b) ACTIVE → VOID (terminal, reasoned). Stamps and status
