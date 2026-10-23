@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import Btn from '../../../components/Btn'
-import { inputCls, labelCls, modalShellCls, modalCardCls } from './styles'
+import { inputCls, labelCls } from './styles'
 import { activeCostCodes, costCodeDisplayName } from '../../../lib/costCodes'
 import {
-  KIND_LABELS, LABEL_MAX, formatMeasurementQuantity, measurementQuantity, validateLabel, measurementBoqItemId,
+  KIND_LABELS, LABEL_MAX, formatMeasurementQuantity, measurementQuantity, quantityIssue, validateLabel, measurementBoqItemId,
 } from '../../../lib/quant'
 import {
   linkableBoqItems, boqItemPickerLabel, measurementLinkState, LINK_STATE, LINK_STATE_LABELS, UNIT_DIMENSION_LABELS,
 } from '../../../lib/quantBoq'
+import QuantDialog from './QuantDialog'
 
 // ── Name a measurement, give it a cost code — and optionally link a BOQ item ─
 //
@@ -26,6 +27,11 @@ import {
 // Linking writes an identity onto the measurement and nothing onto the BOQ
 // item: applying the measured quantity is a later, explicit step on the BOQ
 // tab. Changing the cost code clears the link, with a visible notice.
+//
+// Dialog semantics, Escape (not while saving), focus containment and focus
+// return come from QuantDialog (ADR-53). A geometry problem (a crossed
+// outline, say) is named beside the quantity so the user knows to fix it in
+// Geometry — this dialog never edits points.
 
 export default function MeasurementEditorModal({
   measurement, calibration, costCodes, boqItems, boqItemsLoading, boqItemsError, onSave, onClose,
@@ -46,6 +52,7 @@ export default function MeasurementEditorModal({
   const costCodeName = selected ? costCodeDisplayName(selected) : (measurement?.costCodeName ?? '')
 
   const quantity = measurementQuantity(measurement, calibration)
+  const issue = quantityIssue(quantity)
 
   // BOQ items this measurement may link to under the CHOSEN cost code.
   const linkable = linkableBoqItems(boqItems, { kind: measurement?.kind, costCodeId })
@@ -83,22 +90,12 @@ export default function MeasurementEditorModal({
   }
 
   return (
-    <div className={modalShellCls}>
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className={`${modalCardCls} max-w-[520px]`}>
-        <div className="flex items-center justify-between px-5 py-4 border-b border-brand-border">
-          <h2 className="text-[15px] font-bold text-brand-text m-0">
-            {isNew ? `Save ${KIND_LABELS[measurement?.kind]?.toLowerCase() ?? 'measurement'}` : 'Edit measurement details'}
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="text-brand-muted hover:text-brand-text text-xl leading-none cursor-pointer min-w-[44px] min-h-[44px] flex items-center justify-center"
-          >
-            ×
-          </button>
-        </div>
+    <QuantDialog
+      title={isNew ? `Save ${KIND_LABELS[measurement?.kind]?.toLowerCase() ?? 'measurement'}` : 'Edit measurement details'}
+      titleId="quant-editor-title"
+      onClose={onClose}
+      busy={saving}
+    >
         <form onSubmit={submit} className="p-5">
           <dl className="m-0 grid grid-cols-3 gap-3 rounded-lg bg-brand-bg/60 px-3 py-2.5">
             <div>
@@ -114,6 +111,7 @@ export default function MeasurementEditorModal({
               <dd className="m-0 mt-0.5 text-[13px] font-semibold tabular-nums text-brand-text">{formatMeasurementQuantity(quantity)}</dd>
             </div>
           </dl>
+          {issue && <p className="m-0 mt-2 text-[11.5px] text-brand-red" role="alert">{issue}</p>}
 
           <label className={`${labelCls} mt-4`} htmlFor="quant-label">Label *</label>
           <input
@@ -184,7 +182,6 @@ export default function MeasurementEditorModal({
             <Btn type="submit" disabled={saving}>{saving ? 'Saving…' : isNew ? 'Save measurement' : 'Save changes'}</Btn>
           </div>
         </form>
-      </div>
-    </div>
+    </QuantDialog>
   )
 }

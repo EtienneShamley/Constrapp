@@ -27,6 +27,12 @@ import { isWithdrawnDrawing } from './drawings'
 //     the current revision follows a newly issued one, and a user who had
 //     deliberately opened an older sheet is returned to it — with the same
 //     SUPERSEDED / WITHDRAWN banner they saw when they chose it.
+//   · `measurementId` (Quant 1C-B, ADR-53) is OPTIONAL: the measurement to
+//     highlight on arrival — what the summary's and the BOQ dialog's "Open in
+//     Quant" hand across, and what the workspace remembers as its selection.
+//     It is intent like the rest: the workspace looks the id up on the live
+//     sheet and explains when the measurement is gone, void or elsewhere.
+//     Entries written before 1C-B have no such key and parse unchanged.
 
 export const SELECTION_VERSION = 1
 const KEY_PREFIX = 'constrapp.quant.selection.'
@@ -47,7 +53,9 @@ export function parseSavedSelection(raw) {
   if (!isId(data.drawingId)) return null
   const revisionId = data.revisionId === null || data.revisionId === undefined ? null : data.revisionId
   if (revisionId !== null && !isId(revisionId)) return null
-  return { drawingId: data.drawingId, revisionId, page: isPage(data.page) ? data.page : 1 }
+  const out = { drawingId: data.drawingId, revisionId, page: isPage(data.page) ? data.page : 1 }
+  if (isId(data.measurementId)) out.measurementId = data.measurementId
+  return out
 }
 
 export function readSelection(storage, projectId) {
@@ -62,17 +70,19 @@ export function readSelection(storage, projectId) {
 // Writes the EFFECTIVE selection. A selection without a drawing clears the
 // entry — "nothing chosen" is remembered as nothing. Failures are swallowed:
 // remembering the sheet is a convenience, never a reason to break the page.
-export function writeSelection(storage, projectId, { drawingId, revisionId = null, page = 1 } = {}) {
+export function writeSelection(storage, projectId, { drawingId, revisionId = null, page = 1, measurementId = null } = {}) {
   if (!storage || !isId(projectId)) return false
   try {
     const key = selectionStorageKey(projectId)
     if (!isId(drawingId)) { storage.removeItem(key); return true }
-    storage.setItem(key, JSON.stringify({
+    const entry = {
       v: SELECTION_VERSION,
       drawingId,
       revisionId: isId(revisionId) ? revisionId : null,
       page: isPage(page) ? page : 1,
-    }))
+    }
+    if (isId(measurementId)) entry.measurementId = measurementId
+    storage.setItem(key, JSON.stringify(entry))
     return true
   } catch {
     return false

@@ -53,10 +53,16 @@ production since October 2026**) is a third module tab: manual drawing
 measurement — calibrate a drawing revision's page from a known distance,
 measure lengths, areas and counts, and keep each as a traceable record; the tab
 itself **writes no BOQ quantity** and adds the one pinned runtime dependency
-`pdfjs-dist`. Quant™ 1B (ADR-52, implemented, **not yet deployed**) links a
+`pdfjs-dist`. Quant™ 1B (ADR-52, **live in production since October 2026**) links a
 measurement to one BOQ item on the same cost code and lets the BOQ tab's
 *Quant (n)* dialog review the linked measurements and **explicitly apply** their
-total to that item's quantity — no automatic sync. `/quant` is its hidden pointer. Photos and Reports remain
+total to that item's quantity — no automatic sync. Quant™ 1C (ADR-53,
+implemented, **not yet deployed**) completes the manual workflow — crossed area
+outlines refused, drafts remembered per sheet and never silently discarded,
+full geometry editing, on-sheet selection, anchored pan/zoom, 44 px targets,
+accessible dialogs, a read-only project summary with per-kind totals and an
+attention list, and *Open in Quant* traceability from the summary and the BOQ
+apply dialog — with no schema or rules change. `/quant` is its hidden pointer. Photos and Reports remain
 placeholder screens with live routes but are **hidden from navigation** for
 private beta; IQ™ has no screen. Subcontractors lists live
 contacts. See [PRODUCT.md](PRODUCT.md) for module-by-module status.

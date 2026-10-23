@@ -1,12 +1,15 @@
+import { useEffect } from 'react'
 import Badge from '../../../components/Badge'
 import { thCls, tdCls } from './styles'
 import { resolveCostCodeName } from '../../../lib/costCodes'
 import {
   KIND_LABELS, MEASUREMENT_STATUS, CALIBRATION_REVIEW, CALIBRATION_REVIEW_LABELS,
-  calibrationReviewState, formatMeasurementQuantity, measurementQuantity, originalQuantity,
+  calibrationReviewState, formatMeasurementQuantity, measurementQuantity, originalQuantity, quantityIssue,
   isReadableMeasurement, sortMeasurements, measurementBoqItemId,
 } from '../../../lib/quant'
 import { measurementLinkState, boqItemLabel, LINK_STATE, LINK_STATE_LABELS } from '../../../lib/quantBoq'
+import { measuredAt } from '../../../lib/quantSummary'
+import { formatDate } from '../../../lib/formatters'
 
 // ── The measurements on this page ────────────────────────────────────────────
 //
@@ -19,6 +22,11 @@ import { measurementLinkState, boqItemLabel, LINK_STATE, LINK_STATE_LABELS } fro
 // The BOQ column (ADR-52) shows the linked item, or a warning when the link
 // no longer points at a valid target (item voided, cost code or unit moved).
 // A failed BOQ read shows "BOQ unavailable" — never "not linked".
+//
+// A quantity that cannot be derived (a crossed outline, say — ADR-53) shows
+// its actionable reason under the "—" so the user knows which control fixes
+// it; the BOQ apply dialog blocks the same record through the same derivation.
+// When a measurement is selected on the sheet, its row is scrolled into view.
 //
 // A desktop table, cards below `md`. Every action is a real button ≥44px.
 //
@@ -103,15 +111,29 @@ export default function MeasurementList({
 
   const rows = active.map(m => {
     const review = calibrationReviewState(m, page)
+    const q = measurementQuantity(m, calibration)
     return {
       m,
-      quantity: formatMeasurementQuantity(measurementQuantity(m, calibration)),
+      quantity: formatMeasurementQuantity(q),
+      issue: quantityIssue(q),
       original: review === CALIBRATION_REVIEW.NEEDS_REVIEW ? formatMeasurementQuantity(originalQuantity(m)) : null,
       review,
       costCode: resolveCostCodeName(m.costCodeId, costCodes, m.costCodeName),
       link: measurementLinkState(m, boqItems),
+      // The measured date — only when the document carries a real timestamp (1C-B).
+      measured: measuredAt(m) ? formatDate(measuredAt(m)) : null,
     }
   })
+
+  // The selected measurement's visible row (table or card) scrolls into view —
+  // a DOM scroll only, no state.
+  useEffect(() => {
+    if (!selectedId || typeof document === 'undefined') return
+    for (const prefix of ['quant-row-', 'quant-card-']) {
+      const el = document.getElementById(`${prefix}${selectedId}`)
+      if (el && el.offsetParent !== null) { el.scrollIntoView?.({ block: 'nearest' }); return }
+    }
+  }, [selectedId])
 
   if (sorted.length === 0) {
     return (
@@ -138,13 +160,17 @@ export default function MeasurementList({
             </tr>
           </thead>
           <tbody>
-            {rows.map(({ m, quantity, original, review, costCode, link }) => (
-              <tr key={m.id} className={`border-b border-brand-border ${m.id === selectedId ? 'bg-brand-accent/10' : ''}`}>
-                <td className={`${tdCls} font-semibold`}>{m.label}</td>
+            {rows.map(({ m, quantity, issue, original, review, costCode, link, measured }) => (
+              <tr key={m.id} id={`quant-row-${m.id}`} className={`border-b border-brand-border ${m.id === selectedId ? 'bg-brand-accent/10' : ''}`}>
+                <td className={`${tdCls} font-semibold`}>
+                  {m.label}
+                  {measured && <span className="block text-[11px] font-normal text-brand-muted">Measured {measured}</span>}
+                </td>
                 <td className={`${tdCls} text-brand-muted`}>{KIND_LABELS[m.kind]} · {m.points.length} pt</td>
-                <td className={`${tdCls} tabular-nums whitespace-nowrap`}>
-                  {quantity}
+                <td className={`${tdCls} tabular-nums`}>
+                  <span className="whitespace-nowrap">{quantity}</span>
                   {original && <span className="block text-[11px] text-brand-amber">was {original}</span>}
+                  {issue && <span className="block max-w-[220px] text-[11px] text-brand-red" role="alert">{issue}</span>}
                 </td>
                 <td className={`${tdCls} text-[12.5px]`}>{costCode}</td>
                 <td className={`${tdCls} text-[12.5px]`}>
@@ -165,12 +191,12 @@ export default function MeasurementList({
 
       {/* Mobile cards. */}
       <div className="md:hidden flex flex-col">
-        {rows.map(({ m, quantity, original, review, costCode, link }) => (
-          <div key={m.id} className={`px-4 py-3 border-b border-brand-border ${m.id === selectedId ? 'bg-brand-accent/10' : ''}`}>
+        {rows.map(({ m, quantity, issue, original, review, costCode, link, measured }) => (
+          <div key={m.id} id={`quant-card-${m.id}`} className={`px-4 py-3 border-b border-brand-border ${m.id === selectedId ? 'bg-brand-accent/10' : ''}`}>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className="m-0 text-[14px] font-bold text-brand-text break-words">{m.label}</p>
-                <p className="m-0 mt-0.5 text-[12px] text-brand-muted">{KIND_LABELS[m.kind]} · {costCode}</p>
+                <p className="m-0 mt-0.5 text-[12px] text-brand-muted">{KIND_LABELS[m.kind]} · {costCode}{measured ? ` · ${measured}` : ''}</p>
                 <p className="m-0 mt-0.5 text-[12px]">
                   <span className="text-brand-muted">BOQ: </span>
                   <LinkCell link={link} boqItemsError={boqItemsError} boqItemsLoading={boqItemsLoading} />
@@ -181,6 +207,7 @@ export default function MeasurementList({
                 {original && <p className="m-0 text-[11px] text-brand-amber">was {original}</p>}
               </div>
             </div>
+            {issue && <p className="m-0 mt-1 text-[11.5px] text-brand-red" role="alert">{issue}</p>}
             <Actions
               compact
               indicator={<Badge label={CALIBRATION_REVIEW_LABELS[review]} variant={REVIEW_BADGE[review]} sm />}

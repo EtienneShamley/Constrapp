@@ -1245,7 +1245,7 @@ is reproduced at read time from `points` × the applicable calibration
 | `takeoffPageId` | string | **Must equal `{drawingId}_{revisionId}_{page}`** of the fields below, and that page document must **exist** (rules-verified). Immutable — a measurement never moves to another sheet |
 | `drawingId` / `revisionId` / `page` | string / string / int | The pinned sheet; drawing + revision must exist, revision not withdrawn (rules). Immutable |
 | `kind` | string | `length` \| `area` \| `count`. **Immutable** — a different kind is a different measurement |
-| `points` | `{x,y}[]` | **Canonical** page coordinates. Size by kind: length ≥ 2, area ≥ 3, count ≥ 1; ≤ 500 — **size** rules-enforced. ⚠️ Element **content** is client-only (rules cannot iterate a list — DC32); unreadable records are listed as such, never drawn or summed |
+| `points` | `{x,y}[]` | **Canonical** page coordinates. Size by kind: length ≥ 2, area ≥ 3, count ≥ 1; ≤ 500 — **size** rules-enforced. ⚠️ Element **content** is client-only (rules cannot iterate a list — DC32); unreadable records are listed as such, never drawn or summed. Since ADR-53 an **area** must also be a **simple polygon** (no crossing or touching edges, no doubling back, non-zero area): the app refuses one at save and derives a stored one as `INVALID` with a reason — client-only, nothing stored is altered |
 | `label` | string | Required non-whitespace, ≤ 120 |
 | `costCodeId` / `costCodeName` | string | **Required** — the commercial spine. The code must **exist** in the company (rules `exists()`); ⚠️ *active* is client-only. Frozen display snapshot, resolved live at read time (`resolveCostCodeName`) |
 | `calibration` | map \| **null** | **Snapshot** of the page calibration the measurement was last saved or reviewed under: `{ revision (int ≥ 1), pageDistance (> 0), realDistance (> 0), unit }`. **Required for length/area, `null` for count** (rules-enforced by kind). Drives the derived review state and keeps the previously recorded quantity explainable |
@@ -1269,7 +1269,13 @@ warning are all derived on every read and never written back. **A measurement
 write never changes a BOQ item.** The per-item aggregate of linked, eligible
 measurements (Quant 1B, `lib/quantBoq.js → aggregateLinkedQuantity`) is
 likewise derived on every read; it reaches a BOQ `quantity` only through the
-BOQ tab's explicit, confirmed apply (ADR-52).
+BOQ tab's explicit, confirmed apply (ADR-52). The project-wide summary (Quant
+1C-B, `lib/quantSummary.js → summariseTakeoff`) — categories, per-kind totals,
+groupings and attention issues — is derived the same way on every read from
+these two collections plus the drawing register, cost codes and BOQ items;
+**no total, category, issue or "measured date" is stored** (the date shown is
+the document's own `createdAt`). The remembered sheet and the remembered
+in-progress draft live in the browser's sessionStorage, never in Firestore.
 
 ## …/projects/{projectId}/counters/{counterId}
 

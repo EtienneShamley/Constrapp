@@ -351,13 +351,21 @@ describe('aggregateLinkedQuantity — blockers (one ineligible active measuremen
     expect(c.total).toBe(3)
   })
 
-  it('degenerate geometry that derives no quantity', () => {
-    // Readable (≥3 finite points) but collinear → zero area → INVALID... which validateMeasurementDraft refuses at save; a direct write could still store it.
+  it('degenerate or crossed geometry that derives no quantity BLOCKS the apply (ADR-53 revision)', () => {
+    // Readable (≥3 finite points) but collinear: validateMeasurementDraft refuses
+    // it at save; a direct write could still store it. Before 1C-A it derived 0
+    // and was summed; it is now INVALID — a zero-area outline is not an area.
     const a = agg(item(), [measurement({ points: [P(0, 0), P(1, 0), P(2, 0)] })])
-    expect(a.rows[0].quantity.value).toBe(0)
-    // Zero is a derivable quantity (state ok), so it is eligible and totals 0 — never a blocker.
-    expect(a.total).toBe(0)
-    expect(a.blockers).toHaveLength(0)
+    expect(a.rows[0].quantity.value).toBeNull()
+    expect(a.rows[0].quantity.state).toBe('invalid')
+    expect(a.rows[0].blocker).toBe(APPLY_BLOCKER.INVALID)
+    expect(a.total).toBeNull()
+    // A crossed outline with a plausible non-zero shoelace figure blocks the same way.
+    const crossed = agg(item(), [measurement({ points: [P(0, 0), P(300, 0), P(100, 400), P(300, 400)] })]) // shoelace 2 m², crossed
+    expect(crossed.rows[0].quantity.state).toBe('invalid')
+    expect(crossed.rows[0].quantity.reason).toBe('self_intersecting')
+    expect(crossed.blockers).toHaveLength(1)
+    expect(crossed.total).toBeNull()
   })
 
   it('the rows carry the drawing and the current flag for the dialog’s source column', () => {
@@ -440,8 +448,9 @@ describe('evidence fingerprint — WHICH measurements made the total, not just h
     expect(isValidEvidence('')).toBe(false)
     expect(isValidEvidence('x'.repeat(EVIDENCE_MAX_LENGTH + 1))).toBe(false)
     expect(isValidEvidence(42)).toBe(false)
-    // A 500-point polygon still digests to the same bounded length.
-    const big = measurement({ points: Array.from({ length: 500 }, (_, i) => P(Math.cos(i) * 100 + 200, Math.sin(i) * 100 + 200)) })
+    // A 500-point SIMPLE polygon (a circle traced in order — ADR-53 refuses a
+    // crossed one) still digests to the same bounded length.
+    const big = measurement({ points: Array.from({ length: 500 }, (_, i) => P(Math.cos(i * 2 * Math.PI / 500) * 100 + 200, Math.sin(i * 2 * Math.PI / 500) * 100 + 200)) })
     expect(evidenceFingerprint(agg(item(), [big])).length).toBe(a.length)
   })
 

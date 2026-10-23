@@ -67,8 +67,33 @@ a separate approved action:
 
 `frontend/storage.rules` is **unchanged**; no Storage read permission widens.
 
-**Quant™ 1B (ADR-52): IMPLEMENTED — NOT YET DEPLOYED. ⚠️ RULES FIRST, HOSTING
-SECOND — the reverse of the ADR-40 gate.** The 1B bundle writes a new key,
+**Quant™ 1C (ADR-53, stages 1C-A and 1C-B): IMPLEMENTED — NOT YET DEPLOYED.
+Hosting-only; not production-verified.** The 1C bundle changes no collection,
+no document shape and no rule: `frontend/firestore.rules` and
+`frontend/storage.rules` are byte-identical to the 1B release (196,034 bytes;
+`npm run test:rules` still runs as the gate). Every change is client-side
+(polygon simplicity, remembered per-sheet drafts, geometry editing, selection,
+pan/zoom, dialog semantics, the read-only project summary, Open-in-Quant
+navigation through sessionStorage), and every production document stays
+valid. Release, each a separate approved action:
+
+1. `cd frontend && npm run lint && npm run test:unit && npm run test:rules &&
+   npm run build` — green.
+2. `firebase deploy --only hosting --project constrapp-69b5d`. No rules publish.
+3. **Verify in production** per TESTING.md §29 (a crossed outline refused and
+   an existing one blocked from apply; a draft surviving a tab change; a
+   vertex inserted and removed; a pinch and a Ctrl-wheel zoom staying aligned;
+   the project summary's totals matching the page totals with historical kept
+   apart; *Open* from the summary and *Open in Quant* from the BOQ dialog
+   landing on the right sheet with the measurement highlighted) and record the
+   outcome here.
+
+**Quant™ 1B (ADR-52): LIVE IN PRODUCTION (October 2026).** Released in the
+order below — rules published and confirmed live first, then Hosting — and
+verified per TESTING.md §28; the repository records the month. The original
+ordering note is kept because it still governs any future change that adds a
+key the live `hasOnly` would reject: **RULES FIRST, HOSTING SECOND — the
+reverse of the ADR-40 gate.** The 1B bundle writes a new key,
 `boqItemId`, on **every** measurement save (null or an id), and the LIVE
 `takeoffMeasurements` block's `hasOnly` **rejects any unknown key** — so a
 Hosting deploy ahead of the rules would break every measurement save on the
@@ -87,7 +112,8 @@ separate approved action:
    moment the live 1A bundle keeps working unchanged.
 3. `npm run build` + `firebase deploy --only hosting --project constrapp-69b5d`.
 4. **Verify in production** per TESTING.md §28 (link, review, apply; stale
-   refusal; roles) and record the outcome here.
+   refusal; roles) — done (October 2026): link, review and apply verified
+   against production; the repository records the month, not the day.
 
 `frontend/storage.rules` is **unchanged**; no bucket CORS change is needed (the
 dialog reads no file bytes). **Rollback:** redeploying the previous Hosting

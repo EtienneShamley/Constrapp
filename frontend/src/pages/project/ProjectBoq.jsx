@@ -20,6 +20,7 @@ import {
 } from '../../lib/boq'
 import { MEASUREMENT_STATUS, measurementBoqItemId } from '../../lib/quant'
 import { isReadableQuantApplied } from '../../lib/quantBoq'
+import { writeSelection } from '../../lib/quantSelection'
 import BoqItemEditorModal from './boq/BoqItemEditorModal'
 import BoqItemVoidModal from './boq/BoqItemVoidModal'
 import BoqQuantityApplyModal from './boq/BoqQuantityApplyModal'
@@ -207,6 +208,22 @@ export default function ProjectBoq() {
 
   const noCostCodes = !costCodesLoading && costCodes.length === 0
   const goToCostCodes = () => navigate(`/projects/${projectId}/cost-codes`)
+
+  // Quant 1C-B (ADR-53): "Open in Quant" from the apply dialog hands the
+  // measurement's sheet to the Quant tab through the SAME remembered-selection
+  // mechanism the tab already restores from (sessionStorage, per project), then
+  // navigates with the app's router. Nothing is written to Firestore; the Quant
+  // tab validates the target against the live register and explains a
+  // measurement that is gone, void or on a withdrawn drawing.
+  const openInQuant = (row) => {
+    const m = row?.m
+    if (!m) return
+    writeSelection(typeof window !== 'undefined' ? window.sessionStorage : null, projectId, {
+      drawingId: m.drawingId, revisionId: m.revisionId, page: m.page, measurementId: m.id,
+    })
+    setApplying(null)
+    navigate(`/projects/${projectId}/quant`)
+  }
 
   // ── Gates ──────────────────────────────────────────────────────────────────
   if (profileLoading) {
@@ -399,6 +416,7 @@ export default function ProjectBoq() {
           currentUid={user?.uid ?? null}
           onClose={() => setApplying(null)}
           onApply={(item, change) => applyBoqQuantity(item, change)}
+          onOpenInQuant={openInQuant}
         />
       )}
     </div>

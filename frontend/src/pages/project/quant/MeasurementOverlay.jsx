@@ -1,4 +1,4 @@
-import { MEASUREMENT_KIND, pointsToPath, isReadableMeasurement } from '../../../lib/quant'
+import { MEASUREMENT_KIND, pointsToPath, isReadableMeasurement, HIT_TOLERANCE_PX } from '../../../lib/quant'
 
 // ── SVG overlay in CANONICAL page units ───────────────────────────────────────
 //
@@ -8,10 +8,14 @@ import { MEASUREMENT_KIND, pointsToPath, isReadableMeasurement } from '../../../
 // `vector-effect="non-scaling-stroke"` so they stay 2px on screen; handle
 // radii are converted from screen pixels with `cssScale` for the same reason.
 //
-// Presentation only: it never computes a quantity. Colours are the Quant token
-// for geometry and the shared status tokens for selection/edit state —
-// meaning is always ALSO carried by the list beside the viewer, never by
-// colour alone.
+// Presentation only: it never computes a quantity and, since Quant 1C-A
+// (ADR-53), it handles NO pointer events of its own — every tap, drag, pan and
+// pinch is resolved by the viewer against canonical coordinates (nearest
+// vertex / nearest edge / shape hit test in lib/quant.js), so a 44 px finger
+// target applies at every zoom and two close handles can never both answer.
+// Colours are the Quant token for geometry and the shared status tokens for
+// selection/edit state — meaning is always ALSO carried by the list beside the
+// viewer, never by colour alone.
 
 const HANDLE_PX = 7
 const COUNT_PX  = 9
@@ -24,7 +28,7 @@ function Shape({ m, selected, cssScale }) {
       <g className={`${stroke} fill-brand-quant/25`}>
         {m.points.map((p, i) => (
           <g key={i}>
-            <circle cx={p.x} cy={p.y} r={r} strokeWidth="2" vectorEffect="non-scaling-stroke" />
+            <circle cx={p.x} cy={p.y} r={r} strokeWidth={selected ? 3 : 2} vectorEffect="non-scaling-stroke" />
             <text
               x={p.x} y={p.y} textAnchor="middle" dominantBaseline="central"
               fontSize={12 / cssScale} className="fill-brand-text stroke-none font-bold"
@@ -40,7 +44,7 @@ function Shape({ m, selected, cssScale }) {
   return (
     <path
       d={pointsToPath(m.points, closed)}
-      className={`${stroke} ${closed ? 'fill-brand-quant/15' : 'fill-none'}`}
+      className={`${stroke} ${closed ? (selected ? 'fill-brand-accent/15' : 'fill-brand-quant/15') : 'fill-none'}`}
       strokeWidth={selected ? 3 : 2}
       strokeLinejoin="round"
       strokeLinecap="round"
@@ -53,14 +57,14 @@ export default function MeasurementOverlay({
   pageWidth, pageHeight, cssScale,
   measurements = [], selectedId = null,
   draft = null,            // { kind, points } — in-progress drawing
-  editing = null,          // { points } — geometry being edited (draggable)
+  editing = null,          // { kind, points, vertex } — geometry being edited; `vertex` is the selected point index
   calibration = null,      // page calibration (pointA / pointB) to show
   calibrationDraft = [],   // the one or two points picked for a new calibration
-  onHandlePointerDown,     // (index, event)
 }) {
   const handleR = HANDLE_PX / cssScale
+  const hitR = HIT_TOLERANCE_PX / cssScale
   return (
-    <>
+    <g pointerEvents="none">
       {/* Saved measurements — active, readable ones only. */}
       {measurements.filter(isReadableMeasurement).map(m => (
         <Shape key={m.id} m={m} selected={m.id === selectedId} cssScale={cssScale} />
@@ -108,25 +112,33 @@ export default function MeasurementOverlay({
         </g>
       )}
 
-      {/* Geometry edit: the measurement's points as draggable handles. */}
+      {/* Geometry edit: the measurement's points as handles. The selected vertex
+          carries a ring the size of its 44 px touch target, so the user can see
+          what a tap will move or remove. */}
       {editing && (
         <g className="stroke-brand-accent fill-brand-accent">
-          <path
-            d={pointsToPath(editing.points, editing.kind === MEASUREMENT_KIND.AREA)}
-            className={editing.kind === MEASUREMENT_KIND.AREA ? 'fill-brand-accent/15' : 'fill-none'}
-            strokeWidth="2" vectorEffect="non-scaling-stroke"
-          />
-          {editing.points.map((p, i) => (
-            <circle
-              key={i} cx={p.x} cy={p.y} r={handleR}
-              className="cursor-move"
-              onPointerDown={(e) => onHandlePointerDown?.(i, e)}
+          {editing.kind !== MEASUREMENT_KIND.COUNT && (
+            <path
+              d={pointsToPath(editing.points, editing.kind === MEASUREMENT_KIND.AREA)}
+              className={editing.kind === MEASUREMENT_KIND.AREA ? 'fill-brand-accent/15' : 'fill-none'}
+              strokeWidth="2" vectorEffect="non-scaling-stroke"
             />
+          )}
+          {editing.points.map((p, i) => (
+            <g key={i}>
+              {i === editing.vertex && (
+                <circle cx={p.x} cy={p.y} r={hitR} className="fill-brand-accent/10 stroke-brand-accent" strokeWidth="1" strokeDasharray="4 3" vectorEffect="non-scaling-stroke" />
+              )}
+              <circle cx={p.x} cy={p.y} r={i === editing.vertex ? handleR * 1.3 : handleR} className={i === editing.vertex ? 'stroke-brand-text' : ''} strokeWidth={i === editing.vertex ? 2 : 0} vectorEffect="non-scaling-stroke" />
+              {editing.kind === MEASUREMENT_KIND.COUNT && (
+                <text x={p.x} y={p.y} textAnchor="middle" dominantBaseline="central" fontSize={11 / cssScale} className="fill-brand-bg stroke-none font-bold">{i + 1}</text>
+              )}
+            </g>
           ))}
         </g>
       )}
       {/* The page box itself, so an empty page is still visibly bounded. */}
       <rect x="0" y="0" width={pageWidth} height={pageHeight} className="fill-none stroke-brand-border" strokeWidth="1" vectorEffect="non-scaling-stroke" />
-    </>
+    </g>
   )
 }

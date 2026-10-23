@@ -60,6 +60,7 @@ function sourceLabel(row) {
 
 export default function BoqQuantityApplyModal({
   item, measurements, takeoffPages, drawings, sources, currencyCode, currentUid, onApply, onClose,
+  onOpenInQuant, // (row) — Quant 1C-B: hand this measurement's sheet to the Quant tab (read-only navigation)
 }) {
   const aggregate = useMemo(
     () => aggregateLinkedQuantity({ item, measurements, takeoffPages, drawings }),
@@ -202,7 +203,20 @@ export default function BoqQuantityApplyModal({
                       <tr key={row.m.id} className="border-b border-brand-border last:border-b-0">
                         <td className={`${cellCls} font-semibold`}>{row.m.label ?? row.m.id}</td>
                         <td className={`${cellCls} text-brand-muted`}>{KIND_LABELS[row.m.kind] ?? '—'}</td>
-                        <td className={cellCls}>{sourceLabel(row)}</td>
+                        <td className={cellCls}>
+                          <span className="block">{sourceLabel(row)}</span>
+                          {onOpenInQuant && row.drawing && (
+                            <button
+                              type="button"
+                              onClick={() => onOpenInQuant(row)}
+                              disabled={saving}
+                              aria-label={`Open ${row.m.label ?? row.m.id} in Quant`}
+                              className="mt-0.5 inline-flex min-h-[32px] items-center rounded-lg px-1.5 text-[11.5px] font-semibold text-brand-accent hover:bg-brand-card focus-visible:outline-2 focus-visible:outline-brand-accent disabled:opacity-40"
+                            >
+                              Open in Quant →
+                            </button>
+                          )}
+                        </td>
                         <td className={`${cellCls} tabular-nums whitespace-nowrap`}>{formatMeasurementQuantity(row.quantity)}</td>
                         <td className={cellCls}>
                           {row.blocker

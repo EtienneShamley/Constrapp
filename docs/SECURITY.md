@@ -1568,6 +1568,12 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       lists unreadable records without drawing or summing them;
     - that points lie **on the page**, or that the geometry is
       **non-degenerate** (zero length, collinear area);
+    - that an area's outline is **simple** (ADR-53): rules cannot test whether
+      two edges cross, so a self-intersecting or collapsed polygon passes them;
+      the app refuses one at save (`validatePoints`), derives a STORED one as
+      `INVALID` with a reason (`measurementQuantity` — never a number, never
+      summed, named in the list and the editor), and the BOQ apply blocks it
+      through the unchanged aggregate — all **client-side**;
     - that `pageWidth`/`pageHeight`/`pageRotation` are the sheet's **real**
       canonical geometry, and that `page` is **within the PDF's page count**;
     - that a calibration's `pageDistance` **equals the distance between its two
@@ -1740,8 +1746,27 @@ length may link to an item measured in m³ as far as rules can tell; the app
 never offers it.
 
 **What is NOT enforced** is listed in Deferred Controls 32 and 33 — most
-notably the **content** of `points`, the **truth** of a calibration, the page
-number, unit compatibility, the aggregate, and cross-record concurrency.
+notably the **content** of `points` (including, since ADR-53, whether an area's
+outline is simple), the **truth** of a calibration, the page number, unit
+compatibility, the aggregate, and cross-record concurrency.
+
+**Quant 1C (ADR-53, stages A and B) changed no rule and no document shape.**
+Every control it added — polygon simplicity, the remembered draft in
+sessionStorage, the discard confirmation, the edit session, hit testing, pan
+and zoom, the dialog semantics, the project summary and the Open-in-Quant
+hand-off — is client-side UX over the same two collections; `firestore.rules`
+and `storage.rules` are byte-identical to the 1B release. The remembered draft
+holds canonical points and ids only, in the browser's per-tab storage, is never
+written to Firestore, and becomes a record only through the existing dialogs
+and transactions. The project summary **reads nothing new**: it is composed
+from the subscriptions the Quant workspace already opens (which the three
+Quant roles may read and nobody else — rules-enforced), stores no total, and
+offers *Open* only for a drawing that is in the register and not withdrawn; a
+void, missing or withdrawn source is explained, never navigated to. The
+remembered selection's optional `measurementId` is intent in sessionStorage:
+the workspace looks it up on the live sheet and never bypasses the revision or
+role gates (a withdrawn drawing is still not opened; a withdrawn revision is
+still inspect-or-void-only). Nothing here widens any read or write.
 
 ## Project Timeline — the one collection where `qs` is read-only
 

@@ -134,10 +134,17 @@ describe('geometry — closure and degenerate shapes', () => {
     expect(polygonArea([P(0, 0), P(1, 0)])).toBe(0)
   })
 
-  it('a self-intersecting bow-tie is tolerated by the formula (signed areas cancel) — validation rejects the zero result', () => {
+  // ADR-53 revision: the signed shoelace sum still cancels for a symmetric
+  // bow-tie, but an ASYMMETRIC crossing yields a plausible non-zero figure —
+  // so simplicity is now checked explicitly (see quantInteraction.test.js).
+  it('a self-intersecting bow-tie is refused by the simplicity check, not merely by a zero result', () => {
     const bowtie = [P(0, 0), P(2, 2), P(2, 0), P(0, 2)]
     expect(polygonArea(bowtie)).toBe(0)
-    expect(validatePoints('area', bowtie)).not.toBeNull()
+    expect(validatePoints('area', bowtie)).toMatch(/crosses itself/)
+    const crossed = [P(0, 0), P(4, 0), P(1, 3), P(4, 3)] // non-zero shoelace (1.5), still crossed
+    expect(polygonArea(crossed)).toBeGreaterThan(0)
+    expect(validatePoints('area', crossed)).toMatch(/crosses itself/)
+    expect(measurementQuantity({ kind: 'area', points: crossed }, CAL_1M_PER_100).state).toBe(QUANTITY_STATE.INVALID)
   })
 
   it('more than MAX_POINTS is refused', () => {
@@ -537,7 +544,8 @@ describe('hostile numbers are refused', () => {
 
   it('a measurement with non-finite points is INVALID, never a number', () => {
     const q = measurementQuantity({ kind: 'area', points: [P(0, 0), P(1, 0), P(1, NaN)] }, CAL_1M_PER_100)
-    expect(q).toEqual({ value: null, unit: 'm²', state: QUANTITY_STATE.INVALID })
+    // ADR-53: an INVALID quantity also names its reason (shown to the user).
+    expect(q).toEqual({ value: null, unit: 'm²', state: QUANTITY_STATE.INVALID, reason: 'malformed' })
     expect(validatePoints('area', [P(0, 0), P(1, 0), P(1, Infinity)])).toMatch(/not valid/)
   })
 
@@ -891,9 +899,10 @@ describe('project switching — keyed subscriptions', () => {
     const layout = stripComments(read('layouts/ProjectDetailLayout.jsx'))
     expect(layout).toContain('<Outlet key={projectId}')
     const workspace = stripComments(read('pages/project/quant/TakeoffWorkspace.jsx'))
-    // Changing the sheet inside a project clears every draft in the change handlers.
-    expect(workspace).toMatch(/const changeDrawing = \(id\) => \{ resetDrafts\(\)/)
-    expect(workspace).toMatch(/const changeRevision = \(id\) => \{ resetDrafts\(\)/)
+    // Changing the sheet inside a project clears every draft in the change handlers
+    // (ADR-53: after one explicit confirmation when something is unsaved).
+    expect(workspace).toMatch(/const changeDrawing = \(id\) => \{ if \(!confirmDiscard\(\)\) return; resetDrafts\(\)/)
+    expect(workspace).toMatch(/const changeRevision = \(id\) => \{ if \(!confirmDiscard\(\)\) return; resetDrafts\(\)/)
     // Quant 1B correction renamed the setters (drawingChoice / pageChoice — the CHOICE, validated before use).
     expect(workspace).toMatch(/resetDrafts\(\); setPageChoice\(n\)/)
   })
@@ -969,7 +978,7 @@ describe('superseded and withdrawn revisions', () => {
     // keyed on the new drawing.
     const workspace = stripComments(read('pages/project/quant/TakeoffWorkspace.jsx'))
     expect(workspace).toContain('useDrawingRevisions(projectId, drawingId)')
-    expect(workspace).toMatch(/const changeDrawing = \(id\) => \{ resetDrafts\(\); setDrawingChoice\(id\); setRevisionChoice\(null\)/)
+    expect(workspace).toMatch(/const changeDrawing = \(id\) => \{ if \(!confirmDiscard\(\)\) return; resetDrafts\(\); setDrawingChoice\(id\); setRevisionChoice\(null\)/)
     const hook = stripComments(read('hooks/useDrawingRevisions.jsx'))
     expect(hook).toContain('const key = `${companyId}/${projectId}/${drawingId}`')
   })
@@ -1056,7 +1065,12 @@ describe('permission-gated subscriptions', () => {
     expect(workspace).toContain('const voidable = !!identity && canWrite && !takeoffPagesError && !takeoffMeasurementsError')
     expect(workspace).toContain('canEdit={measurable}')
     expect(workspace).toContain('canVoid={voidable}')
-    expect(workspace).toMatch(/pointerEnabled=\{measurable &&/)
+    // ADR-53: the viewer gets a MODE; measuring taps are refused in the
+    // workspace unless `measurable`, and vertex hit-testing is offered only then.
+    expect(workspace).toContain('mode={viewerMode}')
+    expect(workspace).toContain("const viewerMode = !geometry ? 'none' : editing ? 'edit' : tool")
+    expect(workspace).toContain('editPoints={editing && measurable ? editing.points : null}')
+    expect(workspace).toMatch(/if \(tool === TOOL\.SELECT\) \{\s*setSelectedId\(hitTestMeasurements\(activeOnPage, p, tolerance\)\)\s*return\s*\}\s*if \(!measurable\) return/)
     const list = stripComments(read('pages/project/quant/MeasurementList.jsx'))
     expect(list).toContain('{canEdit && <button type="button" className={actionCls} onClick={() => onEditGeometry(m)}>Geometry</button>}')
     expect(list).toContain('{canEdit && <button type="button" className={actionCls} onClick={() => onEditDetails(m)}>Details</button>}')
@@ -1310,7 +1324,8 @@ describe('the workspace remembers its sheet per project — sessionStorage only,
   })
 
   it('the EFFECTIVE selection is written back only once the records have settled — a loading or failed read never erases a remembered sheet', () => {
-    expect(workspace).toMatch(/useEffect\(\(\) => \{\s*if \(!drawingsSettled\) return\s*if \(drawingId && !revisionsSettled\) return\s*writeSelection\(browserStorage\(\), projectId, \{ drawingId, revisionId: chosen\?\.id \?\? null, page \}\)\s*\}, \[projectId, drawingsSettled, revisionsSettled, drawingId, chosen, page\]\)/)
+    // (1C-B: the selected measurement rides along as the optional `measurementId`.)
+    expect(workspace).toMatch(/useEffect\(\(\) => \{\s*if \(!drawingsSettled\) return\s*if \(drawingId && !revisionsSettled\) return\s*writeSelection\(browserStorage\(\), projectId, \{ drawingId, revisionId: chosen\?\.id \?\? null, page, measurementId: selectedId \}\)\s*\}, \[projectId, drawingsSettled, revisionsSettled, drawingId, chosen, page, selectedId\]\)/)
   })
 
   it('measurability is still decided from the LIVE records — nothing restored bypasses the sheet protections', () => {
@@ -1318,8 +1333,9 @@ describe('the workspace remembers its sheet per project — sessionStorage only,
     expect(workspace).toContain('const measurable = !!identity && !!geometry && sheetLive && canWrite')
     expect(workspace).not.toMatch(/saved\?\.(drawingId|revisionId|page)[^\n]*(measurable|sheetLive|canMeasure)/)
     // The change handlers still reset drafts and the page — restore never calls them.
-    expect(workspace).toContain('const changeDrawing = (id) => { resetDrafts(); setDrawingChoice(id); setRevisionChoice(null); setPageChoice(1); setSelectedId(null); setNotice(null) }')
-    expect(workspace).toContain('const changeRevision = (id) => { resetDrafts(); setRevisionChoice(id); setPageChoice(1); setSelectedId(null); setNotice(null) }')
+    // (ADR-53 adds one explicit confirmation ahead of the reset when work is unsaved.)
+    expect(workspace).toContain('const changeDrawing = (id) => { if (!confirmDiscard()) return; resetDrafts(); setDrawingChoice(id); setRevisionChoice(null); setPageChoice(1); setSelectedId(null); setNotice(null) }')
+    expect(workspace).toContain('const changeRevision = (id) => { if (!confirmDiscard()) return; resetDrafts(); setRevisionChoice(id); setPageChoice(1); setSelectedId(null); setNotice(null) }')
   })
 })
 

@@ -1,12 +1,15 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import { getFileBytes, getFileUrl } from '../../../hooks/useStorageUpload'
 import { isImageContentType, isPdfContentType } from '../../../lib/files'
 import { openPdf, pageGeometry, renderPage, isRenderCancelled } from '../../../lib/pdfRender'
-import { PAGE_SOURCE, RENDER_LIMITS, screenToCanonical } from '../../../lib/quant'
+import {
+  PAGE_SOURCE, RENDER_LIMITS, HIT_TOLERANCE_PX,
+  screenToCanonical, nearestVertex, wheelZoom, pinchZoom, zoomAboutPoint, pointerDistance,
+} from '../../../lib/quant'
 import { loadPdfjs } from './pdfjsLoader'
 import MeasurementOverlay from './MeasurementOverlay'
 
-// ── The sheet on screen (Quant 1A, ADR-51) ───────────────────────────────────
+// ── The sheet on screen (Quant 1A, ADR-51; interaction ADR-53) ───────────────
 //
 // Renders ONE page of ONE drawing revision — a PDF page into a <canvas>
 // through PDF.js, or a PNG/JPEG into an <img> — under an SVG overlay drawn in
@@ -22,6 +25,23 @@ import MeasurementOverlay from './MeasurementOverlay'
 // revision (getFileBytes); a download URL is minted for images and never
 // persisted.
 //
+// INTERACTION (Quant 1C-A). One pointer model on the <svg>, resolved in
+// canonical units so nothing depends on zoom:
+//   · a TAP (press and release within the slop) → `onTap(point, { tolerance })`
+//     — the workspace decides what a tap means for the active tool
+//   · in `edit` mode a press within 22 px of a vertex (half a 44 px target,
+//     nearest vertex wins — never two) starts a VERTEX DRAG
+//   · a press that moves beyond the slop PANS the scroller — any touch, or a
+//     mouse/pen while the Select tool is active; measuring tools ignore a
+//     mouse drag, so a slip never places a point
+//   · two pointers PINCH-ZOOM about their midpoint; Ctrl/⌘ + wheel zooms
+//     about the cursor; plain wheel scrolls as the browser always did; the
+//     toolbar's −/+ zoom about the centre of the visible area
+// Every zoom change is anchored: the sheet position under the pointer (or the
+// centre) stays put, through the pure lib/quant.js → zoomAboutPoint. The <svg>
+// is `touch-action: none` so both fingers reach us; pointer capture keeps a
+// drag alive outside the sheet; cancel clears every gesture.
+//
 // State is written only from async callbacks, never synchronously in an
 // effect body (ADR-41 discipline, react-hooks/set-state-in-effect).
 
@@ -30,19 +50,30 @@ const TAP_SLOP_PX = 6
 const isTouchLimits = () =>
   typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)')?.matches
 
+const MEASURING_MODES = ['calibrate', 'length', 'area', 'count', 'edit']
+
 export default function PageViewer({
   revision, page, zoom, fitMode,
   onGeometry,        // (geometry | null, { numPages }) — canonical page metadata
-  onPoint,           // (canonicalPoint) — a tap/click on the sheet
-  onDragPoint,       // (index, canonicalPoint) — a handle being dragged
-  pointerEnabled,    // whether taps add points
+  onZoomChange,      // (zoom) — a wheel or pinch asks for a new zoom (already clamped)
+  mode = 'none',     // 'none' | 'select' | 'calibrate' | 'length' | 'area' | 'count' | 'edit'
+  onTap,             // (canonicalPoint, { tolerance }) — a tap on the sheet
+  editPoints = null, // the points being edited (edit mode) — for vertex hit testing
+  onVertexDragStart, // (index)
+  onVertexDrag,      // (index, canonicalPoint)
+  onVertexDragEnd,   // ()
   overlay,           // props for MeasurementOverlay (measurements, draft, editing, …)
 }) {
   const containerRef = useRef(null)
   const canvasRef    = useRef(null)
   const svgRef       = useRef(null)
-  const pressRef     = useRef(null)
-  const dragRef      = useRef(null)
+  // Gesture bookkeeping — never rendered, so refs, written only in handlers/effects.
+  const pointersRef  = useRef(new Map())
+  const gestureRef   = useRef(null)
+  const zoomRef      = useRef(zoom)
+  const anchorRef    = useRef(null)
+  const scaleRef     = useRef(null)
+  const frameRef     = useRef(0)
 
   const storagePath = revision?.storagePath ?? null
   const contentType = revision?.contentType ?? null
@@ -55,6 +86,9 @@ export default function PageViewer({
   const [pageState, setPageState] = useState({ key: null, pageProxy: null, geometry: null, error: null })
   const [containerWidth, setContainerWidth] = useState(0)
   const [rendering, setRendering] = useState(false)
+  const [panning, setPanning] = useState(false)
+
+  useEffect(() => { zoomRef.current = zoom }, [zoom])
 
   // ── Container width (fit-to-width) ────────────────────────────────────────
   // Observes the SCROLLER's content box (contentRect excludes its border), so a
@@ -166,6 +200,30 @@ export default function PageViewer({
   const cssWidth  = geometry ? Math.max(1, Math.round(geometry.pageWidth * cssScale)) : 0
   const cssHeight = geometry ? Math.max(1, Math.round(geometry.pageHeight * cssScale)) : 0
 
+  // ── Anchored zoom: keep the point under the pointer (or the centre) still ─
+  // Runs after the SVG has its new size and before paint, so the scroll jump
+  // and the resize land in the same frame. Only a SCALE change on the SAME
+  // sheet in the SAME container is anchored — a new page or a resized window
+  // keeps the browser's own scroll position.
+  useLayoutEffect(() => {
+    const el = containerRef.current
+    const prev = scaleRef.current
+    scaleRef.current = { cssScale, pageKey, containerWidth }
+    if (!el || !prev || prev.pageKey !== pageKey || prev.containerWidth !== containerWidth || prev.cssScale === cssScale) {
+      anchorRef.current = null
+      return
+    }
+    const anchor = anchorRef.current ?? { x: el.clientWidth / 2, y: el.clientHeight / 2 }
+    anchorRef.current = null
+    const next = zoomAboutPoint({
+      scrollLeft: el.scrollLeft, scrollTop: el.scrollTop,
+      pointerX: anchor.x, pointerY: anchor.y,
+      scaleBefore: prev.cssScale, scaleAfter: cssScale,
+    })
+    el.scrollLeft = next.scrollLeft
+    el.scrollTop = next.scrollTop
+  }, [cssScale, pageKey, containerWidth])
+
   // ── Render the PDF page into the canvas at the current scale ─────────────
   // Waits for the scroller to be measured: rendering at the provisional scale
   // of 1 would be thrown away a frame later.
@@ -190,45 +248,140 @@ export default function PageViewer({
     }
   }, [pageProxy, cssScale, containerWidth])
 
-  // ── Pointer handling: tap adds a point; drag moves an edit handle ────────
+  // ── Wheel: Ctrl/⌘ + wheel zooms about the cursor; plain wheel scrolls ─────
+  // A native, NON-passive listener: React's onWheel is passive and could not
+  // preventDefault the browser's page zoom. Removed with the scroller.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el || !onZoomChange) return undefined
+    const onWheel = (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return
+      e.preventDefault()
+      const rect = el.getBoundingClientRect()
+      anchorRef.current = { x: e.clientX - rect.left - el.clientLeft, y: e.clientY - rect.top - el.clientTop }
+      onZoomChange(wheelZoom(zoomRef.current, e.deltaY, e.deltaMode))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [onZoomChange])
+
+  // Pinch updates are coalesced to one per animation frame.
+  useEffect(() => () => { if (frameRef.current) cancelAnimationFrame(frameRef.current) }, [])
+
+  // ── Pointer handling ──────────────────────────────────────────────────────
   const toCanonical = useCallback((e) => {
     const rect = svgRef.current?.getBoundingClientRect()
     if (!rect || !geometry) return null
     return screenToCanonical(e.clientX, e.clientY, rect, geometry.pageWidth, geometry.pageHeight)
   }, [geometry])
 
-  const onPointerDown = useCallback((e) => {
-    if (dragRef.current) return
-    pressRef.current = { x: e.clientX, y: e.clientY }
-  }, [])
+  const tolerance = HIT_TOLERANCE_PX / cssScale
+  const canPanWithMouse = mode === 'select'
 
-  const onPointerUp = useCallback((e) => {
-    const press = pressRef.current
-    pressRef.current = null
-    if (dragRef.current) {
-      // End of a handle drag.
-      dragRef.current = null
-      e.currentTarget.releasePointerCapture?.(e.pointerId)
+  const endGesture = useCallback((e) => {
+    const g = gestureRef.current
+    gestureRef.current = null
+    if (g?.kind === 'drag') onVertexDragEnd?.()
+    if (g?.kind === 'pan') setPanning(false)
+    if (e) e.currentTarget.releasePointerCapture?.(e.pointerId)
+  }, [onVertexDragEnd])
+
+  const onPointerDown = useCallback((e) => {
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    if (pointersRef.current.size === 2) {
+      // A second finger turns whatever was happening into a pinch — no tap,
+      // no drag, no pan will follow from either pointer.
+      const [a, b] = [...pointersRef.current.values()]
+      if (gestureRef.current?.kind === 'drag') onVertexDragEnd?.()
+      if (gestureRef.current?.kind === 'pan') setPanning(false)
+      gestureRef.current = { kind: 'pinch', startDistance: pointerDistance(a, b), startZoom: zoomRef.current }
+      e.currentTarget.setPointerCapture?.(e.pointerId)
       return
     }
-    if (!press || !pointerEnabled) return
-    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) > TAP_SLOP_PX) return
-    const p = toCanonical(e)
-    if (p) onPoint?.(p)
-  }, [pointerEnabled, toCanonical, onPoint])
+    if (pointersRef.current.size > 2) return
+    e.currentTarget.setPointerCapture?.(e.pointerId)
+    if (mode === 'edit' && Array.isArray(editPoints) && editPoints.length > 0) {
+      const p = toCanonical(e)
+      const hit = p ? nearestVertex(editPoints, p) : null
+      if (hit && hit.distance <= tolerance) {
+        gestureRef.current = { kind: 'drag', index: hit.index }
+        onVertexDragStart?.(hit.index)
+        return
+      }
+    }
+    const el = containerRef.current
+    gestureRef.current = {
+      kind: 'press', x: e.clientX, y: e.clientY,
+      scrollLeft: el?.scrollLeft ?? 0, scrollTop: el?.scrollTop ?? 0,
+      pointerType: e.pointerType,
+    }
+  }, [mode, editPoints, toCanonical, tolerance, onVertexDragStart, onVertexDragEnd])
 
   const onPointerMove = useCallback((e) => {
-    if (!dragRef.current) return
-    const p = toCanonical(e)
-    if (p) onDragPoint?.(dragRef.current.index, p)
-  }, [toCanonical, onDragPoint])
+    const pointers = pointersRef.current
+    if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    const g = gestureRef.current
+    if (!g) return
+    if (g.kind === 'pinch') {
+      if (pointers.size < 2 || !onZoomChange) return
+      const [a, b] = [...pointers.values()]
+      const el = containerRef.current
+      if (el) {
+        const rect = el.getBoundingClientRect()
+        anchorRef.current = { x: (a.x + b.x) / 2 - rect.left - el.clientLeft, y: (a.y + b.y) / 2 - rect.top - el.clientTop }
+      }
+      const next = pinchZoom(g.startZoom, g.startDistance, pointerDistance(a, b))
+      if (frameRef.current) cancelAnimationFrame(frameRef.current)
+      frameRef.current = requestAnimationFrame(() => { frameRef.current = 0; onZoomChange(next) })
+      return
+    }
+    if (g.kind === 'drag') {
+      const p = toCanonical(e)
+      if (p) onVertexDrag?.(g.index, p)
+      return
+    }
+    if (g.kind === 'press') {
+      if (Math.hypot(e.clientX - g.x, e.clientY - g.y) <= TAP_SLOP_PX) return
+      if (g.pointerType === 'touch' || canPanWithMouse) {
+        gestureRef.current = { ...g, kind: 'pan' }
+        setPanning(true)
+      } else {
+        // A mouse slip while measuring: not a tap, not a pan — nothing.
+        gestureRef.current = { ...g, kind: 'slip' }
+      }
+    }
+    const pan = gestureRef.current
+    if (pan.kind === 'pan') {
+      const el = containerRef.current
+      if (!el) return
+      el.scrollLeft = pan.scrollLeft - (e.clientX - pan.x)
+      el.scrollTop  = pan.scrollTop  - (e.clientY - pan.y)
+    }
+  }, [onZoomChange, toCanonical, onVertexDrag, canPanWithMouse])
 
-  const onHandlePointerDown = useCallback((index, e) => {
-    e.stopPropagation()
-    dragRef.current = { index }
-    pressRef.current = null
-    svgRef.current?.setPointerCapture?.(e.pointerId)
-  }, [])
+  const onPointerUp = useCallback((e) => {
+    const pointers = pointersRef.current
+    pointers.delete(e.pointerId)
+    const g = gestureRef.current
+    if (g?.kind === 'pinch') {
+      // The pinch ends when the second finger lifts; the remaining pointer
+      // must not turn into a tap, so the gesture is cleared for both.
+      if (pointers.size < 2) endGesture(e)
+      return
+    }
+    if (g?.kind === 'press' && onTap) {
+      const p = toCanonical(e)
+      endGesture(e)
+      if (p) onTap(p, { tolerance })
+      return
+    }
+    endGesture(e)
+  }, [onTap, toCanonical, tolerance, endGesture])
+
+  const onPointerCancel = useCallback((e) => {
+    pointersRef.current.delete(e.pointerId)
+    endGesture(e)
+  }, [endGesture])
 
   // ── Render ────────────────────────────────────────────────────────────────
   if (!revision) {
@@ -247,6 +400,11 @@ export default function PageViewer({
     )
   }
 
+  const cursor = panning ? 'cursor-grabbing'
+    : MEASURING_MODES.includes(mode) ? 'cursor-crosshair'
+    : mode === 'select' ? 'cursor-grab'
+    : 'cursor-default'
+
   return (
     <div className="w-full">
       {!geometry && (
@@ -254,10 +412,10 @@ export default function PageViewer({
           {docSettled ? 'Preparing page…' : 'Loading sheet…'}
         </p>
       )}
-      {/* The scroller pans. `touch-pan-*` keeps one-finger scrolling on touch;
-          a tap that does not move adds a point. Its content box is what
-          fit-to-width measures. */}
-      <div ref={containerRef} className="max-h-[75vh] overflow-auto rounded-lg border border-brand-border bg-white/5 touch-pan-x touch-pan-y">
+      {/* The scroller pans. Its content box is what fit-to-width measures. The
+          overlay is `touch-none` so one finger pans through our handler, a tap
+          that does not move adds a point, and two fingers pinch. */}
+      <div ref={containerRef} className="max-h-[75vh] overflow-auto rounded-lg border border-brand-border bg-white/5 touch-pan-x touch-pan-y overscroll-contain">
         <div className="relative inline-block align-top">
           {isPdf && (
             <canvas
@@ -285,17 +443,17 @@ export default function PageViewer({
               viewBox={`0 0 ${geometry.pageWidth} ${geometry.pageHeight}`}
               width={cssWidth}
               height={cssHeight}
-              className={`relative block select-none ${pointerEnabled ? 'cursor-crosshair' : 'cursor-default'}`}
+              className={`relative block select-none touch-none ${cursor}`}
               onPointerDown={onPointerDown}
               onPointerUp={onPointerUp}
               onPointerMove={onPointerMove}
-              onPointerCancel={() => { pressRef.current = null; dragRef.current = null }}
+              onPointerCancel={onPointerCancel}
+              onContextMenu={(e) => e.preventDefault()}
             >
               <MeasurementOverlay
                 pageWidth={geometry.pageWidth}
                 pageHeight={geometry.pageHeight}
                 cssScale={cssScale}
-                onHandlePointerDown={onHandlePointerDown}
                 {...overlay}
               />
             </svg>
