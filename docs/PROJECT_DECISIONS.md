@@ -4901,9 +4901,10 @@ clear-on-recode), `hooks/useBoqItems.jsx` (guarded edit, `applyBoqQuantity`),
 `scripts/seed-quant-emulator.mjs` (three BOQ items; the calibrated, linked A-201 area), `tests/rules/takeoff.rules.test.js`
 (+8), `tests/rules/boqItems.rules.test.js` (+12), `tests/unit/quant.test.js` and
 `tests/unit/moduleBranding.test.js` (pins revised explicitly). No dependency
-added. **Status: IMPLEMENTED — NOT YET DEPLOYED** (rules publish and Hosting
-deploy are separate, approved release actions; Decision 8). Manual acceptance
-TESTING.md §28.
+added. **Status: LIVE IN PRODUCTION (October 2026)** — released in the
+Decision 8 order (rules published and confirmed live, then Hosting) and
+verified per TESTING.md §28; the repository records the month, not the day.
+Manual acceptance TESTING.md §28.
 
 **Deferred / not built (recorded, not promised):** AI or automatic takeoff;
 automatic syncing of BOQ quantities when measurements change; creating BOQ
@@ -4914,3 +4915,237 @@ revisions on the BOQ page (the dialog says "not the current revision" and links
 to the Quant tab); an audit-history collection; a rules-assisted BOQ revision
 counter; server-side enforcement of unit compatibility, the aggregate and
 cross-record concurrency (Cloud Functions — ADR-14).
+
+## ADR-53: Constrapp Quant™ 1C-A (manual takeoff reliability and interaction — simple-polygon correctness; remembered drafts with explicit discard; complete geometry editing; on-sheet selection; anchored pan and zoom; 44 px targets; accessible dialogs; no schema or rules change)
+
+**Context.** Quant™ 1A (ADR-51) and 1B (ADR-52) are live in production. A
+read-only inspection (October 2026) found the measurement engine, the
+calibration provenance, the revision restrictions, the concurrency guards and
+the BOQ boundary sound, and the *interaction* incomplete for a professional QS:
+one correctness defect — `polygonArea` is a signed shoelace sum, so an area
+whose outline crosses itself saved a plausible, wrong figure that read
+*Current scale* and was eligible for BOQ application; geometry correction was
+drag-only (no insert, no delete, no count-marker edit, no undo); shapes on the
+sheet were not selectable; zoom was button-only and not anchored, pan was the
+scrollbar; edit handles were ≈14 px; the three Quant dialogs lacked the dialog
+semantics the 1B apply dialog has; and every unsaved draft was lost on a tab
+change (the layout's keyed Outlet unmounts the workspace), a sheet change, or a
+refresh — the page-number input even navigated per keystroke, so typing "12"
+visited page 1 and discarded the draft on the way. The architect approved the
+inspection with changes: Quant 1C is delivered in two stages on one branch —
+**1C-A (this ADR): correctness and interaction; 1C-B: project summaries and
+source traceability** — and revision copy-forward, deductions, bulk operations
+and project summaries stay out of 1C-A.
+
+**Decision 1 — an area must be a SIMPLE polygon; the check is pure and
+client-side.** `lib/quant.js` gains `orientation`, `segmentsIntersect`
+(proper crossings and touching, collinear overlap included), `polygonRing`
+(consecutive duplicates collapsed, a repeated closing vertex dropped),
+`polygonProblem` and `isSimplePolygon`. A ring with fewer than three distinct
+points or with every point on one line is *degenerate*; any two non-adjacent
+edges that intersect or touch, or an adjacent pair whose free ends lie on the
+same ray from their shared vertex (the outline runs out and straight back),
+make it *self-intersecting*; otherwise a zero area is *degenerate*. Crossings
+are reported before a zero area, so the symmetric bow-tie — which the shoelace
+sum had hidden behind a zero result and a "collinear" message — now says
+*crosses itself*. O(n²) over the 500-point cap, run on Finish, Save and
+derivation, never per pointer move. **`validatePoints` refuses** a crossed or
+collapsed area before any transaction; **`measurementQuantity` derives** a
+STORED one as `INVALID` and now carries a `reason` (`self_intersecting`,
+`degenerate`, `too_few_points`, `malformed`) that `quantityIssue` turns into
+an actionable sentence shown in the list, the editor, the draft strip and the
+edit strip. Nothing stored is deleted or altered; the user corrects the
+geometry through the (now complete) edit session. The BOQ apply blocks such a
+record through the **unchanged** `aggregateLinkedQuantity` — the derivation it
+calls got stricter; no second engine. Valid simple and concave polygons,
+lengths (a polyline may legitimately cross itself) and counts derive exactly
+as before. Rules cannot iterate `points`, so this joins **Deferred Control 32**
+and the regression — an asymmetric crossing with a non-zero shoelace result —
+is pinned.
+
+**Decision 2 — unsaved work is remembered, restored on the same sheet, and
+discarded only after one explicit question.** `lib/quantDraft.js` (pure,
+storage injected, the quantSelection pattern) keeps the in-progress draft
+points, the calibration pair and the geometry-edit session per project in
+sessionStorage under `constrapp.quant.draft.<projectId>`. The workspace reads
+it once, restores it **once** when it knows which sheet it is on and has that
+sheet's measurements — a geometry edit only against the same **active**
+measurement at the same **revision**, otherwise dropped with a notice — and
+clears a draft that belongs to another sheet; it persists only after that
+restore has run (so an empty initial state can never erase a remembered
+draft), and an empty draft clears the entry. Changing the drawing, revision,
+page or tool, or starting a geometry edit, with unsaved work asks one
+`window.confirm` (the register convention); a clean state never prompts;
+explicit Cancel and Escape discard without a second question. The browser's
+own prompt is armed before unload while work is unsaved or a save is in
+flight. Every save is counted while in flight (`pendingSaves`); in-app links
+are held behind a confirmation only while one is — the transaction would still
+commit, but its outcome could no longer be shown, and a save is never
+misreported as successful before it resolves. The page-number input is
+uncontrolled, keyed by the page, and commits on Enter or blur through the
+pure `clampPageInput` (clamped to the sheet; junk resets). **No Firestore draft
+persistence**; a draft becomes a record only through the existing dialogs and
+the five revision-guarded transactions, which are untouched.
+
+**Decision 3 — the edit session is completed without a second geometry
+engine.** The session is one object in the workspace — `{ measurement, kind,
+points, history, vertex, pending }` — and the geometry lives in pure helpers:
+`nearestVertex`, `nearestSegment` (the closing edge counts only for areas),
+`insertPointAt`, `removePointAt`, `canRemovePoint`, `editValidation`. Drag a
+vertex (the first move of a drag records the pre-drag points for Undo); tap an
+edge to insert a vertex after it; tap a vertex to select it, then *Remove
+point* or Delete/Backspace (refused below the kind's minimum); counts add a
+marker on tap; *Undo* steps back through the session; Cancel discards; Enter
+saves. A crossing is flagged live and withholds Save; a clean session saves
+nothing. Save still goes through `runUpdateMeasurement` with the page's current
+calibration snapshot, so the review provenance refreshes exactly as a geometry
+edit always did, identity and the BOQ link are untouched, and a stale copy is
+still refused.
+
+**Decision 4 — the Select tool works, by zoom-aware hit testing.** A tap in
+Select calls `hitTestMeasurements` over the page's active, readable records in
+canonical units with a tolerance of `HIT_TOLERANCE_PX / cssScale` (22 px — half
+a 44 px target — at every zoom): the nearest edge or count marker within
+tolerance wins; failing that, the **smallest** area containing the point (so a
+room inside a floor plate is reachable); voided and unreadable records are
+never hit. Selection highlights the shape, scrolls its row into view and shows
+a selection bar that repeats the **existing** Details / Geometry / Void
+controls under the list's own gates. Selecting, measuring, editing and panning
+stay distinct: a measuring tap is refused unless the sheet is measurable, an
+edit begins only from Geometry, and a press that moves beyond the slop never
+places a point.
+
+**Decision 5 — one pointer model in the viewer; every zoom is anchored; no
+dependency.** The `<svg>` is `touch-action: none` and owns pointer events
+(the overlay is `pointer-events: none`): a press within the vertex tolerance
+in edit mode starts a drag of the **nearest** vertex — never two; a press that
+leaves the 6 px slop pans the scroller for any touch, or for a mouse/pen with
+Select (a mouse slip while measuring does nothing); a second pointer turns
+whatever was happening into a pinch and the remaining pointer never becomes a
+tap; Ctrl/⌘ + wheel zooms (a native non-passive listener, removed with the
+scroller — plain wheel scrolls as before); pinch updates are coalesced to one
+per frame and cancelled on unmount; pointer capture keeps a drag alive outside
+the sheet; cancel clears every gesture. A scale change on the same sheet in the
+same container is applied in a layout effect through the pure `zoomAboutPoint`
+so the content under the pointer (the centre, for the toolbar buttons) stays
+still; the pure `wheelZoom` and `pinchZoom` clamp to the existing bounds. Pointer
+→ canonical conversion, the PDF render pipeline and its cancellation are
+unchanged, so nothing drifts between bitmap and overlay.
+
+**Decision 6 — accessible dialogs through one shell.** `QuantDialog` gives the
+calibration, measurement-details and void dialogs the contract the 1B apply
+dialog already honours (DESIGN_SYSTEM.md): `role="dialog"`, `aria-modal`, an
+accessible name, the form's own `autoFocus` field first (else the panel),
+Escape and the backdrop ignored while a save is pending, Tab / Shift+Tab
+containment through `lib/dialogFocus.js`, focus returned to the opener on
+close, `role="alert"` errors. Their business behaviour — the void reason, the
+re-calibration acknowledgement, the link clearing on re-code — is unchanged.
+
+**Decision 7 — nothing below the UI moves.** No collection, field, rules line
+(`firestore.rules` 196,034 bytes, byte-identical), Storage rule, BOQ write
+transaction, evidence fingerprint, financial selector, cost-code relationship,
+drawing or revision write, file URL or CORS setting changes; the session-scoped
+sheet selection keeps its shape and version; no dependency is added. Every
+production document stays valid; a stored crossed polygon is simply read more
+honestly. Release is **Hosting-only** (no rules publish; DEPLOYMENT.md).
+
+**Stage 1C-B — project measurement summary and traceability (same branch,
+same ADR).** With 1C-A accepted (automated gates and the three manual checks),
+the architect approved the second stage: project-wide visibility of what has
+been measured and a way back from any quantity to its source.
+
+**Decision 8 — the summary is a pure classification over the existing
+subscriptions; totals never mix.** `lib/quantSummary.js` takes the
+measurements, takeoff pages, drawings, cost codes and BOQ items the workspace
+already subscribes to (plus the selected drawing's revisions, when loaded, for
+naming only) and classifies every measurement once: **current & valid** (on
+the drawing's current revision, calibrated, reviewed, derivable — an unlinked
+measurement is valid), **needs attention** (non-derivable geometry,
+uncalibrated, needs review, a missing drawing or sheet record, a link to a
+missing / void / other-cost-code / incompatible-unit item, an unreadable
+record), **historical** (an earlier revision, or a withdrawn drawing) and
+**voided**. Quantities come from `measurementQuantity` under the measurement's
+OWN page calibration, link state from `measurementLinkState`, liveness from
+the drawing helpers — no formula is added, nothing is rounded before display
+and nothing is stored. Totals are kept **per kind** (m, m², no.) in separate
+buckets with no grand total anywhere; **current and historical are totalled
+apart and never combined**; attention and void rows are never summed; a record
+counts once. *Quantity qualification applies in every category* (integrity
+review correction): a historical measurement whose outline crosses, whose
+page is uncalibrated, or whose page was re-calibrated since (needs review)
+carries that issue beside *earlier revision* / *drawing withdrawn*, stays
+visible and openable in the historical list, and is **excluded from the
+historical total** by the single gate `isTotalable` — derived AND not awaiting
+review — that `kindTotals` applies to every row. A historical measurement
+whose sheet record is missing is *source missing* (attention) and totals
+nothing. Before the correction a needs-review historical figure, derived under
+the new scale, was summed without qualification. Grouping is by cost code (named live) and by drawing → revision →
+page (current revision first). An earlier revision is named by its code only
+when that drawing's revisions are loaded; otherwise it is honestly "earlier
+revision" with the id's tail — the revisions subcollection is not subscribed
+per drawing (listener cost), and nothing is invented. One attention list
+carries every issue of a row once, ordered by what blocks first, with
+per-issue counts; historical and voided sit in their own collapsed lists.
+**Readiness** is computed from every source's loading/error flags: a loading
+or failed subscription reads *loading* / *unavailable* and never "no issues".
+
+**Decision 9 — one navigation mechanism, validated, never bypassing a gate.**
+*Open* on a summary row or page calls `measurementTarget`: a void measurement,
+a drawing missing from the register, a withdrawn drawing or an unreadable
+identity is **explained, never navigated to** (the Quant tab does not display
+withdrawn drawings — that restriction stands). A valid target moves the
+workspace's OWN selection — drawing, explicit revision, page — exactly as the
+picker would, behind the same discard confirmation, switches to the Measure
+view, selects the measurement and scrolls its row into view; a `target`
+watches the records settle and explains a revision that is not in the loaded
+list or a measurement that has since gone or been voided. The BOQ apply
+dialog gains **Open in Quant** per source row: `ProjectBoq` writes the same
+remembered selection (`lib/quantSelection.js` gains an OPTIONAL
+`measurementId`; entries without it parse unchanged; the workspace also
+remembers its own selection there) and navigates with the app router — no
+second routing system, no Firestore write, no change to the apply, the
+fingerprint, the ratchet or any transaction. Measurability, the banner and
+the role gates are decided from the live records as before.
+
+**Decision 10 — drafts are remembered per sheet, so opening another source
+never discards work.** `lib/quantDraft.js` now keys drafts by project AND
+page (`constrapp.quant.draft.<projectId>.<pageId>`, the sheet identity stored
+alongside and checked against the id), restores once per sheet on arrival,
+clears only the sheet the user discarded, and lists the project's other
+remembered drafts so the workspace can name them with an *Open* button.
+Entries in the 1C-A shape (version 1, no identity) are not trusted and are
+simply not restored. The measuring workspace stays MOUNTED behind the summary
+view (hidden, not unmounted), so the loaded sheet, zoom and draft survive a
+look at the summary.
+
+**Decision 11 — the measured date is the document's own stamp.** The list and
+the summary show *Measured dd/mm/yyyy* only when `createdAt` is a real
+Firestore Timestamp; nothing is invented and no field is added.
+
+**Consequences.** New: `lib/quantDraft.js`, `lib/quantSummary.js`,
+`pages/project/quant/QuantDialog.jsx`, `pages/project/quant/TakeoffSummary.jsx`,
+`tests/unit/quantInteraction.test.js` (59), `tests/unit/quantSummary.test.js`
+(39). Modified: `lib/quant.js` (simplicity, quantity reasons, edit helpers,
+hit test, zoom arithmetic, `clampPageInput`), `lib/quantSelection.js`
+(optional `measurementId`), `pages/project/quant/TakeoffWorkspace.jsx`,
+`PageViewer.jsx`, `MeasurementOverlay.jsx` (presentation only),
+`MeasurementList.jsx` (issue text, measured date), `SourcePicker.jsx`, the
+three dialogs, `pages/project/boq/BoqQuantityApplyModal.jsx` (*Open in
+Quant*), `pages/project/ProjectBoq.jsx` (the hand-off); `tests/unit/quant.test.js`
+and `quantBoq.test.js` (the bow-tie, the INVALID shape, the degenerate-geometry
+blocker, the 500-point fingerprint polygon, the change-handler, viewer-mode
+and selection-write pins revised explicitly). No collection, field, rule,
+transaction, fingerprint, selector or dependency changed; `firestore.rules`
+byte-identical (196,034 bytes). Unit suite 3250 across 49 files; rules suite
+unchanged at 1365 across 22. **Status: Quant 1A and 1B LIVE; Quant 1C (1C-A
+and 1C-B) IMPLEMENTED — NOT YET DEPLOYED, not production-verified.** Release
+is Hosting-only (DEPLOYMENT.md). Manual acceptance TESTING.md §29.
+
+**Deferred / not built (recorded, not promised):** AI takeoff and automatic
+recognition, DWG conversion, revision copy-forward and any revision
+reconciliation automation, deductions / negative areas, automatic BOQ syncing,
+on-sheet labels and colour by cost code, typed 1:N scale and
+copy-calibration-between-pages, snapping and orthogonal constraint, bulk
+review / link / apply, export, image rotation, list search, author-name
+resolution, per-drawing revision subscriptions for the summary, a
+Documents → Quant shortcut.

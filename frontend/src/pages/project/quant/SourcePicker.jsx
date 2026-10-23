@@ -1,6 +1,7 @@
 import Badge from '../../../components/Badge'
 import { inputCls, labelCls } from './styles'
 import { formatRevisionStatus, isWithdrawnDrawing, sortRevisions } from '../../../lib/drawings'
+import { clampPageInput } from '../../../lib/quant'
 
 // ── Which sheet: drawing → revision → page ───────────────────────────────────
 //
@@ -8,6 +9,13 @@ import { formatRevisionStatus, isWithdrawnDrawing, sortRevisions } from '../../.
 // not offered; withdrawn revisions are listed (their measurements stay
 // inspectable) but the workspace refuses to measure on them. The current
 // revision is preselected; choosing an older one is deliberate and warned.
+//
+// The page number COMMITS on Enter or blur, never per keystroke (ADR-53):
+// typing "12" used to visit page 1 on the way — and the sheet change that
+// implied discarded whatever was being drawn. The input is uncontrolled and
+// keyed by the current page, so an outside change (‹ ›, a restored
+// selection) resets it without an effect. The clamp is lib/quant.js →
+// clampPageInput, unit-tested.
 
 export default function SourcePicker({
   drawings, drawingsLoading, drawingsError, drawingId, onDrawingChange,
@@ -17,6 +25,14 @@ export default function SourcePicker({
   const options = (drawings ?? []).filter(d => !isWithdrawnDrawing(d))
   const sorted = sortRevisions(revisions)
   const selectedRevision = sorted.find(r => r.id === revisionId) ?? null
+
+  // Commit the typed page: a valid, different number navigates; anything else
+  // puts the current page back in the box.
+  const commitPage = (input) => {
+    const n = clampPageInput(input.value, numPages)
+    if (n !== null && n !== page) onPageChange(n)
+    else input.value = String(page)
+  }
 
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -83,17 +99,21 @@ export default function SourcePicker({
             ‹
           </button>
           <input
+            key={page}
             id="quant-page"
             type="number"
+            inputMode="numeric"
             min="1"
             max={numPages || 1}
             className={`${inputCls} text-center`}
-            value={page}
-            onChange={e => {
-              const n = Number(e.target.value)
-              if (Number.isInteger(n) && n >= 1) onPageChange(n)
+            defaultValue={page}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { e.preventDefault(); commitPage(e.currentTarget) }
+              if (e.key === 'Escape') { e.currentTarget.value = String(page); e.currentTarget.blur() }
             }}
+            onBlur={e => commitPage(e.currentTarget)}
             disabled={!numPages || numPages <= 1}
+            aria-describedby="quant-page-help"
           />
           <button
             type="button"
@@ -105,8 +125,8 @@ export default function SourcePicker({
             ›
           </button>
         </div>
-        <p className="m-0 mt-1 text-[11.5px] text-brand-muted">
-          {numPages ? `of ${numPages}` : 'Page count appears once the sheet loads.'}
+        <p id="quant-page-help" className="m-0 mt-1 text-[11.5px] text-brand-muted">
+          {numPages ? `of ${numPages} · type a page and press Enter` : 'Page count appears once the sheet loads.'}
         </p>
       </div>
     </div>

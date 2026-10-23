@@ -1344,7 +1344,7 @@ Lines, and touches no Committed, Actual, Invoiced, Forecast, Margin or Cash
 Flow figure. Page totals shown on the Quant tab are a read-time summary of
 that page only.
 
-### Quant™ 1B — measurement → BOQ quantity *(implemented — not yet deployed; ADR-52)*
+### Quant™ 1B — measurement → BOQ quantity *(live in production — October 2026; ADR-52)*
 
 Quant 1B is the **only path by which a measurement reaches a BOQ line**, and it
 is a human step, never a sync:
@@ -1365,7 +1365,15 @@ is a human step, never a sync:
    and derivable. Eligible values are summed **unrounded** and rounded **once**
    with `roundQuantity` (3 dp). **One blocked measurement means no total** —
    nothing is omitted silently. Voided measurements are history, never summed.
-   No quantity ledger is stored.
+   No quantity ledger is stored. Since Quant 1C-A (ADR-53) "derivable" also
+   means the area's outline is **simple**: a stored crossed or collapsed
+   polygon derives as `INVALID` with a reason and blocks the apply as
+   *Quantity cannot be derived* — the aggregate itself is unchanged; the
+   derivation it calls got stricter. The Quant tab's project summary (1C-B,
+   `lib/quantSummary.js`) is **not a financial figure and not an input to
+   this aggregate**: it reports per-kind measured totals for review and
+   points back to the sheet; the only path from a measurement to a BOQ
+   quantity remains this explicit apply.
 4. **Preview.** Existing → proposed `quantity` and the difference; for a priced
    item, existing → proposed `amount = boqLineAmount(quantity, rate)` at the
    **unchanged rate** — the same function the BOQ editor uses; an unpriced item

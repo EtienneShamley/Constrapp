@@ -95,9 +95,37 @@ recorded for a module's own token).
   measurement is `brand-accent`; the in-progress draft is dashed `brand-amber`;
   the calibration segment is dashed `brand-blue`. Tool buttons are real
   `<button>`s ≥44px with `aria-pressed`; the active tool is tinted
-  `brand-quant/15` and the label carries the meaning. A tap adds a point; the
-  scroller pans (`touch-pan-x touch-pan-y`). Enter finishes, Backspace undoes,
-  Escape cancels — on the focused viewer region only.
+  `brand-quant/15` and the label carries the meaning. Enter finishes, Backspace
+  undoes, Escape cancels — on the focused viewer region only.
+  **Interaction (ADR-53).** The `<svg>` is `touch-none` and owns one pointer
+  model; the overlay beneath it is `pointer-events: none`. A tap (press and
+  release within 6 px) acts for the tool — Select hit-tests the shapes,
+  measuring tools add a point, edit mode inserts on an edge or selects a
+  vertex; a drag pans for any touch and for a mouse with Select
+  (`cursor-grab` / `cursor-grabbing`), and is ignored while measuring with a
+  mouse; two fingers pinch; Ctrl/⌘ + wheel zooms; every zoom is anchored on the
+  pointer (toolbar −/+ on the centre) through `lib/quant.js → zoomAboutPoint`.
+  Edit handles stay 7 px; their **hit target is 22 px around the nearest
+  vertex** (half a 44 px target, in screen pixels at every zoom), and the
+  selected vertex shows a dashed ring of that radius plus a `brand-text` stroke.
+  A quantity that cannot be derived shows its reason in `text-brand-red` under
+  the "—" (list, editor, draft and edit strips) with `role="alert"`. The
+  selection bar (`border-brand-accent/30 bg-brand-accent/5`) repeats the
+  existing Details / Geometry / Void controls for the selected measurement.
+  Discard confirmations use `window.confirm` (the register convention).
+  **Project summary (ADR-53, 1C-B).** A *Measure / Project summary* toggle
+  (the shared `toolBtnCls` with `aria-pressed`, inside a `role="group"`) above
+  the workspace; the summary is a stack of `Card`s: a header with four count
+  `Badge`s (*Current & valid* `active`, *Needs attention* `pending` when
+  non-zero, *Historical* and *Voided* `soon`) and two per-kind total panels
+  (`bg-brand-bg/60`) that keep Length / Area / Count in separate cells and
+  current apart from historical; tables above `md` and cards below, with the
+  list's `thCls` / `tdCls`; issue badges reuse the status variants (`danger`
+  for what blocks a quantity, `pending` for review and link problems, `soon`
+  for informational); *Open* / *Open sheet* are 44 px text buttons; historical
+  and voided are `<details>` with the same ▸ summary row as the page list's
+  Voided group. Loading is `role="status"`, unavailable is a `role="alert"`
+  red banner — never an empty "no issues".
 
 ## Shared Components (`frontend/src/components/`)
 
@@ -164,7 +192,13 @@ gives its panel `tabIndex={-1}` and focuses it on open, returns focus to the
 opening control on close, closes on Escape (not while saving) and contains
 Tab / Shift+Tab with `lib/dialogFocus.js` — a pure helper (`tabbableWithin`,
 `tabTarget`) rather than a focus-trap dependency; reuse it for any new dialog
-instead of adding one.
+instead of adding one. The Quant™ calibration, measurement-details and void
+dialogs render through `pages/project/quant/QuantDialog.jsx` (ADR-53), which
+packages exactly that contract for a form dialog: `role="dialog"`,
+`aria-modal`, `aria-labelledby` the title, the form's own `autoFocus` field
+first (else the panel), Escape and the backdrop ignored while `busy`, Tab
+containment, focus returned to the opener on close, and the × button disabled
+while busy. New Quant dialogs use it; other modules may adopt the same shape.
 
 **Tables** — inside `<Card padding={false}>`; header row `bg-brand-card` with
 11px bold uppercase muted headers; body rows `border-b border-brand-border

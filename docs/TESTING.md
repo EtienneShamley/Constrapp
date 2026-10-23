@@ -511,9 +511,93 @@ npm run test:unit
   measured in bytes (the file is not pure ASCII), with real headroom between
   the two; `storage.rules` far below. Passing proves the file CAN be published —
   not that it IS (DEPLOYMENT.md → *Verifying which rules version is published*).
+- `frontend/tests/unit/quantSummary.test.js` — **39 tests** over
+  `lib/quantSummary.js` and the 1C-B wiring (ADR-53): see §29 —
+  classification (current & valid with its own-page quantity and live cost
+  code; unlinked still valid but listed; needs review / uncalibrated /
+  non-derivable are attention and never totalled; a missing drawing or page
+  is *source missing*; the four invalid-link states; an earlier revision and a
+  withdrawn drawing are historical, totalled apart, not in the attention list;
+  void counted only; unreadable; a record counts once), **the historical
+  qualification regression** (a needs-review, crossed or uncalibrated
+  measurement on an earlier revision or a withdrawn drawing is badged, stays in
+  the historical list and is NEVER summed into the historical total — by
+  `isTotalable`, the one gate `kindTotals` applies; a missing page is
+  *source missing*; valid historical quantities still total apart from
+  current), totals (per kind with
+  their own units, no grand total, unrounded sums, by cost code with current
+  and historical apart, by drawing → revision → page with the current revision
+  first and a target only for an openable drawing, the attention order and
+  per-issue counts, an empty project), readiness (unavailable beats loading
+  beats ready; the view renders counts only when ready and the workspace feeds
+  every source's flags), traceability (`measurementTarget` for a live
+  measurement and each explained problem; `revisionLabel` proving only what it
+  can; `measuredAt` from a real Timestamp only), the remembered selection's
+  optional `measurementId` (round trip, absent when null, junk ignored,
+  projects isolated), and structure pins (a view on the Quant tab over the
+  existing subscriptions — no new hook, tab or route; *Open* validates then
+  moves the selection behind the same confirmation and resolves the target
+  from a microtask; the BOQ page writes the selection and navigates with the
+  app router, the dialog's button, no second router; the apply write,
+  fingerprint and readiness gates unchanged; per-sheet drafts and the
+  other-sheets notice; the measured date in list and summary; no Firestore or
+  financial import in any Quant file; ≥44 px buttons, tables above `md`, cards
+  below; the view sums nothing).
+- `frontend/tests/unit/quantInteraction.test.js` — **59 tests** over the
+  Quant™ 1C-A additions (ADR-53; the draft pins revised by 1C-B to per-sheet
+  keys, with `listDrafts`): see §29 — the simplicity check (the
+  asymmetric crossing with a NON-ZERO shoelace result is refused and derives
+  `INVALID` with reason `self_intersecting`; the symmetric bow-tie now reads
+  *crosses itself*; square, concave L, triangle and a 500-point circle pass
+  unchanged; adjacent edges may share a vertex, a collinear mid-edge vertex is
+  legal, a spike, a T-touch and a pinched figure-of-eight are refused; a
+  repeated closing vertex and consecutive duplicates normalise; collinear,
+  coincident and fewer-than-three-distinct rings are *degenerate*; lengths may
+  cross and counts still count; an uncalibrated page does not hide a crossing;
+  a crossed draft is refused by `validateMeasurementDraft`; an EXISTING crossed
+  record is counted incomplete, never summed, and BLOCKS the apply through the
+  unchanged aggregate with no fingerprint; 500 points validate in well under a
+  frame; segment primitives), the edit helpers (distance to a segment, nearest
+  vertex / segment with the closing edge only for areas, insert after an edge,
+  remove by index, minimum counts per kind, a crossing drag flagged live), hit
+  testing (point in polygon incl. a concave notch, edge / marker / boundary
+  distances, nearest wins, the SMALLEST containing area, voided and unreadable
+  never hit, the 22 px tolerance scaled by the CSS scale), zoom arithmetic
+  (`wheelZoom` direction, symmetry, line / page modes and clamping;
+  `pinchZoom` ratio, clamp and degenerate distances; `zoomAboutPoint` keeps the
+  content point under the pointer fixed and inverts; pointer → canonical exact
+  at 0.25× to 8×), `clampPageInput` ("12" is 12, clamped, junk null), the
+  remembered draft (per-project key, versioned shape, junk and bad tools /
+  points / three calibration points refused, empty clears, a missing or throwing
+  storage never throws, an edit round-trips with its revision, `restorableDraft`
+  restores only on the same sheet and an edit only against the same active
+  measurement at the same revision — otherwise dropped and SAID so — and no
+  Firebase import), and structure pins: the workspace's unsaved-work
+  definition and `confirmDiscard` in every change handler and on starting an
+  edit, Cancel without a second question, the before-unload and link guards,
+  every save counted in flight, the once-only microtask restore and the
+  persist-after-restore effect, Select hit-testing on tap and measuring taps
+  refused unless measurable, the edit session's history / vertex / insert /
+  markers / Save through the guarded update, Finish withheld while a draft
+  crosses; the viewer's non-passive Ctrl/⌘-wheel listener and its removal,
+  anchored layout effect, pinch coalesced per frame and cancelled on unmount,
+  touch-or-Select pan, mouse slip, nearest-vertex drag within tolerance,
+  pointer capture and cancel, `touch-none`, unchanged render cancellation and
+  no new dependency; the overlay handling no pointer events; `QuantDialog`'s
+  contract and each dialog rendering through it with a unique title id, its
+  saving state as `busy`, `autoFocus` and `role="alert"` kept and no overlay of
+  its own; business behaviour unchanged; the list naming a non-derivable
+  quantity and scrolling the selected row into view; no Quant file gaining a
+  financial import or a Firestore write; nearest-vertex resolution for two
+  handles 30 px apart; the 7 px handle and 22 px target constants; every new
+  control a ≥44 px button; closed vocabularies.
 - `frontend/tests/unit/quant.test.js` — **118 tests** over `lib/quant.js`,
   `lib/quantActions.js`, `lib/pdfRender.js` and the Quant™ 1A page wiring
-  (ADR-51): see §27. (The count is the runner's — an earlier figure of 112
+  (ADR-51): see §27. (ADR-53 revised five pins explicitly: the bow-tie is now
+  refused by the simplicity check — the asymmetric crossing is the regression;
+  an INVALID quantity carries its `reason`; the change handlers confirm before
+  resetting; the viewer receives a `mode` and `editPoints` instead of
+  `pointerEnabled`; Select hit-tests on tap.) (The count is the runner's — an earlier figure of 112
   was a hand count; ADR-52 revised four 1A boundary pins explicitly and added
   one: the workspace may READ BOQ items, no Quant file may call a BOQ write.
   The Quant 1B UI polish added one more: the mobile measurement card's compact
@@ -543,7 +627,10 @@ npm run test:unit
   1 when that revision could not be honoured; the valid default when nothing
   is saved; and an end-to-end restore / withdrawn / deleted-revision walk.
 - `frontend/tests/unit/quantBoq.test.js` — **59 tests** over `lib/quantBoq.js`
-  (Quant™ 1B, ADR-52): see §28 — unit normalisation and every accepted alias
+  (Quant™ 1B, ADR-52; two pins revised explicitly by ADR-53 — degenerate or
+  crossed geometry now BLOCKS the apply as *Quantity cannot be derived* instead
+  of summing 0, and the 500-point fingerprint polygon is traced in order so it
+  is simple): see §28 — unit normalisation and every accepted alias
   per dimension, the refused units (m³, mm, cm, kg, t, hr, lump sums, %,
   blanks, unknowns, imperial) and no dimension ever crossed, linkable items
   (active · same cost code · compatible unit), link state, aggregation
@@ -5182,7 +5269,7 @@ Manual — three checks only, all read-only (SHIELD writes nothing):
 
 ## 27. Constrapp Quant™ 1A — manual drawing measurement (ADR-51)
 
-Automated: `tests/unit/quant.test.js` (108 tests) — lengths and areas against
+Automated: `tests/unit/quant.test.js` (118 tests — the runner's count) — lengths and areas against
 hand-calculated values (3-4-5 triangle, 3×4 rectangle in both windings, a right
 triangle, a concave L-shape), implicit polygon closure and degenerate shapes
 (collinear → zero area refused, coincident → zero length refused, bow-tie,
@@ -5453,3 +5540,152 @@ production; Quant 1B writes exactly one BOQ item per confirmed apply):
       *Show · Details · Geometry · Void* as one row of equal 44px cells (no
       wrapped third line; Void in red; a visible outline when tabbed to); at
       **768px** and **1280px** the table row's inline actions are unchanged.
+
+## 29. Constrapp Quant™ 1C — manual takeoff reliability, interaction, summary and traceability (ADR-53)
+
+Automated: `tests/unit/quantInteraction.test.js` (59, stage 1C-A) and
+`tests/unit/quantSummary.test.js` (39, stage 1C-B) — see §0b; five pins in
+`quant.test.js` and two in `quantBoq.test.js` revised explicitly for 1C-A,
+one more in `quant.test.js` for 1C-B (§0b). The rules suite is unchanged (no
+rule changed; `firestore.rules` is byte-identical to the 1B release) and still
+runs as the gate. Lint 0/0. Unit total **3250 across 49 files**. **Not
+production-verified** — the checks below are the acceptance for the release.
+
+**Nothing below the UI changed:** no collection, field, rule, BOQ write,
+evidence fingerprint, selector, drawing write or dependency. A production
+document that already holds a crossed polygon is not altered — it is read as
+*cannot be derived* and blocked from apply until its geometry is corrected.
+The project summary stores nothing and reads nothing new.
+
+Manual — **1C-A**, three checks, on `npm run test:quant` (the §27/§28 fixture;
+nothing here writes a BOQ item except where §28 already does):
+
+- [ ] **Crossed outlines are refused, named, and blocked — and corrected
+      without starting over.** As **qs** on A-201 Rev A (calibrated PNG) choose
+      **Area** and tap four corners in a figure-of-eight order (top-left,
+      bottom-right, top-right, bottom-left): the draft strip shows *The outline
+      crosses itself…*, **Finish is disabled**; *Undo* the last point and tap
+      the correct corner — Finish enables and the preview reads **12 m²**.
+      Save it. Now open its **Geometry**: drag one corner across the opposite
+      edge — the edit strip turns red with the same sentence and **Save
+      geometry is disabled**; **Undo** restores the square. Tap the middle of
+      the top edge — a fifth point appears there (*Point 2 selected*); drag it
+      upward: the quantity rises live. Tap that point, press **Remove point**
+      (or Delete) — back to four. **Cancel** — the saved shape is untouched.
+      To see an EXISTING invalid record: with the emulator rules bypassed
+      (`withSecurityRulesDisabled` in a one-off script, or the Firestore
+      emulator UI) set a stored area's `points` to `[{x:0,y:0},{x:300,y:0},
+      {x:100,y:400},{x:300,y:400}]`: its row reads **—** with *The outline
+      crosses itself — move or remove the crossing points in Geometry*, the
+      page total says *1 needs attention*, and on the **BOQ** tab the item's
+      *Quant (n)* dialog lists it under **Quantity cannot be derived** with
+      Apply disabled. Fix it through Geometry (drag the third point back to
+      the corner) — the row, the total and the dialog recover; the BOQ item's
+      quantity never changed by itself.
+- [ ] **Unsaved work survives; discarding asks once; the page box commits
+      once.** Start a **Length** with two points and do NOT finish. Switch to
+      the **BOQ** tab and back to **Quant**: the same sheet is selected, the
+      two amber points and the Length tool are back, and a notice says your
+      unsaved work was restored. Reload the browser tab: the browser prompts
+      (cancel it, or accept — the draft is back either way). Now change the
+      **Revision** select: a confirmation asks before discarding; **Cancel**
+      keeps the draft and the select snaps back; **OK** discards it. With a
+      clean sheet, changing drawing / revision / page / tool asks nothing. On
+      A-101 Rev B (two-page PDF) type **2** in the page box without pressing
+      Enter — nothing happens until Enter or Tab; type **12** and press Enter —
+      it clamps to page 2 directly (never page 1 first); type `abc` — the box
+      resets to the current page. Open **Geometry** on a measurement, drag a
+      point, switch to the BOQ tab and back — the edit session is restored
+      with your moved point; in a second browser tab rename that measurement
+      (its revision moves on), then reload the first tab — a notice says the
+      geometry edit was dropped because the measurement changed, and nothing
+      was written. While *Saving…* is shown on any dialog, Escape and the
+      backdrop do nothing and the × is disabled.
+- [ ] **Select, pan, zoom and touch at 375px, 768px and 1280px.** With
+      **Select** active click a saved area's edge on the sheet — the shape turns
+      `brand-accent`, its row highlights and scrolls into view, and the
+      selection bar offers Details / Geometry / Void / Clear; click inside a
+      small room drawn within a larger area — the room is selected, not the
+      floor; click empty sheet — cleared. Drag with the mouse in Select — the
+      sheet pans (grab cursor) and no point is placed; in **Length** a mouse
+      drag places nothing and a click places a point. **Ctrl/⌘ + wheel** over a
+      corner of the drawn rectangle — that corner stays under the cursor while
+      the sheet zooms in and out; plain wheel scrolls; the toolbar **−/+** zoom
+      about the centre; the overlay stays exactly on the bitmap at 25 % and
+      800 %. On a touch device (or DevTools touch emulation): one finger pans in
+      every tool, a tap adds a point, two fingers pinch about their midpoint
+      and lifting one finger does not add a point; in Geometry a vertex is
+      picked up within a fingertip (22 px) of it even at 800 %, two close
+      handles never both move, and the selected vertex shows its dashed target
+      ring. Keyboard: open **Calibrate**'s dialog — focus is in the distance
+      field, Tab cycles inside the dialog and never reaches the page, Escape
+      closes it and focus returns to the Calibrate button; the same for
+      Details and Void; VoiceOver/NVDA announce *Calibrate this page, dialog* /
+      *Edit measurement details, dialog* / *Void measurement, dialog*. As
+      **subcontractor**: *Quant takeoff is restricted*, no console error.
+      **Budget, Forecast, Cash Flow and Commercial are unchanged throughout.**
+
+Manual — **1C-B**, three checks, on the same fixture (the seed has A-101 Rev B
+current with no measurements, A-101 Rev A superseded with a seeded length,
+P1 withdrawn with a seeded length, and A-201 Rev A with the 12 m² area linked
+to 2.1):
+
+- [ ] **Totals never mix and historical stays apart.** As **qs** on the Quant
+      tab press **Project summary**: *Current & valid · 1* (the A-201 area),
+      *Historical · 2* (the Rev A and P1 lengths), *Needs attention* counts
+      only what is wrong, and the *Current & valid — project totals* panel
+      shows Length **—**, Area **12.000 m²**, Count **—** while the
+      *Historical* panel shows the two lengths under Length only — no cell
+      ever adds m, m² and no. together and no single "project total" exists.
+      *By cost code* lists 04-100 Formwork with 12.000 m² under Area and
+      nothing under Length; *By drawing* lists A-101 (Rev B · current first,
+      then Rev A · superseded / P1 · withdrawn with their lengths under the
+      historical cells) and A-201. Draw a **Length** of 5 m on A-201 without
+      linking it and a **Count** of 3: the current panel reads Length
+      **5.000 m**, Area 12.000 m², Count **3 no.**, and the attention list
+      names both as *Not linked to a BOQ item* while *Current & valid* rises
+      to 3 — unlinked is valid work. Re-calibrate A-201 with a halved
+      distance: the area and length move to *Needs review — scale changed*,
+      the current totals drop to Count 3 no. only, and nothing is summed from
+      them. With the Firestore emulator stopped mid-session the summary reads
+      *A required source failed to load* — never zeros, never "nothing needs
+      attention".
+- [ ] **Open from the summary lands on the exact sheet, or explains.** In the
+      attention list press **Open** on the seeded Rev A length: the workspace
+      switches to Measure, the picker shows A-101 · Rev A (superseded, with
+      its banner), page 1, the length is highlighted on the sheet and its row
+      is highlighted and scrolled into view, and the notice reads *"…" is
+      selected on this sheet*. From the *By drawing* table press **Open
+      sheet** on A-101 Rev B p.2: page 2 of the PDF opens with nothing
+      selected. Open the P1 (withdrawn revision) length: it opens as inspect-
+      or-void-only, exactly as choosing P1 in the picker does. Void a
+      measurement, then press **Open** on it in the Voided list — there is no
+      button; open it from an old summary row (reload the tab with its id in
+      the remembered selection, or void it in a second browser tab after
+      pressing Open in the first): the notice says it has been voided and
+      nothing else is selected. Withdraw drawing A-101 as **project_manager**
+      in the Documents tab, return to the summary: its rows read *Drawing
+      withdrawn* under Historical, their *Open* says the drawing has been
+      withdrawn and the picker does not move. Start a **Length** on A-201,
+      switch to the summary and back: the draft is still there; press
+      **Open** on an A-101 row — the discard confirmation asks first; cancel
+      keeps you on A-201 with the draft; press Open again and accept — A-101
+      opens, and a notice above the picker says *Unsaved work on another
+      sheet is remembered* only if you had left work elsewhere (the accepted
+      discard cleared A-201's).
+- [ ] **Open in Quant from the BOQ dialog, roles and layout.** On the **BOQ**
+      tab open **Quant (1)** on 2.1 and press **Open in Quant →** beside *A-201
+      · Rev A · p.1*: the dialog closes, the Quant tab opens on A-201 Rev A
+      page 1 with the 12 m² area highlighted and its row scrolled into view;
+      the BOQ item's quantity is unchanged (no apply happened). Go back to the
+      BOQ tab: *Quant (1)* still opens the same dialog with the same proposal,
+      fingerprint status and confirmation — the review-and-apply workflow is
+      untouched. Reload the browser on the Quant tab: the same sheet and the
+      same highlighted measurement return. As **subcontractor**: *Quant
+      takeoff is restricted* and *The BOQ is restricted*, no permission error
+      in the console. At **375px** the summary's tables become cards and the
+      issue badges wrap, every *Open* is a 44 px button, the *Measure / Project
+      summary* toggle wraps under the heading; at **768px** and **1280px** the
+      tables scroll inside their cards; VoiceOver/NVDA read the four count
+      badges and announce the loading status and the unavailable alert.
+      **Budget, Forecast, Cash Flow and Commercial are unchanged throughout.**
