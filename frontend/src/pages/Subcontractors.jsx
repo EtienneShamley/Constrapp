@@ -13,7 +13,7 @@ const thCls    = 'text-left px-3.5 py-[10px] text-brand-muted text-[11px] font-b
 // contacts, not a separate collection. Records are managed on /contacts.
 export default function Subcontractors() {
   const navigate = useNavigate()
-  const { contacts, contactsLoading } = useContacts()
+  const { contacts, contactsLoading, contactsError } = useContacts()
   const [search, setSearch] = useState('')
 
   const term = search.trim().toLowerCase()
@@ -48,6 +48,14 @@ export default function Subcontractors() {
       <Card padding={false} className="mb-4">
         {contactsLoading ? (
           <div className="px-5 py-12 text-center text-[13px] text-brand-muted">Loading subcontractors…</div>
+        ) : contactsError ? (
+          <div className="px-5 py-12 text-center">
+            <p className="text-[13px] font-bold text-brand-amber mb-1">Contacts unavailable</p>
+            <p className="text-[12px] text-brand-muted m-0">
+              The contact directory could not be read. This does not mean there are no subcontractors — reload the
+              page, and check your connection and permissions if this persists.
+            </p>
+          </div>
         ) : subcontractors.length === 0 ? (
           <div className="px-5 py-12 text-center">
             <p className="text-[13px] text-brand-muted mb-3">

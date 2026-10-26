@@ -11,11 +11,14 @@ import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
 import { useSupplierCreditNotes } from '../../hooks/useSupplierCreditNotes'
 import { useVariations } from '../../hooks/useVariations'
-import { maturedCommittedByCostCode } from '../../lib/purchaseOrders'
-import { actualClaimsByCostCode, claimedPendingByCostCode } from '../../lib/progressClaims'
+import { remainingCommittedByCostCode, PO_STATUS } from '../../lib/purchaseOrders'
+import { actualClaimsByCostCode, claimedPendingByCostCode, recognisedClaimsByPoLine } from '../../lib/progressClaims'
 import { invoicedByCostCode, invoicedClaimIds, postedInvoicedByPoLine } from '../../lib/supplierInvoices'
 import { creditedByCostCode, CREDIT_READ_ERROR_NOTICE } from '../../lib/supplierCreditNotes'
 import { approvedSupplierVariationsByCostCode } from '../../lib/variations'
+import {
+  availableFigure, displayFigure, figureState, FIGURE_STATE, SNAPSHOT_SOURCE_LABELS,
+} from '../../lib/projectSnapshot'
 import { useProfile } from '../../hooks/useProfile'
 import { activeCostCodes, costCodeDisplayName, resolveCostCodeName } from '../../lib/costCodes'
 import { budgetLineToForm } from '../../lib/budgetLines'
@@ -176,22 +179,24 @@ export default function ProjectBudget() {
   const { projectId, currencyCode } = useOutletContext()
   const money = (n) => formatCurrency(n, currencyCode)
 
-  const { budgetLines, budgetLinesLoading, createBudgetLine, updateBudgetLine } = useBudgetLines(projectId)
-  const { costCodes, costCodesLoading } = useCostCodes()
+  const { budgetLines, budgetLinesLoading, budgetLinesError, createBudgetLine, updateBudgetLine } = useBudgetLines(projectId)
+  const { costCodes, costCodesLoading, costCodesError } = useCostCodes()
   const { profile } = useProfile()
-  const { purchaseOrders, purchaseOrdersLoading } = usePurchaseOrders(projectId)
-  const { progressClaims, progressClaimsLoading } = useProgressClaims(projectId)
-  const { supplierInvoices, supplierInvoicesLoading } = useSupplierInvoices(projectId)
+  const { purchaseOrders, purchaseOrdersLoading, purchaseOrdersError } = usePurchaseOrders(projectId)
+  const { progressClaims, progressClaimsLoading, progressClaimsError } = useProgressClaims(projectId)
+  const { supplierInvoices, supplierInvoicesLoading, supplierInvoicesError } = useSupplierInvoices(projectId)
   const { supplierCreditNotes, supplierCreditNotesLoading, supplierCreditNotesError } = useSupplierCreditNotes(projectId)
-  const { variations, variationsLoading } = useVariations(projectId)
+  const { variations, variationsLoading, variationsError } = useVariations(projectId)
   // null = closed · 'new' = create · a budget line = edit that line.
   const [editing, setEditing] = useState(null)
 
   const canWrite = canWriteBudget(profile?.role)
   // A budget line can only be ADDED against an ACTIVE cost code, so the
-  // empty/disabled states track the selectable set, not the whole library.
+  // empty/disabled states track the selectable set, not the whole library. A
+  // FAILED cost-code read is not "no cost codes" — it is reported separately
+  // and authoring waits (ADR-55).
   const selectableCostCodes = activeCostCodes(costCodes)
-  const noCostCodes = !costCodesLoading && selectableCostCodes.length === 0
+  const noCostCodes = !costCodesLoading && !costCodesError && selectableCostCodes.length === 0
   const goToCostCodes = () => navigate(`/projects/${projectId}/cost-codes`)
 
   // Re-resolved by id at render time so the editor always holds the live
@@ -209,14 +214,27 @@ export default function ProjectBudget() {
   }
 
   // Every figure is derived at read time from source documents — never stored on
-  // budget lines. Supplier invoices now feed all four cost figures:
+  // budget lines.
   //
-  // Committed = remaining OPEN commitment: PO line total − posted/paid invoiced
-  //   against that line (floored at 0), grouped by cost code. As invoices post,
-  //   value moves from Committed into Invoiced/Actual, so they are complementary.
-  // Committed is deliberately NOT restored by a credit note (ADR-31): credit
-  // lines carry no poLineIndex, so commitment maturing reads invoices only.
-  const committedMap = maturedCommittedByCostCode(purchaseOrders, postedInvoicedByPoLine(supplierInvoices))
+  // Committed = REMAINING OPEN COMMITMENT (ADR-55): per PO line, the line total
+  //   less what has been posted against it AND less the approved claim value
+  //   Actual already recognises on it (until that claim's own invoice posts and
+  //   takes its place). A dollar leaves Committed at the moment it enters
+  //   Actual, so the two never overlap. ONE formula — lib/purchaseOrders.js →
+  //   remainingCommittedByCostCode — shared with Forecast, Commercial, Cash
+  //   Flow and PULSE. Committed is deliberately NOT restored by a credit note
+  //   (ADR-31): credit lines carry no poLineIndex.
+  const superseded = invoicedClaimIds(supplierInvoices)
+  const invoicedByLine = postedInvoicedByPoLine(supplierInvoices)
+  const recognisedByLine = recognisedClaimsByPoLine(progressClaims, superseded)
+  const committedMap = remainingCommittedByCostCode(purchaseOrders, invoicedByLine, recognisedByLine)
+  // Closed-PO residual — the same formula restricted to CLOSED POs: commitment
+  // still open on an order marked complete. Left INSIDE Committed (a closed PO
+  // is still a commitment) and flagged for QS judgement, exactly as the
+  // Forecast tab does; never silently released.
+  const closedResidualMap = remainingCommittedByCostCode(
+    purchaseOrders.filter(po => po.status === PO_STATUS.CLOSED), invoicedByLine, recognisedByLine,
+  )
   // Invoiced = ex-GST posted/paid supplier invoice lines by cost code, NET of
   //   posted valid-target Supplier Credit Notes. Signed, never clamped — an
   //   over-credited cost code goes negative and stays visible.
@@ -229,8 +247,7 @@ export default function ProjectBudget() {
   // Actual = approved claims NOT yet superseded by a posted/paid invoice (read-
   //   time exclusion — the claim is never mutated) PLUS posted/paid invoices,
   //   net of credit notes (already inside invoicedMap above).
-  const invoicedClaims = invoicedClaimIds(supplierInvoices)
-  const claimActualMap = actualClaimsByCostCode(progressClaims, invoicedClaims)
+  const claimActualMap = actualClaimsByCostCode(progressClaims, superseded)
   const actualMap = {}
   for (const cc of new Set([...Object.keys(claimActualMap), ...Object.keys(invoicedMap)])) {
     actualMap[cc] = (claimActualMap[cc] || 0) + (invoicedMap[cc] || 0)
@@ -258,6 +275,7 @@ export default function ProjectBudget() {
       return {
         costCodeId,
         committed: committedMap[costCodeId] || 0,
+        closedResidual: closedResidualMap[costCodeId] || 0,
         invoiced:  invoicedMap[costCodeId] || 0,
         actual:    actualMap[costCodeId] || 0,
         supplierVar: supplierVarMap[costCodeId] || 0,
@@ -269,6 +287,7 @@ export default function ProjectBudget() {
     budgeted:  acc.budgeted  + (l.budgeted  || 0),
   }), { budgeted: 0 })
   totals.committed = Object.values(committedMap).reduce((sum, v) => sum + v, 0)
+  totals.closedResidual = Object.values(closedResidualMap).reduce((sum, v) => sum + v, 0)
   totals.actual    = Object.values(actualMap).reduce((sum, v) => sum + v, 0)
   totals.claimed   = Object.values(claimedMap).reduce((sum, v) => sum + v, 0)
   totals.invoiced  = Object.values(invoicedMap).reduce((sum, v) => sum + v, 0)
@@ -279,55 +298,95 @@ export default function ProjectBudget() {
   const remaining     = totals.budgeted - totals.actual
   const usagePercent  = totals.budgeted > 0 ? Math.min(100, (totals.actual / totals.budgeted) * 100) : 0
 
-  // ── PRESENTATION ONLY — loading is not a zero (ADR-41) ────────────────────
+  // ── READINESS — loading is not a zero, and a FAILED read is not a zero ──────
   //
   // Every figure above is derived from source documents, and a subscription
-  // that has not settled yet contributes nothing — so mid-load these sums are
-  // arithmetically 0 while meaning "not known yet". Rendering that as currency
-  // states a financial fact the app does not have. THREE STATES, THREE
-  // RENDERINGS: still loading → the neutral em dash; read failed → the
-  // existing unavailable notice; settled and genuinely nil → a real 0.
+  // that has not settled — or that was REJECTED — contributes nothing, so its
+  // sum is arithmetically 0 while meaning "not known". Rendering that as
+  // currency states a financial fact the app does not have. The flags of every
+  // source sit in the Dashboard snapshot's shape (ADR-42) and each figure is
+  // gated through the SAME figureState over the sources its selector actually
+  // reads (lib/projectSnapshot.js → FIGURE_DEPENDENCIES), exactly as the
+  // Forecast and Commercial tabs do (ADR-44; this page was aligned by ADR-55).
   //
-  // This gates DISPLAY ONLY. `totals`, `remaining`, `commitmentExposure` and
-  // every map above are untouched, as is the table below (which has always had
-  // its own `budgetLinesLoading` gate).
-  const summaryLoading = budgetLinesLoading || purchaseOrdersLoading
-    || progressClaimsLoading || supplierInvoicesLoading
-    || supplierCreditNotesLoading || variationsLoading
-  const summaryMoney = (value) => (summaryLoading ? '—' : money(value))
+  //   loading → "—"   ·   a source failed → "Unavailable"   ·   settled → value
+  //
+  // This gates DISPLAY ONLY — the maps above are untouched.
+  const sourceStates = {
+    budgetLines:         { loading: budgetLinesLoading,         error: budgetLinesError },
+    purchaseOrders:      { loading: purchaseOrdersLoading,      error: purchaseOrdersError },
+    progressClaims:      { loading: progressClaimsLoading,      error: progressClaimsError },
+    supplierInvoices:    { loading: supplierInvoicesLoading,    error: supplierInvoicesError },
+    supplierCreditNotes: { loading: supplierCreditNotesLoading, error: supplierCreditNotesError },
+    variations:          { loading: variationsLoading,          error: variationsError },
+  }
+  const cell = (key, value, format = money) => displayFigure(availableFigure(key, value, sourceStates), format)
+  const ready = (key) => availableFigure(key, 0, sourceStates).state === FIGURE_STATE.READY
+  const pageSources = figureState(Object.keys(sourceStates), sourceStates)
+  const failedLabel = (list) => (list ?? []).map(k => SNAPSHOT_SOURCE_LABELS[k] ?? k).join(', ')
+  // "—" is correct for an EMPTY settled figure in a per-row cell only when the
+  // row's own sources are ready; otherwise the cell says why.
+  const rowCell = (key, value, { blankZero = false } = {}) => {
+    if (!ready(key)) return cell(key, value)
+    return blankZero && !value ? '—' : money(value)
+  }
 
   return (
     <div>
-      {supplierCreditNotesError && (
+      {pageSources.state === FIGURE_STATE.UNAVAILABLE && (
         <Card className="mb-3.5">
-          <p className="text-[13px] font-bold text-brand-amber m-0">Supplier Credit Notes unavailable</p>
-          <p className="m-0 mt-1 text-[12px] text-brand-muted">{CREDIT_READ_ERROR_NOTICE}</p>
+          <p className="text-[13px] font-bold text-brand-amber m-0">Some commercial records could not be loaded</p>
+          <p className="m-0 mt-1 text-[12px] text-brand-muted">
+            Could not load: {failedLabel(pageSources.failedSources)}. Every figure that depends on them shows
+            Unavailable rather than a partial or zero total. Reload the page, and check your connection and
+            permissions if this persists.
+          </p>
+          {supplierCreditNotesError && (
+            <p className="m-0 mt-1 text-[12px] text-brand-muted">{CREDIT_READ_ERROR_NOTICE}</p>
+          )}
+        </Card>
+      )}
+      {costCodesError && (
+        <Card className="mb-3.5">
+          <p className="text-[13px] font-bold text-brand-amber m-0">Cost codes could not be loaded</p>
+          <p className="m-0 mt-1 text-[12px] text-brand-muted">
+            Cost-code names fall back to the stored snapshot on each line and new budget lines cannot be added
+            until the library loads. No figure on this page depends on the cost-code list.
+          </p>
         </Card>
       )}
       <Card className="mb-3.5">
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3.5 mb-3">
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Budgeted</p>
-            <p className="text-lg font-bold text-brand-text">{summaryMoney(totals.budgeted)}</p>
+            <p className="text-lg font-bold text-brand-text">{cell('approvedBudget', totals.budgeted)}</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Committed</p>
-            <p className="text-lg font-bold text-brand-text">{summaryMoney(totals.committed)}</p>
+            <p className="text-lg font-bold text-brand-text">{cell('remainingCommitted', totals.committed)}</p>
+            {ready('closedResidual') && totals.closedResidual > 0 && (
+              <p
+                className="m-0 text-[11px] text-brand-amber"
+                title="Purchase orders marked closed still hold commitment that no claim or invoice has recognised. Left inside Committed for QS judgement — never silently released."
+              >
+                ⚠ incl. {money(totals.closedResidual)} on closed POs
+              </p>
+            )}
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Claimed</p>
-            <p className="text-lg font-bold text-brand-text">{summaryMoney(totals.claimed)}</p>
+            <p className="text-lg font-bold text-brand-text">{cell('claimedExposure', totals.claimed)}</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Actual</p>
-            <p className="text-lg font-bold text-brand-text">{summaryMoney(totals.actual)}</p>
+            <p className="text-lg font-bold text-brand-text">{cell('actual', totals.actual)}</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Remaining</p>
-            <p className="text-lg font-bold text-brand-text">{summaryMoney(remaining)}</p>
+            <p className="text-lg font-bold text-brand-text">{cell('remainingBudget', remaining)}</p>
           </div>
         </div>
-        <ProgBar value={summaryLoading ? 0 : usagePercent} colour={usagePercent >= 100 ? 'brand-red' : 'brand-accent'} />
+        <ProgBar value={ready('remainingBudget') ? usagePercent : 0} colour={usagePercent >= 100 ? 'brand-red' : 'brand-accent'} />
 
         {/* Read-time variation figures — kept SEPARATE from the six canonical
             figures above. Committed is unchanged; Commitment Exposure adds
@@ -335,17 +394,18 @@ export default function ProjectBudget() {
         <div className="grid grid-cols-2 gap-3.5 mt-3 pt-3 border-t border-brand-border">
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Approved Supplier Variations</p>
-            <p className="text-lg font-bold text-brand-text">{summaryMoney(totals.supplierVariations)}</p>
+            <p className="text-lg font-bold text-brand-text">{cell('supplierVariationExposure', totals.supplierVariations)}</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Commitment Exposure</p>
-            <p className="text-lg font-bold text-brand-text">{summaryMoney(commitmentExposure)}</p>
+            <p className="text-lg font-bold text-brand-text">{cell('commitmentExposure', commitmentExposure)}</p>
           </div>
         </div>
         <p className="m-0 mt-2 text-[11px] text-brand-muted">
-          Commitment Exposure = Committed + approved Supplier Variations (ex-GST). It is separate from the
-          canonical Committed figure — approved variation amounts do not yet mature against progress claims or
-          supplier invoices.
+          Committed is the remaining open commitment: each PO line less what has been invoiced and less any approved
+          claim already counted in Actual, so a cost is never in both. Commitment Exposure = Committed + approved
+          Supplier Variations (ex-GST) — approved variation amounts do not yet mature against progress claims or
+          supplier invoices. All figures are ex-GST and derived at read time.
         </p>
       </Card>
 
@@ -358,7 +418,7 @@ export default function ProjectBudget() {
             <Btn variant="ghost" sm onClick={goToCostCodes}>Go to Cost Codes</Btn>
           )}
           {canWrite && (
-            <Btn sm onClick={() => setEditing('new')} disabled={costCodesLoading || noCostCodes}>
+            <Btn sm onClick={() => setEditing('new')} disabled={costCodesLoading || costCodesError || noCostCodes}>
               + Add Budget Line
             </Btn>
           )}
@@ -368,6 +428,14 @@ export default function ProjectBudget() {
       <Card padding={false}>
         {budgetLinesLoading ? (
           <div className="px-5 py-12 text-center text-[13px] text-brand-muted">Loading budget…</div>
+        ) : budgetLinesError ? (
+          <div className="px-5 py-12 text-center">
+            <p className="text-[13px] font-bold text-brand-amber mb-1">Budget lines unavailable</p>
+            <p className="text-[12px] text-brand-muted m-0">
+              The budget lines could not be read. This does not mean the project has no budget — reload the page,
+              and check your connection and permissions if this persists.
+            </p>
+          </div>
         ) : budgetLines.length === 0 ? (
           <div className="px-5 py-12 text-center">
             <p className="text-[13px] text-brand-muted mb-3">
@@ -378,7 +446,7 @@ export default function ProjectBudget() {
             {noCostCodes ? (
               <Btn variant="ghost" onClick={goToCostCodes}>Go to Cost Codes</Btn>
             ) : canWrite && (
-              <Btn onClick={() => setEditing('new')}>+ Add your first budget line</Btn>
+              <Btn onClick={() => setEditing('new')} disabled={costCodesLoading || costCodesError}>+ Add your first budget line</Btn>
             )}
           </div>
         ) : (
@@ -408,12 +476,22 @@ export default function ProjectBudget() {
                       {resolveCostCodeName(line.costCodeId, costCodes, line.costCodeName)}
                     </td>
                     <td className="px-3.5 py-3 text-[13px] text-brand-text">{money(line.budgeted || 0)}</td>
-                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{money(committedMap[line.costCodeId] || 0)}</td>
-                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{supplierVarMap[line.costCodeId] ? money(supplierVarMap[line.costCodeId]) : '—'}</td>
-                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{money(actualMap[line.costCodeId] || 0)}</td>
-                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{money(invoicedMap[line.costCodeId] || 0)}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-text">
+                      {rowCell('remainingCommitted', committedMap[line.costCodeId] || 0)}
+                      {ready('closedResidual') && closedResidualMap[line.costCodeId] > 0 && (
+                        <span
+                          className="block text-[11px] text-brand-amber"
+                          title="A closed purchase order still holds commitment no claim or invoice has recognised. Left visible for QS judgement — not removed from Committed."
+                        >
+                          ⚠ incl. {money(closedResidualMap[line.costCodeId])} on closed PO
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{rowCell('supplierVariationExposure', supplierVarMap[line.costCodeId] || 0, { blankZero: true })}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{rowCell('actual', actualMap[line.costCodeId] || 0)}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{rowCell('invoiced', invoicedMap[line.costCodeId] || 0)}</td>
                     <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">
-                      {money((line.budgeted || 0) - (actualMap[line.costCodeId] || 0))}
+                      {rowCell('remainingBudget', (line.budgeted || 0) - (actualMap[line.costCodeId] || 0))}
                     </td>
                     <td className="px-3.5 py-3">
                       {canWrite && <Btn variant="ghost" sm onClick={() => setEditing(line)}>Edit</Btn>}
@@ -427,10 +505,15 @@ export default function ProjectBudget() {
                       <span className="block text-[11px] font-normal">Cost against a code with no budget line</span>
                     </td>
                     <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>
-                    <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.committed ? money(row.committed) : '—'}</td>
-                    <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.supplierVar ? money(row.supplierVar) : '—'}</td>
-                    <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.actual ? money(row.actual) : '—'}</td>
-                    <td className="px-3.5 py-3 text-[13px] text-brand-amber">{row.invoiced ? money(row.invoiced) : '—'}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-amber">
+                      {rowCell('remainingCommitted', row.committed, { blankZero: true })}
+                      {ready('closedResidual') && row.closedResidual > 0 && (
+                        <span className="block text-[11px]">⚠ incl. {money(row.closedResidual)} on closed PO</span>
+                      )}
+                    </td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-amber">{rowCell('supplierVariationExposure', row.supplierVar, { blankZero: true })}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-amber">{rowCell('actual', row.actual, { blankZero: true })}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-amber">{rowCell('invoiced', row.invoiced, { blankZero: true })}</td>
                     <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>
                     <td className="px-3.5 py-3" />
                   </tr>

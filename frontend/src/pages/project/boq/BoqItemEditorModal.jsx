@@ -4,6 +4,7 @@ import { formatCurrency } from '../../../lib/formatters'
 import {
   normalizeRate, boqLineAmount, validateBoqItemDraft,
 } from '../../../lib/boq'
+import { selectableCostCodes } from '../../../lib/costCodes'
 
 // ── Add / edit a BOQ item ────────────────────────────────────────────────────
 //
@@ -47,6 +48,9 @@ export default function BoqItemEditorModal({ item, costCodes, currencyCode, onSa
   }
 
   const selectedCode = costCodes.find(cc => cc.id === form.costCodeId)
+  // NEW authoring offers ACTIVE cost codes only (ADR-39/55); an existing item
+  // keeps its own code selectable whether or not it is still active.
+  const pickerCostCodes = selectableCostCodes(costCodes, [item?.costCodeId])
   const costCodeName = selectedCode ? `${selectedCode.code} — ${selectedCode.name}`
     : (item?.costCodeName || '')
 
@@ -97,7 +101,7 @@ export default function BoqItemEditorModal({ item, costCodes, currencyCode, onSa
               autoFocus={isNew}
             >
               <option value="" disabled>Select a cost code…</option>
-              {costCodes.map(cc => (
+              {pickerCostCodes.map(cc => (
                 <option key={cc.id} value={cc.id}>{cc.code} — {cc.name}</option>
               ))}
             </select>

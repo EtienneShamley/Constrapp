@@ -13,6 +13,7 @@ import { useContacts } from '../../hooks/useContacts'
 import { useRetentionReleases } from '../../hooks/useRetentionReleases'
 import { releasedByInvoiceId } from '../../lib/retention'
 import { CLAIM_STATUS } from '../../lib/progressClaims'
+import { directInvoiceConflictError, mixedModePoLineConflicts, mixedModeOverlapTotal } from '../../lib/poLineRecognition'
 import {
   SI_STATUS, SI_STATUS_LABELS, SI_BADGE_VARIANTS, SI_SOURCE,
   INVOICEABLE_PO_STATUSES, TAX_CODE, TAX_CODES, TAX_CODE_LABELS,
@@ -124,7 +125,7 @@ function TaxSelect({ value, onChange }) {
 // lib/supplierInvoices.js so the two modes cannot drift.
 function SupplierInvoiceEditorModal({
   invoice = null, livePo = null,
-  invoiceablePOs, invoiceableClaims, purchaseOrders, supplierInvoices, contacts,
+  invoiceablePOs, invoiceableClaims, purchaseOrders, progressClaims = [], supplierInvoices, contacts,
   currencyCode, onClose, onSave,
 }) {
   const money  = (n) => formatCurrency(n, currencyCode)
@@ -307,14 +308,26 @@ function SupplierInvoiceEditorModal({
   // save is refused. Two concurrent draft editors remain last-write-wins.
   const stale = isEdit && !isEditableInvoice(invoice)
 
-  // CREATE keeps its own validity expression, unchanged.
+  // ONE RECOGNITION PATH PER PO LINE (ADR-55). A DIRECT invoice may not price a
+  // PO line that any progress claim already occupies: the claim→invoice
+  // hand-over keys on `progressClaimId`, so a direct invoice can never
+  // supersede the claim and Actual would count the line twice. Blocked here
+  // (and mirrored on the claim editor) — CLIENT-ONLY, Deferred Control 34;
+  // SHIELD lists the overlaps that already exist. Claim-sourced invoices are
+  // by definition on the claim path and are never checked.
+  const conflictPo = isEdit ? (claimSourced ? null : livePo) : (claim ? null : po)
+  const conflictError = conflictPo
+    ? directInvoiceConflictError({ po: conflictPo, lineItems: savedLines, progressClaims })
+    : null
+
+  // CREATE keeps its own validity expression, unchanged apart from the guard.
   const hasSource   = !!(claim || po)
   const hasAmount   = savedLines.length > 0
   const refValid    = supplierInvoiceNumber.trim().length > 0
   const dateValid   = !!invoiceDate
   const valid       = isEdit
-    ? (!stale && !draftError && !driftError)
-    : (hasSource && hasAmount && refValid && dateValid && !reconcileError)
+    ? (!stale && !draftError && !driftError && !conflictError)
+    : (hasSource && hasAmount && refValid && dateValid && !reconcileError && !conflictError)
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -532,7 +545,11 @@ function SupplierInvoiceEditorModal({
               {!isEdit && source === SI_SOURCE.DIRECT_PO && (
                 <p className="m-0 mt-1.5 text-[11px] text-brand-muted">
                   Enter the invoiced amount per PO line; leave unused lines at zero. ⚠ marks invoiced-to-date above the PO line value.
+                  A line already being claimed through a progress claim must stay at zero here — invoice it from the claim.
                 </p>
+              )}
+              {conflictError && (
+                <p className="m-0 mt-1.5 text-[12px] text-brand-red" role="alert">{conflictError}</p>
               )}
               {isEdit && !claimSourced && (
                 <p className="m-0 mt-1.5 text-[11px] text-brand-muted">
@@ -1251,6 +1268,16 @@ export default function ProjectInvoices() {
   )
   const canCreate = invoiceablePOs.length > 0
 
+  // EXISTING mixed-mode overlaps (ADR-55): PO lines Actual currently counts
+  // through BOTH a posted direct invoice and an approved, not-yet-invoiced
+  // claim. Listed — never offset, reclassified or hidden. The same selector
+  // SHIELD check 4 (condition E) reads.
+  const mixedModeConflicts = useMemo(
+    () => mixedModePoLineConflicts({ purchaseOrders, progressClaims, supplierInvoices }),
+    [purchaseOrders, progressClaims, supplierInvoices],
+  )
+  const goToShield = () => navigate(`/projects/${projectId}/shield`)
+
   const noPOs = !purchaseOrdersLoading && invoiceablePOs.length === 0
   const goToPOs = () => navigate(`/projects/${projectId}/purchase-orders`)
 
@@ -1344,6 +1371,26 @@ export default function ProjectInvoices() {
       </div>
 
       {actionError && <p className="text-[12px] text-brand-red mb-3">{actionError}</p>}
+
+      {mixedModeConflicts.length > 0 && (
+        <Card className="mb-3.5">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+            <div>
+              <p className="m-0 text-[12.5px] font-bold text-brand-amber">
+                {mixedModeConflicts.length} PO line{mixedModeConflicts.length === 1 ? ' is' : 's are'} counted through both a direct invoice and an approved claim
+              </p>
+              <p className="m-0 mt-1.5 text-[11.5px] text-brand-muted">
+                Actual counts both the posted direct invoice and the approved claim on{' '}
+                {mixedModeConflicts.map(c => `${c.poNumber} ${c.lineLabel}`).join('; ')} — up to{' '}
+                <span className="font-semibold text-brand-text">{money(mixedModeOverlapTotal(mixedModeConflicts))}</span> may be
+                double-counted. Nothing has been adjusted: reconcile by cancelling or crediting the record that should
+                not stand. New direct invoices and claims on these lines are blocked.
+              </p>
+            </div>
+            <Btn variant="ghost" sm onClick={goToShield}>Review in SHIELD</Btn>
+          </div>
+        </Card>
+      )}
 
       {/* ⚠️ Missing release data is never silently a zero — it would understate
           every payable figure on this register. */}
@@ -1676,6 +1723,7 @@ export default function ProjectInvoices() {
           invoiceablePOs={invoiceablePOs}
           invoiceableClaims={invoiceableClaims}
           purchaseOrders={purchaseOrders}
+          progressClaims={progressClaims}
           supplierInvoices={supplierInvoices}
           contacts={contacts}
           onClose={() => setEditing(null)}

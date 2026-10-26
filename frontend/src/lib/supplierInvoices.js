@@ -518,7 +518,9 @@ export function invoicedByCostCode(invoices) {
 }
 
 // { poId: { poLineIndex: ex-GST posted/paid amount } } — invoiced-to-date per PO
-// line. Drives Committed maturing (remaining open commitment) in purchaseOrders.
+// line. One of the two inputs to Remaining Committed (purchaseOrders.js →
+// remainingCommittedByCostCode); the other is the approved claim value not yet
+// superseded by a posted invoice (progressClaims.js → recognisedClaimsByPoLine).
 export function postedInvoicedByPoLine(invoices) {
   const map = {}
   for (const inv of invoices) {
@@ -542,6 +544,42 @@ export function postedInvoicedByPo(invoices) {
     if (!inv.poId) continue
     for (const li of inv.lineItems ?? []) {
       map[inv.poId] = roundMoney((map[inv.poId] || 0) + (Number(li.amount) || 0))
+    }
+  }
+  return map
+}
+
+// DIRECT invoices that OCCUPY a PO line — every non-cancelled `direct_po`
+// invoice on the PO with a positive amount on that line, drafts included (a
+// draft already signals the chosen recognition path). Used by the mixed-mode
+// guards (lib/poLineRecognition.js). Returns { [poLineIndex]: [invoiceNumber, …] }.
+export function directInvoicedPoLines(invoices, poId, { excludeInvoiceId = null } = {}) {
+  const map = {}
+  for (const inv of invoices) {
+    if (inv.poId !== poId || inv.source !== SI_SOURCE.DIRECT_PO) continue
+    if (inv.status === SI_STATUS.CANCELLED) continue
+    if (excludeInvoiceId && inv.id === excludeInvoiceId) continue
+    for (const li of inv.lineItems ?? []) {
+      if (li.poLineIndex == null || !((Number(li.amount) || 0) > 0)) continue
+      const list = map[li.poLineIndex] ?? (map[li.poLineIndex] = [])
+      list.push(inv.invoiceNumber || inv.id)
+    }
+  }
+  return map
+}
+
+// { poId: { poLineIndex: ex-GST posted/paid amount } } restricted to DIRECT
+// invoices — the counted direct cost per PO line, for the mixed-mode overlap
+// detection. Same shape and statuses as postedInvoicedByPoLine.
+export function postedDirectInvoicedByPoLine(invoices) {
+  const map = {}
+  for (const inv of invoices) {
+    if (!SI_COUNTING_STATUSES.includes(inv.status)) continue
+    if (!inv.poId || inv.source !== SI_SOURCE.DIRECT_PO) continue
+    const forPo = map[inv.poId] ?? (map[inv.poId] = {})
+    for (const li of inv.lineItems ?? []) {
+      if (li.poLineIndex == null) continue
+      forPo[li.poLineIndex] = roundMoney((forPo[li.poLineIndex] || 0) + (Number(li.amount) || 0))
     }
   }
   return map

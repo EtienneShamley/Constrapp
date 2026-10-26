@@ -371,7 +371,8 @@ All of the above is proven in `tests/unit/foundationEditInvariance.test.js`.
 Only `budgeted` is an authoritative stored value.
 **Committed, Claimed, Actual, and Invoiced are all derived at read time** —
 computed in the browser from the project's purchase orders, progress claims, and
-supplier invoices (`maturedCommittedByCostCode`, `actualClaimsByCostCode` +
+supplier invoices (`remainingCommittedByCostCode` — net of posted invoicing AND of
+approved claims not yet invoiced, ADR-55 — `actualClaimsByCostCode` +
 `invoicedByCostCode`, `claimedPendingByCostCode`, `invoicedByCostCode` in `lib/`),
 keyed by `costCodeId`. Nothing ever writes these onto budget lines; the
 `committed`/`actual`/`invoiced` fields exist only as vestigial zeros from

@@ -5741,9 +5741,10 @@ Automated: `tests/unit/quantDeductions.test.js` (41) — see §0b; four pins in
 quantity reasons gained five deduction codes; `editDirty` compares with the
 session's `basePoints` so a hole edit is judged against the hole; nine tracked
 saves; four dialogs on the QuantDialog shell). Rules: `takeoff.rules.test.js`
-#65–#71 (§0). Lint 0/0. **Rules changed (one optional key) — the release is
-RULES-FIRST** (DEPLOYMENT.md). **Not production-verified** — the checks below
-are the acceptance for the release.
+#65–#71 (§0). Lint 0/0. **Rules changed (one optional key) — the release was
+RULES-FIRST** (DEPLOYMENT.md). **Production-verified 26 October 2026** (merged,
+Azure CI passed, rules published first, Hosting deployed, the checks below run
+live by the product owner; the repository records the day, not a time).
 
 **The implementation machine could not boot the Firestore emulator** (its only
 JDK is x86_64 Temurin 17 on an arm64 Mac without Rosetta: *Bad CPU type in
@@ -5841,3 +5842,106 @@ Rev A is a calibrated PNG with a 12 m² area linked to BOQ item 2.1):
       VoiceOver/NVDA announce *Save deduction, dialog* and read the
       *Deductions from "…"* list. **No budget line, forecast line, PO, claim,
       invoice, payment, variation, cash-flow line or baseline changed.**
+
+
+## 31. Forecast and Actual Cost Integrity — M1 (ADR-55)
+
+Automated: `tests/unit/poLineRecognition.test.js` (24, new);
+`tests/unit/claimInvoiceLifecycle.test.js` (10, new — the approved-claim →
+invoice lifecycle step by step: Actual, Remaining Committed, Cost to Complete,
+FFC and the Cash Flow basis at no claim, submitted, approved, draft / approved /
+cancelled / posted claim-sourced invoice; partial claim-sourced invoices proven
+unreachable through `claimReconciliationError`, `claimHasActiveInvoice` and the
+terminal `posted` state); `forecast.test.js`
+§8 (11 new cases: the 1,250 → 950 fixture, claim approved before invoice,
+claim converted to a posted invoice, partial and multiple claims, direct
+invoice + claim on one line, legacy line without `poLineIndex`, closed and
+cancelled POs, rejected claim / cancelled invoice, the new rollup fields);
+pins revised **explicitly, with the reason beside each**: `forecast.test.js`
+(fixture claims gained `poLineIndex`; cc1 FFC 1,250 → 950, variance −250 → +50,
+over-budget count 1 → 0; totals RC 1,120 → 700, FFC 1,690 → 1,270; the
+malformed-CTC parity case 1,100 → 800), `progressClaims.test.js` (APPROVING
+now moves Remaining Committed; total commitment never moves),
+`purchaseOrders.test.js` and `supplierInvoices.test.js`
+(`maturedCommittedByCostCode` → `remainingCommittedByCostCode`),
+`cashFlow.test.js` (each cost-coded source has its own balance; D_cost gains
+the approved-claim basis), `shield.test.js` (five conditions; condition E
+suite), `financialReliability.test.js` (`remainingCommitted` depends on
+`progressClaims`; fixture claim on po1; Forecast/Commercial destructure the
+exposed hook errors), `loadingNotZero.test.js` (Budget readiness model),
+`costCodes.test.js` (`selectableCostCodes`; the three pickers filter). Unit
+suite 52 files / 3,347 tests; lint 0 errors / 0 warnings; **no rules change —
+Hosting-only release, not yet deployed, not production-verified.** The rules
+suite is unaffected and must still be green in Azure CI before release (this
+machine cannot boot the emulators — §30).
+
+Manual — three checks, as **project_manager** on a project with one sent PO
+(two lines, say 800 and 500), approved budget 1,000 on the first line's cost
+code and a saved Uncommitted CTC of 150 on it:
+
+- [ ] **An approved claim is counted once.** Raise a claim on the PO claiming
+      300 on line 1, submit and approve it (certify 300). **Budget** tab:
+      Committed for that code reads **500** (not 800), Actual **300**,
+      Commitment Exposure 500 + approved SVs; the help text says a cost is
+      never in both. **Forecast** tab: Remaining Committed 500, Cost to
+      Complete 650, Forecast Final Cost **950**, Variance **+50** (green, not
+      over budget); **Commercial** FFC 950; **Dashboard** snapshot Remaining
+      Committed 500 with help *not yet recognised as Actual*; **PULSE**
+      indicator 1 reads *no issue* (it read *finding* before this release on
+      the same records). Raise the supplier invoice **From approved claim**,
+      approve and post it: every figure above is **unchanged** (Actual 300 now
+      from the invoice, Committed still 500). **Cash Flow**: before posting,
+      *Approved claims awaiting invoice* showed 300 as its own untimed line and
+      *Cost timed* measured against 500 + 300 + 150; after posting it is 0 and
+      the 330 gross balance is timed by the invoice due month. Mark the PO
+      **Closed**: Budget and Commercial show *⚠ incl. 500 on closed PO(s)*
+      beside Committed / under the margin card; nothing is released.
+- [ ] **One recognition path per PO line.** With an open or approved claim on
+      line 1, open **New Supplier Invoice → Direct against PO**, pick the PO
+      and enter an amount on line 1: the red notice names the claim
+      (*Line 1 … is already being claimed through PC-000x*) and **Create** is
+      disabled; enter the amount on line 2 instead and it saves. Post a direct
+      invoice on line 2, then open **New Progress Claim** on the PO: claiming
+      above zero on line 2 is refused with the invoice number; line 1 claims
+      normally. In the emulator or with a direct SDK write, create a posted
+      direct invoice on a line that also carries an approved claim: the
+      Supplier Invoices register shows the amber *counted through both…*
+      notice with the overlap and **Review in SHIELD**; **SHIELD** check 4 is a
+      *finding* with condition *PO line counted through both a direct invoice
+      and an approved claim*, amount = the smaller of the two, both record
+      numbers in the row; Budget Actual still shows **both** amounts (nothing
+      was offset) and the caveat says so. Cancel the direct invoice: the
+      finding clears.
+- [ ] **Readiness, not zeros; failed reads are named — tested with a
+      CONTROLLED denial, never by assuming an external role's permissions.**
+      Use either method, as a **financial role**: (a) *simulated subscription
+      failure* — in Chrome DevTools → Network → *Block request URL*, add the
+      pattern `*Firestore/Listen*` (or `*firestore.googleapis.com*`) **before**
+      opening the tab, so every `onSnapshot` errors instead of settling; or
+      (b) *controlled emulator denial* — against the local emulators
+      (`firebase emulators:start --only firestore,storage`), load a copy of
+      `frontend/firestore.rules` in which the `supplierInvoices` and
+      `variations` `allow read` lines are changed to `if false`, then open the
+      Budget tab. **Budget** then shows Budgeted and Claimed as values and
+      Committed, Actual, Invoiced, Remaining and Commitment Exposure as
+      **Unavailable** (never $0); the amber banner names the failed sources;
+      every row cell in those columns reads *Unavailable* while Budgeted still
+      prints. With method (a), *Budget lines unavailable* replaces the
+      empty-register prompt and every summary figure reads **—** until the
+      block is removed. Repeat method (a) for the **Purchase Orders**,
+      **Variations**, **BOQ** and **Cost Codes** tabs and the **Contacts** /
+      **Subcontractors** pages: each shows the amber *could not be loaded*
+      card (and disables *+ New …*) instead of *Create your first…*;
+      **Forecast** shows the card and disables editing; **Commercial** blocks
+      the baseline save with the contacts note. ⚠️ This check does **not**
+      exercise, and must not be read as securing, the `subcontractor` /
+      `client` roles: rules let those roles read every project's POs, claims,
+      budget lines and cost codes company-wide — an **unresolved P0 security
+      issue for M2** (SECURITY.md → *Documented Roles vs Enforced Roles*). Deactivate a cost code: it disappears from the **New PO**,
+      **New Variation** and **Add BOQ Item** pickers but stays selected on an
+      existing draft that already uses it, and no Budget, Forecast or Margin
+      figure moves. At **375px**, **768px** and **1280px** the Budget summary
+      wraps to two columns, the closed-PO note sits under Committed, and the
+      register scrolls horizontally inside its card. **No PO, claim, invoice,
+      payment, credit note, variation, budget line, forecast line, cash-flow
+      line or baseline document changed.**

@@ -23,8 +23,9 @@ export const PO_BADGE_VARIANTS = {
   [PO_STATUS.CANCELLED]:        'danger',
 }
 
-// Statuses whose value counts toward a budget line's committed cost.
-// Once invoicing exists this matures to: committed = PO value − invoiced-to-date.
+// Statuses whose value counts toward a budget line's committed cost. The
+// Remaining Committed figure matures each line by posted invoicing AND by
+// approved claims not yet invoiced — see remainingCommittedByCostCode.
 export const PO_COMMITTED_STATUSES = [PO_STATUS.SENT, PO_STATUS.CLOSED]
 
 // Forward-only lifecycle. pending_approval is reserved; nothing transitions
@@ -56,8 +57,11 @@ export function poTotals(lineItems) {
 
 export const formatPoNumber = (n) => `PO-${String(n).padStart(4, '0')}`
 
-// { costCodeId: committedAmount } across all committed POs. Amounts are
-// ex-GST line totals — budgets track ex-GST figures.
+// TOTAL CONTRACTUAL COMMITMENT — { costCodeId: Σ lineTotal } across every
+// sent/closed PO, ex-GST. This is the full ordered value and is deliberately
+// kept apart from Remaining Committed below: it never matures, never nets a
+// claim or an invoice, and answers "what have we ordered?" rather than "what
+// is still to be recognised?".
 export function committedByCostCode(purchaseOrders) {
   const map = {}
   for (const po of purchaseOrders) {
@@ -70,21 +74,75 @@ export function committedByCostCode(purchaseOrders) {
   return map
 }
 
-// Matured Committed: the remaining *open* commitment once supplier invoices
-// exist. Per PO line, the open commitment is the line total minus what has been
-// invoiced (posted/paid) against that line, floored at zero, then grouped by
-// cost code. Committed therefore now means "ordered but not yet invoiced"; as
-// invoices post, value moves out of Committed and into Invoiced/Actual, so the
-// two are complementary rather than overlapping. `invoicedByPoLine` comes from
-// supplierInvoices.postedInvoicedByPoLine → { [poId]: { [poLineIndex]: amount } }.
-export function maturedCommittedByCostCode(purchaseOrders, invoicedByPoLine = {}) {
+// Remaining Committed — THE ONE open-commitment formula (ADR-55).
+//
+// Per PO line (POs in sent/closed):
+//
+//   open(line) = max(0, lineTotal
+//                       − posted/paid invoiced against the line
+//                       − approved claim value on the line NOT yet superseded
+//                         by a posted claim-sourced invoice)
+//
+// grouped by cost code. "Committed" therefore means "ordered and not yet
+// RECOGNISED as Actual": a cost leaves Committed at the same moment it enters
+// Actual, whether that moment is an approved claim or a posted invoice, so the
+// two figures are complementary and Forecast Final Cost (Actual + Remaining
+// Committed + Uncommitted CTC) counts each dollar exactly once.
+//
+// Before ADR-55 only posted invoicing matured a line. An approved claim was
+// counted in Actual while the full PO line stayed in Committed until the
+// claim-sourced invoice POSTED, so for that window FFC carried the claim twice
+// (the pinned fixture read 1,250 where 950 was true).
+//
+// NO DOUBLE SUBTRACTION. `recognisedClaimsByPoLine` excludes every claim whose
+// posted invoice is in `invoicedByPoLine` (same `invoicedClaimIds` set the
+// claim side of Actual uses), so when a claim's invoice posts the claim amount
+// leaves one map and the invoice amount enters the other and the line's open
+// commitment is unchanged. A posted DIRECT invoice on a line that also carries
+// an approved claim does subtract twice — that is the mixed-mode conflict
+// SHIELD and the editors surface (lib/poLineRecognition.js); the figure is
+// never silently repaired.
+//
+// A claim line with no `poLineIndex` (legacy shape) cannot be attributed to a
+// PO line and does NOT reduce commitment — the pre-ADR-55 reading, which errs
+// toward overstating open commitment rather than hiding it.
+//
+// `invoicedByPoLine`  — supplierInvoices.postedInvoicedByPoLine
+//                       → { [poId]: { [poLineIndex]: ex-GST amount } }
+// `recognisedByPoLine` — progressClaims.recognisedClaimsByPoLine
+//                       → { [poId]: { [poLineIndex]: ex-GST approved amount } }
+export function remainingCommittedByPoLine(purchaseOrders, invoicedByPoLine = {}, recognisedByPoLine = {}) {
   const map = {}
   for (const po of purchaseOrders) {
     if (!PO_COMMITTED_STATUSES.includes(po.status)) continue
     const invForPo = invoicedByPoLine[po.id] ?? {}
+    const recForPo = recognisedByPoLine[po.id] ?? {}
+    const forPo = {}
+    ;(po.lineItems ?? []).forEach((li, idx) => {
+      const remaining = Math.max(
+        roundMoney((li.lineTotal || 0) - (invForPo[idx] || 0) - (recForPo[idx] || 0)),
+        0,
+      )
+      forPo[idx] = remaining
+    })
+    map[po.id] = forPo
+  }
+  return map
+}
+
+// { costCodeId: Remaining Committed } — the per-line formula above grouped by
+// the line's cost code. Lines with no cost code are skipped (they cannot reach
+// a budget row); exhausted lines contribute nothing and a code with no open
+// commitment is absent from the map (never a negative).
+export function remainingCommittedByCostCode(purchaseOrders, invoicedByPoLine = {}, recognisedByPoLine = {}) {
+  const map = {}
+  const byLine = remainingCommittedByPoLine(purchaseOrders, invoicedByPoLine, recognisedByPoLine)
+  for (const po of purchaseOrders) {
+    const forPo = byLine[po.id]
+    if (!forPo) continue
     ;(po.lineItems ?? []).forEach((li, idx) => {
       if (!li.costCodeId) return
-      const remaining = Math.max(roundMoney((li.lineTotal || 0) - (invForPo[idx] || 0)), 0)
+      const remaining = forPo[idx] || 0
       if (remaining <= 0) return
       map[li.costCodeId] = roundMoney((map[li.costCodeId] || 0) + remaining)
     })

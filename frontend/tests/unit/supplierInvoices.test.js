@@ -11,11 +11,11 @@ import {
   isClaimSourced, invoiceLineToForm, buildInvoiceLine, invoiceLineInputCountError,
   validateInvoiceDraft, claimSourcedDriftError, retentionFloorError,
 } from '../../src/lib/supplierInvoices'
-import { PO_STATUS, GST_RATE, roundMoney, maturedCommittedByCostCode } from '../../src/lib/purchaseOrders'
+import { PO_STATUS, GST_RATE, roundMoney, remainingCommittedByCostCode } from '../../src/lib/purchaseOrders'
 import { isPayableInvoice, postedSupplierInvoices, payablesSummary } from '../../src/lib/supplierPayments'
 import { isCreditableInvoice } from '../../src/lib/supplierCreditNotes'
 import { retentionInvoices, retentionInvoiceRows } from '../../src/lib/retention'
-import { actualClaimsByCostCode } from '../../src/lib/progressClaims'
+import { actualClaimsByCostCode, recognisedClaimsByPoLine } from '../../src/lib/progressClaims'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // lib/supplierInvoices.js — the FIRST dedicated suite for this module.
@@ -1249,7 +1249,11 @@ describe('FINANCIAL REGRESSION — a draft edit moves nothing until the invoice 
   // Every downstream figure this project can produce from the invoice list.
   const snapshot = (invoices) => ({
     invoicedByCostCode: invoicedByCostCode(invoices),
-    committedMatured:   maturedCommittedByCostCode(purchaseOrders, postedInvoicedByPoLine(invoices)),
+    // ADR-55: Remaining Committed nets posted invoicing AND approved claims not
+    // yet superseded by a posted claim-sourced invoice (the ONE formula).
+    committedMatured:   remainingCommittedByCostCode(
+      purchaseOrders, postedInvoicedByPoLine(invoices), recognisedClaimsByPoLine(progressClaims, invoicedClaimIds(invoices)),
+    ),
     postedByPoLine:     postedInvoicedByPoLine(invoices),
     postedByPo:         postedInvoicedByPo(invoices),
     invoicedClaims:     [...invoicedClaimIds(invoices)],
@@ -1320,7 +1324,7 @@ describe('FINANCIAL REGRESSION — a draft edit moves nothing until the invoice 
     expect(now.postedByPoLine).toEqual({ po1: { 0: 4000, 1: 7777, 2: 3333 } })
     expect(now.postedByPo).toEqual({ po1: 15110 })
     // cc2's 6000 commitment is over-invoiced at 7777, so it matures fully and is
-    // DROPPED from the map rather than going negative (maturedCommittedByCostCode
+    // DROPPED from the map rather than going negative (remainingCommittedByCostCode
     // floors at zero and omits an exhausted line — existing behaviour, pinned).
     // cc3 keeps 4000 - 3333 = 667 of open commitment.
     expect(now.committedMatured).not.toHaveProperty('cc2')

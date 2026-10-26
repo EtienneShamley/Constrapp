@@ -99,8 +99,9 @@ export const SNAPSHOT_SOURCE_LABELS = {
 // buildForecastRows / computeMargin / payablesSummary):
 //   · Actual        — claims (certified, not superseded), posted invoices,
 //                     posted valid-target credit notes
-//   · Rem. Committed — sent/closed PO lines matured by posted invoice lines
-//                     (credits deliberately do not restore it — ADR-31)
+//   · Rem. Committed — sent/closed PO lines net of posted invoice lines AND of
+//                     approved claims not yet invoiced (ADR-55; credits
+//                     deliberately do not restore it — ADR-31)
 //   · Uncommitted CTC — saved forecast lines
 //   · Variations feed only supplier-variation EXPOSURE on the cost side, which
 //     is never in Forecast Final Cost; they feed margin through approved client
@@ -121,7 +122,7 @@ export const FORECAST_ROW_SOURCES = [
 export const FIGURE_DEPENDENCIES = {
   approvedBudget:     ['budgetLines'],
   actual:             ['progressClaims', 'supplierInvoices', 'supplierCreditNotes'],
-  remainingCommitted: ['purchaseOrders', 'supplierInvoices'],
+  remainingCommitted: ['purchaseOrders', 'progressClaims', 'supplierInvoices'],
   forecastFinalCost:  FFC_SOURCES,
   varianceToBudget:   ['budgetLines', ...FFC_SOURCES],
   margin:             ['baseline', 'variations', ...FFC_SOURCES],
@@ -148,6 +149,17 @@ export const FIGURE_DEPENDENCIES = {
   //   · Uncommitted Cost to Complete — the saved forecast inputs only (every
   //     forecast line is a row in the union, so no other source moves it)
   uncommittedCostToComplete: ['forecastLines'],
+  // ── Budget tab (ADR-55) ──
+  //   · Claimed — submitted / under-review claim lines (uncertified exposure)
+  //   · Invoiced — posted invoice lines net of posted valid-target credits
+  //   · Remaining — Budgeted − Actual
+  //   · Commitment Exposure — Remaining Committed + approved supplier variations
+  //   · Closed-PO residual — Remaining Committed restricted to closed POs
+  claimedExposure:    ['progressClaims'],
+  invoiced:           ['supplierInvoices', 'supplierCreditNotes'],
+  remainingBudget:    ['budgetLines', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes'],
+  commitmentExposure: ['purchaseOrders', 'progressClaims', 'supplierInvoices', 'variations'],
+  closedResidual:     ['purchaseOrders', 'progressClaims', 'supplierInvoices'],
 }
 
 // The margin figure has one extra, figure-specific state: the commercial

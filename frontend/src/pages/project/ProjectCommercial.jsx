@@ -79,7 +79,7 @@ function ReconRow({ label, cell, op, strong, danger, muted }) {
 // form would otherwise open blank and an upsert would overwrite the stored
 // baseline with those blanks — and while contacts are still loading. The live
 // Approved Budget is offered only once budget lines have settled cleanly.
-function BaselineForm({ baseline, saveBaseline, clientContacts, contactsLoading, currentApprovedBudget, budgetReady, budgetUnavailable, currencyCode, currentUserId, currentUserName, baselineError }) {
+function BaselineForm({ baseline, saveBaseline, clientContacts, contactsLoading, contactsError = false, currentApprovedBudget, budgetReady, budgetUnavailable, currencyCode, currentUserId, currentUserName, baselineError }) {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const [form, setForm] = useState(() => ({
@@ -111,7 +111,10 @@ function BaselineForm({ baseline, saveBaseline, clientContacts, contactsLoading,
   const storedClientUnresolved = !!baseline?.clientId
     && !clientContacts.some(c => c.id === baseline.clientId)
 
-  const saveBlocked = baselineError || contactsLoading
+  // A FAILED contacts read blocks the save exactly as a pending one does (D3):
+  // the client picker is empty because the directory could not be read, and a
+  // save now could never resolve the chosen client (ADR-55).
+  const saveBlocked = baselineError || contactsLoading || contactsError
 
   async function onSave() {
     if (saveBlocked) return
@@ -240,6 +243,12 @@ function BaselineForm({ baseline, saveBaseline, clientContacts, contactsLoading,
             blank values. Reload the page, and check your connection and permissions if this persists.
           </span>
         )}
+        {!baselineError && contactsError && !error && (
+          <p className="m-0 text-[11.5px] text-brand-amber">
+            Contacts could not be loaded, so the client picker is empty and the baseline cannot be saved until they load.
+            This does not mean there are no client contacts.
+          </p>
+        )}
         {!baselineError && contactsLoading && !error && (
           <span className="text-[12px] text-brand-muted">Loading client contacts…</span>
         )}
@@ -290,7 +299,7 @@ function CommercialWorkspace({ projectId, currencyCode }) {
   const { supplierCreditNotes, supplierCreditNotesLoading, supplierCreditNotesError } = useSupplierCreditNotes(projectId)
   const { variations, variationsLoading, variationsError }                            = useVariations(projectId)
   const { forecastLines, forecastLinesLoading, forecastLinesError }                   = useForecastLines(projectId)
-  const { contacts, contactsLoading }                                                 = useContacts()
+  const { contacts, contactsLoading, contactsError }                                  = useContacts()
 
   // Current (live) Approved Budget = Σ budget-line budgeted. Backs the explicit
   // "Use current approved budget" action; never auto-applied to the baseline.
@@ -410,6 +419,12 @@ function CommercialWorkspace({ projectId, currencyCode }) {
             Set and save an Original Contract Value below to calculate forecast revenue, profit, and margin.
           </p>
         )}
+        {ffcCell.ready && forecastTotals.closedResidual > 0 && (
+          <p className="m-0 mt-3 text-[11px] text-brand-amber">
+            Forecast Final Cost includes {money(forecastTotals.closedResidual)} of commitment still open on purchase orders
+            marked closed. It is left in Remaining Committed for QS judgement — review it on the Forecast or Budget tab.
+          </p>
+        )}
         <p className="m-0 mt-3 text-[11px] text-brand-muted">
           All figures are ex-GST, derived at read time, and shown in this project&apos;s currency ({currencyCode}). Forecast
           Final Cost is the same Estimate at Completion shown on the Forecast tab. Currency is a label, never a conversion —
@@ -467,6 +482,7 @@ function CommercialWorkspace({ projectId, currencyCode }) {
         baseline={baseline}
         saveBaseline={saveBaseline}
         clientContacts={clientContacts}
+        contactsError={contactsError}
         contactsLoading={contactsLoading}
         currentApprovedBudget={currentApprovedBudget}
         budgetReady={budgetState.state === FIGURE_STATE.READY}

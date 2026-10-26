@@ -955,6 +955,26 @@ coarser model:
 The fine-grained per-module access matrix in PRODUCT.md is product intent, not
 implementation.
 
+> **⚠️ P0 — UNRESOLVED, scheduled for M2. Company-wide financial read exposure
+> for `subcontractor` / `client` (verified against `frontend/firestore.rules`
+> on 27 October 2026, ADR-55 report).** The `projects`, `costCodes`, `budgetLines`, `purchaseOrders` and
+> `progressClaims` blocks allow **read** to any authenticated member of the
+> company (`companyId` match only — rules 94–95, 170–171, 210–211, 390–391,
+> 408–409; TESTING.md §17b records this as the intended coarse model). A user
+> provisioned with either role therefore reads **every project's** approved
+> budget by cost code, **every supplier's** purchase-order pricing and every
+> progress claim, company-wide — not only their own. Six financial tabs
+> (Budget, Cost Codes, Purchase Orders, Progress Claims, Supplier Invoices,
+> Variations) also render for these roles with write actions the rules will
+> reject; hiding those tabs would **not** secure the collections, only the
+> rules can. **Scoping needs project-scoped membership and therefore a trusted
+> backend (Deferred Control 20) and is the separately approved M2/M3 security
+> work. Until it lands, do not provision `subcontractor` or `client` users.**
+> Whether any such user exists in production cannot be verified from this
+> repository (membership is provisioned out of band, ADR-27) — check
+> `users/{uid}.role` in the console before assuming the exposure is only
+> latent.
+
 Since ADR-27 the enforced `role` in that table is **settable only out of band**:
 `users/{uid}` is client-read-only, so no user can move themselves between the
 rows above. That is what makes the table meaningful — previously any user could
@@ -1671,6 +1691,28 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     forecast, commitment, actual, margin or cash figure. Every item above is
     proven unenforced by a passing test in `takeoff.rules.test.js` (#64) or
     `boqItems.rules.test.js` (the DC33 test).
+
+34. **One recognition path per PO line — the mixed-mode guards (ADR-55).**
+    A PO line's cost must reach Actual through a progress claim OR a direct
+    supplier invoice, never both; the claim→invoice hand-over keys on
+    `progressClaimId`, so a direct invoice can never supersede a claim and a
+    line touched by both paths is counted twice in Actual. The guards in
+    `lib/poLineRecognition.js` (a direct invoice may not price a line any
+    non-rejected claim occupies; a claim may not claim above zero on a line
+    any non-cancelled direct invoice prices) run in the supplier invoice and
+    progress claim editors **only**. Firestore rules cannot read sibling
+    claims or invoices while validating a write (no list, query or count), so
+    a direct-SDK caller — or two users saving concurrently — can still create
+    the combination. Detection is what makes that visible: SHIELD check 4
+    condition E and the Supplier Invoices register list every existing overlap
+    with the overlapping amount, and **nothing is reclassified, offset or
+    rewritten**. The same limitation applies to the Remaining Committed
+    netting itself: rules do not recompute any derived figure, so a forged
+    claim line (missing or wrong `poLineIndex`, or `approvedThisPeriod` above
+    the certified value) moves Remaining Committed exactly as it moves Actual.
+    Never describe the per-line recognition path, the Budget page's readiness
+    gating or the exposed `costCodesError`/`contactsError` flags as enforced
+    controls — they are client behaviour over data the rules admit.
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this

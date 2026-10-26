@@ -71,7 +71,11 @@ const SOURCES = {
     { id: 'po3', status: 'sent', lineItems: [{ costCodeId: 'cc6', lineTotal: 90 }] },
   ],
   progressClaims: [
-    { id: 'cl1', status: 'approved', poId: 'po2', lineItems: [{ costCodeId: 'cc4', approvedThisPeriod: 250 }] },
+    { id: 'cl1', status: 'approved', poId: 'po2', lineItems: [{ poLineIndex: 0, costCodeId: 'cc4', approvedThisPeriod: 250 }] },
+    // ADR-55: an approved, not-yet-invoiced claim on po1 line 0 is netted out of
+    // Remaining Committed (800 → 700), so progressClaims is a DECLARED source of
+    // remainingCommitted and the perturbation below must see it move.
+    { id: 'cl2', status: 'approved', poId: 'po1', lineItems: [{ poLineIndex: 0, costCodeId: 'cc1', approvedThisPeriod: 100 }] },
   ],
   supplierInvoices: [inv1],
   supplierCreditNotes: [{
@@ -246,11 +250,15 @@ describe('credit-note failure: dependent figures are Unavailable (D1), the rest 
 // ── Dashboard invariance ─────────────────────────────────────────────────────
 
 describe('Dashboard: ADR-42 snapshot figures and dependencies are unchanged', () => {
-  it('the eight original dependency lists are byte-identical', () => {
+  it('the eight original dependency lists are byte-identical (remainingCommitted gained progressClaims in ADR-55)', () => {
     const FFC = ['purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes', 'forecastLines']
     expect(FIGURE_DEPENDENCIES.approvedBudget).toEqual(['budgetLines'])
     expect(FIGURE_DEPENDENCIES.actual).toEqual(['progressClaims', 'supplierInvoices', 'supplierCreditNotes'])
-    expect(FIGURE_DEPENDENCIES.remainingCommitted).toEqual(['purchaseOrders', 'supplierInvoices'])
+    // ADR-55 — deliberate change, not drift: Remaining Committed now nets the
+    // approved claim value Actual recognises on each PO line, so a loading or
+    // failed claims read must make it UNAVAILABLE, never a figure that silently
+    // omits the netting. The perturbation suite above proves claims move it.
+    expect(FIGURE_DEPENDENCIES.remainingCommitted).toEqual(['purchaseOrders', 'progressClaims', 'supplierInvoices'])
     expect(FIGURE_DEPENDENCIES.forecastFinalCost).toEqual(FFC)
     expect(FIGURE_DEPENDENCIES.varianceToBudget).toEqual(['budgetLines', ...FFC])
     expect(FIGURE_DEPENDENCIES.margin).toEqual(['baseline', 'variations', ...FFC])
@@ -387,7 +395,8 @@ describe('Forecast: role gate mounts no financial subscription for other roles (
       expect(workspace).toMatch(new RegExp(`const \\{ ${name}, ${name}Loading, ${name}Error[^}]*\\}\\s*= ${hook}\\(projectId\\)`))
       expect(workspace).toMatch(new RegExp(`${name}:\\s*\\{ loading: ${name}Loading,\\s*error: ${name}Error \\}`))
     }
-    expect(workspace).toMatch(/const \{ costCodes, costCodesLoading \}\s*= useCostCodes\(\)/)
+    // ADR-55: the cost-code read error is exposed and disables editing.
+    expect(workspace).toMatch(/const \{ costCodes, costCodesLoading, costCodesError \}\s*= useCostCodes\(\)/)
   })
 })
 
@@ -449,7 +458,8 @@ describe('Commercial: role gate, per-figure availability, safe baseline form', (
       expect(workspace).toMatch(new RegExp(`${name}:\\s*\\{ loading: ${name}Loading,\\s*error: ${name}Error \\}`))
     }
     expect(workspace).toMatch(/baseline:\s*\{ loading: baselineLoading,\s*error: baselineError \}/)
-    expect(workspace).toContain('const { contacts, contactsLoading }')
+    // ADR-55: a failed contacts read blocks the baseline save like a pending one.
+    expect(workspace).toContain('const { contacts, contactsLoading, contactsError }')
   })
 
   it('no figure is printed with money() directly — every one goes through show()', () => {

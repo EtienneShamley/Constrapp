@@ -677,11 +677,14 @@ describe('check 4 — commitment state conflicts', () => {
       [STATE_CONFLICT.CLOSED_PO_WITH_OPEN_CLAIM]:   1,
       [STATE_CONFLICT.MULTIPLE_OPEN_CLAIMS]:        2,
       [STATE_CONFLICT.MULTIPLE_INVOICES_PER_CLAIM]: 2,
+      // E (ADR-55): the fixture's claims carry no line items, so no PO line is
+      // recognised through both paths here — the dedicated test below builds one.
+      [STATE_CONFLICT.MIXED_MODE_PO_LINE]:          0,
     })
     expect(c.values.conflictCount).toBe(7)
     expect(c.evidence).toHaveLength(7)
     expect(new Set(c.evidence.map(r => r.id)).size).toBe(7)
-    expect(Object.keys(STATE_CONFLICT)).toHaveLength(4)
+    expect(Object.keys(STATE_CONFLICT)).toHaveLength(5)
   })
 
   it('A · cancelled PO with a posted invoice and an approved claim', () => {
@@ -753,6 +756,63 @@ describe('check 4 — commitment state conflicts', () => {
 })
 
 // ── 7 · Check 5: existing financial exceptions ───────────────────────────────
+
+describe('check 4 — condition E: a PO line recognised through BOTH paths (ADR-55)', () => {
+  // One PO line carrying a POSTED direct invoice (200) AND an approved claim
+  // (300) that no posted claim-sourced invoice has superseded. Actual counts
+  // both; the overlap listed is the smaller of the two — a bound, never a fix.
+  const po = { id: 'poE', poNumber: 'PO-0009', status: 'sent', subtotal: 800, lineItems: [
+    { costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'Slab', lineTotal: 800 },
+  ] }
+  const approvedClaim = { id: 'clE', claimNumber: 'PC-0009', status: 'approved', poId: 'poE', poNumber: 'PO-0009', approvedSubtotal: 300,
+    lineItems: [{ poLineIndex: 0, costCodeId: 'cc1', approvedThisPeriod: 300 }] }
+  const directInv = inv({
+    id: 'invE', invoiceNumber: 'SI-0090', supplierInvoiceNumber: 'E-1', status: 'posted',
+    supplierId: 'sup1', supplierName: 'Ace Concrete', poId: 'poE', poNumber: 'PO-0009', invoiceDate: '2026-03-01',
+    lineItems: [{ poLineIndex: 0, costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'Slab', amount: 200, taxCode: 'gst', gstAmount: 20 }],
+    ...totals(200, 20),
+  })
+  const sources = { ...EMPTY, purchaseOrders: [po], progressClaims: [approvedClaim], supplierInvoices: [directInv] }
+
+  it('lists the line once, with the overlap as its amount and both source records named', () => {
+    const c = get(CHECK.COMMITMENT_STATE_CONFLICTS, sources)
+    expect(c.state).toBe(SHIELD_STATE.FINDING)
+    expect(c.values.byCondition[STATE_CONFLICT.MIXED_MODE_PO_LINE]).toBe(1)
+    const [row] = c.evidence.filter(r => r.condition === STATE_CONFLICT.MIXED_MODE_PO_LINE)
+    expect(row.poNumber).toBe('PO-0009')
+    expect(row.recordKind).toBe('poLine')
+    expect(row.amount).toBe(200)
+    expect(row.directInvoiced).toBe(200)
+    expect(row.recognisedClaims).toBe(300)
+    expect(row.recordNumber).toContain('SI-0090')
+    expect(row.recordNumber).toContain('PC-0009')
+    expect(row.recordStatusLabel).toBe('Both counted in Actual')
+    expect(c.headline).toContain('po line counted through both')
+  })
+
+  it('is NOT a finding once the claim is superseded by its posted claim-sourced invoice, or while the direct invoice is a draft', () => {
+    const claimInv = inv({ ...directInv, id: 'invF', invoiceNumber: 'SI-0091', supplierInvoiceNumber: 'F-1', source: 'progress_claim',
+      progressClaimId: 'clE', claimNumber: 'PC-0009', lineItems: [{ poLineIndex: 0, costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'Slab', amount: 300, taxCode: 'gst', gstAmount: 30 }], ...totals(300, 30) })
+    // Superseded claim + posted direct invoice: the claim no longer counts, so no overlap.
+    const superseded = get(CHECK.COMMITMENT_STATE_CONFLICTS, { ...sources, supplierInvoices: [directInv, claimInv] })
+    expect(superseded.values.byCondition[STATE_CONFLICT.MIXED_MODE_PO_LINE]).toBe(0)
+    // Direct invoice still a draft: nothing is counted yet.
+    const drafted = get(CHECK.COMMITMENT_STATE_CONFLICTS, { ...sources, supplierInvoices: [{ ...directInv, status: 'draft' }] })
+    expect(drafted.values.byCondition[STATE_CONFLICT.MIXED_MODE_PO_LINE]).toBe(0)
+    expect(drafted.state).toBe(SHIELD_STATE.NO_ISSUE)
+    // Different lines: no overlap.
+    const otherLine = get(CHECK.COMMITMENT_STATE_CONFLICTS, { ...sources,
+      purchaseOrders: [{ ...po, lineItems: [...po.lineItems, { costCodeId: 'cc2', costCodeName: 'x', description: 'y', lineTotal: 100 }] }],
+      supplierInvoices: [{ ...directInv, lineItems: [{ ...directInv.lineItems[0], poLineIndex: 1 }] }] })
+    expect(otherLine.values.byCondition[STATE_CONFLICT.MIXED_MODE_PO_LINE]).toBe(0)
+  })
+
+  it('a cancelled PO with the same records is condition A for both and condition E for the line', () => {
+    const c = get(CHECK.COMMITMENT_STATE_CONFLICTS, { ...sources, purchaseOrders: [{ ...po, status: 'cancelled' }] })
+    expect(c.values.byCondition[STATE_CONFLICT.UNCOMMITTED_PO_WITH_COST]).toBe(2)
+    expect(c.values.byCondition[STATE_CONFLICT.MIXED_MODE_PO_LINE]).toBe(1)
+  })
+})
 
 describe('check 5 — existing financial exceptions (reuse only)', () => {
   const c = get(CHECK.FINANCIAL_EXCEPTIONS)

@@ -225,7 +225,7 @@ export default function ProjectSnapshot({ project, currencyCode, aside = null })
         {/* The remaining established figures — kept visible, not dropped. */}
         <div className="relative mt-4 grid grid-cols-2 gap-x-4 gap-y-4 border-t border-brand-border pt-4 lg:grid-cols-4">
           <Metric label="Actual" figure={snapshot.actual} money={money} help="Cost to date · ex-GST" />
-          <Metric label="Remaining Committed" figure={snapshot.remainingCommitted} money={money} help="Open PO commitment not yet invoiced" />
+          <Metric label="Remaining Committed" figure={snapshot.remainingCommitted} money={money} help="Open PO commitment not yet recognised as Actual" />
           <Metric label="Uncommitted Cost to Complete" figure={snapshot.uncommittedCostToComplete} money={money} help="Saved forecast inputs" />
           <Metric
             label="Variance to Budget"

@@ -24,8 +24,6 @@ import {
   isFinancialRole, isBaselineEstablished, projectForecastTotals, computeMargin,
 } from '../../lib/margin'
 import { buildForecastRows } from '../../lib/forecast'
-import { actualClaimsByCostCode } from '../../lib/progressClaims'
-import { invoicedClaimIds } from '../../lib/supplierInvoices'
 import { contractControl } from '../../lib/clientInvoices'
 import {
   cashInRows, receiptSummary, clientInvoiceReconciliationRows,
@@ -41,7 +39,7 @@ import {
   activeCashFlowLines, voidCashFlowLines, staleCashFlowLines,
   manualForecastByMonth, classifyInvoiceBalances, sumRetentionHeld,
   buildMonthlyCombinedRows, projectedClosingPosition,
-  untimedForecastRevenue, untimedRemainingCommitted, untimedUncommittedCtc,
+  untimedForecastRevenue, untimedRemainingCommitted, untimedUninvoicedClaims, untimedUncommittedCtc,
   revenueCoverage, costCoverage, COMPLETENESS_STATE, completenessState,
   peakFunding, peakFundingSuppression,
 } from '../../lib/cashFlow'
@@ -182,25 +180,23 @@ export default function ProjectCashFlow() {
   )
 
   // Per-cost-code balances for the editor pickers and the claim breakdown.
+  // Since ADR-55 Remaining Committed is NET of approved claims awaiting their
+  // invoice, and that claim value is carried on every forecast row as
+  // `approvedClaimsAwaitingInvoice` — recognised COST, but future CASH, so it
+  // is timed here as its own basis against its own coverage.
   const forecastRows = useMemo(
     () => buildForecastRows({ costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines }),
     [costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines],
   )
-  const uninvoicedClaimByCostCode = useMemo(
-    () => actualClaimsByCostCode(progressClaims, invoicedClaimIds(supplierInvoices)),
-    [progressClaims, supplierInvoices],
-  )
-  const uninvoicedClaimCost = useMemo(
-    () => roundMoney(Object.values(uninvoicedClaimByCostCode).reduce((s, v) => s + v, 0)),
-    [uninvoicedClaimByCostCode],
-  )
   const editorBalances = useMemo(() => {
     const remainingCommittedByCostCode = {}
+    const uninvoicedClaimByCostCode = {}
     const uncommittedCtcByCostCode = {}
     const costCodeNames = {}
     for (const r of forecastRows) {
       costCodeNames[r.costCodeId] = r.costCodeName
       if (r.remainingCommitted > 0) remainingCommittedByCostCode[r.costCodeId] = r.remainingCommitted
+      if (r.approvedClaimsAwaitingInvoice > 0) uninvoicedClaimByCostCode[r.costCodeId] = r.approvedClaimsAwaitingInvoice
       if ((r.storedUncommittedCostToComplete ?? 0) > 0) uncommittedCtcByCostCode[r.costCodeId] = r.storedUncommittedCostToComplete
     }
     return {
@@ -210,7 +206,7 @@ export default function ProjectCashFlow() {
       uninvoicedClaimByCostCode,
       costCodeNames,
     }
-  }, [forecastRows, established, availableToInvoice, uninvoicedClaimByCostCode])
+  }, [forecastRows, established, availableToInvoice])
 
   // ── Coverage, completeness, untimed, peak funding ──────────────────────────
   // ⚠️ A variations read failure understates the Current Contract Sum, so the
@@ -226,6 +222,7 @@ export default function ProjectCashFlow() {
     if (costBasisSourceError) return { pct: null, state: 'source_error', incompleteBasis: false }
     return costCoverage({
       remainingCommittedTotal: forecastTotals.remainingCommitted,
+      uninvoicedClaimTotal: forecastTotals.approvedClaimsAwaitingInvoice,
       uncommittedCtcTotal: forecastTotals.uncommittedCostToComplete,
       unforecastedCount: forecastTotals.unforecastedCount,
       lines: cashFlowLines,
@@ -240,6 +237,10 @@ export default function ProjectCashFlow() {
     () => untimedRemainingCommitted({ remainingCommittedTotal: forecastTotals.remainingCommitted, lines: cashFlowLines }),
     [forecastTotals.remainingCommitted, cashFlowLines],
   )
+  const untimedClaims = useMemo(
+    () => untimedUninvoicedClaims({ uninvoicedClaimTotal: forecastTotals.approvedClaimsAwaitingInvoice, lines: cashFlowLines }),
+    [forecastTotals.approvedClaimsAwaitingInvoice, cashFlowLines],
+  )
   const untimedCtc = useMemo(
     () => untimedUncommittedCtc({ uncommittedCtcTotal: forecastTotals.uncommittedCostToComplete, lines: cashFlowLines }),
     [forecastTotals.uncommittedCostToComplete, cashFlowLines],
@@ -253,7 +254,7 @@ export default function ProjectCashFlow() {
 
   const pf = useMemo(() => peakFunding(combinedRows), [combinedRows])
   const suppression = peakFundingSuppression({
-    untimedRevenue, untimedCommitted, untimedCtc,
+    untimedRevenue, untimedCommitted, untimedUninvoicedClaims: untimedClaims, untimedCtc,
     untimedAR: arClass.noDueDate, pastDueAR: arClass.pastDue,
     untimedAP: apClass.noDueDate, pastDueAP: apClass.pastDue,
     revenueBasisUnavailable: revCov.pct === null,
@@ -514,7 +515,7 @@ export default function ProjectCashFlow() {
                 )}
               </div>
               <div>
-                <Metric label="Cost timed" value={pct(cstCov.pct)} help="Ex-GST coverage of Cost to Complete (Remaining Committed + Uncommitted CTC)" />
+                <Metric label="Cost timed" value={pct(cstCov.pct)} help="Ex-GST coverage of the future cost basis (Remaining Committed + approved claims awaiting invoice + Uncommitted CTC)" />
                 {cstCov.incompleteBasis && (
                   <p className="m-0 mt-1 text-[11px] text-brand-amber">
                     Cost to Complete is incomplete — {forecastTotals.unforecastedCount} cost code{forecastTotals.unforecastedCount === 1 ? ' is' : 's are'} not
@@ -581,9 +582,9 @@ export default function ProjectCashFlow() {
                     <span>Remaining committed</span>
                     <span className="tabular-nums">{costBasisSourceError ? '—' : money(untimedCommitted)}</span>
                   </p>
-                  <p className="m-0 pl-3 text-[11px] text-brand-muted flex justify-between gap-2">
-                    <span>of which approved claim awaiting invoice — included within Remaining Committed</span>
-                    <span className="tabular-nums">{costBasisSourceError ? '—' : money(uninvoicedClaimCost)}</span>
+                  <p className="m-0 text-[11.5px] text-brand-text flex justify-between gap-2">
+                    <span>Approved claims awaiting invoice</span>
+                    <span className="tabular-nums">{costBasisSourceError ? '—' : money(untimedClaims)}</span>
                   </p>
                   <p className="m-0 text-[11.5px] text-brand-text flex justify-between gap-2">
                     <span>Uncommitted cost to complete</span>

@@ -7,6 +7,7 @@ import { formatCurrency } from '../../lib/formatters'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { useContacts } from '../../hooks/useContacts'
+import { selectableCostCodes, activeCostCodes } from '../../lib/costCodes'
 import {
   PO_STATUS, PO_STATUS_LABELS, PO_BADGE_VARIANTS,
   poTotals, EMPTY_PO_FORM_LINE, poLineToForm, buildPoLineItem, validatePoDraft,
@@ -134,6 +135,10 @@ function PurchaseOrderEditorModal({ po = null, costCodes, contacts, projectId, c
 
   const builtLines = lines.map(l => buildPoLineItem(l, { costCodes }))
   const totals     = poTotals(builtLines)
+  // NEW authoring offers ACTIVE cost codes only (ADR-39/55); a code this draft
+  // already carries stays selectable so a retirement never blocks its save.
+  // Name resolution and validation above still read the FULL library.
+  const pickerCostCodes = selectableCostCodes(costCodes, lines.map(l => l.costCodeId))
   // A stored line whose cost code is no longer in the live list rebuilds with
   // an empty costCodeName; the select shows no selection and validation blocks
   // Save until a current cost code is chosen — never silently preserved.
@@ -298,7 +303,7 @@ function PurchaseOrderEditorModal({ po = null, costCodes, contacts, projectId, c
                     required
                   >
                     <option value="" disabled>Cost code…</option>
-                    {costCodes.map(cc => (
+                    {pickerCostCodes.map(cc => (
                       <option key={cc.id} value={cc.id}>{cc.code} — {cc.name}</option>
                     ))}
                   </select>
@@ -405,12 +410,13 @@ export default function ProjectPurchaseOrders() {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const { purchaseOrders, purchaseOrdersLoading, createPurchaseOrder, updatePurchaseOrder, transitionStatus } = usePurchaseOrders(projectId)
-  const { costCodes, costCodesLoading } = useCostCodes()
-  const { contacts, createContact } = useContacts()
+  const { costCodes, costCodesLoading, costCodesError } = useCostCodes()
+  const { contacts, contactsError, createContact } = useContacts()
   const [editing, setEditing]         = useState(null)   // 'new' | draft PO | null
   const [actionError, setActionError] = useState(null)
 
-  const noCostCodes = !costCodesLoading && costCodes.length === 0
+  // A FAILED cost-code read is reported, never read as "no cost codes" (ADR-55).
+  const noCostCodes = !costCodesLoading && !costCodesError && activeCostCodes(costCodes).length === 0
   const goToCostCodes = () => navigate(`/projects/${projectId}/cost-codes`)
 
   async function handleTransition(po, nextStatus) {
@@ -451,13 +457,27 @@ export default function ProjectPurchaseOrders() {
           {noCostCodes && (
             <Btn variant="ghost" sm onClick={goToCostCodes}>Go to Cost Codes</Btn>
           )}
-          <Btn sm onClick={() => setEditing('new')} disabled={costCodesLoading || costCodes.length === 0}>
+          <Btn sm onClick={() => setEditing('new')} disabled={costCodesLoading || costCodesError || noCostCodes}>
             + New Purchase Order
           </Btn>
         </div>
       </div>
 
       {actionError && <p className="text-[12px] text-brand-red mb-3">{actionError}</p>}
+      {(costCodesError || contactsError) && (
+        <Card className="mb-3.5">
+          <p className="text-[13px] font-bold text-brand-amber m-0">
+            {costCodesError && contactsError ? 'Cost codes and contacts could not be loaded'
+              : costCodesError ? 'Cost codes could not be loaded' : 'Contacts could not be loaded'}
+          </p>
+          <p className="m-0 mt-1 text-[12px] text-brand-muted">
+            {costCodesError
+              ? 'New purchase orders need the cost-code library and cannot be raised until it loads. '
+              : 'The supplier picker is empty because the directory could not be read — not because there are no suppliers. '}
+            Reload the page, and check your connection and permissions if this persists.
+          </p>
+        </Card>
+      )}
 
       <Card padding={false}>
         {purchaseOrdersLoading ? (

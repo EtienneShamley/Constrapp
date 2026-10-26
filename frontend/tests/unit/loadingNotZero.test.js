@@ -44,37 +44,58 @@ const gateReturning = (src, marker) => {
   return src.slice(open, close).replace(/\s+/g, ' ')
 }
 
-describe('ProjectBudget: the summary card never prints a loading zero', () => {
+describe('ProjectBudget: no figure prints a loading OR failed zero (ADR-44 model, aligned by ADR-55)', () => {
   const src = read('pages/project/ProjectBudget.jsx')
 
-  it('gates on every source its summary figures read', () => {
-    const gate = src.match(/const summaryLoading = ([\s\S]*?)\n {2}const /)
-    expect(gate).not.toBeNull()
-    for (const flag of [
-      'budgetLinesLoading', 'purchaseOrdersLoading', 'progressClaimsLoading',
-      'supplierInvoicesLoading', 'supplierCreditNotesLoading', 'variationsLoading',
+  // Before ADR-55 this page gated on LOADING flags only and never read an error
+  // flag, so a rules rejection of POs, claims, invoices or variations rendered a
+  // settled $0 register. It now carries every source's flags in the Dashboard
+  // snapshot's shape and routes each figure through figureState, exactly as
+  // Forecast and Commercial do.
+  it('destructures the loading AND error flag of every source it derives from', () => {
+    for (const [hook, name] of [
+      ['useBudgetLines', 'budgetLines'], ['usePurchaseOrders', 'purchaseOrders'],
+      ['useProgressClaims', 'progressClaims'], ['useSupplierInvoices', 'supplierInvoices'],
+      ['useSupplierCreditNotes', 'supplierCreditNotes'], ['useVariations', 'variations'],
     ]) {
-      expect(gate[1]).toContain(flag)
+      expect(src).toMatch(new RegExp(`const \\{ ${name}, ${name}Loading, ${name}Error[^}]*\\}\\s*= ${hook}\\(projectId\\)`))
+      expect(src).toMatch(new RegExp(`${name}:\\s*\\{ loading: ${name}Loading,\\s*error: ${name}Error \\}`))
     }
+    expect(src).toMatch(/const \{ costCodes, costCodesLoading, costCodesError \} = useCostCodes\(\)/)
   })
 
-  it('renders the neutral em dash while loading', () => {
-    expect(src).toMatch(/const summaryMoney = \(value\) => \(summaryLoading \? '—' : money\(value\)\)/)
-  })
-
-  it('routes all seven canonical/exposure figures through the gate', () => {
-    for (const figure of [
-      'totals.budgeted', 'totals.committed', 'totals.claimed', 'totals.actual',
-      'remaining', 'totals.supplierVariations', 'commitmentExposure',
+  it('routes every summary figure through availableFigure with its dependency key', () => {
+    expect(src).toContain("const cell = (key, value, format = money) => displayFigure(availableFigure(key, value, sourceStates), format)")
+    for (const [key, figure] of [
+      ['approvedBudget', 'totals.budgeted'], ['remainingCommitted', 'totals.committed'],
+      ['claimedExposure', 'totals.claimed'], ['actual', 'totals.actual'], ['remainingBudget', 'remaining'],
+      ['supplierVariationExposure', 'totals.supplierVariations'], ['commitmentExposure', 'commitmentExposure'],
     ]) {
-      expect(src).toContain(`{summaryMoney(${figure})}`)
-      // The ungated spelling must not come back.
+      expect(src).toContain(`{cell('${key}', ${figure})}`)
+      // The ungated spellings must not come back.
       expect(src).not.toContain(`{money(${figure})}`)
+      expect(src).not.toContain(`{summaryMoney(${figure})}`)
     }
+    expect(src).not.toMatch(/summaryLoading|summaryMoney/)
   })
 
-  it('still shows the Supplier Credit Notes unavailable notice on a read error', () => {
+  it('table cells wait on their own sources too, and a failed budget-lines read is never an empty register', () => {
+    for (const key of ['remainingCommitted', 'actual', 'invoiced', 'remainingBudget', 'supplierVariationExposure']) {
+      expect(src).toContain(`rowCell('${key}',`)
+    }
+    expect(src).toContain(') : budgetLinesError ? (')
+    expect(src).toContain('Budget lines unavailable')
+  })
+
+  it('names the failed sources in one banner and keeps the Supplier Credit Notes notice', () => {
+    expect(src).toContain('pageSources.state === FIGURE_STATE.UNAVAILABLE && (')
     expect(src).toContain('supplierCreditNotesError && (')
+    expect(src).toContain('{CREDIT_READ_ERROR_NOTICE}')
+  })
+
+  it('a failed cost-code read is reported, not read as "no cost codes"', () => {
+    expect(src).toContain('const noCostCodes = !costCodesLoading && !costCodesError && selectableCostCodes.length === 0')
+    expect(src).toContain('Cost codes could not be loaded')
   })
 })
 

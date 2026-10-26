@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
 import {
   costCodeDisplayName,
@@ -12,7 +14,7 @@ import {
   COST_CODE_NAME_MAX_LENGTH,
   COST_CODE_CATEGORY_MAX_LENGTH,
   COST_CODE_UNIT_MAX_LENGTH,
-  COST_CODE_DEACTIVATE_NOTICE,
+  COST_CODE_DEACTIVATE_NOTICE, selectableCostCodes,
 } from '../../src/lib/costCodes'
 
 // ── Cost Codes — pure unit tests (ADR-39) ────────────────────────────────────
@@ -244,5 +246,48 @@ describe('costCodes — deactivation notice', () => {
     expect(COST_CODE_DEACTIVATE_NOTICE).toMatch(/reactivate/i)
     expect(COST_CODE_DEACTIVATE_NOTICE).toMatch(/no\s+Budgeted/i)
     expect(COST_CODE_DEACTIVATE_NOTICE).not.toMatch(/\d+\s+(budget line|record)/i)
+  })
+})
+
+// ── selectableCostCodes — active-only NEW authoring (ADR-55) ──────────────────
+
+describe('selectableCostCodes — new pickers offer active codes plus the codes a draft already carries', () => {
+  const lib = [
+    { id: 'a', code: '01', name: 'Active', isActive: true },
+    { id: 'b', code: '02', name: 'Retired', isActive: false },
+    { id: 'c', code: '03', name: 'Legacy (no flag)' },
+  ]
+
+  it('drops a deactivated code from new authoring and keeps legacy flag-less codes', () => {
+    expect(selectableCostCodes(lib).map(c => c.id)).toEqual(['a', 'c'])
+  })
+
+  it('keeps a retired code the draft already references, so a retirement never blocks its save', () => {
+    expect(selectableCostCodes(lib, ['b']).map(c => c.id)).toEqual(['a', 'b', 'c'])
+    expect(selectableCostCodes(lib, ['', null, undefined, 'zzz']).map(c => c.id)).toEqual(['a', 'c'])
+  })
+
+  it('preserves library order, never mutates the input and tolerates null', () => {
+    const frozen = Object.freeze(lib.map(c => Object.freeze({ ...c })))
+    expect(() => selectableCostCodes(frozen, ['b'])).not.toThrow()
+    expect(selectableCostCodes(null)).toEqual([])
+    expect(selectableCostCodes(undefined, null)).toEqual([])
+  })
+})
+
+describe('new-authoring pickers use selectableCostCodes (structure)', () => {
+  const read = (rel) => readFileSync(fileURLToPath(new URL(`../../src/${rel}`, import.meta.url)), 'utf8')
+  it('the PO, Variation and BOQ editors filter their option lists', () => {
+    for (const [file, expected] of [
+      ['pages/project/ProjectPurchaseOrders.jsx', 'const pickerCostCodes = selectableCostCodes(costCodes, lines.map(l => l.costCodeId))'],
+      ['pages/project/ProjectVariations.jsx', 'const pickerCostCodes = selectableCostCodes(costCodes, lines.map(l => l.costCodeId))'],
+      ['pages/project/boq/BoqItemEditorModal.jsx', 'const pickerCostCodes = selectableCostCodes(costCodes, [item?.costCodeId])'],
+    ]) {
+      const src = read(file)
+      expect(src, file).toContain(expected)
+      expect(src, file).toContain('{pickerCostCodes.map(cc => (')
+      // No option list iterates the unfiltered library any more.
+      expect(src, file).not.toMatch(/\{costCodes\.map\(cc => \(\s*<option/)
+    }
   })
 })

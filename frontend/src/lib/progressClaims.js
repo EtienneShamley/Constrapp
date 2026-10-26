@@ -147,6 +147,56 @@ export function actualClaimsByCostCode(claims, excludeClaimIds = new Set()) {
   return map
 }
 
+// { poId: { poLineIndex: approved ex-GST } } across certified claims NOT yet
+// superseded by a posted claim-sourced invoice — the claim value Actual is
+// currently recognising on each PO line (ADR-55). Remaining Committed nets
+// these amounts off the PO line so an approved claim is never counted in
+// Actual AND left inside open commitment at the same time.
+//
+// `excludeClaimIds` is the SAME supplierInvoices.invoicedClaimIds set that
+// actualClaimsByCostCode uses, so the two maps move together: when a claim's
+// invoice posts, the claim drops out of this map in the same render that the
+// invoice enters postedInvoicedByPoLine, and the PO line's open commitment is
+// unchanged. A line with no `poLineIndex` is skipped — it cannot be attributed
+// to a PO line, so it reduces no commitment (the pre-ADR-55 reading).
+export function recognisedClaimsByPoLine(claims, excludeClaimIds = new Set()) {
+  const map = {}
+  for (const claim of claims) {
+    if (!CLAIM_APPROVED_STATUSES.includes(claim.status)) continue
+    if (excludeClaimIds.has(claim.id)) continue
+    if (!claim.poId) continue
+    const forPo = map[claim.poId] ?? (map[claim.poId] = {})
+    for (const li of claim.lineItems ?? []) {
+      if (li.poLineIndex == null) continue
+      forPo[li.poLineIndex] = roundMoney((forPo[li.poLineIndex] || 0) + (li.approvedThisPeriod || 0))
+    }
+  }
+  return map
+}
+
+// Claims that OCCUPY a PO line — every non-rejected claim on the PO whose line
+// carries any claimed or certified value. Used by the mixed-mode guards
+// (lib/poLineRecognition.js): a PO line being claimed must not also be invoiced
+// directly, because the two recognition paths cannot be reconciled per line.
+// Returns { [poLineIndex]: [claimNumber, …] } for the one PO.
+export function claimedPoLines(claims, poId, { excludeClaimId = null } = {}) {
+  const map = {}
+  for (const claim of claims) {
+    if (claim.poId !== poId || claim.status === CLAIM_STATUS.REJECTED) continue
+    if (excludeClaimId && claim.id === excludeClaimId) continue
+    for (const li of claim.lineItems ?? []) {
+      if (li.poLineIndex == null) continue
+      const occupied = (Number(li.claimedToDate) || 0) > 0
+        || (Number(li.claimedThisPeriod) || 0) > 0
+        || (Number(li.approvedThisPeriod) || 0) > 0
+      if (!occupied) continue
+      const list = map[li.poLineIndex] ?? (map[li.poLineIndex] = [])
+      list.push(claim.claimNumber || claim.id)
+    }
+  }
+  return map
+}
+
 // { costCodeId: claimed-not-yet-certified ex-GST } — pending exposure only;
 // never counts toward actual cost.
 export function claimedPendingByCostCode(claims) {

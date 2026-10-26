@@ -36,12 +36,16 @@ const read = (rel) =>
 
 // ── Fixtures: every row shape the cost-code union produces ───────────────────
 //
-//   cc1  active, budgeted 1000, PO 800 open, approved claim 300, saved CTC 150
-//        → FFC 1250, variance −250 → OVER BUDGET, forecast
+//   cc1  active, budgeted 1000, PO 800, approved claim 300 awaiting invoice,
+//        saved CTC 150
+//        → Remaining Committed 500 (800 − 300), FFC 950, variance +50 → forecast,
+//          NOT over budget. (Pre-ADR-55 this read FFC 1250 / −250 / over budget:
+//          the approved claim sat in Actual AND still inside Remaining Committed.)
 //   cc2  active, budgeted 500, no activity, saved CTC 0
 //        → FFC 0, variance +500 → forecast (ZERO IS A FORECAST), not over budget
-//   cc3  INACTIVE, unbudgeted, approved claim 120 only, no forecast line
-//        → actual-only → unforecasted, never over budget (no budget line)
+//   cc3  INACTIVE, unbudgeted, PO 120 fully certified by an approved claim 120
+//        awaiting invoice, no forecast line
+//        → actual 120, Remaining Committed 0 → unforecasted, never over budget
 //   cc4  MISSING from the cost-code list, forecast line saved null
 //        → unforecasted; name falls back to the stored snapshot
 //   cc5  active, unbudgeted, PO 200 open, no forecast line
@@ -76,9 +80,11 @@ const PURCHASE_ORDERS = [
   { id: 'po9', status: PO_STATUS.DRAFT, lineItems: [{ costCodeId: 'cc1', lineTotal: 99_999 }] },
 ]
 
+// Claim lines carry `poLineIndex` as every stored claim line does — it is the
+// identity Remaining Committed nets by (ADR-55).
 const PROGRESS_CLAIMS = [
-  { id: 'cl1', status: 'approved', poId: 'po1', lineItems: [{ costCodeId: 'cc1', approvedThisPeriod: 300 }] },
-  { id: 'cl2', status: 'approved', poId: 'po2', lineItems: [{ costCodeId: 'cc3', approvedThisPeriod: 120 }] },
+  { id: 'cl1', status: 'approved', poId: 'po1', lineItems: [{ poLineIndex: 0, costCodeId: 'cc1', approvedThisPeriod: 300 }] },
+  { id: 'cl2', status: 'approved', poId: 'po2', lineItems: [{ poLineIndex: 0, costCodeId: 'cc3', approvedThisPeriod: 120 }] },
 ]
 
 const VARIATIONS = [
@@ -269,14 +275,15 @@ describe('composition over the full cost-code union', () => {
     expect(Object.keys(rows).sort()).toEqual(['cc1', 'cc2', 'cc3', 'cc4', 'cc5', 'cc6', 'cc7'])
   })
 
-  it('cc1 — budgeted, committed, claimed, forecast 150 → over budget, forecast', () => {
+  it('cc1 — budgeted, PO 800, approved claim 300 awaiting invoice, forecast 150 → FFC 950, under budget (ADR-55)', () => {
     expect(rows.cc1.actual).toBe(300)
-    expect(rows.cc1.remainingCommitted).toBe(800)
-    expect(rows.cc1.costToComplete).toBe(950)
-    expect(rows.cc1.forecastFinalCost).toBe(1250)
-    expect(rows.cc1.varianceToBudget).toBe(-250)
+    expect(rows.cc1.remainingCommitted).toBe(500)          // 800 − 300 recognised on the line
+    expect(rows.cc1.approvedClaimsAwaitingInvoice).toBe(300)
+    expect(rows.cc1.costToComplete).toBe(650)              // 500 + 150
+    expect(rows.cc1.forecastFinalCost).toBe(950)           // 300 + 500 + 150 — the 300 counted ONCE
+    expect(rows.cc1.varianceToBudget).toBe(50)
     expect(rows.cc1.unforecasted).toBe(false)
-    expect(rows.cc1.overBudget).toBe(true)
+    expect(rows.cc1.overBudget).toBe(false)
   })
 
   it('cc2 — saved ZERO is a completed forecast, not unforecasted', () => {
@@ -286,11 +293,12 @@ describe('composition over the full cost-code union', () => {
     expect(rows.cc2.varianceToBudget).toBe(500)
   })
 
-  it('cc3 — INACTIVE, actual-only: counted unforecasted, never over budget', () => {
+  it('cc3 — INACTIVE, PO fully certified: Remaining Committed 0, unforecasted, never over budget', () => {
     expect(rows.cc3.isInactive).toBe(true)
     expect(rows.cc3.hasBudgetLine).toBe(false)
     expect(rows.cc3.actual).toBe(120)
-    expect(rows.cc3.remainingCommitted).toBe(120)
+    expect(rows.cc3.remainingCommitted).toBe(0)            // the 120 PO line is wholly recognised by the claim
+    expect(rows.cc3.forecastFinalCost).toBe(120)
     expect(rows.cc3.unforecasted).toBe(true)
     expect(rows.cc3.overBudget).toBe(false)
   })
@@ -389,22 +397,23 @@ describe('projectForecastTotals carries the per-row flags into the rollup counts
     expect(t.unforecastedCount).toBe(5)
   })
 
-  it('counts exactly one over-budget code (cc1) — unbudgeted overruns excluded', () => {
-    expect(t.overBudgetCount).toBe(1)
+  it('counts no over-budget code — cc1 is under budget once its claim is counted once (ADR-55)', () => {
+    expect(t.overBudgetCount).toBe(0)
   })
 
-  it('costToComplete is now the real figure (it was a silent 0 before ADR-43)', () => {
-    // Remaining Committed 800 + 120 + 200 = 1120; Uncommitted CTC 150.
-    expect(t.remainingCommitted).toBe(1120)
+  it('costToComplete is the real figure (it was a silent 0 before ADR-43), net of recognised claims (ADR-55)', () => {
+    // Remaining Committed (800 − 300) + (120 − 120) + 200 = 700; Uncommitted CTC 150.
+    expect(t.remainingCommitted).toBe(700)
+    expect(t.approvedClaimsAwaitingInvoice).toBe(420)
     expect(t.uncommittedCostToComplete).toBe(150)
-    expect(t.costToComplete).toBe(1270)
+    expect(t.costToComplete).toBe(850)
   })
 
-  it('the pre-existing headline figures are exactly what they were', () => {
+  it('the headline figures count each approved claim exactly once', () => {
     expect(t.budgeted).toBe(1800)
     expect(t.actual).toBe(420)
-    expect(t.forecastFinalCost).toBe(1690)      // 420 + 1120 + 150
-    expect(t.varianceToBudget).toBe(110)        // 1800 − 1690
+    expect(t.forecastFinalCost).toBe(1270)      // 420 + 700 + 150  (pre-ADR-55: 1690 = 420 + 1120 + 150)
+    expect(t.varianceToBudget).toBe(530)        // 1800 − 1270
     expect(t.pendingSupplierVariationExposure).toBe(75)
     expect(t.approvedSupplierVariations).toBe(0)
   })
@@ -422,7 +431,7 @@ describe('projectForecastTotals carries the per-row flags into the rollup counts
     const full = projectForecastTotals(sources({ forecastLines: FULLY_FORECAST_LINES }))
     expect(full.lineCount).toBe(7)
     expect(full.unforecastedCount).toBe(0)
-    expect(full.overBudgetCount).toBe(1)
+    expect(full.overBudgetCount).toBe(0)
     // Saving zeros moved no headline figure.
     expect(full.forecastFinalCost).toBe(t.forecastFinalCost)
     expect(full.budgeted).toBe(t.budgeted)
@@ -431,9 +440,9 @@ describe('projectForecastTotals carries the per-row flags into the rollup counts
 
   it('a budget edit can move overBudgetCount but never the cost side', () => {
     const raised = projectForecastTotals(sources({
-      budgetLines: BUDGET_LINES.map(l => (l.costCodeId === 'cc1' ? { ...l, budgeted: 1250 } : l)),
+      budgetLines: BUDGET_LINES.map(l => (l.costCodeId === 'cc1' ? { ...l, budgeted: 949.99 } : l)),
     }))
-    expect(raised.overBudgetCount).toBe(0)        // cc1 now exactly on budget
+    expect(raised.overBudgetCount).toBe(1)        // cc1 (FFC 950) now one cent over budget
     expect(raised.unforecastedCount).toBe(t.unforecastedCount)
     expect(raised.forecastFinalCost).toBe(t.forecastFinalCost)
     expect(raised.actual).toBe(t.actual)
@@ -500,8 +509,8 @@ describe('parity — Forecast page (no edits) and projectForecastTotals agree', 
     expect(page.cc1.ctcInvalid).toBe(true)
     expect(page.cc1.unforecasted).toBe(false)
     expect(saved.cc1.unforecasted).toBe(false)
-    expect(page.cc1.forecastFinalCost).toBe(1100)
-    expect(saved.cc1.forecastFinalCost).toBe(1100)
+    expect(page.cc1.forecastFinalCost).toBe(800)   // 300 actual + 500 remaining committed, junk CTC → 0 (ADR-55: was 1100)
+    expect(saved.cc1.forecastFinalCost).toBe(800)
     const t = projectForecastTotals(src)
     expect(forecastRollups(pageRows(src))).toEqual(t)
     expect(t.unforecastedCount).toBe(5) // cc1 is invalid, not unforecast — unchanged
@@ -518,9 +527,11 @@ const ctcLine = (sourceType, sourceAmountExGst, costCodeId = 'cc1') => ({
   sourceType, costCodeId, costCodeName: '', description: 'd',
 })
 
-// The exact wiring ProjectCashFlow.jsx performs with the totals.
+// The exact wiring ProjectCashFlow.jsx performs with the totals (ADR-55: the
+// approved claims awaiting invoice are their own cash basis).
 const cashFlowCost = (t, lines = []) => costCoverage({
   remainingCommittedTotal: t.remainingCommitted,
+  uninvoicedClaimTotal: t.approvedClaimsAwaitingInvoice,
   uncommittedCtcTotal: t.uncommittedCostToComplete,
   unforecastedCount: t.unforecastedCount,
   lines,
@@ -531,6 +542,7 @@ describe('end to end — unforecast codes now reach Cash Flow (they never could 
   const t = projectForecastTotals(sources())
   const fullCover = [
     ctcLine(CFL_SOURCE_TYPE.REMAINING_COMMITTED, t.remainingCommitted),
+    ctcLine(CFL_SOURCE_TYPE.UNINVOICED_CLAIM, t.approvedClaimsAwaitingInvoice),
     ctcLine(CFL_SOURCE_TYPE.UNCOMMITTED_CTC, t.uncommittedCostToComplete),
   ]
 
@@ -561,6 +573,7 @@ describe('end to end — unforecast codes now reach Cash Flow (they never could 
     const full = projectForecastTotals(sources({ forecastLines: FULLY_FORECAST_LINES }))
     const cover = [
       ctcLine(CFL_SOURCE_TYPE.REMAINING_COMMITTED, full.remainingCommitted),
+      ctcLine(CFL_SOURCE_TYPE.UNINVOICED_CLAIM, full.approvedClaimsAwaitingInvoice),
       ctcLine(CFL_SOURCE_TYPE.UNCOMMITTED_CTC, full.uncommittedCostToComplete),
     ]
     const c = cashFlowCost(full, cover)
@@ -621,8 +634,160 @@ describe('structure — every effective-row composition goes through composeFore
     expect(invariance).not.toMatch(/\bforecastFinalCost\(/)
   })
 
-  it('the Cash Flow page feeds the count straight into costCoverage', () => {
+  it('the Cash Flow page feeds the count straight into costCoverage, with the approved-claim basis (ADR-55)', () => {
     const cf = read('pages/project/ProjectCashFlow.jsx')
     expect(cf).toContain('unforecastedCount: forecastTotals.unforecastedCount')
+    expect(cf).toContain('uninvoicedClaimTotal: forecastTotals.approvedClaimsAwaitingInvoice')
+    expect(cf).toContain('untimedUninvoicedClaims: untimedClaims')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8 · ADR-55 — an approved claim is counted ONCE between Actual and Remaining Committed
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The confirmed defect: Actual recognised an approved claim while Remaining
+// Committed matured only on POSTED invoicing, so between approval and the
+// posting of the claim-sourced invoice Forecast Final Cost carried the claim
+// twice. The architect-approved recognition policy is unchanged — Actual still
+// recognises the approved claim, the claim is still replaced by its posted
+// invoice — and Remaining Committed now nets the recognised claim per PO line.
+
+const PO = { id: 'po', poNumber: 'PO-0001', status: PO_STATUS.SENT, lineItems: [
+  { costCodeId: 'c', costCodeName: 'C', description: 'Slab', lineTotal: 800 },
+  { costCodeId: 'd', costCodeName: 'D', description: 'Steel', lineTotal: 500 },
+] }
+const claim = (id, status, lines) => ({ id, claimNumber: id.toUpperCase(), status, poId: 'po', lineItems: lines })
+const cline = (idx, approved, costCodeId = 'c') => ({ poLineIndex: idx, costCodeId, approvedThisPeriod: approved, claimedToDate: approved })
+const inv = (id, over) => ({
+  id, invoiceNumber: id.toUpperCase(), status: 'posted', poId: 'po', source: 'direct_po', progressClaimId: null, ...over,
+})
+const onePo = (over = {}) => ({
+  costCodes: [{ id: 'c', code: 'C', name: 'C', isActive: true }, { id: 'd', code: 'D', name: 'D', isActive: true }],
+  budgetLines: [{ id: 'b', costCodeId: 'c', budgeted: 1000 }],
+  purchaseOrders: [PO], progressClaims: [], supplierInvoices: [], supplierCreditNotes: [], variations: [],
+  forecastLines: [{ id: 'c', costCodeId: 'c', uncommittedCostToComplete: 150 }],
+  ...over,
+})
+const rowC = (src) => byId(savedRows(src)).c
+
+describe('ADR-55 — the 1250 / 950 case and its neighbours', () => {
+  it('the audited case: PO 800, approved claim 300, CTC 150 → FFC 950, not 1250', () => {
+    const r = rowC(onePo({ progressClaims: [claim('cl1', 'approved', [cline(0, 300)])] }))
+    expect(r.actual).toBe(300)
+    expect(r.remainingCommitted).toBe(500)
+    expect(r.forecastFinalCost).toBe(950)
+    expect(r.varianceToBudget).toBe(50)
+    expect(r.overBudget).toBe(false)
+  })
+
+  it('a claim that is only SUBMITTED moves nothing: FFC is 950 before approval too', () => {
+    const r = rowC(onePo({ progressClaims: [claim('cl1', 'submitted', [{ poLineIndex: 0, costCodeId: 'c', claimedThisPeriod: 300, approvedThisPeriod: null }])] }))
+    expect(r.actual).toBe(0)
+    expect(r.remainingCommitted).toBe(800)
+    expect(r.forecastFinalCost).toBe(950)
+  })
+
+  it('approving the claim moves 300 from Remaining Committed INTO Actual — FFC unchanged', () => {
+    const before = rowC(onePo({ progressClaims: [claim('cl1', 'submitted', [{ poLineIndex: 0, costCodeId: 'c', claimedThisPeriod: 300 }])] }))
+    const after  = rowC(onePo({ progressClaims: [claim('cl1', 'approved', [cline(0, 300)])] }))
+    expect(after.actual - before.actual).toBe(300)
+    expect(before.remainingCommitted - after.remainingCommitted).toBe(300)
+    expect(after.forecastFinalCost).toBe(before.forecastFinalCost)
+  })
+
+  it('converting the approved claim into a POSTED claim-sourced invoice leaves every figure where it was', () => {
+    const claimed  = onePo({ progressClaims: [claim('cl1', 'approved', [cline(0, 300)])] })
+    const invoiced = onePo({
+      progressClaims: claimed.progressClaims,
+      supplierInvoices: [inv('si1', { source: 'progress_claim', progressClaimId: 'cl1', lineItems: [{ poLineIndex: 0, costCodeId: 'c', amount: 300 }] })],
+    })
+    const a = rowC(claimed), b = rowC(invoiced)
+    expect(b.actual).toBe(a.actual)                                 // 300: the invoice replaces the claim
+    expect(b.remainingCommitted).toBe(a.remainingCommitted)         // 500: invoiced-to-date replaces the recognised claim
+    expect(b.approvedClaimsAwaitingInvoice).toBe(0)
+    expect(a.approvedClaimsAwaitingInvoice).toBe(300)
+    expect(b.forecastFinalCost).toBe(950)
+    // A DRAFT or APPROVED (not posted) claim-sourced invoice changes nothing yet.
+    for (const status of ['draft', 'approved']) {
+      const pending = onePo({ progressClaims: claimed.progressClaims, supplierInvoices: [{ ...invoiced.supplierInvoices[0], status }] })
+      expect(rowC(pending)).toEqual(a)
+    }
+  })
+
+  it('partial and multiple claims on one line net cumulatively; a second line is independent', () => {
+    const src = onePo({ progressClaims: [
+      claim('cl1', 'approved', [cline(0, 200), cline(1, 100, 'd')]),
+      claim('cl2', 'approved', [cline(0, 100), cline(1, 0, 'd')]),
+    ] })
+    const rows = byId(savedRows(src))
+    expect(rows.c.actual).toBe(300)
+    expect(rows.c.remainingCommitted).toBe(500)
+    expect(rows.c.forecastFinalCost).toBe(950)
+    expect(rows.d.actual).toBe(100)
+    expect(rows.d.remainingCommitted).toBe(400)
+    expect(rows.d.forecastFinalCost).toBe(500)
+    // Partially invoicing one of the two claims swaps its share exactly.
+    const half = onePo({ progressClaims: src.progressClaims, supplierInvoices: [
+      inv('si1', { source: 'progress_claim', progressClaimId: 'cl2', lineItems: [{ poLineIndex: 0, costCodeId: 'c', amount: 100 }] }),
+    ] })
+    expect(rowC(half).remainingCommitted).toBe(500)
+    expect(rowC(half).actual).toBe(300)
+    expect(rowC(half).approvedClaimsAwaitingInvoice).toBe(200)
+  })
+
+  it('a claim above the PO line value floors Remaining Committed at zero — never negative', () => {
+    const r = rowC(onePo({ progressClaims: [claim('cl1', 'approved', [cline(0, 900)])] }))
+    expect(r.actual).toBe(900)
+    expect(r.remainingCommitted).toBe(0)
+    expect(r.forecastFinalCost).toBe(1050)
+  })
+
+  it('a DIRECT invoice and an approved claim on the SAME line both reach Actual (the mixed-mode conflict)', () => {
+    // The guards block this at authoring; SHIELD lists it when it exists. The
+    // derivation is NOT repaired: Actual carries both and Remaining Committed
+    // nets both, so the overstatement sits in Actual, exactly as the records say.
+    const r = rowC(onePo({
+      progressClaims: [claim('cl1', 'approved', [cline(0, 300)])],
+      supplierInvoices: [inv('si1', { lineItems: [{ poLineIndex: 0, costCodeId: 'c', amount: 200 }] })],
+    }))
+    expect(r.actual).toBe(500)              // 300 claim + 200 direct — the overlap, visible
+    expect(r.remainingCommitted).toBe(300)  // 800 − 200 − 300
+    expect(r.forecastFinalCost).toBe(950)
+  })
+
+  it('a legacy claim line with no poLineIndex nets no commitment (pre-ADR-55 reading, never a guess)', () => {
+    const r = rowC(onePo({ progressClaims: [claim('cl1', 'approved', [{ costCodeId: 'c', approvedThisPeriod: 300 }])] }))
+    expect(r.actual).toBe(300)
+    expect(r.remainingCommitted).toBe(800)
+    expect(r.forecastFinalCost).toBe(1250)
+  })
+
+  it('a CLOSED PO nets exactly as a sent one and reports the residual; a CANCELLED PO commits nothing', () => {
+    const closed = rowC(onePo({ purchaseOrders: [{ ...PO, status: PO_STATUS.CLOSED }], progressClaims: [claim('cl1', 'approved', [cline(0, 300)])] }))
+    expect(closed.remainingCommitted).toBe(500)
+    expect(closed.closedResidual).toBe(500)
+    expect(closed.forecastFinalCost).toBe(950)
+    const cancelled = rowC(onePo({ purchaseOrders: [{ ...PO, status: PO_STATUS.CANCELLED }], progressClaims: [claim('cl1', 'approved', [cline(0, 300)])] }))
+    expect(cancelled.remainingCommitted).toBe(0)
+    expect(cancelled.actual).toBe(300)                  // cost against an uncommitted PO — SHIELD condition A
+    expect(cancelled.forecastFinalCost).toBe(450)
+  })
+
+  it('a REJECTED claim and a cancelled invoice net nothing', () => {
+    const r = rowC(onePo({
+      progressClaims: [claim('cl1', 'rejected', [cline(0, 300)])],
+      supplierInvoices: [inv('si1', { status: 'cancelled', lineItems: [{ poLineIndex: 0, costCodeId: 'c', amount: 200 }] })],
+    }))
+    expect(r.actual).toBe(0)
+    expect(r.remainingCommitted).toBe(800)
+    expect(r.forecastFinalCost).toBe(950)
+  })
+
+  it('the rollup carries closedResidual and approvedClaimsAwaitingInvoice without adding either to FFC', () => {
+    const t = projectForecastTotals(onePo({ purchaseOrders: [{ ...PO, status: PO_STATUS.CLOSED }], progressClaims: [claim('cl1', 'approved', [cline(0, 300)])] }))
+    expect(t.closedResidual).toBe(1000)                  // 500 on line c + 500 on line d
+    expect(t.approvedClaimsAwaitingInvoice).toBe(300)
+    expect(t.forecastFinalCost).toBe(300 + 1000 + 150)
   })
 })

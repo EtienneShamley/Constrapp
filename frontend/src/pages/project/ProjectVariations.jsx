@@ -8,6 +8,7 @@ import { useVariations } from '../../hooks/useVariations'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useContacts } from '../../hooks/useContacts'
 import { useCostCodes } from '../../hooks/useCostCodes'
+import { selectableCostCodes } from '../../lib/costCodes'
 import { useRfis } from '../../hooks/useRfis'
 import { CONTACT_TYPE, PO_SUPPLIER_TYPES } from '../../lib/contacts'
 import {
@@ -186,6 +187,9 @@ function VariationEditorModal({ variation = null, variations, purchaseOrders, co
   const removeLine = (idx) => setLines(ls => ls.filter((_, i) => i !== idx))
 
   const builtLines = lines.map(l => buildVariationLineItem(l, { po: usesPoLines ? po : null, costCodes }))
+  // NEW authoring offers ACTIVE cost codes only (ADR-39/55); a code this draft
+  // already carries stays selectable. Line building still reads the FULL library.
+  const pickerCostCodes = selectableCostCodes(costCodes, lines.map(l => l.costCodeId))
   const totals     = variationTotals(builtLines, 'submitted')
   const draftError = validateVariationDraft({ title, lineItems: builtLines })
 
@@ -450,7 +454,7 @@ function VariationEditorModal({ variation = null, variations, purchaseOrders, co
                         ) : (
                           <select className={inputCls} value={line.costCodeId} onChange={setLine(idx, 'costCodeId')} required>
                             <option value="" disabled>Cost code…</option>
-                            {costCodes.map(cc => (
+                            {pickerCostCodes.map(cc => (
                               <option key={cc.id} value={cc.id}>{cc.code} — {cc.name}</option>
                             ))}
                           </select>
@@ -458,7 +462,7 @@ function VariationEditorModal({ variation = null, variations, purchaseOrders, co
                         {usesPoLines && !poLine ? (
                           <select className={inputCls} value={line.costCodeId} onChange={setLine(idx, 'costCodeId')}>
                             <option value="" disabled>Cost code…</option>
-                            {costCodes.map(cc => (
+                            {pickerCostCodes.map(cc => (
                               <option key={cc.id} value={cc.id}>{cc.code} — {cc.name}</option>
                             ))}
                           </select>
@@ -720,8 +724,8 @@ export default function ProjectVariations() {
 
   const { variations, variationsLoading, createVariation, updateVariation, transitionStatus } = useVariations(projectId)
   const { purchaseOrders } = usePurchaseOrders(projectId)
-  const { contacts } = useContacts()
-  const { costCodes } = useCostCodes()
+  const { contacts, contactsError } = useContacts()
+  const { costCodes, costCodesError } = useCostCodes()
   // Originating-RFI candidates (evidence link, ADR-34) — read only; the
   // variations page never writes an RFI.
   const { rfis } = useRfis(projectId)
@@ -805,6 +809,18 @@ export default function ProjectVariations() {
       </div>
 
       {actionError && <p className="text-[12px] text-brand-red mb-3">{actionError}</p>}
+      {(costCodesError || contactsError) && (
+        <Card className="mb-3.5">
+          <p className="text-[13px] font-bold text-brand-amber m-0">
+            {costCodesError && contactsError ? 'Cost codes and contacts could not be loaded'
+              : costCodesError ? 'Cost codes could not be loaded' : 'Contacts could not be loaded'}
+          </p>
+          <p className="m-0 mt-1 text-[12px] text-brand-muted">
+            The empty picker is a failed read, not an empty library. Reload the page, and check your connection and
+            permissions if this persists.
+          </p>
+        </Card>
+      )}
 
       {/* Filters */}
       {variations.length > 0 && (

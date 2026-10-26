@@ -76,8 +76,12 @@ and the product owner verified the live production smoke checks on 23 October
 2026. The repository records the day, not a time, and no further production
 test result.
 
-**Quant™ 1D (ADR-54, embedded deductions): IMPLEMENTED — NOT YET DEPLOYED.
-RULES FIRST, HOSTING SECOND — not production-verified.** The 1D bundle adds
+**Quant™ 1D (ADR-54, embedded deductions): LIVE IN PRODUCTION since
+26 October 2026** — merged to `main`, Azure CI passed, the revised
+`firestore.rules` published FIRST and confirmed live, Hosting deployed, and
+the TESTING.md §30 checks verified in production by the product owner that
+day (the repository records the day, not a time). The release order below is
+kept as the record of the order used. The 1D bundle adds
 ONE optional key to `takeoffMeasurements`, `deductions` (area only, a list
 of ≤ 50 holes), in `hasOnly` but not `hasAll` — so the revised rules accept
 every existing document and every write the live bundle sends. The reverse
@@ -113,6 +117,33 @@ the 1C ruleset (196,034 bytes); any measurement that already carries a
 `update` fails `exactKeys` until the key is accepted again) but stays
 readable, derivable and voidable — no data is lost and nothing financial is
 affected.
+
+**Forecast and Actual Cost Integrity — M1 (ADR-55): IMPLEMENTED — NOT YET
+DEPLOYED. HOSTING-ONLY — no rules change, no migration, no backfill.** The M1
+bundle changes read-time derivation and page behaviour only: Remaining
+Committed nets approved claims not yet invoiced (every Committed, FFC,
+Variance, Margin, Dashboard, Cash Flow and PULSE figure that was overstated by
+an approved-but-uninvoiced claim corrects itself on first render), the
+supplier invoice and progress claim editors block mixed-mode combinations,
+SHIELD check 4 gains condition E, the Budget page gates every figure on source
+readiness, and the cost-code / contacts hooks expose their read errors.
+`frontend/firestore.rules` and `frontend/storage.rules` are **byte-identical**
+to the 1D publish (196,622 bytes) — do not republish them.
+
+1. `cd frontend && npm run lint && npm run test:unit && npm run build` — green
+   (the rules suite is unaffected but must still be green in Azure CI, which
+   is blocking).
+2. `firebase deploy --only hosting --project constrapp-69b5d`.
+3. **Verify in production** per TESTING.md §31 (an approved uninvoiced claim
+   reads once in FFC; a direct invoice on a claimed line is refused; the
+   Supplier Invoices notice and SHIELD condition E list an existing overlap;
+   the Budget page shows *Unavailable*, never $0, on a rejected read) and
+   record the outcome here.
+
+**Rollback.** Hosting only: redeploy the previous (1D) build — nothing in M1
+writes a new field, so the earlier bundle reads every document unchanged. The
+figures then revert to the pre-ADR-55 derivation (the known overstatement),
+which is why the rollback should be brief.
 
 **Quant™ 1B (ADR-52): LIVE IN PRODUCTION (October 2026).** Released in the
 order below — rules published and confirmed live first, then Hosting — and

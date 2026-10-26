@@ -36,6 +36,17 @@ export const isActiveCostCode = (costCode) => costCode?.isActive !== false
 
 export const activeCostCodes = (costCodes) => (costCodes ?? []).filter(isActiveCostCode)
 
+// The option list for a NEW-authoring picker: every ACTIVE code, plus any code
+// in `keepIds` whether or not it is still active — the codes a draft being
+// edited already carries. Deactivation removes a code from new choices only
+// (ADR-39); a stored draft line keeps its code selectable so the save is not
+// blocked by a retirement that happened after the line was authored. Order is
+// the library's own order; nothing is re-sorted and the input is never mutated.
+export function selectableCostCodes(costCodes, keepIds = []) {
+  const keep = new Set((keepIds ?? []).filter(Boolean))
+  return (costCodes ?? []).filter(cc => isActiveCostCode(cc) || keep.has(cc?.id))
+}
+
 // THE read-time name resolution, matching lib/forecast.js and lib/boq.js
 // exactly: prefer the LIVE cost code, fall back to the document's frozen
 // snapshot, then to a visible placeholder.
