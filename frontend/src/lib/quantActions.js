@@ -4,6 +4,7 @@ import {
   buildCalibration, calibrationSnapshot, isValidCalibration,
   takeoffPageId, validatePageGeometry, validateMeasurementDraft, validatePoints, validateLabel, validateBoqLink,
   normalisePoints, measurementBoqItemId,
+  validateDeductions, measurementDeductions, hasDeductions,
 } from './quant'
 
 // ── Guarded takeoff writes (Quant 1A, ADR-51) ────────────────────────────────
@@ -39,6 +40,14 @@ import {
 // code. Applying a quantity to that item is a separate, explicitly confirmed
 // BOQ write in lib/boqActions.js — never a side effect of anything here.
 //
+// Quant 1D (ADR-54) adds ONE optional field on an AREA, `deductions` — the
+// holes subtracted from its outline — written ONLY through the existing
+// `runUpdateMeasurement` below (add, edit, rename, remove are all one guarded
+// update of the parent, revision +1 each), never at create. The complete new
+// list is validated against the SERVER copy's outline inside the transaction,
+// and a parent outline edit is refused when it would strand a hole. No new
+// transaction, no new collection, no change to the void path.
+//
 // Firestore SDK functions are INJECTED (`runTransaction`, `serverTimestamp`)
 // so this module imports no Firebase code: the hook passes the app SDK and the
 // emulator suite passes the test SDK and exercises the real transactions.
@@ -60,9 +69,13 @@ async function guarded(runTransaction, db, body) {
     if (err instanceof QuantError) throw err
     throw new QuantError(quantErrorKind(err?.code), undefined, err)
   }
-  if (outcome.kind) throw new QuantError(outcome.kind)
+  if (outcome.kind) throw new QuantError(outcome.kind, outcome.message)
   return outcome
 }
+
+// A stored hole is exactly { id, label, points } — nothing else rides along.
+const normaliseDeductions = (list) =>
+  list.map(d => ({ id: String(d.id), label: String(d.label).trim(), points: normalisePoints(d.points) }))
 
 const pageIdentityFields = ({ drawingId, revisionId, page }) => ({ drawingId, revisionId, page })
 
@@ -242,6 +255,16 @@ export async function runCreateMeasurement({
 // the code without saying what the link should become, the link is CLEARED in
 // the same write — decided against the SERVER copy inside the transaction, so a
 // link that appeared underneath is cleared too, never left dangling.
+//
+// `changes.deductions` (ADR-54) is the COMPLETE new list of holes for an AREA
+// — add, edit, rename and remove all arrive this way. It is validated for
+// shape here and for geometry against the SERVER outline inside the
+// transaction (so a parent that moved underneath is judged as it now stands,
+// and the net is checked at BOQ precision under the parent's recorded
+// snapshot). The calibration snapshot is NOT touched by a deductions change:
+// a parent that needs review keeps needing it — nothing is silently treated
+// as reviewed. A `points` edit on a parent WITH holes is validated the same
+// way and refused when it would strand one.
 export async function runUpdateMeasurement({
   db, ref, seen, changes = {}, calibration, uid, runTransaction, serverTimestamp,
 }) {
@@ -270,6 +293,16 @@ export async function runUpdateMeasurement({
     if (linkError) throw new QuantError(QUANT_ERROR.INVALID, linkError)
     next.boqItemId = changes.boqItemId === null ? null : String(changes.boqItemId).trim()
   }
+  if (changes.deductions !== undefined) {
+    if (seen.kind !== MEASUREMENT_KIND.AREA) throw new QuantError(QUANT_ERROR.INVALID, 'Only an area can carry deductions.')
+    if (!Array.isArray(changes.deductions)) throw new QuantError(QUANT_ERROR.INVALID, 'The deductions are not valid.')
+    const deductionsError = validateDeductions(next.points ?? seen.points, changes.deductions, seen.calibration ?? null)
+    if (deductionsError) throw new QuantError(QUANT_ERROR.INVALID, deductionsError)
+    next.deductions = normaliseDeductions(changes.deductions)
+  } else if (next.points !== undefined && hasDeductions(seen)) {
+    const strandError = validateDeductions(next.points, measurementDeductions(seen), seen.calibration ?? null)
+    if (strandError) throw new QuantError(QUANT_ERROR.INVALID, strandError)
+  }
   if (calibration !== undefined) {
     if (seen.kind === MEASUREMENT_KIND.COUNT) {
       next.calibration = null
@@ -293,6 +326,14 @@ export async function runUpdateMeasurement({
     const current = snap.data()
     if (!sameRevision(seen, current)) return { kind: QUANT_ERROR.STALE }
     if (current.status !== MEASUREMENT_STATUS.ACTIVE) return { kind: QUANT_ERROR.INVALID }
+    // Deductions are judged against the outline AS STORED ON THE SERVER (and
+    // against the new outline when this write moves it), under the parent's
+    // own snapshot — the same derivation every read uses.
+    if (next.deductions !== undefined || (next.points !== undefined && hasDeductions(current))) {
+      if (current.kind !== MEASUREMENT_KIND.AREA) return { kind: QUANT_ERROR.INVALID, message: 'Only an area can carry deductions.' }
+      const geometryError = validateDeductions(next.points ?? current.points, next.deductions ?? measurementDeductions(current), current.calibration ?? null)
+      if (geometryError) return { kind: QUANT_ERROR.INVALID, message: geometryError }
+    }
     // Re-coding a LINKED measurement with no explicit link decision: clear
     // the link in this same write (see the block comment above).
     const write = { ...next }

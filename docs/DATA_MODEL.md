@@ -1250,6 +1250,7 @@ is reproduced at read time from `points` × the applicable calibration
 | `costCodeId` / `costCodeName` | string | **Required** — the commercial spine. The code must **exist** in the company (rules `exists()`); ⚠️ *active* is client-only. Frozen display snapshot, resolved live at read time (`resolveCostCodeName`) |
 | `calibration` | map \| **null** | **Snapshot** of the page calibration the measurement was last saved or reviewed under: `{ revision (int ≥ 1), pageDistance (> 0), realDistance (> 0), unit }`. **Required for length/area, `null` for count** (rules-enforced by kind). Drives the derived review state and keeps the previously recorded quantity explainable |
 | `boqItemId` | string \| null \| **absent** | **Quant 1B (ADR-52), OPTIONAL** — the ONE BOQ item this measurement is linked to. Quant 1A documents have **no such key and stay valid for every write** (`hasOnly`, not `hasAll`; no migration, no backfill); 1B writes `null` or an id. When set, rules `get()` the item: **same project path, exists, `status == 'active'`, `costCodeId == this measurement's costCodeId`** — at create and whenever the link OR the cost code changes (a label/geometry edit on a measurement whose item was voided later is not refused). A cost-code change clears the link in the same write. Void keeps it as history. ⚠️ Unit compatibility (the item's `unit` must accept this `kind`) is **client-only** (DC33) |
+| `deductions` | `{ id, label, points }[]` \| **absent** | **Quant 1D (ADR-54), OPTIONAL, AREA only** — the openings (doors, windows, voids) deducted from this area, stored as **holes in its own geometry**: `id` a client-generated string (≤ 64, unique within the parent), `label` non-blank ≤ 120, `points` 3..100 canonical `{x,y}`. **Absent on every earlier document and never written at create** — the key appears when the first deduction is saved (`hasOnly`, not `hasAll`; no migration). Rules enforce: area only, a list, **≤ 50 elements**, movable only through the active-edit branch (live sheet, `revision` +1), frozen by void. ⚠️ **Element content is client-only (DC32)**: each hole simple, inside or touching the parent and never crossing out of it, holes strictly disjoint from one another (no touching, nesting, crossing or duplicate), ids distinct, and the holes together smaller than the gross area with a net that does not round to zero at 3 dp — refused at Finish/Save (`validateDeductions`, repeated against the SERVER outline in `runUpdateMeasurement`) and derived as `INVALID` with a reason naming the hole(s) when stored anyway. A hole has **no cost code, no BOQ link, no stamps and no row of its own**: it inherits the parent's and is never listed or summed separately. Add / edit / rename / remove are each ONE guarded update of the parent (revision +1) that leaves the calibration snapshot untouched; **removing a hole keeps no history of it** |
 | `status` | string | `active` \| `void` — `active → void` only (terminal), rules-enforced; void requires a **non-whitespace `voidReason`** and stamps `voidedAt == request.time`, `voidedBy == request.auth.uid` |
 | `voidReason` / `voidedAt` / `voidedBy` | string / timestamp / uid | `''` / `null` while active |
 | `revision` | int | `1` on create; every update **exactly +1** (rules-enforced); the app refuses stale writes |
@@ -1261,8 +1262,10 @@ withdrawn sheet**; reads are role-gated only, so history stays inspectable;
 the sheet identity is immutable in every state (SECURITY.md → Quant™ 1A has
 the full table).
 
-**Stored vs derived.** Only geometry, labels, the cost code and the calibration
-snapshot are stored. The quantity (m, m², no.), the quantity under the
+**Stored vs derived.** Only geometry (the outline and, since ADR-54, its
+holes), labels, the cost code and the calibration snapshot are stored. The
+quantity (m, m², no.) — for an area with deductions its **NET**, with `gross`
+and `deducted` derived beside it for display — the quantity under the
 original snapshot, the calibration review state (*current / needs review /
 uncalibrated / not applicable*), page totals and the superseded-revision
 warning are all derived on every read and never written back. **A measurement

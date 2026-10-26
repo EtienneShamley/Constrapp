@@ -50,13 +50,13 @@ const TAP_SLOP_PX = 6
 const isTouchLimits = () =>
   typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)')?.matches
 
-const MEASURING_MODES = ['calibrate', 'length', 'area', 'count', 'edit']
+const MEASURING_MODES = ['calibrate', 'length', 'area', 'count', 'deduct', 'edit']
 
 export default function PageViewer({
   revision, page, zoom, fitMode,
   onGeometry,        // (geometry | null, { numPages }) — canonical page metadata
   onZoomChange,      // (zoom) — a wheel or pinch asks for a new zoom (already clamped)
-  mode = 'none',     // 'none' | 'select' | 'calibrate' | 'length' | 'area' | 'count' | 'edit'
+  mode = 'none',     // 'none' | 'select' | 'calibrate' | 'length' | 'area' | 'count' | 'deduct' | 'edit'
   onTap,             // (canonicalPoint, { tolerance }) — a tap on the sheet
   editPoints = null, // the points being edited (edit mode) — for vertex hit testing
   onVertexDragStart, // (index)

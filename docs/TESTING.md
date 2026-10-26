@@ -59,7 +59,7 @@ That script runs
   inert here. The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **1365 in total across 22 files: 1319 Firestore + 46 Storage**:
+- Tests — **1372 in total across 22 files: 1326 Firestore + 46 Storage** (1365 before ADR-54; the seven Quant 1D cases #65–#71 in `takeoff.rules.test.js` were added on 26 October 2026 and parse, but the implementation machine had no arm64 JDK, so their first emulator run is the reviewer's — see §30):
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -209,8 +209,8 @@ That script runs
     date (`2026-02-30`), a `responsibleContactId`/`costCodeId` naming nothing,
     a duplicate `sortOrder`, and a full-document overwrite (last-write-wins)
     are all ACCEPTED by rules.
-  - `frontend/tests/rules/takeoff.rules.test.js` — **64 tests** covering the
-    two Quant™ 1A collections (ADR-51, §27) and the Quant 1B link (ADR-52, §28): the three-role read/write matrix
+  - `frontend/tests/rules/takeoff.rules.test.js` — **71 tests** covering the
+    two Quant™ 1A collections (ADR-51, §27), the Quant 1B link (ADR-52, §28) and the Quant 1D `deductions` key (ADR-54, §30 — #65 the key absent / empty / with holes on an area for each role and fifty as the ceiling; #66 refused on a length or count, as a non-list, above 50; #67 add / replace / clear with revision +1, a legacy document gaining the key, blind and skipped revisions refused; #68 non-list, > 50, the key on a length, and a deductions edit on a withdrawn sheet refused while void still passes; #69 void freezes the holes, a voided parent refuses further change, denied roles and another company can neither write nor read; #70 the real `runUpdateMeasurement` end to end — no key at create, first hole revision 2, a stale copy and an outside hole write nothing, a denied role is PERMISSION; #71 NOT ENFORCED — junk elements, an outside hole, overlapping holes and a hole equal to the parent all pass rules): the three-role read/write matrix
     with `subcontractor`/`client`/`super_admin`, cross-tenant, anonymous and
     no-membership callers denied; page create — id ↔ fields agreement, the
     drawing and revision must exist and the revision must not be withdrawn (a
@@ -511,6 +511,48 @@ npm run test:unit
   measured in bytes (the file is not pure ASCII), with real headroom between
   the two; `storage.rules` far below. Passing proves the file CAN be published —
   not that it IS (DEPLOYMENT.md → *Verifying which rules version is published*).
+- `frontend/tests/unit/quantDeductions.test.js` — **41 tests** over the
+  Quant™ 1D deductions (ADR-54): see §30 — the geometry primitives
+  (`segmentsCross` proper only; on-boundary points; `polygonWithinPolygon`
+  with touching allowed and straddling refused; the CONCAVE regression — a
+  hole in a U's notch with every vertex on the boundary and no proper
+  crossing is outside; an edge that leaves and re-enters; `polygonsDisjoint`
+  failing touching, crossing, nested, identical, collinear-partial-overlap
+  and plus-sign pairs), `deductionsProblem` (the brief's door + window valid;
+  self-crossing / collapsed → invalid; outside; overlap with both ids named;
+  duplicate geometry; duplicate ids and junk → malformed; > 100 points; a
+  hole equal to the parent → exceed), the NET derivation (30 − 2 − 3 = 25 with
+  gross/deducted/count beside it; a legacy area derives byte-identically; mm
+  and re-calibrated scales; unrounded; zero, negative and a sub-3-dp sliver
+  → INVALID while a 0.05 m² sliver survives; every reason labelled; a crossed
+  PARENT reported first; uncalibrated stays uncalibrated; holes ignored on a
+  length; the original quantity is the original NET and the whole measurement
+  needs review), validation (labels, ≤ 100 points, the complete list with the
+  derivation's own words, the 3 dp gate only with a calibration, 50 ok / 51
+  refused, fresh distinct ids, `withDeduction` / `withoutDeduction`,
+  readability — a bad hole is named not hidden, holes on a length unreadable,
+  evenodd path data, a tap inside a hole selects the parent), the guarded
+  update against the in-memory stand-in (create writes no key; first hole is
+  revision 2; rename / outline / remove each +1; the key emptied; outside,
+  overlap, exceed, duplicate id, non-list, on-a-length and the 3 dp sliver
+  refused with their reasons; a stale copy is STALE with nothing written and
+  the SERVER outline decides containment; a parent move that strands a hole
+  is refused and one that keeps every hole inside passes; the snapshot never
+  moves so *needs review* stays; void keeps the holes and refuses further
+  change; an invalid stored set is corrected by Remove), draft memory (parent
+  id and hole id round-trip; a deduct draft without its parent never parses or
+  is written; pre-1D entries parse unchanged; restore needs the parent active
+  on the sheet, a hole edit the hole at the same revision), the page totals,
+  project summary and BOQ aggregate consuming net once (an invalid set is
+  attention / blocks the apply), the fingerprint (byte-identical row key and
+  `v1` for a measurement without holes; a hole added, moved or removed changes
+  it; order-independent across holes; a prior application reads *outdated*),
+  and structure pins (rules key in `hasOnly` not `hasAll`, area-only ≤ 50 list,
+  active-edit list, void unchanged, under budget; no key at create and 3/3
+  transactions; evenodd fill and dashed holes with no pointer events; the
+  list's sub-list and actions; the dialog's label-only form on the shell; the
+  workspace's Deduct, deduct tool, STALE message, no snapshot on a deductions
+  save, cursor mode; the BOQ apply untouched; no financial import anywhere).
 - `frontend/tests/unit/quantSummary.test.js` — **39 tests** over
   `lib/quantSummary.js` and the 1C-B wiring (ADR-53): see §29 —
   classification (current & valid with its own-page quantity and live cost
@@ -5548,8 +5590,10 @@ Automated: `tests/unit/quantInteraction.test.js` (59, stage 1C-A) and
 `quant.test.js` and two in `quantBoq.test.js` revised explicitly for 1C-A,
 one more in `quant.test.js` for 1C-B (§0b). The rules suite is unchanged (no
 rule changed; `firestore.rules` is byte-identical to the 1B release) and still
-runs as the gate. Lint 0/0. Unit total **3250 across 49 files**. **Not
-production-verified** — the checks below are the acceptance for the release.
+runs as the gate. Lint 0/0. Unit total **3250 across 49 files**. **Live in
+production since 23 October 2026** — merged, Azure CI passed, Hosting deployed,
+the product owner's live smoke checks passed that day; the checks below were
+the acceptance for that release and remain the regression script.
 
 **Nothing below the UI changed:** no collection, field, rule, BOQ write,
 evidence fingerprint, selector, drawing write or dependency. A production
@@ -5689,3 +5733,111 @@ to 2.1):
       tables scroll inside their cards; VoiceOver/NVDA read the four count
       badges and announce the loading status and the unavailable alert.
       **Budget, Forecast, Cash Flow and Commercial are unchanged throughout.**
+
+## 30. Constrapp Quant™ 1D — manual opening and void deductions (ADR-54)
+
+Automated: `tests/unit/quantDeductions.test.js` (41) — see §0b; four pins in
+`tests/unit/quantInteraction.test.js` revised explicitly (the closed set of
+quantity reasons gained five deduction codes; `editDirty` compares with the
+session's `basePoints` so a hole edit is judged against the hole; nine tracked
+saves; four dialogs on the QuantDialog shell). Rules: `takeoff.rules.test.js`
+#65–#71 (§0). Lint 0/0. **Rules changed (one optional key) — the release is
+RULES-FIRST** (DEPLOYMENT.md). **Not production-verified** — the checks below
+are the acceptance for the release.
+
+**The implementation machine could not boot the Firestore emulator** (its only
+JDK is x86_64 Temurin 17 on an arm64 Mac without Rosetta: *Bad CPU type in
+executable*). The seven new rules cases parse (`node --check`) and mirror the
+unit-level transaction tests, but their first emulator run must happen on the
+reviewer's machine or in Azure CI (`test:rules` is blocking there) **before the
+rules are published**.
+
+Manual — three checks, on `npm run test:quant` (the §27/§28 fixture: A-201
+Rev A is a calibrated PNG with a 12 m² area linked to BOQ item 2.1):
+
+- [ ] **Gross − deductions = net, everywhere, and nothing is a row of its own.**
+      As **qs** on A-201 Rev A, **Select** the 12 m² area and press **Deduct**
+      in the selection bar (or on its row): the strip reads *Deduction from
+      "…": 0 points · needs 3 — trace the opening inside the area*. Tap four
+      corners of a 1 m × 2 m rectangle inside it: the strip shows *gross
+      12.000 m² · this deduction 2.000 m² · net 10.000 m²* and the hole draws
+      dashed amber. Press **Finish deduction**: the *Save deduction* dialog
+      shows Gross 12.000 m² · This deduction 2.000 m² · All deductions 2.000 m²
+      · 1 · Net 10.000 m², focus is in the label field, Tab stays inside,
+      Escape closes it. Enter *Door D01* and save: the notice names it, the
+      area's row now reads **10.000 m²** with *gross 12.000 m² − 1 deduction
+      2.000 m²* beneath, the hole is a dashed opening cut out of the fill on
+      the sheet, a sub-row *− Door D01 2.000 m²* offers **Edit outline ·
+      Rename · Remove**, the page status reads Area **10.000 m²** with *net ·
+      gross 12.000 m² − deductions 2.000 m²*, and **Project summary** shows
+      Area 10.000 m² (gross 12.000 m² − deductions 2.000 m²) with *Current &
+      valid* unchanged at 1 — the deduction is never a second row and the
+      attention list is unchanged. Add a 1 m × 3 m window deduction the same
+      way: net 7.000 m², *2 deductions 5.000 m²*. Open **Details** on the area:
+      *Net quantity 7.000 m²* with the breakdown line; the label, cost code and
+      BOQ link are exactly as before. **Rename** the door — the sub-row updates
+      and nothing else moves. **Edit outline** on the window: the parent
+      outline and the door show faintly, drag a corner outward past the slab
+      edge — the strip turns red with *A deduction lies partly outside the
+      area…* and **Save geometry** is disabled; drag it back, enlarge it a
+      little, Save — *Deduction "Window W01" outline saved* and the net falls
+      accordingly. Now open **Geometry** on the AREA itself and drag its
+      corner so the door would fall outside: the same red sentence, Save
+      disabled; Undo. Re-calibrate the page with a halved distance: the area
+      reads *Needs review — scale changed*, its figure quadruples and the
+      *was 7.000 m²* line shows the original **net**; **Mark reviewed** clears
+      it. **Budget, Forecast, Cash Flow and Commercial are unchanged throughout.**
+- [ ] **Every refusal names its reason; an existing bad set is visible,
+      blocked and correctable; drafts and stale writes behave.** With the area
+      selected press **Deduct** and trace a second rectangle overlapping the
+      door: the strip reads *Two deductions overlap or touch…* and *Finish
+      deduction* is disabled; trace one that straddles the slab edge — *…lies
+      partly outside…*; trace a figure-of-eight — *…crosses itself…*; trace a
+      rectangle flush against the slab's bottom edge (touching, inside) —
+      allowed, net updates; trace one covering the whole remaining area —
+      *The deductions leave no area…*. Cancel. Start a deduction with two
+      points, switch to the **BOQ** tab and back: the same area is selected,
+      the deduct tool and the two amber points are restored (*Your unsaved
+      work on this sheet was restored*). In a second browser tab (same user)
+      **Rename** the area; back in the first tab finish and save the
+      deduction: the dialog shows *The area changed while you were working on
+      this deduction… Your deduction is kept…*, the points are still on the
+      sheet, the preview now judges them against the live outline; save again
+      — it commits. Void the area in the second tab and try again in the first:
+      *The area this deduction belongs to is no longer on this sheet*. To see
+      an EXISTING invalid record, with the emulator rules bypassed set a
+      stored area's `deductions` to a hole outside its outline: its row reads
+      **—** with *A deduction lies partly outside…* and the offending sub-row
+      marked *see note*; the page total says *1 needs attention*; the project
+      summary lists it under *Needs attention · Quantity cannot be derived*;
+      on the **BOQ** tab *Quant (n)* lists it under **Quantity cannot be
+      derived** with Apply disabled. Press **Remove** on the bad hole (confirm)
+      — row, totals and dialog recover. Set `deductions` to `["junk"]`: the
+      row shows *A deduction could not be read…* and a sub-row *(unreadable
+      deduction)* with **Remove** only. As **subcontractor**: *Quant takeoff
+      is restricted*; a direct write of `deductions` on a length, a non-list,
+      or 51 holes is refused by rules (the emulator log shows
+      PERMISSION_DENIED), while an outside hole is accepted by rules and named
+      by the app — exactly DC32.
+- [ ] **The BOQ apply writes the NET; evidence goes outdated when a hole
+      changes; layout.** With the area at net 7.000 m² linked to 2.1 open
+      **Quant (1)** on the BOQ tab: the row's Quantity reads **7.000 m²** with
+      *gross 12.000 m² − 2 deductions 5.000 m²* beneath; *Measured total 7 m²*;
+      tick, **Apply 7 m²** — quantity 7, amount at the unchanged rate, *Latest
+      Quant application · Matches the current measurements*. On the Quant tab
+      **Remove** the door deduction; back on the BOQ tab the dialog now
+      proposes 9 m² and the latest application reads **Outdated — the linked
+      measurements changed**; the item's quantity is still 7 until applied
+      again. Apply, then **Rename** the window: the fingerprint moves (the
+      measurement's revision did) and the application reads outdated again —
+      a rename is still a change to the record. An item applied BEFORE 1D
+      from a measurement with no deductions still reads *Matches* after the
+      upgrade (fingerprints without holes are byte-identical). At **375px**
+      the deduction sub-rows sit under the card with 44 px *Edit outline /
+      Rename / Remove* cells, *Deduct* beside the review badge, and the
+      breakdown line wraps under the quantity; at **768px** and **1280px** the
+      table shows the sub-row under its parent across all columns; the
+      evenodd hole stays cut out at 25 % and 800 % zoom and under a pinch.
+      VoiceOver/NVDA announce *Save deduction, dialog* and read the
+      *Deductions from "…"* list. **No budget line, forecast line, PO, claim,
+      invoice, payment, variation, cash-flow line or baseline changed.**

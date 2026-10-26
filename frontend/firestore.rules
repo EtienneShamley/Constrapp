@@ -3149,10 +3149,12 @@ service cloud.firestore {
       }
       // `boqItemId` (ADR-52) is OPTIONAL: present on every Quant 1B write
       // (null or an id), absent on Quant 1A documents, which stay valid.
+      // `deductions` (ADR-54) is OPTIONAL: an AREA's holes, written only once
+      // the first deduction exists; absent on every earlier document.
       function exactKeys(d) {
         return d.keys().hasOnly([
                  'takeoffPageId', 'drawingId', 'revisionId', 'page', 'kind', 'points', 'label',
-                 'costCodeId', 'costCodeName', 'calibration', 'boqItemId',
+                 'costCodeId', 'costCodeName', 'calibration', 'boqItemId', 'deductions',
                  'status', 'voidReason', 'voidedAt', 'voidedBy',
                  'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
                ])
@@ -3206,9 +3208,17 @@ service cloud.firestore {
             && c.realDistance is number && c.realDistance > 0
             && c.unit in ['mm', 'm'];
       }
+      // Deductions (ADR-54): absent, or a bounded LIST on an AREA. Element
+      // content (shape, simplicity, containment, overlap, net > 0) is
+      // client-only — rules cannot iterate a list (DC32).
+      function deductionsValid(d) {
+        return !('deductions' in d)
+            || (d.kind == 'area' && d.deductions is list && d.deductions.size() <= 50);
+      }
       // The editable content, validated identically at create and at edit.
       function contentValid(d) {
         return d.kind in ['length', 'area', 'count']
+            && deductionsValid(d)
             && d.points is list
             && d.points.size() <= 500
             && (
@@ -3267,7 +3277,7 @@ service cloud.firestore {
                     (
                       resource.data.status == 'active'
                       && request.resource.data.status == 'active'
-                      && changedKeys().hasOnly(['points', 'label', 'costCodeId', 'costCodeName', 'calibration', 'boqItemId', 'revision', 'updatedAt', 'updatedBy'])
+                      && changedKeys().hasOnly(['points', 'label', 'costCodeId', 'costCodeName', 'calibration', 'boqItemId', 'deductions', 'revision', 'updatedAt', 'updatedBy'])
                       && sourceLive(resource.data)
                       && contentValid(request.resource.data)
                       && (!changedKeys().hasAny(['boqItemId', 'costCodeId']) || linkValid(request.resource.data))

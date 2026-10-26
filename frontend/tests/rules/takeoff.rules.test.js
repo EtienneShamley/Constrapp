@@ -965,6 +965,143 @@ describe('QUANT 1B — the BOQ link (ADR-52)', () => {
   })
 })
 
+// ── Quant 1D — embedded deductions (ADR-54) ──────────────────────────────────
+//
+// ONE optional key on an AREA measurement: `deductions`, a LIST of at most 50
+// holes. Rules enforce: the key is optional (hasOnly, not hasAll — every
+// earlier document stays valid), area-only, list type, ≤ 50, and that it moves
+// only through the active-edit branch (void freezes it). Everything about the
+// ELEMENTS — shape, simplicity, containment, overlap, net > 0 — is client-only
+// (Deferred Control 32), and #71 proves it.
+
+describe('QUANT 1D — embedded deductions (ADR-54)', () => {
+  const SQUARE = [{ x: 0, y: 0 }, { x: 500, y: 0 }, { x: 500, y: 600 }, { x: 0, y: 600 }]
+  const DOOR = { id: 'door', label: 'Door D01', points: [{ x: 50, y: 50 }, { x: 150, y: 50 }, { x: 150, y: 250 }, { x: 50, y: 250 }] }
+  const WINDOW = { id: 'window', label: 'Window W01', points: [{ x: 300, y: 100 }, { x: 450, y: 100 }, { x: 450, y: 300 }, { x: 300, y: 300 }] }
+  const areaPayload = (user, overrides = {}) => measurementPayload(user, { kind: 'area', points: SQUARE, ...overrides })
+  const manyHoles = (n) => Array.from({ length: n }, (_, i) => ({ id: `h${i}`, label: `Hole ${i}`, points: [{ x: i, y: 0 }, { x: i + 0.5, y: 0 }, { x: i + 0.5, y: 1 }, { x: i, y: 1 }] }))
+
+  beforeEach(async () => { await seedPage() })
+
+  it('65. CREATE — an area WITHOUT the key (every earlier shape), with an empty list, and with holes all pass, for each role', async () => {
+    for (const user of WRITERS) {
+      await assertSucceeds(setDoc(measRef(ctx(user), `legacy-${user.uid}`), areaPayload(user)))
+      await assertSucceeds(setDoc(measRef(ctx(user), `empty-${user.uid}`), areaPayload(user, { deductions: [] })))
+      await assertSucceeds(setDoc(measRef(ctx(user), `holes-${user.uid}`), areaPayload(user, { deductions: [DOOR, WINDOW] })))
+    }
+    const stored = (await getDoc(measRef(ctx(USERS.qs), `holes-${USERS.qs.uid}`))).data()
+    expect(stored.deductions).toEqual([DOOR, WINDOW])
+    expect((await getDoc(measRef(ctx(USERS.qs), `legacy-${USERS.qs.uid}`))).data().deductions).toBeUndefined()
+    // Fifty is the ceiling and passes.
+    await assertSucceeds(setDoc(measRef(ctx(USERS.qs), 'fifty'), areaPayload(USERS.qs, { deductions: manyHoles(50) })))
+  })
+
+  it('66. CREATE — the key is refused on a length or a count, as a non-list, and above 50 elements', async () => {
+    const qs = ctx(USERS.qs)
+    await assertFails(setDoc(measRef(qs), measurementPayload(USERS.qs, { deductions: [DOOR] })))                       // length
+    await assertFails(setDoc(measRef(qs), measurementPayload(USERS.qs, { deductions: [] })))                           // length, even empty
+    await assertFails(setDoc(measRef(qs), measurementPayload(USERS.qs, { kind: 'count', points: [{ x: 1, y: 1 }], calibration: null, deductions: [] })))
+    for (const bad of ['junk', 7, { id: 'door' }, null]) {
+      await assertFails(setDoc(measRef(qs), areaPayload(USERS.qs, { deductions: bad })))
+    }
+    await assertFails(setDoc(measRef(qs), areaPayload(USERS.qs, { deductions: manyHoles(51) })))
+  })
+
+  it('67. UPDATE — adding, replacing and clearing the key on an area are active edits with revision +1; a legacy document gains the key; blind overwrites fail', async () => {
+    await seedMeasurement({ kind: 'area', points: SQUARE }) // no key at all
+    const qs = ctx(USERS.qs)
+    await assertSucceeds(updateDoc(measRef(qs), stamps(USERS.qs, 2, { deductions: [DOOR] })))
+    expect((await getDoc(measRef(qs))).data().deductions).toEqual([DOOR])
+    await assertSucceeds(updateDoc(measRef(qs), stamps(USERS.qs, 3, { deductions: [DOOR, WINDOW] })))
+    await assertSucceeds(updateDoc(measRef(qs), stamps(USERS.qs, 4, { deductions: [WINDOW] })))      // remove one
+    await assertSucceeds(updateDoc(measRef(qs), stamps(USERS.qs, 5, { deductions: [] })))            // remove the last
+    await assertSucceeds(updateDoc(measRef(qs), stamps(USERS.qs, 6, { deductions: [DOOR], label: 'renamed too' })))
+    await assertFails(updateDoc(measRef(qs), stamps(USERS.qs, 6, { deductions: [WINDOW] })))          // same revision: blind
+    await assertFails(updateDoc(measRef(qs), stamps(USERS.qs, 8, { deductions: [WINDOW] })))          // skipped revision
+    // The other roles may write it too; the snapshot, link and identity are untouched by a deductions edit.
+    await assertSucceeds(updateDoc(measRef(ctx(USERS.pm)), stamps(USERS.pm, 7, { deductions: [WINDOW] })))
+    await assertSucceeds(updateDoc(measRef(ctx(USERS.admin)), stamps(USERS.admin, 8, { deductions: [DOOR, WINDOW] })))
+    expect((await getDoc(measRef(qs))).data()).toMatchObject({ kind: 'area', calibration: SNAP, revision: 8 })
+  })
+
+  it('68. UPDATE — a non-list, more than 50 elements, or the key on a length is refused; a deductions edit still needs a LIVE sheet', async () => {
+    await seedMeasurement({ kind: 'area', points: SQUARE, deductions: [DOOR] })
+    const qs = ctx(USERS.qs)
+    for (const bad of ['junk', 7, { id: 'door' }, null, manyHoles(51)]) {
+      await assertFails(updateDoc(measRef(qs), stamps(USERS.qs, 2, { deductions: bad })))
+    }
+    await seedMeasurement({}, 'len') // a length
+    await assertFails(updateDoc(measRef(qs, 'len'), stamps(USERS.qs, 2, { deductions: [DOOR] })))
+    // On a withdrawn revision an active edit — deductions included — is refused; void stays permitted (#54).
+    await seedMeasurement({ kind: 'area', points: SQUARE, revisionId: REV_WITHDRAWN, takeoffPageId: pageIdFor(DRAWING_A, REV_WITHDRAWN, 1), deductions: [DOOR] }, 'onWithdrawn')
+    await seedPage({ revisionId: REV_WITHDRAWN }, pageIdFor(DRAWING_A, REV_WITHDRAWN, 1))
+    await assertFails(updateDoc(measRef(qs, 'onWithdrawn'), stamps(USERS.qs, 2, { deductions: [] })))
+    await assertSucceeds(updateDoc(measRef(qs, 'onWithdrawn'), voidWrite(USERS.qs, 2)))
+  })
+
+  it('69. VOID freezes the holes; a voided parent accepts no deductions change; denied roles and another company cannot write or read them', async () => {
+    await seedMeasurement({ kind: 'area', points: SQUARE, deductions: [DOOR, WINDOW] })
+    const qs = ctx(USERS.qs)
+    await assertFails(updateDoc(measRef(qs), voidWrite(USERS.qs, 2, 'done', { deductions: [] })))
+    await assertSucceeds(updateDoc(measRef(qs), voidWrite(USERS.qs, 2)))
+    expect((await getDoc(measRef(qs))).data()).toMatchObject({ status: 'void', deductions: [DOOR, WINDOW] })
+    await assertFails(updateDoc(measRef(qs), stamps(USERS.qs, 3, { deductions: [] })))
+    for (const user of DENIED) {
+      await assertFails(setDoc(measRef(ctx(user), 'denied'), areaPayload(user, { deductions: [DOOR] })))
+      await assertFails(getDoc(measRef(ctx(user))))
+    }
+    await assertFails(setDoc(measRef(ctx(USERS.other), 'other'), areaPayload(USERS.other, { deductions: [DOOR] })))
+    await assertFails(updateDoc(measRef(ctx(USERS.other)), stamps(USERS.other, 3, { deductions: [] })))
+    await assertFails(getDoc(measRef(anon())))
+  })
+
+  it('70. GUARDED TRANSACTION — create writes no key; the first deduction is revision 2; a stale copy and an outside hole write nothing; a denied role is PERMISSION', async () => {
+    const identity = { drawingId: DRAWING_A, revisionId: REV_CURRENT, page: 1 }
+    const qs = { db: ctx(USERS.qs), uid: USERS.qs.uid, runTransaction, serverTimestamp }
+    const page = (await getDoc(pageRef(qs.db))).data()
+    const draft = { kind: 'area', points: SQUARE, label: 'Slab', costCodeId: COST_CODE, costCodeName: 'C' }
+    await runCreateMeasurement({ ...qs, pageRef: pageRef(qs.db), identity, seenPage: page, measurementRef: measRef(qs.db, 't1'), draft })
+    expect((await getDoc(measRef(qs.db, 't1'))).data().deductions).toBeUndefined()
+
+    const seen1 = { id: 't1', ...(await getDoc(measRef(qs.db, 't1'))).data() }
+    const out = await runUpdateMeasurement({ ...qs, ref: measRef(qs.db, 't1'), seen: seen1, changes: { deductions: [DOOR] } })
+    expect(out).toEqual({ kind: null, revision: 2, linkCleared: false })
+    expect((await getDoc(measRef(qs.db, 't1'))).data()).toMatchObject({ revision: 2, deductions: [DOOR], calibration: SNAP })
+
+    // The copy the first user saw is stale now: refused, nothing written.
+    let caught = null
+    try { await runUpdateMeasurement({ ...qs, ref: measRef(qs.db, 't1'), seen: seen1, changes: { deductions: [DOOR, WINDOW] } }) } catch (err) { caught = err }
+    expect(caught).toBeInstanceOf(QuantError)
+    expect(caught.kind).toBe(QUANT_ERROR.STALE)
+    expect((await getDoc(measRef(qs.db, 't1'))).data().deductions).toEqual([DOOR])
+
+    // A hole outside the parent is refused by the APP (rules would accept it — #71): INVALID, nothing written.
+    const seen2 = { id: 't1', ...(await getDoc(measRef(qs.db, 't1'))).data() }
+    caught = null
+    try { await runUpdateMeasurement({ ...qs, ref: measRef(qs.db, 't1'), seen: seen2, changes: { deductions: [DOOR, { id: 'out', label: 'out', points: [{ x: 450, y: 500 }, { x: 560, y: 500 }, { x: 560, y: 650 }, { x: 450, y: 650 }] }] } }) } catch (err) { caught = err }
+    expect(caught).toBeInstanceOf(QuantError)
+    expect(caught.kind).toBe(QUANT_ERROR.INVALID)
+    expect(caught.message).toMatch(/outside/)
+    expect((await getDoc(measRef(qs.db, 't1'))).data()).toMatchObject({ revision: 2, deductions: [DOOR] })
+
+    // A denied role running the real transaction: PERMISSION, nothing written.
+    const sub = { db: ctx(USERS.sub), uid: USERS.sub.uid, runTransaction, serverTimestamp }
+    caught = null
+    try { await runUpdateMeasurement({ ...sub, ref: measRef(sub.db, 't1'), seen: seen2, changes: { deductions: [] } }) } catch (err) { caught = err }
+    expect(caught).toBeInstanceOf(QuantError)
+    expect(caught.kind).toBe(QUANT_ERROR.PERMISSION)
+    expect((await getDoc(measRef(qs.db, 't1'))).data().deductions).toEqual([DOOR])
+  })
+
+  it('71. NOT ENFORCED (DC32) — element CONTENT: junk elements, a hole outside the parent and two overlapping holes all pass rules', async () => {
+    const qs = ctx(USERS.qs)
+    await assertSucceeds(setDoc(measRef(qs, 'junk'), areaPayload(USERS.qs, { deductions: ['a', 7, { id: 'x' }] })))
+    await assertSucceeds(setDoc(measRef(qs, 'outside'), areaPayload(USERS.qs, { deductions: [{ id: 'out', label: 'out', points: [{ x: 900, y: 900 }, { x: 950, y: 900 }, { x: 950, y: 950 }] }] })))
+    await assertSucceeds(setDoc(measRef(qs, 'overlap'), areaPayload(USERS.qs, { deductions: [DOOR, { ...DOOR, id: 'door2' }] })))
+    await assertSucceeds(setDoc(measRef(qs, 'all'), areaPayload(USERS.qs, { deductions: [{ id: 'all', label: 'all', points: SQUARE }] })))
+  })
+})
+
 // ── Deliberately NOT enforced — proven, so nobody describes it as a control ──
 
 describe('NOT ENFORCED (Deferred Control 32) — proven by passing writes', () => {

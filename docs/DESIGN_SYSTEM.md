@@ -111,8 +111,25 @@ recorded for a module's own token).
   A quantity that cannot be derived shows its reason in `text-brand-red` under
   the "—" (list, editor, draft and edit strips) with `role="alert"`. The
   selection bar (`border-brand-accent/30 bg-brand-accent/5`) repeats the
-  existing Details / Geometry / Void controls for the selected measurement.
+  existing Details / Geometry / Void controls for the selected measurement —
+  and, for an area, **Deduct** (ADR-54).
   Discard confirmations use `window.confirm` (the register convention).
+  **Deductions (ADR-54).** An area with openings is ONE shape: the fill is a
+  single path with `fill-rule: evenodd` (the holes are cut out of the
+  `brand-quant/15` or, selected, `brand-accent/15` fill), the outer outline is
+  solid and the hole outlines are **dashed** (`5 4`) in the same stroke token
+  — meaning is carried by the list beside the sheet, never by colour alone. A
+  hole being traced is the amber draft with a tighter dash (`3 3`); a hole
+  being edited shows the parent outline and the other holes in a thin
+  `brand-quant` stroke for context. Quantities are shown as the **net** with a
+  muted breakdown line beneath — *gross 30.000 m² − 2 deductions 5.000 m²* —
+  in the list, the selection bar, the page status, the details dialog, the
+  project summary and the BOQ apply dialog; the deductions themselves are a
+  sub-list under their parent row (`− label · area`, offending holes in
+  `text-brand-red` with *see note*), never rows of their own, with
+  *Edit outline · Rename · Remove* as 44 px text buttons (equal cells on
+  cards). The **Finish deduction** strip previews *gross · this deduction ·
+  net* and names a containment problem in `text-brand-red` with `role="alert"`.
   **Project summary (ADR-53, 1C-B).** A *Measure / Project summary* toggle
   (the shared `toolBtnCls` with `aria-pressed`, inside a `role="group"`) above
   the workspace; the summary is a stack of `Card`s: a header with four count
@@ -192,8 +209,9 @@ gives its panel `tabIndex={-1}` and focuses it on open, returns focus to the
 opening control on close, closes on Escape (not while saving) and contains
 Tab / Shift+Tab with `lib/dialogFocus.js` — a pure helper (`tabbableWithin`,
 `tabTarget`) rather than a focus-trap dependency; reuse it for any new dialog
-instead of adding one. The Quant™ calibration, measurement-details and void
-dialogs render through `pages/project/quant/QuantDialog.jsx` (ADR-53), which
+instead of adding one. The Quant™ calibration, measurement-details, void and
+(since ADR-54) deduction dialogs render through
+`pages/project/quant/QuantDialog.jsx` (ADR-53), which
 packages exactly that contract for a form dialog: `role="dialog"`,
 `aria-modal`, `aria-labelledby` the title, the form's own `autoFocus` field
 first (else the panel), Escape and the backdrop ignored while `busy`, Tab

@@ -1369,7 +1369,14 @@ is a human step, never a sync:
    means the area's outline is **simple**: a stored crossed or collapsed
    polygon derives as `INVALID` with a reason and blocks the apply as
    *Quantity cannot be derived* — the aggregate itself is unchanged; the
-   derivation it calls got stricter. The Quant tab's project summary (1C-B,
+   derivation it calls got stricter. Since Quant 1D (ADR-54) an area's
+   derived quantity is its **NET** — `gross − Σ deductions`, each scaled
+   through the same calibration — because `measurementQuantity` subtracts
+   the area's stored holes itself; the aggregate still sums `value` and
+   adds no formula, a hole is never a row of its own, and a set of holes that
+   fails its geometry (outside the parent, overlapping, exceeding the gross,
+   or a net that rounds to zero) is `INVALID` and blocks the apply the same
+   way. The Quant tab's project summary (1C-B,
    `lib/quantSummary.js`) is **not a financial figure and not an input to
    this aggregate**: it reports per-kind measured totals for review and
    points back to the sheet; the only path from a measurement to a BOQ
@@ -1408,6 +1415,36 @@ The manual BOQ editor's save goes through the same version guard
 Because the BOQ `revision` is frozen at 1, this guard — like unit
 compatibility and the aggregate — is **client-enforced**
 (SECURITY.md → Deferred Control 33).
+
+### Quant™ 1D — opening and void deductions *(implemented — NOT YET DEPLOYED; ADR-54)*
+
+A deduction is an opening traced **inside** an area and subtracted from it.
+It is stored on the parent measurement as a hole in its own geometry
+(`deductions: [{ id, label, points }]`) — not a measurement, not a BOQ item,
+not a cost code of its own — so commercially it changes exactly one thing:
+
+```
+gross    = area(outline)            × k²      (k = metres per page unit)
+deducted = Σ area(each hole)        × k²
+net      = gross − deducted                    ← the measurement's quantity.value
+```
+
+`net` is what the page totals, the project summary, the BOQ aggregate and the
+evidence fingerprint consume — through the one existing
+`measurementQuantity`, never a second formula — and `gross` / `deducted` are
+derived beside it for the *30.000 m² − 5.000 m² = 25.000 m²* breakdown shown
+in the list, the editor, the summary and the apply dialog. The QS identifies
+each deduction explicitly (nothing is assumed deductible), and the net reaches
+a BOQ `quantity` only through the unchanged review-and-apply step above.
+**Nothing downstream moves:** `runApplyBoqQuantity`, `boqLineAmount`, the
+currency ratchet, Budget, Forecast, Margin and Cash Flow are untouched; the
+fingerprint gains the holes' ids and geometry **only when a measurement has
+any**, so every application recorded before 1D keeps its `v1` fingerprint and
+still reads *matches* until the measurement itself changes — and adding,
+moving or removing a hole afterwards reads *outdated* until re-applied.
+Geometry validity (inside the parent, disjoint, net > 0 at 3 dp) is
+**client-enforced** (SECURITY.md → Deferred Control 32); a stored set that
+fails it is `INVALID`, totals nothing and blocks the apply.
 
 ### Tender and Award *(implemented — foundation; see the Tenders section above)*
 

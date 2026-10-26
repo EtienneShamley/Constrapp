@@ -3,7 +3,7 @@ import Btn from '../../../components/Btn'
 import { inputCls, labelCls } from './styles'
 import { activeCostCodes, costCodeDisplayName } from '../../../lib/costCodes'
 import {
-  KIND_LABELS, LABEL_MAX, formatMeasurementQuantity, measurementQuantity, quantityIssue, validateLabel, measurementBoqItemId,
+  KIND_LABELS, LABEL_MAX, formatMeasurementQuantity, measurementQuantity, quantityIssue, quantityBreakdown, validateLabel, measurementBoqItemId,
 } from '../../../lib/quant'
 import {
   linkableBoqItems, boqItemPickerLabel, measurementLinkState, LINK_STATE, LINK_STATE_LABELS, UNIT_DIMENSION_LABELS,
@@ -53,6 +53,8 @@ export default function MeasurementEditorModal({
 
   const quantity = measurementQuantity(measurement, calibration)
   const issue = quantityIssue(quantity)
+  // Net, with its gross − deductions breakdown when the area has holes (ADR-54).
+  const breakdown = quantityBreakdown(quantity)
 
   // BOQ items this measurement may link to under the CHOSEN cost code.
   const linkable = linkableBoqItems(boqItems, { kind: measurement?.kind, costCodeId })
@@ -107,10 +109,15 @@ export default function MeasurementEditorModal({
               <dd className="m-0 mt-0.5 text-[13px] font-semibold tabular-nums text-brand-text">{measurement?.points?.length ?? 0}</dd>
             </div>
             <div>
-              <dt className="m-0 text-[10.5px] font-bold uppercase tracking-[0.4px] text-brand-muted">Quantity</dt>
+              <dt className="m-0 text-[10.5px] font-bold uppercase tracking-[0.4px] text-brand-muted">{breakdown ? 'Net quantity' : 'Quantity'}</dt>
               <dd className="m-0 mt-0.5 text-[13px] font-semibold tabular-nums text-brand-text">{formatMeasurementQuantity(quantity)}</dd>
             </div>
           </dl>
+          {breakdown && (
+            <p className="m-0 mt-1.5 text-[11.5px] text-brand-muted tabular-nums">
+              Gross {breakdown.gross} − {breakdown.count} deduction{breakdown.count === 1 ? '' : 's'} {breakdown.deducted} = net {breakdown.net}. Deductions are edited from the measurement list.
+            </p>
+          )}
           {issue && <p className="m-0 mt-2 text-[11.5px] text-brand-red" role="alert">{issue}</p>}
 
           <label className={`${labelCls} mt-4`} htmlFor="quant-label">Label *</label>

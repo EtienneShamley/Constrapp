@@ -67,26 +67,52 @@ a separate approved action:
 
 `frontend/storage.rules` is **unchanged**; no Storage read permission widens.
 
-**Quant™ 1C (ADR-53, stages 1C-A and 1C-B): IMPLEMENTED — NOT YET DEPLOYED.
-Hosting-only; not production-verified.** The 1C bundle changes no collection,
-no document shape and no rule: `frontend/firestore.rules` and
-`frontend/storage.rules` are byte-identical to the 1B release (196,034 bytes;
-`npm run test:rules` still runs as the gate). Every change is client-side
-(polygon simplicity, remembered per-sheet drafts, geometry editing, selection,
-pan/zoom, dialog semantics, the read-only project summary, Open-in-Quant
-navigation through sessionStorage), and every production document stays
-valid. Release, each a separate approved action:
+**Quant™ 1C (ADR-53, stages 1C-A and 1C-B): LIVE IN PRODUCTION since
+23 October 2026.** Released Hosting-only — merged to `main`, Azure CI passed,
+`firebase deploy --only hosting` by hand, **no rules publish** (the 1C bundle
+changed no collection, no document shape and no rule; `firestore.rules` and
+`storage.rules` stayed byte-identical to the 1B release at 196,034 bytes) —
+and the product owner verified the live production smoke checks on 23 October
+2026. The repository records the day, not a time, and no further production
+test result.
+
+**Quant™ 1D (ADR-54, embedded deductions): IMPLEMENTED — NOT YET DEPLOYED.
+RULES FIRST, HOSTING SECOND — not production-verified.** The 1D bundle adds
+ONE optional key to `takeoffMeasurements`, `deductions` (area only, a list
+of ≤ 50 holes), in `hasOnly` but not `hasAll` — so the revised rules accept
+every existing document and every write the live bundle sends. The reverse
+is not true: the LIVE ruleset's `hasOnly` rejects the new key, so a Hosting
+deploy ahead of the rules would refuse the **first deduction on any area**
+with *You do not have permission to save measurements*. Ordinary saves would
+keep working, because 1D never writes the key at create and only sends it
+once a deduction exists — but the feature would be dead on arrival. Hence the
+ADR-52 order again:
 
 1. `cd frontend && npm run lint && npm run test:unit && npm run test:rules &&
-   npm run build` — green.
-2. `firebase deploy --only hosting --project constrapp-69b5d`. No rules publish.
-3. **Verify in production** per TESTING.md §29 (a crossed outline refused and
-   an existing one blocked from apply; a draft surviving a tab change; a
-   vertex inserted and removed; a pinch and a Ctrl-wheel zoom staying aligned;
-   the project summary's totals matching the page totals with historical kept
-   apart; *Open* from the summary and *Open in Quant* from the BOQ dialog
-   landing on the right sheet with the measurement highlighted) and record the
-   outcome here.
+   npm run build` — green, and the size test passes (`firestore.rules` is
+   **196,622 bytes** against the 245,000-byte budget).
+2. **Publish `frontend/firestore.rules`** (procedure below) and **confirm the
+   live ruleset** is the published one before step 3. Nothing in the
+   previous bundle writes `deductions`, so publishing first changes no live
+   behaviour.
+3. `firebase deploy --only hosting --project constrapp-69b5d`.
+4. **Verify in production** per TESTING.md §30 (a deduction traced inside an
+   area shows gross − deductions = net in the list, the page status and the
+   project summary; a hole outside the outline or overlapping another is
+   refused with its reason; an existing invalid set blocks the BOQ apply and
+   is fixed by Remove; the apply writes the NET and the previous application
+   reads *outdated* once a hole changes) and record the outcome here.
+
+**Rollback.** Hosting: redeploy the previous build (`firebase hosting:rollback`
+or re-run the deploy from the 1C commit) — nothing in 1D is needed by earlier
+bundles. Rules: the revised ruleset can stay published after a Hosting
+rollback (it is a strict superset; the 1C bundle never sends the key), and it
+is the recommended state. If the rules themselves must be reverted, re-publish
+the 1C ruleset (196,034 bytes); any measurement that already carries a
+`deductions` key then becomes **read-only for active edits** (its next
+`update` fails `exactKeys` until the key is accepted again) but stays
+readable, derivable and voidable — no data is lost and nothing financial is
+affected.
 
 **Quant™ 1B (ADR-52): LIVE IN PRODUCTION (October 2026).** Released in the
 order below — rules published and confirmed live first, then Hosting — and

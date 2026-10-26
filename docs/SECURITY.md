@@ -115,7 +115,7 @@ to financial roles.**
 | `…/projects/{id}/drawings/{id}/revisions/{id}` | **any company member** | same drawing writers; **file and authored identity immutable**, exact `storagePath` required, legal transitions only | blocked — a revision is never deleted |
 | `…/projects/{id}/documents/{id}` | `internal` → financial roles; `project` → **any company member** | financial roles; **file identity immutable**, three `hasOnly` update shapes, non-whitespace withdraw reason | blocked — withdraw via status |
 | `…/projects/{id}/takeoffPages/{drawingId}_{revisionId}_{page}` | **`company_admin`, `project_manager`, `qs`** | same three roles; **id recomputed from the stored sheet identity; drawing + revision EXISTENCE and revision-not-withdrawn via `exists()`/`get()`; exact keys; source/rotation vocabularies; positive page dimensions; calibration shape or null; `calibrationRevision` 0 → exactly +1 per re-calibration; identity, geometry and creation stamps immutable; `revision` exactly +1** | blocked |
-| `…/projects/{id}/takeoffMeasurements/{id}` | **`company_admin`, `project_manager`, `qs`** | same three roles; **`takeoffPageId` recomputed and the page, drawing, revision and cost code must EXIST (revision not withdrawn); kind vocabulary; point-list SIZE by kind (≤ 500); label/name bounds; calibration snapshot for length/area, null for count; identity, kind and creation stamps immutable; `revision` exactly +1; active→void terminal with a non-whitespace reason; the OPTIONAL `boqItemId` (ADR-52) — when set, the target item is `get()`: same project, exists, active, same `costCodeId`, re-verified whenever the link or the cost code changes** — point CONTENT and unit compatibility are NOT checked | blocked — void via status |
+| `…/projects/{id}/takeoffMeasurements/{id}` | **`company_admin`, `project_manager`, `qs`** | same three roles; **`takeoffPageId` recomputed and the page, drawing, revision and cost code must EXIST (revision not withdrawn); kind vocabulary; point-list SIZE by kind (≤ 500); label/name bounds; calibration snapshot for length/area, null for count; identity, kind and creation stamps immutable; `revision` exactly +1; active→void terminal with a non-whitespace reason; the OPTIONAL `boqItemId` (ADR-52) — when set, the target item is `get()`: same project, exists, active, same `costCodeId`, re-verified whenever the link or the cost code changes; the OPTIONAL `deductions` (ADR-54) — absent, or on an AREA only, a LIST of ≤ 50, movable only through the active-edit branch and frozen by void** — point CONTENT, deduction ELEMENT content (shape, simplicity, containment, overlap, net > 0) and unit compatibility are NOT checked | blocked — void via status |
 | `…/counters/{id}` | financial roles | financial roles | blocked |
 | `…/projects/{id}/counters/{id}` | financial roles | financial roles — **the per-project RFI counter** (`rfis`); +1 semantics NOT enforced | blocked |
 | `…/projects/{id}/rfis/{id}` | **`company_admin`, `project_manager`, `qs`** | same three roles; **create draft-only; the forward-only lifecycle (no reopen, answered cannot cancel, closed/cancelled terminal), the question-block freeze from `open`, the management freeze from `answered`, the raise gate (assignee + due date), `answerDate`/`dueDate >= raisedDate`, and referenced drawing + revision / document EXISTENCE are all rules-enforced** | blocked — cancel via status (draft/open only) |
@@ -1574,6 +1574,19 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       `INVALID` with a reason (`measurementQuantity` — never a number, never
       summed, named in the list and the editor), and the BOQ apply blocks it
       through the unchanged aggregate — all **client-side**;
+    - **everything about a deduction's ELEMENTS** (ADR-54): rules bound the
+      `deductions` list (area only, a list, ≤ 50 — `takeoff.rules.test.js`
+      #65–#69) and can see nothing inside it, so junk elements, a hole that
+      lies outside its parent, two holes that overlap or duplicate one
+      another, duplicate ids, a hole of more than 100 points, and a set that
+      equals or exceeds the gross area **all pass rules** (#71). The app
+      refuses each at Finish and Save (`validateDeductions`, run again against
+      the SERVER outline inside `runUpdateMeasurement`), derives a STORED
+      offending set as `INVALID` with a reason naming the hole(s) (never a
+      number, never summed, removable from the list), and the BOQ apply
+      blocks it through the unchanged aggregate — all **client-side**. A
+      deduction amount therefore carries no more server-side assurance than
+      any other quantity: *who placed these holes on which outline, when*;
     - that `pageWidth`/`pageHeight`/`pageRotation` are the sheet's **real**
       canonical geometry, and that `page` is **within the PDF's page count**;
     - that a calibration's `pageDistance` **equals the distance between its two
@@ -1672,7 +1685,7 @@ full author here. `subcontractor`, `client` and `super_admin` are denied both
 ways: a takeoff is the internal estimate's provenance. Cross-company and
 unauthenticated callers are denied.
 
-**Rules-enforced (proven by `tests/rules/takeoff.rules.test.js`, 56 tests):**
+**Rules-enforced (proven by `tests/rules/takeoff.rules.test.js` — 56 tests for 1A, #57–#64 for 1B, #65–#71 for 1D):**
 
 - tenant via the path + `users/{uid}` lookup; the three roles
 - **exact keys** on both documents (`hasOnly` + `hasAll`)
@@ -1747,8 +1760,29 @@ never offers it.
 
 **What is NOT enforced** is listed in Deferred Controls 32 and 33 — most
 notably the **content** of `points` (including, since ADR-53, whether an area's
-outline is simple), the **truth** of a calibration, the page number, unit
-compatibility, the aggregate, and cross-record concurrency.
+outline is simple, and, since ADR-54, everything inside `deductions`), the
+**truth** of a calibration, the page number, unit compatibility, the
+aggregate, and cross-record concurrency.
+
+**Quant 1D — embedded deductions (ADR-54).** `takeoffMeasurements` gains ONE
+more optional key, `deductions` — an AREA's openings, stored as holes in its
+own geometry (`[{ id, label, points }]`). It sits in `hasOnly` but **not**
+`hasAll`, so every earlier document stays valid for every write (no migration,
+no backfill), and the app writes it only once the first deduction exists —
+never at create. **Rules-enforced** (`deductionsValid()`, proven by
+`tests/rules/takeoff.rules.test.js` #65–#70): absent, or `kind == 'area'`,
+`is list`, `size() <= 50`; it may move only through the **active-edit** branch
+(so the sheet must still be live and `revision` must move by exactly +1), and
+the void branch freezes it with everything else. Deductions are a measurement
+write by the same three roles; nobody else reads or writes them. **Not
+enforced** (#71, Deferred Control 32): the elements. There is no separate
+collection, no cost code and no BOQ link on a hole — it inherits its
+parent's, which is why nothing can count it twice — and removing a hole is a
+geometry edit of the parent: **no history of removed deductions is kept**
+(the parent's `updatedAt`/`updatedBy` and `revision` move; the hole itself is
+gone). **Release is RULES-FIRST** (DEPLOYMENT.md): the live `hasOnly` rejects
+the new key, so Hosting ahead of the rules would refuse every save that adds a
+deduction — and nothing else, because ordinary saves still send no key.
 
 **Quant 1C (ADR-53, stages A and B) changed no rule and no document shape.**
 Every control it added — polygon simplicity, the remembered draft in

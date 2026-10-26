@@ -5137,15 +5137,171 @@ blocker, the 500-point fingerprint polygon, the change-handler, viewer-mode
 and selection-write pins revised explicitly). No collection, field, rule,
 transaction, fingerprint, selector or dependency changed; `firestore.rules`
 byte-identical (196,034 bytes). Unit suite 3250 across 49 files; rules suite
-unchanged at 1365 across 22. **Status: Quant 1A and 1B LIVE; Quant 1C (1C-A
-and 1C-B) IMPLEMENTED — NOT YET DEPLOYED, not production-verified.** Release
-is Hosting-only (DEPLOYMENT.md). Manual acceptance TESTING.md §29.
+unchanged at 1365 across 22. **Status: Quant 1A, 1B and 1C LIVE IN
+PRODUCTION** — 1C was merged to `main`, Azure CI passed, Firebase Hosting was
+deployed (Hosting-only, no rules publish), and the product owner verified the
+live production smoke checks on **23 October 2026** (the repository records
+the day of that verification, not a time). Manual acceptance TESTING.md §29.
 
 **Deferred / not built (recorded, not promised):** AI takeoff and automatic
 recognition, DWG conversion, revision copy-forward and any revision
-reconciliation automation, deductions / negative areas, automatic BOQ syncing,
+reconciliation automation, deductions / negative areas (manual area
+deductions arrived in Quant 1D, ADR-54), automatic BOQ syncing,
 on-sheet labels and colour by cost code, typed 1:N scale and
 copy-calibration-between-pages, snapping and orthogonal constraint, bulk
 review / link / apply, export, image rotation, list search, author-name
 resolution, per-drawing revision subscriptions for the summary, a
 Documents → Quant shortcut.
+
+## ADR-54: Constrapp Quant™ 1D (manual opening and void deductions — holes embedded in the parent area's geometry; one net derivation; no new collection, transaction or formula; rules-first release)
+
+**Context.** Quant™ 1A, 1B and 1C are live in production. A QS measuring a
+wall, slab or ceiling must take the openings off — doors, windows, voids —
+and until now could only do so by hand outside Quant or by drawing a smaller,
+false outline. A read-only inspection (26 October 2026) compared four
+representations and the architect approved, with changes, the smallest: a
+deduction is **part of the parent area's own geometry**, not a record of its
+own. The requirements that shaped it: the QS identifies every deduction
+explicitly (nothing is assumed deductible); gross, deductions and net are all
+visible; no hole may ever be counted twice or applied on its own; outdated
+work is never silently treated as reviewed; existing documents, the BOQ
+apply, the fingerprint and every financial selector stay as they are.
+
+**Decision 1 — a deduction is a hole stored on the parent.** An AREA
+measurement gains ONE optional key, `deductions: [{ id, label, points }]`
+(id a client-generated string ≤ 64, unique within the parent; label non-blank
+≤ 120; 3..100 canonical points; ≤ 50 per parent). It is **absent on every
+earlier document and never written at create**; it appears when the first
+deduction is saved and may be emptied again. A hole shares its parent's sheet,
+calibration snapshot, revision, cost code and BOQ link and has none of its
+own; it is never a measurement row, never linkable, never summable apart. The
+alternatives — child measurement documents (`parentMeasurementId`), free-
+standing negative measurements, multi-ring `points` — were rejected: the
+first needs a read-time join and four separate double-counting exclusions
+plus a rules `get()` chain for an audit trail the product does not yet need;
+the second assumes every opening deductible and cannot bound a net; the
+third breaks the `points` contract everywhere. The accepted cost: **no
+per-hole stamps and no history of a removed hole** — `serverTimestamp()`
+cannot live inside an array element, a client clock would be invented
+provenance, and removing a hole is a geometry edit of the parent exactly as
+moving a vertex is (the parent's `revision`, `updatedAt`/`updatedBy` move;
+the hole is gone). Per-deduction audit history is recorded as not built.
+
+**Decision 2 — ONE derivation: `quantity.value` is the NET.** `lib/quant.js →
+measurementQuantity` subtracts the holes itself: `gross = area(outline) × k²`,
+`deducted = Σ area(hole) × k²`, `net = gross − deducted`, unrounded, with
+`gross`, `deducted` and `deductionCount` beside `value` only when holes
+exist (a measurement without them derives byte-for-byte as before). Because
+every consumer already reads `value`, the page totals
+(`summariseMeasurements`), the project summary (`kindTotals`), the BOQ
+aggregate (`aggregateLinkedQuantity`) and the evidence fingerprint all carry
+net with **no change to their arithmetic** — there is no second formula and
+no join. `quantityBreakdown` formats the *30.000 m² − 5.000 m² = 25.000 m²*
+line the list, the editor, the selection bar, the page status, the summary
+and the apply dialog show. A net that rounds to zero at the BOQ precision
+(3 dp) is `INVALID`, never 0.000.
+
+**Decision 3 — validity is geometry, judged like simplicity.** New pure
+primitives (`segmentsCross` — proper crossings only; `pointInOrOnPolygon`;
+`segmentWithinPolygon` — the concave case: every stretch between successive
+boundary touches has its midpoint inside, so a chord across a notch or an
+edge that leaves and re-enters is caught; `polygonWithinPolygon`;
+`polygonsDisjoint`; bounding-box prechecks) give `deductionsProblem`: each
+hole simple; each hole within the parent — **touching the parent boundary is
+allowed** (a door at a floor line is routine), crossing out of it is not;
+holes **strictly disjoint** from one another — no shared point, which for
+simple polygons is a complete overlap test (the "allow shared edges" variant
+was rejected because collinear partial overlaps slip past a proper-crossing
+test and would double-deduct); distinct ids; and Σ holes < gross. The
+problem is reported with the offending ids as five new `QUANTITY_PROBLEM`
+reasons (`deduction_malformed`, `deduction_invalid`, `deduction_outside`,
+`deductions_overlap`, `deductions_exceed_area`) through the existing
+`quantityIssue` path. `validateDeductions` runs the COMPLETE list through
+the same derivation at Finish and Save; rules see only the list's bound, so
+all of it is client-side — **Deferred Control 32** (proven by
+`takeoff.rules.test.js` #71). A stored set that fails stays visible, named,
+excluded from every total, blocked from the apply, and correctable (Remove is
+always offered, even for an unreadable element); nothing stored is repaired
+silently. The full check runs at Finish, Save and derivation (≤ 100 × ≤ 500
+edges, boxes first), not per pointer move.
+
+**Decision 4 — one write path, revision-guarded, judged against the server
+copy.** Add, edit outline, rename and remove are all `runUpdateMeasurement`
+with `changes.deductions` — the complete new list — and nothing else: no new
+transaction (`tx.set` × 3 / `tx.update` × 3 unchanged), each committed update
+exactly +1 on the parent's `revision`. Inside the transaction the list is
+validated against the **server** outline (and against the new outline when
+the same write moves it), under the parent's recorded calibration snapshot
+for the 3 dp gate; a parent outline edit that would strand a hole is refused
+with the hole named. A deductions change **does not touch the calibration
+snapshot**: a parent that *needs review* keeps needing it (nothing is
+silently treated as reviewed), and the original quantity under the old
+snapshot is the original NET. A stale copy is STALE as before; the workspace
+keeps the draft, says the parent changed, and re-judges the hole against the
+live outline before another save. Void freezes the holes with the parent.
+
+**Decision 5 — rules: one optional key, bounded.** `takeoffMeasurements`
+`exactKeys` gains `'deductions'` in `hasOnly` (never `hasAll`);
+`deductionsValid()` = absent, or `kind == 'area' && is list && size() <= 50`,
+inside `contentValid()` (create and active edit alike); the active-edit
+`changedKeys().hasOnly` list gains `'deductions'`; the void branch is
+unchanged. `firestore.rules` 196,034 → 196,622 bytes (budget 245,000).
+Roles, tenancy, `sourceLive`, `linkValid` and the `+1` rule are untouched.
+**Release is rules-first** (the ADR-52 Decision 8 order): the live `hasOnly`
+rejects the key, so Hosting ahead of the rules would refuse the first
+deduction on any area — and nothing else, since ordinary saves send no key.
+
+**Decision 6 — the fingerprint learns about holes without a version bump.**
+`evidenceRowKey` appends `:<id>=<points>` per hole, sorted by id, **only when
+the measurement has any**, so every `v1` fingerprint recorded before 1D is
+unchanged and still reads *matches* until the measurement itself changes;
+adding, moving or removing a hole (and, through `revision`, renaming one)
+reads *outdated* until re-applied. `runApplyBoqQuantity`, `boqLineAmount`,
+`applyPreview`, the ratchet, `quantApplied` and every financial selector are
+untouched; the apply dialog only displays the breakdown.
+
+**Decision 7 — the workflow lives in the existing workspace.** Select an
+active area → *Deduct* (selection bar and list; measurable sheets only) → a
+`deduct` tool that draws into the same `draftPoints` (so every unsaved-work
+rule, confirmation and per-sheet draft memory applies unchanged; the draft
+carries `deductParentId`) → the strip previews *gross · this deduction ·
+net* live through the one derivation and names a containment problem →
+*Finish deduction* → `DeductionDialog` (QuantDialog shell; label only; the
+same preview) → Save. The overlay fills an area with `fill-rule: evenodd`
+and draws the holes dashed; a hole being traced uses a tighter dash; a hole
+being edited shows the parent outline and the other holes for context. The
+list shows net with the gross − deductions line and the holes as a sub-list
+of the parent with *Edit outline* (the same edit session, on the hole's
+points, `basePoints` judging dirtiness), *Rename* and *Remove* (one
+`window.confirm`). The summary and the apply dialog show the same breakdown.
+Nothing new is a drawing editor, a route, a tab, a hook or a dependency.
+
+**Consequences.** New: `pages/project/quant/DeductionDialog.jsx`,
+`tests/unit/quantDeductions.test.js` (41). Modified: `lib/quant.js`
+(deduction constants, geometry primitives, `deductionsProblem`, net
+derivation, breakdown, validation, `areaPathWithHoles`/`holesPath`,
+readability, page totals carrying gross/deducted), `lib/quantActions.js`
+(`changes.deductions`, server-copy validation, strand refusal; the guarded
+error now carries its message), `lib/quantBoq.js` (fingerprint segment,
+blocker wording), `lib/quantSummary.js` (gross/deducted beside each kind
+total), `lib/quantDraft.js` (optional `deductParentId` and
+`editing.deductionId`, same version), `TakeoffWorkspace.jsx`,
+`MeasurementOverlay.jsx`, `MeasurementList.jsx`, `MeasurementEditorModal.jsx`,
+`TakeoffSummary.jsx`, `PageViewer.jsx` (cursor mode),
+`pages/project/boq/BoqQuantityApplyModal.jsx` (display only),
+`firestore.rules`, `tests/rules/takeoff.rules.test.js` (#65–#71),
+`tests/unit/quantInteraction.test.js` (four pins revised explicitly: the
+closed set of quantity reasons, `editDirty` against `basePoints`, nine
+tracked saves, four dialogs on the shell). No collection, counter, BOQ
+transaction, financial selector or dependency changed; `useTakeoff.jsx`,
+`useBoqItems.jsx`, `lib/boqActions.js` and `ProjectBoq.jsx` are untouched.
+**Status: IMPLEMENTED — NOT YET DEPLOYED, not production-verified. Release
+is RULES-FIRST** (DEPLOYMENT.md). Manual acceptance TESTING.md §30.
+
+**Deferred / not built (recorded, not promised):** per-deduction audit
+history or stamps, a per-deduction approval flag, length or volume
+deductions, selecting a hole by tapping inside it on the sheet, copying
+deductions between areas, typed opening dimensions, bulk deduction or bulk
+BOQ application, AI opening detection, DWG/CAD, automatic measurement-rule
+interpretation (e.g. "openings under 0.5 m² are not deducted"), revision
+copy-forward, any Budget or Forecast effect.
