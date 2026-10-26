@@ -17,7 +17,7 @@ Drawing → Quantity → BOQ → Estimate → Tender → Award → Approved Budg
   → Final Project Margin → Final Account
 ```
 
-Today the delivery-and-cost-control middle of this lifecycle is implemented (budgets → POs → variations → claims → supplier invoices → forecasting → margin → cash flow), and the preconstruction front has begun with the **BOQ foundation** (measured quantities by cost code; the BOQ feeds no financial figure), **Tenders**, and **Constrapp Quant™** manual takeoff (1A live; 1B — linking measurements to BOQ items and explicitly applying their total — implemented, not yet deployed). Estimating remains planned. See [PRODUCT.md](PRODUCT.md) and [ROADMAP.md](ROADMAP.md) for module-by-module status, and [PRODUCT.md](PRODUCT.md) → "What Constrapp Is Not" for the strategic boundaries.
+Today the delivery-and-cost-control middle of this lifecycle is implemented (budgets → POs → variations → claims → supplier invoices → forecasting → margin → cash flow), and the preconstruction front has begun with the **BOQ foundation** (measured quantities by cost code; the BOQ feeds no financial figure), **Tenders**, and **Constrapp Quant™** manual takeoff (1A to 1D live in production — measurement, BOQ linking and explicit apply, geometry editing and project summary, manual deductions). Estimating remains planned. See [PRODUCT.md](PRODUCT.md) and [ROADMAP.md](ROADMAP.md) for module-by-module status, and [PRODUCT.md](PRODUCT.md) → "What Constrapp Is Not" for the strategic boundaries.
 
 ## What Works Today
 
@@ -63,7 +63,7 @@ discarded, full geometry editing, on-sheet selection, anchored pan/zoom, 44 px
 targets, accessible dialogs, a read-only project summary with per-kind totals
 and an attention list, and *Open in Quant* traceability from the summary and
 the BOQ apply dialog — with no schema or rules change. Quant™ 1D (ADR-54,
-implemented, **not yet deployed — rules first**) adds manual opening and void
+**live in production since 26 October 2026** — rules published first) adds manual opening and void
 deductions: trace an opening inside a measured area and the area derives its
 **net** (gross − deductions) through the one existing derivation; holes that
 leave the outline, overlap or leave no area are refused; a deduction is never

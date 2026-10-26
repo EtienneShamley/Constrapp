@@ -459,50 +459,65 @@ export function coverageByType(lines, sourceType) {
   )
 }
 
-// Per-cost-code combined COST coverage. ⚠️ THE CORRECTED MODEL: approved-claim
-// cost awaiting a supplier invoice sits INSIDE Remaining Committed (an approved
-// claim consumes PO commitment, and maturedCommitted subtracts only POSTED
-// INVOICING), so `uninvoiced_claim` coverage counts against the SAME
-// remaining-committed balance as `remaining_committed` coverage — never
-// against a second, additive denominator.
-export function committedCoverageByCostCode(lines) {
+// Per-cost-code coverage of one cost-coded source type (ADR-55 — the three
+// cost bases are DISJOINT, so each has its own balance per cost code):
+//
+//   remaining_committed — Remaining Committed, which since ADR-55 is already
+//                         net of approved claims not yet invoiced;
+//   uninvoiced_claim    — approved claim value awaiting its supplier invoice
+//                         (already in Actual as COST, but not yet CASH — it
+//                         leaves the bank when the invoice is paid, so Cash
+//                         Flow times it as its own future outflow);
+//   uncommitted_ctc     — the manual Uncommitted Cost to Complete.
+//
+// Before ADR-55 the first two shared one balance because Remaining Committed
+// still contained the approved claim; it no longer does, so sharing would now
+// let a line timed against the claim consume the committed balance twice.
+function coverageByCostCodeFor(lines, sourceType) {
   const map = {}
   for (const l of activeCashFlowLines(lines)) {
-    if (l.sourceType !== CFL_SOURCE_TYPE.REMAINING_COMMITTED
-      && l.sourceType !== CFL_SOURCE_TYPE.UNINVOICED_CLAIM) continue
+    if (l.sourceType !== sourceType) continue
     if (!l.costCodeId) continue
     map[l.costCodeId] = roundMoney((map[l.costCodeId] || 0) + safeAmount(l.sourceAmountExGst))
   }
   return map
 }
 
+export function committedCoverageByCostCode(lines) {
+  return coverageByCostCodeFor(lines, CFL_SOURCE_TYPE.REMAINING_COMMITTED)
+}
+
+export function uninvoicedClaimCoverageByCostCode(lines) {
+  return coverageByCostCodeFor(lines, CFL_SOURCE_TYPE.UNINVOICED_CLAIM)
+}
+
 export function ctcCoverageByCostCode(lines) {
-  const map = {}
-  for (const l of activeCashFlowLines(lines)) {
-    if (l.sourceType !== CFL_SOURCE_TYPE.UNCOMMITTED_CTC) continue
-    if (!l.costCodeId) continue
-    map[l.costCodeId] = roundMoney((map[l.costCodeId] || 0) + safeAmount(l.sourceAmountExGst))
-  }
-  return map
+  return coverageByCostCodeFor(lines, CFL_SOURCE_TYPE.UNCOMMITTED_CTC)
 }
 
 // ── Untimed forecast values (ex-GST source basis) ────────────────────────────
 //
-// ⚠️ THE CORRECTED COST MODEL (approved decision):
+// ⚠️ THE COST MODEL (ADR-55 — cash timing is not cost recognition):
 //
-//   D_cost                    = remainingCommittedTotal + uncommittedCtcTotal
-//                               (= Cost to Complete — the figure the Forecast
-//                                tab already publishes; no new arithmetic)
-//   Untimed Remaining Committed = max(0, remainingCommittedTotal
-//                                        − coverage('remaining_committed')
-//                                        − coverage('uninvoiced_claim'))
-//   Untimed Uncommitted CTC     = max(0, uncommittedCtcTotal
-//                                        − coverage('uncommitted_ctc'))
+//   D_cost = remainingCommittedTotal + uninvoicedClaimTotal + uncommittedCtcTotal
 //
-// Approved-claim cost awaiting an invoice is NOT a second denominator and NOT
-// an additional untimed total — it is a labelled breakdown WITHIN Remaining
-// Committed ("Approved claim awaiting invoice — included within Remaining
-// Committed"). Presenting it additively would double-count it.
+//   Remaining Committed is NET of approved claims not yet invoiced (that value
+//   is already recognised as Actual COST). But it is not yet CASH: the money
+//   leaves when the claim's invoice is paid, so Cash Flow carries it as its
+//   own basis — `uninvoicedClaimTotal`, the forecast rollup's
+//   `approvedClaimsAwaitingInvoice`. The three bases are disjoint by
+//   construction (a dollar is open commitment, OR an approved claim awaiting
+//   invoice, OR uncommitted CTC), so adding them counts nothing twice, and
+//   each is timed against its own coverage:
+//
+//   Untimed Remaining Committed = max(0, remainingCommittedTotal − coverage('remaining_committed'))
+//   Untimed Uninvoiced Claims   = max(0, uninvoicedClaimTotal   − coverage('uninvoiced_claim'))
+//   Untimed Uncommitted CTC     = max(0, uncommittedCtcTotal    − coverage('uncommitted_ctc'))
+//
+// Before ADR-55 Remaining Committed still contained the approved claim, so the
+// two coverages were netted off ONE balance. Keeping that netting against the
+// corrected Remaining Committed would have understated Forecast Cash Out by
+// every approved claim awaiting an invoice.
 
 export function untimedForecastRevenue({ availableToInvoice, lines }) {
   const remaining = Math.max(0, roundMoney(safeAmount(availableToInvoice)))
@@ -511,9 +526,13 @@ export function untimedForecastRevenue({ availableToInvoice, lines }) {
 
 export function untimedRemainingCommitted({ remainingCommittedTotal, lines }) {
   return Math.max(0, roundMoney(
-    safeAmount(remainingCommittedTotal)
-    - coverageByType(lines, CFL_SOURCE_TYPE.REMAINING_COMMITTED)
-    - coverageByType(lines, CFL_SOURCE_TYPE.UNINVOICED_CLAIM),
+    safeAmount(remainingCommittedTotal) - coverageByType(lines, CFL_SOURCE_TYPE.REMAINING_COMMITTED),
+  ))
+}
+
+export function untimedUninvoicedClaims({ uninvoicedClaimTotal, lines }) {
+  return Math.max(0, roundMoney(
+    safeAmount(uninvoicedClaimTotal) - coverageByType(lines, CFL_SOURCE_TYPE.UNINVOICED_CLAIM),
   ))
 }
 
@@ -540,11 +559,14 @@ export function revenueCoverage({ baselineEstablished, availableToInvoice, lines
 }
 
 // Cost coverage % = (remaining_committed + uninvoiced_claim + uncommitted_ctc
-// coverage) ÷ D_cost, where D_cost = Cost to Complete (the corrected model —
-// see above). `incompleteBasis` flags an understated denominator when cost
-// codes remain unforecast (unforecastedCount > 0).
-export function costCoverage({ remainingCommittedTotal, uncommittedCtcTotal, unforecastedCount = 0, lines }) {
-  const denominator = roundMoney(safeAmount(remainingCommittedTotal) + safeAmount(uncommittedCtcTotal))
+// coverage) ÷ D_cost, where D_cost = Remaining Committed + approved claims
+// awaiting invoice + Uncommitted CTC (ADR-55 — see above). `incompleteBasis`
+// flags an understated denominator when cost codes remain unforecast
+// (unforecastedCount > 0).
+export function costCoverage({ remainingCommittedTotal, uninvoicedClaimTotal = 0, uncommittedCtcTotal, unforecastedCount = 0, lines }) {
+  const denominator = roundMoney(
+    safeAmount(remainingCommittedTotal) + safeAmount(uninvoicedClaimTotal) + safeAmount(uncommittedCtcTotal),
+  )
   const incompleteBasis = safeAmount(unforecastedCount) > 0
   if (toCents(denominator) <= 0) return { pct: null, state: 'no_cost_basis', incompleteBasis }
   const covered = roundMoney(
@@ -624,7 +646,7 @@ export function peakFunding(combinedRows) {
 // `pastDueAP`, which DOES suppress. That is deliberate and is the honest
 // direction: released retention is money owed with no trustworthy month.
 export function peakFundingSuppression({
-  untimedRevenue = 0, untimedCommitted = 0, untimedCtc = 0,
+  untimedRevenue = 0, untimedCommitted = 0, untimedUninvoicedClaims = 0, untimedCtc = 0,
   untimedAR = 0, pastDueAR = 0, untimedAP = 0, pastDueAP = 0,
   revenueBasisUnavailable = false, costBasisUnavailable = false, costBasisIncomplete = false,
 }) {
@@ -634,6 +656,7 @@ export function peakFundingSuppression({
   if (costBasisIncomplete) reasons.push('Cost to Complete is incomplete (unforecast cost codes)')
   if (toCents(untimedRevenue) > 0) reasons.push('untimed remaining contract revenue')
   if (toCents(untimedCommitted) > 0) reasons.push('untimed remaining committed cost')
+  if (toCents(untimedUninvoicedClaims) > 0) reasons.push('untimed approved claims awaiting invoice')
   if (toCents(untimedCtc) > 0) reasons.push('untimed uncommitted cost to complete')
   if (toCents(untimedAR) > 0) reasons.push('client invoice balances with no due date')
   if (toCents(pastDueAR) > 0) reasons.push('past-due client invoice balances not retimed')
@@ -661,9 +684,9 @@ export function gstSuggestedGross(sourceAmountExGst) {
 // acknowledgement — the Deferred-Control 14/16/18 posture.
 //
 // `balances` supplies the source denominators the caller already derives:
-//   { availableToInvoice, remainingCommittedByCostCode, uncommittedCtcByCostCode }
-// Under the corrected model, remaining_committed and uninvoiced_claim lines
-// share one balance per cost code.
+//   { availableToInvoice, remainingCommittedByCostCode, uninvoicedClaimByCostCode,
+//     uncommittedCtcByCostCode }
+// Each cost-coded source type has its OWN balance per cost code (ADR-55).
 export function coverageOverWarning({ sourceType, costCodeId, sourceAmountExGst, lines, excludeLineId = null, balances = {} }) {
   if (!isCoverageSourceType(sourceType)) return null
   const others = activeCashFlowLines(lines).filter(l => l.id !== excludeLineId)
@@ -676,8 +699,10 @@ export function coverageOverWarning({ sourceType, costCodeId, sourceAmountExGst,
   } else if (sourceType === CFL_SOURCE_TYPE.UNCOMMITTED_CTC) {
     balance = roundMoney(safeAmount(balances.uncommittedCtcByCostCode?.[costCodeId]))
     alreadyCovered = roundMoney(safeAmount(ctcCoverageByCostCode(others)[costCodeId]))
+  } else if (sourceType === CFL_SOURCE_TYPE.UNINVOICED_CLAIM) {
+    balance = roundMoney(safeAmount(balances.uninvoicedClaimByCostCode?.[costCodeId]))
+    alreadyCovered = roundMoney(safeAmount(uninvoicedClaimCoverageByCostCode(others)[costCodeId]))
   } else {
-    // remaining_committed and uninvoiced_claim share ONE balance per cost code.
     balance = roundMoney(safeAmount(balances.remainingCommittedByCostCode?.[costCodeId]))
     alreadyCovered = roundMoney(safeAmount(committedCoverageByCostCode(others)[costCodeId]))
   }

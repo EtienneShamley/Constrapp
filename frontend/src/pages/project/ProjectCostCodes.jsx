@@ -140,7 +140,7 @@ function CostCodeEditorModal({ costCode = null, onClose, onSave }) {
 
 export default function ProjectCostCodes() {
   const {
-    costCodes, costCodesLoading,
+    costCodes, costCodesLoading, costCodesError,
     createCostCode, updateCostCode, deactivateCostCode, reactivateCostCode,
   } = useCostCodes()
   const { profile } = useProfile()
@@ -196,6 +196,14 @@ export default function ProjectCostCodes() {
       <Card padding={false}>
         {costCodesLoading ? (
           <div className="px-5 py-12 text-center text-[13px] text-brand-muted">Loading cost codes…</div>
+        ) : costCodesError ? (
+          <div className="px-5 py-12 text-center">
+            <p className="text-[13px] font-bold text-brand-amber mb-1">Cost codes unavailable</p>
+            <p className="text-[12px] text-brand-muted m-0">
+              The cost-code library could not be read. This does not mean the company has no cost codes — reload
+              the page, and check your connection and permissions if this persists.
+            </p>
+          </div>
         ) : costCodes.length === 0 ? (
           <div className="px-5 py-12 text-center">
             <p className="text-[13px] text-brand-muted mb-3">No cost codes yet. Create your first one to start building budgets.</p>

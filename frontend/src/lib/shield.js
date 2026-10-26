@@ -14,6 +14,7 @@ import {
   releaseExceptions, overReleasedRows, retentionInvoiceRows, releasedByInvoiceId, postedRetentionReleases,
 } from './retention'
 import { VARIATION_TYPE, VARIATION_APPROVED_STATUSES, approvedSupplierVariationsTotal } from './variations'
+import { mixedModePoLineConflicts } from './poLineRecognition'
 import { figureState, FIGURE_STATE, SNAPSHOT_SOURCE_LABELS } from './projectSnapshot'
 
 // ── Constrapp SHIELD™ foundation — commercial assurance checks (ADR-50) ──────
@@ -37,6 +38,9 @@ import { figureState, FIGURE_STATE, SNAPSHOT_SOURCE_LABELS } from './projectSnap
 //                            status constants
 //   Approved supplier variations on a PO
 //                          → lib/variations.js  approvedSupplierVariationsTotal
+//   Mixed-mode PO lines     → lib/poLineRecognition.js  mixedModePoLineConflicts
+//                            (ADR-55 — the same posted-direct and recognised-
+//                            claim maps Remaining Committed nets)
 //   Already-defined payable exceptions
 //                          → lib/supplierPayments.js  allocationExceptions /
 //                            payablesSummary / overReconciledPayableRows,
@@ -686,6 +690,11 @@ export const STATE_CONFLICT = {
   CLOSED_PO_WITH_OPEN_CLAIM: 'closed_po_with_open_claim',
   MULTIPLE_OPEN_CLAIMS:      'multiple_open_claims',
   MULTIPLE_INVOICES_PER_CLAIM: 'multiple_invoices_per_claim',
+  // E · ADR-55 — one PO line recognised through BOTH paths at once: a posted
+  //     direct invoice AND an approved claim no posted claim-sourced invoice
+  //     has superseded. Actual counts both; nothing in the records can say
+  //     which is the duplicate, so the line is listed for reconciliation.
+  MIXED_MODE_PO_LINE:        'mixed_mode_po_line',
 }
 
 const STATE_CONFLICT_LABELS = {
@@ -693,6 +702,7 @@ const STATE_CONFLICT_LABELS = {
   [STATE_CONFLICT.CLOSED_PO_WITH_OPEN_CLAIM]:  'PO closed or cancelled with an open claim',
   [STATE_CONFLICT.MULTIPLE_OPEN_CLAIMS]:       'More than one open claim on the PO',
   [STATE_CONFLICT.MULTIPLE_INVOICES_PER_CLAIM]: 'More than one active invoice for the claim',
+  [STATE_CONFLICT.MIXED_MODE_PO_LINE]:         'PO line counted through both a direct invoice and an approved claim',
 }
 
 const STATE_CONFLICT_COLUMNS = [
@@ -807,6 +817,23 @@ function evaluateCommitmentStateConflicts(purchaseOrders, progressClaims, suppli
     }
   }
 
+  // E · one PO line carrying BOTH a posted direct invoice and an approved,
+  //     not-yet-invoiced claim (ADR-55). The editors block new combinations
+  //     (client-only — Deferred Control 34); this lists the ones that exist.
+  //     Figures are the exact per-line maps Remaining Committed nets; `amount`
+  //     is the overlap — the most that can be double-counted on the line.
+  for (const row of mixedModePoLineConflicts({ purchaseOrders: pos, progressClaims: claims, supplierInvoices: invoices })) {
+    push(STATE_CONFLICT.MIXED_MODE_PO_LINE, {
+      id: `${STATE_CONFLICT.MIXED_MODE_PO_LINE}:${row.poId}:${row.poLineIndex}`, ...poRef(row.poId, row.poNumber),
+      recordId: row.id, recordKind: 'poLine',
+      recordNumber: `${row.lineLabel} — direct ${row.invoiceNumbers.join(', ') || '—'} · claim ${row.claimNumbers.join(', ') || '—'}`,
+      recordStatus: null, recordStatusLabel: 'Both counted in Actual',
+      amount: money(row.overlap),
+      directInvoiced: money(row.directInvoiced), recognisedClaims: money(row.recognisedClaims),
+      costCodeId: row.costCodeId, costCodeName: row.costCodeName,
+    })
+  }
+
   const values = {
     poCount: pos.length,
     claimCount: claims.length,
@@ -818,6 +845,9 @@ function evaluateCommitmentStateConflicts(purchaseOrders, progressClaims, suppli
     'These are records whose lifecycle states disagree with each other and need reconciling — not an inference ' +
     'of unauthorised conduct. PO and claim lifecycles are client-enforced (Firestore rules do not check them), so ' +
     'a PO can be closed or cancelled while claims or invoices against it remain.',
+    'A PO line counted through both a direct invoice and an approved claim is listed with the overlapping amount. ' +
+    'Actual and Remaining Committed are left exactly as the records say — nothing is reclassified or offset; ' +
+    'reconcile by cancelling or crediting the record that should not stand.',
     NOT_WRONGDOING_CAVEAT,
   ]
 
@@ -837,8 +867,8 @@ function evaluateCommitmentStateConflicts(purchaseOrders, progressClaims, suppli
       headline: `${plural(evidence.length, 'record needs', 'records need')} reconciling — ${named.join('; ')}`,
       explanation:
         'Each row is one related record whose status conflicts with its purchase order or claim: cost counted ' +
-        'against an uncommitted PO, an open claim on a closed PO, more than one open claim per PO, or more than ' +
-        'one active invoice per claim.',
+        'against an uncommitted PO, an open claim on a closed PO, more than one open claim per PO, more than ' +
+        'one active invoice per claim, or a PO line recognised through both a direct invoice and an approved claim.',
       values,
       evidence,
       evidenceColumns: STATE_CONFLICT_COLUMNS,
@@ -848,7 +878,7 @@ function evaluateCommitmentStateConflicts(purchaseOrders, progressClaims, suppli
 
   return check(id, SHIELD_STATE.NO_ISSUE, {
     headline: 'Purchase order, claim and invoice states agree',
-    explanation: 'No uncommitted PO carries counted cost, no closed or cancelled PO has an open claim, each PO has at most one open claim, and each claim at most one active invoice.',
+    explanation: 'No uncommitted PO carries counted cost, no closed or cancelled PO has an open claim, each PO has at most one open claim, each claim at most one active invoice, and no PO line is counted through both a direct invoice and an approved claim.',
     values,
     caveats: [caveats[0]],
   })

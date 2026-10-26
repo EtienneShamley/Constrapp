@@ -20,10 +20,11 @@ export function useCostCodes() {
   // The target is the COMPANY alone — cost codes are company-scoped, so
   // switching project neither re-subscribes nor reloads them.
   //
-  // `error` is tracked here for pattern uniformity but deliberately NOT
-  // exposed: adding a `costCodesError` would change this hook's public API. A
-  // failed read therefore still presents as an empty list, exactly as it did
-  // before this migration.
+  // `error` is EXPOSED as `costCodesError` (ADR-55; closes ADR-41 Decision 3):
+  // a rules rejection or connection loss must never present as an empty list,
+  // because consumers turn an empty list into "create your first…" prompts and
+  // disabled authoring. Like every financial hook it is derived only once the
+  // CURRENT target has settled, so a company switch never flashes a stale flag.
   const [snap, setSnap] = useState({ key: null, costCodes: [], error: false })
 
   useEffect(() => {
@@ -61,6 +62,7 @@ export function useCostCodes() {
     [settled, snap.costCodes],
   )
   const costCodesLoading = targetKey !== null && !settled
+  const costCodesError = settled ? snap.error : false
 
   // Create normalises and validates through the SAME pure helpers the edit path
   // uses, so the two modes cannot drift. The only behaviour change from the
@@ -142,6 +144,7 @@ export function useCostCodes() {
   return {
     costCodes,
     costCodesLoading,
+    costCodesError,
     createCostCode,
     updateCostCode,
     deactivateCostCode,

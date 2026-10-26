@@ -94,8 +94,9 @@ export default function LineEditorModal({
   }, [costCoded, sourceType, balances])
 
   // The remaining UNTIMED balance for the chosen source — the visible,
-  // editable coverage suggestion. Under the corrected model, uninvoiced_claim
-  // and remaining_committed share ONE committed balance per cost code.
+  // editable coverage suggestion. Each cost-coded source has its OWN balance
+  // per cost code (ADR-55): Remaining Committed is net of approved claims
+  // awaiting invoice, which are timed as their own basis.
   const suggestion = useMemo(() => {
     if (!covered) return null
     const others = (cashFlowLines || []).filter(l => l.id !== line?.id)
@@ -118,10 +119,14 @@ export default function LineEditorModal({
         .reduce((s, l) => s + (Number(l.sourceAmountExGst) || 0), 0)
       return Math.max(0, roundMoney(base - used))
     }
-    // remaining_committed and uninvoiced_claim: one shared committed balance.
+    if (sourceType === CFL_SOURCE_TYPE.UNINVOICED_CLAIM) {
+      const base = roundMoney(Number(balances.uninvoicedClaimByCostCode?.[costCodeId]) || 0)
+      const used = others.filter(l => l.status === 'active' && l.sourceType === CFL_SOURCE_TYPE.UNINVOICED_CLAIM && l.costCodeId === costCodeId)
+        .reduce((s, l) => s + (Number(l.sourceAmountExGst) || 0), 0)
+      return Math.max(0, roundMoney(base - used))
+    }
     const base = roundMoney(Number(balances.remainingCommittedByCostCode?.[costCodeId]) || 0)
-    const used = others.filter(l => l.status === 'active' && l.costCodeId === costCodeId
-      && (l.sourceType === CFL_SOURCE_TYPE.REMAINING_COMMITTED || l.sourceType === CFL_SOURCE_TYPE.UNINVOICED_CLAIM))
+    const used = others.filter(l => l.status === 'active' && l.sourceType === CFL_SOURCE_TYPE.REMAINING_COMMITTED && l.costCodeId === costCodeId)
       .reduce((s, l) => s + (Number(l.sourceAmountExGst) || 0), 0)
     return Math.max(0, roundMoney(base - used))
   }, [covered, sourceType, costCodeId, cashFlowLines, line?.id, balances])
@@ -222,8 +227,8 @@ export default function LineEditorModal({
             </select>
             {sourceType === CFL_SOURCE_TYPE.UNINVOICED_CLAIM && (
               <p className="m-0 mt-1 text-[10.5px] text-brand-muted">
-                Approved claim awaiting invoice — included within Remaining Committed. Its coverage counts
-                against the same cost-code committed balance.
+                Approved claim value awaiting its supplier invoice — already counted in Actual, not yet paid.
+                Remaining Committed excludes it, so it is timed against its own cost-code balance.
               </p>
             )}
           </div>

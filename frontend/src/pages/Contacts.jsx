@@ -439,7 +439,7 @@ const matchesSearch = (contact, term) => {
 }
 
 export default function Contacts() {
-  const { contacts, contactsLoading, createContact, updateContact, archiveContact, reactivateContact } = useContacts()
+  const { contacts, contactsLoading, contactsError, createContact, updateContact, archiveContact, reactivateContact } = useContacts()
   const { projects, projectsLoading } = useProjects()
   const [search, setSearch]           = useState('')
   const [typeFilter, setTypeFilter]   = useState('all')
@@ -518,6 +518,14 @@ export default function Contacts() {
       <Card padding={false}>
         {contactsLoading ? (
           <div className="px-5 py-12 text-center text-[13px] text-brand-muted">Loading contacts…</div>
+        ) : contactsError ? (
+          <div className="px-5 py-12 text-center">
+            <p className="text-[13px] font-bold text-brand-amber mb-1">Contacts unavailable</p>
+            <p className="text-[12px] text-brand-muted m-0">
+              The contact directory could not be read. This does not mean there are no contacts — reload the page,
+              and check your connection and permissions if this persists.
+            </p>
+          </div>
         ) : filtered.length === 0 ? (
           <div className="px-5 py-12 text-center">
             <p className="text-[13px] text-brand-muted mb-3">

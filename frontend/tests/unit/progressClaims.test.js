@@ -4,12 +4,12 @@ import {
   CLAIM_OPEN_STATUSES, CLAIM_PENDING_STATUSES, CLAIM_APPROVED_STATUSES,
   CLAIMABLE_PO_STATUSES, formatClaimNumber, hasOpenClaim,
   claimTotals, approvedLineError, validateApprovedAmounts,
-  previouslyApprovedByPoLine, approvedByCostCode, actualClaimsByCostCode,
+  previouslyApprovedByPoLine, approvedByCostCode, actualClaimsByCostCode, recognisedClaimsByPoLine,
   claimedPendingByCostCode,
   claimLineToForm, buildClaimLine, claimedToDateCountError, validateClaimDraft,
 } from '../../src/lib/progressClaims'
 import {
-  PO_STATUS, GST_RATE, roundMoney, committedByCostCode, maturedCommittedByCostCode,
+  PO_STATUS, GST_RATE, roundMoney, committedByCostCode, remainingCommittedByCostCode,
 } from '../../src/lib/purchaseOrders'
 import { buildForecastRows } from '../../src/lib/forecast'
 import { computeMargin, projectForecastTotals } from '../../src/lib/margin'
@@ -768,9 +768,12 @@ describe('draft edit — financial regression (draft is never counted)', () => {
       approvedClaims: approvedByCostCode(progressClaims),
       claimedPending: claimedPendingByCostCode(progressClaims),
       prevApproved:   previouslyApprovedByPoLine(progressClaims, 'po1'),
-      // PO / commitment
+      // PO / commitment — ADR-55: Remaining Committed nets posted invoicing AND
+      // approved claims not yet superseded by a posted claim-sourced invoice.
       committed:      committedByCostCode(purchaseOrders),
-      matured:        maturedCommittedByCostCode(purchaseOrders, invByPoLine),
+      remainingCommitted: remainingCommittedByCostCode(
+        purchaseOrders, invByPoLine, recognisedClaimsByPoLine(progressClaims, invoicedClaimIds(supplierInvoices)),
+      ),
       // forecast / margin
       rows: rows.map(r => [r.costCodeId, r.remainingCommitted, r.actual, r.forecastFinalCost ?? null]),
       forecastRemainingCommitted: forecastTotals.remainingCommitted,
@@ -818,10 +821,15 @@ describe('draft edit — financial regression (draft is never counted)', () => {
     expect(o.invoiceable).toEqual([])                          // c-approved already has an active invoice
   })
 
-  it('Committed and PO remaining value never move — a claim of any status is not read there', () => {
+  it('total commitment never moves; Remaining Committed moves only for an APPROVED claim not yet invoiced (ADR-55)', () => {
     const o = outputs([approvedClaim, editedDraft])
-    expect(o.committed).toEqual({ cc1: 10000, cc2: 20000 })
-    expect(o.matured).toEqual({ cc1: 8000, cc2: 20000 })       // reduced by the POSTED INVOICE, not by any claim
+    expect(o.committed).toEqual({ cc1: 10000, cc2: 20000 })    // total contractual commitment — never matures
+    // The approved claim is SUPERSEDED by its posted invoice, so the invoice
+    // (2000) matures the line and the claim adds nothing more; the DRAFT, whatever
+    // its amounts, is not recognised and nets nothing.
+    expect(o.remainingCommitted).toEqual({ cc1: 8000, cc2: 20000 })
+    // Pre-ADR-55 this read the same — the netting only differs once a claim is
+    // approved AND its invoice has not yet posted (the APPROVING case below).
   })
 
   it('Retention Held / Released derive from posted invoices only, never from a claim', () => {
@@ -853,11 +861,21 @@ describe('draft edit — financial regression (draft is never counted)', () => {
       ...editedDraft, status: CLAIM_STATUS.APPROVED,
       lineItems: editedDraft.lineItems.map((li, i) => ({ ...li, approvedThisPeriod: certified[i] })),
     }
+    const before = outputs([approvedClaim, editedDraft])
     const after = outputs([approvedClaim, approved])
     expect(after.actualClaims).toEqual({ cc1: 17500.25, cc2: 20000 })
     expect(after.claimedPending).toEqual({})
     expect(after.prevApproved).toEqual({ 0: 19500.25, 1: 20000 })
-    expect(after.forecastActual).toBeGreaterThan(outputs([approvedClaim, editedDraft]).forecastActual)
+    expect(after.forecastActual).toBeGreaterThan(before.forecastActual)
+    // ADR-55 — the certified value leaves Remaining Committed as it enters
+    // Actual, so it is never in both. Line 1 (10000) carried a posted 2000 and
+    // now a certified 17500.25 above its value → floors at 0; line 2 (20000) is
+    // fully certified → 0. Before ADR-55 both lines stayed fully committed and
+    // FFC would have carried 37500.25 twice.
+    expect(before.remainingCommitted).toEqual({ cc1: 8000, cc2: 20000 })
+    expect(after.remainingCommitted).toEqual({})
+    expect(before.forecastFinalCost).toBe(2000 + 8000 + 20000)
+    expect(after.forecastFinalCost).toBe(2000 + 17500.25 + 20000)
   })
 
   it('a WITHDRAWN (rejected) draft contributes nothing either', () => {

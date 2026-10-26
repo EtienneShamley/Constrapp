@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   PO_STATUS, PO_EDITABLE_STATUSES, PO_COMMITTED_STATUSES, canTransition,
   GST_RATE, roundMoney, lineTotal, poTotals,
-  committedByCostCode, maturedCommittedByCostCode,
+  committedByCostCode, remainingCommittedByCostCode,
   EMPTY_PO_FORM_LINE, poLineToForm, buildPoLineItem, validatePoDraft,
 } from '../../src/lib/purchaseOrders'
 import { buildForecastRows } from '../../src/lib/forecast'
@@ -342,7 +342,7 @@ describe('draft edit — financial regression (draft is never counted)', () => {
     const m = computeMargin({ baseline, forecastFinalCost: forecastTotals.forecastFinalCost })
     return {
       committed: committedByCostCode(purchaseOrders),
-      matured: maturedCommittedByCostCode(purchaseOrders, {}),
+      matured: remainingCommittedByCostCode(purchaseOrders, {}, {}),
       rows: rows.map(r => [r.costCodeId, r.remainingCommitted, r.actual, r.closedResidualCommitted ?? null]).sort(),
       forecastRemainingCommitted: forecastTotals.remainingCommitted,
       forecastFinalCost: forecastTotals.forecastFinalCost,
@@ -389,6 +389,6 @@ describe('draft edit — financial regression (draft is never counted)', () => {
     expect(committedByCostCode([draftAfter])).toEqual({})
     const sent = { ...draftAfter, status: PO_STATUS.SENT }
     expect(committedByCostCode([sent])).toEqual({ cc2: 39996, cc1: 123.45 })
-    expect(maturedCommittedByCostCode([sent], {})).toEqual({ cc2: 39996, cc1: 123.45 })
+    expect(remainingCommittedByCostCode([sent], {}, {})).toEqual({ cc2: 39996, cc1: 123.45 })
   })
 })

@@ -6,6 +6,8 @@ import Badge from '../../components/Badge'
 import { formatCurrency } from '../../lib/formatters'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
+import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
+import { claimLineConflictError } from '../../lib/poLineRecognition'
 import { PO_STATUS, PO_STATUS_LABELS } from '../../lib/purchaseOrders'
 import {
   CLAIM_STATUS, CLAIM_STATUS_LABELS, CLAIM_BADGE_VARIANTS,
@@ -46,7 +48,7 @@ function TotalsFooter({ totals, heading, currencyCode }) {
 // from the claim's OWN stored line, so the editor cannot repoint a line at a
 // different PO line or cost code. Line building and validation are the shared
 // pure helpers in lib/progressClaims.js so the two modes cannot drift.
-function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, progressClaims, currencyCode, onClose, onSave }) {
+function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, progressClaims, supplierInvoices = [], currencyCode, onClose, onSave }) {
   const money  = (n) => formatCurrency(n, currencyCode)
   const isEdit = !!claim
 
@@ -95,11 +97,20 @@ function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, p
 
   const totals     = claimTotals(builtLines.map(l => l.claimedThisPeriod), retention)
   const draftError = validateClaimDraft({ lineItems: builtLines })
+  // ONE RECOGNITION PATH PER PO LINE (ADR-55). A claim may not claim a PO line
+  // that a DIRECT supplier invoice already occupies — the two paths cannot be
+  // reconciled per line and Actual would count the line twice. CLIENT-ONLY
+  // (Deferred Control 34); mirrored on the invoice editor. The claim's OWN
+  // stored lines are the subject of an edit and are not another record.
+  const conflictPo = isEdit ? livePo : po
+  const conflictError = conflictPo
+    ? claimLineConflictError({ po: conflictPo, lineItems: builtLines, supplierInvoices })
+    : null
   // Live-status guard: the page passes the LIVE document, so if it left draft
   // while this editor was open the form shows a latest-version message and the
   // save is refused. Two concurrent draft editors remain last-write-wins.
   const stale      = isEdit && claim.status !== CLAIM_STATUS.DRAFT
-  const valid      = !draftError && (isEdit || !!po) && !stale
+  const valid      = !draftError && !conflictError && (isEdit || !!po) && !stale
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -239,7 +250,11 @@ function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, p
               </div>
               <p className="m-0 mt-1.5 text-[11px] text-brand-muted">
                 Amounts are cumulative — enter total claimed to date per line. Previously approved amounts are pre-filled and cannot be reduced. ⚠ marks a claim above the PO line value.
+                A line already invoiced directly must stay at zero — a PO line is recognised through claims or direct invoices, never both.
               </p>
+              {conflictError && (
+                <p className="m-0 mt-1.5 text-[12px] text-brand-red" role="alert">{conflictError}</p>
+              )}
             </div>
           )}
 
@@ -420,6 +435,10 @@ export default function ProjectProgressClaims() {
 
   const { progressClaims, progressClaimsLoading, createProgressClaim, updateProgressClaim, transitionStatus } = useProgressClaims(projectId)
   const { purchaseOrders, purchaseOrdersLoading } = usePurchaseOrders(projectId)
+  // Read for the per-line recognition guard only (ADR-55): a PO line already
+  // invoiced directly cannot be claimed. A failed read leaves the list empty
+  // and the guard silent — the guard is client-only either way.
+  const { supplierInvoices } = useSupplierInvoices(projectId)
   const [editing, setEditing]           = useState(null)   // 'new' | draft claim | null
   const [assessing, setAssessing]       = useState(null)
   const [actionError, setActionError]   = useState(null)
@@ -546,6 +565,7 @@ export default function ProjectProgressClaims() {
           currencyCode={currencyCode}
           claimablePOs={claimablePOs}
           progressClaims={progressClaims}
+          supplierInvoices={supplierInvoices}
           onClose={() => setEditing(null)}
           onSave={editing === 'new' ? createProgressClaim : (data) => handleUpdate(editing.id, data)}
         />

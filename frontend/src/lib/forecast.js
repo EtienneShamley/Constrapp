@@ -1,9 +1,9 @@
 import {
   roundMoney,
-  maturedCommittedByCostCode,
+  remainingCommittedByCostCode,
   PO_STATUS,
 } from './purchaseOrders'
-import { actualClaimsByCostCode } from './progressClaims'
+import { actualClaimsByCostCode, recognisedClaimsByPoLine } from './progressClaims'
 import {
   invoicedByCostCode,
   postedInvoicedByPoLine,
@@ -99,7 +99,8 @@ export function isOverBudget(varianceValue) {
 // Builds one base row per cost code that appears ANYWHERE relevant, reusing the
 // exact Budget-page read-time calculations (imported, not duplicated):
 //   • Budget Lines
-//   • sent/closed Purchase Order lines (Remaining Committed)
+//   • sent/closed Purchase Order lines (Remaining Committed — net of posted
+//     invoicing AND of approved claims not yet invoiced, ADR-55)
 //   • Actual (approved claims not superseded by a posted/paid invoice + posted/paid invoices
 //     − posted valid-target Supplier Credit Notes)
 //   • posted/paid Supplier Invoices (folded into Actual)
@@ -125,15 +126,20 @@ export function buildForecastRows({
   variations = [],
   forecastLines = [],
 }) {
-  // Remaining Committed — identical calculation to the Budget page.
+  // Remaining Committed — THE ONE formula (ADR-55), identical to the Budget
+  // page: each PO line nets posted invoicing AND the approved claim value Actual
+  // already recognises on that line, so a claim awaiting its invoice is never
+  // inside both Actual and Remaining Committed.
+  const superseded = invoicedClaimIds(supplierInvoices)
   const invByPoLine = postedInvoicedByPoLine(supplierInvoices)
-  const committedMap = maturedCommittedByCostCode(purchaseOrders, invByPoLine)
+  const recognisedByPoLine = recognisedClaimsByPoLine(progressClaims, superseded)
+  const committedMap = remainingCommittedByCostCode(purchaseOrders, invByPoLine, recognisedByPoLine)
 
   // Closed-PO residual open commitment — same formula, restricted to closed POs,
-  // so the page can flag uninvoiced commitment sitting on a completed PO for QS
+  // so every consumer can flag commitment still open on a completed PO for QS
   // judgement. It is NOT removed from Remaining Committed.
   const closedPurchaseOrders = purchaseOrders.filter(po => po.status === PO_STATUS.CLOSED)
-  const closedResidualMap = maturedCommittedByCostCode(closedPurchaseOrders, invByPoLine)
+  const closedResidualMap = remainingCommittedByCostCode(closedPurchaseOrders, invByPoLine, recognisedByPoLine)
 
   // Actual — approved claims not superseded by a posted/paid invoice + posted/paid
   // invoice lines − posted valid-target credit notes (the Budget-page
@@ -145,7 +151,7 @@ export function buildForecastRows({
   // adjusts Uncommitted CTC if re-invoicing is expected.
   const invoicedMap = invoicedByCostCode(supplierInvoices)
   const creditedMap = creditedByCostCode(supplierCreditNotes, supplierInvoices)
-  const claimActualMap = actualClaimsByCostCode(progressClaims, invoicedClaimIds(supplierInvoices))
+  const claimActualMap = actualClaimsByCostCode(progressClaims, superseded)
   const actualMap = {}
   for (const cc of new Set([
     ...Object.keys(claimActualMap), ...Object.keys(invoicedMap), ...Object.keys(creditedMap),
@@ -204,6 +210,11 @@ export function buildForecastRows({
       actual: actualMap[id] || 0,
       remainingCommitted: committedMap[id] || 0,
       closedResidual: closedResidualMap[id] || 0,
+      // Approved claim value awaiting its supplier invoice — already INSIDE
+      // Actual and already netted OUT of Remaining Committed. Carried so Cash
+      // Flow can time it as its own future cash basis (cash leaves when the
+      // invoice is paid, not when the claim is approved); never added to FFC.
+      approvedClaimsAwaitingInvoice: claimActualMap[id] || 0,
       approvedSupplierVariations: approvedSVMap[id] || 0,
       pendingSupplierVariationExposure: pendingSVMap[id] || 0,
       // The stored authored input (number | null); null = not forecast.
@@ -269,6 +280,8 @@ export function forecastRollups(rows) {
     forecastFinalCost: 0,
     approvedSupplierVariations: 0,
     pendingSupplierVariationExposure: 0,
+    closedResidual: 0,
+    approvedClaimsAwaitingInvoice: 0,
     unforecastedCount: 0,
     overBudgetCount: 0,
   }
@@ -281,6 +294,8 @@ export function forecastRollups(rows) {
     acc.forecastFinalCost += safeNumber(r.forecastFinalCost)
     acc.approvedSupplierVariations += safeNumber(r.approvedSupplierVariations)
     acc.pendingSupplierVariationExposure += safeNumber(r.pendingSupplierVariationExposure)
+    acc.closedResidual += safeNumber(r.closedResidual)
+    acc.approvedClaimsAwaitingInvoice += safeNumber(r.approvedClaimsAwaitingInvoice)
     if (r.unforecasted) acc.unforecastedCount += 1
     if (r.overBudget) acc.overBudgetCount += 1
   }
@@ -296,6 +311,8 @@ export function forecastRollups(rows) {
     varianceToBudget: roundMoney(budgeted - forecastFinalCostValue),
     approvedSupplierVariations: roundMoney(acc.approvedSupplierVariations),
     pendingSupplierVariationExposure: roundMoney(acc.pendingSupplierVariationExposure),
+    closedResidual: roundMoney(acc.closedResidual),
+    approvedClaimsAwaitingInvoice: roundMoney(acc.approvedClaimsAwaitingInvoice),
     unforecastedCount: acc.unforecastedCount,
     overBudgetCount: acc.overBudgetCount,
     lineCount: rows.length,

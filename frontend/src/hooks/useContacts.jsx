@@ -80,10 +80,11 @@ export function useContacts() {
   // The target is the COMPANY alone — the contact book is company-scoped, so
   // switching project neither re-subscribes nor reloads it.
   //
-  // `error` is tracked here for pattern uniformity but deliberately NOT
-  // exposed: adding a `contactsError` would change this hook's public API. A
-  // failed read therefore still presents as an empty list, exactly as it did
-  // before this migration.
+  // `error` is EXPOSED as `contactsError` (ADR-55; closes ADR-41 Decision 3):
+  // a rules rejection or connection loss must never present as an empty list,
+  // because consumers turn an empty list into "create your first…" prompts and
+  // disabled authoring. Like every financial hook it is derived only once the
+  // CURRENT target has settled, so a company switch never flashes a stale flag.
   const [snap, setSnap] = useState({ key: null, contacts: [], error: false })
 
   useEffect(() => {
@@ -115,6 +116,7 @@ export function useContacts() {
   const settled = targetKey !== null && snap.key === targetKey
   const contacts = settled ? snap.contacts : []
   const contactsLoading = targetKey !== null && !settled
+  const contactsError = settled ? snap.error : false
 
   // Returns the new contact's document ID so callers (e.g. the PO supplier
   // quick-create) can select it immediately.
@@ -165,5 +167,5 @@ export function useContacts() {
   const archiveContact    = useCallback((contact) => setContactActive(contact, false), [setContactActive])
   const reactivateContact = useCallback((contact) => setContactActive(contact, true),  [setContactActive])
 
-  return { contacts, contactsLoading, createContact, updateContact, archiveContact, reactivateContact }
+  return { contacts, contactsLoading, contactsError, createContact, updateContact, archiveContact, reactivateContact }
 }

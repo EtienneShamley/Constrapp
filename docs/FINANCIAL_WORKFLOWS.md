@@ -81,10 +81,27 @@ incremented in the same transaction as the PO write.
 
 ### Committed-cost calculation
 
+Two figures, deliberately kept apart (ADR-55):
+
 ```
-Committed(costCode) = Σ lineTotal of every line with that costCodeId
-                      across POs in status ∈ { sent, closed }
+Total commitment(costCode)    = Σ lineTotal of every line with that costCodeId
+                                across POs in status ∈ { sent, closed }
+                                (lib/purchaseOrders.js → committedByCostCode — never matures)
+
+Remaining Committed(costCode) = Σ over the same lines of
+                                max(0, lineTotal
+                                       − posted/paid supplier-invoice amount on the line
+                                       − approved claim value on the line NOT yet superseded
+                                         by a posted claim-sourced invoice)
+                                (lib/purchaseOrders.js → remainingCommittedByCostCode —
+                                 THE one formula every Committed figure uses)
 ```
+
+*Committed* on the Budget, Forecast, Commercial, Dashboard, Cash Flow and
+PULSE surfaces is **Remaining Committed**: ordered and **not yet recognised as
+Actual**. A dollar leaves it at the moment it enters Actual — by approved claim
+or by posted invoice — so the two never overlap and Forecast Final Cost counts
+each dollar once. See *The Six Budget Figures* below.
 
 ## Progress Claim Lifecycle
 
@@ -320,6 +337,29 @@ certified amount it bills.
   normalised `supplierInvoiceNumber` for the same supplier (`supplierId` when
   present, else the `supplierName` snapshot for pre-Contacts POs). Never blocks;
   server-enforced uniqueness is deferred.
+
+### One recognition path per PO line (ADR-55)
+
+A PO line's cost reaches Actual through **either** a progress claim (certified,
+then invoiced from the claim) **or** a direct supplier invoice — never both.
+The claim→invoice hand-over keys on `progressClaimId`, so a direct invoice can
+never supersede a claim: if both paths touch one line, Actual counts the line
+twice and nothing in the records can say which side is the duplicate.
+
+- **New combinations are blocked at authoring** (`lib/poLineRecognition.js`,
+  client-only — SECURITY.md Deferred Control 34): a direct invoice may not
+  price a PO line any non-rejected claim occupies, and a claim may not claim
+  above zero on a line any non-cancelled direct invoice prices. Independent
+  lines on the same PO are never blocked; claim-sourced invoices are never
+  checked.
+- **Existing overlaps are listed, never repaired**: `mixedModePoLineConflicts`
+  names every PO line where a posted direct invoice and an approved,
+  not-yet-invoiced claim both count right now, with both amounts and the
+  *overlap* (the smaller of the two — an upper bound of the double count). It
+  is shown on the Supplier Invoices register and as SHIELD check 4 condition E.
+  Actual and Remaining Committed are left exactly as the documents say;
+  reconciliation is a human cancelling or crediting the record that should not
+  stand.
 
 ### No Budget Line writes
 
@@ -1208,7 +1248,7 @@ All derived figures group PO/claim **line items by `costCodeId`** and are ex-GST
 | Figure | Definition | Source |
 |---|---|---|
 | **Budgeted** | Σ `budgeted` across the project's budget lines | Stored on budget lines |
-| **Committed** | Remaining **open** commitment: per PO line (POs in `sent`/`closed`), `lineTotal − posted/paid invoiced-to-date against that line`, floored at 0, grouped by cost code | Derived from POs + invoices |
+| **Committed** | Remaining **open** commitment: per PO line (POs in `sent`/`closed`), `lineTotal − posted/paid invoiced-to-date against that line − approved claim value on that line not yet superseded by a posted claim-sourced invoice`, floored at 0, grouped by cost code (ADR-55) | Derived from POs + claims + invoices |
 | **Claimed** | Σ `claimedThisPeriod` of claim lines, claims in `submitted`/`under_review` — uncertified exposure only | Derived from claims |
 | **Actual** | Σ `approvedThisPeriod` of claim lines (claims in `approved`/`invoiced`) **not superseded by a posted/paid invoice** + Σ ex-GST line `amount` of posted/paid supplier invoices **− Σ ex-GST line `amount` of posted valid-target supplier credit notes** (signed, never clamped) | Derived from claims + invoices − credit notes |
 | **Invoiced** | Σ ex-GST line `amount` of supplier invoices in `posted`/`paid` **− Σ ex-GST line `amount` of posted valid-target supplier credit notes**, grouped by cost code (signed, never clamped) | Derived from invoices − credit notes |
@@ -1227,16 +1267,20 @@ Commitment Exposure is explicitly **separate** from Committed: approved variatio
 amounts **do not yet mature** against progress claims or supplier invoices. UI
 helper text states this.
 
-### Committed now means *remaining open commitment*
+### Committed means *remaining open commitment* — ordered and not yet recognised as Actual
 
-Before invoices, Committed was the full value of every sent/closed PO. **Now that
-supplier invoices exist, Committed matures to the remaining open commitment** —
-each PO line's value less what has been invoiced (posted/paid) against it, floored
-at zero. As invoices post, value moves out of Committed and into Invoiced/Actual,
-so the figures are **complementary rather than overlapping**: Committed answers
-"what have we ordered but not yet been billed for?", Actual answers "what has this
-project actually cost?" Over-invoicing a line simply drives its open commitment to
-zero (never negative).
+Before invoices, Committed was the full value of every sent/closed PO. With
+supplier invoices it matured by posted invoicing; **since ADR-55 it matures at
+the moment a cost is recognised**, whichever path recognises it: each PO line's
+value less what has been posted against it **and** less the approved claim value
+Actual already counts on it (until that claim's own invoice posts and takes its
+place), floored at zero. Committed and Actual are therefore **complementary
+rather than overlapping** — Committed answers "what have we ordered that is not
+yet recognised as cost?", Actual answers "what has this project actually cost?"
+— and `Actual + Remaining Committed` never counts a certified claim twice.
+Over-invoicing or over-claiming a line simply drives its open commitment to zero
+(never negative). The claim value awaiting its invoice is carried separately as
+`approvedClaimsAwaitingInvoice` so Cash Flow can time it as future cash.
 
 ### Actual: claims are replaced by their invoice, never double-counted
 
@@ -1416,7 +1460,7 @@ Because the BOQ `revision` is frozen at 1, this guard — like unit
 compatibility and the aggregate — is **client-enforced**
 (SECURITY.md → Deferred Control 33).
 
-### Quant™ 1D — opening and void deductions *(implemented — NOT YET DEPLOYED; ADR-54)*
+### Quant™ 1D — opening and void deductions *(live in production — 26 October 2026; ADR-54)*
 
 A deduction is an opening traced **inside** an area and subtracted from it.
 It is stored on the parent measurement as a hole in its own geometry
@@ -1544,6 +1588,12 @@ Forecast Final Cost = Actual + Remaining Committed + Uncommitted Cost to Complet
 Variance to Budget  = Budgeted − Forecast Final Cost                                (a.k.a. Variance at Completion / VAC)
 ```
 
+- **Remaining Committed is net of approved claims awaiting their invoice
+  (ADR-55).** An approved claim is recognised in Actual, so the same value is
+  netted off its PO line in Remaining Committed; Forecast Final Cost counts it
+  once. The audited fixture — PO 800, approved claim 300, CTC 150 — reads
+  **950**, not the 1,250 it read before ADR-55 (and *under*, not *over*, a
+  1,000 budget). Posting the claim's invoice moves nothing.
 - **Variance to Budget > 0 ⇒ forecast under budget; < 0 ⇒ forecast over budget.**
 - **`null` (not forecast) contributes zero** to totals for calculation while the
   row stays visibly *not forecast*; a project-level count of unforecasted cost
@@ -1749,22 +1799,24 @@ months, counted manual-line months, and the current month.
 Revenue coverage % = Σ contract_revenue coverage ÷ Remaining Uninvoiced Contract Value
 Cost coverage %    = ( remaining_committed + uninvoiced_claim + uncommitted_ctc coverage )
                      ÷ D_cost
-D_cost             = Remaining Committed + Uncommitted Cost to Complete
-                   ( ≡ Cost to Complete — the figure the Forecast tab publishes )
+D_cost             = Remaining Committed
+                   + approved claims awaiting invoice   (forecast rollup `approvedClaimsAwaitingInvoice`)
+                   + Uncommitted Cost to Complete
 ```
 
-> **⚠️ Approved-claim cost sits INSIDE Remaining Committed.** An approved claim
-> consumes PO commitment, and Remaining Committed subtracts only **posted
-> invoicing** — so `uninvoiced_claim` coverage counts against the **same
-> cost-code committed balance** as `remaining_committed`, and is **never** an
-> additive second denominator or an additional untimed cost total. It is shown
-> only as a labelled breakdown: *"Approved claim awaiting invoice — included
-> within Remaining Committed."*
+> **⚠️ Cash timing is not cost recognition (ADR-55).** Remaining Committed is
+> **net** of approved claims awaiting their supplier invoice — that value is
+> already recognised as Actual **cost**. It is not yet **cash**: the money
+> leaves when the claim's invoice is paid. Cash Flow therefore carries it as
+> its **own** basis with its own `uninvoiced_claim` coverage. The three bases
+> are disjoint by construction (a dollar is open commitment, OR an approved
+> claim awaiting invoice, OR uncommitted CTC), so adding them counts nothing
+> twice. Before ADR-55 the two coverages were netted off one committed balance
+> because the claim still sat inside Remaining Committed.
 
 ```
-Untimed Remaining Committed = max(0, Remaining Committed
-                                     − coverage('remaining_committed')
-                                     − coverage('uninvoiced_claim'))
+Untimed Remaining Committed = max(0, Remaining Committed − coverage('remaining_committed'))
+Untimed Uninvoiced Claims   = max(0, approved claims awaiting invoice − coverage('uninvoiced_claim'))
 Untimed Uncommitted CTC     = max(0, Uncommitted CTC − coverage('uncommitted_ctc'))
 Untimed Uninvoiced Contract = max(0, max(0, Available to Invoice)
                                      − coverage('contract_revenue'))

@@ -137,7 +137,7 @@ function ForecastWorkspace({ projectId, currencyCode }) {
   const { user }    = useAuth()
   const { profile } = useProfile()
   const { budgetLines, budgetLinesLoading, budgetLinesError }                         = useBudgetLines(projectId)
-  const { costCodes, costCodesLoading }                                               = useCostCodes()
+  const { costCodes, costCodesLoading, costCodesError }                               = useCostCodes()
   const { purchaseOrders, purchaseOrdersLoading, purchaseOrdersError }                = usePurchaseOrders(projectId)
   const { progressClaims, progressClaimsLoading, progressClaimsError }                = useProgressClaims(projectId)
   const { supplierInvoices, supplierInvoicesLoading, supplierInvoicesError }          = useSupplierInvoices(projectId)
@@ -158,12 +158,12 @@ function ForecastWorkspace({ projectId, currencyCode }) {
   }
   // The table, its counts and every row figure depend on the full cost-code
   // union. Cost codes add no row and no amount, but supply the live name a
-  // save stores — so editing also waits for them. (useCostCodes exposes no
-  // error flag: a failed read is indistinguishable from an empty list, and
-  // names then fall back to the stored snapshot — ADR-44 limitation.)
+  // save stores — so editing also waits for them, and a FAILED cost-code read
+  // (exposed since ADR-55) disables editing rather than storing an unresolved
+  // name; figures are unaffected and names fall back to the stored snapshot.
   const rows = figureState(FIGURE_DEPENDENCIES.forecastRows, sourceStates)
   const rowsReady = rows.state === FIGURE_STATE.READY
-  const editable = rowsReady && !costCodesLoading
+  const editable = rowsReady && !costCodesLoading && !costCodesError
 
   const [edits, setEdits]         = useState({})   // costCodeId → { ctc: string, notes: string }
   const [savingId, setSavingId]   = useState(null) // costCodeId | 'all' | null
@@ -311,6 +311,16 @@ function ForecastWorkspace({ projectId, currencyCode }) {
           {supplierCreditNotesError && (
             <p className="m-0 mt-1 text-[12px] text-brand-muted">{CREDIT_READ_UNAVAILABLE_NOTICE}</p>
           )}
+        </Card>
+      )}
+      {costCodesError && (
+        <Card className="mb-3.5">
+          <p className="text-[13px] font-bold text-brand-amber m-0">Cost codes could not be loaded</p>
+          <p className="m-0 mt-1 text-[12px] text-brand-muted">
+            Figures are unaffected; cost-code names fall back to each row&apos;s stored snapshot, and forecast inputs
+            cannot be saved until the library loads. Reload the page, and check your connection and permissions if
+            this persists.
+          </p>
         </Card>
       )}
       <SummaryCards figures={figures} currencyCode={currencyCode} />

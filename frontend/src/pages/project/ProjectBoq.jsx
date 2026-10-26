@@ -165,7 +165,7 @@ export default function ProjectBoq() {
     boqItems, boqItemsLoading, boqItemsError,
     createBoqItem, updateBoqItem, voidBoqItem, applyBoqQuantity,
   } = useBoqItems(mid)
-  const { costCodes, costCodesLoading } = useCostCodes()
+  const { costCodes, costCodesLoading, costCodesError } = useCostCodes()
   const { budgetLines, budgetLinesLoading, budgetLinesError } = useBudgetLines(mid)
   // Quant 1B sources (ADR-52) — read-only here; same three roles as the BOQ.
   const { takeoffMeasurements, takeoffMeasurementsLoading, takeoffMeasurementsError } = useTakeoffMeasurements(mid)
@@ -206,7 +206,8 @@ export default function ProjectBoq() {
     [costCodes, boqItems, budgetLines],
   )
 
-  const noCostCodes = !costCodesLoading && costCodes.length === 0
+  // A FAILED cost-code read is reported, never read as "no cost codes" (ADR-55).
+  const noCostCodes = !costCodesLoading && !costCodesError && costCodes.length === 0
   const goToCostCodes = () => navigate(`/projects/${projectId}/cost-codes`)
 
   // Quant 1C-B (ADR-53): "Open in Quant" from the apply dialog hands the
@@ -298,11 +299,20 @@ export default function ProjectBoq() {
         </div>
         <div className="flex items-center gap-2">
           {noCostCodes && <Btn variant="ghost" sm onClick={goToCostCodes}>Go to Cost Codes</Btn>}
-          <Btn sm onClick={() => setEditing('new')} disabled={costCodesLoading || costCodes.length === 0}>
+          <Btn sm onClick={() => setEditing('new')} disabled={costCodesLoading || costCodesError || costCodes.length === 0}>
             + Add BOQ Item
           </Btn>
         </div>
       </div>
+      {costCodesError && (
+        <Card className="mb-3.5">
+          <p className="text-[13px] font-bold text-brand-amber m-0">Cost codes could not be loaded</p>
+          <p className="m-0 mt-1 text-[12px] text-brand-muted">
+            New BOQ items need the cost-code library and cannot be added until it loads; existing items show their
+            stored cost-code names. Reload the page, and check your connection and permissions if this persists.
+          </p>
+        </Card>
+      )}
 
       {/* ── Source-failure banner (never shown as zeros) ──────────────────── */}
       {!boqItemsError && takeoffMeasurementsError && (

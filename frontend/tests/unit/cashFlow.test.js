@@ -9,8 +9,8 @@ import {
   activeCashFlowLines, voidCashFlowLines, staleCashFlowLines,
   manualForecastByMonth, classifyInvoiceBalances, sumRetentionHeld,
   buildMonthlyCombinedRows, projectedClosingPosition,
-  coverageByType, committedCoverageByCostCode, ctcCoverageByCostCode,
-  untimedForecastRevenue, untimedRemainingCommitted, untimedUncommittedCtc,
+  coverageByType, committedCoverageByCostCode, uninvoicedClaimCoverageByCostCode, ctcCoverageByCostCode,
+  untimedForecastRevenue, untimedRemainingCommitted, untimedUninvoicedClaims, untimedUncommittedCtc,
   revenueCoverage, costCoverage, COMPLETENESS_STATE, completenessState,
   peakFunding, peakFundingSuppression,
   gstSuggestedGross, coverageOverWarning, validateCashFlowLineDraft,
@@ -920,28 +920,39 @@ describe('no double counting', () => {
     expect(total).toBe(1100)
   })
 
-  it('uninvoiced_claim coverage counts against the SAME committed balance (corrected model)', () => {
+  // ADR-55 — Remaining Committed is now NET of approved claims awaiting their
+  // invoice (that value is recognised cost), so the approved claim is timed as
+  // ITS OWN cash basis. Before ADR-55 the two coverages were netted off one
+  // committed balance because the claim still sat inside it; keeping that
+  // against the corrected figure would understate Forecast Cash Out.
+  it('uninvoiced_claim and remaining_committed coverage each count against their OWN balance (ADR-55)', () => {
     const lines = [
       outLine({ sourceType: 'remaining_committed', costCodeId: 'cc1', sourceAmountExGst: 600 }),
       outLine({ sourceType: 'uninvoiced_claim', costCodeId: 'cc1', sourceAmountExGst: 300 }),
     ]
-    expect(committedCoverageByCostCode(lines)).toEqual({ cc1: 900 })
-    // Untimed committed subtracts BOTH coverages from ONE denominator.
-    expect(untimedRemainingCommitted({ remainingCommittedTotal: 1000, lines })).toBe(100)
+    expect(committedCoverageByCostCode(lines)).toEqual({ cc1: 600 })
+    expect(uninvoicedClaimCoverageByCostCode(lines)).toEqual({ cc1: 300 })
+    expect(untimedRemainingCommitted({ remainingCommittedTotal: 1000, lines })).toBe(400)
+    expect(untimedUninvoicedClaims({ uninvoicedClaimTotal: 300, lines })).toBe(0)
+    expect(untimedUninvoicedClaims({ uninvoicedClaimTotal: 500, lines })).toBe(200)
   })
 
-  it('uninvoiced-claim cost is never an additive second denominator', () => {
-    // D_cost = remainingCommitted + uncommittedCtc — nothing else.
-    const r = costCoverage({ remainingCommittedTotal: 1000, uncommittedCtcTotal: 500, lines: [] })
+  it('the three cost bases are disjoint and are added once each — a dollar is open commitment, OR an approved claim, OR CTC', () => {
+    // D_cost = remainingCommitted + uninvoicedClaims + uncommittedCtc.
+    const r = costCoverage({ remainingCommittedTotal: 1000, uninvoicedClaimTotal: 300, uncommittedCtcTotal: 500, lines: [] })
     expect(r.pct).toBe(0)
     const covered = costCoverage({
-      remainingCommittedTotal: 1000, uncommittedCtcTotal: 500,
+      remainingCommittedTotal: 1000, uninvoicedClaimTotal: 300, uncommittedCtcTotal: 500,
       lines: [
-        outLine({ sourceType: 'uninvoiced_claim', costCodeId: 'cc1', sourceAmountExGst: 750 }),
-        outLine({ sourceType: 'uncommitted_ctc', costCodeId: 'cc2', sourceAmountExGst: 375 }),
+        outLine({ sourceType: 'remaining_committed', costCodeId: 'cc1', sourceAmountExGst: 1000 }),
+        outLine({ sourceType: 'uninvoiced_claim', costCodeId: 'cc1', sourceAmountExGst: 300 }),
+        outLine({ sourceType: 'uncommitted_ctc', costCodeId: 'cc2', sourceAmountExGst: 50 }),
       ],
     })
-    expect(covered.pct).toBe(75) // (750 + 375) / 1500
+    expect(covered.pct).toBe(75) // (1000 + 300 + 50) / 1800
+    // Omitting the claim basis defaults to zero — a caller that does not carry
+    // approved claims times only commitment and CTC.
+    expect(costCoverage({ remainingCommittedTotal: 1000, uncommittedCtcTotal: 500, lines: [] }).pct).toBe(0)
   })
 
   it('client variations never add a second revenue source — coverage keys on contract_revenue only', () => {
@@ -1001,17 +1012,30 @@ describe('over-coverage warning (warned, never blocked)', () => {
   const balances = {
     availableToInvoice: 1000,
     remainingCommittedByCostCode: { cc1: 800 },
+    uninvoicedClaimByCostCode: { cc1: 300 },
     uncommittedCtcByCostCode: { cc1: 200 },
   }
 
-  it('warns when combined committed + claim coverage exceeds the shared balance', () => {
+  it('committed coverage warns against the committed balance only — a claim line does not consume it (ADR-55)', () => {
     const existing = [outLine({ sourceType: 'uninvoiced_claim', costCodeId: 'cc1', sourceAmountExGst: 500 })]
-    const w = coverageOverWarning({
+    expect(coverageOverWarning({
       sourceType: 'remaining_committed', costCodeId: 'cc1',
       sourceAmountExGst: 400, lines: existing, balances,
+    })).toBe(null)
+    const w = coverageOverWarning({
+      sourceType: 'remaining_committed', costCodeId: 'cc1',
+      sourceAmountExGst: 900, lines: existing, balances,
     })
-    expect(w).not.toBe(null)
-    expect(w.excess).toBe(100) // 500 + 400 − 800
+    expect(w.excess).toBe(100) // 900 − 800; the claim line is not in this balance
+  })
+
+  it('uninvoiced_claim coverage warns against the approved-claims balance', () => {
+    const existing = [outLine({ sourceType: 'uninvoiced_claim', costCodeId: 'cc1', sourceAmountExGst: 200 })]
+    const w = coverageOverWarning({
+      sourceType: 'uninvoiced_claim', costCodeId: 'cc1',
+      sourceAmountExGst: 150, lines: existing, balances,
+    })
+    expect(w.excess).toBe(50) // 200 + 150 − 300
   })
 
   it('does not warn within the balance, and excludes the line being edited', () => {
