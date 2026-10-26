@@ -463,7 +463,12 @@ describe('structure — draft protection and navigation in the workspace', () =>
   const workspace = stripComments(read('pages/project/quant/TakeoffWorkspace.jsx'))
 
   it('unsaved work is exactly: draft points, a calibration pair, or a DIRTY geometry edit — a clean state never prompts', () => {
-    expect(workspace).toContain('const editDirty = !!editing && !samePoints(editing.points, editing.measurement.points)')
+    // (ADR-54 revision: a session starts from `basePoints` — the measurement's
+    // points, or a HOLE's — so a deduction outline edit is judged dirty against
+    // the hole it started from, never against its parent.)
+    expect(workspace).toContain('const editDirty = !!editing && !samePoints(editing.points, editing.basePoints)')
+    expect(workspace).toContain('basePoints: m.points, deductionId: null,')
+    expect(workspace).toContain('basePoints: d.points, deductionId: d.id,')
     expect(workspace).toContain('const hasUnsavedWork = draftPoints.length > 0 || calibrationPoints.length > 0 || editDirty')
     expect(workspace).toContain('const confirmDiscard = () => !hasUnsavedWork || window.confirm(DISCARD_MESSAGE)')
   })
@@ -487,7 +492,11 @@ describe('structure — draft protection and navigation in the workspace', () =>
 
   it('every save is counted while in flight and still resolves only after the transaction committed', () => {
     expect(workspace).toMatch(/const tracked = async \(work\) => \{\s*setPendingSaves\(n => n \+ 1\)\s*try \{ return await work\(\) \} finally \{ setPendingSaves\(n => n - 1\) \}\s*\}/)
-    expect(workspace.match(/await tracked\(\(\) => /g)).toHaveLength(6) // calibration, create, details, geometry, review, void
+    // calibration, create, details, geometry, review, void — plus, since ADR-54, a
+    // deduction save/rename, a deduction outline save and a deduction removal, all
+    // through the SAME guarded `updateMeasurement`.
+    expect(workspace.match(/await tracked\(\(\) => /g)).toHaveLength(9)
+    expect(workspace.match(/await tracked\(\(\) => updateMeasurement\(\{ seen: (live|m), changes: \{ deductions: /g)).toHaveLength(3)
     expect(workspace).not.toMatch(/setNotice\(\{ tone: 'ok'[^\n]*\n[^\n]*await /)
   })
 
@@ -608,9 +617,10 @@ describe('structure — the overlay handles no pointer events; the selected vert
   })
 })
 
-describe('structure — the three Quant dialogs share the accessible shell (QuantDialog)', () => {
+describe('structure — the Quant dialogs share the accessible shell (QuantDialog)', () => {
   const shell = stripComments(read('pages/project/quant/QuantDialog.jsx'))
-  const dialogs = ['CalibrationModal.jsx', 'MeasurementEditorModal.jsx', 'MeasurementVoidModal.jsx']
+  // The three 1C-A dialogs plus the 1D DeductionDialog (ADR-54).
+  const dialogs = ['CalibrationModal.jsx', 'MeasurementEditorModal.jsx', 'MeasurementVoidModal.jsx', 'DeductionDialog.jsx']
 
   it('QuantDialog: role, aria-modal, accessible name, Escape unless busy, Tab containment via lib/dialogFocus, focus in, focus back', () => {
     expect(shell).toContain('role="dialog" aria-modal="true" aria-labelledby={titleId}')
@@ -635,7 +645,7 @@ describe('structure — the three Quant dialogs share the accessible shell (Quan
       expect(src, f).not.toMatch(/modalShellCls|modalCardCls|bg-black\/60|aria-label="Close"/)
     }
     const ids = dialogs.map(f => read(`pages/project/quant/${f}`).match(/titleId="([^"]+)"/)[1])
-    expect(new Set(ids).size).toBe(3)
+    expect(new Set(ids).size).toBe(4)
   })
 
   it('business behaviour is unchanged: the void reason, the calibration acknowledgement, the link clearing', () => {
@@ -700,7 +710,11 @@ describe('vocabulary', () => {
   it('kinds, polygon problems and quantity problems are closed sets', () => {
     expect(Object.values(MEASUREMENT_KIND)).toEqual(['length', 'area', 'count'])
     expect(POLYGON_PROBLEM).toEqual({ DEGENERATE: 'degenerate', SELF_INTERSECTING: 'self_intersecting' })
-    expect(Object.keys(QUANTITY_PROBLEM).sort()).toEqual(['DEGENERATE', 'MALFORMED', 'SELF_INTERSECTING', 'TOO_FEW_POINTS'])
+    // (ADR-54 revision: five deduction reasons joined the closed set.)
+    expect(Object.keys(QUANTITY_PROBLEM).sort()).toEqual([
+      'DEDUCTIONS_EXCEED_AREA', 'DEDUCTIONS_OVERLAP', 'DEDUCTION_INVALID', 'DEDUCTION_MALFORMED', 'DEDUCTION_OUTSIDE',
+      'DEGENERATE', 'MALFORMED', 'SELF_INTERSECTING', 'TOO_FEW_POINTS',
+    ])
     expect(ZOOM_MIN).toBe(0.25)
     expect(ZOOM_MAX).toBe(8)
   })

@@ -1,7 +1,7 @@
 import {
   MEASUREMENT_KIND, MEASUREMENT_KINDS, MEASUREMENT_STATUS, KIND_UNITS, QUANTITY_STATE, CALIBRATION_REVIEW,
   isReadableMeasurement, measurementQuantity, calibrationReviewState, roundQuantity, isCurrentSource,
-  measurementBoqItemId,
+  measurementBoqItemId, measurementDeductions,
 } from './quant'
 import { BOQ_STATUS, boqLineAmount, isPriced, sortBoqItems, formatQuantity } from './boq'
 import { isWithdrawnDrawing } from './drawings'
@@ -165,7 +165,7 @@ export const APPLY_BLOCKER_LABELS = {
   [APPLY_BLOCKER.SOURCE_NOT_CURRENT]: { title: 'Not on the current revision',    remedy: 'Re-measure on the current revision, then void or unlink this measurement.' },
   [APPLY_BLOCKER.UNCALIBRATED]:       { title: 'Page not calibrated',            remedy: 'Calibrate the page on the Quant tab.' },
   [APPLY_BLOCKER.NEEDS_REVIEW]:       { title: 'Needs review — scale changed',   remedy: 'Open the Quant tab and Mark reviewed, or re-measure.' },
-  [APPLY_BLOCKER.INVALID]:            { title: 'Quantity cannot be derived',     remedy: 'Check the measurement geometry on the Quant tab.' },
+  [APPLY_BLOCKER.INVALID]:            { title: 'Quantity cannot be derived',     remedy: 'Check the measurement geometry — and any deductions — on the Quant tab.' },
 }
 
 // Classify ONE active linked measurement against its item and sources.
@@ -327,6 +327,14 @@ const num = (n) => (typeof n === 'number' && Number.isFinite(n) ? String(n) : ''
 const pointsKey = (points) => (points ?? []).map(p => `${num(p?.x)},${num(p?.y)}`).join(';')
 const snapshotKey = (c) => (c ? `${num(c.revision)}/${num(c.pageDistance)}/${num(c.realDistance)}/${c.unit ?? ''}` : 'null')
 const pageCalKey = (page) => (page?.calibration ? `${num(page.calibration.pageDistance)}/${num(page.calibration.realDistance)}/${page.calibration.unit ?? ''}` : 'null')
+// Deductions (ADR-54): identity and geometry of every hole, by id, appended
+// ONLY when the measurement has any — so every fingerprint ever recorded for
+// a measurement without deductions is unchanged, and EVIDENCE_VERSION stays v1.
+const deductionsKey = (m) => {
+  const list = measurementDeductions(m)
+  if (list.length === 0) return ''
+  return ':' + [...list].sort((a, b) => (String(a?.id) < String(b?.id) ? -1 : 1)).map(d => `${d?.id ?? ''}=${pointsKey(d?.points)}`).join('|')
+}
 
 // The canonical (un-hashed) evidence text for one row.
 export function evidenceRowKey(row) {
@@ -337,7 +345,7 @@ export function evidenceRowKey(row) {
     pointsKey(m.points), snapshotKey(m.calibration),
     num(page?.calibrationRevision), pageCalKey(page),
     drawing?.currentRevisionId ?? '', drawing?.status ?? '',
-  ].join(':')
+  ].join(':') + deductionsKey(m)
 }
 
 // The fingerprint of an aggregate's ELIGIBLE evidence, or null when there is

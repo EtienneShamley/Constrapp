@@ -15,8 +15,9 @@ import {
   MEASUREMENT_KIND, MEASUREMENT_STATUS, KIND_LABELS, MIN_POINTS, MAX_POINTS, ZOOM_STEP, clampZoom, FIT_MODE,
   canUseQuant, canMeasureOnRevision, sourceWarning, takeoffPageId, measurementsForPage,
   activeMeasurements, calibrationSnapshot, validatePoints, formatMeasurementQuantity,
-  measurementQuantity, quantityIssue, summariseMeasurements, isReadableMeasurement, QUANT_ERROR,
+  measurementQuantity, quantityIssue, quantityBreakdown, summariseMeasurements, isReadableMeasurement, QUANT_ERROR,
   hitTestMeasurements, nearestSegment, insertPointAt, removePointAt, canRemovePoint,
+  DEDUCTION_MAX_POINTS, measurementDeductions, isDeduction, withDeduction, withoutDeduction, newDeductionId, validateDeductionPoints,
 } from '../../../lib/quant'
 import { toolBtnCls } from './styles'
 import SourcePicker from './SourcePicker'
@@ -25,6 +26,7 @@ import MeasurementList from './MeasurementList'
 import CalibrationModal from './CalibrationModal'
 import MeasurementEditorModal from './MeasurementEditorModal'
 import MeasurementVoidModal from './MeasurementVoidModal'
+import DeductionDialog from './DeductionDialog'
 import TakeoffSummary from './TakeoffSummary'
 
 // ── The takeoff workspace (Quant 1A, ADR-51; interaction ADR-53) ─────────────
@@ -75,6 +77,18 @@ import TakeoffSummary from './TakeoffSummary'
 // same way, through the remembered selection's optional `measurementId`.
 // Drafts are remembered PER SHEET, so opening another measurement's sheet
 // never costs the work on the one you left.
+//
+// DEDUCTIONS (Quant 1D, ADR-54). Select an active AREA → Deduct → trace the
+// opening with the same taps as an area (the `deduct` tool draws into the
+// same `draftPoints`, so every unsaved-work rule above applies unchanged);
+// the strip previews gross · this deduction · net live, through the one
+// derivation; Finish opens DeductionDialog for a label; Save is the parent's
+// revision-guarded update with its COMPLETE deductions list — as are Edit
+// outline (the same edit session, on the hole's points, with the parent's
+// outline shown for context), Rename and Remove (one confirmation). A STALE
+// refusal keeps the draft and says the parent changed, so the hole is
+// re-judged against the live outline before another save. No deduction is
+// ever a measurement of its own and nothing here writes a BOQ field.
 
 const TOOL = {
   SELECT:    'select',
@@ -82,12 +96,15 @@ const TOOL = {
   LENGTH:    MEASUREMENT_KIND.LENGTH,
   AREA:      MEASUREMENT_KIND.AREA,
   COUNT:     MEASUREMENT_KIND.COUNT,
+  DEDUCT:    'deduct',
 }
 
 const isKindTool = (tool) => tool === TOOL.LENGTH || tool === TOOL.AREA || tool === TOOL.COUNT
 
 export const DISCARD_MESSAGE = 'You have unsaved measurement work on this sheet. Discard it?'
 const LEAVE_WHILE_SAVING_MESSAGE = 'A save is still in progress. Leave this page anyway? The save will complete, but its result will not be shown.'
+export const STALE_DEDUCTION_MESSAGE = 'The area changed while you were working on this deduction (another user saved it). Your deduction is kept — check it against the updated outline shown now, then save again.'
+const DRAFT_DEDUCTION_ID = '__draft__'
 
 // The browser's per-tab storage, or null where there is none (lib/quantSelection.js
 // treats null as "remember nothing"). Read inside the initialiser and the
@@ -148,7 +165,11 @@ export default function TakeoffWorkspace({ projectId }) {
   const [tool, setTool] = useState(TOOL.SELECT)
   const [draftPoints, setDraftPoints] = useState([])
   const [calibrationPoints, setCalibrationPoints] = useState([])
-  // { measurement, kind, points, history: [points…], vertex: index | null, pending: points | null }
+  // The AREA a deduction is being traced for (tool `deduct` draws into draftPoints).
+  const [deductParentId, setDeductParentId] = useState(null)
+  // { measurement, kind, points, basePoints, history: [points…], vertex: index | null, pending: points | null,
+  //   deductionId: string | null } — `basePoints` are the points the session started from (the
+  //   measurement's, or the hole's); `deductionId` is set when a HOLE's outline is being edited.
   const [editing, setEditing] = useState(null)
   // The remembered selection may name a measurement to highlight (1C-B).
   const [selectedId, setSelectedId] = useState(saved?.measurementId ?? null)
@@ -179,6 +200,7 @@ export default function TakeoffWorkspace({ projectId }) {
   const [saveDialog, setSaveDialog] = useState(null)               // { kind, points }
   const [detailsDialog, setDetailsDialog] = useState(null)         // measurement
   const [voidDialog, setVoidDialog] = useState(null)               // measurement
+  const [deductionDialog, setDeductionDialog] = useState(null)     // { parent, points } (new) | { parent, deduction } (rename)
 
   // ── Derived ───────────────────────────────────────────────────────────────
   const identity = drawingId && revisionId ? { drawingId, revisionId, page } : null
@@ -206,10 +228,15 @@ export default function TakeoffWorkspace({ projectId }) {
   const calibrated = !!takeoffPage?.calibration
   const summary = summariseMeasurements(pageMeasurements, takeoffPage?.calibration ?? null)
   const selected = selectedId ? activeOnPage.find(m => m.id === selectedId) ?? null : null
+  // The parent of the deduction being traced — the LIVE copy, so a concurrent
+  // change shows up in the preview; null once it is voided or gone.
+  const deductParent = deductParentId ? activeOnPage.find(m => m.id === deductParentId && m.kind === MEASUREMENT_KIND.AREA) ?? null : null
 
   // Unsaved work: a draft with points, a calibration pair in progress, or a
   // geometry edit that changed something. A clean edit session is not "work".
-  const editDirty = !!editing && !samePoints(editing.points, editing.measurement.points)
+  // (A deduction being traced is draft points; a hole being edited compares
+  // with the hole's own starting points — ADR-54.)
+  const editDirty = !!editing && !samePoints(editing.points, editing.basePoints)
   const hasUnsavedWork = draftPoints.length > 0 || calibrationPoints.length > 0 || editDirty
 
   // Clears the in-progress state AND this sheet's remembered draft — called only
@@ -217,6 +244,7 @@ export default function TakeoffWorkspace({ projectId }) {
   const resetDrafts = () => {
     setDraftPoints([])
     setCalibrationPoints([])
+    setDeductParentId(null)
     setEditing(null)
     if (pageId) clearDraft(browserStorage(), projectId, pageId)
   }
@@ -359,14 +387,27 @@ export default function TakeoffWorkspace({ projectId }) {
         setDraftPoints(d.points)
         setCalibrationPoints(d.calibrationPoints)
         if (d.calibrationPoints.length === 2) setCalibrationDialog({ pointA: d.calibrationPoints[0], pointB: d.calibrationPoints[1] })
+        if (d.tool === TOOL.DEDUCT && d.deductParentId) {
+          setDeductParentId(d.deductParentId)
+          setSelectedId(d.deductParentId)
+        }
         if (d.editing) {
           const m = d.editing.measurement
-          setEditing({ measurement: m, kind: m.kind, points: d.editing.points, history: [], vertex: null, pending: null })
+          const hole = d.editing.deductionId ? measurementDeductions(m).find(x => x?.id === d.editing.deductionId) ?? null : null
+          setEditing({
+            measurement: m, kind: hole ? MEASUREMENT_KIND.AREA : m.kind, points: d.editing.points,
+            basePoints: hole ? hole.points : m.points, deductionId: hole ? hole.id : null,
+            history: [], vertex: null, pending: null,
+          })
           setSelectedId(m.id)
         }
-        setNotice({ tone: 'ok', text: result.droppedEdit ? 'Your unsaved work was restored; a geometry edit was dropped because that measurement changed.' : 'Your unsaved work on this sheet was restored.' })
-      } else if (result?.droppedEdit) {
-        setNotice({ tone: 'error', text: 'An unsaved geometry edit was dropped: the measurement changed since you started it.' })
+        const dropped = [
+          result.droppedEdit ? 'a geometry edit was dropped because that measurement changed' : null,
+          result.droppedDeduction ? 'a deduction draft was dropped because its area is no longer on this sheet' : null,
+        ].filter(Boolean)
+        setNotice({ tone: 'ok', text: dropped.length ? `Your unsaved work was restored; ${dropped.join('; ')}.` : 'Your unsaved work on this sheet was restored.' })
+      } else if (result?.droppedEdit || result?.droppedDeduction) {
+        setNotice({ tone: 'error', text: result.droppedEdit ? 'An unsaved geometry edit was dropped: the measurement changed since you started it.' : 'An unsaved deduction was dropped: the area it was traced for is no longer on this sheet.' })
         clearDraft(storage, projectId, pageId)
       }
       setOtherDrafts(listDrafts(storage, projectId).filter(d => d.pageId !== pageId))
@@ -388,9 +429,12 @@ export default function TakeoffWorkspace({ projectId }) {
       tool: editing ? 'edit' : tool,
       points: draftPoints,
       calibrationPoints,
-      editing: editing ? { measurementId: editing.measurement.id, revision: editing.measurement.revision, points: editing.points } : null,
+      deductParentId: tool === TOOL.DEDUCT ? deductParentId : null,
+      editing: editing
+        ? { measurementId: editing.measurement.id, revision: editing.measurement.revision, points: editing.points, deductionId: editing.deductionId ?? null }
+        : null,
     })
-  }, [restoredFor, projectId, pageId, drawingId, revisionId, page, tool, draftPoints, calibrationPoints, editing])
+  }, [restoredFor, projectId, pageId, drawingId, revisionId, page, tool, draftPoints, calibrationPoints, deductParentId, editing])
 
   // ── Taps on the sheet (canonical point + zoom-aware tolerance) ────────────
   const editTap = (p, tolerance) => {
@@ -401,7 +445,7 @@ export default function TakeoffWorkspace({ projectId }) {
         return { ...prev, history: [...prev.history, prev.points], points: [...prev.points, p], vertex: prev.points.length, pending: null }
       }
       const seg = nearestSegment(prev.points, p, prev.kind === MEASUREMENT_KIND.AREA)
-      if (seg && seg.distance <= tolerance && prev.points.length < MAX_POINTS) {
+      if (seg && seg.distance <= tolerance && prev.points.length < (prev.deductionId ? DEDUCTION_MAX_POINTS : MAX_POINTS)) {
         return { ...prev, history: [...prev.history, prev.points], points: insertPointAt(prev.points, seg.index, p), vertex: seg.index + 1, pending: null }
       }
       // Off the shape: just drop the vertex selection.
@@ -426,6 +470,14 @@ export default function TakeoffWorkspace({ projectId }) {
         if (next.length === 2) setCalibrationDialog({ pointA: next[0], pointB: next[1] })
         return next
       })
+      return
+    }
+    if (tool === TOOL.DEDUCT) {
+      if (!deductParent) {
+        setNotice({ tone: 'error', text: 'The area this deduction belongs to is no longer on this sheet. Cancel and select another area.' })
+        return
+      }
+      setDraftPoints(prev => (prev.length >= DEDUCTION_MAX_POINTS ? prev : [...prev, p]))
       return
     }
     if (isKindTool(tool)) {
@@ -476,6 +528,13 @@ export default function TakeoffWorkspace({ projectId }) {
   const cancelDraft = () => { resetDrafts(); setNotice(null) }
 
   const finishDraft = () => {
+    if (tool === TOOL.DEDUCT) {
+      if (!deductParent) { setNotice({ tone: 'error', text: 'The area this deduction belongs to is no longer on this sheet. Cancel and select another area.' }); return }
+      const error = validateDeductionPoints(draftPoints) || draftIssue
+      if (error) { setNotice({ tone: 'error', text: error }); return }
+      setDeductionDialog({ parent: deductParent, points: draftPoints })
+      return
+    }
     if (!isKindTool(tool)) return
     const error = validatePoints(tool, draftPoints)
     if (error) { setNotice({ tone: 'error', text: error }); return }
@@ -486,7 +545,7 @@ export default function TakeoffWorkspace({ projectId }) {
   // the selected vertex), Escape cancels — on the viewer region, never while a
   // dialog or an input has focus.
   const onKeyDown = (e) => {
-    if (calibrationDialog || saveDialog || detailsDialog || voidDialog) return
+    if (calibrationDialog || saveDialog || detailsDialog || voidDialog || deductionDialog) return
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return
     if (editing) {
       if (e.key === 'Enter') { e.preventDefault(); handleSaveGeometry() }
@@ -494,7 +553,7 @@ export default function TakeoffWorkspace({ projectId }) {
       if (e.key === 'Escape') { e.preventDefault(); cancelDraft() }
       return
     }
-    if (e.key === 'Enter' && isKindTool(tool) && draftPoints.length > 0) { e.preventDefault(); finishDraft() }
+    if (e.key === 'Enter' && (isKindTool(tool) || tool === TOOL.DEDUCT) && draftPoints.length > 0) { e.preventDefault(); finishDraft() }
     if (e.key === 'Backspace' && draftPoints.length > 0) { e.preventDefault(); undoPoint() }
     if (e.key === 'Escape') { e.preventDefault(); cancelDraft() }
   }
@@ -549,9 +608,82 @@ export default function TakeoffWorkspace({ projectId }) {
     setTool(TOOL.SELECT)
     setDraftPoints([])
     setCalibrationPoints([])
+    setDeductParentId(null)
     setSelectedId(m.id)
     setNotice(null)
-    setEditing({ measurement: m, kind: m.kind, points: m.points.map(p => ({ x: p.x, y: p.y })), history: [], vertex: null, pending: null })
+    setEditing({ measurement: m, kind: m.kind, points: m.points.map(p => ({ x: p.x, y: p.y })), basePoints: m.points, deductionId: null, history: [], vertex: null, pending: null })
+  }
+
+  // ── Deductions (ADR-54) ───────────────────────────────────────────────────
+  const startDeduction = (m) => {
+    if (!measurable) { setNotice({ tone: 'error', text: 'This sheet cannot be edited.' }); return }
+    if (m?.kind !== MEASUREMENT_KIND.AREA) return
+    if (!confirmDiscard()) return
+    resetDrafts()
+    setTool(TOOL.DEDUCT)
+    setDeductParentId(m.id)
+    setSelectedId(m.id)
+    setNotice(null)
+  }
+
+  // Edit a hole's outline: the same edit session, on the hole's points, with
+  // the parent remembered so Save replaces that hole in the parent's list.
+  const startDeductionEdit = (m, d) => {
+    if (!measurable) { setNotice({ tone: 'error', text: 'This sheet cannot be edited.' }); return }
+    if (!isDeduction(d)) return
+    if (!confirmDiscard()) return
+    setTool(TOOL.SELECT)
+    setDraftPoints([])
+    setCalibrationPoints([])
+    setDeductParentId(null)
+    setSelectedId(m.id)
+    setNotice(null)
+    setEditing({ measurement: m, kind: MEASUREMENT_KIND.AREA, points: d.points.map(p => ({ x: p.x, y: p.y })), basePoints: d.points, deductionId: d.id, history: [], vertex: null, pending: null })
+  }
+
+  // A deduction save that was refused as STALE keeps the draft and explains.
+  const reportDeduction = (err, fallback) => {
+    const text = err?.kind === QUANT_ERROR.STALE ? STALE_DEDUCTION_MESSAGE : (err?.message || fallback)
+    setNotice({ tone: 'error', text })
+    throw new Error(text)
+  }
+
+  // Save a NEW deduction (from the dialog after Finish) or a RENAME. The parent
+  // is re-read from the live sheet; the write carries the parent's complete
+  // deductions list through the one guarded update (no calibration snapshot
+  // change — a parent that needs review keeps needing it).
+  const handleSaveDeduction = async ({ label }) => {
+    const { parent, points, deduction } = deductionDialog
+    const live = activeOnPage.find(m => m.id === parent.id) ?? null
+    if (!live) reportDeduction(null, 'The area this deduction belongs to is no longer on this sheet. Nothing was saved.')
+    const existing = measurementDeductions(live)
+    const candidate = deduction
+      ? { ...deduction, label }
+      : { id: newDeductionId(existing.map(d => d?.id)), label, points }
+    try {
+      await tracked(() => updateMeasurement({ seen: live, changes: { deductions: withDeduction(existing, candidate) } }))
+      if (!deduction) {
+        setDraftPoints([])
+        setDeductParentId(null)
+        setTool(TOOL.SELECT)
+      }
+      setSelectedId(live.id)
+      setNotice({ tone: 'ok', text: deduction ? 'Deduction renamed.' : `Deduction "${label}" saved on "${live.label}". The area now shows its net quantity.` })
+    } catch (err) { reportDeduction(err, 'The deduction could not be saved.') }
+  }
+
+  const handleRemoveDeduction = async (m, d, index) => {
+    if (!measurable) { setNotice({ tone: 'error', text: 'This sheet cannot be edited.' }); return }
+    const label = isDeduction(d) && d.label ? d.label : 'this deduction'
+    if (!window.confirm(`Remove deduction "${label}" from "${m.label}"? The area's net quantity will rise by the deduction's area. There is no history of removed deductions.`)) return
+    const existing = measurementDeductions(m)
+    const next = isDeduction(d) ? withoutDeduction(existing, d.id) : existing.filter((_, i) => i !== index)
+    try {
+      await tracked(() => updateMeasurement({ seen: m, changes: { deductions: next } }))
+      setNotice({ tone: 'ok', text: `Deduction "${label}" removed from "${m.label}".` })
+    } catch (err) {
+      setNotice({ tone: 'error', text: err?.kind === QUANT_ERROR.STALE ? STALE_DEDUCTION_MESSAGE : (err?.message || 'The deduction could not be removed.') })
+    }
   }
 
   const handleSaveGeometry = async () => {
@@ -559,6 +691,20 @@ export default function TakeoffWorkspace({ projectId }) {
     const error = validatePoints(editing.kind, editing.points)
     if (error) { setNotice({ tone: 'error', text: error }); return }
     if (!editDirty) { setNotice({ tone: 'ok', text: 'No geometry change to save.' }); setEditing(null); return }
+    if (editing.deductionId) {
+      // A hole's new outline: the parent's list with this hole replaced.
+      const live = editing.measurement
+      const hole = measurementDeductions(live).find(x => x?.id === editing.deductionId) ?? null
+      if (!hole) { setNotice({ tone: 'error', text: 'That deduction no longer exists on this area.' }); setEditing(null); return }
+      try {
+        await tracked(() => updateMeasurement({ seen: live, changes: { deductions: withDeduction(measurementDeductions(live), { ...hole, points: editing.points }) } }))
+        setEditing(null)
+        setNotice({ tone: 'ok', text: `Deduction "${hole.label}" outline saved.` })
+      } catch (err) {
+        setNotice({ tone: 'error', text: err?.kind === QUANT_ERROR.STALE ? STALE_DEDUCTION_MESSAGE : (err?.message || 'The deduction could not be saved.') })
+      }
+      return
+    }
     try {
       const calibration = editing.kind === MEASUREMENT_KIND.COUNT ? undefined : calibrationSnapshot(takeoffPage)
       if (editing.kind !== MEASUREMENT_KIND.COUNT && !calibration) {
@@ -593,17 +739,34 @@ export default function TakeoffWorkspace({ projectId }) {
   }
 
   // ── Live draft quantity (preview only) ────────────────────────────────────
+  const pageCalibration = takeoffPage?.calibration ?? null
   const draftQ = isKindTool(tool) && draftPoints.length >= MIN_POINTS[tool]
-    ? measurementQuantity({ kind: tool, points: draftPoints }, takeoffPage?.calibration ?? null)
-    : null
+    ? measurementQuantity({ kind: tool, points: draftPoints }, pageCalibration)
+    : tool === TOOL.DEDUCT && draftPoints.length >= MIN_POINTS[MEASUREMENT_KIND.AREA]
+      ? measurementQuantity({ kind: MEASUREMENT_KIND.AREA, points: draftPoints }, pageCalibration)
+      : null
   const draftQuantity = draftQ ? formatMeasurementQuantity(draftQ) : null
-  const draftIssue = quantityIssue(draftQ)
+  // A deduction draft is previewed IN its parent: gross · deductions · net
+  // through the one derivation, which also names any containment problem.
+  const deductPreview = tool === TOOL.DEDUCT && deductParent && draftQ
+    ? measurementQuantity({ ...deductParent, deductions: withDeduction(measurementDeductions(deductParent), { id: DRAFT_DEDUCTION_ID, label: 'draft', points: draftPoints }) }, pageCalibration)
+    : null
+  const deductBreakdown = quantityBreakdown(deductPreview)
+  const draftIssue = quantityIssue(draftQ) || quantityIssue(deductPreview)
+  // An edit session's quantity: a hole edit is judged inside its parent; a
+  // parent edit carries its existing holes, so one that would strand a hole
+  // reads as the problem it is.
   const editingQ = editing
-    ? measurementQuantity({ kind: editing.kind, points: editing.points }, takeoffPage?.calibration ?? null)
+    ? editing.deductionId
+      ? measurementQuantity({ ...editing.measurement, deductions: withDeduction(measurementDeductions(editing.measurement), { id: editing.deductionId, label: 'edit', points: editing.points }) }, pageCalibration)
+      : measurementQuantity({ kind: editing.kind, points: editing.points, deductions: editing.measurement.deductions }, pageCalibration)
     : null
   const editingQuantity = editingQ ? formatMeasurementQuantity(editingQ) : null
+  const editingHole = editing?.deductionId ? formatMeasurementQuantity(measurementQuantity({ kind: MEASUREMENT_KIND.AREA, points: editing.points }, pageCalibration)) : null
   const editError = editing ? (validatePoints(editing.kind, editing.points) || quantityIssue(editingQ)) : null
-  const selectedQuantity = selected ? formatMeasurementQuantity(measurementQuantity(selected, takeoffPage?.calibration ?? null)) : null
+  const selectedQ = selected ? measurementQuantity(selected, pageCalibration) : null
+  const selectedQuantity = selectedQ ? formatMeasurementQuantity(selectedQ) : null
+  const selectedBreakdown = quantityBreakdown(selectedQ)
 
   const unavailable = takeoffPagesError || takeoffMeasurementsError
   const viewerMode = !geometry ? 'none' : editing ? 'edit' : tool
@@ -715,16 +878,17 @@ export default function TakeoffWorkspace({ projectId }) {
           </p>
 
           {/* Draft / edit / selection controls */}
-          {(isKindTool(tool) || tool === TOOL.CALIBRATE || editing) && (
+          {(isKindTool(tool) || tool === TOOL.CALIBRATE || tool === TOOL.DEDUCT || editing) && (
             <div className="mt-2.5 flex flex-wrap items-center gap-2 rounded-lg bg-brand-bg/60 px-3 py-2" role="status">
               {editing ? (
                 <>
                   <span className="text-[12.5px] text-brand-text">
-                    Editing <span className="font-semibold">{editing.measurement.label}</span> —{' '}
+                    Editing {editing.deductionId ? 'deduction outline in ' : ''}<span className="font-semibold">{editing.measurement.label}</span> —{' '}
                     {editing.kind === MEASUREMENT_KIND.COUNT
                       ? 'tap the sheet to add a marker, tap a marker to select it.'
                       : 'drag a point, tap an edge to add one, tap a point to select it.'}
-                    {editingQuantity && <> Now <span className="font-semibold tabular-nums">{editingQuantity}</span>.</>}
+                    {editingHole && <> This deduction <span className="font-semibold tabular-nums">{editingHole}</span>.</>}
+                    {editingQuantity && <> {editing.deductionId || editing.measurement.deductions ? 'Net' : 'Now'} <span className="font-semibold tabular-nums">{editingQuantity}</span>.</>}
                     {editing.vertex !== null && <> Point {editing.vertex + 1} selected.</>}
                   </span>
                   <Btn sm onClick={handleSaveGeometry} disabled={!!editError || !editDirty}>Save geometry</Btn>
@@ -739,6 +903,25 @@ export default function TakeoffWorkspace({ projectId }) {
                     Tap two points a known distance apart ({calibrationPoints.length} of 2).
                   </span>
                   <Btn sm variant="ghost" onClick={cancelDraft}>Cancel</Btn>
+                </>
+              ) : tool === TOOL.DEDUCT ? (
+                <>
+                  <span className="text-[12.5px] text-brand-text">
+                    Deduction from <span className="font-semibold">{deductParent?.label ?? '—'}</span>: {draftPoints.length} point{draftPoints.length === 1 ? '' : 's'}
+                    {draftPoints.length < MIN_POINTS[MEASUREMENT_KIND.AREA] && <> · needs {MIN_POINTS[MEASUREMENT_KIND.AREA]} — trace the opening inside the area</>}
+                    {deductBreakdown && (
+                      <>
+                        {' '}· gross <span className="font-semibold tabular-nums">{deductBreakdown.gross}</span>
+                        {' '}· this deduction <span className="font-semibold tabular-nums">{draftQuantity}</span>
+                        {' '}· net <span className="font-semibold tabular-nums">{deductBreakdown.net}</span>
+                      </>
+                    )}
+                  </span>
+                  <Btn sm onClick={finishDraft} disabled={!deductParent || draftPoints.length < MIN_POINTS[MEASUREMENT_KIND.AREA] || !!draftIssue}>Finish deduction</Btn>
+                  <Btn sm variant="ghost" onClick={undoPoint} disabled={draftPoints.length === 0}>Undo</Btn>
+                  <Btn sm variant="ghost" onClick={cancelDraft}>Cancel</Btn>
+                  {!deductParent && <span className="basis-full text-[12px] text-brand-red" role="alert">The area this deduction belongs to is no longer on this sheet. Cancel and select another area.</span>}
+                  {draftIssue && <span className="basis-full text-[12px] text-brand-red" role="alert">{draftIssue}</span>}
                 </>
               ) : (
                 <>
@@ -760,10 +943,16 @@ export default function TakeoffWorkspace({ projectId }) {
             <div className="mt-2.5 flex flex-wrap items-center gap-2 rounded-lg border border-brand-accent/30 bg-brand-accent/5 px-3 py-2" role="status">
               <span className="text-[12.5px] text-brand-text">
                 Selected: <span className="font-semibold">{selected.label}</span> · {KIND_LABELS[selected.kind]}
-                {selectedQuantity && <> · <span className="font-semibold tabular-nums">{selectedQuantity}</span></>}
+                {selectedQuantity && <> · {selectedBreakdown ? 'net ' : ''}<span className="font-semibold tabular-nums">{selectedQuantity}</span></>}
+                {selectedBreakdown && (
+                  <span className="block text-[11px] text-brand-muted tabular-nums">
+                    gross {selectedBreakdown.gross} − {selectedBreakdown.count} deduction{selectedBreakdown.count === 1 ? '' : 's'} {selectedBreakdown.deducted}
+                  </span>
+                )}
               </span>
               {measurable && <Btn sm variant="ghost" onClick={() => setDetailsDialog(selected)}>Details</Btn>}
               {measurable && <Btn sm variant="ghost" onClick={() => startGeometryEdit(selected)}>Geometry</Btn>}
+              {measurable && selected.kind === MEASUREMENT_KIND.AREA && <Btn sm variant="ghost" onClick={() => startDeduction(selected)}>Deduct</Btn>}
               {voidable && <Btn sm variant="ghost" className="text-brand-red" onClick={() => setVoidDialog(selected)}>Void</Btn>}
               <Btn sm variant="ghost" onClick={() => setSelectedId(null)}>Clear</Btn>
             </div>
@@ -793,8 +982,19 @@ export default function TakeoffWorkspace({ projectId }) {
               overlay={{
                 measurements: editing ? activeOnPage.filter(m => m.id !== editing.measurement.id) : activeOnPage,
                 selectedId,
-                draft: isKindTool(tool) ? { kind: tool, points: draftPoints } : null,
-                editing: editing ? { kind: editing.kind, points: editing.points, vertex: editing.vertex } : null,
+                draft: isKindTool(tool)
+                  ? { kind: tool, points: draftPoints }
+                  : tool === TOOL.DEDUCT ? { kind: MEASUREMENT_KIND.AREA, points: draftPoints, deduction: true } : null,
+                editing: editing
+                  ? {
+                      kind: editing.kind, points: editing.points, vertex: editing.vertex,
+                      // A hole edit shows the parent outline and the OTHER holes; a parent edit shows its holes.
+                      outline: editing.deductionId ? editing.measurement.points : null,
+                      holes: editing.deductionId
+                        ? withoutDeduction(measurementDeductions(editing.measurement), editing.deductionId)
+                        : measurementDeductions(editing.measurement),
+                    }
+                  : null,
                 calibration: takeoffPage?.calibration ?? null,
                 calibrationDraft: calibrationPoints,
               }}
@@ -817,11 +1017,16 @@ export default function TakeoffWorkspace({ projectId }) {
                     : summary[kind].incomplete > 0 ? `${summary[kind].incomplete} need${summary[kind].incomplete === 1 ? 's' : ''} attention`
                     : formatMeasurementQuantity({ value: summary[kind].total, unit: summary[kind].unit })}
                 </p>
+                {kind === MEASUREMENT_KIND.AREA && !takeoffMeasurementsLoading && summary[kind].incomplete === 0 && summary[kind].deducted > 0 && (
+                  <p className="m-0 text-[10.5px] tabular-nums text-brand-muted">
+                    net · gross {formatMeasurementQuantity({ value: summary[kind].gross, unit: summary[kind].unit })} − deductions {formatMeasurementQuantity({ value: summary[kind].deducted, unit: summary[kind].unit })}
+                  </p>
+                )}
               </div>
             ))}
           </div>
           <p className="m-0 mt-2 text-[11px] text-brand-muted">
-            Page totals are a read-time summary of this page only. Quant writes no BOQ quantity by itself — link a
+            Page totals are a read-time summary of this page only; an area with deductions counts at its net. Quant writes no BOQ quantity by itself — link a
             measurement to a BOQ item here, then review and apply the measured total on the BOQ tab.
           </p>
         </Card>
@@ -851,12 +1056,27 @@ export default function TakeoffWorkspace({ projectId }) {
                 onEditGeometry={startGeometryEdit}
                 onReview={handleReview}
                 onVoid={(m) => setVoidDialog(m)}
+                onDeduct={startDeduction}
+                onEditDeduction={startDeductionEdit}
+                onRenameDeduction={(m, d) => setDeductionDialog({ parent: m, deduction: d })}
+                onRemoveDeduction={handleRemoveDeduction}
               />
             )}
           </Card>
         </div>
       )}
       </div>
+
+      {deductionDialog && (
+        <DeductionDialog
+          parent={activeOnPage.find(m => m.id === deductionDialog.parent.id) ?? deductionDialog.parent}
+          deduction={deductionDialog.deduction ?? null}
+          points={deductionDialog.points ?? null}
+          calibration={takeoffPage?.calibration ?? null}
+          onSave={handleSaveDeduction}
+          onClose={() => setDeductionDialog(null)}
+        />
+      )}
 
       {calibrationDialog && (
         <CalibrationModal

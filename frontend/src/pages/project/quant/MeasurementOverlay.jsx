@@ -1,4 +1,6 @@
-import { MEASUREMENT_KIND, pointsToPath, isReadableMeasurement, HIT_TOLERANCE_PX } from '../../../lib/quant'
+import {
+  MEASUREMENT_KIND, pointsToPath, areaPathWithHoles, holesPath, measurementDeductions, isReadableMeasurement, HIT_TOLERANCE_PX,
+} from '../../../lib/quant'
 
 // ── SVG overlay in CANONICAL page units ───────────────────────────────────────
 //
@@ -16,6 +18,13 @@ import { MEASUREMENT_KIND, pointsToPath, isReadableMeasurement, HIT_TOLERANCE_PX
 // Colours are the Quant token for geometry and the shared status tokens for
 // selection/edit state — meaning is always ALSO carried by the list beside the
 // viewer, never by colour alone.
+//
+// Deductions (Quant 1D, ADR-54): an area with holes is filled with
+// `fill-rule: evenodd` through lib/quant.js → areaPathWithHoles, so each
+// opening reads as an opening; the hole outlines are drawn DASHED on top of
+// the solid outer outline. A hole being traced is the dashed amber draft with
+// a tighter dash; a hole being edited shows its parent's outline faintly
+// beside it, so the user sees what the hole must stay inside.
 
 const HANDLE_PX = 7
 const COUNT_PX  = 9
@@ -40,11 +49,43 @@ function Shape({ m, selected, cssScale }) {
       </g>
     )
   }
-  const closed = m.kind === MEASUREMENT_KIND.AREA
+  if (m.kind === MEASUREMENT_KIND.AREA) {
+    const holes = measurementDeductions(m)
+    return (
+      <g className={stroke}>
+        {/* The fill, with the holes cut out. */}
+        <path
+          d={areaPathWithHoles(m.points, holes)}
+          fillRule="evenodd"
+          className={`stroke-none ${selected ? 'fill-brand-accent/15' : 'fill-brand-quant/15'}`}
+        />
+        {/* The outer outline, solid. */}
+        <path
+          d={pointsToPath(m.points, true)}
+          className="fill-none"
+          strokeWidth={selected ? 3 : 2}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+          vectorEffect="non-scaling-stroke"
+        />
+        {/* The deductions, dashed. */}
+        {holes.length > 0 && (
+          <path
+            d={holesPath(holes)}
+            className="fill-none"
+            strokeWidth={selected ? 2.5 : 1.75}
+            strokeDasharray="5 4"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
+      </g>
+    )
+  }
   return (
     <path
-      d={pointsToPath(m.points, closed)}
-      className={`${stroke} ${closed ? (selected ? 'fill-brand-accent/15' : 'fill-brand-quant/15') : 'fill-none'}`}
+      d={pointsToPath(m.points, false)}
+      className={`${stroke} fill-none`}
       strokeWidth={selected ? 3 : 2}
       strokeLinejoin="round"
       strokeLinecap="round"
@@ -56,8 +97,9 @@ function Shape({ m, selected, cssScale }) {
 export default function MeasurementOverlay({
   pageWidth, pageHeight, cssScale,
   measurements = [], selectedId = null,
-  draft = null,            // { kind, points } — in-progress drawing
-  editing = null,          // { kind, points, vertex } — geometry being edited; `vertex` is the selected point index
+  draft = null,            // { kind, points, deduction? } — in-progress drawing (a deduction is an area traced inside its parent)
+  editing = null,          // { kind, points, vertex, outline?, holes? } — geometry being edited; `vertex` is the selected point index;
+                           //   `outline` is the parent's outline when a HOLE is edited, `holes` the other holes to keep clear of
   calibration = null,      // page calibration (pointA / pointB) to show
   calibrationDraft = [],   // the one or two points picked for a new calibration
 }) {
@@ -98,14 +140,15 @@ export default function MeasurementOverlay({
         </g>
       )}
 
-      {/* In-progress measurement (dashed) with its points. */}
+      {/* In-progress measurement (dashed) with its points. A deduction draft
+          uses a tighter dash so it reads as an opening, not a new area. */}
       {draft && draft.points.length > 0 && (
         <g className="stroke-brand-amber fill-brand-amber">
           {draft.kind !== MEASUREMENT_KIND.COUNT && (
             <path
               d={pointsToPath(draft.points, draft.kind === MEASUREMENT_KIND.AREA)}
               className={draft.kind === MEASUREMENT_KIND.AREA ? 'fill-brand-amber/15' : 'fill-none'}
-              strokeWidth="2" strokeDasharray="6 4" vectorEffect="non-scaling-stroke"
+              strokeWidth="2" strokeDasharray={draft.deduction ? '3 3' : '6 4'} vectorEffect="non-scaling-stroke"
             />
           )}
           {draft.points.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r={handleR * 0.8} />)}
@@ -117,11 +160,19 @@ export default function MeasurementOverlay({
           what a tap will move or remove. */}
       {editing && (
         <g className="stroke-brand-accent fill-brand-accent">
+          {/* Context for a hole edit: the parent's outline; and the other holes,
+              which the edited one must stay clear of. */}
+          {editing.outline && (
+            <path d={pointsToPath(editing.outline, true)} className="fill-none stroke-brand-quant" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+          )}
+          {editing.holes?.length > 0 && (
+            <path d={holesPath(editing.holes)} className="fill-none stroke-brand-quant" strokeWidth="1.5" strokeDasharray="5 4" vectorEffect="non-scaling-stroke" />
+          )}
           {editing.kind !== MEASUREMENT_KIND.COUNT && (
             <path
               d={pointsToPath(editing.points, editing.kind === MEASUREMENT_KIND.AREA)}
               className={editing.kind === MEASUREMENT_KIND.AREA ? 'fill-brand-accent/15' : 'fill-none'}
-              strokeWidth="2" vectorEffect="non-scaling-stroke"
+              strokeWidth="2" strokeDasharray={editing.outline ? '3 3' : undefined} vectorEffect="non-scaling-stroke"
             />
           )}
           {editing.points.map((p, i) => (

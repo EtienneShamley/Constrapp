@@ -1,7 +1,7 @@
 import Card from '../../../components/Card'
 import Badge from '../../../components/Badge'
 import { thCls, tdCls } from './styles'
-import { KIND_LABELS, formatMeasurementQuantity } from '../../../lib/quant'
+import { KIND_LABELS, formatMeasurementQuantity, quantityBreakdown } from '../../../lib/quant'
 import { formatDate } from '../../../lib/formatters'
 import {
   SUMMARY_ISSUE, SUMMARY_ISSUE_LABELS, SUMMARY_ISSUE_ORDER, SUMMARY_READINESS, KIND_ORDER,
@@ -35,14 +35,33 @@ const ISSUE_BADGE = {
 const openBtnCls = 'inline-flex min-h-[44px] items-center rounded-lg px-2.5 text-[12px] font-semibold text-brand-accent hover:bg-brand-card focus-visible:outline-2 focus-visible:outline-brand-accent disabled:opacity-40'
 const sectionTitleCls = 'm-0 px-4 py-3 text-[12px] font-bold uppercase tracking-[0.4px] text-brand-muted border-b border-brand-border'
 
-// One kind total: "12.000 m²" with the contributing count, or "—".
+// One kind total: "12.000 m²" with the contributing count, or "—". An area
+// total is NET (ADR-54); when anything in it was deducted, the gross and the
+// deductions are named beneath — a breakdown, never a second total.
 function KindTotal({ t }) {
   if (!t || t.count === 0) return <span className="text-brand-muted">—</span>
+  const deducted = typeof t.deducted === 'number' && t.deducted > 0
   return (
     <span className="tabular-nums">
       {formatMeasurementQuantity({ value: t.total, unit: t.unit })}
       <span className="ml-1 text-[11px] text-brand-muted">· {t.count}</span>
+      {deducted && (
+        <span className="block text-[11px] text-brand-muted">
+          gross {formatMeasurementQuantity({ value: t.gross, unit: t.unit })} − deductions {formatMeasurementQuantity({ value: t.deducted, unit: t.unit })}
+        </span>
+      )}
     </span>
+  )
+}
+
+// A row's quantity: net, with its gross − deductions line when it has holes.
+function RowQuantity({ quantity }) {
+  const b = quantityBreakdown(quantity)
+  return (
+    <>
+      {formatMeasurementQuantity(quantity)}
+      {b && <span className="block text-[11px] font-normal text-brand-muted">gross {b.gross} − {b.count} deduction{b.count === 1 ? '' : 's'} {b.deducted}</span>}
+    </>
   )
 }
 
@@ -72,7 +91,7 @@ function MeasurementRows({ rows, onOpenMeasurement, emptyText }) {
                 <td className={`${tdCls} text-brand-muted`}>{KIND_LABELS[row.m.kind] ?? '—'}</td>
                 <td className={`${tdCls} text-[12.5px]`}>{row.costCode}</td>
                 <td className={`${tdCls} text-[12.5px]`}>{sourceLabel(row)}</td>
-                <td className={`${tdCls} tabular-nums whitespace-nowrap`}>{formatMeasurementQuantity(row.quantity)}</td>
+                <td className={`${tdCls} tabular-nums whitespace-nowrap`}><RowQuantity quantity={row.quantity} /></td>
                 <td className={tdCls}>
                   <span className="flex flex-wrap gap-1">
                     {row.issues.map(issue => <Badge key={issue} label={SUMMARY_ISSUE_LABELS[issue]} variant={ISSUE_BADGE[issue]} sm />)}
@@ -95,7 +114,7 @@ function MeasurementRows({ rows, onOpenMeasurement, emptyText }) {
                 <p className="m-0 mt-0.5 text-[12px] text-brand-muted">{KIND_LABELS[row.m.kind] ?? '—'} · {row.costCode}</p>
                 <p className="m-0 mt-0.5 text-[12px] text-brand-muted">{sourceLabel(row)}{row.measuredAt ? ` · ${formatDate(row.measuredAt)}` : ''}</p>
               </div>
-              <p className="m-0 text-[15px] font-bold tabular-nums text-brand-text shrink-0">{formatMeasurementQuantity(row.quantity)}</p>
+              <p className="m-0 text-right text-[15px] font-bold tabular-nums text-brand-text shrink-0"><RowQuantity quantity={row.quantity} /></p>
             </div>
             <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
               <span className="flex flex-wrap gap-1">

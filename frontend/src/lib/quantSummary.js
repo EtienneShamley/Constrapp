@@ -143,9 +143,12 @@ export function classifyMeasurement(m, { pagesById, drawingsById, boqItems = [] 
 
 // ── Totals (per kind — never across kinds) ───────────────────────────────────
 
+// Since ADR-54 an area's `total` is NET; `gross` and `deducted` ride alongside
+// (zero when nothing is deducted) for the breakdown line only — never a
+// second total.
 export const emptyKindTotals = () => {
   const out = {}
-  for (const kind of MEASUREMENT_KINDS) out[kind] = { count: 0, total: 0, unit: KIND_UNITS[kind] }
+  for (const kind of MEASUREMENT_KINDS) out[kind] = { count: 0, total: 0, unit: KIND_UNITS[kind], gross: 0, deducted: 0 }
   return out
 }
 
@@ -168,6 +171,8 @@ export function kindTotals(rows) {
     if (!entry) continue
     entry.count += 1
     entry.total += r.quantity.value
+    entry.gross += typeof r.quantity.gross === 'number' ? r.quantity.gross : r.quantity.value
+    entry.deducted += typeof r.quantity.deducted === 'number' ? r.quantity.deducted : 0
   }
   return out
 }

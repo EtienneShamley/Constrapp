@@ -1,4 +1,4 @@
-import { MEASUREMENT_KINDS, MAX_POINTS, isPointList, normalisePoints, takeoffPageId, isPageNumber } from './quant'
+import { MEASUREMENT_KINDS, MAX_POINTS, isPointList, normalisePoints, takeoffPageId, isPageNumber, measurementDeductions } from './quant'
 
 // ── Remembering unsaved takeoff work (Quant 1C-A, ADR-53) ───────────────────
 //
@@ -24,12 +24,21 @@ import { MEASUREMENT_KINDS, MAX_POINTS, isPointList, normalisePoints, takeoffPag
 //     the edit started from — anything else is dropped, never applied.
 //   · Pure: the storage object is injected, so the tests run in plain Node and
 //     a browser without usable storage degrades to "remember nothing".
+//   · Deductions (Quant 1D, ADR-54): a hole being traced carries the parent it
+//     is for (`deductParentId`, tool `deduct`) and a hole being edited carries
+//     its id beside the parent's (`editing.deductionId`). Both are OPTIONAL
+//     keys on the same version-2 shape — entries written before 1D parse
+//     unchanged — and both are intent: a deduction draft is restored only
+//     while its parent is still an ACTIVE area on this sheet and is then
+//     re-judged against the parent's LIVE outline at save; a hole edit only
+//     while the parent still holds that hole at the revision the edit began.
 
 export const DRAFT_VERSION = 2
 const KEY_PREFIX = 'constrapp.quant.draft.'
 const MAX_ID = 128
 const EDIT_TOOL = 'edit'
-const DRAFT_TOOLS = ['select', 'calibrate', ...MEASUREMENT_KINDS, EDIT_TOOL]
+const DEDUCT_TOOL = 'deduct'
+const DRAFT_TOOLS = ['select', 'calibrate', ...MEASUREMENT_KINDS, EDIT_TOOL, DEDUCT_TOOL]
 
 const projectPrefix = (projectId) => `${KEY_PREFIX}${projectId}.`
 export const draftStorageKey = (projectId, pageId) => `${projectPrefix(projectId)}${pageId}`
@@ -63,8 +72,13 @@ export function parseSavedDraft(raw) {
     const e = data.editing
     if (!e || typeof e !== 'object' || !isId(e.measurementId) || !Number.isInteger(e.revision) || e.revision < 1) return null
     if (!isBoundedPoints(e.points) || e.points.length === 0) return null
+    if (e.deductionId !== undefined && e.deductionId !== null && !isId(e.deductionId)) return null
     editing = { measurementId: e.measurementId, revision: e.revision, points: normalisePoints(e.points) }
+    if (isId(e.deductionId)) editing.deductionId = e.deductionId
   }
+  // A deduction being traced names its parent; without one the points are not usable.
+  if (data.tool === DEDUCT_TOOL && !isId(data.deductParentId)) return null
+  if (data.deductParentId !== undefined && data.deductParentId !== null && !isId(data.deductParentId)) return null
   const draft = {
     pageId: data.pageId,
     drawingId: data.drawingId,
@@ -75,6 +89,7 @@ export function parseSavedDraft(raw) {
     calibrationPoints: normalisePoints(data.calibrationPoints ?? []),
     editing,
   }
+  if (data.tool === DEDUCT_TOOL) draft.deductParentId = data.deductParentId
   return isDraftEmpty(draft) ? null : draft
 }
 
@@ -100,19 +115,27 @@ export function writeDraft(storage, projectId, draft) {
       storage.removeItem(key)
       return true
     }
-    storage.setItem(key, JSON.stringify({
+    const tool = DRAFT_TOOLS.includes(draft.tool) ? draft.tool : 'select'
+    const entry = {
       v: DRAFT_VERSION,
       pageId: draft.pageId,
       drawingId: draft.drawingId,
       revisionId: draft.revisionId,
       page: draft.page,
-      tool: DRAFT_TOOLS.includes(draft.tool) ? draft.tool : 'select',
+      tool,
       points: normalisePoints(draft.points ?? []),
       calibrationPoints: normalisePoints(draft.calibrationPoints ?? []).slice(0, 2),
       editing: draft.editing
         ? { measurementId: draft.editing.measurementId, revision: draft.editing.revision, points: normalisePoints(draft.editing.points) }
         : null,
-    }))
+    }
+    if (entry.editing && isId(draft.editing.deductionId)) entry.editing.deductionId = draft.editing.deductionId
+    if (tool === DEDUCT_TOOL) {
+      // A deduction draft without its parent is not worth remembering.
+      if (!isId(draft.deductParentId)) { storage.removeItem(key); return true }
+      entry.deductParentId = draft.deductParentId
+    }
+    storage.setItem(key, JSON.stringify(entry))
     return true
   } catch {
     return false
@@ -152,20 +175,39 @@ export function listDrafts(storage, projectId) {
 // geometry edit is restored only against the same active measurement at the
 // same revision (a measurement edited, voided or re-measured by anyone since is
 // a different record — the edit is dropped, with a notice, never re-applied).
-// Returns { draft, droppedEdit } or null when nothing applies.
+// A hole edit (ADR-54) is restored only while the parent still holds that
+// hole; a hole being TRACED only while its parent is still an active area on
+// this sheet — then `droppedDeduction` says the points were let go.
+// Returns { draft, droppedEdit[, droppedDeduction] } or null when nothing applies.
 export function restorableDraft(saved, { pageId, measurements = [] } = {}) {
   if (!saved || !isId(pageId) || saved.pageId !== pageId) return null
   let editing = null
   let droppedEdit = false
   if (saved.editing) {
     const m = measurements.find(x => x?.id === saved.editing.measurementId) ?? null
-    if (m && m.status === 'active' && m.revision === saved.editing.revision && MEASUREMENT_KINDS.includes(m.kind)) {
+    const holeOk = !saved.editing.deductionId || (m && measurementDeductions(m).some(d => d?.id === saved.editing.deductionId))
+    if (m && m.status === 'active' && m.revision === saved.editing.revision && MEASUREMENT_KINDS.includes(m.kind) && holeOk) {
       editing = { measurement: m, points: saved.editing.points }
+      if (saved.editing.deductionId) editing.deductionId = saved.editing.deductionId
     } else {
       droppedEdit = true
     }
   }
-  const draft = { ...saved, editing }
-  if (isDraftEmpty(draft)) return droppedEdit ? { draft: null, droppedEdit } : null
-  return { draft, droppedEdit }
+  let draft = { ...saved, editing }
+  let droppedDeduction = false
+  if (saved.tool === DEDUCT_TOOL) {
+    const parent = measurements.find(x => x?.id === saved.deductParentId) ?? null
+    if (!parent || parent.status !== 'active' || parent.kind !== 'area') {
+      droppedDeduction = saved.points.length > 0
+      draft = { ...draft, tool: 'select', points: [] }
+      delete draft.deductParentId
+    }
+  }
+  const out = { draft, droppedEdit }
+  if (droppedDeduction) out.droppedDeduction = true
+  if (isDraftEmpty(draft)) {
+    if (!droppedEdit && !droppedDeduction) return null
+    out.draft = null
+  }
+  return out
 }

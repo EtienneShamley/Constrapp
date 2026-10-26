@@ -4,7 +4,7 @@ import Badge from '../../../components/Badge'
 import { formatCurrency, formatDate } from '../../../lib/formatters'
 import { tabbableWithin, tabTarget } from '../../../lib/dialogFocus'
 import { BOQ_STATUS, BOQ_STATUS_LABELS, BOQ_BADGE_VARIANTS, formatQuantity } from '../../../lib/boq'
-import { KIND_LABELS, CALIBRATION_REVIEW_LABELS, formatMeasurementQuantity } from '../../../lib/quant'
+import { KIND_LABELS, CALIBRATION_REVIEW_LABELS, formatMeasurementQuantity, quantityBreakdown } from '../../../lib/quant'
 import {
   aggregateLinkedQuantity, applyReadiness, applyPreview, evidenceKey, evidenceFingerprint,
   APPLY_BLOCKER_LABELS, APPLY_DISABLED, APPLY_DISABLED_LABELS,
@@ -47,6 +47,19 @@ const APPLIED_BADGE = {
   [QUANT_APPLIED_STATE.MEASUREMENTS_CHANGED]: 'pending',
   [QUANT_APPLIED_STATE.UNVERIFIABLE]:         'soon',
   [QUANT_APPLIED_STATE.UNKNOWN]:              'soon',
+}
+
+// A row's quantity is its NET (lib/quant.js → measurementQuantity); an area
+// with deductions (ADR-54) names gross and deductions beneath it, so the
+// reviewer sees what was taken off before confirming. No arithmetic here.
+function RowQuantity({ quantity }) {
+  const b = quantityBreakdown(quantity)
+  return (
+    <>
+      {formatMeasurementQuantity(quantity)}
+      {b && <span className="block text-[11px] text-brand-muted">gross {b.gross} − {b.count} deduction{b.count === 1 ? '' : 's'} {b.deducted}</span>}
+    </>
+  )
 }
 
 function sourceLabel(row) {
@@ -217,7 +230,7 @@ export default function BoqQuantityApplyModal({
                             </button>
                           )}
                         </td>
-                        <td className={`${cellCls} tabular-nums whitespace-nowrap`}>{formatMeasurementQuantity(row.quantity)}</td>
+                        <td className={`${cellCls} tabular-nums whitespace-nowrap`}><RowQuantity quantity={row.quantity} /></td>
                         <td className={cellCls}>
                           {row.blocker
                             ? <Badge label={APPLY_BLOCKER_LABELS[row.blocker].title} variant="danger" sm />

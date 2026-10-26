@@ -66,6 +66,12 @@ export const MIN_POINTS = {
 export const MAX_POINTS = 500
 export const LABEL_MAX  = 120
 
+// Deductions (Quant 1D, ADR-54): openings traced INSIDE an area and
+// subtracted from it. Bounded per parent; a hole is small by nature.
+export const MAX_DEDUCTIONS       = 50
+export const DEDUCTION_MAX_POINTS = 100
+export const DEDUCTION_ID_MAX     = 64
+
 export const MEASUREMENT_STATUS = { ACTIVE: 'active', VOID: 'void' }
 
 export const PAGE_SOURCE = { PDF: 'pdf', IMAGE: 'image' }
@@ -223,6 +229,189 @@ export function polygonProblem(points) {
 
 export const isSimplePolygon = (points) => polygonProblem(points) === null
 
+// ── Deductions — geometry (Quant 1D, ADR-54) ─────────────────────────────────
+//
+// A deduction is a HOLE in an area's own outline: an opening (door, window,
+// void) traced inside the parent polygon and subtracted from its gross area.
+// It is stored ON the parent document (`deductions: [{ id, label, points }]`),
+// shares the parent's sheet, calibration snapshot, revision and BOQ link, and
+// is never a measurement of its own — nothing lists, links or sums a hole
+// separately, so a deduction can never be counted twice. Its validity is a
+// GEOMETRY question, judged exactly like polygon simplicity: the whole set is
+// checked at Finish and Save and refused; a stored set that fails derives as
+// INVALID with a reason (never a number) and blocks the BOQ apply through the
+// unchanged aggregate. Rules bound the list (area only, ≤ 50) and see nothing
+// else — every check below is client-side (docs/SECURITY.md → DC32).
+//
+// A valid set:
+//   · every hole is a simple polygon of 3..100 finite points with a unique id;
+//   · every hole lies WITHIN the parent: each vertex inside or ON the parent's
+//     boundary and no edge leaving it — touching the boundary is allowed (a
+//     door opening at a floor line is routine), leaving and re-entering is not;
+//   · holes are strictly DISJOINT from one another — no shared point at all
+//     (no crossing, touching, nesting or duplicate), which for simple polygons
+//     is a complete test and keeps the subtraction a plain sum;
+//   · the holes together are smaller than the gross area, and the net does not
+//     round to zero at the BOQ quantity precision.
+// Bounding boxes screen every pairwise test first; the full check runs on
+// Finish, Save and derivation (≤ 100 × ≤ 500 edges), never per pointer move.
+
+export const isDeduction = (d) =>
+  !!d && typeof d === 'object'
+  && typeof d.id === 'string' && d.id.length > 0 && d.id.length <= DEDUCTION_ID_MAX
+  && typeof d.label === 'string'
+  && isPointList(d.points) && d.points.length <= DEDUCTION_MAX_POINTS
+
+// The stored list's SHAPE: absent, or a bounded list of well-formed holes with
+// distinct ids. Geometry is judged separately (deductionsProblem).
+export function isDeductionList(list) {
+  if (list === undefined) return true
+  if (!Array.isArray(list) || list.length > MAX_DEDUCTIONS || !list.every(isDeduction)) return false
+  return new Set(list.map(d => d.id)).size === list.length
+}
+
+export const measurementDeductions = (m) => (Array.isArray(m?.deductions) ? m.deductions : [])
+export const hasDeductions = (m) => measurementDeductions(m).length > 0
+
+export function boundingBox(points) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const p of points) {
+    if (p.x < minX) minX = p.x
+    if (p.x > maxX) maxX = p.x
+    if (p.y < minY) minY = p.y
+    if (p.y > maxY) maxY = p.y
+  }
+  return { minX, minY, maxX, maxY }
+}
+const boxesTouch = (a, b) =>
+  a.minX <= b.maxX + GEOM_EPS && b.minX <= a.maxX + GEOM_EPS
+  && a.minY <= b.maxY + GEOM_EPS && b.minY <= a.maxY + GEOM_EPS
+const boxWithin = (inner, outer) =>
+  inner.minX >= outer.minX - GEOM_EPS && inner.maxX <= outer.maxX + GEOM_EPS
+  && inner.minY >= outer.minY - GEOM_EPS && inner.maxY <= outer.maxY + GEOM_EPS
+
+// A PROPER crossing: the two segments meet at one interior point of both.
+// Touching at an endpoint, or running along each other, is not a crossing.
+export function segmentsCross(a, b, c, d) {
+  const o1 = orientation(a, b, c), o2 = orientation(a, b, d)
+  const o3 = orientation(c, d, a), o4 = orientation(c, d, b)
+  return o1 !== 0 && o2 !== 0 && o3 !== 0 && o4 !== 0 && o1 !== o2 && o3 !== o4
+}
+
+export function pointOnPolygonBoundary(ring, p) {
+  const n = ring.length
+  for (let i = 0; i < n; i++) {
+    if (distanceToSegment(p, ring[i], ring[(i + 1) % n]) <= GEOM_EPS) return true
+  }
+  return false
+}
+
+// Inside or on the boundary. Even-odd ray casting is unreliable exactly ON an
+// edge, so the boundary is tested first.
+export const pointInOrOnPolygon = (ring, p) => pointOnPolygonBoundary(ring, p) || pointInPolygon(ring, p)
+
+// Parameter 0..1 of `p` along a→b (p already known collinear and within).
+const segmentParam = (a, b, p) => {
+  const dx = b.x - a.x, dy = b.y - a.y
+  return Math.abs(dx) >= Math.abs(dy) ? (p.x - a.x) / dx : (p.y - a.y) / dy
+}
+
+// The closed segment a→b lies entirely within the closed polygon `ring`: both
+// ends in the closure, no proper crossing of the boundary, and — the concave
+// case — every stretch between successive touches of the boundary has its
+// midpoint inside. A chord across a notch of a concave outline is caught here,
+// and so is an edge that leaves and re-enters.
+export function segmentWithinPolygon(a, b, ring) {
+  if (!pointInOrOnPolygon(ring, a) || !pointInOrOnPolygon(ring, b)) return false
+  const ts = [0, 1]
+  const n = ring.length
+  for (let i = 0; i < n; i++) {
+    const c = ring[i], d = ring[(i + 1) % n]
+    if (segmentsCross(a, b, c, d)) return false
+    if (orientation(a, b, c) === 0 && withinSegmentBox(a, b, c)) ts.push(segmentParam(a, b, c))
+  }
+  ts.sort((x, y) => x - y)
+  for (let i = 1; i < ts.length; i++) {
+    if (ts[i] - ts[i - 1] <= GEOM_EPS) continue
+    const t = (ts[i] + ts[i - 1]) / 2
+    if (!pointInOrOnPolygon(ring, { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })) return false
+  }
+  return true
+}
+
+// `hole` lies within `parent` (both simple rings); touching the boundary is allowed.
+export function polygonWithinPolygon(hole, parent) {
+  if (hole.length < 3 || parent.length < 3) return false
+  if (!boxWithin(boundingBox(hole), boundingBox(parent))) return false
+  const n = hole.length
+  for (let i = 0; i < n; i++) {
+    if (!segmentWithinPolygon(hole[i], hole[(i + 1) % n], parent)) return false
+  }
+  return true
+}
+
+// Two simple rings share NO point: no edge touches or crosses an edge of the
+// other, and no vertex lies inside or on the other. Identical, nested,
+// crossing and partially overlapping rings all fail.
+export function polygonsDisjoint(a, b) {
+  if (!boxesTouch(boundingBox(a), boundingBox(b))) return true
+  const na = a.length, nb = b.length
+  for (let i = 0; i < na; i++) {
+    for (let j = 0; j < nb; j++) {
+      if (segmentsIntersect(a[i], a[(i + 1) % na], b[j], b[(j + 1) % nb])) return false
+    }
+  }
+  if (a.some(p => pointInOrOnPolygon(b, p))) return false
+  if (b.some(p => pointInOrOnPolygon(a, p))) return false
+  return true
+}
+
+export const DEDUCTION_PROBLEM = {
+  MALFORMED:   'deduction_malformed',   // not a well-formed hole, or a duplicate id
+  INVALID:     'deduction_invalid',     // a hole crosses itself or has no area
+  OUTSIDE:     'deduction_outside',     // a hole leaves the parent outline
+  OVERLAP:     'deductions_overlap',    // two holes share a point (touch, cross, nest, duplicate)
+  EXCEED_AREA: 'deductions_exceed_area', // the holes equal or exceed the gross area
+}
+
+const malformedDeductionIds = (list) => {
+  const seen = new Set()
+  const bad = new Set()
+  for (const d of list) {
+    const id = typeof d?.id === 'string' && d.id ? d.id : null
+    if (!isDeduction(d) || (id && seen.has(id))) { if (id) bad.add(id) }
+    if (id) seen.add(id)
+  }
+  return [...bad]
+}
+
+// Null for a valid set, otherwise { problem, deductionIds } naming the
+// offender(s). Canonical units — the area comparison is scale-free; the
+// BOQ-precision check on the net needs a calibration and lives in
+// measurementQuantity. The parent is assumed SIMPLE (polygonProblem first).
+export function deductionsProblem(parentPoints, deductions) {
+  if (!Array.isArray(deductions) || deductions.length === 0) return null
+  if (!isDeductionList(deductions)) return { problem: DEDUCTION_PROBLEM.MALFORMED, deductionIds: malformedDeductionIds(deductions) }
+  const parent = polygonRing(parentPoints)
+  const rings = []
+  for (const d of deductions) {
+    if (polygonProblem(d.points)) return { problem: DEDUCTION_PROBLEM.INVALID, deductionIds: [d.id] }
+    rings.push({ id: d.id, ring: polygonRing(d.points) })
+  }
+  for (const r of rings) {
+    if (!polygonWithinPolygon(r.ring, parent)) return { problem: DEDUCTION_PROBLEM.OUTSIDE, deductionIds: [r.id] }
+  }
+  for (let i = 0; i < rings.length; i++) {
+    for (let j = i + 1; j < rings.length; j++) {
+      if (!polygonsDisjoint(rings[i].ring, rings[j].ring)) return { problem: DEDUCTION_PROBLEM.OVERLAP, deductionIds: [rings[i].id, rings[j].id] }
+    }
+  }
+  const gross = polygonArea(parent)
+  const deducted = rings.reduce((sum, r) => sum + polygonArea(r.ring), 0)
+  if (deducted >= gross) return { problem: DEDUCTION_PROBLEM.EXCEED_AREA, deductionIds: rings.map(r => r.id) }
+  return null
+}
+
 // ── Calibration ──────────────────────────────────────────────────────────────
 //
 // A calibration is two canonical points plus the real distance between them:
@@ -335,6 +524,12 @@ export const QUANTITY_PROBLEM = {
   TOO_FEW_POINTS:    'too_few_points',
   DEGENERATE:        POLYGON_PROBLEM.DEGENERATE,
   SELF_INTERSECTING: POLYGON_PROBLEM.SELF_INTERSECTING,
+  // Deductions (ADR-54) — the parent's holes, judged as part of its geometry.
+  DEDUCTION_MALFORMED:    DEDUCTION_PROBLEM.MALFORMED,
+  DEDUCTION_INVALID:      DEDUCTION_PROBLEM.INVALID,
+  DEDUCTION_OUTSIDE:      DEDUCTION_PROBLEM.OUTSIDE,
+  DEDUCTIONS_OVERLAP:     DEDUCTION_PROBLEM.OVERLAP,
+  DEDUCTIONS_EXCEED_AREA: DEDUCTION_PROBLEM.EXCEED_AREA,
 }
 
 export const QUANTITY_PROBLEM_LABELS = {
@@ -342,6 +537,11 @@ export const QUANTITY_PROBLEM_LABELS = {
   [QUANTITY_PROBLEM.TOO_FEW_POINTS]:    'Not enough points for this measurement type.',
   [QUANTITY_PROBLEM.DEGENERATE]:        'The outline has no area — its points are collinear or coincide. Edit the geometry.',
   [QUANTITY_PROBLEM.SELF_INTERSECTING]: 'The outline crosses itself — move or remove the crossing points in Geometry.',
+  [QUANTITY_PROBLEM.DEDUCTION_MALFORMED]:    'A deduction could not be read. Remove it and trace the opening again.',
+  [QUANTITY_PROBLEM.DEDUCTION_INVALID]:      'A deduction outline crosses itself or has no area — edit or remove that deduction.',
+  [QUANTITY_PROBLEM.DEDUCTION_OUTSIDE]:      'A deduction lies partly outside the area it is deducted from — edit the deduction, or the outline.',
+  [QUANTITY_PROBLEM.DEDUCTIONS_OVERLAP]:     'Two deductions overlap or touch — trace each opening once, clear of the others.',
+  [QUANTITY_PROBLEM.DEDUCTIONS_EXCEED_AREA]: 'The deductions leave no area — together they equal or exceed the gross area.',
 }
 
 // The actionable message for an INVALID quantity, or null when there is none.
@@ -363,6 +563,14 @@ export function roundQuantity(value) {
 // `value` is UNROUNDED (callers round for display or for a later BOQ write);
 // null whenever the geometry is malformed or a physical scale is required and
 // absent. A count never needs calibration.
+//
+// An AREA with deductions (ADR-54) derives its NET: gross outline minus the
+// holes, each scaled through the same calibration. `value` IS the net — so
+// the page totals, the project summary, the BOQ aggregate and the fingerprint
+// all carry net through this one function — and `gross`, `deducted` and
+// `deductionCount` ride alongside for display only. A set of holes that fails
+// its geometry (deductionsProblem) or leaves no area at BOQ precision is
+// INVALID with that reason and the offending ids; never a number.
 export function measurementQuantity(measurement, calibration) {
   const kind = measurement?.kind
   const unit = KIND_UNITS[kind]
@@ -375,9 +583,14 @@ export function measurementQuantity(measurement, calibration) {
   }
   // An area must be a SIMPLE polygon (ADR-53): a crossed or collapsed outline
   // is INVALID whatever the calibration says — never a number.
+  const deductions = kind === MEASUREMENT_KIND.AREA ? measurementDeductions(measurement) : []
   if (kind === MEASUREMENT_KIND.AREA) {
     const problem = polygonProblem(points)
     if (problem) return invalidQuantity(unit, problem)
+    if (deductions.length > 0) {
+      const issue = deductionsProblem(points, deductions)
+      if (issue) return { ...invalidQuantity(unit, issue.problem), deductionIds: issue.deductionIds }
+    }
   }
   if (!isValidCalibration(calibration)) return { value: null, unit, state: QUANTITY_STATE.UNCALIBRATED }
 
@@ -385,7 +598,26 @@ export function measurementQuantity(measurement, calibration) {
   if (kind === MEASUREMENT_KIND.LENGTH) {
     return { value: polylineLength(points) * k, unit, state: QUANTITY_STATE.OK }
   }
-  return { value: polygonArea(points) * k * k, unit, state: QUANTITY_STATE.OK }
+  if (deductions.length === 0) return { value: polygonArea(points) * k * k, unit, state: QUANTITY_STATE.OK }
+  const gross = polygonArea(points) * k * k
+  const deducted = deductions.reduce((sum, d) => sum + polygonArea(d.points), 0) * k * k
+  const net = gross - deducted
+  if (roundQuantity(net) <= 0) {
+    return { ...invalidQuantity(unit, QUANTITY_PROBLEM.DEDUCTIONS_EXCEED_AREA), deductionIds: deductions.map(d => d.id) }
+  }
+  return { value: net, unit, state: QUANTITY_STATE.OK, gross, deducted, deductionCount: deductions.length }
+}
+
+// Gross / deductions / net for display, or null when a quantity carries no
+// deductions (the plain figure is then the whole story). Display rounding only.
+export function quantityBreakdown(q) {
+  if (!q || q.state !== QUANTITY_STATE.OK || !isFiniteNumber(q.gross) || !isFiniteNumber(q.deducted)) return null
+  return {
+    gross:    formatMeasurementQuantity({ value: q.gross, unit: q.unit }),
+    deducted: formatMeasurementQuantity({ value: q.deducted, unit: q.unit }),
+    net:      formatMeasurementQuantity(q),
+    count:    q.deductionCount ?? 0,
+  }
 }
 
 // The quantity the measurement had when it was last saved or reviewed — from
@@ -518,6 +750,67 @@ export function validatePoints(kind, points) {
   if (kind === MEASUREMENT_KIND.AREA && polygonArea(points) <= 0) return 'The area is zero — the points are collinear or coincide.'
   return null
 }
+
+// ── Deductions — validation (Quant 1D, ADR-54) ───────────────────────────────
+
+export function validateDeductionLabel(label) {
+  const s = String(label ?? '').trim()
+  if (!s) return 'Enter a label for this deduction.'
+  if (s.length > LABEL_MAX) return `The label is too long (max ${LABEL_MAX} characters).`
+  return null
+}
+
+// A hole's own outline: an area polygon (simple, ≥ 3 points) of at most 100 points.
+export function validateDeductionPoints(points) {
+  const base = validatePoints(MEASUREMENT_KIND.AREA, points)
+  if (base) return base
+  if (points.length > DEDUCTION_MAX_POINTS) return `Too many points for a deduction (max ${DEDUCTION_MAX_POINTS}).`
+  return null
+}
+
+// Error string or null for a COMPLETE deduction list against its parent —
+// the check every save runs (add, edit, rename, remove, and a parent outline
+// edit that must not strand a hole). The geometry judgement is
+// measurementQuantity's own, so what is refused here is exactly what would
+// derive as INVALID; `calibration` (the page's, or the parent's snapshot)
+// additionally rejects a net that rounds to zero at BOQ precision.
+export function validateDeductions(parentPoints, deductions, calibration = null) {
+  if (deductions === undefined || deductions === null) return null
+  if (!Array.isArray(deductions)) return 'The deductions are not valid.'
+  if (deductions.length > MAX_DEDUCTIONS) return `Too many deductions (max ${MAX_DEDUCTIONS} per area).`
+  for (const d of deductions) {
+    if (!d || typeof d !== 'object' || typeof d.id !== 'string' || !d.id || d.id.length > DEDUCTION_ID_MAX) return 'A deduction has no usable id.'
+    const labelError = validateDeductionLabel(d.label)
+    if (labelError) return labelError
+    const pointsError = validateDeductionPoints(d.points)
+    if (pointsError) return pointsError
+  }
+  if (new Set(deductions.map(d => d.id)).size !== deductions.length) return 'Two deductions share the same id.'
+  if (deductions.length === 0) return null
+  const q = measurementQuantity({ kind: MEASUREMENT_KIND.AREA, points: parentPoints, deductions }, calibration)
+  return q.state === QUANTITY_STATE.INVALID ? quantityIssue(q) : null
+}
+
+// A fresh id, distinct from the parent's existing ones.
+export function newDeductionId(existingIds = []) {
+  const taken = new Set(existingIds)
+  for (;;) {
+    const id = typeof globalThis.crypto?.randomUUID === 'function'
+      ? globalThis.crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+    if (!taken.has(id)) return id
+  }
+}
+
+// The list with `candidate` added or, when its id already exists, replaced in place.
+export function withDeduction(deductions, candidate) {
+  const list = measurementDeductions({ deductions })
+  const at = list.findIndex(d => d?.id === candidate.id)
+  return at < 0 ? [...list, candidate] : list.map((d, i) => (i === at ? candidate : d))
+}
+
+export const withoutDeduction = (deductions, deductionId) =>
+  measurementDeductions({ deductions }).filter(d => d?.id !== deductionId)
 
 // ── Geometry editing (Quant 1C-A, ADR-53) ────────────────────────────────────
 //
@@ -669,6 +962,11 @@ export function isReadableMeasurement(m) {
     && (m.calibration === null || isValidCalibrationSnapshot(m.calibration))
     // Quant 1A documents have no `boqItemId` key at all; 1B writes null or an id.
     && isValidBoqLink(m.boqItemId)
+    // Deductions (ADR-54): absent, or a list on an AREA. Element content is
+    // judged by the derivation (a malformed hole is NAMED, so the record stays
+    // visible and the hole removable) — only a non-list, or holes on another
+    // kind, makes the record unreadable.
+    && (m.deductions === undefined || (m.kind === MEASUREMENT_KIND.AREA && Array.isArray(m.deductions)))
 }
 
 // The link a stored measurement carries, normalised: null for a 1A document.
@@ -697,16 +995,22 @@ export const sortMeasurements = (list) =>
 
 // Totals by kind for one list, under one calibration — a per-page summary only.
 // Quant 1A never carries these onto a BOQ item (ADR-51 → Quant 1B boundary).
+// Since ADR-54 an area total is NET; `gross` and `deducted` ride alongside
+// (zero when nothing on the page is deducted) for the breakdown line only.
 export function summariseMeasurements(list, calibration) {
   const out = {}
-  for (const kind of MEASUREMENT_KINDS) out[kind] = { count: 0, total: 0, unit: KIND_UNITS[kind], incomplete: 0 }
+  for (const kind of MEASUREMENT_KINDS) out[kind] = { count: 0, total: 0, unit: KIND_UNITS[kind], incomplete: 0, gross: 0, deducted: 0 }
   for (const m of activeMeasurements(list)) {
     if (!isReadableMeasurement(m)) continue
     const q = measurementQuantity(m, calibration)
     const entry = out[m.kind]
     entry.count += 1
     if (q.value === null) entry.incomplete += 1
-    else entry.total += q.value
+    else {
+      entry.total += q.value
+      entry.gross += isFiniteNumber(q.gross) ? q.gross : q.value
+      entry.deducted += isFiniteNumber(q.deducted) ? q.deducted : 0
+    }
   }
   return out
 }
@@ -847,4 +1151,16 @@ export function pointsToPath(points, closed = false) {
   if (!isPointList(points) || points.length === 0) return ''
   const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x} ${p.y}`).join(' ')
   return closed && points.length > 2 ? `${d} Z` : d
+}
+
+// The holes alone (each closed), and an area WITH its holes — drawn with
+// fill-rule evenodd so the openings read as openings (ADR-54). Only
+// well-formed holes are drawn; a malformed one is named in the list instead.
+export const holesPath = (deductions = []) =>
+  (deductions ?? []).filter(isDeduction).map(d => pointsToPath(d.points, true)).join(' ')
+
+export function areaPathWithHoles(points, deductions = []) {
+  const outer = pointsToPath(points, true)
+  const holes = holesPath(deductions)
+  return holes ? `${outer} ${holes}` : outer
 }
