@@ -126,24 +126,38 @@ const COLLECTIONS = {
     }),
     update: (user) => ({ budgeted: 120_000, updatedAt: serverTimestamp(), updatedBy: user.uid }),
   },
+  // ADR-57 (M2-B1) REVISED THESE FIXTURES, NOT THE ASSERTIONS. When this suite
+  // was written (ADR-56) the PO write rule was tenant-and-role only, so the
+  // seeded document was `sent` and the update was a bare `{ notes }`. The PO
+  // block now enforces the lifecycle: content edits are draft-only and every
+  // write carries `updatedAt`/`updatedBy`, a create carries the exact key set
+  // with ≥ 1 line, and a draft-edit payload must keep the header consistent.
+  // The seed is therefore a DRAFT with the full ADR-57 shape and the create /
+  // update payloads are what hooks/usePurchaseOrders.jsx writes — the read
+  // matrix this suite exists for does not depend on status. The lifecycle
+  // itself is proven in purchaseOrders.rules.test.js.
   purchaseOrders: {
     path: (c = COMPANY_A, p = PROJECT_A) => `companies/${c}/projects/${p}/purchaseOrders`,
     seed: {
-      poNumber: 'PO-0001', status: 'sent', supplierName: 'Acme Concrete', supplierId: 'contact1',
+      poNumber: 'PO-0001', status: 'draft', supplierName: 'Acme Concrete', supplierId: 'contact1',
       description: 'Slab pour', lineItems: [
         { costCodeId: 'cc1', costCodeName: '03-100 — Concrete Slab', description: 'Pour', qty: 1, unit: 'ea', unitPrice: 800, lineTotal: 800 },
       ],
       subtotal: 800, gst: 80, total: 880, currency: 'AUD', revision: 1, notes: '',
-      sentAt: new Date('2026-02-01T00:00:00Z'), closedAt: null, cancelledAt: null, externalRefs: {},
+      sentAt: null, sentBy: null, closedAt: null, closedBy: null, cancelledAt: null, cancelledBy: null, externalRefs: {},
       createdAt: new Date('2026-01-20T00:00:00Z'), createdBy: 'u_qs',
+      updatedAt: new Date('2026-01-20T00:00:00Z'), updatedBy: 'u_qs',
     },
     create: (user) => ({
       poNumber: 'PO-0002', status: 'draft', supplierName: 'Beta Steel', supplierId: null,
-      description: '', lineItems: [], subtotal: 0, gst: 0, total: 0, currency: 'AUD', revision: 1, notes: '',
-      sentAt: null, closedAt: null, cancelledAt: null, externalRefs: {},
-      createdAt: serverTimestamp(), createdBy: user.uid,
+      description: '', lineItems: [
+        { costCodeId: 'cc1', costCodeName: '03-100 — Concrete Slab', description: '', qty: 0, unit: '', unitPrice: 0, lineTotal: 0 },
+      ],
+      subtotal: 0, gst: 0, total: 0, currency: 'AUD', revision: 1, notes: '',
+      sentAt: null, sentBy: null, closedAt: null, closedBy: null, cancelledAt: null, cancelledBy: null, externalRefs: {},
+      createdAt: serverTimestamp(), createdBy: user.uid, updatedAt: serverTimestamp(), updatedBy: user.uid,
     }),
-    update: () => ({ notes: 'Updated by a financial role' }),
+    update: (user) => ({ notes: 'Updated by a financial role', updatedAt: serverTimestamp(), updatedBy: user.uid }),
   },
   progressClaims: {
     path: (c = COMPANY_A, p = PROJECT_A) => `companies/${c}/projects/${p}/progressClaims`,

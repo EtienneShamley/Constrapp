@@ -145,8 +145,12 @@ writes a new field, so the earlier bundle reads every document unchanged. The
 figures then revert to the pre-ADR-55 derivation (the known overstatement),
 which is why the rollback should be brief.
 
-**Financial Read-Access Containment — M2-A (ADR-56): IMPLEMENTED — NOT YET
-DEPLOYED. RULES-ONLY — no Hosting deploy, no migration, no schema change.**
+**Financial Read-Access Containment — M2-A (ADR-56): LIVE IN PRODUCTION since
+27 October 2026 — merged to `main`, Azure CI green, the revised ruleset
+published through the console, confirmed live and production-verified per
+TESTING.md §32 by the product owner that day (the repository records the day,
+not a time). RULES-ONLY — no Hosting deploy, no migration, no schema change.
+The release order below is kept as the record of the order used.**
 The revised `frontend/firestore.rules` (**197,035 bytes**; 196,622 before)
 restricts **reads** of `costCodes`, `budgetLines`, `purchaseOrders` and
 `progressClaims` to the three financial roles. It changes **no write rule, no
@@ -154,10 +158,9 @@ other collection and not `storage.rules`**, and it needs **no ordering gate**:
 it adds no field and tightens no `hasOnly`, so the live bundle keeps working
 for every financial role, while a `subcontractor` / `client` session's four
 subscriptions start receiving `PERMISSION_DENIED` and the pages show their
-*unavailable* state (ADR-41/44) — the intended outcome. **Production is
-remediated only once the ruleset is confirmed live.** This release is
-independent of the M1 Hosting hold: M2-A can be published before, after or
-without the M1 Hosting deploy.
+*unavailable* state (ADR-41/44) — the intended outcome. It was released
+independently of the M1 Hosting hold, which still stands (M1 is merged; its
+Hosting deploy awaits cofounder acceptance).
 
 1. Feature review; commit and merge to `main`; Azure CI green (lint → unit →
    **rules** → build — the rules step is the gate for this release).
@@ -170,16 +173,94 @@ without the M1 Hosting deploy.
    a controlled external-role read denied — in a non-production tenant or the
    emulator, never by provisioning an external user in production; financial
    roles unaffected) and record the outcome here.
-6. Close the milestone: mark ADR-56 LIVE here, in SECURITY.md and ROADMAP.md.
+6. Close the milestone: mark ADR-56 LIVE here, in SECURITY.md and ROADMAP.md
+   — done, 27 October 2026.
 
 **Rollback.** Re-publish the previous ruleset (196,622 bytes, the 1D / M1
 version). No data, document or bundle is affected either way — rules read
 nothing new and write nothing. Rolling back **restores the P0 exposure**, so it
-should be a last resort and brief. **What rollback cannot do:** it cannot undo
+should be a last resort and brief. ⚠️ Once M2-B1 is live this rollback target
+is superseded: see the M2-B1 note (rules roll back to the M2-A ruleset, never
+further, while the M2-B1 bundle is deployed). **What rollback cannot do:** it cannot undo
 any read an external user performed while the exposure was live, and it does
 not change whether such users exist (NOT VERIFIED — check `users/{uid}.role`
 in the console; disable or de-provision any `subcontractor` / `client` account
 until the revised ruleset is live).
+
+**Purchase Order Lifecycle Security — M2-B1 (ADR-57): IMPLEMENTED — NOT YET
+DEPLOYED. HOSTING FIRST, THEN RULES — the ADR-40 ordering gate applies.** The
+M2-B1 bundle changes the PO write paths (`hooks/usePurchaseOrders.jsx`,
+`lib/purchaseOrderActions.js`, `lib/poCancellation.js`,
+`pages/project/ProjectPurchaseOrders.jsx`): every PO write now carries
+`updatedAt` / `updatedBy`, a create carries null `sentBy` / `closedBy` /
+`cancelledBy`, each transition writes its `*By` actor through a guarded
+transaction, and the Cancel button runs the strict linked-record guard. The
+revised `frontend/firestore.rules` (**207,567 bytes**; 197,035 before) makes
+the `purchaseOrders` block REQUIRE those keys (`updateStamped()` on every
+write, the `*By` stamps on each transition, the exact key set at create). The
+two halves are therefore **not independently deployable in either order
+except the one below**:
+
+- *Live bundle + new rules* (rules first) → **outage**: every PO create, draft
+  edit, send, close and cancel in the live app fails with *Missing or
+  insufficient permissions* — the live bundle sends none of the required keys.
+  This is the ADR-40 gate; do not publish first.
+- *New bundle + live rules* (Hosting first) → **safe**: the live (M2-A) PO
+  write rule is tenant-and-role only, so it accepts the new payloads; the
+  stricter cancel policy and the stale-copy guard already run in the client,
+  the rules simply do not yet back them. This is the **compatibility phase**,
+  and it is the only one needed.
+
+**M1 (ADR-55) is merged but its Hosting deploy is awaiting cofounder
+acceptance.** `main` carries M1; a Hosting deploy of M2-B1 therefore ships the
+M1 bundle at the same time. M2-B1 does not itself require M1 (it writes no M1
+field and reads no M1 figure), but **there is no M2-B1-only Hosting artifact
+without a cherry-pick**, so the M1 acceptance must land first — or the product
+owner must explicitly accept shipping both in one deploy. The M2-A ruleset
+already live is a strict subset of the M2-B1 ruleset (read predicates
+unchanged, PO write rule tightened, nothing else touched); publishing M2-B1
+supersedes it with no intermediate state.
+
+Release, in order, each a separate approved action:
+
+1. **M1 Hosting acceptance** by the cofounder (or an explicit decision to
+   ship M1 + M2-B1 together).
+2. Lead Architect review; commit and merge to `main`; Azure CI green (lint →
+   unit → **rules** → build).
+3. `cd frontend && npm run lint && npm run test:unit && npm run test:rules &&
+   npm run build` — green; the size test passes (207,567 bytes against the
+   245,000-byte budget).
+4. **Confirm the live ruleset first** (procedure above) and record its
+   timestamp and byte count (expected: the M2-A ruleset, 197,035 bytes).
+5. **Deploy Hosting**: `firebase deploy --only hosting --project
+   constrapp-69b5d`. Hard-refresh and verify, against the STILL-LIVE M2-A
+   rules, that a PO can be created, edited, sent, closed and cancelled, that a
+   PO with an approved claim (or supplier variation) shows the cancel reason, and that the sent
+   document in the console carries `sentBy` and `updatedAt` / `updatedBy`.
+   This is the compatibility phase; it may stay in place as long as needed.
+6. **Publish `frontend/firestore.rules`** (procedure above). Confirm the live
+   version is the published one (search `ADR-57`; `diff <(pbpaste)
+   frontend/firestore.rules` empty; **207,567** bytes).
+7. **Verify in production** per TESTING.md §33 (the three checks: this build
+   and this ruleset; the cancel guard and a console-side forged edit refused;
+   legacy documents and downstream figures unaffected) and record the outcome
+   here.
+8. Close the milestone: mark ADR-57 LIVE here, in SECURITY.md, DATA_MODEL.md,
+   FINANCIAL_WORKFLOWS.md, ROADMAP.md and AGENT.md.
+
+**Rollback.** *Rules only* (after step 6, keeping the new bundle): re-publish
+the M2-A ruleset (197,035 bytes) — the new bundle keeps working unchanged
+against it (it was proven to in step 5); the only loss is the rules-level
+enforcement. *Hosting only* (after step 5, before step 6): redeploy the
+previous build — the live rules accept its writes. *Both* (after step 6):
+**rules back first, then Hosting** — never the reverse, because the old bundle
+against the new rules is the outage above. Existing documents are unaffected
+in every direction: the new rules compare the added keys through
+`get(key, null)` and require the stamps only of the incoming document, so a
+pre-M2-B1 PO stays writable, and a post-M2-B1 PO (which carries the extra
+keys) is read and written by the old bundle without complaint (it uses partial
+`updateDoc` and never asserts a key set). No migration, backfill or data
+rewrite is involved in either direction.
 
 **Quant™ 1B (ADR-52): LIVE IN PRODUCTION (October 2026).** Released in the
 order below — rules published and confirmed live first, then Hosting — and

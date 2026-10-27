@@ -392,10 +392,19 @@ service cloud.firestore {
     // Reads: internal financial roles only (ADR-56) — supplier pricing is
     // commercially sensitive. Subcontractor / client reads are denied until a
     // project- or supplier-scoped membership model exists (M2-A2 / M3).
-    // Create/update: company_admin, project_manager, or qs.
+    // Create/update: company_admin, project_manager, or qs — LIFECYCLE
+    // RULES-ENFORCED since ADR-57 (M2-B1): born draft with the caller's stamps
+    // and the project's resolved currency; draft-only content edits; exactly
+    // draft|pending_approval → sent, sent → closed, draft|pending_approval|sent
+    // → cancelled, each touching only status + its own (at, by) stamps + the
+    // audit stamps, actor == caller, time == request.time; identity, money and
+    // every earlier stamp frozen after send; whole-cent header arithmetic;
+    // nothing enters the reserved `pending_approval`; closed/cancelled terminal.
     // Delete: blocked — cancellation is a status change; POs are audit records.
-    // TODO (M2-B): enforce status-transition legality and immutability-after-sent
-    // here rather than only in the client hook.
+    // What rules CANNOT verify — lineItems contents, Σ lineTotal == subtotal,
+    // and whether a claim, invoice or supplier variation references the PO
+    // being cancelled — is recorded in docs/SECURITY.md → Deferred Control 35;
+    // the strict cancel policy runs in the client (lib/poCancellation.js).
     match /companies/{companyId}/projects/{projectId}/purchaseOrders/{poId} {
       function financialMember() {
         return request.auth != null
@@ -403,7 +412,192 @@ service cloud.firestore {
             && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
             && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
       }
-      allow read, create, update: if financialMember();
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // Whole cents — see the supplierInvoices block for why doubles are never
+      // compared directly.
+      function cents(v) {
+        return math.round(v * 100);
+      }
+      // 10% of an ex-GST cent amount, round-half-up, correct under either
+      // division semantics (same helper as supplierInvoices / retentionReleases).
+      function gstCents(c) {
+        return math.floor((c + 5) / 10);
+      }
+      function projectPath() {
+        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId);
+      }
+      // lib/currency.js → resolveProjectCurrency, mirrored: the project's
+      // well-formed `currency`, else the company's well-formed `baseCurrency`,
+      // else AUD. Checked at CREATE only (the field is frozen afterwards).
+      function resolvedCurrency() {
+        let pc = get(projectPath()).data.get('currency', '');
+        let cc = get(/databases/$(database)/documents/companies/$(companyId)).data.get('baseCurrency', '');
+        return (pc is string && pc.matches('^[A-Z]{3}$')) ? pc
+             : ((cc is string && cc.matches('^[A-Z]{3}$')) ? cc : 'AUD');
+      }
+      // Exact key set of a document the app creates (hooks/usePurchaseOrders.jsx).
+      function exactKeys() {
+        return request.resource.data.keys().hasOnly(['poNumber', 'status', 'supplierName', 'supplierId', 'description', 'lineItems', 'subtotal', 'gst', 'total', 'currency', 'revision', 'notes', 'sentAt', 'sentBy', 'closedAt', 'closedBy', 'cancelledAt', 'cancelledBy', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+            && request.resource.data.keys().hasAll(['poNumber', 'status', 'supplierName', 'supplierId', 'description', 'lineItems', 'subtotal', 'gst', 'total', 'currency', 'revision', 'notes', 'sentAt', 'sentBy', 'closedAt', 'closedBy', 'cancelledAt', 'cancelledBy', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']);
+      }
+      // Identity written once. `supplierId` is null on a pre-Contacts PO
+      // (ADR-15) and is never backfilled.
+      function identityShapeValid() {
+        let d = request.resource.data;
+        return d.poNumber is string
+            && d.poNumber.matches('^PO-[0-9]{4,}$')
+            && d.supplierName is string
+            && d.supplierName.size() > 0
+            && d.supplierName.size() <= 200
+            && (d.supplierId == null || (d.supplierId is string && d.supplierId.size() > 0))
+            && d.currency is string
+            && d.currency.matches('^[A-Z]{3}$')
+            && d.revision is number
+            && d.externalRefs is map;
+      }
+      // Authored content. Bounds stop unbounded strings, not business cases;
+      // the line COUNT is the honest ceiling on what rules can say about
+      // `lineItems` (no iteration — Deferred Control 35).
+      function contentShapeValid() {
+        let d = request.resource.data;
+        return d.description is string
+            && d.description.size() <= 2000
+            && d.notes is string
+            && d.notes.size() <= 5000
+            && d.lineItems is list
+            && d.lineItems.size() >= 1
+            && d.lineItems.size() <= 200;
+      }
+      function moneyTypesValid() {
+        let d = request.resource.data;
+        return d.subtotal is number
+            && d.gst is number
+            && d.total is number
+            && d.subtotal >= 0
+            && d.gst >= 0
+            && d.total >= 0;
+      }
+      // subtotal + gst == total EXACTLY, in cents. gst is 10% of subtotal
+      // round-half-up EXACTLY — except on a half-cent boundary (subtotal cents
+      // ending in 5), where ONE cent below is also accepted: lib/purchaseOrders
+      // .js → poTotals computes roundMoney(subtotal × 0.1) in binary floating
+      // point, and there the product can land a hair below .5 and round DOWN
+      // (40.15 → 4.01 where half-up gives 4.02). Swept exhaustively to $1M and
+      // sampled to $90M: the deviation is always −1, never +1, and never off a
+      // boundary — so this admits exactly the app's own output and nothing else
+      // (ADR-57). GST_RATE is a flat 10% regardless of currency.
+      function moneyBalanced() {
+        let d = request.resource.data;
+        let sub = cents(d.subtotal);
+        let gst = cents(d.gst);
+        return sub + gst == cents(d.total)
+            && (gst == gstCents(sub)
+                || (sub % 10 == 5 && gst == gstCents(sub) - 1));
+      }
+      function moneyValid() {
+        return moneyTypesValid() && moneyBalanced();
+      }
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // Born draft, stamped by its creator, every lifecycle stamp null.
+      function createValid() {
+        let d = request.resource.data;
+        return d.status == 'draft'
+            && d.createdBy == request.auth.uid
+            && d.createdAt == request.time
+            && d.sentAt == null
+            && d.sentBy == null
+            && d.closedAt == null
+            && d.closedBy == null
+            && d.cancelledAt == null
+            && d.cancelledBy == null;
+      }
+      // The identity no update may rewrite. Optional keys are read through
+      // get(key, null) on BOTH sides so a document written before ADR-57 (no
+      // `*By` stamps, possibly no `externalRefs`) compares equal and stays
+      // writable; `hasOnly` on changedKeys() in every branch below is what
+      // freezes the lifecycle stamps a transition does not own.
+      function corePreserved() {
+        let d = request.resource.data;
+        let p = resource.data;
+        return d.poNumber == p.poNumber
+            && d.supplierName == p.supplierName
+            && d.get('supplierId', null) == p.get('supplierId', null)
+            && d.get('currency', null) == p.get('currency', null)
+            && d.get('revision', null) == p.get('revision', null)
+            && d.get('externalRefs', null) == p.get('externalRefs', null)
+            && d.createdAt == p.createdAt
+            && d.createdBy == p.createdBy;
+      }
+
+      allow read: if financialMember();
+
+      allow create: if financialMember()
+                  && exactKeys()
+                  && createValid()
+                  && updateStamped()
+                  && identityShapeValid()
+                  && contentShapeValid()
+                  && moneyValid()
+                  && exists(projectPath())
+                  && request.resource.data.currency == resolvedCurrency();
+
+      // `resource != null` first — a denied create is also measured against
+      // this rule (see the supplierInvoices note on the 1000-expression ceiling).
+      allow update: if resource != null
+                  && financialMember() && corePreserved() && updateStamped() && (
+                    // (a) DRAFT EDIT — the authored content and the derived
+                    //     header only (hooks/usePurchaseOrders.jsx →
+                    //     updatePurchaseOrder). Status and every stamp are
+                    //     outside the list, so they cannot move here.
+                    (
+                      resource.data.status == 'draft'
+                      && changedKeys().hasOnly(['description', 'notes', 'lineItems', 'subtotal', 'gst', 'total', 'updatedAt', 'updatedBy'])
+                      && contentShapeValid()
+                      && moneyValid()
+                    )
+                    ||
+                    // (b) SEND — THE FREEZE AND COMMITMENT POINT. From draft
+                    //     (or the reserved pending_approval, which nothing
+                    //     enters). The stored lines are what gets frozen, so a
+                    //     draft with no line cannot be sent. Stamps only.
+                    (
+                      resource.data.status in ['draft', 'pending_approval']
+                      && request.resource.data.status == 'sent'
+                      && resource.data.lineItems is list
+                      && resource.data.lineItems.size() >= 1
+                      && changedKeys().hasOnly(['status', 'sentAt', 'sentBy', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.sentBy == request.auth.uid
+                      && request.resource.data.sentAt == request.time
+                    )
+                    ||
+                    // (c) CLOSE — sent only. Stamps only.
+                    (
+                      resource.data.status == 'sent'
+                      && request.resource.data.status == 'closed'
+                      && changedKeys().hasOnly(['status', 'closedAt', 'closedBy', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.closedBy == request.auth.uid
+                      && request.resource.data.closedAt == request.time
+                    )
+                    ||
+                    // (d) CANCEL (terminal) — from any non-terminal status.
+                    //     Stamps only; no reason field exists on this model.
+                    //     Whether a claim or invoice still counts against the
+                    //     PO is NOT checked here (no sibling reads) — the
+                    //     strict policy is the client's (DC35).
+                    (
+                      resource.data.status in ['draft', 'pending_approval', 'sent']
+                      && request.resource.data.status == 'cancelled'
+                      && changedKeys().hasOnly(['status', 'cancelledAt', 'cancelledBy', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.cancelledBy == request.auth.uid
+                      && request.resource.data.cancelledAt == request.time
+                    )
+                  );
+
       allow delete: if false;
     }
 

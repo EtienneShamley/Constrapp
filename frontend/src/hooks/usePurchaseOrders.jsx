@@ -10,6 +10,8 @@ import { useProject } from './useProject'
 import { stageProjectCurrencyLock } from './projectCurrencyLock'
 import { resolveProjectCurrency } from '../lib/currency'
 import { PO_STATUS, canTransition, poTotals, formatPoNumber, lineTotal, validatePoDraft } from '../lib/purchaseOrders'
+import { PO_CANCEL_BLOCKER_KIND, poCancellationGuard } from '../lib/poCancellation'
+import { runTransitionPurchaseOrder, PoWriteError, PO_WRITE_ERROR } from '../lib/purchaseOrderActions'
 
 export function usePurchaseOrders(projectId) {
   const { user }    = useAuth()
@@ -105,12 +107,21 @@ export function usePurchaseOrders(projectId) {
         currency:    projectCurrency,
         revision:    1,
         notes:       notes?.trim() || '',
+        // Lifecycle stamps — born null. Each transition writes its own
+        // (at, by) pair; Firestore rules require the actor to be the caller
+        // and the time to be the server's (ADR-57).
         sentAt:      null,
+        sentBy:      null,
         closedAt:    null,
+        closedBy:    null,
         cancelledAt: null,
+        cancelledBy: null,
         externalRefs: {},
         createdAt:   serverTimestamp(),
         createdBy:   user.uid,
+        // Audit stamps — required by rules on EVERY write since ADR-57.
+        updatedAt:   serverTimestamp(),
+        updatedBy:   user.uid,
       })
       commitLock()
     })
@@ -123,8 +134,10 @@ export function usePurchaseOrders(projectId) {
   // Supplier identity (supplierId/supplierName), poNumber, status, currency,
   // revision, lifecycle stamps, externalRefs and createdAt/createdBy are never
   // written — updateDoc is partial, so they pass through untouched. No currency
-  // ratchet: the project locked when this PO was created. The draft guard is
-  // client-side only (rules do not check status — Deferred Control 2).
+  // ratchet: the project locked when this PO was created. Since ADR-57 the
+  // draft-only edit is RULES-ENFORCED (the update branch admits exactly these
+  // keys, on a draft, with the audit stamps) — this client check is the UX
+  // mirror that gives a readable message.
   const updatePurchaseOrder = useCallback(async (po, { description, notes, lineItems }) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (po.status !== PO_STATUS.DRAFT) throw new Error('Only draft purchase orders can be edited')
@@ -140,23 +153,53 @@ export function usePurchaseOrders(projectId) {
       subtotal,
       gst,
       total,
+      updatedAt:   serverTimestamp(),
+      updatedBy:   user.uid,
     })
   }, [companyId, projectId, user])
 
-  const transitionStatus = useCallback(async (po, nextStatus) => {
+  // Send / close / cancel through ONE guarded transaction (ADR-57,
+  // lib/purchaseOrderActions.js): the server copy must still be in the status
+  // the user acted on, the move must be legal, and the write is status + the
+  // transition's (at, by) stamps + the audit stamps — exactly what the rules'
+  // transition branches admit.
+  //
+  // CANCEL additionally requires `linked`: the live progress-claim,
+  // supplier-invoice and variation subscriptions WITH their loading / error
+  // flags. The strict policy (lib/poCancellation.js) runs here against the
+  // snapshot — failing CLOSED while any read is loading or failed — and again inside the
+  // transaction against the server copies of every linked record. Omitting
+  // `linked` on a cancel is refused: "unknown" is never "no linked records".
+  // Both checks are CLIENT-ONLY (Deferred Control 35); rules cannot see
+  // sibling documents.
+  const transitionStatus = useCallback(async (po, nextStatus, linked = null) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (!canTransition(po.status, nextStatus)) {
       throw new Error(`Cannot move a ${po.status} purchase order to ${nextStatus}`)
     }
-    const stampField = {
-      [PO_STATUS.SENT]:      'sentAt',
-      [PO_STATUS.CLOSED]:    'closedAt',
-      [PO_STATUS.CANCELLED]: 'cancelledAt',
-    }[nextStatus]
-    const ref = doc(db, 'companies', companyId, 'projects', projectId, 'purchaseOrders', po.id)
-    await updateDoc(ref, {
-      status: nextStatus,
-      ...(stampField ? { [stampField]: serverTimestamp() } : {}),
+    const linkedRefs = []
+    if (nextStatus === PO_STATUS.CANCELLED) {
+      const guard = poCancellationGuard(po, linked)   // refuses when `linked` is absent
+      if (!guard.allowed) throw new PoWriteError(PO_WRITE_ERROR.BLOCKED, guard.reason)
+      for (const c of linked.progressClaims ?? []) {
+        if (c.poId === po.id && c.id) {
+          linkedRefs.push({ kind: PO_CANCEL_BLOCKER_KIND.CLAIM, ref: doc(db, 'companies', companyId, 'projects', projectId, 'progressClaims', c.id) })
+        }
+      }
+      for (const inv of linked.supplierInvoices ?? []) {
+        if (inv.poId === po.id && inv.id) {
+          linkedRefs.push({ kind: PO_CANCEL_BLOCKER_KIND.INVOICE, ref: doc(db, 'companies', companyId, 'projects', projectId, 'supplierInvoices', inv.id) })
+        }
+      }
+      for (const v of linked.variations ?? []) {
+        if (v.poId === po.id && v.id) {
+          linkedRefs.push({ kind: PO_CANCEL_BLOCKER_KIND.VARIATION, ref: doc(db, 'companies', companyId, 'projects', projectId, 'variations', v.id) })
+        }
+      }
+    }
+    const poRef = doc(db, 'companies', companyId, 'projects', projectId, 'purchaseOrders', po.id)
+    await runTransitionPurchaseOrder({
+      db, poRef, seen: po, nextStatus, uid: user.uid, runTransaction, serverTimestamp, linkedRefs,
     })
   }, [companyId, projectId, user])
 

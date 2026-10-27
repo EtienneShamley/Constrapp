@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  PO_STATUS, PO_EDITABLE_STATUSES, PO_COMMITTED_STATUSES, canTransition,
+  PO_STATUS, PO_EDITABLE_STATUSES, PO_COMMITTED_STATUSES, PO_CANCELLABLE_STATUSES,
+  PO_TRANSITION_STAMPS, PO_MAX_LINES, PO_TRANSITIONS, canTransition,
   GST_RATE, roundMoney, lineTotal, poTotals,
   committedByCostCode, remainingCommittedByCostCode,
   EMPTY_PO_FORM_LINE, poLineToForm, buildPoLineItem, validatePoDraft,
@@ -250,28 +251,37 @@ describe('PO_EDITABLE_STATUSES', () => {
 // ── update-payload / immutable contract ──────────────────────────────────────
 //
 // Mirrors what usePurchaseOrders.updatePurchaseOrder writes: description, notes,
-// rebuilt lines and re-derived header totals — nothing else. A pure replica so
-// the contract is pinned without Firestore.
+// rebuilt lines, re-derived header totals and — since ADR-57 — the two audit
+// stamps (`updatedAt` = serverTimestamp(), `updatedBy` = the caller), nothing
+// else. A pure replica so the contract is pinned without Firestore; the stamp
+// values are opaque tokens here. The SAME eight keys are the `hasOnly` list of
+// the rules' draft-edit branch (firestore.rules → purchaseOrders (a)).
 
-const draftUpdatePayload = ({ description, notes, lineItems }) => {
+const SERVER_TIME = Symbol('serverTimestamp()')
+const draftUpdatePayload = ({ description, notes, lineItems }, uid = 'u1') => {
   const lines = lineItems.map(li => ({ ...li, lineTotal: lineTotal(li.qty, li.unitPrice) }))
   const { subtotal, gst, total } = poTotals(lines)
-  return { description: description?.trim() || '', notes: notes?.trim() || '', lineItems: lines, subtotal, gst, total }
+  return {
+    description: description?.trim() || '', notes: notes?.trim() || '', lineItems: lines, subtotal, gst, total,
+    updatedAt: SERVER_TIME, updatedBy: uid,
+  }
 }
 
 const IMMUTABLE = ['poNumber', 'status', 'supplierId', 'supplierName', 'currency', 'revision',
-  'sentAt', 'closedAt', 'cancelledAt', 'externalRefs', 'createdAt', 'createdBy', 'id']
+  'sentAt', 'sentBy', 'closedAt', 'closedBy', 'cancelledAt', 'cancelledBy', 'externalRefs', 'createdAt', 'createdBy', 'id']
 
 describe('draft edit — update payload contract', () => {
-  it('contains only description, notes, lineItems and the three derived header totals', () => {
+  it('contains only description, notes, lineItems, the three derived header totals and the two audit stamps (ADR-57)', () => {
     const payload = draftUpdatePayload({
       description: ' Fixed ', notes: undefined,
       lineItems: [storedLine({ lineTotal: 1 }), storedLine({ costCodeId: 'cc2', qty: 2, unitPrice: 5, lineTotal: 999 })],
     })
-    expect(Object.keys(payload).sort()).toEqual(['description', 'gst', 'lineItems', 'notes', 'subtotal', 'total'])
+    expect(Object.keys(payload).sort()).toEqual(['description', 'gst', 'lineItems', 'notes', 'subtotal', 'total', 'updatedAt', 'updatedBy'])
     for (const k of IMMUTABLE) expect(k in payload).toBe(false)
     expect(payload.description).toBe('Fixed')
     expect(payload.notes).toBe('')
+    expect(payload.updatedBy).toBe('u1')
+    expect(payload.updatedAt).toBe(SERVER_TIME)
   })
 
   it('rebuilds every lineTotal and re-derives the header — caller figures are never trusted', () => {
@@ -287,7 +297,8 @@ describe('draft edit — update payload contract', () => {
     const stored = deepFreeze({
       id: 'po1', poNumber: 'PO-0007', status: 'draft', supplierId: null, supplierName: 'Legacy Supplies',
       description: 'Old', notes: 'n', lineItems: [storedLine()], subtotal: 2500, gst: 250, total: 2750,
-      currency: 'AUD', revision: 1, sentAt: null, closedAt: null, cancelledAt: null, externalRefs: {},
+      currency: 'AUD', revision: 1, sentAt: null, sentBy: null, closedAt: null, closedBy: null,
+      cancelledAt: null, cancelledBy: null, externalRefs: {},
       createdAt: 't0', createdBy: 'u1',
     })
     const after = { ...stored, ...draftUpdatePayload({ description: 'New', notes: 'm', lineItems: [storedLine({ qty: 1 })] }) }
@@ -390,5 +401,124 @@ describe('draft edit — financial regression (draft is never counted)', () => {
     const sent = { ...draftAfter, status: PO_STATUS.SENT }
     expect(committedByCostCode([sent])).toEqual({ cc2: 39996, cc1: 123.45 })
     expect(remainingCommittedByCostCode([sent], {}, {})).toEqual({ cc2: 39996, cc1: 123.45 })
+  })
+})
+
+// ── ADR-57 (M2-B1) — lifecycle constants and the hardened draft validation ───
+
+describe('PO lifecycle constants (ADR-57)', () => {
+  it('every cancellable status is exactly the `cancelled` column of PO_TRANSITIONS', () => {
+    expect(PO_CANCELLABLE_STATUSES.sort()).toEqual([PO_STATUS.DRAFT, PO_STATUS.PENDING_APPROVAL, PO_STATUS.SENT].sort())
+    for (const s of PO_CANCELLABLE_STATUSES) expect(PO_TRANSITIONS[s]).toContain(PO_STATUS.CANCELLED)
+    expect(PO_CANCELLABLE_STATUSES).not.toContain(PO_STATUS.CLOSED)
+    expect(PO_CANCELLABLE_STATUSES).not.toContain(PO_STATUS.CANCELLED)
+  })
+
+  it('each app-reachable transition has exactly one (at, by) stamp pair, named as the rules branches expect', () => {
+    expect(PO_TRANSITION_STAMPS).toEqual({
+      sent:      { at: 'sentAt',      by: 'sentBy' },
+      closed:    { at: 'closedAt',    by: 'closedBy' },
+      cancelled: { at: 'cancelledAt', by: 'cancelledBy' },
+    })
+    // The reserved status has NO stamp: nothing transitions into it.
+    expect(PO_TRANSITION_STAMPS[PO_STATUS.PENDING_APPROVAL]).toBeUndefined()
+    expect(PO_TRANSITION_STAMPS[PO_STATUS.DRAFT]).toBeUndefined()
+  })
+
+  it('the line ceiling is the one the rules enforce', () => {
+    expect(PO_MAX_LINES).toBe(200)
+  })
+})
+
+describe('validatePoDraft — negative lines and the line ceiling (ADR-57)', () => {
+  it('refuses a negative quantity or rate, naming the line', () => {
+    expect(validatePoDraft({ lineItems: [storedLine(), storedLine({ qty: -1 })] })).toBe('Line 2: quantity and rate cannot be negative')
+    expect(validatePoDraft({ lineItems: [storedLine({ unitPrice: -0.01 })] })).toBe('Line 1: quantity and rate cannot be negative')
+    expect(validatePoDraft({ lineItems: [storedLine({ qty: '-3' })] })).toBe('Line 1: quantity and rate cannot be negative')
+    expect(validatePoDraft({ lineItems: [storedLine({ qty: Infinity })] })).toBe('Line 1: quantity and rate cannot be negative')
+  })
+
+  it('accepts zero, blank and absent quantity / rate — the editor does not require them', () => {
+    expect(validatePoDraft({ lineItems: [storedLine({ qty: 0, unitPrice: 0 })] })).toBeNull()
+    expect(validatePoDraft({ lineItems: [storedLine({ qty: '', unitPrice: '' })] })).toBeNull()
+    expect(validatePoDraft({ lineItems: [{ costCodeId: 'cc1' }] })).toBeNull()
+  })
+
+  it('the cost-code check still comes first, and the resolution check still last', () => {
+    expect(validatePoDraft({ lineItems: [storedLine({ costCodeId: '', qty: -1 })] })).toBe('Line 1: a cost code is required')
+    expect(validatePoDraft({ lineItems: [storedLine({ costCodeId: 'ccX' })], costCodes: COST_CODES })).toBe('Line 1: choose a current cost code')
+  })
+
+  it('refuses more than PO_MAX_LINES lines and accepts exactly PO_MAX_LINES', () => {
+    const many = Array.from({ length: PO_MAX_LINES + 1 }, () => storedLine())
+    expect(validatePoDraft({ lineItems: many })).toBe(`A purchase order can carry at most ${PO_MAX_LINES} lines`)
+    expect(validatePoDraft({ lineItems: many.slice(0, PO_MAX_LINES) })).toBeNull()
+  })
+
+  it('a negative line would make the stored header negative — which is exactly what the rules refuse', () => {
+    const built = buildPoLineItem({ costCodeId: 'cc1', description: '', qty: '-2', unit: '', unitPrice: '10' }, { costCodes: COST_CODES })
+    expect(built.lineTotal).toBe(-20)
+    expect(poTotals([built]).subtotal).toBe(-20)
+    expect(validatePoDraft({ lineItems: [built], costCodes: COST_CODES })).toBe('Line 1: quantity and rate cannot be negative')
+  })
+})
+
+describe('poTotals vs the rules’ whole-cent GST check (ADR-57)', () => {
+  // firestore.rules → purchaseOrders.moneyBalanced, replicated: cents(total)
+  // == cents(sub) + cents(gst) EXACTLY, and cents(gst) == half-up(10%) EXACTLY
+  // — or, only when cents(sub) ends in 5, half-up(10%) − 1.
+  const cents = (v) => Math.round(v * 100)
+  const halfUp = (subCents) => Math.floor((subCents + 5) / 10)
+  const rulesAccept = ({ subtotal, gst, total }) => {
+    const sub = cents(subtotal), g = cents(gst)
+    return sub + g === cents(total) && (g === halfUp(sub) || (sub % 10 === 5 && g === halfUp(sub) - 1))
+  }
+
+  it('every subtotal from $0.00 to $10,000.00 produces a header the rules accept, and every deviation from half-up is −1 on a half-cent boundary', () => {
+    let deviations = 0
+    for (let c = 0; c <= 1_000_000; c++) {
+      const t = poTotals([{ lineTotal: c / 100 }])
+      if (!rulesAccept(t)) throw new Error(`rules would reject subtotal ${c / 100}: ${JSON.stringify(t)}`)
+      const diff = cents(t.gst) - halfUp(c)
+      if (diff !== 0) {
+        deviations++
+        if (diff !== -1 || c % 10 !== 5) throw new Error(`unexpected deviation ${diff} at ${c / 100}`)
+      }
+    }
+    expect(deviations).toBeGreaterThan(0)   // the boundary case is real, not theoretical
+  })
+
+  it('the boundary allowance exists because floating point rounds some half-cent boundaries DOWN (40.15 → 4.01, exact half-up 4.02)', () => {
+    const t = poTotals([{ lineTotal: 40.15 }])
+    expect(t.gst).toBe(4.01)
+    expect(halfUp(cents(t.subtotal))).toBe(402)
+    expect(rulesAccept(t)).toBe(true)
+    expect(rulesAccept({ subtotal: 40.15, gst: 4.02, total: 44.17 })).toBe(true)    // the half-up value is accepted too
+    expect(rulesAccept({ subtotal: 40.15, gst: 4.03, total: 44.18 })).toBe(false)   // never above
+    expect(rulesAccept({ subtotal: 40.15, gst: 4.00, total: 44.15 })).toBe(false)   // never two below
+  })
+
+  it('off a boundary the pin is exact — one cent either way, two cents, zero, a 15% rate, or a total one cent off are refused', () => {
+    expect(rulesAccept({ subtotal: 2500, gst: 250, total: 2750 })).toBe(true)
+    expect(rulesAccept({ subtotal: 2500, gst: 250.01, total: 2750.01 })).toBe(false)
+    expect(rulesAccept({ subtotal: 2500, gst: 249.99, total: 2749.99 })).toBe(false)
+    expect(rulesAccept({ subtotal: 2500, gst: 250.02, total: 2750.02 })).toBe(false)
+    expect(rulesAccept({ subtotal: 2500, gst: 250, total: 2750.01 })).toBe(false)
+    expect(rulesAccept({ subtotal: 2500, gst: 0, total: 2500 })).toBe(false)
+    expect(rulesAccept({ subtotal: 1000, gst: 150, total: 1150 })).toBe(false)     // NZ 15% is not a supported rate — GST_RATE is a flat 10%
+    expect(GST_RATE).toBe(0.1)
+  })
+
+  it('zero and large values', () => {
+    expect(rulesAccept(poTotals([]))).toBe(true)
+    expect(rulesAccept({ subtotal: 0, gst: 0, total: 0 })).toBe(true)
+    expect(rulesAccept({ subtotal: 0, gst: 0.01, total: 0.01 })).toBe(false)
+    expect(rulesAccept(poTotals([{ lineTotal: 12345678.9 }]))).toBe(true)
+    expect(rulesAccept(poTotals([{ lineTotal: 99999999.95 }]))).toBe(true)
+    expect(rulesAccept(poTotals([{ lineTotal: 327680.05 }]))).toBe(true)
+    expect(poTotals([{ lineTotal: 327680.05 }]).gst).toBe(32768)          // rounds down here (half-up 32,768.01)
+    for (const c of [296912165, 8809540085, 4767333605, 1119047035]) {   // sampled large boundaries where the app rounds down
+      expect(rulesAccept(poTotals([{ lineTotal: c / 100 }]))).toBe(true)
+    }
   })
 })
