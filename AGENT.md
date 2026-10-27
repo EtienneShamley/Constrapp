@@ -232,7 +232,8 @@ companies/{companyId}                        name, countryCode (ISO 3166-1 alpha
                                              baseCurrency (ISO 4217), currencyUpdatedAt/By —
                                              client may update ONLY those four currency fields
                                              (company_admin); create/delete blocked
-companies/{companyId}/costCodes/{id}         code, name, category, unit, isActive — company-wide taxonomy
+companies/{companyId}/costCodes/{id}         code, name, category, unit, isActive — company-wide taxonomy;
+                                             reads restricted to financial roles (ADR-56)
 companies/{companyId}/contacts/{contactId}   entityType, contactTypes[], names, abn, gstStatus, people[],
                                              projectAssignments[] + derived projectIds[], isActive —
                                              company-wide directory; reads restricted to financial roles
@@ -243,7 +244,8 @@ companies/{companyId}/counters/{counterId}   next — sequential numbering (purc
 companies/{companyId}/projects/{projectId}   name, status, budget, startDate, location, progress,
                                              currency (ISO 4217 — the display authority),
                                              currencyLocked (one-way ratchet)
-  …/budgetLines/{lineId}                     costCodeId, costCodeName, budgeted, notes
+  …/budgetLines/{lineId}                     costCodeId, costCodeName, budgeted, notes — reads restricted to
+                                             financial roles (ADR-56)
   …/boqItems/{itemId}                        measured Bill of Quantities: itemNumber (user label, NO counter),
                                              section, description, quantity (≥ 0), unit (prefilled from the
                                              cost code, editable), rate (number ≥ 0 | null — NULL MEANS
@@ -264,9 +266,12 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
                                              never a certificate; ADR-52); edits and the Quant apply are version-guarded
                                              transactions (CLIENT-enforced — revision stays 1, DC33);
                                              reads restricted to financial roles
-  …/purchaseOrders/{poId}                    poNumber, status, supplierName, lineItems[], subtotal, gst, total
+  …/purchaseOrders/{poId}                    poNumber, status, supplierName, lineItems[], subtotal, gst, total —
+                                             reads restricted to financial roles (ADR-56); write lifecycle
+                                             CLIENT-only until M2-B
   …/progressClaims/{claimId}                 claimNumber, status, poId, cumulative lineItems[], retention,
-                                             claimed/approved subtotal-gst-total
+                                             claimed/approved subtotal-gst-total — reads restricted to financial
+                                             roles (ADR-56); write lifecycle CLIENT-only until M2-B
   …/supplierInvoices/{invoiceId}             invoiceNumber (SI-####), status, source, poId, progressClaimId,
                                              ex-GST lineItems[] w/ per-line taxCode, retention, subtotal-gst-net-total —
                                              accounts payable; reads restricted to financial roles. LIFECYCLE +

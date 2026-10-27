@@ -20,7 +20,10 @@ import {
 // in the UI and `create, update` was ONE unconstrained rule.
 //
 // The enforced contract, in full:
-//   · READ    — any provisioned member of the owning company, every role.
+//   · READ    — company_admin / project_manager / qs ONLY (ADR-56, M2-A).
+//               Until ADR-56 every provisioned member could read the
+//               approved budget; that was the confirmed P0 exposure, not a
+//               contract — see tests/rules/externalRoles.rules.test.js.
 //   · CREATE  — company_admin / project_manager / qs, with a non-empty
 //               `costCodeId` and a numeric `budgeted` >= 0.
 //   · UPDATE  — the same three roles, restricted to EXACTLY `budgeted`,
@@ -163,12 +166,24 @@ beforeEach(async () => {
 
 // ── A. READ ─────────────────────────────────────────────────────────────────
 
+// ADR-56 (M2-A): the read audience narrowed from every company member to the
+// three financial roles. `budgeted` is the approved budget by cost code —
+// commercially sensitive — and the earlier expectation here ("every provisioned
+// role can read") was revised deliberately: it pinned the P0 exposure, not a
+// product contract.
 describe('budgetLines — read', () => {
-  it('every provisioned Company A role can read a budget line', async () => {
+  it('the three financial roles can read a budget line', async () => {
     await seed()
-    for (const key of ['admin', 'pm', 'qs', 'sub', 'client', 'sadmin']) {
+    for (const key of WRITERS) {
       const snap = await assertSucceeds(getDoc(lineRef(ctx(USERS[key]))))
       expect(snap.data().budgeted).toBe(100_000)
+    }
+  })
+
+  it('subcontractor, client and super_admin CANNOT read a budget line (ADR-56)', async () => {
+    await seed()
+    for (const key of NON_WRITERS) {
+      await assertFails(getDoc(lineRef(ctx(USERS[key]))))
     }
   })
 
