@@ -364,6 +364,113 @@ tenant-and-role rules were live, and it cannot make a document approved
 through the new rules un-approved. No migration, backfill or data rewrite is
 involved in either direction.
 
+**Variation Lifecycle Security — M2-B3 (ADR-59): IMPLEMENTED — NOT YET
+DEPLOYED. HOSTING FIRST, THEN RULES — the ADR-40 ordering gate applies, and
+this release SUPERSEDES the M2-B2 release order above: the three pending rules
+changes (M2-B1, M2-B2, M2-B3) ship in ONE publish and the four pending Hosting
+changes (M1, M2-B1, M2-B2, M2-B3) in ONE deploy unless cherry-picked.** The
+M2-B3 bundle changes the variation write paths (`hooks/useVariations.jsx`,
+`lib/variationActions.js`, `lib/variations.js`,
+`pages/project/ProjectVariations.jsx`): every variation write now carries
+`updatedAt` / `updatedBy` and `revision + 1`, and the draft edit and each of
+the four transitions run through a revision-guarded transaction. The revised
+`frontend/firestore.rules` (**237,851 bytes**; 224,528 after M2-B2, 207,567
+after M2-B1, 197,035 live) makes the `variations` block REQUIRE those keys
+(`updateStamped()` and `revisionIncremented()` on every write, the exact key
+set, the type-consistent counterparty and a `get()` on the source PO at
+create). The compatibility analysis is the M2-B2 one, extended:
+
+- *Live (pre-M2-B3) bundle + new rules* (rules first) → **outage**: every
+  variation create, draft edit, submit, approve, reject and withdraw in the
+  live app fails with *Missing or insufficient permissions* — the live bundle
+  sends no stamp and never increments `revision`. The same is true of every
+  PO write (M2-B1) and every claim write (M2-B2). Do not publish first.
+- *New bundle + live M2-A rules* (Hosting first) → **safe**: the live
+  variation write rule is tenant-and-role plus the ADR-34 link, which accepts
+  every new payload (the link is unchanged in every transition write and
+  validated the same way on a draft edit); the live PO and claim rules are
+  tenant-and-role only. The stale guards and the stricter client checks run in
+  the client, the rules simply do not yet back them. This is the
+  **compatibility phase**.
+- *New bundle + the M2-B1 or M2-B2 ruleset alone* — **not states this release
+  creates** (neither was published), but both would be safe: their variation
+  block is the M2-A one. The M2-B3 ruleset is a strict tightening of the
+  M2-B2 ruleset (variations block only), which is a strict tightening of
+  M2-B1 (claims block only), which is a strict tightening of M2-A (PO block
+  only). Publishing the M2-B3 ruleset directly over M2-A is the recommended
+  path — one publish, one verification, no intermediate interval.
+- *New Hosting bundle against the M2-B3 ruleset* — the M2-B1 PO paths, the
+  M2-B2 claim paths and the M2-B3 variation paths are all required by it and
+  all present in the bundle (`main` will carry M1 + M2-B1 + M2-B2 + M2-B3). A
+  bundle built WITHOUT any of the three against the M2-B3 ruleset would break
+  that collection's writes — so if M2-B3 is ever cherry-picked ahead of the
+  others, their blocks must be cherry-picked with it, or the rules publish
+  must wait for their Hosting.
+
+**M1 (ADR-55) is merged, Hosting on hold pending cofounder acceptance; M2-B1
+(ADR-57) and M2-B2 (ADR-58) are merged, not deployed.** `main` carries all
+three; a Hosting deploy of M2-B3 ships M1 + M2-B1 + M2-B2 + M2-B3 together
+unless cherry-picked. M2-B3 does not itself require M1, M2-B1 or M2-B2 at the
+bundle level (separate paths), but its **ruleset** contains their blocks, so
+the ruleset requires all four bundles to be live. The M2-A ruleset live in
+production is a strict subset of the M2-B3 ruleset (read predicates unchanged;
+PO, claim and variation write rules tightened; nothing else touched).
+
+Release, in order, each a separate approved action:
+
+1. **M1 Hosting acceptance** by the cofounder (or an explicit decision to
+   ship M1 + M2-B1 + M2-B2 + M2-B3 together). Cofounder acceptance gates stay
+   mandatory for every step that touches production.
+2. Lead Architect review of M2-B3; commit and merge to `main`; Azure CI green
+   (lint → unit → **rules** → build).
+3. `cd frontend && npm run lint && npm run test:unit && npm run test:rules &&
+   npm run build` — green; the size test passes (237,851 bytes against the
+   245,000-byte budget).
+4. **Confirm the live ruleset first** (procedure above) and record its
+   timestamp and byte count (expected: the M2-A ruleset, 197,035 bytes —
+   none of M2-B1, M2-B2 or M2-B3 has been published).
+5. **Deploy Hosting** (M1 + M2-B1 + M2-B2 + M2-B3): `firebase deploy --only
+   hosting --project constrapp-69b5d`. Hard-refresh and verify, against the
+   STILL-LIVE M2-A rules: the M2-B1 PO checks, the M2-B2 claim checks AND the
+   M2-B3 variation checks — raise a draft supplier variation against a sent
+   PO, edit it, submit, assess → approve a different amount with a note,
+   withdraw a second draft, raise and approve a client variation; the
+   approved document in the console carries `submittedBy`, `approvedBy`,
+   `updatedAt` / `updatedBy` and `revision: 4`. This is the compatibility
+   phase; it may stay in place as long as needed.
+6. **Publish `frontend/firestore.rules`** (procedure above) — the ONE publish
+   covering M2-B1, M2-B2 and M2-B3. Confirm the live version is the published
+   one (search `ADR-57`, `ADR-58` AND `ADR-59`; `diff <(pbpaste)
+   frontend/firestore.rules` empty; **237,851** bytes).
+7. **Verify in production** per TESTING.md §33 (M2-B1), §34 (M2-B2) and §35
+   (M2-B3) and record the outcome here.
+8. Close the milestones: mark ADR-57, ADR-58 and ADR-59 LIVE here, in
+   SECURITY.md, DATA_MODEL.md, FINANCIAL_WORKFLOWS.md, ROADMAP.md and
+   AGENT.md.
+
+**Rollback.** *Rules only* (after step 6, keeping the new bundle):
+re-publish the M2-A ruleset (197,035 bytes) — the new bundle keeps working
+unchanged against it (proven in step 5); the only loss is the rules-level
+enforcement of M2-B1, M2-B2 AND M2-B3 together (there is no M2-B1-only or
+M2-B2-only ruleset to fall back to unless one is built from the `d29e993` /
+`f9b84cf` trees and tested). *Hosting only* (after step 5, before step 6):
+redeploy the previous build — the live M2-A rules accept its writes. *Both*
+(after step 6): **rules back first, then Hosting** — never the reverse,
+because the old bundle against the new rules is the outage above. Existing
+documents are unaffected in every direction: the new rules require the
+stamps only of the incoming document, read a missing `revision` as 0 and
+compare the link keys through `get(key, null)`, so a pre-M2-B3 variation stays
+writable, and a post-M2-B3 variation (which carries the extra keys and a
+higher `revision`) is read by the old bundle without complaint and written by
+it with partial `updateDoc` — the old bundle writes `revision` nowhere, so a
+rolled-back bundle against the rolled-back rules leaves the higher revision in
+place harmlessly. **What rollback cannot do:** it cannot undo a forged or
+out-of-lifecycle variation write performed while the tenant-and-role rules
+were live, and it cannot make a document approved through the new rules
+un-approved. No migration, backfill or data rewrite is involved in either
+direction. **Rules headroom after this release is 7,149 bytes** — the next
+rules change must first recover headroom (ADR-59 records the plan).
+
 **Quant™ 1B (ADR-52): LIVE IN PRODUCTION (October 2026).** Released in the
 order below — rules published and confirmed live first, then Hosting — and
 verified per TESTING.md §28; the repository records the month. The original

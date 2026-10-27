@@ -81,6 +81,20 @@ export const VARIATION_TRANSITIONS = {
 
 export const canTransition = (from, to) => (VARIATION_TRANSITIONS[from] ?? []).includes(to)
 
+// The (at, by) stamp pair each application transition writes (ADR-59). Rules
+// require `by == request.auth.uid` and `at == request.time` on that branch and
+// admit no other stamp; the reserved statuses have no entry and no path.
+export const VARIATION_TRANSITION_STAMPS = {
+  [VARIATION_STATUS.SUBMITTED]: { at: 'submittedAt', by: 'submittedBy' },
+  [VARIATION_STATUS.APPROVED]:  { at: 'approvedAt',  by: 'approvedBy' },
+  [VARIATION_STATUS.REJECTED]:  { at: 'rejectedAt',  by: 'rejectedBy' },
+  [VARIATION_STATUS.WITHDRAWN]: { at: 'withdrawnAt', by: 'withdrawnBy' },
+}
+
+// Ceiling on embedded variation lines — the rules' `lineItems.size() <= 200`
+// (the PO / claim ceiling); an editor cannot author more.
+export const VARIATION_MAX_LINES = 200
+
 // The single financial counting point — only approved variations count.
 export const VARIATION_APPROVED_STATUSES = [VARIATION_STATUS.APPROVED]
 
@@ -449,13 +463,15 @@ export function buildVariationLineItem(formLine, { po = null, costCodes = [] } =
 }
 
 // Draft content validation shared by create and edit — the existing product
-// rules, unchanged: a title, at least one line, and a cost code on every line.
-// Amounts are deliberately NOT checked (negative credits/omissions are valid).
+// rules: a title, at least one line (and at most VARIATION_MAX_LINES), and a
+// cost code on every line. Amounts are deliberately NOT checked (negative
+// credits/omissions are valid).
 // Returns null when valid, otherwise the first error message.
 export function validateVariationDraft({ title, lineItems } = {}) {
   if (!String(title ?? '').trim()) return 'Title is required'
   const lines = Array.isArray(lineItems) ? lineItems : []
   if (lines.length === 0) return 'At least one line item is required'
+  if (lines.length > VARIATION_MAX_LINES) return `A variation may carry at most ${VARIATION_MAX_LINES} line items`
   const missing = lines.findIndex(li => !(typeof li?.costCodeId === 'string' && li.costCodeId.length > 0))
   if (missing !== -1) return `Line ${missing + 1}: a cost code is required`
   return null

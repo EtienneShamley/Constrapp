@@ -25,6 +25,12 @@ import {
   eligibleOriginRfis, normaliseOriginRfi, originRfiLabel, hasOriginRfi,
   EMPTY_VARIATION_FORM_LINE, variationLineToForm, buildVariationLineItem, validateVariationDraft,
 } from '../../lib/variations'
+import { VariationWriteError } from '../../lib/variationActions'
+
+// A guarded refusal (stale copy, invalid content, permission, offline —
+// ADR-59) carries its reason; anything else keeps the generic text.
+const writeErrorMessage = (err, fallback) =>
+  (err instanceof VariationWriteError && err.message ? err.message : fallback)
 
 const inputCls = 'w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
 const labelCls = 'block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1.5'
@@ -261,7 +267,11 @@ function VariationEditorModal({ variation = null, variations, purchaseOrders, co
       }
       onClose()
     } catch (err) {
-      setError(err?.message || 'Failed to save. Check your connection and try again.')
+      // A guarded refusal keeps the editor open with every entry intact and
+      // names the reason (e.g. the draft was submitted or edited underneath).
+      setError(err instanceof VariationWriteError
+        ? err.message
+        : (err?.message || 'Failed to save. Check your connection and try again.'))
       setSaving(false)
     }
   }
@@ -611,7 +621,9 @@ function AssessVariationModal({ variation, currencyCode, onClose, onTransition }
       })
       onClose()
     } catch (err) {
-      setError(err?.message || 'Failed to save. Check your connection and try again.')
+      // A STALE / INVALID / PERMISSION refusal keeps the modal open with the
+      // certified amounts and notes intact and shows the reason (ADR-59).
+      setError(writeErrorMessage(err, 'Failed to save. Check your connection and try again.'))
       setSaving(false)
     }
   }
@@ -766,7 +778,7 @@ export default function ProjectVariations() {
     try {
       await transitionStatus(variation, nextStatus, extras)
     } catch (err) {
-      setActionError(err?.message || 'Failed to update status. Check your connection and try again.')
+      setActionError(writeErrorMessage(err, 'Failed to update status. Check your connection and try again.'))
       throw err
     }
   }
@@ -775,6 +787,8 @@ export default function ProjectVariations() {
   // document from the subscribed collection by id and refuses to write unless
   // it is STILL a draft, so an editor left open across a submit / withdraw by
   // another action, tab or user can never write stale draft content back.
+  // The hook then runs a revision-guarded transaction against the SERVER copy
+  // (ADR-59), which catches what the subscription has not yet delivered.
   async function handleUpdate(variationId, data) {
     const live = variations.find(v => v.id === variationId)
     if (!live || live.status !== VARIATION_STATUS.DRAFT) {

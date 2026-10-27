@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  VARIATION_TYPE, VARIATION_STATUS, VARIATION_EDITABLE_STATUSES,
+  VARIATION_TYPE, VARIATION_STATUS, VARIATION_EDITABLE_STATUSES, VARIATION_TRANSITIONS,
+  VARIATION_TRANSITION_STAMPS, VARIATION_MAX_LINES, gstForLine,
   ORIGIN_RFI_STATUSES, UNLINKED_ORIGIN_RFI,
   isEligibleOriginRfi, normaliseOriginRfi, hasOriginRfi, eligibleOriginRfis,
   originRfiLabel, canEditOriginRfi, variationsForRfi,
@@ -773,5 +774,82 @@ describe('draft edit — financial regression (only pending exposure may move)',
     const before = JSON.stringify([approvedSupplier, approvedClient])
     edited(draftSupplierBefore, [{ poLineIndex: '', costCodeId: 'cc1', submittedAmount: '1' }])
     expect(JSON.stringify([approvedSupplier, approvedClient])).toBe(before)
+  })
+})
+
+// ── ADR-59 (M2-B3) — the rules' money and lifecycle contract, replicated ─────
+//
+// tests/rules/variations.rules.test.js proves the rules against the emulator.
+// These pin the client side of the same contract without Firestore: the stamp
+// map the transaction writes, the line ceiling validateVariationDraft shares
+// with the rules, and that EVERY header `variationTotals` produces — signed,
+// mixed tax codes — satisfies the rules' whole-cent check and total identity.
+
+describe('ADR-59 — transition stamps and the line ceiling', () => {
+  it('every application target has exactly one (at, by) pair and the reserved statuses have none', () => {
+    expect(VARIATION_TRANSITION_STAMPS).toEqual({
+      submitted: { at: 'submittedAt', by: 'submittedBy' },
+      approved:  { at: 'approvedAt',  by: 'approvedBy' },
+      rejected:  { at: 'rejectedAt',  by: 'rejectedBy' },
+      withdrawn: { at: 'withdrawnAt', by: 'withdrawnBy' },
+    })
+    for (const s of [VARIATION_STATUS.UNDER_REVIEW, VARIATION_STATUS.DISPUTED, VARIATION_STATUS.SUPERSEDED, VARIATION_STATUS.DRAFT]) {
+      expect(VARIATION_TRANSITION_STAMPS[s]).toBeUndefined()
+    }
+    // Every legal target is stamped — the rules admit no unstamped transition.
+    for (const t of new Set(Object.values(VARIATION_TRANSITIONS).flat())) expect(t in VARIATION_TRANSITION_STAMPS).toBe(true)
+  })
+
+  it('validateVariationDraft refuses more than VARIATION_MAX_LINES (= the rules\' 200) and accepts exactly 200', () => {
+    const l = (n) => Array.from({ length: n }, () => ({ costCodeId: 'cc1' }))
+    expect(VARIATION_MAX_LINES).toBe(200)
+    expect(validateVariationDraft({ title: 't', lineItems: l(200) })).toBeNull()
+    expect(validateVariationDraft({ title: 't', lineItems: l(201) })).toMatch(/at most 200 line items/)
+  })
+})
+
+describe('ADR-59 — every variationTotals header satisfies the rules\' whole-cent check and total identity', () => {
+  // firestore.rules → wholeCents(v): |v × 100 − round(v × 100)| < 0.001;
+  // moneyValid(a, g, t): cents(a) + cents(g) == cents(t).
+  const cents = (v) => Math.round(v * 100)
+  const wholeCents = (v) => typeof v === 'number' && Math.abs(v * 100 - Math.round(v * 100)) < 0.001
+  const headerOk = ({ subtotal, gst, total }) => wholeCents(subtotal) && wholeCents(gst) && wholeCents(total) && cents(subtotal) + cents(gst) === cents(total)
+  const codes = [TAX_CODE.GST, TAX_CODE.GST_FREE, TAX_CODE.INPUT_TAXED]
+  const line = (amount, taxCode) => ({ submittedAmount: amount, submittedGst: gstForLine(amount, taxCode), approvedAmount: amount, approvedGst: gstForLine(amount, taxCode), taxCode })
+
+  it('a single line at every cent from −$10,000.00 to $10,000.00, each tax code, submitted and approved sides', () => {
+    for (const taxCode of codes) {
+      for (let c = -1000000; c <= 1000000; c += 1) {
+        const amount = c / 100
+        const lines = [line(amount, taxCode)]
+        if (!headerOk(variationTotals(lines, 'submitted')) || !headerOk(variationTotals(lines, 'approved'))) {
+          throw new Error(`header refused for ${amount} ${taxCode}`)
+        }
+      }
+    }
+  })
+
+  it('20,000 random mixed-sign, mixed-tax-code multi-line variations (up to 200 lines, cents to ±$1M)', () => {
+    let seed = 20261027
+    const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648 }
+    for (let i = 0; i < 20000; i++) {
+      const n = 1 + Math.floor(rnd() * (i % 50 === 0 ? 200 : 6))
+      const lines = Array.from({ length: n }, () => line(Math.round((rnd() * 2 - 1) * 100000000) / 100, codes[Math.floor(rnd() * 3)]))
+      const sub = variationTotals(lines, 'submitted')
+      const app = variationTotals(lines, 'approved')
+      if (!headerOk(sub) || !headerOk(app)) throw new Error(`header refused: ${JSON.stringify(sub)}`)
+    }
+  })
+
+  it('the check is not vacuous — a third-decimal value, a half-cent and a total one cent off are refused', () => {
+    expect(wholeCents(10.001)).toBe(false)
+    expect(wholeCents(0.005)).toBe(false)
+    expect(wholeCents(-1234.567)).toBe(false)
+    expect(wholeCents(1000.1)).toBe(true)
+    expect(wholeCents(-0.01)).toBe(true)
+    expect(wholeCents(0)).toBe(true)
+    expect(wholeCents('1000')).toBe(false)
+    expect(headerOk({ subtotal: 1000, gst: 100, total: 1100.01 })).toBe(false)
+    expect(headerOk({ subtotal: -1000, gst: -100, total: -1100 })).toBe(true)
   })
 })

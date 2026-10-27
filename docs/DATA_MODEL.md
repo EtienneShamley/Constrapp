@@ -916,11 +916,31 @@ Header totals derive from the line items (no flat header rate). Numbers come fro
 `counters/variationsClient` (`CV-0001`) / `counters/variationsSupplier`
 (`SV-0001`), incremented in the same transaction as the write.
 
+**Lifecycle, immutability and stamps are RULES-ENFORCED since ADR-59 (M2-B3,
+NOT YET DEPLOYED).** A variation is born `draft` with the exact key set below,
+the creator / audit stamps at server time, the project's resolved `currency`
+and `revision` 1, a type-consistent counterparty (the other type's block all
+null) and — for a supplier variation that names a PO — a `get()`-verified
+**sent or closed** PO of the same project whose `poNumber`, `supplierName` and
+`supplierId` it must carry; the draft edit admits exactly the editable keys
+(line count free); `draft → submitted`, `submitted|under_review → approved`,
+`submitted|under_review → rejected` and `draft|submitted|under_review →
+withdrawn` are the only transitions, each with `*By == request.auth.uid` and
+`*At == request.time`; the submitted header and content freeze at
+`submitted`, the certified lines and approved header freeze at `approved`;
+`under_review`, `disputed` and `superseded` are unauthorable targets;
+approved / rejected / withdrawn are terminal; every update carries `revision
+== stored + 1` and `updatedAt`/`updatedBy`. Headers are SIGNED whole cents
+with `subtotal + gst == total` exact on both sides — never clamped, never
+bounded against submitted. `lineItems` CONTENTS, the header GST against the
+lines, notes-required-when-differing and uniqueness stay client-only
+(SECURITY.md → *Variations — rules-enforced lifecycle*, Deferred Control 37).
+
 | Field | Type | Notes |
 |---|---|---|
-| `variationNumber` | string | `CV-0001` (client) or `SV-0001` (supplier) |
-| `variationType` | string | `client` \| `supplier` |
-| `status` | string | `draft` \| `submitted` \| `approved` \| `rejected` \| `withdrawn`; `under_review` \| `disputed` \| `superseded` reserved |
+| `variationNumber` | string | `CV-0001` (client) or `SV-0001` (supplier) — **rules pin the prefix to the type** (ADR-59) |
+| `variationType` | string | `client` \| `supplier` — rules-enforced; immutable |
+| `status` | string | `draft` \| `submitted` \| `approved` \| `rejected` \| `withdrawn`; `under_review` \| `disputed` \| `superseded` reserved (**unauthorable as targets by rules**, ADR-59) |
 | `title`, `description` | string | |
 | `reason` | string | Optional reserved enum: `design_change` \| `site_condition` \| `client_instruction` \| `error_omission` \| `other` \| `''` |
 | `clientId` | string \| null | Client type: → contact (type `client`). `null` on supplier variations |
@@ -929,23 +949,25 @@ Header totals derive from the line items (no flat header rate). Numbers come fro
 | `supplierId` | string \| null | Supplier type: → contact, or snapshotted from the linked PO. `null` on client variations |
 | `supplierName` | string \| null | Snapshot (frozen). `null` on client variations |
 | `supplierRef` | string \| null | Supplier's own variation/quote number (optional). `null` on client variations |
-| `poId` | string \| null | Supplier type: the **one** PO this varies, or `null` (no-PO / manual). Always `null` on client variations |
-| `poNumber` | string \| null | Snapshot of the PO number |
+| `poId` | string \| null | Supplier type: the **one** PO this varies, or `null` (no-PO / manual). Always `null` on client variations. **Rules `get()` the PO at create** (same project, exists, `sent`\|`closed`; `poNumber`, `supplierName`, `supplierId` pinned to it) and freeze the link afterwards (ADR-59); null and `poNumber` null together in manual mode |
+| `poNumber` | string \| null | Snapshot of the PO number — rules-pinned to the PO at create |
 | `originRfiId` | string \| null | **Originating RFI** (ADR-34) — the **one** same-project `rfis/{id}` that originated or materially supports this variation, or `null`. **Evidence link only** — no financial effect. Rules verify the RFI **exists in this project** and is `open`/`answered`/`closed` **when the link is created or changed**; an unchanged link is never re-checked, so it **survives** a later cancellation of the RFI. **Frozen by rules once the variation leaves `draft`.** Legacy documents may lack all three keys (read as unlinked) |
 | `originRfiNumber` | string \| null | Frozen snapshot of `rfi.rfiNumber` — **rules-verified equal** to the RFI at link time (the number is immutable on the RFI) |
 | `originRfiTitle` | string \| null | Frozen snapshot of `rfi.title` — **rules-verified equal** to the RFI at link time (the title is frozen for life once an RFI is raised, so every eligible RFI's title is immutable) |
 | `lineItems` | array | See below — ex-GST, per-line tax |
-| `submittedSubtotal`, `submittedGst`, `submittedTotal` | number | Derived from submitted line amounts (signed) |
-| `approvedSubtotal`, `approvedGst`, `approvedTotal` | number \| null | Null until approved; frozen after (signed) |
+| `submittedSubtotal`, `submittedGst`, `submittedTotal` | number | Derived from submitted line amounts (signed). **Rules-enforced at create and draft edit (ADR-59):** each whole-cent, `subtotal + gst == total` exact; frozen from `submitted`. The GST is Σ per-line GST — not pinnable at header level (DC37) |
+| `approvedSubtotal`, `approvedGst`, `approvedTotal` | number \| null | Null until approved (rules-enforced at create); **written once by the approve transition and frozen forever** — same whole-cent / exact-total check, signed, never clamped, never bounded against submitted (ADR-59) |
 | `forecastAmount` | number \| null | **Reserved** — likely settlement value of a pending variation, for future forecast |
-| `identifiedDate`, `submittedDate`, `responseDueDate`, `approvedDate`, `effectiveDate` | string | Human `YYYY-MM-DD` strings (may be empty) |
-| `currency`, `revision` | | **Audit snapshot** of the project currency at write time (never read for display; historical `AUD` values are never rewritten), 1 |
-| `notes`, `assessmentNotes` | string | `assessmentNotes` required when approved amounts differ from submitted |
-| `submittedAt`/`submittedBy`, `approvedAt`/`approvedBy`, `rejectedAt`/`rejectedBy`, `withdrawnAt`/`withdrawnBy` | timestamp / uid | Stamped on transition |
+| `identifiedDate`, `submittedDate`, `responseDueDate`, `approvedDate`, `effectiveDate` | string | Human `YYYY-MM-DD` strings (may be empty) — rules check the shape; `approvedDate` is empty at create and a real date at approval; `submittedDate` is written by submit (kept when already set) |
+| `currency` | string | **Audit snapshot** of the project currency at write time (never read for display; historical `AUD` values are never rewritten) — rules pin it to the project's resolved currency at create and freeze it (ADR-59) |
+| `revision` | number | **1 at create; EXACTLY +1 on every update, rules-enforced** (ADR-59). The client transactions (`lib/variationActions.js`) write the revision they reviewed + 1 after confirming the server copy's status and revision, so a stale edit or assessment is refused (rules-ASSISTED — a direct caller who reads first passes; DC37). Every variation written before ADR-59 holds 1; a missing key reads as 0. **No consumer reads it** |
+| `notes`, `assessmentNotes` | string | ≤ 5000 by rules; `assessmentNotes` empty at create, written by approve or reject only; **required when approved amounts differ from submitted — client-enforced** (DC37) |
+| `submittedAt`/`submittedBy`, `approvedAt`/`approvedBy`, `rejectedAt`/`rejectedBy`, `withdrawnAt`/`withdrawnBy` | timestamp / uid | Stamped on transition — **`*By == request.auth.uid`, `*At == request.time`, rules-enforced**; null at create (ADR-59) |
 | `attachments` | array | **Reserved** — always `[]`; no Storage uploads yet |
 | `externalRefs` | map | **Reserved** — accounting-system IDs |
-| `supersededByVariationId` | string \| null | **Reserved** — revision workflow |
-| `createdAt` / `createdBy` | timestamp / uid | |
+| `supersededByVariationId` | string \| null | **Reserved** — revision workflow; null at create and frozen (rules) |
+| `createdAt` / `createdBy` | timestamp / uid | `== request.time` / `== request.auth.uid` at create; immutable (ADR-59) |
+| `updatedAt` / `updatedBy` | timestamp / uid | **ADR-59 addition (M2-B3).** Required by rules on **every** write — create, draft edit and all four transitions. Absent on variations written before M2-B3; required only of the *incoming* document, so those acquire it on their next valid write |
 
 Each line item:
 
@@ -985,9 +1007,13 @@ re-derived) and the `originRfi*` triple. Every draft line's `approvedAmount`/
 `assessmentNotes`, `submittedDate`/`approvedDate`, every `…At`/`…By` stamp,
 `currency`, `revision`, `forecastAmount`, `attachments`, `externalRefs`,
 `supersededByVariationId`, `createdAt`/`createdBy` — and `notes`, which has no
-editor input and passes through unchanged. Immutability of these fields is
-client-side (the rules freeze only `originRfi*` post-draft — Deferred Control
-2); there is no `updatedAt`/`updatedBy` on this collection.
+editor input and passes through unchanged. **Since ADR-59 (M2-B3, NOT YET
+DEPLOYED) that immutability is RULES-ENFORCED**: the draft-edit branch's
+`hasOnly` list is exactly the editable keys above plus `revision`,
+`updatedAt`, `updatedBy`, and every other branch is stamps-only, so none of
+these fields can move on any update. The edit runs through a revision-guarded
+transaction (`lib/variationActions.js → runUpdateVariationDraft`) that refuses
+a server copy whose status or revision moved and keeps the user's entries.
 
 ## …/projects/{projectId}/forecastLines/{costCodeId}
 
