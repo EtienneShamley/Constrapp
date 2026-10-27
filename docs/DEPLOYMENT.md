@@ -118,8 +118,10 @@ the 1C ruleset (196,034 bytes); any measurement that already carries a
 readable, derivable and voidable — no data is lost and nothing financial is
 affected.
 
-**Forecast and Actual Cost Integrity — M1 (ADR-55): IMPLEMENTED — NOT YET
-DEPLOYED. HOSTING-ONLY — no rules change, no migration, no backfill.** The M1
+**Forecast and Actual Cost Integrity — M1 (ADR-55): LIVE IN PRODUCTION since
+27 October 2026 (shipped in the combined M2-B3 Hosting deploy, verified against
+matching local and production asset hashes). HOSTING-ONLY — no rules change,
+no migration, no backfill.** The M1
 bundle changes read-time derivation and page behaviour only: Remaining
 Committed nets approved claims not yet invoiced (every Committed, FFC,
 Variance, Margin, Dashboard, Cash Flow and PULSE figure that was overstated by
@@ -187,8 +189,10 @@ not change whether such users exist (NOT VERIFIED — check `users/{uid}.role`
 in the console; disable or de-provision any `subcontractor` / `client` account
 until the revised ruleset is live).
 
-**Purchase Order Lifecycle Security — M2-B1 (ADR-57): IMPLEMENTED — NOT YET
-DEPLOYED. HOSTING FIRST, THEN RULES — the ADR-40 ordering gate applies.** The
+**Purchase Order Lifecycle Security — M2-B1 (ADR-57): LIVE IN PRODUCTION since
+27 October 2026 — released in the combined M2-B3 order below (Hosting first,
+then one rules publish — the ADR-40 ordering gate). The notes that follow are
+kept as the record of the order used.** The
 M2-B1 bundle changes the PO write paths (`hooks/usePurchaseOrders.jsx`,
 `lib/purchaseOrderActions.js`, `lib/poCancellation.js`,
 `pages/project/ProjectPurchaseOrders.jsx`): every PO write now carries
@@ -211,8 +215,8 @@ except the one below**:
   the rules simply do not yet back them. This is the **compatibility phase**,
   and it is the only one needed.
 
-**M1 (ADR-55) is merged but its Hosting deploy is awaiting cofounder
-acceptance.** `main` carries M1; a Hosting deploy of M2-B1 therefore ships the
+**M1 (ADR-55) shipped in the same Hosting deploy on 27 October 2026; the
+cofounder's M1 acceptance is one-off feedback, not a deployment gate.** `main` carries M1; a Hosting deploy of M2-B1 therefore ships the
 M1 bundle at the same time. M2-B1 does not itself require M1 (it writes no M1
 field and reads no M1 figure), but **there is no M2-B1-only Hosting artifact
 without a cherry-pick**, so the M1 acceptance must land first — or the product
@@ -262,8 +266,10 @@ keys) is read and written by the old bundle without complaint (it uses partial
 `updateDoc` and never asserts a key set). No migration, backfill or data
 rewrite is involved in either direction.
 
-**Progress Claim Lifecycle Security — M2-B2 (ADR-58): IMPLEMENTED — NOT YET
-DEPLOYED. HOSTING FIRST, THEN RULES — the ADR-40 ordering gate applies, and
+**Progress Claim Lifecycle Security — M2-B2 (ADR-58): LIVE IN PRODUCTION since
+27 October 2026 (released in the combined M2-B3 order below; the notes that
+follow are kept as the record). HOSTING FIRST, THEN RULES — the ADR-40
+ordering gate applied, and
 this release SUPERSEDES the M2-B1 release order above: the two pending rules
 changes ship in ONE publish and the three pending Hosting changes in ONE
 deploy unless cherry-picked.** The M2-B2 bundle changes the claim write paths
@@ -303,8 +309,8 @@ at create). The compatibility analysis is the M2-B1 one, extended:
   be cherry-picked with it, or the rules publish must wait for M2-B1's
   Hosting.
 
-**M1 (ADR-55) is merged, Hosting on hold pending cofounder acceptance; M2-B1
-(ADR-57) is merged, not deployed.** `main` carries both; a Hosting deploy of
+**(As written before the release: M1 merged and awaiting Hosting, M2-B1 merged
+and not deployed — all shipped together on 27 October 2026.)** `main` carries both; a Hosting deploy of
 M2-B2 ships M1 + M2-B1 + M2-B2 together unless cherry-picked. M2-B2 does not
 itself require M1 (no M1 field or figure) and does not require M2-B1 at the
 bundle level (separate paths), but its **ruleset** contains M2-B1's PO block,
@@ -364,8 +370,12 @@ tenant-and-role rules were live, and it cannot make a document approved
 through the new rules un-approved. No migration, backfill or data rewrite is
 involved in either direction.
 
-**Variation Lifecycle Security — M2-B3 (ADR-59): IMPLEMENTED — NOT YET
-DEPLOYED. HOSTING FIRST, THEN RULES — the ADR-40 ordering gate applies, and
+**Variation Lifecycle Security — M2-B3 (ADR-59): LIVE IN PRODUCTION since
+27 October 2026 — one Hosting deploy (M1 + M2-B1 + M2-B2 + M2-B3, verified
+against matching local and production asset hashes), then one rules publish
+(inspected and confirmed to carry ADR-59); the repository records the day, not
+a time. The order below is kept as the record used. HOSTING FIRST, THEN RULES
+— the ADR-40 ordering gate applied, and
 this release SUPERSEDES the M2-B2 release order above: the three pending rules
 changes (M2-B1, M2-B2, M2-B3) ship in ONE publish and the four pending Hosting
 changes (M1, M2-B1, M2-B2, M2-B3) in ONE deploy unless cherry-picked.** The
@@ -407,8 +417,8 @@ create). The compatibility analysis is the M2-B2 one, extended:
   others, their blocks must be cherry-picked with it, or the rules publish
   must wait for their Hosting.
 
-**M1 (ADR-55) is merged, Hosting on hold pending cofounder acceptance; M2-B1
-(ADR-57) and M2-B2 (ADR-58) are merged, not deployed.** `main` carries all
+**(As written before the release: M1 merged and awaiting Hosting, M2-B1 and
+M2-B2 merged and not deployed — all shipped together on 27 October 2026.)** `main` carries all
 three; a Hosting deploy of M2-B3 ships M1 + M2-B1 + M2-B2 + M2-B3 together
 unless cherry-picked. M2-B3 does not itself require M1, M2-B1 or M2-B2 at the
 bundle level (separate paths), but its **ruleset** contains their blocks, so
@@ -468,8 +478,48 @@ place harmlessly. **What rollback cannot do:** it cannot undo a forged or
 out-of-lifecycle variation write performed while the tenant-and-role rules
 were live, and it cannot make a document approved through the new rules
 un-approved. No migration, backfill or data rewrite is involved in either
-direction. **Rules headroom after this release is 7,149 bytes** — the next
-rules change must first recover headroom (ADR-59 records the plan).
+direction. **Rules headroom after this release was 7,149 bytes**; ADR-60 (below)
+recovers it — 201,523 bytes once published.
+
+**Firestore Rules Capacity Optimisation — ADR-60: IMPLEMENTED — NOT YET
+DEPLOYED. RULES-ONLY — no Hosting deploy, no migration, no schema change, and
+the ADR-40 ordering gate does not apply because the bundle's writes are
+unchanged.** The refactored `frontend/firestore.rules` (**201,523 bytes**;
+237,851 live) allows and denies exactly what the M2-B3 ruleset does: the 32
+match paths and every allow rule are unchanged, the shared helpers are the
+byte-for-byte bodies of the local copies they replace, and the full emulator
+suite passed unchanged (ADR-60 records the equivalence argument). Either
+ruleset accepts the live bundle's writes, so the publish can happen at any
+time and in isolation.
+
+Release, in order, each a separate approved action:
+
+1. Lead Architect review; commit and merge to `main`; Azure CI green (lint →
+   unit → **rules** → build).
+2. `cd frontend && npm run lint && npm run test:unit && npm run test:rules &&
+   npm run build` — green; the size test passes (201,523 bytes against the
+   245,000-byte budget).
+3. **Confirm the live ruleset first** (procedure below) and record its
+   timestamp and byte count (expected: the M2-B3 ruleset, 237,851 bytes,
+   containing `ADR-59`).
+4. **Publish `frontend/firestore.rules`** (procedure below). Read the console
+   result: a *Rules are too large* or compile banner means nothing was
+   published. Confirm the live version is the published one (search
+   `Shared helpers (ADR-60)`; `diff <(pbpaste) frontend/firestore.rules`
+   empty; **201,523** bytes).
+5. **Verify in production, read-only,** per TESTING.md §36 (the published
+   version; a financial-role read sweep across the registers, Documents,
+   Quant and PULSE; an external-role read still denied — in a non-production
+   tenant or the emulator) and record the outcome here.
+6. Close the milestone: mark ADR-60 LIVE here, in SECURITY.md, ROADMAP.md and
+   TESTING.md.
+
+**Rollback.** Re-publish the M2-B3 ruleset (`frontend/firestore.rules` at
+`06da35b`, 237,851 bytes). The two rulesets are semantically identical, so
+rollback is safe at any moment, in either direction, with no Hosting change,
+no data impact and no loss of any M2 control. ⚠️ Never roll back further
+than M2-B3: an older ruleset would remove the M2-B1 / M2-B2 / M2-B3
+enforcement the live bundle relies on.
 
 **Quant™ 1B (ADR-52): LIVE IN PRODUCTION (October 2026).** Released in the
 order below — rules published and confirmed live first, then Hosting — and

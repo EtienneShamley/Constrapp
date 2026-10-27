@@ -59,7 +59,10 @@ that must not be moved or renamed.
 
 ```
 frontend/
-  firestore.rules   Firestore security rules (published manually — see docs/DEPLOYMENT.md)
+  firestore.rules   Firestore security rules (published manually — see docs/DEPLOYMENT.md);
+                    the tenant, stamp, cents, GST, revision, path and currency helpers are
+                    declared ONCE at the documents scope and take companyId / projectId as
+                    arguments (ADR-60) — call them, never re-declare them per block
   storage.rules     Cloud Storage security rules — the SECOND trust boundary
                     (published manually; see docs/DEPLOYMENT.md)
   src/
@@ -286,7 +289,7 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
                                              DRAFT-ONLY EDITING, FREEZE AFTER SEND, ACTOR == CALLER + SERVER-TIME
                                              STAMPS and the WHOLE-CENT HEADER (subtotal + gst == total exactly; gst
                                              exactly 10% half-up, one cent below admitted on a half-cent boundary
-                                             only) are RULES-ENFORCED (ADR-57, M2-B1, NOT YET DEPLOYED — Hosting
+                                             only) are RULES-ENFORCED (ADR-57, M2-B1, live since 27 October 2026 — Hosting
                                              first, rules second); the strict CANCEL policy (no non-rejected claim,
                                              non-cancelled invoice or non-rejected/non-withdrawn supplier variation
                                              — lib/poCancellation.js, re-checked in
@@ -305,7 +308,7 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
                                              FROZEN FOREVER, ACTOR == CALLER + SERVER-TIME STAMPS, WHOLE-CENT HEADERS
                                              ON BOTH SIDES (retention ≥ 0 and ≤ subtotal; GST 10% of the net, exact or
                                              one cent below on a boundary; approved subtotal ≤ claimed subtotal) and
-                                             REVISION EXACTLY +1 are RULES-ENFORCED (ADR-58, M2-B2, NOT YET DEPLOYED —
+                                             REVISION EXACTLY +1 are RULES-ENFORCED (ADR-58, M2-B2, live since 27 October 2026 —
                                              Hosting first, rules second); the draft edit and every transition run
                                              through revision-guarded transactions (lib/progressClaimActions.js —
                                              stale copy refused, entries kept); one open claim per PO, cumulative
@@ -377,7 +380,7 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
                                              SIGNED WHOLE-CENT HEADERS ON BOTH SIDES (subtotal + gst == total exact;
                                              never clamped, never bounded against submitted), REVISION EXACTLY +1 and
                                              the ADR-34 originating-RFI link (verified on change, frozen outside
-                                             draft) are RULES-ENFORCED (ADR-59, M2-B3, NOT YET DEPLOYED — Hosting
+                                             draft) are RULES-ENFORCED (ADR-59, M2-B3, live since 27 October 2026 — Hosting
                                              first, rules second); the draft edit and every transition run through
                                              revision-guarded transactions (lib/variationActions.js — stale copy
                                              refused, entries kept); lineItems contents, the header GST against the
@@ -535,7 +538,7 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
 - **Cash Flow consumes cash records and writes only its own timing lines — gross cash only.** Every figure is derived at read time in `lib/cashFlow.js` across three layers: **actual** (posted Client Receipts / Supplier Payments via `cashInRows()`/`cashOutRows()`), **automatic near-term forecast** (positive remaining on issued Client Invoices at gross, and on posted Supplier Invoices at `payableTotal`, timed by `dueDate` **month**), and **manual longer-term timing** (`cashFlowLines`). It consumes the **total transaction `amount`** (never `allocatedTotal`) on the **transaction date** (`receiptDate`/`paymentDate`, never `createdAt`/`postedAt`) and groups by `date.slice(0, 7)`. **THE BOUNDARY RULE: months before the current month are ACTUAL ONLY** — no forecast amount, automatic or manual, ever lands in a past month, which is what makes actual-vs-forecast provably non-double-counting. Past-due and undated invoice balances are **never guessed into a month**; they are reported untimed. Cash Flow **writes only `cashFlowLines`** — no receipt, payment, invoice, PO, claim, variation, forecast line, budget line, or baseline is ever mutated. A timing line stores an expected **gross** `amount` plus, separately, the **ex-GST `sourceAmountExGst`** it represents (completeness only — the two bases are never added together); invoice source types are **excluded** so an invoice balance can never be timed twice; approved-claim cost sits **inside** Remaining Committed and is never an additive second denominator. The cumulative position starts at **zero** and is net project cash movement, **never presented as a bank balance** (no bank account, opening balance, financing, retention release, or GST/BAS remittance is modelled — each is warned about, never silently adjusted). **A failed subscription is reported as unavailable, never as a genuine zero.**
 - **Tenders are a decision trail, not a financial document set.** Tender packages hold scope (≥1 cost codes + free text) and **no amounts**; bids hold ex-GST per-cost-code lines with **NO stored `bidTotal`** and packages store **NO `awardTotal`** — rules cannot sum an array, so a stored header total would be forgeable (the Credit Notes header-vs-lines lesson). Every figure derives through the `lib/tenders.js → assessBid` **validity gate**: a bid with any malformed line is invalid whole — total `null`, never a partial sum, never $0 — and is excluded from comparison and award. **An award creates NO Purchase Order and changes NO financial figure** (no budget, committed, claimed, actual, invoiced, forecast, margin, or cash-flow effect); the Awarded Bid Value derives from the rules-frozen awarded bid and is **never netted against POs** (no Award → PO linkage exists). Comparison variance uses **Approved Budget − Bid** (positive = under budget) and shows *no budget* rather than comparing against zero. The **closing date is informational only** — nothing blocks a late bid, anywhere. Tender bids (incl. void) are currency-lock evidence; packages never lock
 - **Retention Releases are an authorisation, not a document type of any other kind.** A Retention Release makes retention **already withheld** on a posted supplier invoice **payable**. It is **not** a supplier invoice, tax invoice, credit note, or payment, carries **no cost code**, and moves **no cash** — only a posted Supplier Payment does. Held is derived from posted invoices, released from **posted** releases, and paid stays derived from payment allocations; **nothing is written onto a supplier invoice** and `retention`/`retentionGst`/`retentionTotal` are immutable for its life. Partial releases are supported and their GST is the **cumulative rounding delta** (`round((prev+amount)×10%) − round(prev×10%)`), which telescopes exactly to `retentionGst`/`retentionTotal` — never each release rounding its own share. Rules enforce the target invoice, the **per-document** cap, and the exact GST formula; the **cumulative** cap is client-only and **hard-blocked in the UI** (no acknowledgement override) — see DC24. **Retention *paid* is not derivable and must never be reported**, and a failed release read must never be treated as "nothing released" (ADR-30)
-- PO line items freeze once a PO leaves `draft` (rules-enforced, ADR-57); claim amounts freeze once submitted and approved amounts are frozen forever (rules-enforced, ADR-58 — both NOT YET DEPLOYED); supplier invoices freeze once `posted` (and posted invoices cannot be cancelled/unposted)
+- PO line items freeze once a PO leaves `draft` (rules-enforced, ADR-57); claim amounts freeze once submitted and approved amounts are frozen forever (rules-enforced, ADR-58 — both live since 27 October 2026); supplier invoices freeze once `posted` (and posted invoices cannot be cancelled/unposted)
 - Lifecycles are forward-only; financial documents are never deleted — cancellation/rejection is a status change
 - One open Progress Claim per PO at a time (client-enforced only — rules cannot see sibling claims, DC36); claims are cumulative (claimed-to-date per PO line)
 - POs snapshot `supplierName` from the chosen contact at write time (`supplierId` is the live link); contact edits or archiving never rewrite issued documents, and POs/claims with `supplierId: null` (pre-Contacts) render from the snapshot and are never backfilled

@@ -384,7 +384,7 @@ Budget page shows it as a warning row rather than hiding it. Exact formulas
 
 Lifecycle and semantics: [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md).
 **Lifecycle, identity, stamps, scalar money and create-time currency are
-RULES-ENFORCED since ADR-57 (M2-B1, NOT YET DEPLOYED)** — see
+RULES-ENFORCED since ADR-57 (M2-B1, live since 27 October 2026)** — see
 [SECURITY.md](SECURITY.md) → *Purchase Orders — rules-enforced lifecycle*; what
 stays client-only is Deferred Control 35. Reads are restricted to internal
 financial roles (ADR-56).
@@ -426,7 +426,7 @@ every field below marked as a stamp, snapshot or approved value are **immutable
 after create**; wrong PO or supplier → withdraw and raise a new claim.
 
 **Lifecycle, immutability and stamps are RULES-ENFORCED since ADR-58 (M2-B2,
-NOT YET DEPLOYED).** A claim is born `draft` with the exact key set below,
+live since 27 October 2026).** A claim is born `draft` with the exact key set below,
 the creator / audit stamps at server time, the project's resolved `currency`
 and `revision` 1, against a `get()`-verified **sent** PO of the same project
 whose `poNumber`, `supplierName`, `supplierId` and **line count** it must
@@ -917,7 +917,7 @@ Header totals derive from the line items (no flat header rate). Numbers come fro
 (`SV-0001`), incremented in the same transaction as the write.
 
 **Lifecycle, immutability and stamps are RULES-ENFORCED since ADR-59 (M2-B3,
-NOT YET DEPLOYED).** A variation is born `draft` with the exact key set below,
+live since 27 October 2026).** A variation is born `draft` with the exact key set below,
 the creator / audit stamps at server time, the project's resolved `currency`
 and `revision` 1, a type-consistent counterparty (the other type's block all
 null) and — for a supplier variation that names a PO — a `get()`-verified

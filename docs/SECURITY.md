@@ -43,6 +43,19 @@ Controls now in place:
   rationale, the enforced controls and the client-only gaps for every
   collection live in this document's per-collection sections, the Deferred
   Controls list and the ADRs — nothing was dropped, only de-duplicated.
+- **ADR-60 (27 October 2026, NOT YET DEPLOYED)** recovered the headroom M2-B3
+  had consumed: thirteen helpers are declared once at the
+  `match /databases/{database}/documents` scope (`financialMember(companyId)`,
+  `sameCompany(companyId)`, `memberRole()`, `changedKeys()`, `updateStamped()`,
+  `cents()`, `gstCents()`, `revisionIncremented()`, `isIsoDate()`,
+  `amountInvariant()`, `projectPath()`, `poPath()`, `resolvedCurrency()`) in
+  place of 95 byte-identical local copies, and the duplicated comments and
+  block headers were consolidated here and into the ADRs. **237,851 →
+  201,523 bytes** with the 32 match paths and every allow rule unchanged; the
+  emulator suite passed unchanged. The tenant and path helpers take
+  `companyId` / `projectId` as arguments because path wildcards are not in
+  scope at that level — every call site passes its own match's wildcards.
+  `variations` keeps its ADR-59 predicate verbatim as `variationMember()`.
 - **Size compliance is not deployment proof.** The emulator suite proves the
   repo file; the size test proves it can be published; only the console shows
   what is live — see [DEPLOYMENT.md](DEPLOYMENT.md) → *Verifying which rules
@@ -83,7 +96,9 @@ Controls now in place:
 
 Shared pattern: *write* requires an authenticated member of the company in the
 path whose role ∈ {`company_admin`, `project_manager`, `qs`} (called "financial
-roles" below); *delete* is blocked everywhere. **Reads are restricted to the
+roles" below — since ADR-60 one shared `financialMember(companyId)` declared at
+the documents scope and called with each block's own `companyId`; `variations`
+keeps its ADR-59 form as `variationMember()`); *delete* is blocked everywhere. **Reads are restricted to the
 financial roles on every commercially sensitive collection** — since ADR-56
 (M2-A) that includes `costCodes`, `budgetLines`, `purchaseOrders` and
 `progressClaims`, which until then were readable by any company member (the
@@ -101,14 +116,14 @@ Control 20).
 | `…/contacts/{id}` | **financial roles only** | financial roles | blocked — archive via `isActive` |
 | `…/projects/{id}/budgetLines/{id}` | **financial roles only** (ADR-56; was company member) | financial roles | blocked |
 | `…/projects/{id}/boqItems/{id}` | **financial roles only** | financial roles, **create active-only; transitions, post-void immutability and the `amount == quantity × rate` invariant rules-enforced; the optional `quantApplied` map (ADR-52) absent at create and, on an edit, preserved verbatim or fresh — exact keys, `by == caller`, `at == request.time`, `quantity == the written quantity`** — the version guard on edits and the Quant apply is CLIENT-only (DC33) | blocked — void via status |
-| `…/projects/{id}/purchaseOrders/{id}` | **financial roles only** (ADR-56; was company member) | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time and the project's resolved currency; draft-only content edits (`hasOnly`); `draft\|pending_approval → sent`, `sent → closed`, `draft\|pending_approval → cancelled`, `sent → cancelled` each stamps-only with actor == caller and time == `request.time`; identity, money and earlier stamps frozen after send; `subtotal + gst == total` in cents and `gst` exactly 10% half-up (one cent below also accepted on a half-cent boundary only); nothing enters `pending_approval`; closed / cancelled terminal — ALL RULES-ENFORCED (ADR-57, M2-B1, NOT YET DEPLOYED)**. `lineItems` contents, Σ lineTotal and the linked claim / invoice / supplier-variation cancel policy are client-only (DC35) | blocked — cancel via status |
-| `…/projects/{id}/progressClaims/{id}` | **financial roles only** (ADR-56; was company member) | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time, the project's resolved currency and a `get()` on the source PO (same project, exists, `sent`; number, supplier identity and line count pinned); draft-only content edits (`hasOnly`, line count fixed); `draft → submitted`, `submitted\|under_review → approved`, `draft\|submitted\|under_review → rejected` each with actor == caller and time == `request.time` (approval also carrying the certified lines, the approved header and the notes); claimed header frozen after submit, approved values frozen forever; whole-cent headers on both sides (retention ≥ 0 and ≤ subtotal, GST exactly 10% of the net half-up or one cent below on a boundary, totals exact, approved subtotal ≤ claimed subtotal); `revision` exactly +1 on every update; `under_review` / `invoiced` unauthorable; approved / rejected / invoiced terminal — ALL RULES-ENFORCED (ADR-58, M2-B2, NOT YET DEPLOYED)**. `lineItems` contents, Σ lines, one open claim per PO, cumulative ceilings, the mixed-mode overlap and creator ≠ approver are client-only (DC36) | blocked — reject via status |
+| `…/projects/{id}/purchaseOrders/{id}` | **financial roles only** (ADR-56; was company member) | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time and the project's resolved currency; draft-only content edits (`hasOnly`); `draft\|pending_approval → sent`, `sent → closed`, `draft\|pending_approval → cancelled`, `sent → cancelled` each stamps-only with actor == caller and time == `request.time`; identity, money and earlier stamps frozen after send; `subtotal + gst == total` in cents and `gst` exactly 10% half-up (one cent below also accepted on a half-cent boundary only); nothing enters `pending_approval`; closed / cancelled terminal — ALL RULES-ENFORCED (ADR-57, M2-B1, live since 27 October 2026)**. `lineItems` contents, Σ lineTotal and the linked claim / invoice / supplier-variation cancel policy are client-only (DC35) | blocked — cancel via status |
+| `…/projects/{id}/progressClaims/{id}` | **financial roles only** (ADR-56; was company member) | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time, the project's resolved currency and a `get()` on the source PO (same project, exists, `sent`; number, supplier identity and line count pinned); draft-only content edits (`hasOnly`, line count fixed); `draft → submitted`, `submitted\|under_review → approved`, `draft\|submitted\|under_review → rejected` each with actor == caller and time == `request.time` (approval also carrying the certified lines, the approved header and the notes); claimed header frozen after submit, approved values frozen forever; whole-cent headers on both sides (retention ≥ 0 and ≤ subtotal, GST exactly 10% of the net half-up or one cent below on a boundary, totals exact, approved subtotal ≤ claimed subtotal); `revision` exactly +1 on every update; `under_review` / `invoiced` unauthorable; approved / rejected / invoiced terminal — ALL RULES-ENFORCED (ADR-58, M2-B2, live since 27 October 2026)**. `lineItems` contents, Σ lines, one open claim per PO, cumulative ceilings, the mixed-mode overlap and creator ≠ approver are client-only (DC36) | blocked — reject via status |
 | `…/projects/{id}/supplierInvoices/{id}` | **financial roles only** | financial roles | blocked — cancel via status |
 | `…/projects/{id}/clientInvoices/{id}` | **financial roles only** | financial roles, **create draft-only; transitions and issued-immutability rules-enforced** | blocked — void via status |
 | `…/projects/{id}/clientReceipts/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability and the scalar amount invariant rules-enforced** | blocked — void via status |
 | `…/projects/{id}/supplierPayments/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability and the scalar amount invariant rules-enforced** | blocked — void via status |
 | `…/projects/{id}/supplierCreditNotes/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability, the header cent invariant, AND the target-invoice checks (exists, posted, zero retention, supplier/currency match, grossTotal ≤ payableTotal) rules-enforced via a `get()` on the target at create, draft edit, and posting** | blocked — void via status |
-| `…/projects/{id}/variations/{id}` | **financial roles only** | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time, the project's resolved currency, a type-consistent counterparty (`CV-` client / `SV-` supplier, the other side null) and — for a PO-linked supplier variation — a `get()` on the source PO (same project, exists, `sent`\|`closed`; number and supplier snapshot pinned); draft-only content edits (`hasOnly`, line count free); `draft → submitted`, `submitted\|under_review → approved`, `submitted\|under_review → rejected`, `draft\|submitted\|under_review → withdrawn` each with actor == caller and time == `request.time` (approval also carrying the certified lines, the SIGNED approved header, the notes and the dates); submitted header frozen after submit, approved values frozen forever; SIGNED whole-cent headers on both sides (never clamped; `subtotal + gst == total` exact); `revision` exactly +1 on every update; the originating-RFI link (`originRfi*`) rules-verified via a `get()` when it changes and frozen outside `draft` (ADR-34); reserved statuses unauthorable; approved / rejected / withdrawn terminal — ALL RULES-ENFORCED (ADR-59, M2-B3, NOT YET DEPLOYED)**. `lineItems` contents, the header GST against the lines, notes-required-when-differing, uniqueness and creator ≠ approver are client-only (DC37) | blocked — reject/withdraw via status |
+| `…/projects/{id}/variations/{id}` | **financial roles only** | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time, the project's resolved currency, a type-consistent counterparty (`CV-` client / `SV-` supplier, the other side null) and — for a PO-linked supplier variation — a `get()` on the source PO (same project, exists, `sent`\|`closed`; number and supplier snapshot pinned); draft-only content edits (`hasOnly`, line count free); `draft → submitted`, `submitted\|under_review → approved`, `submitted\|under_review → rejected`, `draft\|submitted\|under_review → withdrawn` each with actor == caller and time == `request.time` (approval also carrying the certified lines, the SIGNED approved header, the notes and the dates); submitted header frozen after submit, approved values frozen forever; SIGNED whole-cent headers on both sides (never clamped; `subtotal + gst == total` exact); `revision` exactly +1 on every update; the originating-RFI link (`originRfi*`) rules-verified via a `get()` when it changes and frozen outside `draft` (ADR-34); reserved statuses unauthorable; approved / rejected / withdrawn terminal — ALL RULES-ENFORCED (ADR-59, M2-B3, live since 27 October 2026)**. `lineItems` contents, the header GST against the lines, notes-required-when-differing, uniqueness and creator ≠ approver are client-only (DC37) | blocked — reject/withdraw via status |
 | `…/projects/{id}/tenderPackages/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, issued-scope freeze, the closingDate/notes carve-out, and award integrity (bid exists · same package · received · name snapshot · once) rules-enforced** | blocked — cancel via status |
 | `…/projects/{id}/tenderBids/{id}` | **financial roles only** | financial roles, **create received-only against an issued same-project package with a real supplier/subcontractor contact; edits/voids only while the package stays issued; bids freeze on award/cancel** | blocked — void via status |
 | `…/projects/{id}/forecastLines/{id}` | **financial roles only** | financial roles | blocked — clear via `null`, never deleted |
@@ -224,7 +239,7 @@ Existing documents are unaffected: `cancelledBy` is compared through
 incoming document, so a pre-ADR-40 invoice stays editable and acquires the new
 fields on its next valid write.
 
-## Purchase Orders — rules-enforced lifecycle (ADR-57, M2-B1 — NOT YET DEPLOYED)
+## Purchase Orders — rules-enforced lifecycle (ADR-57, M2-B1 — LIVE since 27 October 2026)
 
 **Until ADR-57 the `purchaseOrders` block enforced tenant and role and nothing
 else**, while `supplierInvoices` `get()`s a PO's `status` at invoice create and
@@ -320,7 +335,7 @@ only of the incoming document, and the exact key set applies to `create` only,
 so a pre-ADR-57 PO stays editable, sendable, closable and cancellable and
 acquires the new fields on its next valid write.
 
-## Progress Claims — rules-enforced lifecycle (ADR-58, M2-B2 — NOT YET DEPLOYED)
+## Progress Claims — rules-enforced lifecycle (ADR-58, M2-B2 — LIVE since 27 October 2026)
 
 **Until ADR-58 the `progressClaims` block enforced tenant and role and nothing
 else**, while `supplierInvoices` `get()`s a claim's `status` at invoice create
@@ -439,7 +454,7 @@ document, a missing `revision` reads as 0, and the exact key set applies to
 `create` only, so a pre-ADR-58 claim stays editable, submittable, approvable
 and rejectable and acquires the new fields on its next valid write.
 
-## Variations — rules-enforced lifecycle (ADR-59, M2-B3 — NOT YET DEPLOYED)
+## Variations — rules-enforced lifecycle (ADR-59, M2-B3 — LIVE since 27 October 2026)
 
 **Until ADR-59 the `variations` block enforced tenant, role and the ADR-34
 originating-RFI link and nothing else**, while approved supplier variations
@@ -1000,7 +1015,7 @@ subcontractor-scoped visibility (e.g. a client seeing their own head-contract
 variations) is future work alongside the deferred scoping controls below.
 
 **The originating-RFI link (ADR-34) was, until ADR-59, the ONE rules-enforced
-content control on a variation; since ADR-59 (M2-B3, NOT YET DEPLOYED) the
+content control on a variation; since ADR-59 (M2-B3, live since 27 October 2026) the
 whole lifecycle is enforced — see *Variations — rules-enforced lifecycle*
 above. The link's own rules are unchanged.** A variation may cite zero
 or one RFI in three scalar fields (`originRfiId` + frozen `originRfiNumber` /
@@ -1019,7 +1034,7 @@ status is `draft`**; from `submitted` onward the triple is immutable by rules.
 **Not enforced (client-only, never present otherwise):** that the RFI
 genuinely caused the variation. Status legality and post-submit immutability
 of amounts, lines and text — recorded under Deferred Controls 1 and 2 until
-M2-B3 — are rules-enforced since ADR-59 (NOT YET DEPLOYED); the one change
+M2-B3 — are rules-enforced since ADR-59 (live since 27 October 2026); the one change
 ADR-59 made to the link is that it may now be set, changed or removed through
 the draft edit only, no longer in the same write as `draft → submitted`.
 
@@ -1346,8 +1361,8 @@ implementation.
 > `users/{uid}.role` in the console. Rollback of the ruleset would restore the
 > exposure and cannot undo reads performed before 27 October. The PO, claim
 > and variation **write** rules are hardened by ADR-57 / ADR-58 / ADR-59
-> (M2-B1 / M2-B2 / M2-B3, all NOT YET DEPLOYED — one Hosting deploy, then one
-> rules publish).
+> (M2-B1 / M2-B2 / M2-B3, all live since 27 October 2026 — one Hosting deploy,
+> then one rules publish).
 
 Since ADR-27 the enforced `role` in that table is **settable only out of band**:
 `users/{uid}` is client-read-only, so no user can move themselves between the
@@ -1363,13 +1378,13 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
    rules don't validate status changes; `canTransition` runs client-side only, so
    a financial-role user could set any status directly.
    **None still deferred: `variations` was the last, closed by ADR-59 (M2-B3,
-   NOT YET DEPLOYED).**
+   live since 27 October 2026).**
    **Rules-enforced: `clientInvoices`, `clientReceipts`, `supplierPayments`,
    `supplierCreditNotes`, `retentionReleases`, `cashFlowLines`, `activities`,
    `rfis`, `boqItems`, `tenderPackages`, `tenderBids`, since ADR-40
-   `supplierInvoices`, since ADR-57 (M2-B1, NOT YET DEPLOYED)
-   `purchaseOrders`, since ADR-58 (M2-B2, NOT YET DEPLOYED)
-   `progressClaims`, and — since ADR-59 (M2-B3, NOT YET DEPLOYED) —
+   `supplierInvoices`, since ADR-57 (M2-B1, live since 27 October 2026)
+   `purchaseOrders`, since ADR-58 (M2-B2, live since 27 October 2026)
+   `progressClaims`, and — since ADR-59 (M2-B3, live since 27 October 2026) —
    `variations`** (see *Purchase Orders*, *Progress Claims* and *Variations —
    rules-enforced lifecycle*). ⚠️ The supplier-invoice consequence recorded here is
    **closed**: a posted supplier invoice can no longer be cancelled or unposted,
@@ -1377,17 +1392,17 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
    prevent *future* forgery only — a document tampered with before ADR-40 keeps
    whatever status it holds.
 2. **Post-submission immutability** — **closed for every financial collection
-   since ADR-59 (M2-B3, NOT YET DEPLOYED): variation content IS frozen by
+   since ADR-59 (M2-B3, live since 27 October 2026): variation content IS frozen by
    rules after `submitted` and the certified lines and SIGNED approved header
    after `approved`** — a submitted variation admits approval, rejection or
    withdrawal, an approved, rejected or withdrawn one admits nothing; what is
    NOT frozen there is anything inside `lineItems` beyond its count at approval
    (item 37). **PO lines, header totals,
    supplier and number ARE frozen by rules after `sent` since ADR-57 (M2-B1,
-   NOT YET DEPLOYED)** — a sent, closed or cancelled PO admits a stamps-only
+   live since 27 October 2026)** — a sent, closed or cancelled PO admits a stamps-only
    transition or nothing. **Claim amounts ARE frozen by rules after
    `submitted` and the certified lines and approved header after `approved`
-   since ADR-58 (M2-B2, NOT YET DEPLOYED)** — a submitted claim admits
+   since ADR-58 (M2-B2, live since 27 October 2026)** — a submitted claim admits
    approval or rejection, an approved, rejected or invoiced one admits
    nothing; what is NOT frozen there is anything inside `lineItems` beyond
    its count (item 36). A variation's `originRfiId`/`originRfiNumber`/
