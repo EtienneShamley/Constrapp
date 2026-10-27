@@ -1598,6 +1598,27 @@ lifecycle stages, not separate entities.
   Approved amounts and commercial content freeze forever.
 - **Rejected / Withdrawn** — terminal audit records; contribute nothing financially.
 
+**Since ADR-59 (M2-B3, NOT YET DEPLOYED) the lifecycle above is
+RULES-ENFORCED**, to the ADR-40 / ADR-57 / ADR-58 standard: born `draft` with
+a type-consistent counterparty (client ⇄ supplier blocks mutually null), a
+`get()`-verified **sent or closed** PO of the same project when a supplier
+variation names one (number and supplier snapshot pinned), creator / audit /
+transition stamps `== request.auth.uid` / `== request.time`, draft-only
+content edits, the submitted header and content frozen at `submitted`, the
+certified lines and SIGNED approved header written once at `approved` and
+frozen, `rejected` and `withdrawn` terminal, the reserved `under_review` /
+`disputed` / `superseded` unauthorable as targets, and `revision` exactly +1
+on every update. **Nothing financial changed:** approval is still the only
+counting point, approved amounts are still unbounded against submitted,
+negative variations are still valid and never clamped, the GST is still per
+line, and no consumer reads the new `revision` or `updatedAt`/`updatedBy`.
+The transition matrix is in PROJECT_DECISIONS.md → ADR-59; what rules cannot
+verify (line contents, the header GST against the lines, notes required when
+the certified value differs) is Deferred Control 37. The draft edit and every
+transition run through revision-guarded transactions
+(`lib/variationActions.js`) that refuse a stale copy and keep the user's
+entries — two concurrent assessors are no longer last-write-wins.
+
 **Tax & totals.** All line amounts are **ex-GST**. Per-line `taxCode`
 (`gst` 10% · `gst_free` 0% · `input_taxed` 0%) yields a per-line, per-side
 `submittedGst`/`approvedGst`; header subtotals/GST/totals **derive from the lines**

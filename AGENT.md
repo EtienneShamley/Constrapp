@@ -363,8 +363,26 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
                                              POSTED IMMUTABILITY ARE RULES-ENFORCED; reads restricted to financial roles
   …/variations/{variationId}                 variationNumber (CV-#### client / SV-#### supplier), variationType,
                                              status, client/supplier + poId snapshots, ex-GST lineItems[] w/ per-line
-                                             taxCode (submitted/approved sides), costCodeId spine — commercial change
-                                             control; approved-only read-time; reads restricted to financial roles
+                                             taxCode (submitted/approved sides), costCodeId spine, revision,
+                                             submittedAt/By, approvedAt/By, rejectedAt/By, withdrawnAt/By,
+                                             createdAt/By, updatedAt/By — commercial change control; approved-only
+                                             read-time; reads restricted to financial roles; LIFECYCLE (born draft
+                                             with a type-consistent counterparty and, for a PO-linked supplier
+                                             variation, a get()-verified SENT|CLOSED same-project PO with number and
+                                             supplier pinned; draft → submitted; submitted|under_review →
+                                             approved|rejected; draft|submitted|under_review → withdrawn; nothing
+                                             enters under_review/disputed/superseded; approved/rejected/withdrawn
+                                             terminal), DRAFT-ONLY EDITING, SUBMITTED HEADER FROZEN AT SUBMIT,
+                                             APPROVED VALUES FROZEN FOREVER, ACTOR == CALLER + SERVER-TIME STAMPS,
+                                             SIGNED WHOLE-CENT HEADERS ON BOTH SIDES (subtotal + gst == total exact;
+                                             never clamped, never bounded against submitted), REVISION EXACTLY +1 and
+                                             the ADR-34 originating-RFI link (verified on change, frozen outside
+                                             draft) are RULES-ENFORCED (ADR-59, M2-B3, NOT YET DEPLOYED — Hosting
+                                             first, rules second); the draft edit and every transition run through
+                                             revision-guarded transactions (lib/variationActions.js — stale copy
+                                             refused, entries kept); lineItems contents, the header GST against the
+                                             lines, notes-required-when-differing and uniqueness are CLIENT-only
+                                             (DC37)
   …/tenderPackages/{packageId}               tenderNumber (TP-####), status draft|issued|awarded|cancelled, name,
                                              scope (free text), costCodes[] {costCodeId, costCodeName} (≥1),
                                              closingDate (INFORMATIONAL ONLY — never blocks a bid), awardedBidId +

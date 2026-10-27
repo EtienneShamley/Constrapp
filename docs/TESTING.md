@@ -59,7 +59,7 @@ That script runs
   inert here. The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **1731 in total across 25 files** (1629 across 24 files before ADR-58: `progressClaims.rules.test.js` adds **102**; the `externalRoles` claim fixtures and its one PO seed, and the PO suite's one claim-create case, were revised to the ADR-58 shape with no change to any assertion or count; 1550 across 23 files before ADR-57: `purchaseOrders.rules.test.js` adds **79**; the `externalRoles` PO fixtures were revised to the ADR-57 shape; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §33 and §34):
+- Tests — **1726 in total across 25 files** (1731 across 25 files before ADR-59: `variations.rules.test.js` was rewritten from 107 to **102** cases — every ADR-34 case kept in the new write shape, the old "forgery accepted", "smuggling allowed", "legacy keys absent on create" and "identical triple on an approved document" cases replaced by their refusals, the freeze re-proven per status and per role, and the PO link / counterparty / type proven frozen from creation; no other suite changed; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §35; 1629 across 24 files before ADR-58: `progressClaims.rules.test.js` adds **102**; the `externalRoles` claim fixtures and its one PO seed, and the PO suite's one claim-create case, were revised to the ADR-58 shape with no change to any assertion or count; 1550 across 23 files before ADR-57: `purchaseOrders.rules.test.js` adds **79**; the `externalRoles` PO fixtures were revised to the ADR-57 shape; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §33 and §34):
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -565,36 +565,73 @@ That script runs
     invariant** group (REGRESSION 1–8) proves an open RFI can be reassigned
     and re-dated but can **never** lose its assignee, assignee name or due
     date, while a draft still may, and raise still requires both.
-  - `frontend/tests/rules/variations.rules.test.js` — **107 tests**, the first
-    dedicated suite for the `variations` block (ADR-18 · ADR-34). It **pins the
-    existing posture** — the three financial roles read/create/update;
-    `subcontractor`/`client`/`super_admin`/cross-company/unauthenticated denied;
-    delete blocked at every status; and, deliberately, that a **direct status
-    forgery and a post-approval amount rewrite are still accepted** (Deferred
-    Controls 1 and 2 are unchanged). It then proves the **originating-RFI
-    link**: create with the null triple, with the keys absent (legacy client),
-    and against a same-project open/answered/closed RFI (supplier and client
-    variations, every financial role); create denied for a draft RFI, a
-    cancelled RFI, a nonexistent id, an RFI in **another project** of the same
-    company, an RFI in **another company**, seven partial/malformed triples, a
-    wrong number snapshot, a wrong title snapshot (including trimmed and
-    re-cased copies) and non-string snapshots; the RFI document is **untouched**
-    (still exactly 34 keys). Draft update: add (incl. to a legacy document),
-    change, remove, unrelated edits with an unchanged or identically re-sent
-    link, and denial of every invalid target, of snapshot-only or id-only
-    rewrites, and of partial removal. The **critical historical case**: link an
-    open RFI → cancel the RFI → an unrelated draft edit, **every** lifecycle
-    transition (submit, approve, withdraw, reject) and a re-send of the same
-    triple all still succeed and leave the link intact — while *changing* the
-    link to that now-cancelled RFI, or re-linking it after removal, is denied.
-    Freeze: from `submitted`/`approved`/`rejected`/`withdrawn` no role can add,
-    remove, or change the id, number or title (legacy documents included), while
-    transition-shaped writes with an unchanged, absent or identically re-sent
-    triple remain allowed. Smuggling: draft → submitted with an unchanged link,
-    or while setting/changing/removing to a **valid** link, is allowed; with an
-    invalid link the **whole write** fails (document still draft, still
-    unlinked); a non-draft source cannot bundle any origin change with a
-    transition, nor by rewriting `status: 'draft'` in the same request.
+  - `frontend/tests/rules/variations.rules.test.js` — **102 tests**, the
+    `variations` block after ADR-59 (M2-B3) — see §35. Roles and tenancy
+    (every financial role creates a manual, a PO-linked and a client
+    variation, edits, submits, approves, rejects and withdraws;
+    `subcontractor` / `client` / `super_admin`, anonymous, orphan and another
+    company denied; a member cannot write into another company's project; no
+    create under a missing project); delete blocked at six statuses; valid
+    creates (SENT and CLOSED POs, a pre-Contacts PO, an all-negative credit, a
+    zero-value variation, mixed signs and tax codes, 200 lines, the ADR-34 link
+    on both types); the exact key set, born-draft status, creator stamps
+    against skewed clocks, every stamp / approved value / date / note empty at
+    birth, reserved fields at reserved values, the type-pinned number prefix;
+    counterparty consistency between the two types; the source-PO `get()`
+    (draft / pending / cancelled / missing / other-project PO, wrong number,
+    wrong supplier name or id, a manual-mode pair that is not both null);
+    currency resolution through project → company → AUD; content shape;
+    SIGNED whole-cent headers with the exact total identity; every ADR-34
+    create case (draft / cancelled / nonexistent / other-project /
+    other-company RFI, seven malformed triples, wrong or re-cased snapshots,
+    the RFI untouched at 34 keys, the keys now mandatory). Draft edit: the hook
+    payload with a changing line count, a client draft's clientRef, notes, a
+    partial edit, a legacy draft acquiring the keys, refused stamps / revision
+    / skewed clocks, refused status and stamp changes, every identity /
+    counterparty / PO / reserved / provenance field refused, content and money
+    re-validated, the reference kept on its own side; the ADR-34 add / change
+    / remove cases (legacy included), the invalid targets, the **critical
+    historical case** (link, cancel the RFI, every later edit and transition
+    still passes; only changing TO it is refused) and the freeze on every
+    non-draft status — remove, partial removal, id / number / title change and
+    a valid re-link refused for every financial role, an unlinked and a legacy
+    document unable to gain a link, re-sending the identical triple refused
+    outside draft. **Source PO link, counterparty and type frozen from
+    creation** (the final-review question): a legitimately created PO-linked
+    variation refuses every re-link (cancelled, draft, foreign-project, valid-
+    but-different, nonexistent, id-only, number-only, demotion to manual mode),
+    every supplier-snapshot forgery, a type flip and a number change — alone,
+    bundled with a content edit, as a whole-document replacement and bundled
+    with a transition — then submits and approves against its ORIGINAL PO and
+    stays frozen afterwards; manual-mode and client variations can never gain
+    a PO; a legacy link survives its PO's cancellation and cannot be
+    "repaired" to another PO. Revision
+    exactly +1 on every branch, a stored 7 → 8, a missing key → 1, two
+    assessors. The legal matrix (submit with the date kept / set / empty;
+    approve with the SIGNED header on four sign patterns; reject with and
+    without notes; withdraw from draft and submitted; `under_review` as a
+    source only) and every illegal move, reserved target and unknown status.
+    Transition purity (no content on submit / reject / withdraw; approval
+    touches only its own keys; actor and time on every branch against skewed
+    clocks; the certified line count pinned; the approved date required; notes
+    and dates bounded; the stored draft must hold a line). Approval money on
+    every sign. Direct-SDK bypasses (create approved / submitted / withdrawn,
+    rewrite a submitted or approved document by replacement, move exposure to
+    another PO / supplier / type / project, attach a foreign-project RFI,
+    revive a terminal document, strip stamps). Legacy documents (foundation
+    shape: edit, submit, withdraw, approve, reject; terminal stays terminal; a
+    PO-linked one whose PO was since cancelled). Downstream figures from
+    variations approved through the new rules — Commitment Exposure by cost
+    code, the four exposure totals, the Current Contract Sum through
+    `computeMargin` (positive and credit), the M2-B1 cancel guard, the RFI
+    reverse view. The two REAL transactions (`lib/variationActions.js`): draft
+    edit, STALE by revision and by status, invalid before any read, link /
+    keep / unlink through the edit, submit → approve (cents, notes) → reject /
+    withdraw, a STALE assessment, illegal / reserved / missing, a denied role
+    as PERMISSION, a legacy draft. Six **honest-ceiling** cases (DC37): junk
+    line contents, a header GST unrelated to the lines, an approval that
+    differs with empty notes, self-approval and duplicates, the read-then-write
+    stale bypass, the PO read at create only.
   - `frontend/tests/rules/storage.rules.test.js` — **46 tests**, the **Storage**
     boundary. Requires **both** emulator hosts, because the document read rule
     performs a `firestore.get()`. Covers: drawing files readable by every
@@ -1373,9 +1410,28 @@ npm run test:unit
   alone and combined (assignee names are NOT searched), and a **purity** block
   proving every exported function leaves deep-frozen inputs intact.
 
-- `frontend/tests/unit/variations.test.js` — **67 tests**: 38 over the
-  originating-RFI helpers in `lib/variations.js` (ADR-34) and 29 over the
-  draft-edit helpers (ADR-35 — see the end of this bullet): `ORIGIN_RFI_STATUSES`
+- `frontend/tests/unit/variationActions.test.js` — **25 tests** over
+  `lib/variationActions.js` (ADR-59, M2-B3 — see §35): revision arithmetic
+  and `todayIso`; `draftUpdate` (exactly the draft-editable keys, the signed
+  header, the approved side forced null, the reference on the SERVER copy's
+  type, notes and the RFI triple only when passed, every INVALID reason, a
+  legacy copy writing revision 1); `transitionUpdate` (submit with the date
+  kept or set, reject / withdraw stamps-only, approve with the certified lines
+  / signed header / notes / dates, the effective-date fallback, unbounded
+  amounts, count mismatch / non-number / differing-without-notes refused, the
+  reserved targets refused, the stamp map complete); and both transactions
+  over a scripted fake — check order before any read, the write built over
+  the server copy, STALE by revision and by status with nothing written,
+  MISSING, PERMISSION, error-code mapping and pass-through.
+- `frontend/tests/unit/variations.test.js` — **72 tests**: 38 over the
+  originating-RFI helpers in `lib/variations.js` (ADR-34), 29 over the
+  draft-edit helpers (ADR-35 — see the end of this bullet) and **5 ADR-59
+  cases** — the four-entry stamp map with the reserved statuses absent and
+  every legal target stamped, `validateVariationDraft` refusing 201 lines and
+  accepting 200, a sweep of every cent from −$10,000 to $10,000 on each tax
+  code and 20,000 random mixed-sign multi-line variations through the REAL
+  `variationTotals` against the rules' replicated whole-cent check and total
+  identity, and the check's non-vacuity: `ORIGIN_RFI_STATUSES`
   is exactly open/answered/closed and every RFI status classifies one way;
   `normaliseOriginRfi` maps null/undefined/non-objects and every partial or
   malformed RFI to the all-null triple, a valid RFI to the **exact** id/number/
@@ -6314,3 +6370,78 @@ tested):
       Budget Committed, Claimed, Actual, FFC, Forecast Cash Out and the
       Commercial margin before and after the release on a project with data →
       identical.
+
+## 35. Variation Lifecycle Security — M2-B3 (ADR-59)
+
+Automated: `tests/rules/variations.rules.test.js` (**102**, rewritten from the
+107-case ADR-34 suite — see §0; every ADR-34 case is kept in the new write
+shape, and the source-PO link, counterparty and type are proven frozen from
+creation through submit and approve), `tests/unit/variationActions.test.js` (**25**, new — the exact
+draft-edit and transition writes, revision arithmetic, check order, stale
+detection over a scripted transaction, error kinds) and the **5** ADR-59 cases
+added to `tests/unit/variations.test.js` (the stamp map, the line ceiling, and
+sweeps of every cent from −$10,000 to $10,000 on each tax code plus 20,000
+random mixed-sign multi-line variations through the REAL `variationTotals`
+against the rules' replicated whole-cent check and total identity). No other
+suite changed. Full rules suite: **25 files / 1726 tests**; unit **56 files /
+3451 tests**; lint 0 / 0; build green — all run locally on 27 October 2026 on
+arm64 Java 17. Rules file **237,851 bytes** (224,528 after M2-B2; 197,035
+live) against the 245,000-byte budget — 7,149 bytes of headroom.
+
+**Status: IMPLEMENTED, NOT YET DEPLOYED.** Nothing the rules enforce below is
+true in production until `frontend/firestore.rules` is published and confirmed
+live — and the rules may be published **only after** the M2-B3 Hosting build
+is live (the ADR-40 ordering gate: the live bundle sends no `updatedAt` /
+`updatedBy` and never increments `revision`, so publishing first breaks every
+variation create, edit, submit, approve, reject and withdraw — and, because the
+same ruleset carries M2-B1 and M2-B2, every PO and claim write). See
+DEPLOYMENT.md → *M2-B3 release order* (one Hosting deploy, one rules publish,
+for M1 + M2-B1 + M2-B2 + M2-B3).
+
+Manual acceptance — at most three checks, run **after both deploy steps**,
+against production, by the product owner (every rules invariant is automated
+in §0; these prove the deployed build and the published ruleset are the ones
+tested):
+
+- [ ] **The deployed build and the published ruleset are this release.** On a
+      project with a sent PO, raise a draft supplier variation against it with
+      one positive `GST 10%` line and one negative `GST-free` line, edit it
+      (change a line and add one), submit it, assess it → certify a different
+      amount on one line with a note → Approve; withdraw a second draft; raise
+      and approve a client variation: all succeed, the register shows the
+      signed totals, and in the Firestore console the approved supplier
+      document shows `submittedBy` and `approvedBy` = your uid, `submittedAt` /
+      `approvedAt`, `updatedAt` / `updatedBy`, `withdrawnBy: null`,
+      `revision: 4` (create 1, edit 2, submit 3, approve 4), and the withdrawn
+      one `withdrawnBy` = your uid. Firebase console → Firestore → Rules: the
+      active version's timestamp is after the publish, the editor finds
+      `ADR-59` in the `variations` block (and `ADR-57` / `ADR-58` in
+      `purchaseOrders` / `progressClaims`), and `diff <(pbpaste)
+      frontend/firestore.rules` is empty (**237,851** bytes).
+- [ ] **The guards and the rules both hold.** Open the same submitted
+      variation's Assess dialog in two tabs; approve in tab A, then approve in
+      tab B → tab B shows the red *"… is now Approved, not Submitted …"*
+      reason, keeps its entries, and the first certified figures stand; Budget
+      *Approved Supplier Variations* / *Commitment Exposure* (or the
+      Commercial *Current Contract Sum* for a client variation) reflect tab A's
+      figures exactly once. Then, in the Firebase console (a direct write, as a
+      financial-role identity), attempt to edit that approved variation's
+      `approvedSubtotal`, change its `poId`, set `status` back to `submitted`,
+      or set `status: 'disputed'` → *Missing or insufficient permissions* each
+      time; attempt to create a variation document with `status: 'approved'`
+      → refused. (A console write that approves a submitted variation with a
+      certified value different from the submitted one and **empty**
+      `assessmentNotes` — correct shape, your uid, server timestamps,
+      `revision + 1` — **succeeds**: notes-required-when-differing is
+      client-only, DC37; this is the documented ceiling, not a failure.)
+- [ ] **Legacy documents and downstream figures are unaffected.** Pick a
+      variation created before this release (no `updatedAt` key in the
+      console): a draft one edits and submits; a submitted one approves,
+      rejects or withdraws; the document gains the new keys and `revision` 2.
+      Record Budget Approved Supplier Variations, Commitment Exposure,
+      Pending Supplier Variation Exposure, the Commercial Current Contract
+      Sum, Forecast Revenue, Gross Profit, PULSE indicator 6 and the SHIELD
+      check 4 variation column before and after the release on a project with
+      data → identical; attempt to cancel a sent PO that a live supplier
+      variation references → still refused with the variation named (the
+      M2-B1 guard reads the same fields).

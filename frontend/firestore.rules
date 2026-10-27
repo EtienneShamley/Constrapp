@@ -1304,32 +1304,72 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Variations — project-scoped commercial change control. One type-
-    // discriminated collection holds Client Variations (variationType 'client',
-    // head-contract revenue changes) and Supplier Variations (variationType
-    // 'supplier', subcontract commitment changes). Numbered CV-#### / SV-####
-    // from company-wide counters (variationsClient / variationsSupplier).
-    // Reads: restricted to internal financial roles — variations expose client
-    // contract revenue and supplier pricing, so subcontractor and client users
-    // must NOT read them (matching Contacts and Supplier Invoices). Client- and
-    // subcontractor-scoped visibility is future work.
-    // Create/update: same financial roles.
-    // Delete: blocked — rejection/withdrawal is a status change; variations are
-    // audit records.
-    // TODO (server-side hardening): enforce status-transition legality, post-
-    // submit/post-approval immutability, creator != approver segregation, and
-    // (counterparty + external reference) uniqueness here rather than only in
-    // the client hook.
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
+    // Variations — project-scoped commercial change control: one type-
+    // discriminated collection (Client CV-#### / Supplier SV-####, ADR-18).
+    // Reads: internal financial roles only (contract revenue and supplier
+    // pricing). Create/update: same roles — LIFECYCLE RULES-ENFORCED since
+    // ADR-59 (M2-B3): born draft with the exact key set, the caller's stamps,
+    // the project's resolved currency and (supplier, PO-linked) a get() on the
+    // SENT/CLOSED PO of the same project; draft-only content edits; exactly
+    // draft → submitted, submitted|under_review → approved|rejected,
+    // draft|submitted|under_review → withdrawn, each stamps-only (approval also
+    // writes the certified lines, the approved header, the notes and the
+    // dates), actor == caller, time == request.time; identity frozen by the
+    // hasOnly lists; submitted money frozen after submit, approved money frozen
+    // forever; SIGNED whole-cent headers (negatives are valid — never clamped);
+    // revision EXACTLY +1; the originating-RFI link (ADR-34) verified when it
+    // changes and frozen outside draft. Delete: blocked.
+    // What rules CANNOT verify (lineItems contents, header GST vs per-line tax
+    // codes, notes-required-when-differing, uniqueness, creator ≠ approver) is
+    // recorded in docs/SECURITY.md → Deferred Control 37.
     match /companies/{companyId}/projects/{projectId}/variations/{variationId} {
       function financialMember() {
         return request.auth != null
             && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
             && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
       }
-      // The RFI this candidate cites, in THIS company and THIS project.
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      function cents(v) {
+        return math.round(v * 100);
+      }
+      // A whole-cent double (lib/purchaseOrders.js → roundMoney output): within
+      // a thousandth of a cent of an integer number of cents. Signed.
+      function wholeCents(v) {
+        return v is number && math.abs(v * 100 - math.round(v * 100)) < 0.001;
+      }
+      // Header identity on either side: subtotal + gst == total in cents. The
+      // GST itself cannot be pinned — it is Σ per-line gstForLine(amount,
+      // taxCode) over lines of mixed tax codes and signs (DC37).
+      function moneyValid(a, g, t) {
+        return wholeCents(a) && wholeCents(g) && wholeCents(t)
+            && cents(a) + cents(g) == cents(t);
+      }
+      function isDate(v) {
+        return v is string && (v == '' || v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'));
+      }
+      function text(v, n) {
+        return v is string && v.size() <= n;
+      }
+      function idOrNull(v) {
+        return v == null || (v is string && v.size() > 0);
+      }
+      function projectPath() {
+        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId);
+      }
+      function poPath() {
+        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/purchaseOrders/$(request.resource.data.poId);
+      }
+      // lib/currency.js → resolveProjectCurrency, mirrored (as in the
+      // purchaseOrders / progressClaims blocks). Create only; frozen after.
+      function resolvedCurrency() {
+        let pc = get(projectPath()).data.get('currency', '');
+        let cc = get(/databases/$(database)/documents/companies/$(companyId)).data.get('baseCurrency', '');
+        return (pc is string && pc.matches('^[A-Z]{3}$')) ? pc
+             : ((cc is string && cc.matches('^[A-Z]{3}$')) ? cc : 'AUD');
+      }
+      // The RFI this candidate cites, in THIS company and THIS project (ADR-34).
       function originRfiDoc(d) {
         return get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/rfis/$(d.originRfiId)).data;
       }
@@ -1351,30 +1391,197 @@ service cloud.firestore {
       function originRfiValid(d) {
         return originUnlinked(d) || originLinked(d);
       }
-      // Value comparison, absent treated as null — legacy documents and the
-      // partial transition writes the hook issues never register as a change.
+      // Value comparison, absent treated as null — legacy documents never
+      // register as a change, and an unchanged link is never re-validated.
       function originChanged() {
         return request.resource.data.get('originRfiId', null)     != resource.data.get('originRfiId', null)
             || request.resource.data.get('originRfiNumber', null) != resource.data.get('originRfiNumber', null)
             || request.resource.data.get('originRfiTitle', null)  != resource.data.get('originRfiTitle', null);
       }
+      // Exact key set of a document the app creates (hooks/useVariations.jsx).
+      function exactKeys() {
+        return request.resource.data.keys().hasOnly(['variationNumber', 'variationType', 'status', 'title', 'description', 'reason', 'clientId', 'clientName', 'clientRef', 'supplierId', 'supplierName', 'supplierRef', 'poId', 'poNumber', 'originRfiId', 'originRfiNumber', 'originRfiTitle', 'lineItems', 'submittedSubtotal', 'submittedGst', 'submittedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'forecastAmount', 'identifiedDate', 'submittedDate', 'responseDueDate', 'approvedDate', 'effectiveDate', 'currency', 'revision', 'notes', 'assessmentNotes', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'withdrawnAt', 'withdrawnBy', 'attachments', 'externalRefs', 'supersededByVariationId', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+            && request.resource.data.keys().hasAll(['variationNumber', 'variationType', 'status', 'title', 'description', 'reason', 'clientId', 'clientName', 'clientRef', 'supplierId', 'supplierName', 'supplierRef', 'poId', 'poNumber', 'originRfiId', 'originRfiNumber', 'originRfiTitle', 'lineItems', 'submittedSubtotal', 'submittedGst', 'submittedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'forecastAmount', 'identifiedDate', 'submittedDate', 'responseDueDate', 'approvedDate', 'effectiveDate', 'currency', 'revision', 'notes', 'assessmentNotes', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'withdrawnAt', 'withdrawnBy', 'attachments', 'externalRefs', 'supersededByVariationId', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']);
+      }
+      // Tier-2 source validation — CREATE ONLY, supplier variations that name a
+      // PO. The PO must exist in THIS project and be sent or closed
+      // (lib/variations.js → VARIATION_PO_STATUSES), and the variation's
+      // poNumber and supplier snapshot must be the PO's. Never re-checked: a
+      // variation survives its PO's later cancellation (the PO cancel guard is
+      // the client's, DC35).
+      function sourcePoValid() {
+        let d = request.resource.data;
+        return exists(poPath())
+            && get(poPath()).data.status in ['sent', 'closed']
+            && get(poPath()).data.poNumber == d.poNumber
+            && get(poPath()).data.supplierName == d.supplierName
+            && get(poPath()).data.get('supplierId', null) == d.supplierId;
+      }
+      // Identity written once: type-discriminated number and counterparty, the
+      // other type's block all null, reserved fields at their reserved values.
+      function identityShapeValid() {
+        let d = request.resource.data;
+        return d.variationType in ['client', 'supplier']
+            && d.variationNumber is string
+            && d.variationNumber.matches(d.variationType == 'client' ? '^CV-[0-9]{4,}$' : '^SV-[0-9]{4,}$')
+            && d.currency is string
+            && d.currency.matches('^[A-Z]{3}$')
+            && d.revision == 1
+            && d.externalRefs is map
+            && d.attachments is list
+            && d.attachments.size() == 0
+            && d.supersededByVariationId == null
+            && d.forecastAmount == null
+            && (d.variationType == 'client'
+                 ? (idOrNull(d.clientId) && text(d.clientName, 200)
+                    && d.supplierId == null && d.supplierName == null && d.poId == null && d.poNumber == null)
+                 : (idOrNull(d.supplierId) && text(d.supplierName, 200)
+                    && d.clientId == null && d.clientName == null
+                    && (d.poId == null ? d.poNumber == null : (d.poId is string && d.poId.size() > 0 && sourcePoValid()))));
+      }
+      // The external reference belongs to the document's own type; the other
+      // type's is null (create and draft edit).
+      function refsValid() {
+        let d = request.resource.data;
+        return d.variationType == 'client'
+             ? (text(d.clientRef, 200) && d.supplierRef == null)
+             : (text(d.supplierRef, 200) && d.clientRef == null);
+      }
+      // Authored content. Bounds stop unbounded strings, not business cases;
+      // the line COUNT is the honest ceiling on `lineItems` (no iteration).
+      function contentShapeValid() {
+        let d = request.resource.data;
+        return d.title is string
+            && d.title.size() > 0
+            && d.title.size() <= 500
+            && text(d.description, 5000)
+            && d.reason in ['', 'design_change', 'site_condition', 'client_instruction', 'error_omission', 'other']
+            && isDate(d.identifiedDate)
+            && isDate(d.submittedDate)
+            && isDate(d.responseDueDate)
+            && isDate(d.effectiveDate)
+            && text(d.notes, 5000)
+            && d.lineItems is list
+            && d.lineItems.size() >= 1
+            && d.lineItems.size() <= 200;
+      }
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // Born draft, stamped by its creator, every lifecycle stamp, approved
+      // value and assessment field empty.
+      function createValid() {
+        let d = request.resource.data;
+        return d.status == 'draft'
+            && d.createdBy == request.auth.uid
+            && d.createdAt == request.time
+            && d.submittedAt == null && d.submittedBy == null
+            && d.approvedAt == null && d.approvedBy == null
+            && d.rejectedAt == null && d.rejectedBy == null
+            && d.withdrawnAt == null && d.withdrawnBy == null
+            && d.approvedSubtotal == null && d.approvedGst == null && d.approvedTotal == null
+            && d.approvedDate == ''
+            && d.assessmentNotes == '';
+      }
+      // EXACTLY +1 on every update (the progressClaims idiom, ADR-58): with the
+      // client writing the revision it REVIEWED + 1 inside a transaction
+      // (lib/variationActions.js) a write over a newer copy fails here —
+      // rules-ASSISTED concurrency, not rules-proven (DC37). Every variation the
+      // app has written holds 1; a missing key reads as 0.
+      function revisionIncremented() {
+        return request.resource.data.revision is number
+            && request.resource.data.revision == resource.data.get('revision', 0) + 1;
+      }
 
       allow read: if financialMember();
-      allow create: if financialMember() && originRfiValid(request.resource.data);
-      allow update: if financialMember()
-                  && (
-                       // (a) originRfi* untouched — every existing write shape
-                       //     (draft edits, submit, assess, reject, withdraw)
-                       //     continues exactly as before, whatever the linked
-                       //     RFI's status is today.
-                       !originChanged()
-                       ||
-                       // (b) originRfi* changed — only from a stored draft,
-                       //     and only to the unlinked triple or a verified
-                       //     eligible RFI. Applies even when the same write
-                       //     also moves draft → submitted.
-                       (resource.data.status == 'draft' && originRfiValid(request.resource.data))
-                     );
+
+      allow create: if financialMember()
+                  && exactKeys()
+                  && createValid()
+                  && updateStamped()
+                  && identityShapeValid()
+                  && refsValid()
+                  && contentShapeValid()
+                  && moneyValid(request.resource.data.submittedSubtotal, request.resource.data.submittedGst, request.resource.data.submittedTotal)
+                  && exists(projectPath())
+                  && request.resource.data.currency == resolvedCurrency()
+                  && originRfiValid(request.resource.data);
+
+      // `resource != null` first — a denied create is also measured against
+      // this rule. Every branch's hasOnly on changedKeys() is what freezes the
+      // identity, the counterparty, the PO link, the reserved fields and every
+      // stamp or figure a branch does not own — a key outside the list cannot
+      // be added, removed or changed.
+      allow update: if resource != null
+                  && financialMember() && updateStamped() && revisionIncremented() && (
+                    // (a) DRAFT EDIT — the authored content, the re-derived
+                    //     submitted header and the originating-RFI link (which
+                    //     must validate when it changes — ADR-34).
+                    (
+                      resource.data.status == 'draft'
+                      && changedKeys().hasOnly(['title', 'description', 'reason', 'clientRef', 'supplierRef', 'identifiedDate', 'responseDueDate', 'effectiveDate', 'lineItems', 'submittedSubtotal', 'submittedGst', 'submittedTotal', 'notes', 'originRfiId', 'originRfiNumber', 'originRfiTitle', 'revision', 'updatedAt', 'updatedBy'])
+                      && contentShapeValid()
+                      && refsValid()
+                      && moneyValid(request.resource.data.submittedSubtotal, request.resource.data.submittedGst, request.resource.data.submittedTotal)
+                      && (!originChanged() || originRfiValid(request.resource.data))
+                    )
+                    ||
+                    // (b) SUBMIT — THE SUBMITTED-MONEY FREEZE POINT. Stamps
+                    //     and the submitted date only; the stored lines are
+                    //     what gets frozen.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'submitted'
+                      && resource.data.lineItems is list
+                      && resource.data.lineItems.size() >= 1
+                      && changedKeys().hasOnly(['status', 'submittedDate', 'submittedAt', 'submittedBy', 'revision', 'updatedAt', 'updatedBy'])
+                      && isDate(request.resource.data.submittedDate)
+                      && request.resource.data.submittedBy == request.auth.uid
+                      && request.resource.data.submittedAt == request.time
+                    )
+                    ||
+                    // (c) APPROVE — THE CERTIFICATION POINT (the only state
+                    //     that counts financially). Writes the certified lines
+                    //     (contents unverifiable — the count is pinned), the
+                    //     SIGNED approved header, the notes, the approved and
+                    //     effective dates and its own stamps. Approved amounts
+                    //     are unbounded against submitted by product decision.
+                    (
+                      resource.data.status in ['submitted', 'under_review']
+                      && request.resource.data.status == 'approved'
+                      && changedKeys().hasOnly(['status', 'lineItems', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'assessmentNotes', 'approvedDate', 'effectiveDate', 'approvedAt', 'approvedBy', 'revision', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.approvedBy == request.auth.uid
+                      && request.resource.data.approvedAt == request.time
+                      && request.resource.data.lineItems is list
+                      && request.resource.data.lineItems.size() == resource.data.lineItems.size()
+                      && text(request.resource.data.assessmentNotes, 5000)
+                      && isDate(request.resource.data.approvedDate)
+                      && request.resource.data.approvedDate != ''
+                      && isDate(request.resource.data.effectiveDate)
+                      && moneyValid(request.resource.data.approvedSubtotal, request.resource.data.approvedGst, request.resource.data.approvedTotal)
+                    )
+                    ||
+                    // (d) REJECT (terminal) — stamps plus the optional notes.
+                    (
+                      resource.data.status in ['submitted', 'under_review']
+                      && request.resource.data.status == 'rejected'
+                      && changedKeys().hasOnly(['status', 'rejectedAt', 'rejectedBy', 'assessmentNotes', 'revision', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.rejectedBy == request.auth.uid
+                      && request.resource.data.rejectedAt == request.time
+                      && text(request.resource.data.assessmentNotes, 5000)
+                    )
+                    ||
+                    // (e) WITHDRAW (terminal) — stamps only.
+                    (
+                      resource.data.status in ['draft', 'submitted', 'under_review']
+                      && request.resource.data.status == 'withdrawn'
+                      && changedKeys().hasOnly(['status', 'withdrawnAt', 'withdrawnBy', 'revision', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.withdrawnBy == request.auth.uid
+                      && request.resource.data.withdrawnAt == request.time
+                    )
+                  );
+
       allow delete: if false;
     }
 

@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   collection, doc, onSnapshot, query, orderBy,
-  runTransaction, updateDoc, serverTimestamp,
+  runTransaction, serverTimestamp,
 } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { useAuth } from './useAuth'
@@ -11,17 +11,12 @@ import { stageProjectCurrencyLock } from './projectCurrencyLock'
 import { resolveProjectCurrency } from '../lib/currency'
 import {
   VARIATION_TYPE, VARIATION_STATUS, VARIATION_COUNTER_ID,
-  canTransition, variationTotals, validateApprovedAmounts, buildApprovedLineItems,
+  canTransition, variationTotals,
   formatClientVariationNumber, formatSupplierVariationNumber,
   normaliseOriginRfi, isEligibleOriginRfi,
-  validateVariationDraft, stripApprovedFromLines,
+  validateVariationDraft,
 } from '../lib/variations'
-
-const pad2 = (n) => String(n).padStart(2, '0')
-function todayIso() {
-  const d = new Date()
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
-}
+import { runUpdateVariationDraft, runTransitionVariation } from '../lib/variationActions'
 
 export function useVariations(projectId) {
   const { user }    = useAuth()
@@ -100,6 +95,8 @@ export function useVariations(projectId) {
   }) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (originRfi && !isEligibleOriginRfi(originRfi)) throw new Error('Only open, answered or closed RFIs can originate a variation')
+    const draftError = validateVariationDraft({ title, lineItems })
+    if (draftError) throw new Error(draftError)
     const isClient = variationType === VARIATION_TYPE.CLIENT
 
     const counterRef = doc(db, 'companies', companyId, 'counters', VARIATION_COUNTER_ID[variationType])
@@ -184,6 +181,9 @@ export function useVariations(projectId) {
 
         createdAt: serverTimestamp(),
         createdBy: user.uid,
+        // Audit stamps (ADR-59) — required by rules on every write.
+        updatedAt: serverTimestamp(),
+        updatedBy: user.uid,
       })
       commitLock()
     })
@@ -192,111 +192,52 @@ export function useVariations(projectId) {
 
   // Draft-only edits (ADR-35) — authored content freezes once a variation is
   // submitted. The caller supplies rebuilt line items; the approved side of
-  // every line is forced null here (a draft never carries certified values)
-  // and submitted totals are re-derived. Identity, type, counterparty, PO,
-  // status, stamps and the approved totals are never written. `notes` has no
-  // editor input — when omitted (undefined) the stored value is preserved.
-  // The originating RFI is touched ONLY when `originRfi` is passed (an RFI
+  // every line is forced null (a draft never carries certified values) and
+  // submitted totals are re-derived. Identity, type, counterparty, PO, status,
+  // stamps and the approved totals are never written. `notes` has no editor
+  // input — when omitted (undefined) the stored value is preserved. The
+  // originating RFI is touched ONLY when `originRfi` is passed (an RFI
   // document to set/change, or null to unlink); undefined preserves the stored
   // triple — which is what keeps a historical link to a since-cancelled RFI
   // intact across unrelated edits (rules never revalidate an unchanged triple).
-  const updateVariation = useCallback(async (variation, {
-    title, description, reason,
-    clientRef, supplierRef,
-    identifiedDate, responseDueDate, effectiveDate,
-    lineItems, notes,
-    originRfi,
-  }) => {
+  //
+  // Since ADR-59 (M2-B3) the edit is a REVISION-GUARDED transaction
+  // (lib/variationActions.js → runUpdateVariationDraft): the server copy must
+  // still be a draft at the revision the user reviewed (STALE otherwise — the
+  // editor keeps the user's entries and shows the reason), and the write
+  // carries `revision + 1` and the audit stamps. The rules admit exactly these
+  // keys on a draft and require the +1, so the draft-only edit and the freeze
+  // after submit are RULES-ENFORCED; the status check here is the UX mirror.
+  const updateVariation = useCallback(async (variation, data) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (variation.status !== VARIATION_STATUS.DRAFT) throw new Error('Only draft variations can be edited')
-    if (originRfi && !isEligibleOriginRfi(originRfi)) throw new Error('Only open, answered or closed RFIs can originate a variation')
-    const validationError = validateVariationDraft({ title, lineItems })
-    if (validationError) throw new Error(validationError)
-    const isClient  = variation.variationType === VARIATION_TYPE.CLIENT
-    const ref       = doc(db, 'companies', companyId, 'projects', projectId, 'variations', variation.id)
-    const lines     = stripApprovedFromLines(lineItems)
-    const submitted = variationTotals(lines, 'submitted')
-    await updateDoc(ref, {
-      ...(originRfi === undefined ? {} : normaliseOriginRfi(originRfi)),
-      title:       title?.trim()       || '',
-      description: description?.trim() || '',
-      reason:      reason || '',
-      clientRef:   isClient ? (clientRef?.trim() || '')  : null,
-      supplierRef: isClient ? null : (supplierRef?.trim() || ''),
-      identifiedDate:  identifiedDate  || '',
-      responseDueDate: responseDueDate || '',
-      effectiveDate:   effectiveDate   || '',
-      lineItems: lines,
-      submittedSubtotal: submitted.subtotal,
-      submittedGst:      submitted.gst,
-      submittedTotal:    submitted.total,
-      ...(notes === undefined ? {} : { notes: notes?.trim() || '' }),
+    const variationRef = doc(db, 'companies', companyId, 'projects', projectId, 'variations', variation.id)
+    await runUpdateVariationDraft({
+      db, variationRef, seen: variation, data, uid: user.uid, runTransaction, serverTimestamp,
     })
   }, [companyId, projectId, user])
 
-  // Lifecycle transitions. Moving to approved requires per-line approvedAmount
-  // values (unbounded — above/below/zero/negative allowed) and assessment notes
-  // when any differ from submitted; approved amounts and totals freeze forever.
-  // Legality is client-checked (server enforcement is deferred, matching the
-  // rest of the app).
+  // Submit / approve / reject / withdraw through ONE guarded transaction
+  // (ADR-59, lib/variationActions.js): the server copy must still be in the
+  // status AND at the revision the user acted on, the move must be legal
+  // (canTransition), and the write is status + the transition's (at, by)
+  // stamps + the audit stamps + revision — plus, for approval, the certified
+  // lines (unbounded — above/below/zero/negative allowed), the SIGNED approved
+  // header, the assessment notes (required when any amount differs — client
+  // validation) and the approved / effective dates; for submit, the submitted
+  // date. Exactly what the rules' transition branches admit. The reserved
+  // under_review / disputed / superseded have no application path; approved,
+  // rejected and withdrawn are terminal — approved amounts freeze forever.
   const transitionStatus = useCallback(async (variation, nextStatus, { approvedAmounts, assessmentNotes } = {}) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (!canTransition(variation.status, nextStatus)) {
       throw new Error(`Cannot move a ${variation.status} variation to ${nextStatus}`)
     }
-    const ref   = doc(db, 'companies', companyId, 'projects', projectId, 'variations', variation.id)
-    const today = todayIso()
-
-    if (nextStatus === VARIATION_STATUS.APPROVED) {
-      const validationError = validateApprovedAmounts(variation.lineItems, approvedAmounts, assessmentNotes)
-      if (validationError) throw new Error(validationError)
-      const lineItems = buildApprovedLineItems(variation.lineItems, approvedAmounts)
-      const approved  = variationTotals(lineItems, 'approved')
-      await updateDoc(ref, {
-        status:           VARIATION_STATUS.APPROVED,
-        lineItems,
-        approvedSubtotal: approved.subtotal,
-        approvedGst:      approved.gst,
-        approvedTotal:    approved.total,
-        assessmentNotes:  assessmentNotes?.trim() || '',
-        approvedDate:     variation.approvedDate || today,
-        effectiveDate:    variation.effectiveDate || variation.approvedDate || today,
-        approvedAt:       serverTimestamp(),
-        approvedBy:       user.uid,
-      })
-      return
-    }
-
-    if (nextStatus === VARIATION_STATUS.SUBMITTED) {
-      await updateDoc(ref, {
-        status:      VARIATION_STATUS.SUBMITTED,
-        submittedDate: variation.submittedDate || today,
-        submittedAt: serverTimestamp(),
-        submittedBy: user.uid,
-      })
-      return
-    }
-
-    if (nextStatus === VARIATION_STATUS.REJECTED) {
-      await updateDoc(ref, {
-        status:      VARIATION_STATUS.REJECTED,
-        rejectedAt:  serverTimestamp(),
-        rejectedBy:  user.uid,
-        ...(assessmentNotes?.trim() ? { assessmentNotes: assessmentNotes.trim() } : {}),
-      })
-      return
-    }
-
-    if (nextStatus === VARIATION_STATUS.WITHDRAWN) {
-      await updateDoc(ref, {
-        status:      VARIATION_STATUS.WITHDRAWN,
-        withdrawnAt: serverTimestamp(),
-        withdrawnBy: user.uid,
-      })
-      return
-    }
-
-    throw new Error(`Unsupported transition to ${nextStatus}`)
+    const variationRef = doc(db, 'companies', companyId, 'projects', projectId, 'variations', variation.id)
+    await runTransitionVariation({
+      db, variationRef, seen: variation, nextStatus, extras: { approvedAmounts, assessmentNotes },
+      uid: user.uid, runTransaction, serverTimestamp,
+    })
   }, [companyId, projectId, user])
 
   return { variations, variationsLoading, variationsError, createVariation, updateVariation, transitionStatus }
