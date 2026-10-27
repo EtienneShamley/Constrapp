@@ -7,9 +7,11 @@ import {
   previouslyApprovedByPoLine, approvedByCostCode, actualClaimsByCostCode, recognisedClaimsByPoLine,
   claimedPendingByCostCode,
   claimLineToForm, buildClaimLine, claimedToDateCountError, validateClaimDraft,
+  claimRetentionError, CLAIM_MAX_LINES, CLAIM_TRANSITION_STAMPS,
 } from '../../src/lib/progressClaims'
+import { draftUpdate } from '../../src/lib/progressClaimActions'
 import {
-  PO_STATUS, GST_RATE, roundMoney, committedByCostCode, remainingCommittedByCostCode,
+  PO_STATUS, GST_RATE, roundMoney, committedByCostCode, remainingCommittedByCostCode, PO_MAX_LINES,
 } from '../../src/lib/purchaseOrders'
 import { buildForecastRows } from '../../src/lib/forecast'
 import { computeMargin, projectForecastTotals } from '../../src/lib/margin'
@@ -286,6 +288,33 @@ describe('validateClaimDraft', () => {
     expect(validateClaimDraft({ lineItems: [line(1)] })).toBeNull()
   })
 
+  // ADR-58 (M2-B2): the retention FLOOR and the line CEILING — the two checks
+  // the Firestore rules now make on every claimed header, mirrored here so a
+  // write the client considers valid is never refused by rules (and vice versa).
+  it('ADR-58: a retention, when given, must be a non-negative number — blank / null is 0, not an error', () => {
+    for (const retention of ['', null, undefined, 0, '0', 100, '100.5']) {
+      expect(validateClaimDraft({ lineItems: [line(1)], retention })).toBeNull()
+    }
+    expect(validateClaimDraft({ lineItems: [line(1)], retention: -1 })).toBe('Retention cannot be negative')
+    expect(validateClaimDraft({ lineItems: [line(1)], retention: '-0.01' })).toBe('Retention cannot be negative')
+    expect(validateClaimDraft({ lineItems: [line(1)], retention: 'abc' })).toBe('Retention must be a number')
+    expect(validateClaimDraft({ lineItems: [line(1)], retention: NaN })).toBe('Retention must be a number')
+    expect(claimRetentionError(-1)).toBe('Retention cannot be negative')
+    expect(claimRetentionError('')).toBeNull()
+  })
+
+  it('ADR-58: the line checks still come first — a negative retention on an invalid line set reports the line error', () => {
+    expect(validateClaimDraft({ lineItems: [line(-1)], retention: -1 })).toMatch(/below the previously approved/)
+    expect(validateClaimDraft({ lineItems: [], retention: -1 })).toBe('A progress claim needs at least one line')
+  })
+
+  it('ADR-58: refuses more than CLAIM_MAX_LINES lines (= PO_MAX_LINES, one line per PO line) and accepts exactly that many', () => {
+    expect(CLAIM_MAX_LINES).toBe(PO_MAX_LINES)
+    const many = Array.from({ length: CLAIM_MAX_LINES + 1 }, () => line(1))
+    expect(validateClaimDraft({ lineItems: many })).toBe(`A progress claim can carry at most ${CLAIM_MAX_LINES} lines`)
+    expect(validateClaimDraft({ lineItems: many.slice(0, CLAIM_MAX_LINES) })).toBeNull()
+  })
+
   it('does not mutate its input', () => {
     const lines = deepFreeze([line(100), line(-1)])
     expect(() => validateClaimDraft({ lineItems: lines })).not.toThrow()
@@ -505,6 +534,16 @@ describe('CLAIM_EDITABLE_STATUSES', () => {
     }
   })
 
+  it('ADR-58: the three application transitions carry a stamp pair; the two reserved targets carry none', () => {
+    expect(CLAIM_TRANSITION_STAMPS).toEqual({
+      submitted: { at: 'submittedAt', by: 'submittedBy' },
+      approved:  { at: 'approvedAt',  by: 'approvedBy' },
+      rejected:  { at: 'rejectedAt',  by: 'rejectedBy' },
+    })
+    expect(CLAIM_TRANSITION_STAMPS[CLAIM_STATUS.UNDER_REVIEW]).toBeUndefined()
+    expect(CLAIM_TRANSITION_STAMPS[CLAIM_STATUS.INVOICED]).toBeUndefined()
+  })
+
   it('leaves the existing lifecycle untouched — no reopen, no new status', () => {
     expect(CLAIM_TRANSITIONS).toEqual({
       draft:        ['submitted', 'rejected'],
@@ -535,29 +574,84 @@ describe('CLAIM_EDITABLE_STATUSES', () => {
   })
 })
 
+// ── G2. claimTotals vs the rules’ whole-cent GST check (ADR-58) ──────────────
+
+describe('claimTotals vs the rules’ whole-cent GST check (ADR-58)', () => {
+  // firestore.rules → progressClaims.claimedMoneyBalanced / approvedMoneyBalanced,
+  // replicated: net = cents(sub) − cents(retention clamped); cents(total) == net +
+  // cents(gst) EXACTLY; cents(gst) == half-up(10% of net) EXACTLY — or, only
+  // when net ends in 5 (or −5), half-up − 1.
+  const cents = (v) => Math.round(v * 100)
+  const halfUp = (c) => Math.floor((c + 5) / 10)
+  const pinned = (net, g) => g === halfUp(net) || ((net % 10 === 5 || net % 10 === -5) && g === halfUp(net) - 1)
+  const rulesAccept = ({ subtotal, retention, gst, total }) => {
+    const sub = cents(subtotal), ret = cents(retention), g = cents(gst)
+    const r = ret < sub ? ret : sub
+    return ret <= sub && pinned(sub - r, g) && sub - r + g === cents(total)
+  }
+
+  it('every subtotal from $0.01 to $10,000.00 with no retention produces a header the rules accept, and every deviation from half-up is −1 on a boundary', () => {
+    let deviations = 0
+    for (let c = 1; c <= 1_000_000; c++) {
+      const t = claimTotals([c / 100], 0)
+      if (!rulesAccept(t)) throw new Error(`rules would reject subtotal ${c / 100}: ${JSON.stringify(t)}`)
+      const diff = cents(t.gst) - halfUp(c)
+      if (diff !== 0) {
+        deviations++
+        if (diff !== -1 || c % 10 !== 5) throw new Error(`unexpected deviation ${diff} at ${c / 100}`)
+      }
+    }
+    expect(deviations).toBeGreaterThan(0)
+  })
+
+  it('with a retention the NET is what is pinned — swept over 100,000 (subtotal, retention) pairs, including retention above the subtotal (clamped)', () => {
+    for (let c = 0; c <= 100_000; c++) {
+      const retention = (c * 7919) % 120_000 / 100   // pseudo-random, sometimes above the subtotal
+      const t = claimTotals([c / 100], retention)
+      if (!rulesAccept(t)) throw new Error(`rules would reject subtotal ${c / 100} retention ${retention}: ${JSON.stringify(t)}`)
+    }
+  })
+
+  it('a LEGACY negative retention (approval of a pre-ADR-58 claim) still yields a header the rules’ approved-side identity accepts, including negative boundaries', () => {
+    for (let c = 0; c <= 20_000; c++) {
+      const t = claimTotals([c / 100], -((c * 31) % 5_000) / 100)
+      if (!rulesAccept(t)) throw new Error(`rules would reject ${JSON.stringify(t)}`)
+    }
+    const t = claimTotals([0.05], -40.1)   // net 40.15 — a boundary reached through a negative retention
+    expect(t.gst).toBe(4.01)
+    expect(rulesAccept(t)).toBe(true)
+  })
+
+  it('the boundary allowance exists because floating point rounds some half-cent boundaries DOWN (net 40.15 → 4.01, exact half-up 4.02)', () => {
+    const t = claimTotals([40.15], 0)
+    expect(t.gst).toBe(4.01)
+    expect(halfUp(cents(t.subtotal))).toBe(402)
+    expect(rulesAccept(t)).toBe(true)
+    expect(rulesAccept({ subtotal: 40.15, retention: 0, gst: 4.02, total: 44.17 })).toBe(true)
+    expect(rulesAccept({ subtotal: 40.15, retention: 0, gst: 4.03, total: 44.18 })).toBe(false)
+    expect(rulesAccept({ subtotal: 40.15, retention: 0, gst: 4.00, total: 44.15 })).toBe(false)
+  })
+
+  it('off a boundary the pin is exact; GST on the GROSS is refused when retention is withheld; a negative retention fails the claimed-side floor the rules add', () => {
+    expect(rulesAccept({ subtotal: 1000, retention: 100, gst: 90, total: 990 })).toBe(true)
+    expect(rulesAccept({ subtotal: 1000, retention: 100, gst: 100, total: 1000 })).toBe(false)   // the PO formula
+    expect(rulesAccept({ subtotal: 1000, retention: 100, gst: 90.01, total: 990.01 })).toBe(false)
+    expect(rulesAccept({ subtotal: 1000, retention: 100, gst: 90, total: 990.01 })).toBe(false)
+    expect(rulesAccept({ subtotal: 1000, retention: 1000.01, gst: 0, total: 0 })).toBe(false)   // above the subtotal
+    expect(claimRetentionError(-1)).not.toBeNull()   // the floor is a separate, claimed-side check
+    expect(GST_RATE).toBe(0.1)
+  })
+})
+
 // ── H. update payload / immutable contract ───────────────────────────────────
 
-// Mirrors useProgressClaims.updateProgressClaim exactly: the caller supplies
-// only authored values; every line is rebuilt over the STORED lines.
-function draftUpdatePayload(claim, { periodEnding, claimRef, notes, retention, claimedToDate }) {
-  const countError = claimedToDateCountError(claim.lineItems, claimedToDate)
-  if (countError) throw new Error(countError)
-  const lineItems = claim.lineItems.map((stored, idx) =>
-    buildClaimLine(stored, { claimedToDate: claimedToDate[idx] }))
-  const draftError = validateClaimDraft({ lineItems })
-  if (draftError) throw new Error(draftError)
-  const totals = claimTotals(lineItems.map(li => li.claimedThisPeriod), retention)
-  return {
-    claimRef:        claimRef?.trim() || '',
-    periodEnding:    periodEnding || '',
-    lineItems,
-    retention:       totals.retention,
-    claimedSubtotal: totals.subtotal,
-    claimedGst:      totals.gst,
-    claimedTotal:    totals.total,
-    notes:           notes?.trim() || '',
-  }
-}
+// useProgressClaims.updateProgressClaim writes exactly what
+// lib/progressClaimActions.js → draftUpdate builds over the SERVER copy (ADR-58):
+// the caller supplies only authored values; every line is rebuilt over the
+// STORED lines; since ADR-58 the payload also carries `revision + 1` and the
+// two audit stamps (`now` is the injected serverTimestamp()).
+const NOW = Symbol('serverTimestamp()')
+const draftUpdatePayload = (claim, data) => draftUpdate(claim, data, 'u1', NOW)
 
 const storedClaim = (o = {}) => deepFreeze({
   id: 'c1', claimNumber: 'PC-0007', status: CLAIM_STATUS.DRAFT,
@@ -580,23 +674,26 @@ const storedClaim = (o = {}) => deepFreeze({
 
 const IMMUTABLE = [
   'id', 'claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId',
-  'variationId', 'currency', 'revision',
+  'variationId', 'currency',
   'approvedSubtotal', 'approvedGst', 'approvedTotal', 'assessmentNotes',
-  'submittedAt', 'approvedAt', 'rejectedAt', 'invoicedAt', 'approvedBy',
+  'submittedAt', 'submittedBy', 'approvedAt', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'approvedBy',
   'externalRefs', 'createdAt', 'createdBy',
 ]
 
 describe('draft edit — update payload contract', () => {
   const edit = { periodEnding: '2026-02-28', claimRef: ' S-2 ', notes: undefined, retention: '500', claimedToDate: ['8000', '1000'] }
 
-  it('contains ONLY the draft-editable fields and the derived totals', () => {
+  it('contains ONLY the draft-editable fields, the derived totals, revision + 1 and the audit stamps (ADR-58)', () => {
     const payload = draftUpdatePayload(storedClaim(), edit)
     expect(Object.keys(payload).sort()).toEqual(
-      ['claimRef', 'claimedGst', 'claimedSubtotal', 'claimedTotal', 'lineItems', 'notes', 'periodEnding', 'retention'].sort()
+      ['claimRef', 'claimedGst', 'claimedSubtotal', 'claimedTotal', 'lineItems', 'notes', 'periodEnding', 'retention', 'revision', 'updatedAt', 'updatedBy'].sort()
     )
     for (const k of IMMUTABLE) expect(k in payload).toBe(false)
     expect(payload.claimRef).toBe('S-2')
     expect(payload.notes).toBe('')
+    expect(payload.revision).toBe(2)          // the reviewed revision + 1 — never a fixed 1 any more
+    expect(payload.updatedAt).toBe(NOW)
+    expect(payload.updatedBy).toBe('u1')
   })
 
   it('re-derives every claimedThisPeriod and the header totals — caller figures are never trusted', () => {

@@ -128,25 +128,27 @@ const COLLECTIONS = {
   },
   // ADR-57 (M2-B1) REVISED THESE FIXTURES, NOT THE ASSERTIONS. When this suite
   // was written (ADR-56) the PO write rule was tenant-and-role only, so the
-  // seeded document was `sent` and the update was a bare `{ notes }`. The PO
-  // block now enforces the lifecycle: content edits are draft-only and every
-  // write carries `updatedAt`/`updatedBy`, a create carries the exact key set
-  // with ≥ 1 line, and a draft-edit payload must keep the header consistent.
-  // The seed is therefore a DRAFT with the full ADR-57 shape and the create /
-  // update payloads are what hooks/usePurchaseOrders.jsx writes — the read
-  // matrix this suite exists for does not depend on status. The lifecycle
-  // itself is proven in purchaseOrders.rules.test.js.
+  // update was a bare `{ notes }`. The PO block now enforces the lifecycle:
+  // every write carries `updatedAt`/`updatedBy`, a create carries the exact
+  // key set with ≥ 1 line, and a transition is stamps-only. ADR-58 (M2-B2)
+  // revised them once more: a claim create now get()s its PO, which must be
+  // SENT in the same project, so the ONE seeded PO (the list tests pin exactly
+  // one document per collection) is `sent` with the full ADR-57 shape and its
+  // update payload is the `sent → closed` transition
+  // (lib/purchaseOrderActions.js → transitionUpdate) — the read matrix this
+  // suite exists for does not depend on status. The lifecycles themselves are
+  // proven in purchaseOrders.rules.test.js and progressClaims.rules.test.js.
   purchaseOrders: {
     path: (c = COMPANY_A, p = PROJECT_A) => `companies/${c}/projects/${p}/purchaseOrders`,
     seed: {
-      poNumber: 'PO-0001', status: 'draft', supplierName: 'Acme Concrete', supplierId: 'contact1',
+      poNumber: 'PO-0001', status: 'sent', supplierName: 'Acme Concrete', supplierId: 'contact1',
       description: 'Slab pour', lineItems: [
         { costCodeId: 'cc1', costCodeName: '03-100 — Concrete Slab', description: 'Pour', qty: 1, unit: 'ea', unitPrice: 800, lineTotal: 800 },
       ],
       subtotal: 800, gst: 80, total: 880, currency: 'AUD', revision: 1, notes: '',
-      sentAt: null, sentBy: null, closedAt: null, closedBy: null, cancelledAt: null, cancelledBy: null, externalRefs: {},
+      sentAt: new Date('2026-01-21T00:00:00Z'), sentBy: 'u_admin', closedAt: null, closedBy: null, cancelledAt: null, cancelledBy: null, externalRefs: {},
       createdAt: new Date('2026-01-20T00:00:00Z'), createdBy: 'u_qs',
-      updatedAt: new Date('2026-01-20T00:00:00Z'), updatedBy: 'u_qs',
+      updatedAt: new Date('2026-01-21T00:00:00Z'), updatedBy: 'u_admin',
     },
     create: (user) => ({
       poNumber: 'PO-0002', status: 'draft', supplierName: 'Beta Steel', supplierId: null,
@@ -157,32 +159,46 @@ const COLLECTIONS = {
       sentAt: null, sentBy: null, closedAt: null, closedBy: null, cancelledAt: null, cancelledBy: null, externalRefs: {},
       createdAt: serverTimestamp(), createdBy: user.uid, updatedAt: serverTimestamp(), updatedBy: user.uid,
     }),
-    update: (user) => ({ notes: 'Updated by a financial role', updatedAt: serverTimestamp(), updatedBy: user.uid }),
+    update: (user) => ({ status: 'closed', closedAt: serverTimestamp(), closedBy: user.uid, updatedAt: serverTimestamp(), updatedBy: user.uid }),
   },
+  // ADR-58 (M2-B2) REVISED THESE FIXTURES, NOT THE ASSERTIONS — the same
+  // revision ADR-57 made to the PO fixtures above. The claim block now
+  // enforces the lifecycle: content edits are draft-only, every write carries
+  // `updatedAt`/`updatedBy` and `revision + 1`, a create carries the exact key
+  // set with ≥ 1 line and a balanced header against a SENT same-project PO
+  // (the seeded PO above) whose number, supplier and line count it must match.
+  // The seed is therefore a DRAFT with the full ADR-58 shape and the create /
+  // update payloads are what hooks/useProgressClaims.jsx writes — the read
+  // matrix this suite exists for does not depend on status. The lifecycle
+  // itself is proven in progressClaims.rules.test.js.
   progressClaims: {
     path: (c = COMPANY_A, p = PROJECT_A) => `companies/${c}/projects/${p}/progressClaims`,
     seed: {
-      claimNumber: 'PC-0001', status: 'approved', poId: 'po1', poNumber: 'PO-0001',
+      claimNumber: 'PC-0001', status: 'draft', poId: 'seeded' /* SEED_ID — the one seeded PO */, poNumber: 'PO-0001',
       supplierName: 'Acme Concrete', supplierId: 'contact1', claimRef: 'INV-77', periodEnding: '2026-02-28',
       variationId: null,
       lineItems: [{ poLineIndex: 0, costCodeId: 'cc1', costCodeName: '03-100 — Concrete Slab', description: 'Pour',
-        poLineTotal: 800, previouslyApproved: 0, claimedToDate: 300, claimedThisPeriod: 300, approvedThisPeriod: 300 }],
+        poLineTotal: 800, previouslyApproved: 0, claimedToDate: 300, claimedThisPeriod: 300, approvedThisPeriod: null }],
       retention: 0, claimedSubtotal: 300, claimedGst: 30, claimedTotal: 330,
-      approvedSubtotal: 300, approvedGst: 30, approvedTotal: 330,
-      notes: '', assessmentNotes: 'Certified in full', currency: 'AUD', revision: 1,
-      submittedAt: new Date('2026-03-01T00:00:00Z'), approvedAt: new Date('2026-03-02T00:00:00Z'),
-      rejectedAt: null, invoicedAt: null, approvedBy: 'u_pm', externalRefs: {},
+      approvedSubtotal: null, approvedGst: null, approvedTotal: null,
+      notes: '', assessmentNotes: '', currency: 'AUD', revision: 1,
+      submittedAt: null, submittedBy: null, approvedAt: null, approvedBy: null, rejectedAt: null, rejectedBy: null, invoicedAt: null,
+      externalRefs: {},
       createdAt: new Date('2026-03-01T00:00:00Z'), createdBy: 'u_qs',
+      updatedAt: new Date('2026-03-01T00:00:00Z'), updatedBy: 'u_qs',
     },
     create: (user) => ({
-      claimNumber: 'PC-0002', status: 'draft', poId: 'po1', poNumber: 'PO-0001',
+      claimNumber: 'PC-0002', status: 'draft', poId: 'seeded' /* SEED_ID — the one seeded PO */, poNumber: 'PO-0001',
       supplierName: 'Acme Concrete', supplierId: 'contact1', claimRef: '', periodEnding: '', variationId: null,
-      lineItems: [], retention: 0, claimedSubtotal: 0, claimedGst: 0, claimedTotal: 0,
+      lineItems: [{ poLineIndex: 0, costCodeId: 'cc1', costCodeName: '03-100 — Concrete Slab', description: 'Pour',
+        poLineTotal: 800, previouslyApproved: 0, claimedToDate: 100, claimedThisPeriod: 100, approvedThisPeriod: null }],
+      retention: 0, claimedSubtotal: 100, claimedGst: 10, claimedTotal: 110,
       approvedSubtotal: null, approvedGst: null, approvedTotal: null, notes: '', assessmentNotes: '',
-      currency: 'AUD', revision: 1, submittedAt: null, approvedAt: null, rejectedAt: null, invoicedAt: null,
-      approvedBy: null, externalRefs: {}, createdAt: serverTimestamp(), createdBy: user.uid,
+      currency: 'AUD', revision: 1,
+      submittedAt: null, submittedBy: null, approvedAt: null, approvedBy: null, rejectedAt: null, rejectedBy: null, invoicedAt: null,
+      externalRefs: {}, createdAt: serverTimestamp(), createdBy: user.uid, updatedAt: serverTimestamp(), updatedBy: user.uid,
     }),
-    update: () => ({ notes: 'Updated by a financial role' }),
+    update: (user) => ({ notes: 'Updated by a financial role', revision: 2, updatedAt: serverTimestamp(), updatedBy: user.uid }),
   },
 }
 const NAMES = Object.keys(COLLECTIONS)

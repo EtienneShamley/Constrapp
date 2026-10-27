@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import {
   collection, doc, onSnapshot, query, orderBy,
-  runTransaction, updateDoc, serverTimestamp,
+  runTransaction, serverTimestamp,
 } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { useAuth } from './useAuth'
@@ -11,9 +11,9 @@ import { stageProjectCurrencyLock } from './projectCurrencyLock'
 import { resolveProjectCurrency } from '../lib/currency'
 import {
   CLAIM_STATUS, CLAIMABLE_PO_STATUSES, canTransition, claimTotals,
-  formatClaimNumber, hasOpenClaim, validateApprovedAmounts,
-  buildClaimLine, claimedToDateCountError, validateClaimDraft,
+  formatClaimNumber, hasOpenClaim, validateClaimDraft,
 } from '../lib/progressClaims'
+import { runUpdateClaimDraft, runTransitionClaim } from '../lib/progressClaimActions'
 
 export function useProgressClaims(projectId) {
   const { user }    = useAuth()
@@ -79,10 +79,20 @@ export function useProgressClaims(projectId) {
 
   // Creates a draft claim against one sent PO. The company-wide counter is read
   // and incremented in the same transaction as the claim write, matching POs.
+  // Since ADR-58 (M2-B2) the rules get() the PO at create — it must exist in
+  // this project and be `sent`, and the claim's number, supplier snapshot and
+  // line count must be the PO's — and require the creator / audit stamps at
+  // server time, the exact key set and the whole-cent claimed header. The
+  // one-open-claim check below stays CLIENT-ONLY (rules cannot see sibling
+  // claims — SECURITY.md Deferred Control 36).
   const createProgressClaim = useCallback(async ({ po, periodEnding, claimRef, notes, retention, variationId, lineItems }) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (!CLAIMABLE_PO_STATUSES.includes(po.status)) throw new Error('Claims can only be raised against sent purchase orders')
     if (hasOpenClaim(progressClaims, po.id)) throw new Error('This purchase order already has an open claim')
+    // The same draft validation the editor and the draft edit apply — the
+    // hook is the domain boundary, the editor's disabled button is not.
+    const draftError = validateClaimDraft({ lineItems, retention })
+    if (draftError) throw new Error(draftError)
 
     const counterRef  = doc(db, 'companies', companyId, 'counters', 'progressClaims')
     const claimDocRef = doc(collection(db, 'companies', companyId, 'projects', projectId, 'progressClaims'))
@@ -126,14 +136,23 @@ export function useProgressClaims(projectId) {
         // their stored 'AUD' and are never rewritten.
         currency:         projectCurrency,
         revision:         1,
+        // Lifecycle stamps — born null. Each transition writes its own
+        // (at, by) pair; Firestore rules require the actor to be the caller
+        // and the time to be the server's (ADR-58). `invoicedAt` is reserved
+        // (no application path writes it).
         submittedAt:      null,
+        submittedBy:      null,
         approvedAt:       null,
-        rejectedAt:       null,
-        invoicedAt:       null,
         approvedBy:       null,
+        rejectedAt:       null,
+        rejectedBy:       null,
+        invoicedAt:       null,
         externalRefs:     {},
         createdAt:        serverTimestamp(),
         createdBy:        user.uid,
+        // Audit stamps — required by rules on EVERY write since ADR-58.
+        updatedAt:        serverTimestamp(),
+        updatedBy:        user.uid,
       })
       commitLock()
     })
@@ -144,90 +163,51 @@ export function useProgressClaims(projectId) {
   // The caller supplies NO line items. `claimedToDate` is the ordered set of
   // authored cumulative figures, one per STORED line, and the stored claim
   // document is the sole authority for line identity: every line is rebuilt over
-  // `claim.lineItems`, so poLineIndex, costCodeId, costCodeName, description,
-  // poLineTotal and previouslyApproved cannot be rewritten by any caller.
-  // `previouslyApproved` is deliberately NOT re-derived — the one-open-claim rule
-  // means no later approved claim can legitimately appear while this draft is
-  // open, so re-deriving would be a no-op in every supported case and, in the
-  // already-broken ones, would silently move a figure the user never authored.
-  // `claimedThisPeriod` is always re-derived and `approvedThisPeriod` forced null.
+  // the SERVER copy's `lineItems` inside the guarded transaction
+  // (lib/progressClaimActions.js → runUpdateClaimDraft), so poLineIndex,
+  // costCodeId, costCodeName, description, poLineTotal and previouslyApproved
+  // cannot be rewritten by any caller. `previouslyApproved` is deliberately NOT
+  // re-derived — the one-open-claim rule means no later approved claim can
+  // legitimately appear while this draft is open. `claimedThisPeriod` is always
+  // re-derived and `approvedThisPeriod` forced null.
   //
-  // Immutable fields (claimNumber, status, poId/poNumber, supplierId/supplierName,
-  // variationId, currency, revision, every approved* value, assessmentNotes, the
-  // lifecycle stamps, approvedBy, externalRefs, createdAt/createdBy) are never
-  // written — updateDoc is partial, so they pass through untouched. No currency
-  // ratchet is staged (the project locked when the claim was created) and no audit
-  // stamp is added (the model has none). The draft guard is client-side only
-  // (rules do not check status — SECURITY.md Deferred Controls 1 and 2).
-  const updateProgressClaim = useCallback(async (claim, { periodEnding, claimRef, notes, retention, claimedToDate }) => {
+  // Since ADR-58 (M2-B2) the edit is a REVISION-GUARDED transaction: the server
+  // copy must still be a draft at the revision the user reviewed (STALE
+  // otherwise — the editor keeps the user's entries and shows the reason), and
+  // the write carries `revision + 1` and the audit stamps. The rules admit
+  // exactly these keys on a draft and require the +1, so the draft-only edit
+  // and the freeze after submit are RULES-ENFORCED; the status check here is
+  // the UX mirror. Immutable fields are never written — updateDoc is partial.
+  // No currency ratchet is staged (the project locked when the claim was
+  // created).
+  const updateProgressClaim = useCallback(async (claim, data) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (claim.status !== CLAIM_STATUS.DRAFT) throw new Error('Only draft claims can be edited')
-    // Exact positional pairing — a mismatch would silently pair authored values
-    // with the wrong lines, so nothing is written.
-    const countError = claimedToDateCountError(claim.lineItems, claimedToDate)
-    if (countError) throw new Error(countError)
-
-    const lineItems = claim.lineItems.map((storedLine, idx) =>
-      buildClaimLine(storedLine, { claimedToDate: claimedToDate[idx] })
-    )
-    const draftError = validateClaimDraft({ lineItems })
-    if (draftError) throw new Error(draftError)
-
-    const ref    = doc(db, 'companies', companyId, 'projects', projectId, 'progressClaims', claim.id)
-    const totals = claimTotals(lineItems.map(li => li.claimedThisPeriod), retention)
-    await updateDoc(ref, {
-      claimRef:        claimRef?.trim() || '',
-      periodEnding:    periodEnding || '',
-      lineItems,
-      retention:       totals.retention,
-      claimedSubtotal: totals.subtotal,
-      claimedGst:      totals.gst,
-      claimedTotal:    totals.total,
-      notes:           notes?.trim() || '',
+    const claimRef = doc(db, 'companies', companyId, 'projects', projectId, 'progressClaims', claim.id)
+    await runUpdateClaimDraft({
+      db, claimRef, seen: claim, data, uid: user.uid, runTransaction, serverTimestamp,
     })
   }, [companyId, projectId, user])
 
-  // Moving to approved requires per-line certified amounts (assessment). All
-  // other transitions are stamps only. Approved amounts are frozen forever.
+  // Submit / approve / reject through ONE guarded transaction (ADR-58,
+  // lib/progressClaimActions.js): the server copy must still be in the status
+  // AND at the revision the user acted on, the move must be legal, and the
+  // write is status + the transition's (at, by) stamps + the audit stamps +
+  // revision — plus, for approval, the certified lines, the approved header
+  // (claimTotals over the certified amounts and the STORED retention) and the
+  // assessment notes — exactly what the rules' transition branches admit.
+  // `under_review` and `invoiced` are reserved targets with no application
+  // path; the transaction refuses them and so do the rules. Approved amounts
+  // are frozen forever: an approved claim matches no update branch.
   const transitionStatus = useCallback(async (claim, nextStatus, { approvedAmounts, assessmentNotes } = {}) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (!canTransition(claim.status, nextStatus)) {
       throw new Error(`Cannot move a ${claim.status} claim to ${nextStatus}`)
     }
-    const ref = doc(db, 'companies', companyId, 'projects', projectId, 'progressClaims', claim.id)
-
-    if (nextStatus === CLAIM_STATUS.APPROVED) {
-      const validationError = validateApprovedAmounts(claim.lineItems, approvedAmounts)
-      if (validationError) throw new Error(validationError)
-      const lineItems = claim.lineItems.map((li, idx) => ({
-        ...li,
-        approvedThisPeriod: Number(approvedAmounts[idx]) || 0,
-      }))
-      const totals = claimTotals(approvedAmounts, claim.retention)
-      await updateDoc(ref, {
-        status:           CLAIM_STATUS.APPROVED,
-        lineItems,
-        approvedSubtotal: totals.subtotal,
-        approvedGst:      totals.gst,
-        approvedTotal:    totals.total,
-        assessmentNotes:  assessmentNotes?.trim() || '',
-        approvedAt:       serverTimestamp(),
-        approvedBy:       user.uid,
-      })
-      return
-    }
-
-    const stampField = {
-      [CLAIM_STATUS.SUBMITTED]: 'submittedAt',
-      [CLAIM_STATUS.REJECTED]:  'rejectedAt',
-      [CLAIM_STATUS.INVOICED]:  'invoicedAt',
-    }[nextStatus]
-    await updateDoc(ref, {
-      status: nextStatus,
-      ...(stampField ? { [stampField]: serverTimestamp() } : {}),
-      ...(nextStatus === CLAIM_STATUS.REJECTED && assessmentNotes?.trim()
-        ? { assessmentNotes: assessmentNotes.trim() }
-        : {}),
+    const claimRef = doc(db, 'companies', companyId, 'projects', projectId, 'progressClaims', claim.id)
+    await runTransitionClaim({
+      db, claimRef, seen: claim, nextStatus, extras: { approvedAmounts, assessmentNotes },
+      uid: user.uid, runTransaction, serverTimestamp,
     })
   }, [companyId, projectId, user])
 

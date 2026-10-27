@@ -1,4 +1,4 @@
-import { PO_STATUS, GST_RATE, roundMoney } from './purchaseOrders'
+import { PO_STATUS, GST_RATE, roundMoney, PO_MAX_LINES } from './purchaseOrders'
 
 export const CLAIM_STATUS = {
   DRAFT:        'draft',
@@ -41,6 +41,21 @@ export const CLAIM_TRANSITIONS = {
 }
 
 export const canTransition = (from, to) => (CLAIM_TRANSITIONS[from] ?? []).includes(to)
+
+// The (at, by) stamp pair each APPLICATION transition writes — and the Firestore
+// rules require, with `by == request.auth.uid` and `at == request.time`
+// (ADR-58, M2-B2). `under_review` and `invoiced` have NO entry: they are reserved
+// (no stamp, no application path) and the rules refuse them as targets, so a
+// document can never be stranded in a state the UI shows no action for.
+export const CLAIM_TRANSITION_STAMPS = {
+  [CLAIM_STATUS.SUBMITTED]: { at: 'submittedAt', by: 'submittedBy' },
+  [CLAIM_STATUS.APPROVED]:  { at: 'approvedAt',  by: 'approvedBy' },
+  [CLAIM_STATUS.REJECTED]:  { at: 'rejectedAt',  by: 'rejectedBy' },
+}
+
+// Ceiling on embedded claim lines — one line per PO line (ADR-37), so it is the
+// PO ceiling; mirrored by Firestore rules (lineItems.size()).
+export const CLAIM_MAX_LINES = PO_MAX_LINES
 
 // A PO may only carry one claim in these statuses at a time — an open claim's
 // previouslyApproved snapshots would race against a sibling's assessment.
@@ -225,8 +240,9 @@ export function claimedPendingByCostCode(claims) {
 
 // Statuses whose authored content (claimed amounts, retention, period, refs,
 // notes) may still change. Exactly draft — the freeze point is `submitted`, and
-// every later status is frozen at the product level. Enforced in the client hook
-// only (rules do not check status — SECURITY.md Deferred Control 2).
+// every later status is frozen. RULES-ENFORCED since ADR-58 (M2-B2): the draft
+// edit branch admits exactly the draft-editable keys on a `draft`; the client
+// check is the UX mirror that gives a readable message.
 export const CLAIM_EDITABLE_STATUSES = [CLAIM_STATUS.DRAFT]
 
 // Stored claim line → the editor's per-line form value: the CUMULATIVE
@@ -293,17 +309,34 @@ export function claimedToDateCountError(lineItems, claimedToDate) {
   return null
 }
 
+// Retention floor (ADR-58, the ADR-40 posture applied to claims). `claimTotals`
+// clamps only the UPPER bound, so a negative retention would flow into the
+// stored document and RAISE the payable above the claim; the editor's `min="0"`
+// is browser constraint validation, not a control. Blank / null is 0 (not
+// required); anything else must be a finite number >= 0. Mirrored by Firestore
+// rules (`retention >= 0`, whole cents) on create and draft edit. Returns null
+// when valid, otherwise a message for display.
+export function claimRetentionError(retention) {
+  if (retention === '' || retention == null) return null
+  const n = Number(retention)
+  if (!Number.isFinite(n)) return 'Retention must be a number'
+  if (n < 0) return 'Retention cannot be negative'
+  return null
+}
+
 // Draft content validation shared by create and edit — the existing product
 // rules, unchanged and now enforced in the hook as well as the modal:
-//   · at least one line;
+//   · at least one line, and at most CLAIM_MAX_LINES (one per PO line);
 //   · no line may be claimed BELOW its previously approved amount;
-//   · at least one line must claim something this period.
+//   · at least one line must claim something this period;
+//   · the retention, when given, is a non-negative number (ADR-58).
 // Claiming ABOVE a PO line value stays WARN-ONLY (the amber ⚠ in the editor) —
 // real claims sometimes exceed the PO pending a variation. There is deliberately
 // no aggregate over-PO control. Returns null when valid, else the first error.
-export function validateClaimDraft({ lineItems } = {}) {
+export function validateClaimDraft({ lineItems, retention } = {}) {
   const lines = Array.isArray(lineItems) ? lineItems : []
   if (lines.length === 0) return 'A progress claim needs at least one line'
+  if (lines.length > CLAIM_MAX_LINES) return `A progress claim can carry at most ${CLAIM_MAX_LINES} lines`
   const backwards = lines.findIndex(li => (Number(li?.claimedThisPeriod) || 0) < 0)
   if (backwards !== -1) {
     return `Line ${backwards + 1}: claimed to date cannot be below the previously approved amount`
@@ -311,5 +344,5 @@ export function validateClaimDraft({ lineItems } = {}) {
   if (!lines.some(li => (Number(li?.claimedThisPeriod) || 0) > 0)) {
     return 'A progress claim must claim an amount on at least one line'
   }
-  return null
+  return claimRetentionError(retention)
 }

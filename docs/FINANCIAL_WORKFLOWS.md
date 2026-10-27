@@ -155,12 +155,32 @@ module).
   every save. **A draft edit moves no financial figure** — a draft claim is
   counted nowhere. A draft whose PO has since been closed or cancelled remains
   editable.
-- **Submitted** — claimed amounts freeze; awaits assessment. `submittedAt` stamped.
+- **Submitted** — claimed amounts freeze; awaits assessment. `submittedAt` /
+  `submittedBy` stamped.
 - **Approved** — carries per-line certified amounts; `approvedAt`/`approvedBy`
   stamped; approved amounts frozen forever.
-- **Rejected** — terminal audit record; contributes nothing to any budget figure.
+- **Rejected** — terminal audit record (`rejectedAt` / `rejectedBy`);
+  contributes nothing to any budget figure.
 
 Numbering: `PC-0001` from `counters/progressClaims`, same transactional pattern.
+
+**Since ADR-58 (M2-B2, NOT YET DEPLOYED) the lifecycle above is
+RULES-ENFORCED**, to the ADR-40 / ADR-57 standard: born `draft` against a
+`get()`-verified **sent** PO of the same project (number, supplier identity and
+line count pinned), creator / audit / transition stamps `== request.auth.uid` /
+`== request.time`, draft-only content edits, the claimed header and retention
+frozen at `submitted`, the certified lines and approved header written once at
+`approved` and frozen, `rejected` reachable from every open status, the reserved
+`under_review` / `invoiced` unauthorable as targets, and `revision` exactly +1
+on every update. The transition matrix is in PROJECT_DECISIONS.md → ADR-58;
+what rules cannot see — **one open claim per PO, cumulative claiming against
+the previously approved amounts, `lineItems` contents, the mixed-mode overlap
+and a read-then-write stale bypass** — stays client-enforced (SECURITY.md →
+Deferred Control 36). In the app, the draft edit and every transition run
+through **revision-guarded transactions** (`lib/progressClaimActions.js`): a
+copy whose status OR revision moved on the server is refused with its reason
+and the editor / assess modal keeps the user's entries — two concurrent draft
+editors or two concurrent assessors are no longer last-write-wins.
 
 ## Cumulative Claiming
 
@@ -190,15 +210,24 @@ can't bypass them):
 - Every claim line must have a certified amount (array length must match).
 - Each amount must be a finite number, ≥ 0, and ≤ that line's `claimedThisPeriod`.
 
-Approval writes the certified line amounts plus `approvedSubtotal/Gst/Total`;
-rejection stamps `rejectedAt` (with optional assessment notes) and frees the PO
-for a corrected claim.
+Approval writes the certified line amounts (normalised to whole cents since
+ADR-58) plus `approvedSubtotal/Gst/Total`, `approvedAt` / `approvedBy` and the
+assessment notes; rejection stamps `rejectedAt` / `rejectedBy` (with optional
+assessment notes) and frees the PO for a corrected claim. **Rules (ADR-58)
+re-check the aggregate:** `approvedSubtotal <= claimedSubtotal` in cents, the
+stored retention clamped to the approved subtotal, GST 10% of that net, total
+exact — the per-line bound stays client-side (rules cannot iterate the lines).
+Creator self-approval is permitted; separation of duties is not approved.
 
 ## Retention & GST
 
 - **Retention** is entered per claim as an ex-GST amount, clamped to the claim
-  subtotal. It is **excluded from what is payable** — Supplier Payments settle
-  `payableTotal`, which is already net of it (see *Supplier Payments* below).
+  subtotal and — since ADR-58 — **required non-negative** (`claimRetentionError`
+  in the editor, the hooks and the rules; a negative retention would raise the
+  payable above the claim). It is **excluded from what is payable** — Supplier
+  Payments settle `payableTotal`, which is already net of it (see *Supplier
+  Payments* below). At approval the **stored** retention is clamped to the
+  certified subtotal and never rewritten.
 - **GST (10%) applies to the net payable**, not the gross claim:
 
 ```
