@@ -59,7 +59,7 @@ That script runs
   inert here. The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **1726 in total across 25 files** (1731 across 25 files before ADR-59: `variations.rules.test.js` was rewritten from 107 to **102** cases — every ADR-34 case kept in the new write shape, the old "forgery accepted", "smuggling allowed", "legacy keys absent on create" and "identical triple on an approved document" cases replaced by their refusals, the freeze re-proven per status and per role, and the PO link / counterparty / type proven frozen from creation; no other suite changed; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §35; 1629 across 24 files before ADR-58: `progressClaims.rules.test.js` adds **102**; the `externalRoles` claim fixtures and its one PO seed, and the PO suite's one claim-create case, were revised to the ADR-58 shape with no change to any assertion or count; 1550 across 23 files before ADR-57: `purchaseOrders.rules.test.js` adds **79**; the `externalRoles` PO fixtures were revised to the ADR-57 shape; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §33 and §34):
+- Tests — **1726 in total across 25 files** (unchanged by ADR-60 — the rules capacity refactor touched no test file and the whole suite re-ran green against the refactored ruleset on 27 October 2026, see §36; 1731 across 25 files before ADR-59: `variations.rules.test.js` was rewritten from 107 to **102** cases — every ADR-34 case kept in the new write shape, the old "forgery accepted", "smuggling allowed", "legacy keys absent on create" and "identical triple on an approved document" cases replaced by their refusals, the freeze re-proven per status and per role, and the PO link / counterparty / type proven frozen from creation; no other suite changed; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §35; 1629 across 24 files before ADR-58: `progressClaims.rules.test.js` adds **102**; the `externalRoles` claim fixtures and its one PO seed, and the PO suite's one claim-create case, were revised to the ADR-58 shape with no change to any assertion or count; 1550 across 23 files before ADR-57: `purchaseOrders.rules.test.js` adds **79**; the `externalRoles` PO fixtures were revised to the ADR-57 shape; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §33 and §34):
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -720,7 +720,8 @@ npm run test:unit
   `lib/pulseAttention.js` and `lib/pulseAcknowledgementActions.js` (PULSE™ 1B,
   ADR-49): see §25.
 - `frontend/tests/unit/rulesSize.test.js` — **5 tests** pinning the
-  `firestore.rules` SOURCE-SIZE budget (ADR-51 hotfix): under the approved
+  `firestore.rules` SOURCE-SIZE budget (ADR-51 hotfix; 201,523 bytes after
+  ADR-60): under the approved
   **245,000 UTF-8 bytes** and under Firestore's **262,144-byte** publish limit,
   measured in bytes (the file is not pure ASCII), with real headroom between
   the two; `storage.rules` far below. Passing proves the file CAN be published —
@@ -4696,7 +4697,7 @@ enforced.
   uniqueness are client-enforced only **on `progressClaims` and
   `variations`**. **Exception:** `clientInvoices`, `clientReceipts`,
   `supplierPayments`, `supplierCreditNotes`, `retentionReleases`, **since
-  ADR-40 `supplierInvoices`, and — since ADR-57 (M2-B1, NOT YET DEPLOYED) —
+  ADR-40 `supplierInvoices`, and — since ADR-57 (M2-B1, live since 27 October 2026) —
   `purchaseOrders`** enforce transitions and post-commit immutability
   **by rules** — see §15i-x, §15j-x, §15k-x, §15r-x, §15q, **§13f** and **§33**,
   which test them as real rejections. The PO **cancellation policy** (no
@@ -6124,7 +6125,8 @@ suite), `financialReliability.test.js` (`remainingCommitted` depends on
 exposed hook errors), `loadingNotZero.test.js` (Budget readiness model),
 `costCodes.test.js` (`selectableCostCodes`; the three pickers filter). Unit
 suite 52 files / 3,347 tests; lint 0 errors / 0 warnings; **no rules change —
-Hosting-only release, not yet deployed, not production-verified.** The rules
+Hosting-only release, LIVE IN PRODUCTION since 27 October 2026 (the deployed
+build verified against matching local and production asset hashes).** The rules
 suite is unaffected and must still be green in Azure CI before release (this
 machine cannot boot the emulators — §30).
 
@@ -6258,13 +6260,11 @@ suite: **24 files / 1629 tests**; unit **54 files / 3389 tests**; lint 0 / 0;
 build green — all run locally on 27 October 2026 on arm64 Java 17. Rules file
 **207,567 bytes** (197,035 before) against the 245,000-byte budget.
 
-**Status: IMPLEMENTED, NOT YET DEPLOYED.** Nothing the rules enforce below is
-true in production until `frontend/firestore.rules` is published and confirmed
-live — and the rules may be published **only after** the M2-B1 Hosting build
-is live (the ADR-40 ordering gate: the live bundle sends no `updatedAt` /
-`updatedBy` / `sentBy` / `closedBy` / `cancelledBy`, so publishing first breaks
-every PO create, edit, send, close and cancel). See DEPLOYMENT.md →
-*M2-B1 release order*.
+**Status: LIVE IN PRODUCTION since 27 October 2026.** Hosting was deployed
+first and the ruleset published second (the ADR-40 ordering gate); the product
+owner verified the build against matching local and production asset hashes
+and inspected the published ruleset, which carries ADR-57 / ADR-58 / ADR-59.
+The checks below are the acceptance record of that release.
 
 Manual acceptance — at most three checks, run **after both deploy steps**,
 against production, by the product owner (every rules invariant is automated
@@ -6319,15 +6319,11 @@ build green — all run locally on 27 October 2026 on arm64 Java 17. Rules file
 **224,528 bytes** (207,567 after M2-B1; 197,035 live) against the
 245,000-byte budget.
 
-**Status: IMPLEMENTED, NOT YET DEPLOYED.** Nothing the rules enforce below is
-true in production until `frontend/firestore.rules` is published and confirmed
-live — and the rules may be published **only after** the M2-B2 Hosting build
-is live (the ADR-40 ordering gate: the live bundle sends no `updatedAt` /
-`updatedBy` / `submittedBy` / `rejectedBy` and never increments `revision`, so
-publishing first breaks every claim create, edit, submit, approve and reject —
-and, because the same ruleset carries M2-B1, every PO write). See
-DEPLOYMENT.md → *M2-B2 release order* (one Hosting deploy, one rules publish,
-for M1 + M2-B1 + M2-B2).
+**Status: LIVE IN PRODUCTION since 27 October 2026.** Hosting was deployed
+first and the ruleset published second (the ADR-40 ordering gate); the product
+owner verified the build against matching local and production asset hashes
+and inspected the published ruleset, which carries ADR-57 / ADR-58 / ADR-59.
+The checks below are the acceptance record of that release.
 
 Manual acceptance — at most three checks, run **after both deploy steps**,
 against production, by the product owner (every rules invariant is automated
@@ -6388,15 +6384,11 @@ suite changed. Full rules suite: **25 files / 1726 tests**; unit **56 files /
 arm64 Java 17. Rules file **237,851 bytes** (224,528 after M2-B2; 197,035
 live) against the 245,000-byte budget — 7,149 bytes of headroom.
 
-**Status: IMPLEMENTED, NOT YET DEPLOYED.** Nothing the rules enforce below is
-true in production until `frontend/firestore.rules` is published and confirmed
-live — and the rules may be published **only after** the M2-B3 Hosting build
-is live (the ADR-40 ordering gate: the live bundle sends no `updatedAt` /
-`updatedBy` and never increments `revision`, so publishing first breaks every
-variation create, edit, submit, approve, reject and withdraw — and, because the
-same ruleset carries M2-B1 and M2-B2, every PO and claim write). See
-DEPLOYMENT.md → *M2-B3 release order* (one Hosting deploy, one rules publish,
-for M1 + M2-B1 + M2-B2 + M2-B3).
+**Status: LIVE IN PRODUCTION since 27 October 2026.** Hosting was deployed
+first and the ruleset published second (the ADR-40 ordering gate); the product
+owner verified the build against matching local and production asset hashes
+and inspected the published ruleset, which carries ADR-57 / ADR-58 / ADR-59.
+The checks below are the acceptance record of that release.
 
 Manual acceptance — at most three checks, run **after both deploy steps**,
 against production, by the product owner (every rules invariant is automated
@@ -6445,3 +6437,48 @@ tested):
       data → identical; attempt to cancel a sent PO that a live supplier
       variation references → still refused with the variation named (the
       M2-B1 guard reads the same fields).
+
+## 36. Firestore Rules Capacity Optimisation — ADR-60
+
+Automated: no test was added, changed or removed — that is the point. The
+refactor is proven by the suites that already exist: the full rules suite
+(**25 files / 1726 tests**, every case unchanged, including `externalRoles`'
+176 tenancy / role cases, the legacy-document, forged-stamp and
+boundary-money cases of §33–§35 and the Quant source-status cases) and the
+unit suite (**56 files / 3451 tests**) — the five structural tests that read
+`firestore.rules` (`quant.test.js`, `quantDeductions.test.js`,
+`quantBoq.test.js`, `pulseAttention.test.js`, `rulesSize.test.js`) pass
+because their anchors were kept local (ADR-60); lint 0 / 0; build green;
+`git diff --check` clean — all run locally on 27 October 2026 on arm64
+Java 17, after each of the three passes. Rules file **201,523 bytes**
+(237,851 live) against the 245,000-byte budget. Mechanical checks beyond the
+suites: the 32 match paths identical; every `allow` line identical modulo the
+helper renames; every deleted local body normalised-identical to its shared
+replacement; every call in every block resolved to one definition with the
+right arity; the two comment-only passes byte-identical in non-comment text.
+
+**Status: IMPLEMENTED, NOT YET DEPLOYED.** Rules-only; the live bundle is
+unaffected either way, so there is no ordering gate. See DEPLOYMENT.md →
+*ADR-60 release order*.
+
+Manual acceptance — at most three checks, **read-only**, run after the
+publish, by the product owner:
+
+- [ ] **The published ruleset is this file.** Firebase console → Firestore →
+      Rules: the active version's timestamp is after the publish, the editor
+      finds `Shared helpers (ADR-60)` near the top and `ADR-59` in the
+      `variations` block, and `diff <(pbpaste) frontend/firestore.rules` is
+      empty (**201,523** bytes). No *Rules are too large* banner appeared.
+- [ ] **Financial-role reads are unchanged.** As `project_manager` and again
+      as `qs`, open one project's Budget, Purchase Orders, Progress Claims,
+      Supplier Invoices, Variations, Commercial (Margin, Cash Flow), Tenders,
+      Documents & Drawings, Quant and PULSE tabs, and the company Contacts
+      and Cost Codes: every register loads with its previous figures and no
+      tab reports *Unavailable*. (Reads exercise every shared helper's tenant
+      path; nothing is written.)
+- [ ] **External-role reads are still denied.** In a non-production tenant
+      or the emulator — never by provisioning an external user in production
+      — a `subcontractor` / `client` identity still cannot read cost codes,
+      budget lines, POs, claims, invoices, variations, forecast lines, the
+      baseline or contacts (the §32 method); another user's `users/{uid}`
+      remains unreadable to everyone.

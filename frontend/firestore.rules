@@ -1,29 +1,120 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Comments here are deliberately brief: Firestore refuses a ruleset over 256 KB
+    // of source (ADR-51, ADR-60). The rationale, enforced controls and client-only
+    // gaps for every collection live in docs/SECURITY.md and the ADRs in
+    // docs/PROJECT_DECISIONS.md.
+    // ── Shared helpers (ADR-60) ──────────────────────────────────────────────
+    // Declared once here and visible to every match below (functions declared
+    // in an outer match are in scope in nested matches). Path wildcards are NOT
+    // in scope at this level, so tenant helpers take companyId / projectId from
+    // the calling match. Bodies are byte-for-byte the per-block helpers they
+    // replace; no helper reads a document its callers did not already read.
+
+    // The caller's role, from their membership document.
+    function memberRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+    // Any provisioned member of THIS company, regardless of role.
+    function sameCompany(companyId) {
+      return request.auth != null
+          && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+          && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
+    }
+    // The internal financial roles (ADR-56) of THIS company.
+    function financialMember(companyId) {
+      return request.auth != null
+          && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+          && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
+          && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+    }
+    // Keys this update changes.
+    function changedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+    // Every write path stamps the caller and the server time.
+    function updateStamped() {
+      return request.resource.data.updatedBy == request.auth.uid
+          && request.resource.data.updatedAt == request.time;
+    }
+    // MONEY IS DECIMAL; IEEE-754 IS NOT. Rules numbers are doubles, so an exact
+    // `subtotal + gstTotal == grossTotal` REJECTS legitimate cent values (0.10 +
+    // 0.20 is 0.30000000000000004). Both sides are therefore compared as WHOLE
+    // CENTS via math.round() — a REPRESENTATION FIX, NOT A WEAKENED INVARIANT:
+    // exactly a half-cent tolerance, so any discrepancy of one cent or more still
+    // fails. lib/purchaseOrders.js → roundMoney() and lib/payments.js → toCents()
+    // mirror this, so a write the client considers valid is never rejected here.
+    function cents(v) {
+      return math.round(v * 100);
+    }
+    // GST (flat 10%) on a non-negative whole-cent amount, round-half-up. Mirrors
+    // roundMoney(x * GST_RATE) / lib/retention.js → cumulativeRetentionGst.
+    //
+    // ⚠️ DO NOT "SIMPLIFY" THIS TO math.round(c / 10). Firestore Rules and
+    // JavaScript DISAGREE there, and it was proven in the emulator: Rules `/` on
+    // two integers TRUNCATES, so 10005/10 yields 1000 while JS Math.round(1000.5)
+    // yields 1001 — a one-cent divergence that would reject legitimate client
+    // writes in production while every unit test passed. `math.floor((c + 5) / 10)`
+    // is round-half-up for non-negative c and is correct under EITHER division
+    // semantics. Every caller validates its operands >= 0 before reaching this
+    // (pinned by tests/rules/retentionReleases.rules.test.js).
+    function gstCents(c) {
+      return math.floor((c + 5) / 10);
+    }
+    // `revision` EXACTLY +1 on every update, a missing key reading as 0 (the
+    // progressClaims / variations idiom, ADR-58 / ADR-59: rules-ASSISTED
+    // concurrency for the client's revision-guarded transactions, not
+    // rules-proven — DC36 / DC37).
+    function revisionIncremented() {
+      return request.resource.data.revision is number
+          && request.resource.data.revision == resource.data.get('revision', 0) + 1;
+    }
+    // A DATE-ONLY string, YYYY-MM-DD (string comparison is exact for zero-padded ISO).
+    function isIsoDate(v) {
+      return v is string
+          && v.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$');
+    }
+    // Cash records (clientReceipts / supplierPayments): the one arithmetic
+    // guarantee rules CAN give — a record may never claim to have allocated more
+    // money than it received or paid.
+    function amountInvariant() {
+      return request.resource.data.amount is number
+          && request.resource.data.amount > 0
+          && request.resource.data.allocatedTotal is number
+          && request.resource.data.allocatedTotal >= 0
+          && request.resource.data.unallocatedAmount is number
+          && request.resource.data.unallocatedAmount >= 0
+          && cents(request.resource.data.allocatedTotal + request.resource.data.unallocatedAmount)
+             == cents(request.resource.data.amount);
+    }
+    // The calling match's project, and the PO the incoming document names.
+    function projectPath(companyId, projectId) {
+      return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId);
+    }
+    function poPath(companyId, projectId) {
+      return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/purchaseOrders/$(request.resource.data.poId);
+    }
+    // lib/currency.js → resolveProjectCurrency, mirrored: the project's
+    // well-formed `currency`, else the company's well-formed `baseCurrency`, else
+    // AUD. Checked at CREATE only (the field is frozen afterwards).
+    function resolvedCurrency(companyId, projectId) {
+      let pc = get(projectPath(companyId, projectId)).data.get('currency', '');
+      let cc = get(/databases/$(database)/documents/companies/$(companyId)).data.get('baseCurrency', '');
+      return (pc is string && pc.matches('^[A-Z]{3}$')) ? pc
+           : ((cc is string && cc.matches('^[A-Z]{3}$')) ? cc : 'AUD');
+    }
+
 
     // Membership documents — a user may READ THEIR OWN PROFILE AND NOTHING ELSE.
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
     match /users/{uid} {
       allow read: if request.auth != null && request.auth.uid == uid;
       allow create, update, delete: if false;
     }
 
-    // Users may read the company they belong to.
-    // Company CREATION and DELETION remain blocked — companies are provisioned
-    // by admin tooling, never from the client (opening `create` would let any
-    // authenticated user mint companies).
-    // UPDATE is permitted to company_admin for the FOUR currency fields ONLY.
-    // `affectedKeys().hasOnly(...)` is what keeps the rest of the document
-    // (notably `name`) immutable from the client: this does not make the company
-    // document writable, it makes four named fields writable.
-    // Codes are validated by SHAPE (ISO 3166-1 alpha-2 / ISO 4217), not against
-    // an enum: an enum duplicated into this manually-published file would drift
-    // out of sync with frontend/src/lib/currency.js and start rejecting valid
-    // writes in production. The known-code check is client-side (see
-    // docs/SECURITY.md → Deferred Controls).
+    // Companies — readable by members; create / delete blocked (provisioned by admin
+    // tooling); company_admin may update the FOUR currency fields only, codes
+    // shape-tested, not enumerated (an enum here would drift from lib/currency.js).
     match /companies/{companyId} {
       allow read: if request.auth != null
                   && exists(/databases/$(database)/documents/users/$(request.auth.uid))
@@ -40,21 +131,11 @@ service cloud.firestore {
                   && request.resource.data.baseCurrency.matches('^[A-Z]{3}$');
     }
 
-    // Projects are scoped under companies.
-    // Reads: any authenticated user belonging to this company (so every role can
-    // read `currency` and render amounts with the correct label).
-    // Create/update: company_admin or project_manager role within the same company.
-    // Delete: blocked for Sprint 1.
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
+    // Projects — read by any member of the company; create / update company_admin
+    // and project_manager (plus the QS currency-lock ratchet); delete blocked.
     match /companies/{companyId}/projects/{projectId} {
-      // The five-value project status vocabulary, mirroring
-      // frontend/src/lib/projects.js → PROJECT_STATUSES. Unlike the ISO 4217
-      // currency table (deliberately shape-tested above because an enum copied
-      // into this manually-published file would drift against an external
-      // standard), this list is short, product-owned and stable, so it is
-      // enumerated — the same posture as boqItems, clientInvoices and rfis.
+      // Status vocabulary mirrors lib/projects.js → PROJECT_STATUSES (short and
+      // product-owned, so enumerated — unlike the shape-tested currency codes).
       function validProjectStatus(s) {
         return s in ['Planning', 'In Progress', 'Backlogged', 'On Hold', 'Completed'];
       }
@@ -154,26 +235,14 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Company Cost Codes — company-wide taxonomy reused across every project's budget.
-    // Reads: internal financial roles only (ADR-56) — the taxonomy is the budget
-    // structure; subcontractor / client reads are denied.
-    // Create/update: company_admin, project_manager, or qs (owns budgets/forecasting per PRODUCT.md).
-    // Delete: blocked — use isActive: false instead.
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
+    // Company Cost Codes — the company-wide taxonomy. Financial roles read and
+    // write (ADR-56); delete blocked (isActive: false instead).
     match /companies/{companyId}/costCodes/{costCodeId} {
-      function financialMember() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
-      }
       // Same three roles write; kept as a named alias for the update rule below.
       function costCodeWriter() {
-        return financialMember();
+        return financialMember(companyId);
       }
-      allow read: if financialMember();
+      allow read: if financialMember(companyId);
 
       allow create: if costCodeWriter();
 
@@ -203,20 +272,11 @@ service cloud.firestore {
 
     // Budget Lines — project-scoped allocations against a company cost code.
     // Reads: internal financial roles only (ADR-56). Same role set writes; delete blocked.
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/budgetLines/{lineId} {
-      function financialMember() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
-      }
       function budgetLineWriter() {
-        return financialMember();
+        return financialMember(companyId);
       }
-      allow read: if financialMember();
+      allow read: if financialMember(companyId);
 
       allow create: if budgetLineWriter()
                   && request.resource.data.costCodeId is string
@@ -248,35 +308,12 @@ service cloud.firestore {
     // BOQ items — the project's measured Bill of Quantities: description,
     // quantity, unit, cost code (mandatory spine, frozen name snapshot), and —
     // once priced — a rate with a DERIVED amount (ADR-32 Part 1).
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/boqItems/{itemId} {
-      function financialMember() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
-      }
-      // Keys this update changes.
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
-      // The document identity that no update of any kind may rewrite.
       function corePreserved() {
         return request.resource.data.currency  == resource.data.currency
             && request.resource.data.createdAt == resource.data.createdAt
             && request.resource.data.createdBy == resource.data.createdBy
             && request.resource.data.revision  == resource.data.revision;
-      }
-      // Every write path stamps the caller and the server time.
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
-      }
-      // Whole-cent comparison (see block comment).
-      function cents(v) {
-        return math.round(v * 100);
       }
       // rate and amount travel together: both null (unpriced), or both
       // non-negative numbers with amount == quantity × rate to the cent.
@@ -342,9 +379,9 @@ service cloud.firestore {
             && request.resource.data.quantApplied.quantity == request.resource.data.quantity;
       }
 
-      allow read: if financialMember();
+      allow read: if financialMember(companyId);
 
-      allow create: if financialMember()
+      allow create: if financialMember(companyId)
                   && shapeValid()
                   && request.resource.data.status == 'active'
                   && request.resource.data.createdBy == request.auth.uid
@@ -356,7 +393,7 @@ service cloud.firestore {
                   // Provenance is written only by an application to an existing item.
                   && !('quantApplied' in request.resource.data);
 
-      allow update: if financialMember() && corePreserved() && updateStamped() && (
+      allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
                     // (a) ACTIVE EDIT — content (measurement, pricing, cost
                     //     code, labels) is freely editable while active, but
                     //     the status may not move and no void stamp may be
@@ -388,55 +425,12 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Purchase Orders — project-scoped supplier commitments against company cost codes.
-    // Reads: internal financial roles only (ADR-56) — supplier pricing is
-    // commercially sensitive. Subcontractor / client reads are denied until a
-    // project- or supplier-scoped membership model exists (M2-A2 / M3).
-    // Create/update: company_admin, project_manager, or qs — LIFECYCLE
-    // RULES-ENFORCED since ADR-57 (M2-B1): born draft with the caller's stamps
-    // and the project's resolved currency; draft-only content edits; exactly
-    // draft|pending_approval → sent, sent → closed, draft|pending_approval|sent
-    // → cancelled, each touching only status + its own (at, by) stamps + the
-    // audit stamps, actor == caller, time == request.time; identity, money and
-    // every earlier stamp frozen after send; whole-cent header arithmetic;
-    // nothing enters the reserved `pending_approval`; closed/cancelled terminal.
-    // Delete: blocked — cancellation is a status change; POs are audit records.
-    // What rules CANNOT verify — lineItems contents, Σ lineTotal == subtotal,
-    // and whether a claim, invoice or supplier variation references the PO
-    // being cancelled — is recorded in docs/SECURITY.md → Deferred Control 35;
-    // the strict cancel policy runs in the client (lib/poCancellation.js).
+    // Purchase Orders — supplier commitments against company cost codes. Financial
+    // roles only (ADR-56). Lifecycle RULES-ENFORCED (ADR-57, M2-B1): born draft,
+    // draft-only content edits, stamps-only transitions, identity and money frozen
+    // after send, whole-cent headers; delete blocked. What rules cannot verify
+    // (lineItems, the cancel policy) is docs/SECURITY.md → Deferred Control 35.
     match /companies/{companyId}/projects/{projectId}/purchaseOrders/{poId} {
-      function financialMember() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
-      }
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
-      // Whole cents — see the supplierInvoices block for why doubles are never
-      // compared directly.
-      function cents(v) {
-        return math.round(v * 100);
-      }
-      // 10% of an ex-GST cent amount, round-half-up, correct under either
-      // division semantics (same helper as supplierInvoices / retentionReleases).
-      function gstCents(c) {
-        return math.floor((c + 5) / 10);
-      }
-      function projectPath() {
-        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId);
-      }
-      // lib/currency.js → resolveProjectCurrency, mirrored: the project's
-      // well-formed `currency`, else the company's well-formed `baseCurrency`,
-      // else AUD. Checked at CREATE only (the field is frozen afterwards).
-      function resolvedCurrency() {
-        let pc = get(projectPath()).data.get('currency', '');
-        let cc = get(/databases/$(database)/documents/companies/$(companyId)).data.get('baseCurrency', '');
-        return (pc is string && pc.matches('^[A-Z]{3}$')) ? pc
-             : ((cc is string && cc.matches('^[A-Z]{3}$')) ? cc : 'AUD');
-      }
       // Exact key set of a document the app creates (hooks/usePurchaseOrders.jsx).
       function exactKeys() {
         return request.resource.data.keys().hasOnly(['poNumber', 'status', 'supplierName', 'supplierId', 'description', 'lineItems', 'subtotal', 'gst', 'total', 'currency', 'revision', 'notes', 'sentAt', 'sentBy', 'closedAt', 'closedBy', 'cancelledAt', 'cancelledBy', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
@@ -499,10 +493,6 @@ service cloud.firestore {
       function moneyValid() {
         return moneyTypesValid() && moneyBalanced();
       }
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
-      }
       // Born draft, stamped by its creator, every lifecycle stamp null.
       function createValid() {
         let d = request.resource.data;
@@ -534,22 +524,22 @@ service cloud.firestore {
             && d.createdBy == p.createdBy;
       }
 
-      allow read: if financialMember();
+      allow read: if financialMember(companyId);
 
-      allow create: if financialMember()
+      allow create: if financialMember(companyId)
                   && exactKeys()
                   && createValid()
                   && updateStamped()
                   && identityShapeValid()
                   && contentShapeValid()
                   && moneyValid()
-                  && exists(projectPath())
-                  && request.resource.data.currency == resolvedCurrency();
+                  && exists(projectPath(companyId, projectId))
+                  && request.resource.data.currency == resolvedCurrency(companyId, projectId);
 
       // `resource != null` first — a denied create is also measured against
       // this rule (see the supplierInvoices note on the 1000-expression ceiling).
       allow update: if resource != null
-                  && financialMember() && corePreserved() && updateStamped() && (
+                  && financialMember(companyId) && corePreserved() && updateStamped() && (
                     // (a) DRAFT EDIT — the authored content and the derived
                     //     header only (hooks/usePurchaseOrders.jsx →
                     //     updatePurchaseOrder). Status and every stamp are
@@ -601,49 +591,13 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Progress Claims — supplier claims assessed against a sent purchase order.
-    // Reads: internal financial roles only (ADR-56) — claimed and certified
-    // amounts and assessment notes are commercially sensitive. Supplier-scoped
-    // subcontractor reads need a membership model (M3); denied until then.
-    // Create/update: company_admin, project_manager, or qs — LIFECYCLE
-    // RULES-ENFORCED since ADR-58 (M2-B2): born draft against a SENT purchase
-    // order of the same project (get(): status, number, supplier identity and
-    // line COUNT pinned to the PO), the caller's stamps, the project's resolved
-    // currency and revision 1; draft-only content edits with the line count
-    // fixed; exactly draft → submitted, submitted|under_review → approved,
-    // draft|submitted|under_review → rejected, each touching only status, its
-    // own (at, by) stamps, the audit stamps and the revision (approval also
-    // writes the certified lines, the approved header and the assessment
-    // notes), actor == caller, time == request.time; claimed money frozen after
-    // submit, approved money frozen forever; whole-cent header arithmetic on
-    // both sides, approved subtotal never above the claimed subtotal; revision
-    // EXACTLY +1 on every update; nothing enters the reserved `under_review` or
-    // `invoiced`; approved / rejected / invoiced terminal.
-    // Delete: blocked — rejection/withdrawal is a status change; claims are audit records.
-    // What rules CANNOT verify — lineItems contents, Σ line == subtotal, one
-    // open claim per PO, cumulative claiming against the PO, the mixed-mode
-    // (claim vs direct invoice) overlap, and creator ≠ approver (permitted by
-    // decision) — is recorded in docs/SECURITY.md → Deferred Control 36.
+    // Progress Claims — assessed against a SENT purchase order. Financial roles
+    // only (ADR-56). Lifecycle RULES-ENFORCED (ADR-58, M2-B2): born draft against
+    // a get()-verified PO, draft-only edits with the line count fixed, stamps-only
+    // transitions, claimed money frozen at submit and approved money forever,
+    // revision +1; delete blocked. What rules cannot verify (lineItems, one open
+    // claim per PO, cumulative claiming) is docs/SECURITY.md → Deferred Control 36.
     match /companies/{companyId}/projects/{projectId}/progressClaims/{claimId} {
-      function financialMember() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
-      }
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
-      // Whole cents — see the supplierInvoices block for why doubles are never
-      // compared directly.
-      function cents(v) {
-        return math.round(v * 100);
-      }
-      // 10% of a cent amount, round-half-up, correct under either division
-      // semantics (same helper as supplierInvoices / purchaseOrders).
-      function gstCents(c) {
-        return math.floor((c + 5) / 10);
-      }
       // lib/progressClaims.js → claimTotals computes roundMoney(net × 0.1) in
       // binary floating point, which on some half-cent boundaries lands a hair
       // below .5 and rounds DOWN (the ADR-57 finding, same helper, swept again
@@ -654,20 +608,6 @@ service cloud.firestore {
       function gstPinned(netC, gstC) {
         return gstC == gstCents(netC)
             || ((netC % 10 == 5 || netC % 10 == -5) && gstC == gstCents(netC) - 1);
-      }
-      function projectPath() {
-        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId);
-      }
-      function poPath() {
-        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/purchaseOrders/$(request.resource.data.poId);
-      }
-      // lib/currency.js → resolveProjectCurrency, mirrored (as in the
-      // purchaseOrders block). Checked at CREATE only; frozen afterwards.
-      function resolvedCurrency() {
-        let pc = get(projectPath()).data.get('currency', '');
-        let cc = get(/databases/$(database)/documents/companies/$(companyId)).data.get('baseCurrency', '');
-        return (pc is string && pc.matches('^[A-Z]{3}$')) ? pc
-             : ((cc is string && cc.matches('^[A-Z]{3}$')) ? cc : 'AUD');
       }
       // Exact key set of a document the app creates (hooks/useProgressClaims.jsx).
       function exactKeys() {
@@ -765,10 +705,6 @@ service cloud.firestore {
       function approvedMoneyValid() {
         return approvedMoneyTypesValid() && approvedMoneyBalanced();
       }
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
-      }
       // Born draft, stamped by its creator, every lifecycle stamp and every
       // approved value null.
       function createValid() {
@@ -796,13 +732,13 @@ service cloud.firestore {
       // evaluation is a single billed read.
       function sourcePoValid() {
         let d = request.resource.data;
-        return exists(poPath())
-            && get(poPath()).data.status == 'sent'
-            && get(poPath()).data.poNumber == d.poNumber
-            && get(poPath()).data.supplierName == d.supplierName
-            && get(poPath()).data.get('supplierId', null) == d.supplierId
-            && get(poPath()).data.lineItems is list
-            && get(poPath()).data.lineItems.size() == d.lineItems.size();
+        return exists(poPath(companyId, projectId))
+            && get(poPath(companyId, projectId)).data.status == 'sent'
+            && get(poPath(companyId, projectId)).data.poNumber == d.poNumber
+            && get(poPath(companyId, projectId)).data.supplierName == d.supplierName
+            && get(poPath(companyId, projectId)).data.get('supplierId', null) == d.supplierId
+            && get(poPath(companyId, projectId)).data.lineItems is list
+            && get(poPath(companyId, projectId)).data.lineItems.size() == d.lineItems.size();
       }
       // The identity no update may rewrite. Optional keys are read through
       // get(key, null) on BOTH sides so a document written before ADR-58 (no
@@ -823,37 +759,28 @@ service cloud.firestore {
             && d.createdAt == p.createdAt
             && d.createdBy == p.createdBy;
       }
-      // EXACTLY +1 on every update (the pulseAcknowledgements / takeoff idiom).
-      // With the client writing the revision it REVIEWED + 1 inside a
-      // transaction (lib/progressClaimActions.js), a write over a newer copy
-      // fails here — rules-ASSISTED concurrency, not rules-proven (DC36). A
-      // legacy document always holds 1; a missing key reads as 0.
-      function revisionIncremented() {
-        return request.resource.data.revision is number
-            && request.resource.data.revision == resource.data.get('revision', 0) + 1;
-      }
       function notesBounded() {
         return request.resource.data.assessmentNotes is string
             && request.resource.data.assessmentNotes.size() <= 5000;
       }
 
-      allow read: if financialMember();
+      allow read: if financialMember(companyId);
 
-      allow create: if financialMember()
+      allow create: if financialMember(companyId)
                   && exactKeys()
                   && createValid()
                   && updateStamped()
                   && identityShapeValid()
                   && contentShapeValid()
                   && claimedMoneyValid()
-                  && exists(projectPath())
-                  && request.resource.data.currency == resolvedCurrency()
+                  && exists(projectPath(companyId, projectId))
+                  && request.resource.data.currency == resolvedCurrency(companyId, projectId)
                   && sourcePoValid();
 
       // `resource != null` first — a denied create is also measured against
       // this rule (see the supplierInvoices note on the 1000-expression ceiling).
       allow update: if resource != null
-                  && financialMember() && corePreserved() && updateStamped() && revisionIncremented() && (
+                  && financialMember(companyId) && corePreserved() && updateStamped() && revisionIncremented() && (
                     // (a) DRAFT EDIT — the authored content and the derived
                     //     claimed header only (hooks/useProgressClaims.jsx →
                     //     updateProgressClaim). Status, every stamp, every
@@ -921,49 +848,7 @@ service cloud.firestore {
 
     // Supplier Invoices — project-scoped accounts-payable bills against a sent/
     // closed PO, optionally sourced from one approved progress claim.
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/supplierInvoices/{invoiceId} {
-      function financialMember() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
-      }
-      // Keys this update changes.
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
-      // MONEY IS DECIMAL; IEEE-754 IS NOT. Rules numbers are doubles, so an exact
-      // `subtotal + gstTotal == grossTotal` REJECTS legitimate cent values: 0.10
-      // + 0.20 evaluates to 0.30000000000000004, which is not 0.30. Both sides
-      // are therefore compared as WHOLE CENTS via math.round().
-      //
-      // This is a REPRESENTATION FIX, NOT A WEAKENED INVARIANT: it is exactly
-      // equivalent to a half-cent tolerance, so any discrepancy of one cent or
-      // more still fails. lib/purchaseOrders.js → roundMoney() mirrors this, so a
-      // write the client considers valid is never rejected here (or vice versa).
-      function cents(v) {
-        return math.round(v * 100);
-      }
-      // GST on an ex-GST amount, in whole cents. Identical to the helper in the
-      // retentionReleases block and to lib/supplierInvoices.js → invoiceTotals'
-      // `roundMoney(retained * GST_RATE)`.
-      //
-      // ⚠️ DO NOT "SIMPLIFY" THIS TO math.round(exGstCents / 10). Firestore Rules
-      // and JavaScript DISAGREE there, and it was proven in the emulator: Rules
-      // `/` on two integers TRUNCATES, so 10005/10 yields 1000 while JS
-      // Math.round(1000.5) yields 1001 — a one-cent divergence that would reject
-      // legitimate client writes in production while every unit test passed.
-      //
-      // `math.floor((c + 5) / 10)` is round-half-up for non-negative c and is
-      // correct under EITHER division semantics. `c` is always a non-negative
-      // integer here: cents() returns math.round(...) and `retention >= 0` is
-      // validated before this is reached.
-      function gstCents(exGstCents) {
-        return math.floor((exGstCents + 5) / 10);
-      }
       // The document identity that no update of any kind may rewrite. Wider than
       // the cash collections, because a supplier invoice's identity includes both
       // counterparty snapshots and BOTH source references — repointing either
@@ -995,11 +880,6 @@ service cloud.firestore {
             && d.paymentTerms     == p.paymentTerms
             && d.paidAt           == p.paidAt
             && d.adjustsInvoiceId == p.adjustsInvoiceId;
-      }
-      // Every write path stamps the caller and the server time.
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
       }
       // Lifecycle stamps a content edit may not forge. `cancelledBy` is read
       // through get(key, null) on BOTH sides: it is an ADR-40 addition, so every
@@ -1139,17 +1019,14 @@ service cloud.firestore {
       // short-circuit is what guarantees the id is a non-empty string before it
       // is interpolated. Repeated access to the same document within one
       // evaluation is a single billed read.
-      function poPath() {
-        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/purchaseOrders/$(request.resource.data.poId);
-      }
       function claimPath() {
         return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/progressClaims/$(request.resource.data.progressClaimId);
       }
       function sourcePoValid() {
         return request.resource.data.poId is string
             && request.resource.data.poId.size() > 0
-            && exists(poPath())
-            && get(poPath()).data.status in ['sent', 'closed'];
+            && exists(poPath(companyId, projectId))
+            && get(poPath(companyId, projectId)).data.status in ['sent', 'closed'];
       }
       function sourceClaimValid() {
         return request.resource.data.progressClaimId is string
@@ -1187,9 +1064,9 @@ service cloud.firestore {
             && d.adjustsInvoiceId == null;
       }
 
-      allow read: if financialMember();
+      allow read: if financialMember(companyId);
 
-      allow create: if financialMember()
+      allow create: if financialMember(companyId)
                   && createValid()
                   && updateStamped()
                   && shapeValid()
@@ -1208,7 +1085,7 @@ service cloud.firestore {
       // erroring on LEGITIMATE writes. Short-circuiting here restores it. A
       // create can never satisfy this guard, so nothing is widened.
       allow update: if resource != null
-                  && financialMember() && corePreserved() && updateStamped() && (
+                  && financialMember(companyId) && corePreserved() && updateStamped() && (
                     // (a) DRAFT EDIT — progress_claim: HEADER ONLY.
                     //     The line amounts, tax codes and retention ARE the
                     //     approved claim's certified values, and the invoice must
@@ -1304,35 +1181,17 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Variations — project-scoped commercial change control: one type-
-    // discriminated collection (Client CV-#### / Supplier SV-####, ADR-18).
-    // Reads: internal financial roles only (contract revenue and supplier
-    // pricing). Create/update: same roles — LIFECYCLE RULES-ENFORCED since
-    // ADR-59 (M2-B3): born draft with the exact key set, the caller's stamps,
-    // the project's resolved currency and (supplier, PO-linked) a get() on the
-    // SENT/CLOSED PO of the same project; draft-only content edits; exactly
-    // draft → submitted, submitted|under_review → approved|rejected,
-    // draft|submitted|under_review → withdrawn, each stamps-only (approval also
-    // writes the certified lines, the approved header, the notes and the
-    // dates), actor == caller, time == request.time; identity frozen by the
-    // hasOnly lists; submitted money frozen after submit, approved money frozen
-    // forever; SIGNED whole-cent headers (negatives are valid — never clamped);
-    // revision EXACTLY +1; the originating-RFI link (ADR-34) verified when it
-    // changes and frozen outside draft. Delete: blocked.
-    // What rules CANNOT verify (lineItems contents, header GST vs per-line tax
-    // codes, notes-required-when-differing, uniqueness, creator ≠ approver) is
-    // recorded in docs/SECURITY.md → Deferred Control 37.
+    // Variations — type-discriminated client (CV) / supplier (SV) change control
+    // (ADR-18). Financial roles only. Lifecycle RULES-ENFORCED (ADR-59, M2-B3):
+    // born draft, a get()-verified PO for PO-linked supplier variations, draft-only
+    // edits, stamps-only transitions, SIGNED whole-cent headers never clamped,
+    // revision +1, the ADR-34 RFI link draft-only; delete blocked. What rules
+    // cannot verify is docs/SECURITY.md → Deferred Control 37.
     match /companies/{companyId}/projects/{projectId}/variations/{variationId} {
-      function financialMember() {
+      function variationMember() {
         return request.auth != null
             && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
             && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
-      }
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
-      function cents(v) {
-        return math.round(v * 100);
       }
       // A whole-cent double (lib/purchaseOrders.js → roundMoney output): within
       // a thousandth of a cent of an integer number of cents. Signed.
@@ -1354,20 +1213,6 @@ service cloud.firestore {
       }
       function idOrNull(v) {
         return v == null || (v is string && v.size() > 0);
-      }
-      function projectPath() {
-        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId);
-      }
-      function poPath() {
-        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/purchaseOrders/$(request.resource.data.poId);
-      }
-      // lib/currency.js → resolveProjectCurrency, mirrored (as in the
-      // purchaseOrders / progressClaims blocks). Create only; frozen after.
-      function resolvedCurrency() {
-        let pc = get(projectPath()).data.get('currency', '');
-        let cc = get(/databases/$(database)/documents/companies/$(companyId)).data.get('baseCurrency', '');
-        return (pc is string && pc.matches('^[A-Z]{3}$')) ? pc
-             : ((cc is string && cc.matches('^[A-Z]{3}$')) ? cc : 'AUD');
       }
       // The RFI this candidate cites, in THIS company and THIS project (ADR-34).
       function originRfiDoc(d) {
@@ -1411,11 +1256,11 @@ service cloud.firestore {
       // the client's, DC35).
       function sourcePoValid() {
         let d = request.resource.data;
-        return exists(poPath())
-            && get(poPath()).data.status in ['sent', 'closed']
-            && get(poPath()).data.poNumber == d.poNumber
-            && get(poPath()).data.supplierName == d.supplierName
-            && get(poPath()).data.get('supplierId', null) == d.supplierId;
+        return exists(poPath(companyId, projectId))
+            && get(poPath(companyId, projectId)).data.status in ['sent', 'closed']
+            && get(poPath(companyId, projectId)).data.poNumber == d.poNumber
+            && get(poPath(companyId, projectId)).data.supplierName == d.supplierName
+            && get(poPath(companyId, projectId)).data.get('supplierId', null) == d.supplierId;
       }
       // Identity written once: type-discriminated number and counterparty, the
       // other type's block all null, reserved fields at their reserved values.
@@ -1465,10 +1310,6 @@ service cloud.firestore {
             && d.lineItems.size() >= 1
             && d.lineItems.size() <= 200;
       }
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
-      }
       // Born draft, stamped by its creator, every lifecycle stamp, approved
       // value and assessment field empty.
       function createValid() {
@@ -1484,19 +1325,10 @@ service cloud.firestore {
             && d.approvedDate == ''
             && d.assessmentNotes == '';
       }
-      // EXACTLY +1 on every update (the progressClaims idiom, ADR-58): with the
-      // client writing the revision it REVIEWED + 1 inside a transaction
-      // (lib/variationActions.js) a write over a newer copy fails here —
-      // rules-ASSISTED concurrency, not rules-proven (DC37). Every variation the
-      // app has written holds 1; a missing key reads as 0.
-      function revisionIncremented() {
-        return request.resource.data.revision is number
-            && request.resource.data.revision == resource.data.get('revision', 0) + 1;
-      }
 
-      allow read: if financialMember();
+      allow read: if variationMember();
 
-      allow create: if financialMember()
+      allow create: if variationMember()
                   && exactKeys()
                   && createValid()
                   && updateStamped()
@@ -1504,8 +1336,8 @@ service cloud.firestore {
                   && refsValid()
                   && contentShapeValid()
                   && moneyValid(request.resource.data.submittedSubtotal, request.resource.data.submittedGst, request.resource.data.submittedTotal)
-                  && exists(projectPath())
-                  && request.resource.data.currency == resolvedCurrency()
+                  && exists(projectPath(companyId, projectId))
+                  && request.resource.data.currency == resolvedCurrency(companyId, projectId)
                   && originRfiValid(request.resource.data);
 
       // `resource != null` first — a denied create is also measured against
@@ -1514,7 +1346,7 @@ service cloud.firestore {
       // stamp or figure a branch does not own — a key outside the list cannot
       // be added, removed or changed.
       allow update: if resource != null
-                  && financialMember() && updateStamped() && revisionIncremented() && (
+                  && variationMember() && updateStamped() && revisionIncremented() && (
                     // (a) DRAFT EDIT — the authored content, the re-derived
                     //     submitted header and the originating-RFI link (which
                     //     must validate when it changes — ADR-34).
@@ -1585,19 +1417,9 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Forecast Lines — project-scoped Forecast Cost to Complete inputs, one
-    // document per cost code keyed by a deterministic costCodeId. The only stored
-    // input is uncommittedCostToComplete (number | null; null = not forecast) plus
-    // notes and audit stamps — Actual, Remaining Committed, Cost to Complete,
-    // Forecast Final Cost, Variance, Budgeted, and variation exposure are all
-    // derived at read time and never written here.
-    // Reads: restricted to internal financial roles — forecast data is
-    // commercially sensitive and may reveal expected overruns or implied margin,
-    // so subcontractor and client users must NOT read it (matching Variations,
-    // Supplier Invoices, and Contacts).
-    // Create/update: same financial roles (idempotent upsert by costCodeId).
-    // Delete: blocked — clearing an input writes null; forecast lines are not
-    // deleted.
+    // Forecast Lines — one input document per cost code (uncommittedCostToComplete,
+    // notes, stamps); every forecast figure is derived at read time. Financial
+    // roles only (commercially sensitive); idempotent upsert; delete blocked.
     match /companies/{companyId}/projects/{projectId}/forecastLines/{costCodeId} {
       allow read, create, update: if request.auth != null
                   && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
@@ -1605,22 +1427,11 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Project Commercial Baseline — the stored inputs of the Project Margin
-    // foundation (Original Contract Value, Original Approved Budget, contract
-    // dates, client snapshot, notes). Lives in a single-document subcollection
-    // keyed by the DETERMINISTIC id `baseline`. The match is deliberately
-    // restricted to that one document id — any other `commercial/*` document has
-    // no matching rule and is denied by default (no arbitrary commercial docs).
-    // Reads: restricted to internal financial roles — contract value and implied
-    // margin are commercially sensitive, so subcontractor and client users must
-    // NOT read it (matching Variations, Supplier Invoices, Forecast Lines, and
-    // Contacts, and deliberately tighter than the company-member-readable Project
-    // document, which is why the baseline is NOT stored on the Project doc).
-    // Create/update: same financial roles (idempotent upsert of `baseline`).
-    // Delete: blocked — the baseline is not deleted; clearing an input is a save.
-    // TODO (server-side hardening): enforce non-negative amounts and
-    // Original-Approved-Budget immutability once a baseline is set, here rather
-    // than only in the client hook.
+    // Project Commercial Baseline — the Margin foundation inputs in ONE document
+    // with the deterministic id `baseline` (no other commercial/* id has a rule).
+    // Financial roles only — tighter than the member-readable project document,
+    // which is why it is not stored there. Delete blocked. Non-negative amounts
+    // and Original-Approved-Budget immutability stay client-only (TODO).
     match /companies/{companyId}/projects/{projectId}/commercial/baseline {
       allow read, create, update: if request.auth != null
                   && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
@@ -1628,25 +1439,9 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Client Invoices — project-scoped ACCOUNTS-RECEIVABLE invoices issued to
-    // the head-contract client. CI-#### from the company-wide
-    // counters/clientInvoices document (covered by the counters block below —
-    // no separate rule needed).
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
+    // Client Invoices — accounts-receivable invoices to the head-contract client;
+    // CI-#### from the company counters block below.
     match /companies/{companyId}/projects/{projectId}/clientInvoices/{invoiceId} {
-      function financialMember() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
-      }
-      // Keys this update changes.
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
-      // The document identity that no update of any kind may rewrite.
       function corePreserved() {
         return request.resource.data.invoiceNumber == resource.data.invoiceNumber
             && request.resource.data.currency      == resource.data.currency
@@ -1655,15 +1450,10 @@ service cloud.firestore {
             && request.resource.data.docType       == resource.data.docType
             && request.resource.data.revision      == resource.data.revision;
       }
-      // Every write path stamps the caller and the server time.
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
-      }
 
-      allow read: if financialMember();
+      allow read: if financialMember(companyId);
 
-      allow create: if financialMember()
+      allow create: if financialMember(companyId)
                   && request.resource.data.status == 'draft'
                   && request.resource.data.docType == 'invoice'
                   && request.resource.data.invoiceNumber is string
@@ -1679,7 +1469,7 @@ service cloud.firestore {
                   && request.resource.data.voidedAt == null
                   && request.resource.data.voidedBy == null;
 
-      allow update: if financialMember() && corePreserved() && updateStamped() && (
+      allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
                     // (a) DRAFT EDIT — content is freely editable while draft,
                     //     but the status may not move and no lifecycle stamp
                     //     may be forged.
@@ -1719,25 +1509,9 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Client Receipts — project-scoped records of CASH ACTUALLY RECEIVED from a
-    // head-contract client, with EMBEDDED allocations against issued Client
-    // Invoices. CR-#### from the company-wide counters/clientReceipts document
-    // (covered by the counters block below — no separate rule needed).
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
+    // Client Receipts — cash actually received from a client, with EMBEDDED
+    // allocations against issued Client Invoices; CR-#### from the company counters.
     match /companies/{companyId}/projects/{projectId}/clientReceipts/{receiptId} {
-      function financialMember() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
-      }
-      // Keys this update changes.
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
-      // The document identity that no update of any kind may rewrite.
       function corePreserved() {
         return request.resource.data.receiptNumber == resource.data.receiptNumber
             && request.resource.data.currency      == resource.data.currency
@@ -1745,35 +1519,6 @@ service cloud.firestore {
             && request.resource.data.createdBy     == resource.data.createdBy
             && request.resource.data.docType       == resource.data.docType
             && request.resource.data.revision      == resource.data.revision;
-      }
-      // Every write path stamps the caller and the server time.
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
-      }
-      // MONEY IS DECIMAL; IEEE-754 IS NOT. Rules numbers are doubles, so an
-      // exact `allocatedTotal + unallocatedAmount == amount` REJECTS legitimate
-      // cent values: 0.10 + 0.20 evaluates to 0.30000000000000004, which is not
-      // 0.30. Both sides are therefore compared as WHOLE CENTS via math.round().
-      //
-      // This is a REPRESENTATION FIX, NOT A WEAKENED INVARIANT: it is exactly
-      // equivalent to a half-cent tolerance, so any discrepancy of one cent or
-      // more still fails. lib/payments.js → toCents() mirrors this precisely, so
-      // a write the client considers valid is never rejected here (or vice versa).
-      function cents(v) {
-        return math.round(v * 100);
-      }
-      // The one arithmetic guarantee rules CAN give: a receipt may never claim
-      // to have allocated more money than it received.
-      function amountInvariant() {
-        return request.resource.data.amount is number
-            && request.resource.data.amount > 0
-            && request.resource.data.allocatedTotal is number
-            && request.resource.data.allocatedTotal >= 0
-            && request.resource.data.unallocatedAmount is number
-            && request.resource.data.unallocatedAmount >= 0
-            && cents(request.resource.data.allocatedTotal + request.resource.data.unallocatedAmount)
-               == cents(request.resource.data.amount);
       }
       // Shape required of every stored state (create and draft edit alike).
       function shapeValid() {
@@ -1798,9 +1543,9 @@ service cloud.firestore {
             && amountInvariant();
       }
 
-      allow read: if financialMember();
+      allow read: if financialMember(companyId);
 
-      allow create: if financialMember()
+      allow create: if financialMember(companyId)
                   && shapeValid()
                   && request.resource.data.status == 'draft'
                   && request.resource.data.createdBy == request.auth.uid
@@ -1812,7 +1557,7 @@ service cloud.firestore {
                   && request.resource.data.voidedAt == null
                   && request.resource.data.voidedBy == null;
 
-      allow update: if financialMember() && corePreserved() && updateStamped() && (
+      allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
                     // (a) DRAFT EDIT — content (amount, date, method,
                     //     references, allocations) is freely editable while
                     //     draft, but the status may not move and no lifecycle
@@ -1857,25 +1602,9 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Supplier Payments — project-scoped records of CASH ACTUALLY PAID to a
-    // supplier or subcontractor, with EMBEDDED allocations against POSTED
-    // Supplier Invoices. SP-#### from the company-wide counters/supplierPayments
-    // document (covered by the counters block below — no separate rule needed).
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
+    // Supplier Payments — cash actually paid to a supplier, with EMBEDDED
+    // allocations against POSTED Supplier Invoices; SP-#### from the company counters.
     match /companies/{companyId}/projects/{projectId}/supplierPayments/{paymentId} {
-      function financialMember() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
-      }
-      // Keys this update changes.
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
-      // The document identity that no update of any kind may rewrite.
       function corePreserved() {
         return request.resource.data.paymentNumber == resource.data.paymentNumber
             && request.resource.data.currency      == resource.data.currency
@@ -1883,35 +1612,6 @@ service cloud.firestore {
             && request.resource.data.createdBy     == resource.data.createdBy
             && request.resource.data.docType       == resource.data.docType
             && request.resource.data.revision      == resource.data.revision;
-      }
-      // Every write path stamps the caller and the server time.
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
-      }
-      // MONEY IS DECIMAL; IEEE-754 IS NOT. Rules numbers are doubles, so an
-      // exact `allocatedTotal + unallocatedAmount == amount` REJECTS legitimate
-      // cent values: 0.10 + 0.20 evaluates to 0.30000000000000004, which is not
-      // 0.30. Both sides are therefore compared as WHOLE CENTS via math.round().
-      //
-      // This is a REPRESENTATION FIX, NOT A WEAKENED INVARIANT: it is exactly
-      // equivalent to a half-cent tolerance, so any discrepancy of one cent or
-      // more still fails. lib/payments.js → toCents() mirrors this precisely, so
-      // a write the client considers valid is never rejected here (or vice versa).
-      function cents(v) {
-        return math.round(v * 100);
-      }
-      // The one arithmetic guarantee rules CAN give: a payment may never claim
-      // to have allocated more money than it paid.
-      function amountInvariant() {
-        return request.resource.data.amount is number
-            && request.resource.data.amount > 0
-            && request.resource.data.allocatedTotal is number
-            && request.resource.data.allocatedTotal >= 0
-            && request.resource.data.unallocatedAmount is number
-            && request.resource.data.unallocatedAmount >= 0
-            && cents(request.resource.data.allocatedTotal + request.resource.data.unallocatedAmount)
-               == cents(request.resource.data.amount);
       }
       // Shape required of every stored state (create and draft edit alike).
       function shapeValid() {
@@ -1938,9 +1638,9 @@ service cloud.firestore {
             && amountInvariant();
       }
 
-      allow read: if financialMember();
+      allow read: if financialMember(companyId);
 
-      allow create: if financialMember()
+      allow create: if financialMember(companyId)
                   && shapeValid()
                   && request.resource.data.status == 'draft'
                   && request.resource.data.createdBy == request.auth.uid
@@ -1952,7 +1652,7 @@ service cloud.firestore {
                   && request.resource.data.voidedAt == null
                   && request.resource.data.voidedBy == null;
 
-      allow update: if financialMember() && corePreserved() && updateStamped() && (
+      allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
                     // (a) DRAFT EDIT — content (supplier, amount, date, method,
                     //     references, allocations) is freely editable while
                     //     draft, but the status may not move and no lifecycle
@@ -1998,25 +1698,9 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Supplier Credit Notes — project-scoped REDUCTION records against exactly
-    // one POSTED Supplier Invoice (over-claimed quantities, rejected work,
-    // back-charges, negotiated reductions). SCN-#### from the company-wide
-    // counters/supplierCreditNotes document (covered by the counters block
-    // below — no separate rule needed).
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
+    // Supplier Credit Notes — reductions against exactly one POSTED Supplier
+    // Invoice; SCN-#### from the company counters.
     match /companies/{companyId}/projects/{projectId}/supplierCreditNotes/{creditNoteId} {
-      function financialMember() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
-      }
-      // Keys this update changes.
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
       // The document identity that no update of any kind may rewrite. Wider
       // than the cash collections: the TARGET REFERENCE and its supplier
       // snapshots are frozen from creation, so the get()-validated link can
@@ -2033,23 +1717,6 @@ service cloud.firestore {
             && request.resource.data.supplierInvoiceNumber == resource.data.supplierInvoiceNumber
             && request.resource.data.supplierId            == resource.data.supplierId
             && request.resource.data.supplierName          == resource.data.supplierName;
-      }
-      // Every write path stamps the caller and the server time.
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
-      }
-      // MONEY IS DECIMAL; IEEE-754 IS NOT. Rules numbers are doubles, so an
-      // exact `subtotal + gstTotal == grossTotal` REJECTS legitimate cent
-      // values: 0.10 + 0.20 evaluates to 0.30000000000000004, which is not
-      // 0.30. Both sides are therefore compared as WHOLE CENTS via math.round().
-      //
-      // This is a REPRESENTATION FIX, NOT A WEAKENED INVARIANT: it is exactly
-      // equivalent to a half-cent tolerance, so any discrepancy of one cent or
-      // more still fails. lib/payments.js → toCents() mirrors this precisely, so
-      // a write the client considers valid is never rejected here (or vice versa).
-      function cents(v) {
-        return math.round(v * 100);
       }
       // The header arithmetic guarantee rules CAN give: the stored totals must
       // agree with each other (the lines themselves are unverifiable).
@@ -2113,9 +1780,9 @@ service cloud.firestore {
             && headerInvariant();
       }
 
-      allow read: if financialMember();
+      allow read: if financialMember(companyId);
 
-      allow create: if financialMember()
+      allow create: if financialMember(companyId)
                   && shapeValid()
                   && targetValid()
                   && request.resource.data.status == 'draft'
@@ -2128,7 +1795,7 @@ service cloud.firestore {
                   && request.resource.data.voidedAt == null
                   && request.resource.data.voidedBy == null;
 
-      allow update: if financialMember() && corePreserved() && updateStamped() && (
+      allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
                     // (a) DRAFT EDIT — content (date, reason, reference, lines,
                     //     totals, notes) is freely editable while draft, but
                     //     the frozen target must still validate (the amounts
@@ -2189,38 +1856,16 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Cash Flow timing lines — AUTHORED monthly forecast inputs for the Cash
-    // Flow view: an expected GROSS cash amount in a chosen month, optionally
-    // representing an ex-GST source value (completeness tracking only). They
-    // are planning records, not transactions: no counter, no number, no posted
-    // status. They never reference or mutate any other financial document —
-    // the cost-side link is the cost-code spine (costCodeId + frozen name).
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
+    // Cash Flow timing lines — authored monthly GROSS cash forecasts (planning
+    // records: no counter, no posting); they never reference another financial
+    // document — the cost-side link is the cost-code spine.
     match /companies/{companyId}/projects/{projectId}/cashFlowLines/{lineId} {
-      function financialMember() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
-      }
-      // Keys this update changes.
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
-      // The document identity that no update of any kind may rewrite.
       function corePreserved() {
         return request.resource.data.currency  == resource.data.currency
             && request.resource.data.createdAt == resource.data.createdAt
             && request.resource.data.createdBy == resource.data.createdBy
             && request.resource.data.basis     == resource.data.basis
             && request.resource.data.revision  == resource.data.revision;
-      }
-      // Every write path stamps the caller and the server time.
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
       }
       // Shape required of every stored ACTIVE state (create and edit alike).
       function shapeValid() {
@@ -2257,9 +1902,9 @@ service cloud.firestore {
             && request.resource.data.currency.matches('^[A-Z]{3}$');
       }
 
-      allow read: if financialMember();
+      allow read: if financialMember(companyId);
 
-      allow create: if financialMember()
+      allow create: if financialMember(companyId)
                   && shapeValid()
                   && request.resource.data.status == 'active'
                   && request.resource.data.createdBy == request.auth.uid
@@ -2269,7 +1914,7 @@ service cloud.firestore {
                   && request.resource.data.voidedAt == null
                   && request.resource.data.voidedBy == null;
 
-      allow update: if financialMember() && corePreserved() && updateStamped() && (
+      allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
                     // (a) ACTIVE EDIT — content (month, direction, source,
                     //     amounts, cost code, description) is freely editable
                     //     while active, but the status may not move and no
@@ -2299,36 +1944,14 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Tender Packages — project-scoped tender scope records: a named package of
-    // selected cost codes + free-text scope put to market, numbered TP-#### from
-    // the company-wide counters/tenderPackages document (covered by the counters
-    // block below — no separate rule needed). A package holds NO amounts and NO
-    // currency field — the money lives on Tender Bids.
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
+    // Tender Packages — a named scope of cost codes put to market, TP-#### from
+    // the company counters. No amounts and no currency — the money is on the bids.
     match /companies/{companyId}/projects/{projectId}/tenderPackages/{packageId} {
-      function financialMember() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
-      }
-      // Keys this update changes.
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
-      // The document identity that no update of any kind may rewrite.
       function corePreserved() {
         return request.resource.data.tenderNumber == resource.data.tenderNumber
             && request.resource.data.createdAt    == resource.data.createdAt
             && request.resource.data.createdBy    == resource.data.createdBy
             && request.resource.data.revision     == resource.data.revision;
-      }
-      // Every write path stamps the caller and the server time.
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
       }
       // '' (no closing date) or a YYYY-MM-DD shape. That the date is future,
       // past, or sane is NOT checked — it is informational only.
@@ -2358,9 +1981,9 @@ service cloud.firestore {
         return get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/tenderBids/$(request.resource.data.awardedBidId)).data;
       }
 
-      allow read: if financialMember();
+      allow read: if financialMember(companyId);
 
-      allow create: if financialMember()
+      allow create: if financialMember(companyId)
                   && shapeValid()
                   && request.resource.data.status == 'draft'
                   && request.resource.data.createdBy == request.auth.uid
@@ -2379,7 +2002,7 @@ service cloud.firestore {
                   && request.resource.data.awardNotes == ''
                   && request.resource.data.cancelReason == '';
 
-      allow update: if financialMember() && corePreserved() && updateStamped() && (
+      allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
                     // (a) DRAFT EDIT — commercial content (name, description,
                     //     scope, costCodes, closingDate, notes) is freely
                     //     editable while draft, but the status may not move and
@@ -2460,27 +2083,10 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Tender Bids — project-scoped manual transcriptions of bids received
-    // against an ISSUED Tender Package, priced PER COST CODE (ex-GST, no GST
-    // fields — comparison is ex-GST; tax is a commitment-time concern). Random
-    // document ids, NO sequential number and NO counter: a bid is identified by
-    // its bidder and package. Project-level with a tenderPackageId reference —
-    // the progressClaims→PO idiom — NOT a subcollection, so one subscription
-    // serves the register and rules still verify containment via get().
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
+    // Tender Bids — manual transcriptions of bids against an ISSUED package,
+    // priced per cost code ex-GST. Random ids, no counter; project-level with a
+    // tenderPackageId reference so rules verify containment via get().
     match /companies/{companyId}/projects/{projectId}/tenderBids/{bidId} {
-      function financialMember() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
-      }
-      // Keys this update changes.
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
       // The document identity that no update of any kind may rewrite: package
       // linkage, both frozen snapshots, bidder identity, currency, creation.
       function corePreserved() {
@@ -2492,11 +2098,6 @@ service cloud.firestore {
             && request.resource.data.createdAt       == resource.data.createdAt
             && request.resource.data.createdBy       == resource.data.createdBy
             && request.resource.data.revision        == resource.data.revision;
-      }
-      // Every write path stamps the caller and the server time.
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
       }
       // The parent package, from the SAME project path as this bid — so a bid
       // can never graft onto another project's (or company's) package.
@@ -2531,9 +2132,9 @@ service cloud.firestore {
             && request.resource.data.revision == 1;
       }
 
-      allow read: if financialMember();
+      allow read: if financialMember(companyId);
 
-      allow create: if financialMember()
+      allow create: if financialMember(companyId)
                   && shapeValid()
                   && request.resource.data.status == 'received'
                   && request.resource.data.createdBy == request.auth.uid
@@ -2553,7 +2154,7 @@ service cloud.firestore {
                   && bidderContact().contactTypes.hasAny(['supplier', 'subcontractor'])
                   && request.resource.data.bidderName == bidderContact().displayName;
 
-      allow update: if financialMember() && corePreserved() && updateStamped() && (
+      allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
                     // (a) RECEIVED EDIT — transcription corrections (bidDate,
                     //     bidderRef, lineItems, exclusions, notes) while the
                     //     parent package is STILL ISSUED. The status may not
@@ -2589,40 +2190,19 @@ service cloud.firestore {
     }
 
     // Project Timeline activities — the project programme (ADR-29).
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
     match /companies/{companyId}/projects/{projectId}/activities/{activityId} {
-      function memberRole() {
-        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
-      }
-      function sameCompany() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
-      }
       // Read audience — includes qs.
       function programmeReader() {
-        return sameCompany() && memberRole() in ['company_admin', 'project_manager', 'qs'];
+        return sameCompany(companyId) && memberRole() in ['company_admin', 'project_manager', 'qs'];
       }
       // Write audience — deliberately EXCLUDES qs.
       function programmeWriter() {
-        return sameCompany() && memberRole() in ['company_admin', 'project_manager'];
+        return sameCompany(companyId) && memberRole() in ['company_admin', 'project_manager'];
       }
-      // Keys this update changes.
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
-      // The document identity that no update of any kind may rewrite.
       function corePreserved() {
         return request.resource.data.createdAt == resource.data.createdAt
             && request.resource.data.createdBy == resource.data.createdBy
             && request.resource.data.revision  == resource.data.revision;
-      }
-      // Every write path stamps the caller and the server time.
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
       }
       // EXACT shape — hasOnly + hasAll together mean no field may be added,
       // renamed, or omitted. Pre-seeding an arbitrary privilege-bearing field
@@ -2644,10 +2224,6 @@ service cloud.firestore {
                  'cancelReason', 'cancelledAt', 'cancelledBy',
                  'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
                ]);
-      }
-      function isIsoDate(v) {
-        return v is string
-            && v.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$');
       }
       // Shape required of every stored NON-CANCELLED state (create and edit).
       function shapeValid() {
@@ -2762,24 +2338,9 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Retention Releases — project-scoped AUTHORISATIONS that make retention
-    // ALREADY WITHHELD on a posted Supplier Invoice payable. RR-#### from the
-    // company-wide counters/retentionReleases document (covered by the counters
-    // block below — no separate rule needed).
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
+    // Retention Releases — authorisations making retention ALREADY WITHHELD on a
+    // posted Supplier Invoice payable; RR-#### from the company counters.
     match /companies/{companyId}/projects/{projectId}/retentionReleases/{releaseId} {
-      function financialMember() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
-      }
-      // Keys this update changes.
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
       // The document identity that no update of any kind may rewrite. The TARGET
       // INVOICE is part of that identity: re-pointing a release at a different
       // invoice would move money between suppliers without any audit trail.
@@ -2791,41 +2352,6 @@ service cloud.firestore {
             && request.resource.data.docType           == resource.data.docType
             && request.resource.data.revision          == resource.data.revision
             && request.resource.data.supplierInvoiceId == resource.data.supplierInvoiceId;
-      }
-      // Every write path stamps the caller and the server time.
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
-      }
-      // MONEY IS DECIMAL; IEEE-754 IS NOT. Identical to the cents() helper in
-      // the clientReceipts/supplierPayments blocks and to lib/payments.js →
-      // toCents(), so a write the client considers valid is never rejected here
-      // for floating-point reasons (or vice versa).
-      function cents(v) {
-        return math.round(v * 100);
-      }
-      // GST on a CUMULATIVE ex-GST amount, in whole cents. Mirrors
-      // lib/retention.js → cumulativeRetentionGst() exactly: ONE rounding of the
-      // cumulative figure, never a composition of per-release roundings.
-      //
-      // ⚠️ DO NOT "SIMPLIFY" THIS TO math.round(exGstCents / 10). Firestore
-      // Rules and JavaScript DISAGREE there, and it was proven in the emulator:
-      // Rules `/` on two integers TRUNCATES, so 10005/10 yields 1000 while JS
-      // Math.round(1000.5) yields 1001 — a one-cent divergence that would reject
-      // legitimate client writes in production while every unit test passed.
-      //
-      // `math.floor((c + 5) / 10)` is round-half-up for non-negative c, and it
-      // is correct under EITHER division semantics (if `/` truncates, floor is a
-      // no-op; if `/` is float division, floor performs the truncation), so it
-      // cannot silently drift if the runtime ever changes. `c` is always a
-      // non-negative integer: cents() returns math.round(...) and both operands
-      // are validated >= 0.
-      //
-      // This mirrors JS roundMoney(x * 10%) exactly — see
-      // tests/rules/retentionReleases.rules.test.js → "math.round matches
-      // JavaScript on half-cent boundaries", which fails if either side moves.
-      function gstCents(exGstCents) {
-        return math.floor((exGstCents + 5) / 10);
       }
       function targetInvoice() {
         return get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/supplierInvoices/$(request.resource.data.supplierInvoiceId));
@@ -2887,9 +2413,9 @@ service cloud.firestore {
             && moneyValid();
       }
 
-      allow read: if financialMember();
+      allow read: if financialMember(companyId);
 
-      allow create: if financialMember()
+      allow create: if financialMember(companyId)
                   && shapeValid()
                   && targetValid()
                   && request.resource.data.status == 'draft'
@@ -2902,7 +2428,7 @@ service cloud.firestore {
                   && request.resource.data.voidedAt == null
                   && request.resource.data.voidedBy == null;
 
-      allow update: if financialMember() && corePreserved() && updateStamped() && (
+      allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
                     // (a) DRAFT EDIT — the money, date, reason and notes are
                     //     freely editable while draft (re-saving is also how a
                     //     stale cumulative snapshot is refreshed), but the
@@ -2958,34 +2484,13 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // ── Drawings ─────────────────────────────────────────────────────────────
-    // A DRAWING MASTER is the stable identity of a sheet; its `revisions`
-    // subcollection holds the immutable issues. The master carries a POINTER to
-    // the authored current revision plus mirrored display fields.
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
+    // ── Drawings — a MASTER is the stable identity of a sheet; its `revisions`
+    // subcollection holds the immutable issues; the master points at the current one.
     match /companies/{companyId}/projects/{projectId}/drawings/{drawingId} {
-      // Any provisioned member of THIS company, regardless of role.
-      function companyMember() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
-      }
       function drawingWriter() {
-        return companyMember()
+        return sameCompany(companyId)
             && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager'];
       }
-      // Keys this update changes.
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
-      // Every write path stamps the caller and the server time.
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
-      }
-      // The document identity that no update of any kind may rewrite.
       function masterCorePreserved() {
         return request.resource.data.createdAt == resource.data.createdAt
             && request.resource.data.createdBy == resource.data.createdBy
@@ -3004,7 +2509,7 @@ service cloud.firestore {
             && request.resource.data.description.size() <= 2000;
       }
 
-      allow read: if companyMember();
+      allow read: if sameCompany(companyId);
 
       allow create: if drawingWriter()
                   && identityShape()
@@ -3122,7 +2627,7 @@ service cloud.firestore {
               && request.resource.data.storagePath == expectedStoragePath();
         }
 
-        allow read: if companyMember();
+        allow read: if sameCompany(companyId);
 
         // Every revision is born CURRENT — it is created by the promotion
         // transaction, which supersedes the previous current in the same commit.
@@ -3198,33 +2703,15 @@ service cloud.firestore {
       }
     }
 
-    // ── General Project Documents ────────────────────────────────────────────
-    // The flat, non-drawing register: specifications, contracts, subcontracts,
-    // reports, certificates, safety documents, programmes, manuals,
-    // correspondence. No folders, no revision subcollection — a replacement is a
-    // NEW record and the old one is superseded with a forward link.
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
+    // ── General Project Documents — the flat non-drawing register; a replacement
+    // is a NEW record and the old one is superseded with a forward link.
     match /companies/{companyId}/projects/{projectId}/documents/{documentId} {
-      function companyMember() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
-      }
       // Roles that may write documents AND read `internal` ones. The two sets
       // coincide by definition: "internal" means visible to the people who
       // administer the register.
       function internalMember() {
-        return companyMember()
+        return sameCompany(companyId)
             && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
-      }
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
       }
       function docCorePreserved() {
         return request.resource.data.createdAt == resource.data.createdAt
@@ -3267,7 +2754,7 @@ service cloud.firestore {
       }
 
       allow read: if internalMember()
-                  || (companyMember() && resource.data.visibility == 'project');
+                  || (sameCompany(companyId) && resource.data.visibility == 'project');
 
       allow create: if internalMember()
                   && metadataShape()
@@ -3316,41 +2803,18 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // RFIs — Requests for Information (ADR-33). The formal record of a
-    // question that needed clarification: who asked what, of whom, against
-    // which drawing revision or document, when it was due, what the answer was
-    // and when it arrived.
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
+    // RFIs — Requests for Information (ADR-33): who asked what, of whom, against
+    // which drawing revision or document, when due, and the answer.
     match /companies/{companyId}/projects/{projectId}/rfis/{rfiId} {
-      function memberRole() {
-        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
-      }
-      function sameCompany() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
-      }
       // One audience for reads and writes.
       function rfiMember() {
-        return sameCompany() && memberRole() in ['company_admin', 'project_manager', 'qs'];
+        return sameCompany(companyId) && memberRole() in ['company_admin', 'project_manager', 'qs'];
       }
-      // Keys this update changes.
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
-      // The document identity that no update of any kind may rewrite.
       function corePreserved() {
         return request.resource.data.rfiNumber == resource.data.rfiNumber
             && request.resource.data.createdAt == resource.data.createdAt
             && request.resource.data.createdBy == resource.data.createdBy
             && request.resource.data.revision  == resource.data.revision;
-      }
-      // Every write path stamps the caller and the server time.
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
       }
       // ⚠️ EXPRESSION BUDGET. Firestore evaluates at most 1000 expressions per
       // request, and this block validates ~34 fields plus two existence
@@ -3376,10 +2840,6 @@ service cloud.firestore {
                  'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
                ])
             && d.size() == 34;
-      }
-      function isIsoDate(v) {
-        return v is string
-            && v.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$');
       }
       function nonBlank(v, max) {
         return v is string && v.trim().size() > 0 && v.size() <= max;
@@ -3558,45 +3018,21 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // PULSE™ acknowledgements — ONE document per PULSE indicator, keyed by the
-    // DETERMINISTIC indicator id (six permitted ids, so at most six documents
-    // per project). A MANAGEMENT record (ADR-49): a manager's note that a
-    // finding has been seen and what is being done, with a REQUIRED review-by
-    // date and the ids of the records the finding rested on when acknowledged.
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
+    // PULSE™ acknowledgements — ONE management record per indicator (ADR-49), keyed
+    // by the indicator id: a note, a REQUIRED review-by date and the evidence keys.
     match /companies/{companyId}/projects/{projectId}/pulseAcknowledgements/{indicatorId} {
-      function memberRole() {
-        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
-      }
-      function sameCompany() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
-      }
       // Read audience — the PULSE tab's roles, includes qs.
       function pulseReader() {
-        return sameCompany() && memberRole() in ['company_admin', 'project_manager', 'qs'];
+        return sameCompany(companyId) && memberRole() in ['company_admin', 'project_manager', 'qs'];
       }
       // Write audience — deliberately EXCLUDES qs.
       function pulseWriter() {
-        return sameCompany() && memberRole() in ['company_admin', 'project_manager'];
+        return sameCompany(companyId) && memberRole() in ['company_admin', 'project_manager'];
       }
-      // Keys this update changes.
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
-      // The document identity that no update of any kind may rewrite.
       function corePreserved() {
         return request.resource.data.indicatorId == resource.data.indicatorId
             && request.resource.data.createdAt   == resource.data.createdAt
             && request.resource.data.createdBy   == resource.data.createdBy;
-      }
-      // Every write path stamps the caller and the server time.
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
       }
       // Every update carries exactly the next revision.
       function nextRevision() {
@@ -3616,10 +3052,6 @@ service cloud.firestore {
                  'acknowledgedAt', 'acknowledgedBy', 'withdrawnAt', 'withdrawnBy',
                  'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
                ]);
-      }
-      function isIsoDate(v) {
-        return v is string
-            && v.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$');
       }
       // The six PULSE 1A indicator ids (lib/pulse.js → INDICATOR) — the
       // document id AND the stored field, which must agree.
@@ -3682,35 +3114,14 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // ── Constrapp Quant™ 1A — takeoff pages (ADR-51) ─────────────────────────
-    // One document per (drawing, revision, page number). The id is
-    // `{drawingId}_{revisionId}_{page}` and is RECOMPUTED here from the stored
-    // fields, so a page can never claim a different sheet than it is filed
-    // under. Holds the page's canonical geometry (PDF.js scale-1 viewport, or
-    // intrinsic image pixels) and its CURRENT calibration. NON-FINANCIAL: no
-    // amount, no currency, no counter, no BOQ or budget reference.
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
+    // ── Quant™ takeoff pages (ADR-51) — one document per (drawing, revision, page),
+    // id `{drawingId}_{revisionId}_{page}` RECOMPUTED from the stored fields; holds
+    // the canonical geometry and CURRENT calibration. NON-FINANCIAL.
     match /companies/{companyId}/projects/{projectId}/takeoffPages/{takeoffPageId} {
-      function memberRole() {
-        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
-      }
-      function sameCompany() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
-      }
       function quantMember() {
-        return sameCompany() && memberRole() in ['company_admin', 'project_manager', 'qs'];
+        return sameCompany(companyId) && memberRole() in ['company_admin', 'project_manager', 'qs'];
       }
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
-      }
+      // Every update carries exactly the next revision.
       function nextRevision() {
         return request.resource.data.revision is int
             && request.resource.data.revision == resource.data.revision + 1;
@@ -3827,35 +3238,14 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // ── Constrapp Quant™ 1A — takeoff measurements (ADR-51) ──────────────────
-    // One measurement: a length (polyline), an area (polygon) or a count
-    // (points) in the CANONICAL coordinates of exactly one takeoff page. The
-    // quantity is NEVER stored — it is reproduced from `points` and the
-    // measurement's calibration SNAPSHOT (the page calibration it was last
-    // saved or reviewed under; null for a count). NON-FINANCIAL: no amount,
-    // no currency, no BOQ reference — Quant 1B owns BOQ linkage (ADR-51).
-    // Rationale, the enforced controls and the client-only gaps are recorded in
-    // docs/SECURITY.md (and the ADR named above); comments here were trimmed to keep
-    // the published ruleset under Firestore's 256 KB source limit.
+    // ── Quant™ takeoff measurements (ADR-51) — a length, area or count in the
+    // canonical coordinates of one page; the quantity is NEVER stored (derived
+    // from `points` and the calibration SNAPSHOT). NON-FINANCIAL; BOQ link ADR-52.
     match /companies/{companyId}/projects/{projectId}/takeoffMeasurements/{measurementId} {
-      function memberRole() {
-        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
-      }
-      function sameCompany() {
-        return request.auth != null
-            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
-      }
       function quantMember() {
-        return sameCompany() && memberRole() in ['company_admin', 'project_manager', 'qs'];
+        return sameCompany(companyId) && memberRole() in ['company_admin', 'project_manager', 'qs'];
       }
-      function changedKeys() {
-        return request.resource.data.diff(resource.data).affectedKeys();
-      }
-      function updateStamped() {
-        return request.resource.data.updatedBy == request.auth.uid
-            && request.resource.data.updatedAt == request.time;
-      }
+      // Every update carries exactly the next revision.
       function nextRevision() {
         return request.resource.data.revision is int
             && request.resource.data.revision == resource.data.revision + 1;
@@ -4014,17 +3404,9 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Project counters — PER-PROJECT sequential numbering. Today the only
-    // document here is `rfis` ({ next }): every project numbers its RFIs from
-    // RFI-0001 independently, the construction convention. Every FINANCIAL
-    // counter remains company-wide (see the counters block below); this is the
-    // first project-scoped one.
-    //
-    // Same audience as the company counters — the roles that create numbered
-    // documents — and the same tenant gate. The create transaction reads and
-    // increments the counter in the SAME commit as the RFI write.
-    // Counter integrity (+1 only, no arbitrary set) is NOT enforced here — see
-    // docs/SECURITY.md → Deferred Control 6 / 27. Delete blocked.
+    // Project counters — PER-PROJECT sequential numbering (today only `rfis`);
+    // financial counters stay company-wide. Same audience and tenant gate as the
+    // company counters; +1-only integrity is NOT enforced (DC6 / DC27). Delete blocked.
     match /companies/{companyId}/projects/{projectId}/counters/{counterId} {
       allow read, create, update: if request.auth != null
                   && exists(/databases/$(database)/documents/users/$(request.auth.uid))
@@ -4033,14 +3415,8 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Contacts — company-wide directory of suppliers, subcontractors,
-    // consultants, and clients (third-party PII: names, phones, emails, ABNs,
-    // payment terms).
-    // Reads: restricted to internal financial roles — subcontractor and client
-    // users must NOT see the company's full contact directory.
-    // Create/update: same roles (QS quick-creates suppliers while raising POs).
-    // Delete: blocked — archive via isActive: false; contacts referenced by
-    // POs/claims are part of the financial audit story.
+    // Contacts — the company directory (third-party PII). Financial roles read and
+    // write; delete blocked (archive via isActive: false).
     match /companies/{companyId}/contacts/{contactId} {
       allow read, create, update: if request.auth != null
                   && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
@@ -4048,15 +3424,10 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Counters — COMPANY-WIDE sequential document numbering (purchaseOrders,
-    // progressClaims, supplierInvoices, variationsClient, variationsSupplier,
-    // clientInvoices, clientReceipts, supplierPayments, supplierCreditNotes,
-    // tenderPackages, retentionReleases). RFIs are NOT here — they use the
-    // PER-PROJECT counter block above (projects/{projectId}/counters/rfis).
-    // Read/write restricted to the roles that create numbered documents;
-    // the create transaction must read and increment the counter.
-    // Counter integrity (+1 only, no arbitrary set) is NOT enforced here — see
-    // docs/SECURITY.md → Deferred Control 6.
+    // Counters — COMPANY-WIDE sequential document numbering for every financial
+    // collection (RFIs use the per-project block above). Read / write restricted
+    // to the roles that create numbered documents; +1-only integrity is NOT
+    // enforced (DC6).
     match /companies/{companyId}/counters/{counterId} {
       allow read, create, update: if request.auth != null
                   && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId

@@ -95,7 +95,7 @@ backwards, and `closed`/`cancelled` are terminal. `pending_approval` is
 Numbering: `PO-0001` from the company-wide `counters/purchaseOrders` document,
 incremented in the same transaction as the PO write.
 
-**Rules-enforced since ADR-57 (M2-B1, NOT YET DEPLOYED).** The lifecycle above,
+**Rules-enforced since ADR-57 (M2-B1, live since 27 October 2026).** The lifecycle above,
 the draft-only edit, the freeze of lines / totals / supplier / number after
 `sent`, the stamps (`sentAt/By`, `closedAt/By`, `cancelledAt/By`, `updatedAt/By`
 — actor == caller, time == server), the whole-cent header arithmetic
@@ -164,7 +164,7 @@ module).
 
 Numbering: `PC-0001` from `counters/progressClaims`, same transactional pattern.
 
-**Since ADR-58 (M2-B2, NOT YET DEPLOYED) the lifecycle above is
+**Since ADR-58 (M2-B2, live since 27 October 2026) the lifecycle above is
 RULES-ENFORCED**, to the ADR-40 / ADR-57 standard: born `draft` against a
 `get()`-verified **sent** PO of the same project (number, supplier identity and
 line count pinned), creator / audit / transition stamps `== request.auth.uid` /
@@ -1598,7 +1598,7 @@ lifecycle stages, not separate entities.
   Approved amounts and commercial content freeze forever.
 - **Rejected / Withdrawn** — terminal audit records; contribute nothing financially.
 
-**Since ADR-59 (M2-B3, NOT YET DEPLOYED) the lifecycle above is
+**Since ADR-59 (M2-B3, live since 27 October 2026) the lifecycle above is
 RULES-ENFORCED**, to the ADR-40 / ADR-57 / ADR-58 standard: born `draft` with
 a type-consistent counterparty (client ⇄ supplier blocks mutually null), a
 `get()`-verified **sent or closed** PO of the same project when a supplier
