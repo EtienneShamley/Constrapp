@@ -383,22 +383,32 @@ Budget page shows it as a warning row rather than hiding it. Exact formulas
 ## …/projects/{projectId}/purchaseOrders/{poId}
 
 Lifecycle and semantics: [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md).
+**Lifecycle, identity, stamps, scalar money and create-time currency are
+RULES-ENFORCED since ADR-57 (M2-B1, NOT YET DEPLOYED)** — see
+[SECURITY.md](SECURITY.md) → *Purchase Orders — rules-enforced lifecycle*; what
+stays client-only is Deferred Control 35. Reads are restricted to internal
+financial roles (ADR-56).
 
 | Field | Type | Notes |
 |---|---|---|
-| `poNumber` | string | `PO-0001` — from the company-wide counter |
-| `status` | string | `draft` \| `pending_approval` (reserved) \| `sent` \| `closed` \| `cancelled` |
-| `supplierName` | string | Snapshot of the contact's `displayName` at write time — permanently denormalised; contact renames never rewrite issued documents. **Immutable after create** with `supplierId` (ADR-36): the draft editor never writes either; wrong supplier → cancel and recreate. Free text on POs created before the Contacts module |
-| `supplierId` | string \| null | → company contact. Null on POs created before the Contacts module — such POs render from `supplierName` and are never backfilled; code must never assume `supplierId` resolves |
-| `description`, `notes` | string | |
-| `lineItems` | array | **Embedded**; editable while `draft` (add/remove/reorder, cost code, description, qty, unit, rate — `costCodeName` re-snapshotted from the live list on save, ADR-36); frozen once the PO leaves draft. Both the draft-only edit and the freeze are **client-side only** — rules check tenant and role, not status |
-| `subtotal`, `gst`, `total` | number | Denormalised from lines; GST = 10% of subtotal |
-| `currency` | string | **Audit snapshot** of the project currency at write time (frozen, like `supplierName`/`costCodeName`). **Never read for display** — the project currency is the display authority, so a project can never render mixed currencies. Documents created before this foundation keep their stored `AUD` and are **never rewritten** |
-| `revision` | number | 1 today |
-| `sentAt`, `closedAt`, `cancelledAt` | timestamp \| null | Stamped on transition |
-| `externalRefs` | map | Empty today; reserved for accounting integrations (Xero/MYOB/QuickBooks IDs) |
+| `poNumber` | string | `PO-0001` — from the company-wide counter. Rules require `^PO-[0-9]{4,}$` at create and freeze it for life; uniqueness is NOT enforced (DC6) |
+| `status` | string | `draft` \| `pending_approval` (reserved) \| `sent` \| `closed` \| `cancelled`. **Rules: born `draft`; `draft\|pending_approval → sent`, `sent → closed`, `draft\|pending_approval\|sent → cancelled`; nothing enters `pending_approval` (no stamp, no app path — a stored one can still be sent or cancelled); `closed` / `cancelled` terminal; any other value unauthorable** |
+| `supplierName` | string | Snapshot of the contact's `displayName` at write time — permanently denormalised; contact renames never rewrite issued documents. **Immutable after create** with `supplierId` (ADR-36 — product; **rules-frozen since ADR-57**): the draft editor never writes either; wrong supplier → cancel and recreate. Free text on POs created before the Contacts module. Rules require a non-empty string ≤ 200 at create |
+| `supplierId` | string \| null | → company contact. Null on POs created before the Contacts module — such POs render from `supplierName` and are never backfilled; code must never assume `supplierId` resolves. Rules: null or a non-empty string; frozen (compared through `get(key, null)` so a legacy document without the key stays writable); that it names a real contact is NOT verified (DC35) |
+| `description`, `notes` | string | Rules: strings, ≤ 2000 / ≤ 5000; editable while `draft` only |
+| `lineItems` | array | **Embedded**; editable while `draft` (add/remove/reorder, cost code, description, qty, unit, rate — `costCodeName` re-snapshotted from the live list on save, ADR-36); frozen once the PO leaves draft. **Rules enforce the draft-only edit and the freeze after send, and bound the list to 1–200 elements** (a draft with no line cannot be sent). Element CONTENTS are unverifiable by rules (DC35): `validatePoDraft` additionally refuses a negative qty / rate since ADR-57 |
+| `subtotal`, `gst`, `total` | number | Denormalised from lines; GST = 10% of subtotal (flat, whatever the currency). **Rules: all `>= 0`; `cents(subtotal) + cents(gst) == cents(total)` exactly; `cents(gst) == floor((cents(subtotal) + 5) / 10)` exactly, or — only when `cents(subtotal) % 10 == 5` — one cent below it** (the app's `poTotals` rounds some half-cent boundaries down in floating point: 40.15 → 4.01; the deviation is provably never upward and never off a boundary). `subtotal == Σ lineTotal` is NOT verified (DC35). Frozen after send |
+| `currency` | string | **Audit snapshot** of the project currency at write time (frozen, like `supplierName`/`costCodeName`). **Never read for display** — the project currency is the display authority, so a project can never render mixed currencies. Documents created before this foundation keep their stored `AUD` and are **never rewritten**. **Rules (ADR-57): at create must equal the project's resolved currency — the project's well-formed `currency`, else the company's well-formed `baseCurrency`, else `AUD` (`lib/currency.js → resolveProjectCurrency`, via two `get()`s); the project must exist; frozen afterwards** |
+| `revision` | number | 1 today. Rules: a number at create, frozen (no version guard uses it — draft edits are last-write-wins, DC35) |
+| `sentAt`, `closedAt`, `cancelledAt` | timestamp \| null | Stamped on transition. **Rules: all null at create; the transition's own stamp `== request.time`; a transition may touch no other stamp** |
+| `sentBy`, `closedBy`, `cancelledBy` | uid \| null | **ADR-57 additions** — the actor of each transition, `== request.auth.uid` by rules. Null at create. **Absent on POs written before M2-B1**; rules compare them through `get(key, null)`, so those documents stay sendable, closable and cancellable and acquire the key on that transition |
+| `externalRefs` | map | Empty today; reserved for accounting integrations (Xero/MYOB/QuickBooks IDs). Rules: a map at create, frozen (a future integration write needs a rules change) |
 | `createdAt` / `createdBy` | timestamp / uid | Rules require `createdBy == request.auth.uid` and `createdAt == request.time` at create, and freeze both for life |
-| `updatedAt` / `updatedBy` | timestamp / uid | **ADR-40 addition.** Required by rules on **every** write — create, draft edit, and all three transitions (`updatedBy == request.auth.uid`, `updatedAt == request.time`). Absent on invoices raised before ADR-40; required only of the *incoming* document, so those acquire it on their next valid write. Last-write only — no field-level history (Deferred Control 7) |
+| `updatedAt` / `updatedBy` | timestamp / uid | **ADR-57 addition** (M2-B1). Required by rules on **every** write — create, draft edit, and all three transitions (`updatedBy == request.auth.uid`, `updatedAt == request.time`). Absent on POs written before M2-B1; required only of the *incoming* document, so those acquire it on their next valid write. Last-write only — no field-level history (Deferred Control 7) |
+
+⚠️ **Publishing the ADR-57 rules needs the ADR-40 ordering gate** — the
+pre-M2-B1 bundle sends neither the audit stamps nor the `*By` stamps, so the
+application build ships first and the rules second ([DEPLOYMENT.md](DEPLOYMENT.md)).
 
 Each line item: `{ costCodeId, costCodeName, description, qty, unit, unitPrice, lineTotal }`
 (`lineTotal` = qty × unitPrice, ex-GST, rounded to cents).

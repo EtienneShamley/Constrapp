@@ -74,10 +74,41 @@ backwards, and `closed`/`cancelled` are terminal. `pending_approval` is
 - **Closed** — work complete; still counts toward Committed; takes no further
   claims. `closedAt` stamped.
 - **Cancelled** — audit record retained (never deleted); **drops out of
-  Committed entirely**. `cancelledAt` stamped.
+  Committed entirely**. `cancelledAt` stamped. **A PO with surviving financial
+  activity cannot be cancelled through the app (ADR-57):** any progress claim
+  that is not `rejected`, any supplier invoice that is not `cancelled`, or any
+  **supplier variation** linked by `poId` that is neither `rejected` nor
+  `withdrawn` — drafts included — blocks the cancel, because Actual keeps
+  recognising an approved claim or a posted invoice whatever the PO's status,
+  and Commitment Exposure keeps carrying an approved supplier variation, so the
+  cost or exposure would detach from its commitment (SHIELD check 4 conditions
+  A and B list the claim / invoice state after the fact; nothing lists the
+  variation case). The user rejects the claims / cancels the invoices /
+  rejects or withdraws the variations first; cancelling the PO never mutates,
+  rejects, withdraws, cancels or deletes a linked record. The guard runs against the live registers before the confirm (failing
+  CLOSED while they load or if a read failed — unavailable is never "nothing
+  linked") and again inside the transaction against the server copies of every
+  linked record the page knew about. **Client-enforced only** (Deferred
+  Control 35): rules cannot see sibling documents, so a direct-SDK cancel still
+  succeeds and surfaces in SHIELD.
 
 Numbering: `PO-0001` from the company-wide `counters/purchaseOrders` document,
 incremented in the same transaction as the PO write.
+
+**Rules-enforced since ADR-57 (M2-B1, NOT YET DEPLOYED).** The lifecycle above,
+the draft-only edit, the freeze of lines / totals / supplier / number after
+`sent`, the stamps (`sentAt/By`, `closedAt/By`, `cancelledAt/By`, `updatedAt/By`
+— actor == caller, time == server), the whole-cent header arithmetic
+(`subtotal + gst == total` exactly; `gst` exactly 10% round-half-up, with one
+cent below also admitted on a half-cent boundary only — see SECURITY.md for
+the floating-point reason and the sweep), and the create-time currency / project
+consistency are enforced by Firestore rules once published. Send, close and
+cancel run through one guarded transaction (`lib/purchaseOrderActions.js`)
+that refuses a STALE copy — a PO another user sent or cancelled underneath is
+never overwritten. The creator may send their own PO (self-approval permitted;
+separation of duties not approved). Nothing in this release changes how
+Committed, Remaining Committed, Actual, Forecast, Cash Flow or Margin are
+derived — the ADR-55 formulas read the same fields they always did.
 
 ### Committed-cost calculation
 

@@ -40,6 +40,26 @@ export const PO_TRANSITIONS = {
 
 export const canTransition = (from, to) => (PO_TRANSITIONS[from] ?? []).includes(to)
 
+// Statuses a PO may be cancelled FROM — the `cancelled` column of PO_TRANSITIONS.
+export const PO_CANCELLABLE_STATUSES = Object.keys(PO_TRANSITIONS)
+  .filter(from => PO_TRANSITIONS[from].includes(PO_STATUS.CANCELLED))
+
+// The (timestamp, actor) pair each transition stamps (ADR-57). `sentBy`,
+// `closedBy` and `cancelledBy` are M2-B1 additions: Firestore rules require
+// the actor to be the caller and the time to be the server's, so a status
+// change is attributable and cannot carry a forged stamp. Documents written
+// before M2-B1 carry the `*At` keys only; rules read the `*By` keys through
+// get(key, null) so those documents stay fully writable.
+export const PO_TRANSITION_STAMPS = {
+  [PO_STATUS.SENT]:      { at: 'sentAt',      by: 'sentBy' },
+  [PO_STATUS.CLOSED]:    { at: 'closedAt',    by: 'closedBy' },
+  [PO_STATUS.CANCELLED]: { at: 'cancelledAt', by: 'cancelledBy' },
+}
+
+// Ceiling on embedded lines — mirrored by Firestore rules (lineItems.size()).
+// Generous: it bounds a document, it is not a business limit.
+export const PO_MAX_LINES = 200
+
 export const GST_RATE = 0.1
 
 // Single rounding helper — every money figure passes through here so PO totals
@@ -158,8 +178,9 @@ export function remainingCommittedByCostCode(purchaseOrders, invoicedByPoLine = 
 
 // Statuses whose authored content (description, notes, lines) may still change.
 // Exactly draft — pending_approval is reserved and, like every later status,
-// frozen at the product level. Enforced in the client hook only (rules do not
-// check status — SECURITY.md Deferred Control 2).
+// frozen at the product level. Since ADR-57 (M2-B1) the draft-only edit, the
+// freeze after `sent` and the legal transitions are RULES-ENFORCED once the
+// revised firestore.rules is published (docs/SECURITY.md → Purchase Orders).
 export const PO_EDITABLE_STATUSES = [PO_STATUS.DRAFT]
 
 // Blank editor line — every form line has exactly these five keys.
@@ -201,8 +222,16 @@ export function buildPoLineItem(formLine, { costCodes = [] } = {}) {
   }
 }
 
+// Blank / absent counts as 0; anything else must be a finite number >= 0.
+const nonNegativeAmount = (v) => {
+  if (v == null || v === '') return true
+  const n = Number(v)
+  return Number.isFinite(n) && n >= 0
+}
+
 // Draft content validation shared by create and edit — the existing product
-// rules, unchanged: at least one line, and a cost code on every line.
+// rules: at least one line (and at most PO_MAX_LINES), a cost code on every
+// line, and no negative quantity or rate (ADR-57).
 // Description, qty, unit and rate are deliberately NOT required. When the
 // live `costCodes` list is supplied, every line's id must ALSO resolve to it —
 // a stored line whose cost code has since been removed blocks the save until
@@ -211,8 +240,15 @@ export function buildPoLineItem(formLine, { costCodes = [] } = {}) {
 export function validatePoDraft({ lineItems, costCodes = null } = {}) {
   const lines = Array.isArray(lineItems) ? lineItems : []
   if (lines.length === 0) return 'At least one line item is required'
+  if (lines.length > PO_MAX_LINES) return `A purchase order can carry at most ${PO_MAX_LINES} lines`
   const missing = lines.findIndex(li => !(typeof li?.costCodeId === 'string' && li.costCodeId.length > 0))
   if (missing !== -1) return `Line ${missing + 1}: a cost code is required`
+  // Quantity and rate may be blank (0) but never negative — a negative line
+  // would make the stored subtotal negative, which Firestore rules refuse
+  // (ADR-57). The editor's `min="0"` is browser constraint validation, not a
+  // control; this is the domain check the hook relies on.
+  const negative = lines.findIndex(li => !nonNegativeAmount(li?.qty) || !nonNegativeAmount(li?.unitPrice))
+  if (negative !== -1) return `Line ${negative + 1}: quantity and rate cannot be negative`
   if (Array.isArray(costCodes)) {
     const unresolved = lines.findIndex(li => !costCodes.some(c => c.id === li.costCodeId))
     if (unresolved !== -1) return `Line ${unresolved + 1}: choose a current cost code`

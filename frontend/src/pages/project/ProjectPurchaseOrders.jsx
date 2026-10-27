@@ -5,8 +5,13 @@ import Btn from '../../components/Btn'
 import Badge from '../../components/Badge'
 import { formatCurrency } from '../../lib/formatters'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
+import { useProgressClaims } from '../../hooks/useProgressClaims'
+import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
+import { useVariations } from '../../hooks/useVariations'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { useContacts } from '../../hooks/useContacts'
+import { poCancellationGuard } from '../../lib/poCancellation'
+import { PoWriteError } from '../../lib/purchaseOrderActions'
 import { selectableCostCodes, activeCostCodes } from '../../lib/costCodes'
 import {
   PO_STATUS, PO_STATUS_LABELS, PO_BADGE_VARIANTS,
@@ -379,7 +384,11 @@ function PurchaseOrderEditorModal({ po = null, costCodes, contacts, projectId, c
   )
 }
 
-function RowActions({ po, onTransition, onEdit }) {
+// Cancel goes through `onCancel`, which runs the cancellation guard BEFORE the
+// confirm dialog (ADR-57): a blocked PO shows its reason instead of a prompt.
+// The button stays enabled and the reason is shown on tap — never a hover-only
+// tooltip on a disabled control.
+function RowActions({ po, onTransition, onCancel, onEdit }) {
   const confirmThen = (label, nextStatus) => () => {
     if (window.confirm(`${label} ${po.poNumber}?`)) onTransition(po, nextStatus)
   }
@@ -389,7 +398,7 @@ function RowActions({ po, onTransition, onEdit }) {
       <div className="flex gap-1.5 justify-end">
         <Btn sm variant="ghost" onClick={() => onEdit(po)}>Edit</Btn>
         <Btn sm variant="success" onClick={confirmThen('Send', PO_STATUS.SENT)}>Send</Btn>
-        <Btn sm variant="ghost" onClick={confirmThen('Cancel', PO_STATUS.CANCELLED)}>Cancel</Btn>
+        <Btn sm variant="ghost" onClick={() => onCancel(po)}>Cancel</Btn>
       </div>
     )
   }
@@ -397,7 +406,7 @@ function RowActions({ po, onTransition, onEdit }) {
     return (
       <div className="flex gap-1.5 justify-end">
         <Btn sm variant="ghost" onClick={confirmThen('Close', PO_STATUS.CLOSED)}>Close</Btn>
-        <Btn sm variant="ghost" onClick={confirmThen('Cancel', PO_STATUS.CANCELLED)}>Cancel</Btn>
+        <Btn sm variant="ghost" onClick={() => onCancel(po)}>Cancel</Btn>
       </div>
     )
   }
@@ -410,22 +419,57 @@ export default function ProjectPurchaseOrders() {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const { purchaseOrders, purchaseOrdersLoading, createPurchaseOrder, updatePurchaseOrder, transitionStatus } = usePurchaseOrders(projectId)
+  // Linked records for the cancellation guard (ADR-57). All three reads are
+  // financial-role subscriptions this page's audience already holds; their
+  // loading / error flags make the guard fail CLOSED — an unavailable claim,
+  // invoice or variation register is never read as "nothing is linked".
+  const { progressClaims, progressClaimsLoading, progressClaimsError } = useProgressClaims(projectId)
+  const { supplierInvoices, supplierInvoicesLoading, supplierInvoicesError } = useSupplierInvoices(projectId)
+  const { variations, variationsLoading, variationsError } = useVariations(projectId)
   const { costCodes, costCodesLoading, costCodesError } = useCostCodes()
   const { contacts, contactsError, createContact } = useContacts()
   const [editing, setEditing]         = useState(null)   // 'new' | draft PO | null
   const [actionError, setActionError] = useState(null)
 
+  const linked = {
+    progressClaims, progressClaimsLoading, progressClaimsError,
+    supplierInvoices, supplierInvoicesLoading, supplierInvoicesError,
+    variations, variationsLoading, variationsError,
+  }
+
   // A FAILED cost-code read is reported, never read as "no cost codes" (ADR-55).
   const noCostCodes = !costCodesLoading && !costCodesError && activeCostCodes(costCodes).length === 0
   const goToCostCodes = () => navigate(`/projects/${projectId}/cost-codes`)
 
+  // A guarded transaction reports WHY it refused (stale, blocked, permission,
+  // offline); anything else is the generic connection message.
+  const reportActionError = (err) => {
+    setActionError(err instanceof PoWriteError && err.message
+      ? err.message
+      : 'Failed to update status. Check your connection and try again.')
+  }
+
   async function handleTransition(po, nextStatus) {
     setActionError(null)
     try {
-      await transitionStatus(po, nextStatus)
-    } catch {
-      setActionError('Failed to update status. Check your connection and try again.')
+      await transitionStatus(po, nextStatus, linked)
+    } catch (err) {
+      reportActionError(err)
     }
+  }
+
+  // Cancel: the guard runs on the live snapshot FIRST. Blocked (linked claim or
+  // invoice, or the registers still loading / failed) → the reason is shown and
+  // no confirm dialog opens. Allowed → confirm, then the hook re-checks inside
+  // the transaction against the server copies.
+  function handleCancel(po) {
+    setActionError(null)
+    const guard = poCancellationGuard(po, linked)
+    if (!guard.allowed) {
+      setActionError(guard.reason)
+      return
+    }
+    if (window.confirm(`Cancel ${po.poNumber}?`)) handleTransition(po, PO_STATUS.CANCELLED)
   }
 
   // Draft edit — stale-editor guard (ADR-36). The save path resolves the LIVE
@@ -521,7 +565,7 @@ export default function ProjectPurchaseOrders() {
                       <Badge label={PO_STATUS_LABELS[po.status] ?? po.status} variant={PO_BADGE_VARIANTS[po.status]} sm />
                     </td>
                     <td className="px-3.5 py-3">
-                      <RowActions po={po} onTransition={handleTransition} onEdit={setEditing} />
+                      <RowActions po={po} onTransition={handleTransition} onCancel={handleCancel} onEdit={setEditing} />
                     </td>
                   </tr>
                 ))}

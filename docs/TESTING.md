@@ -59,7 +59,7 @@ That script runs
   inert here. The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **1550 in total across 23 files** (1372 across 22 files before ADR-56: `externalRoles.rules.test.js` adds **176**, and the revised read groups of `costCodes` / `budgetLines` add one case each; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §32):
+- Tests — **1629 in total across 24 files** (1550 across 23 files before ADR-57: `purchaseOrders.rules.test.js` adds **79**; the `externalRoles` PO fixtures were revised to the ADR-57 shape with no change to its assertions or count; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §33):
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -353,6 +353,69 @@ That script runs
     GST-free retained invoice (negative payable — Deferred Control 30) and a
     `gstTotal` above 10% of subtotal (per-line roundings) are both accepted,
     because rejecting them would reject documents the app itself writes.
+  - `frontend/tests/rules/purchaseOrders.rules.test.js` — **79 tests**
+    covering every case in §33 below (Purchase Order Lifecycle Security,
+    ADR-57 / M2-B1). Until M2-B1 this block enforced role and tenancy and
+    nothing else while `supplierInvoices` get()s a PO's `status` and every
+    Committed / FFC / Cash Flow / SHIELD figure trusts its fields. It asserts
+    the roles / membership / tenant matrix (three financial roles allowed;
+    `subcontractor`, `client`, orphan, anonymous and the other tenant denied;
+    delete blocked for every role × status), the **create** contract (exact
+    key set, born draft, creator and audit stamps against `request.time` with
+    three skewed clocks each, all six lifecycle stamps null, PO-number shape,
+    supplier name / id, revision, externalRefs, description / notes bounds,
+    1–200 lines), **currency and project consistency** (the project's explicit
+    currency; the company `baseCurrency` fallback; the `AUD` fallback; every
+    other well-formed code refused; malformed codes refused; a non-existent
+    project refused), the **whole-cent money invariants** (negative and
+    non-numeric money refused; `total` one cent off refused; off a half-cent
+    boundary `gst` is EXACT — one cent either way, two cents, zero, doubled and
+    a 15% figure all refused; on a boundary BOTH the half-up value and one cent
+    below pass while one above or two below fail, at 40.15 and at the smallest
+    boundary 0.05; zero money passes only as exact zeros; a $12.3M exact header
+    passes and one cent off fails; the REAL `poTotals` accepted on the
+    boundaries where floating point rounds down — 40.15, 41.05, 80.85,
+    327,680.05 — and on boundaries where it rounds up — 0.05, 0.15, 1,234.45;
+    an NZD project accepts 10% and refuses 15% — currency is not tax), the
+    **draft edit** (the hook payload for each
+    role; lines added / removed / re-priced; a pre-ADR-57 document gaining the
+    stamps; missing / forged / client-clock stamps refused; status or stamp
+    moves refused; eight identity rewrites refused; shape and money breaks
+    refused; every content key refused on `pending_approval` / `sent` /
+    `closed` / `cancelled` — the freeze after send), the **legal transitions**
+    (`draft → sent`, `pending_approval → sent|cancelled`, `sent → closed`,
+    `draft|sent → cancelled`, creator self-send permitted, legacy documents
+    without `*By` / `updatedAt` / `externalRefs` / `supplierId` keys taking
+    every write), the **illegal transitions** (skip to closed, entry to
+    `pending_approval`, reopen from sent / closed / cancelled, re-send,
+    unknown statuses from every state, a no-line draft cannot be sent but can
+    be cancelled, a bare re-stamp of a SENT PO refused while on a DRAFT it is an
+    accepted empty edit), **transition purity** (eight kinds of smuggled
+    content on send / close / cancel, another transition's stamps, forged
+    actors, three skewed clocks per stamp, missing audit stamps), **direct-SDK
+    bypasses** the old block admitted (create already sent, rewrite a sent
+    PO's lines with a full setDoc, revive a cancelled PO, strip stamps or
+    provenance), the **dependent collections** (a PO created and sent through
+    the new rules is a valid `direct_po` invoice source; draft and cancelled are
+    not; a claim against a sent PO still creates), **the REAL guarded
+    transaction** `lib/purchaseOrderActions.js → runTransitionPurchaseOrder`
+    against the rules (exact write; STALE copy refused with nothing written
+    then the fresh copy closes; INVALID / MISSING / reserved target before any
+    read; cancel BLOCKED by a draft, submitted, approved or invoiced claim, by
+    a draft or posted invoice, and by a draft, submitted or approved SUPPLIER
+    variation, with the PO left `sent`, while a rejected / withdrawn / client /
+    manual-mode (`poId: null`) variation does not block; cancel SUCCEEDS when
+    every link is rejected / cancelled / withdrawn or nothing is linked; the SERVER copy
+    decides — a claim the snapshot called rejected but the server calls
+    approved blocks, a vanished record cannot block; a denied role is
+    PERMISSION with nothing written). Finally **six tests assert the security
+    CEILING honestly** (Deferred Control 35): a direct-SDK cancel of a sent PO
+    carrying an approved claim, a posted invoice and an approved supplier
+    variation, junk `lineItems`
+    elements, a header unrelated to its lines, creator == sender, duplicate PO
+    numbers, a `supplierId` naming no contact, an unknown but well-formed
+    project currency, and a blind last-write-wins draft edit are **all ACCEPTED
+    by rules**.
   - `frontend/tests/rules/drawings.rules.test.js` — **86 tests** over the drawing
     master and its `revisions` subcollection: the **broad read** (all six Company
     A roles read masters and revisions, cross-company and unauthenticated denied),
@@ -1406,13 +1469,18 @@ financial effect, so the invariance checks below are the important ones.**
 - [ ] Stale edit: tab A opens Edit on a draft; tab B Sends it → tab A shows "This purchase order is no longer Draft…" and Save is disabled; a save attempted at that moment is refused with the same message.
 - [ ] A legacy PO with `supplierId: null` is editable and shows its stored free-text supplier name.
 - [ ] Sent PO: no edit path; can be **Closed** or **Cancelled**; Closed/Cancelled show no further actions and no **Edit**.
+- [ ] **Cancel guard (ADR-57):** on a sent PO with a draft, submitted or approved claim, a draft / approved / posted supplier invoice, or a draft / submitted / approved supplier variation raised against it, **Cancel** opens no confirm dialog and shows the red reason naming each record and its status (*… reject the claims, cancel the invoices and reject or withdraw the supplier variations first — cancelling the PO never changes them*); the PO stays Sent and no claim, invoice or variation changes. Reject the claim(s), cancel the invoice(s), reject or withdraw the variation(s) → **Cancel** now confirms and succeeds. A supplier variation raised in manual mode (no PO) never blocks.
+- [ ] **Cancel guard fails closed:** with the Progress Claims, Supplier Invoices or Variations read failing (simulate offline or a denied read), **Cancel** shows *Linked progress claims, supplier invoices or variations could not be loaded…* and does nothing.
+- [ ] **Stale transition (ADR-57):** tab A shows a draft; tab B sends it; tab A clicks **Cancel** → confirm → the message reads *PO-000n is now Sent, not Draft. Reload the page…*; nothing changed. Same for **Send** on a PO another tab cancelled.
+- [ ] A negative quantity or rate typed into the editor is refused at Save with *Line n: quantity and rate cannot be negative* (no document written).
 - [ ] Editor is usable at 375 / 768 / 1280 px (context block stacks on mobile; line grid wraps as at create).
 
 ## 6. PO Cancellation Removes Committed Cost
 
 - [ ] Send a PO against a budgeted cost code → Budget tab Committed equals the PO's ex-GST line total.
-- [ ] Cancel that PO → Committed returns to previous value immediately, without editing the budget line.
+- [ ] Cancel that PO (no claim or invoice linked — ADR-57) → Committed returns to previous value immediately, without editing the budget line.
 - [ ] Send a PO against a cost code with **no** budget line → amber "Committed via PO — no budget line" warning row appears; cancel → row disappears.
+- [ ] A PO that carries an approved claim or a posted invoice **cannot** be cancelled through the app (§5, cancel guard); Committed, Actual and FFC therefore never lose a commitment that still has recognised cost against it.
 
 ## 7. Progress Claim Creation
 
@@ -4471,12 +4539,14 @@ enforced.
 
 - [ ] Lifecycle-transition legality, post-submission/`approved` immutability,
   one-open-claim races, creator ≠ approver segregation, counter integrity, and
-  uniqueness are client-enforced only **on `purchaseOrders`, `progressClaims` and
+  uniqueness are client-enforced only **on `progressClaims` and
   `variations`**. **Exception:** `clientInvoices`, `clientReceipts`,
-  `supplierPayments`, `supplierCreditNotes`, `retentionReleases` **and — since
-  ADR-40 — `supplierInvoices`** enforce transitions and post-commit immutability
-  **by rules** — see §15i-x, §15j-x, §15k-x, §15r-x, §15q and **§13f**, which test
-  them as real rejections. ⚠️ The consequence recorded here is now **closed**: a
+  `supplierPayments`, `supplierCreditNotes`, `retentionReleases`, **since
+  ADR-40 `supplierInvoices`, and — since ADR-57 (M2-B1, NOT YET DEPLOYED) —
+  `purchaseOrders`** enforce transitions and post-commit immutability
+  **by rules** — see §15i-x, §15j-x, §15k-x, §15r-x, §15q, **§13f** and **§33**,
+  which test them as real rejections. The PO **cancellation policy** (no
+  non-rejected claim / non-cancelled invoice) stays client-only (DC35). ⚠️ The consequence recorded here is now **closed**: a
   posted supplier invoice can no longer be cancelled by any caller, and
   `status: 'paid'` is unauthorable. What remains is that a document tampered with
   *before* ADR-40 keeps its state, which is why `paid` stays in
@@ -5984,13 +6054,15 @@ read groups of `costCodes.rules.test.js` (52) and `budgetLines.rules.test.js`
 **197,035 bytes** (196,622 before) against the 245,000-byte budget. **Rules-only
 release — no Hosting deploy**; the live bundle is unchanged.
 
-**Status: IMPLEMENTED, NOT YET DEPLOYED.** Nothing below is true in production
-until `frontend/firestore.rules` is published and confirmed live
-(DEPLOYMENT.md). Whether any `subcontractor` / `client` user exists in
-production is **NOT VERIFIED** from the repository.
+**Status: LIVE IN PRODUCTION since 27 October 2026** — merged, Azure green, the
+ruleset published and the three checks below verified in production by the
+product owner that day (the repository records the day, not a time). Whether
+any `subcontractor` / `client` user exists in production is still **NOT
+VERIFIED** from the repository.
 
 Manual acceptance — at most three checks, run **after** the publish, against
-production, by the product owner:
+production, by the product owner (completed 27 October 2026; kept as the
+record):
 
 - [ ] **The published ruleset is this one.** Firebase console → Firestore →
       Rules: the active version's timestamp is after the publish, the editor
@@ -6013,3 +6085,62 @@ production, by the product owner:
       figure renders as before the publish (record Budgeted, Committed, Actual,
       FFC and Margin before and after → identical), a draft PO and a draft claim
       can be created and edited, and no *Unavailable* banner appears.
+
+## 33. Purchase Order Lifecycle Security — M2-B1 (ADR-57)
+
+Automated: `tests/rules/purchaseOrders.rules.test.js` (**79**, new — see §0),
+`tests/unit/poCancellation.test.js` (**19**, new — the strict policy over
+claims, invoices and supplier variations, the reason text, the fail-closed
+guard), `tests/unit/purchaseOrderActions.test.js` (**11**, new — the exact
+transition write, check order, variation blockers and error kinds over a
+scripted transaction) and the **12** ADR-57 cases added to
+`tests/unit/purchaseOrders.test.js` (lifecycle constants, negative-line and
+line-ceiling validation, the stamped update-payload contract, and a sweep of
+every subtotal from $0.00 to $10,000.00 through the REAL `poTotals` against
+the rules' exact-or-boundary GST check, proving every deviation is −1 on a
+half-cent boundary). The revised `externalRoles.rules.test.js` PO fixtures
+carry the ADR-57 shape; its assertions and count are unchanged. Full rules
+suite: **24 files / 1629 tests**; unit **54 files / 3389 tests**; lint 0 / 0;
+build green — all run locally on 27 October 2026 on arm64 Java 17. Rules file
+**207,567 bytes** (197,035 before) against the 245,000-byte budget.
+
+**Status: IMPLEMENTED, NOT YET DEPLOYED.** Nothing the rules enforce below is
+true in production until `frontend/firestore.rules` is published and confirmed
+live — and the rules may be published **only after** the M2-B1 Hosting build
+is live (the ADR-40 ordering gate: the live bundle sends no `updatedAt` /
+`updatedBy` / `sentBy` / `closedBy` / `cancelledBy`, so publishing first breaks
+every PO create, edit, send, close and cancel). See DEPLOYMENT.md →
+*M2-B1 release order*.
+
+Manual acceptance — at most three checks, run **after both deploy steps**,
+against production, by the product owner (every rules invariant is automated
+in §0; these prove the deployed build and the published ruleset are the ones
+tested):
+
+- [ ] **The deployed build and the published ruleset are this release.** On a
+      project with cost codes, raise a draft PO, edit it, send it, and cancel a
+      second draft: all four succeed, and in the Firestore console the sent
+      document shows `sentBy` = your uid, `sentAt`, `updatedAt` / `updatedBy`
+      and `closedBy: null` / `cancelledBy: null`. Firebase console → Firestore →
+      Rules: the active version's timestamp is after the publish, the editor
+      finds `ADR-57` in the `purchaseOrders` block, and `diff <(pbpaste)
+      frontend/firestore.rules` is empty (**207,567** bytes).
+- [ ] **The cancel guard and the rules both hold.** On a sent PO that has an
+      approved claim (or a posted supplier invoice, or an approved supplier
+      variation), **Cancel** shows the red reason naming the record, opens no
+      confirm, and the PO stays Sent; Budget Committed, Actual, FFC and
+      Commitment Exposure do not move. Then, in the Firebase console (a
+      direct write, as a financial-role identity), attempt to edit that sent
+      PO's `subtotal` or set `status` back to `draft` → *Missing or insufficient
+      permissions*; attempt `status: 'cancelled'` with `cancelledBy` set to
+      another user's uid → refused. (A console cancel with your own uid and a
+      server timestamp **succeeds** — the cancel policy is client-only, DC35 —
+      and SHIELD check 4 then lists it; this is the documented ceiling, not a
+      failure.)
+- [ ] **Legacy documents and downstream figures are unaffected.** Pick a PO
+      created before this release (no `sentBy` key in the console): a draft one
+      edits and sends; a sent one closes or cancels (if unlinked); the document
+      gains the new keys. Record Budget Committed, Actual, FFC, Forecast Cash
+      Out and the Commercial margin before and after the release on a project
+      with data → identical. Raise a supplier invoice against a PO sent through
+      the new rules → succeeds; a progress claim against it → succeeds.

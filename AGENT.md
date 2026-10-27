@@ -172,6 +172,12 @@ frontend/
                     poLineRecognition.js (ADR-55 — one recognition path per PO
                     line: the direct-invoice / claim authoring guards and the
                     mixed-mode overlap detection; pure, client-only),
+                    poCancellation.js (ADR-57 — the strict PO cancel policy over
+                    claims, invoices and supplier variations: blockers, reason
+                    text, fail-closed guard; pure, client-only, DC35), purchaseOrderActions.js (ADR-57 — the ONE guarded
+                    send / close / cancel transaction, SDK injected; refuses a
+                    stale copy and re-checks the cancel policy against server
+                    copies),
                     quantBoq.js (Quant™ 1B — pure unit alias table with
                     factor 1 only, link state, the per-item aggregate of
                     eligible linked measurements summed unrounded and rounded
@@ -266,9 +272,22 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
                                              never a certificate; ADR-52); edits and the Quant apply are version-guarded
                                              transactions (CLIENT-enforced — revision stays 1, DC33);
                                              reads restricted to financial roles
-  …/purchaseOrders/{poId}                    poNumber, status, supplierName, lineItems[], subtotal, gst, total —
-                                             reads restricted to financial roles (ADR-56); write lifecycle
-                                             CLIENT-only until M2-B
+  …/purchaseOrders/{poId}                    poNumber, status, supplierName, supplierId (null pre-Contacts),
+                                             lineItems[] (1–200), subtotal, gst, total, currency (pinned to the
+                                             project's resolved currency at create), revision, sentAt/By,
+                                             closedAt/By, cancelledAt/By, externalRefs, createdAt/By, updatedAt/By —
+                                             reads restricted to financial roles (ADR-56); LIFECYCLE (born draft;
+                                             draft|pending_approval→sent; sent→closed; draft|pending_approval|sent
+                                             →cancelled; nothing enters pending_approval; closed/cancelled terminal),
+                                             DRAFT-ONLY EDITING, FREEZE AFTER SEND, ACTOR == CALLER + SERVER-TIME
+                                             STAMPS and the WHOLE-CENT HEADER (subtotal + gst == total exactly; gst
+                                             exactly 10% half-up, one cent below admitted on a half-cent boundary
+                                             only) are RULES-ENFORCED (ADR-57, M2-B1, NOT YET DEPLOYED — Hosting
+                                             first, rules second); the strict CANCEL policy (no non-rejected claim,
+                                             non-cancelled invoice or non-rejected/non-withdrawn supplier variation
+                                             — lib/poCancellation.js, re-checked in
+                                             the guarded transaction lib/purchaseOrderActions.js) and lineItems
+                                             contents are CLIENT-only (DC35)
   …/progressClaims/{claimId}                 claimNumber, status, poId, cumulative lineItems[], retention,
                                              claimed/approved subtotal-gst-total — reads restricted to financial
                                              roles (ADR-56); write lifecycle CLIENT-only until M2-B
