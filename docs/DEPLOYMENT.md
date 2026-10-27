@@ -179,9 +179,9 @@ Hosting deploy awaits cofounder acceptance).
 **Rollback.** Re-publish the previous ruleset (196,622 bytes, the 1D / M1
 version). No data, document or bundle is affected either way — rules read
 nothing new and write nothing. Rolling back **restores the P0 exposure**, so it
-should be a last resort and brief. ⚠️ Once M2-B1 is live this rollback target
-is superseded: see the M2-B1 note (rules roll back to the M2-A ruleset, never
-further, while the M2-B1 bundle is deployed). **What rollback cannot do:** it cannot undo
+should be a last resort and brief. ⚠️ Once M2-B1 / M2-B2 are live this
+rollback target is superseded: see the M2-B2 note (rules roll back to the
+M2-A ruleset, never further, while the M2-B bundle is deployed). **What rollback cannot do:** it cannot undo
 any read an external user performed while the exposure was live, and it does
 not change whether such users exist (NOT VERIFIED — check `users/{uid}.role`
 in the console; disable or de-provision any `subcontractor` / `client` account
@@ -261,6 +261,108 @@ pre-M2-B1 PO stays writable, and a post-M2-B1 PO (which carries the extra
 keys) is read and written by the old bundle without complaint (it uses partial
 `updateDoc` and never asserts a key set). No migration, backfill or data
 rewrite is involved in either direction.
+
+**Progress Claim Lifecycle Security — M2-B2 (ADR-58): IMPLEMENTED — NOT YET
+DEPLOYED. HOSTING FIRST, THEN RULES — the ADR-40 ordering gate applies, and
+this release SUPERSEDES the M2-B1 release order above: the two pending rules
+changes ship in ONE publish and the three pending Hosting changes in ONE
+deploy unless cherry-picked.** The M2-B2 bundle changes the claim write paths
+(`hooks/useProgressClaims.jsx`, `lib/progressClaimActions.js`,
+`lib/progressClaims.js`, `pages/project/ProjectProgressClaims.jsx`): every
+claim write now carries `updatedAt` / `updatedBy` and `revision + 1`, a create
+carries null `submittedBy` / `rejectedBy`, each transition writes its `*By`
+actor through a revision-guarded transaction, and the draft edit runs through
+one too. The revised `frontend/firestore.rules` (**224,528 bytes**; 207,567
+after M2-B1, 197,035 live) makes the `progressClaims` block REQUIRE those keys
+(`updateStamped()` and `revisionIncremented()` on every write, the `*By`
+stamps on each transition, the exact key set and a `get()` on the source PO
+at create). The compatibility analysis is the M2-B1 one, extended:
+
+- *Live (pre-M2-B2) bundle + new rules* (rules first) → **outage**: every
+  claim create, draft edit, submit, approve and reject in the live app fails
+  with *Missing or insufficient permissions* — the live bundle sends no
+  stamp and never increments `revision`. The same is true of every PO write
+  (M2-B1). Do not publish first.
+- *New bundle + live M2-A rules* (Hosting first) → **safe**: the live claim
+  AND PO write rules are tenant-and-role only, so they accept every new
+  payload; the stale guards and the stricter client checks run in the client,
+  the rules simply do not yet back them. This is the **compatibility phase**.
+- *New bundle + the M2-B1 ruleset alone* — **not a state this release
+  creates** (M2-B1 was never published), but it would also be safe: the
+  M2-B1 ruleset's claim block is the M2-A one. There is therefore **no
+  intermediate compatibility risk between M2-B1 and M2-B2**: the M2-B2
+  ruleset is a strict tightening of the M2-B1 ruleset (claim block only), and
+  the M2-B1 ruleset a strict tightening of M2-A (PO block only). Publishing
+  the M2-B2 ruleset directly over M2-A is the recommended path — one publish,
+  one verification, no M2-B1-only interval.
+- *New Hosting bundle against the M2-B2 ruleset* — the M2-B1 PO paths and the
+  M2-B2 claim paths are both required by it and both present in the bundle
+  (`main` carries M1 + M2-B1 + M2-B2). A bundle built WITHOUT M2-B1 (a
+  cherry-pick of M2-B2 alone) against the M2-B2 ruleset would break every PO
+  write — so if M2-B2 is ever cherry-picked ahead of M2-B1, the PO block must
+  be cherry-picked with it, or the rules publish must wait for M2-B1's
+  Hosting.
+
+**M1 (ADR-55) is merged, Hosting on hold pending cofounder acceptance; M2-B1
+(ADR-57) is merged, not deployed.** `main` carries both; a Hosting deploy of
+M2-B2 ships M1 + M2-B1 + M2-B2 together unless cherry-picked. M2-B2 does not
+itself require M1 (no M1 field or figure) and does not require M2-B1 at the
+bundle level (separate paths), but its **ruleset** contains M2-B1's PO block,
+so the ruleset requires BOTH bundles to be live. The M2-A ruleset live in
+production is a strict subset of the M2-B2 ruleset (read predicates
+unchanged; PO and claim write rules tightened; nothing else touched).
+
+Release, in order, each a separate approved action:
+
+1. **M1 Hosting acceptance** by the cofounder (or an explicit decision to
+   ship M1 + M2-B1 + M2-B2 together). Cofounder acceptance gates stay
+   mandatory for every step that touches production.
+2. Lead Architect review of M2-B2; commit and merge to `main`; Azure CI green
+   (lint → unit → **rules** → build).
+3. `cd frontend && npm run lint && npm run test:unit && npm run test:rules &&
+   npm run build` — green; the size test passes (224,528 bytes against the
+   245,000-byte budget).
+4. **Confirm the live ruleset first** (procedure above) and record its
+   timestamp and byte count (expected: the M2-A ruleset, 197,035 bytes —
+   neither M2-B1 nor M2-B2 has been published).
+5. **Deploy Hosting** (M1 + M2-B1 + M2-B2): `firebase deploy --only hosting
+   --project constrapp-69b5d`. Hard-refresh and verify, against the
+   STILL-LIVE M2-A rules: the M2-B1 PO checks (create, edit, send, close,
+   cancel; the cancel reason on a linked PO; `sentBy` / `updatedAt` in the
+   console) AND the M2-B2 claim checks — raise a draft claim, edit it, submit,
+   assess → approve, withdraw a second draft; the approved document in the
+   console carries `submittedBy`, `approvedBy`, `updatedAt` / `updatedBy` and
+   `revision: 3`. This is the compatibility phase; it may stay in place as
+   long as needed.
+6. **Publish `frontend/firestore.rules`** (procedure above) — the ONE publish
+   covering M2-B1 and M2-B2. Confirm the live version is the published one
+   (search `ADR-57` AND `ADR-58`; `diff <(pbpaste) frontend/firestore.rules`
+   empty; **224,528** bytes).
+7. **Verify in production** per TESTING.md §33 (M2-B1) and §34 (M2-B2) and
+   record the outcome here.
+8. Close the milestones: mark ADR-57 and ADR-58 LIVE here, in SECURITY.md,
+   DATA_MODEL.md, FINANCIAL_WORKFLOWS.md, ROADMAP.md and AGENT.md.
+
+**Rollback.** *Rules only* (after step 6, keeping the new bundle):
+re-publish the M2-A ruleset (197,035 bytes) — the new bundle keeps working
+unchanged against it (proven in step 5); the only loss is the rules-level
+enforcement of BOTH M2-B1 and M2-B2 (there is no M2-B1-only ruleset to fall
+back to unless one is built from the `d29e993` tree and tested). *Hosting
+only* (after step 5, before step 6): redeploy the previous build — the live
+M2-A rules accept its writes. *Both* (after step 6): **rules back first, then
+Hosting** — never the reverse, because the old bundle against the new rules
+is the outage above. Existing documents are unaffected in every direction:
+the new rules compare the added keys through `get(key, null)`, read a missing
+`revision` as 0 and require the stamps only of the incoming document, so a
+pre-M2-B2 claim stays writable, and a post-M2-B2 claim (which carries the
+extra keys and a higher `revision`) is read by the old bundle without
+complaint and written by it with partial `updateDoc` — the old bundle writes
+`revision` nowhere, so a rolled-back bundle against the rolled-back rules
+leaves the higher revision in place harmlessly. **What rollback cannot do:**
+it cannot undo a forged or out-of-lifecycle claim write performed while the
+tenant-and-role rules were live, and it cannot make a document approved
+through the new rules un-approved. No migration, backfill or data rewrite is
+involved in either direction.
 
 **Quant™ 1B (ADR-52): LIVE IN PRODUCTION (October 2026).** Released in the
 order below — rules published and confirmed live first, then Hosting — and

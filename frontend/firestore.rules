@@ -605,11 +605,25 @@ service cloud.firestore {
     // Reads: internal financial roles only (ADR-56) — claimed and certified
     // amounts and assessment notes are commercially sensitive. Supplier-scoped
     // subcontractor reads need a membership model (M3); denied until then.
-    // Create/update: company_admin, project_manager, or qs (assesses/certifies claims).
+    // Create/update: company_admin, project_manager, or qs — LIFECYCLE
+    // RULES-ENFORCED since ADR-58 (M2-B2): born draft against a SENT purchase
+    // order of the same project (get(): status, number, supplier identity and
+    // line COUNT pinned to the PO), the caller's stamps, the project's resolved
+    // currency and revision 1; draft-only content edits with the line count
+    // fixed; exactly draft → submitted, submitted|under_review → approved,
+    // draft|submitted|under_review → rejected, each touching only status, its
+    // own (at, by) stamps, the audit stamps and the revision (approval also
+    // writes the certified lines, the approved header and the assessment
+    // notes), actor == caller, time == request.time; claimed money frozen after
+    // submit, approved money frozen forever; whole-cent header arithmetic on
+    // both sides, approved subtotal never above the claimed subtotal; revision
+    // EXACTLY +1 on every update; nothing enters the reserved `under_review` or
+    // `invoiced`; approved / rejected / invoiced terminal.
     // Delete: blocked — rejection/withdrawal is a status change; claims are audit records.
-    // TODO (M2-B): enforce status-transition legality, immutability after
-    // submission, and creator ≠ approver segregation here rather than only in
-    // the client hook.
+    // What rules CANNOT verify — lineItems contents, Σ line == subtotal, one
+    // open claim per PO, cumulative claiming against the PO, the mixed-mode
+    // (claim vs direct invoice) overlap, and creator ≠ approver (permitted by
+    // decision) — is recorded in docs/SECURITY.md → Deferred Control 36.
     match /companies/{companyId}/projects/{projectId}/progressClaims/{claimId} {
       function financialMember() {
         return request.auth != null
@@ -617,7 +631,291 @@ service cloud.firestore {
             && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
             && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
       }
-      allow read, create, update: if financialMember();
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+      // Whole cents — see the supplierInvoices block for why doubles are never
+      // compared directly.
+      function cents(v) {
+        return math.round(v * 100);
+      }
+      // 10% of a cent amount, round-half-up, correct under either division
+      // semantics (same helper as supplierInvoices / purchaseOrders).
+      function gstCents(c) {
+        return math.floor((c + 5) / 10);
+      }
+      // lib/progressClaims.js → claimTotals computes roundMoney(net × 0.1) in
+      // binary floating point, which on some half-cent boundaries lands a hair
+      // below .5 and rounds DOWN (the ADR-57 finding, same helper, swept again
+      // for claimTotals in tests/unit/progressClaims.test.js): the GST must be
+      // EXACTLY half-up, or ONE cent below it on a boundary only. `-5` admits
+      // the same deviation on the negative net a LEGACY negative retention can
+      // still produce at approval (new writes require retention >= 0).
+      function gstPinned(netC, gstC) {
+        return gstC == gstCents(netC)
+            || ((netC % 10 == 5 || netC % 10 == -5) && gstC == gstCents(netC) - 1);
+      }
+      function projectPath() {
+        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId);
+      }
+      function poPath() {
+        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/purchaseOrders/$(request.resource.data.poId);
+      }
+      // lib/currency.js → resolveProjectCurrency, mirrored (as in the
+      // purchaseOrders block). Checked at CREATE only; frozen afterwards.
+      function resolvedCurrency() {
+        let pc = get(projectPath()).data.get('currency', '');
+        let cc = get(/databases/$(database)/documents/companies/$(companyId)).data.get('baseCurrency', '');
+        return (pc is string && pc.matches('^[A-Z]{3}$')) ? pc
+             : ((cc is string && cc.matches('^[A-Z]{3}$')) ? cc : 'AUD');
+      }
+      // Exact key set of a document the app creates (hooks/useProgressClaims.jsx).
+      function exactKeys() {
+        return request.resource.data.keys().hasOnly(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+            && request.resource.data.keys().hasAll(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']);
+      }
+      // Identity written once. `supplierId` is null on a claim raised from a
+      // pre-Contacts PO (ADR-15); `variationId` is a RESERVED forward link and
+      // must be null (the claim-against-variation linkage is not wired).
+      function identityShapeValid() {
+        let d = request.resource.data;
+        return d.claimNumber is string
+            && d.claimNumber.matches('^PC-[0-9]{4,}$')
+            && d.poId is string
+            && d.poId.size() > 0
+            && d.poNumber is string
+            && d.supplierName is string
+            && d.supplierName.size() <= 200
+            && (d.supplierId == null || (d.supplierId is string && d.supplierId.size() > 0))
+            && d.variationId == null
+            && d.currency is string
+            && d.currency.matches('^[A-Z]{3}$')
+            && d.revision == 1
+            && d.externalRefs is map
+            && d.assessmentNotes == '';
+      }
+      // Authored content. Bounds stop unbounded strings, not business cases;
+      // the line COUNT is the honest ceiling on what rules can say about
+      // `lineItems` (no iteration — Deferred Control 36).
+      function contentShapeValid() {
+        let d = request.resource.data;
+        return d.claimRef is string
+            && d.claimRef.size() <= 200
+            && d.periodEnding is string
+            && (d.periodEnding == '' || d.periodEnding.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'))
+            && d.notes is string
+            && d.notes.size() <= 5000
+            && d.lineItems is list
+            && d.lineItems.size() >= 1
+            && d.lineItems.size() <= 200;
+      }
+      // The CLAIMED header, as lib/progressClaims.js → claimTotals writes it:
+      // retention >= 0 (the ADR-40 floor — a negative retention would raise the
+      // payable above the claim) and <= subtotal (the clamp), subtotal > 0 (at
+      // least one line claims something — validateClaimDraft), gst pinned to
+      // 10% of (subtotal − retention), total == net + gst exactly.
+      function claimedMoneyTypesValid() {
+        let d = request.resource.data;
+        return d.retention is number
+            && d.claimedSubtotal is number
+            && d.claimedGst is number
+            && d.claimedTotal is number
+            && d.retention >= 0
+            && d.claimedSubtotal > 0;
+      }
+      function claimedMoneyBalanced() {
+        let d   = request.resource.data;
+        let sub = cents(d.claimedSubtotal);
+        let ret = cents(d.retention);
+        let gst = cents(d.claimedGst);
+        return ret <= sub
+            && gstPinned(sub - ret, gst)
+            && sub - ret + gst == cents(d.claimedTotal);
+      }
+      function claimedMoneyValid() {
+        return claimedMoneyTypesValid() && claimedMoneyBalanced();
+      }
+      // The APPROVED header, as claimTotals(approvedAmounts, claim.retention)
+      // writes it at approval: the STORED retention (never rewritten) is
+      // clamped to the approved subtotal; the approved subtotal can never
+      // exceed the STORED claimed subtotal (certify at most what was claimed —
+      // approvedLineError per line, here in aggregate). The stored retention
+      // is validated by identity only, so a legacy claim approves exactly as
+      // the app computes it.
+      function approvedMoneyTypesValid() {
+        let d = request.resource.data;
+        let p = resource.data;
+        return d.approvedSubtotal is number
+            && d.approvedGst is number
+            && d.approvedTotal is number
+            && d.approvedSubtotal >= 0
+            && p.retention is number
+            && p.claimedSubtotal is number;
+      }
+      function approvedMoneyBalanced() {
+        let d   = request.resource.data;
+        let sub = cents(d.approvedSubtotal);
+        let ret = cents(resource.data.retention);
+        let r   = ret < sub ? ret : sub;
+        let gst = cents(d.approvedGst);
+        return sub <= cents(resource.data.claimedSubtotal)
+            && gstPinned(sub - r, gst)
+            && sub - r + gst == cents(d.approvedTotal);
+      }
+      function approvedMoneyValid() {
+        return approvedMoneyTypesValid() && approvedMoneyBalanced();
+      }
+      function updateStamped() {
+        return request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.updatedAt == request.time;
+      }
+      // Born draft, stamped by its creator, every lifecycle stamp and every
+      // approved value null.
+      function createValid() {
+        let d = request.resource.data;
+        return d.status == 'draft'
+            && d.createdBy == request.auth.uid
+            && d.createdAt == request.time
+            && d.submittedAt == null
+            && d.submittedBy == null
+            && d.approvedAt == null
+            && d.approvedBy == null
+            && d.rejectedAt == null
+            && d.rejectedBy == null
+            && d.invoicedAt == null
+            && d.approvedSubtotal == null
+            && d.approvedGst == null
+            && d.approvedTotal == null;
+      }
+      // Tier-2 source validation — CREATE ONLY. The PO is a scalar reference,
+      // so it CAN be get()-ed: it must exist in THIS project and be `sent`
+      // (lib/progressClaims.js → CLAIMABLE_PO_STATUSES), and the claim's
+      // number, supplier snapshot and line COUNT must be the PO's (the line
+      // set is one-per-PO-line, ADR-37). The path is built inside the guarded
+      // branch, never before it. Repeated access to one document within one
+      // evaluation is a single billed read.
+      function sourcePoValid() {
+        let d = request.resource.data;
+        return exists(poPath())
+            && get(poPath()).data.status == 'sent'
+            && get(poPath()).data.poNumber == d.poNumber
+            && get(poPath()).data.supplierName == d.supplierName
+            && get(poPath()).data.get('supplierId', null) == d.supplierId
+            && get(poPath()).data.lineItems is list
+            && get(poPath()).data.lineItems.size() == d.lineItems.size();
+      }
+      // The identity no update may rewrite. Optional keys are read through
+      // get(key, null) on BOTH sides so a document written before ADR-58 (no
+      // `submittedBy` / `rejectedBy` / audit keys) compares equal and stays
+      // writable; `hasOnly` on changedKeys() in every branch below is what
+      // freezes the stamps and the money a transition does not own.
+      function corePreserved() {
+        let d = request.resource.data;
+        let p = resource.data;
+        return d.claimNumber == p.claimNumber
+            && d.poId == p.poId
+            && d.poNumber == p.poNumber
+            && d.supplierName == p.supplierName
+            && d.get('supplierId', null) == p.get('supplierId', null)
+            && d.get('variationId', null) == p.get('variationId', null)
+            && d.get('currency', null) == p.get('currency', null)
+            && d.get('externalRefs', null) == p.get('externalRefs', null)
+            && d.createdAt == p.createdAt
+            && d.createdBy == p.createdBy;
+      }
+      // EXACTLY +1 on every update (the pulseAcknowledgements / takeoff idiom).
+      // With the client writing the revision it REVIEWED + 1 inside a
+      // transaction (lib/progressClaimActions.js), a write over a newer copy
+      // fails here — rules-ASSISTED concurrency, not rules-proven (DC36). A
+      // legacy document always holds 1; a missing key reads as 0.
+      function revisionIncremented() {
+        return request.resource.data.revision is number
+            && request.resource.data.revision == resource.data.get('revision', 0) + 1;
+      }
+      function notesBounded() {
+        return request.resource.data.assessmentNotes is string
+            && request.resource.data.assessmentNotes.size() <= 5000;
+      }
+
+      allow read: if financialMember();
+
+      allow create: if financialMember()
+                  && exactKeys()
+                  && createValid()
+                  && updateStamped()
+                  && identityShapeValid()
+                  && contentShapeValid()
+                  && claimedMoneyValid()
+                  && exists(projectPath())
+                  && request.resource.data.currency == resolvedCurrency()
+                  && sourcePoValid();
+
+      // `resource != null` first — a denied create is also measured against
+      // this rule (see the supplierInvoices note on the 1000-expression ceiling).
+      allow update: if resource != null
+                  && financialMember() && corePreserved() && updateStamped() && revisionIncremented() && (
+                    // (a) DRAFT EDIT — the authored content and the derived
+                    //     claimed header only (hooks/useProgressClaims.jsx →
+                    //     updateProgressClaim). Status, every stamp, every
+                    //     approved value and the assessment notes are outside
+                    //     the list. The line COUNT is pinned: the set is fixed
+                    //     one-per-PO-line and a draft edit re-authors amounts,
+                    //     never lines.
+                    (
+                      resource.data.status == 'draft'
+                      && changedKeys().hasOnly(['claimRef', 'periodEnding', 'notes', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'revision', 'updatedAt', 'updatedBy'])
+                      && contentShapeValid()
+                      && claimedMoneyValid()
+                      && request.resource.data.lineItems.size() == resource.data.lineItems.size()
+                    )
+                    ||
+                    // (b) SUBMIT — THE CLAIMED-MONEY FREEZE POINT and the
+                    //     moment the claim starts counting as Claimed. Stamps
+                    //     only; the stored lines are what gets frozen, so a
+                    //     draft with no line cannot be submitted.
+                    (
+                      resource.data.status == 'draft'
+                      && request.resource.data.status == 'submitted'
+                      && resource.data.lineItems is list
+                      && resource.data.lineItems.size() >= 1
+                      && changedKeys().hasOnly(['status', 'submittedAt', 'submittedBy', 'revision', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.submittedBy == request.auth.uid
+                      && request.resource.data.submittedAt == request.time
+                    )
+                    ||
+                    // (c) APPROVE — THE CERTIFICATION POINT (Actual starts
+                    //     recognising the certified value). From submitted, or
+                    //     the reserved under_review which nothing enters. It
+                    //     writes the certified lines (contents unverifiable —
+                    //     the count is pinned), the approved header, the
+                    //     assessment notes and its own stamps — the claimed
+                    //     header and the retention are untouched, and the
+                    //     approved subtotal cannot exceed the claimed one.
+                    (
+                      resource.data.status in ['submitted', 'under_review']
+                      && request.resource.data.status == 'approved'
+                      && changedKeys().hasOnly(['status', 'lineItems', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'assessmentNotes', 'approvedAt', 'approvedBy', 'revision', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.approvedBy == request.auth.uid
+                      && request.resource.data.approvedAt == request.time
+                      && request.resource.data.lineItems is list
+                      && request.resource.data.lineItems.size() == resource.data.lineItems.size()
+                      && notesBounded()
+                      && approvedMoneyValid()
+                    )
+                    ||
+                    // (d) REJECT (terminal) — from any open status; a draft
+                    //     rejection is a withdrawal. Stamps plus the optional
+                    //     assessment notes; nothing else moves.
+                    (
+                      resource.data.status in ['draft', 'submitted', 'under_review']
+                      && request.resource.data.status == 'rejected'
+                      && changedKeys().hasOnly(['status', 'rejectedAt', 'rejectedBy', 'assessmentNotes', 'revision', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.rejectedBy == request.auth.uid
+                      && request.resource.data.rejectedAt == request.time
+                      && notesBounded()
+                    )
+                  );
+
       allow delete: if false;
     }
 

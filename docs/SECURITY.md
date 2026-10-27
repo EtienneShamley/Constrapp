@@ -102,7 +102,7 @@ Control 20).
 | `…/projects/{id}/budgetLines/{id}` | **financial roles only** (ADR-56; was company member) | financial roles | blocked |
 | `…/projects/{id}/boqItems/{id}` | **financial roles only** | financial roles, **create active-only; transitions, post-void immutability and the `amount == quantity × rate` invariant rules-enforced; the optional `quantApplied` map (ADR-52) absent at create and, on an edit, preserved verbatim or fresh — exact keys, `by == caller`, `at == request.time`, `quantity == the written quantity`** — the version guard on edits and the Quant apply is CLIENT-only (DC33) | blocked — void via status |
 | `…/projects/{id}/purchaseOrders/{id}` | **financial roles only** (ADR-56; was company member) | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time and the project's resolved currency; draft-only content edits (`hasOnly`); `draft\|pending_approval → sent`, `sent → closed`, `draft\|pending_approval → cancelled`, `sent → cancelled` each stamps-only with actor == caller and time == `request.time`; identity, money and earlier stamps frozen after send; `subtotal + gst == total` in cents and `gst` exactly 10% half-up (one cent below also accepted on a half-cent boundary only); nothing enters `pending_approval`; closed / cancelled terminal — ALL RULES-ENFORCED (ADR-57, M2-B1, NOT YET DEPLOYED)**. `lineItems` contents, Σ lineTotal and the linked claim / invoice / supplier-variation cancel policy are client-only (DC35) | blocked — cancel via status |
-| `…/projects/{id}/progressClaims/{id}` | **financial roles only** (ADR-56; was company member) | financial roles — **no lifecycle, shape, money or stamp validation (M2-B)** | blocked — reject via status |
+| `…/projects/{id}/progressClaims/{id}` | **financial roles only** (ADR-56; was company member) | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time, the project's resolved currency and a `get()` on the source PO (same project, exists, `sent`; number, supplier identity and line count pinned); draft-only content edits (`hasOnly`, line count fixed); `draft → submitted`, `submitted\|under_review → approved`, `draft\|submitted\|under_review → rejected` each with actor == caller and time == `request.time` (approval also carrying the certified lines, the approved header and the notes); claimed header frozen after submit, approved values frozen forever; whole-cent headers on both sides (retention ≥ 0 and ≤ subtotal, GST exactly 10% of the net half-up or one cent below on a boundary, totals exact, approved subtotal ≤ claimed subtotal); `revision` exactly +1 on every update; `under_review` / `invoiced` unauthorable; approved / rejected / invoiced terminal — ALL RULES-ENFORCED (ADR-58, M2-B2, NOT YET DEPLOYED)**. `lineItems` contents, Σ lines, one open claim per PO, cumulative ceilings, the mixed-mode overlap and creator ≠ approver are client-only (DC36) | blocked — reject via status |
 | `…/projects/{id}/supplierInvoices/{id}` | **financial roles only** | financial roles | blocked — cancel via status |
 | `…/projects/{id}/clientInvoices/{id}` | **financial roles only** | financial roles, **create draft-only; transitions and issued-immutability rules-enforced** | blocked — void via status |
 | `…/projects/{id}/clientReceipts/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability and the scalar amount invariant rules-enforced** | blocked — void via status |
@@ -319,6 +319,125 @@ compared through `get(key, null)` on both sides, the audit stamps are required
 only of the incoming document, and the exact key set applies to `create` only,
 so a pre-ADR-57 PO stays editable, sendable, closable and cancellable and
 acquires the new fields on its next valid write.
+
+## Progress Claims — rules-enforced lifecycle (ADR-58, M2-B2 — NOT YET DEPLOYED)
+
+**Until ADR-58 the `progressClaims` block enforced tenant and role and nothing
+else**, while `supplierInvoices` `get()`s a claim's `status` at invoice create
+and Actual, Remaining Committed, Forecast Final Cost, Cash Flow, Margin, PULSE
+and SHIELD trust `status`, `lineItems[].approvedThisPeriod`, `poId` and the
+header totals at read time. A financial-role caller with the Firebase SDK
+could create a claim already `approved` against any (or no) PO, certify more
+than was claimed, rewrite an approved claim's lines or supplier, revive a
+rejected claim, forge `approvedBy`, or store a header unrelated to its GST.
+**Nothing below is enforced in production until the revised ruleset is
+published** (DEPLOYMENT.md → *M2-B2 release order*).
+
+**Reads** stay restricted to `company_admin` / `project_manager` / `qs`
+(ADR-56). **Delete** stays blocked for every role and every status.
+
+**Two freeze points.** `submitted` freezes the authored content (claimed lines,
+retention, period, refs, notes) and starts the Claimed counting;
+`approved` writes the certified lines and the approved header once and is
+terminal — approved amounts are frozen forever. `rejected` (a withdrawal from
+`draft`) and the reserved `invoiced` are terminal too.
+
+*Rules-enforced (`tests/rules/progressClaims.rules.test.js`):*
+
+- `create` only with the **exact key set** the hook writes (the 29 existing
+  keys plus `submittedBy`, `rejectedBy`, `updatedAt`, `updatedBy`),
+  `status: 'draft'`, `createdBy` and `updatedBy` `== request.auth.uid`,
+  `createdAt` and `updatedAt` `== request.time`, **every lifecycle stamp and
+  every approved value null**, `assessmentNotes` empty, `claimNumber` matching
+  `PC-####`, `supplierName` ≤ 200, `supplierId` null or non-empty,
+  `variationId` **null** (reserved), `revision` 1, `externalRefs` a map,
+  `claimRef` ≤ 200, `periodEnding` empty or `YYYY-MM-DD`, `notes` ≤ 5000, and
+  `lineItems` a list of **1 to 200**.
+- **Source PO at create (a `get()` on the scalar `poId`):** the PO must exist
+  **in the same project path** and be `sent` (`CLAIMABLE_PO_STATUSES`), and
+  the claim's `poNumber`, `supplierName`, `supplierId` and **line count** must
+  be the PO's. A draft, pending, closed or cancelled PO, a PO from another
+  project or company, a foreign supplier snapshot or a different line count is
+  refused. Checked at create only — a claim whose PO is later closed or
+  cancelled still edits, submits, approves and rejects (the PO is read nowhere
+  else).
+- **Currency and project consistency at create:** the project must exist and
+  `currency` must equal the project's resolved currency exactly as
+  `lib/currency.js → resolveProjectCurrency` computes it (project → company
+  `baseCurrency` → `AUD`) — the ADR-57 mirror. Frozen afterwards.
+- **Scalar money, in whole cents, with the claim's own formula** (GST on the
+  NET — `lib/progressClaims.js → claimTotals`): *claimed side* (create and
+  draft edit) — `retention >= 0` (the ADR-40 floor; a negative retention would
+  raise the payable above the claim), `claimedSubtotal > 0` (at least one line
+  claims something), `cents(retention) <= cents(claimedSubtotal)`,
+  `cents(claimedGst)` **exactly** 10% round-half-up of `cents(claimedSubtotal)
+  − cents(retention)` — or one cent below it on a half-cent boundary only (the
+  provable floating-point deviation of `claimTotals`, swept in the unit
+  suite) — and `cents(claimedTotal)` exact. *Approved side* (approval only) —
+  `approvedSubtotal >= 0`, **`cents(approvedSubtotal) <= cents(claimedSubtotal)`**
+  (certify at most what was claimed), the STORED `retention` clamped to the
+  approved subtotal exactly as `claimTotals(approvedAmounts, claim.retention)`
+  does, the same GST pin on that net, the total exact. The stored retention is
+  used by identity and not re-floored at approval, so a legacy claim approves
+  exactly as the app computes it.
+- **Every** update preserves `claimNumber`, `poId`, `poNumber`, `supplierName`,
+  `supplierId`, `variationId`, `currency`, `externalRefs`, `createdAt`,
+  `createdBy`; stamps `updatedBy == request.auth.uid`, `updatedAt ==
+  request.time`; and carries **`revision == stored + 1`** (a missing legacy
+  key reads as 0).
+- **Draft-only editing:** on a `draft`, `changedKeys().hasOnly(['claimRef',
+  'periodEnding', 'notes', 'lineItems', 'retention', 'claimedSubtotal',
+  'claimedGst', 'claimedTotal', 'revision', 'updatedAt', 'updatedBy'])` with
+  the content shape and claimed money re-checked and the **line count equal to
+  the stored count** (the set is one line per PO line — ADR-37). Status, every
+  stamp, every approved value and the assessment notes are outside the list.
+- **Transitions:** `draft → submitted` (`hasOnly(['status', 'submittedAt',
+  'submittedBy', 'revision', 'updatedAt', 'updatedBy'])`, the stored lines
+  non-empty); `submitted|under_review → approved` (`hasOnly(['status',
+  'lineItems', 'approvedSubtotal', 'approvedGst', 'approvedTotal',
+  'assessmentNotes', 'approvedAt', 'approvedBy', 'revision', 'updatedAt',
+  'updatedBy'])`, the certified line count equal to the stored count, notes
+  ≤ 5000, the approved money as above); `draft|submitted|under_review →
+  rejected` (`hasOnly(['status', 'rejectedAt', 'rejectedBy',
+  'assessmentNotes', 'revision', 'updatedAt', 'updatedBy'])`); each with the
+  actor `== request.auth.uid` and the timestamp `== request.time`. Submit and
+  reject can carry **no** content change; approval can touch nothing but the
+  certified lines, the approved header, the notes and its stamps — the claimed
+  header and the retention are frozen from `submitted` on.
+- **The reserved `under_review` and `invoiced` are unauthorable as targets**
+  (no stamp, no application path — the ADR-57 `pending_approval` posture; the
+  hook refuses them too), but a document already holding `under_review` can
+  still be approved or rejected, so none is stranded. `approved`, `rejected`
+  and `invoiced` are **terminal** — they match no update branch; a rejected
+  claim cannot be revived and an approved one cannot be re-assessed, rejected
+  or reopened. Any unknown status is refused from every state. Posting a
+  claim-sourced supplier invoice writes **nothing** to the claim — the
+  hand-over is the read-time `invoicedClaimIds` exclusion, unchanged.
+- **Creator self-approval is permitted** — the creator may submit and approve
+  their own claim. Mandatory separation of duties is **not approved**
+  (Deferred Control 4).
+
+*Client-enforced only (deferred — never describe these as enforced):* the
+**revision-guarded stale check** (`lib/progressClaimActions.js` refuses a copy
+whose status OR revision moved on the server; the rule only makes a write
+carrying `reviewed + 1` fail — a caller who reads first and writes `stored + 1`
+passes), **one open claim per PO**, **cumulative claiming** (the
+`previouslyApproved` seed, no line below it, at least one line claimed above
+zero — the editor and `validateClaimDraft`), **per-line certified ≤ claimed**
+(`approvedLineError` — rules bound the subtotal only), `lineItems` **contents**,
+`Σ claimedThisPeriod == claimedSubtotal`, the mixed-mode overlap with a direct
+invoice (DC34), claim-number uniqueness (DC6) — see **Deferred Control 36**.
+
+⚠️ **Publishing these rules requires the ADR-40 ordering gate.** The block
+requires `updatedAt`/`updatedBy` and `revision + 1` on every write and the
+`*By` stamps on every transition and at create, and the pre-M2-B2 application
+bundle sends none of them. **The application build ships first; the rules are
+published second** — see DEPLOYMENT.md (the combined M1 / M2-B1 / M2-B2
+order). Existing documents are unaffected: the optional keys are compared
+through `get(key, null)`, the stamps are required only of the incoming
+document, a missing `revision` reads as 0, and the exact key set applies to
+`create` only, so a pre-ADR-58 claim stays editable, submittable, approvable
+and rejectable and acquires the new fields on its next valid write.
 
 ## Client Invoices — deliberately stricter than every other collection
 
@@ -1095,24 +1214,30 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
 1. **Server-enforced lifecycle transitions** — for the collections listed below,
    rules don't validate status changes; `canTransition` runs client-side only, so
    a financial-role user could set any status directly.
-   **Still deferred: `progressClaims`, `variations`**
-   (draft → submitted → approved/rejected/withdrawn legality) — M2-B2 / M2-B3.
+   **Still deferred: `variations`**
+   (draft → submitted → approved/rejected/withdrawn legality) — M2-B3.
    **Rules-enforced: `clientInvoices`, `clientReceipts`, `supplierPayments`,
    `supplierCreditNotes`, `retentionReleases`, `cashFlowLines`, `activities`,
    `rfis`, `boqItems`, `tenderPackages`, `tenderBids`, since ADR-40
-   `supplierInvoices`, and — since ADR-57 (M2-B1, NOT YET DEPLOYED) —
-   `purchaseOrders`** (see *Purchase Orders — rules-enforced lifecycle*). ⚠️ The supplier-invoice consequence recorded here is
+   `supplierInvoices`, since ADR-57 (M2-B1, NOT YET DEPLOYED)
+   `purchaseOrders`, and — since ADR-58 (M2-B2, NOT YET DEPLOYED) —
+   `progressClaims`** (see *Purchase Orders* and *Progress Claims —
+   rules-enforced lifecycle*). ⚠️ The supplier-invoice consequence recorded here is
    **closed**: a posted supplier invoice can no longer be cancelled or unposted,
    and `status: 'paid'` is unauthorable from any path (ADR-24/ADR-40). Rules
    prevent *future* forgery only — a document tampered with before ADR-40 keeps
    whatever status it holds.
-2. **Post-submission immutability** — freezing claim amounts after
-   submission/approval, and variation content after `submitted` / approved
-   amounts after `approved`, is client-side only; rules allow full document
-   updates on those two collections. **PO lines, header totals, supplier and
-   number ARE frozen by rules after `sent` since ADR-57 (M2-B1, NOT YET
-   DEPLOYED)** — a sent, closed or cancelled PO admits a stamps-only transition
-   or nothing. **One narrow exception (ADR-34):** a variation's
+2. **Post-submission immutability** — freezing variation content after
+   `submitted` / approved amounts after `approved` is client-side only; rules
+   allow full document updates on `variations`. **PO lines, header totals,
+   supplier and number ARE frozen by rules after `sent` since ADR-57 (M2-B1,
+   NOT YET DEPLOYED)** — a sent, closed or cancelled PO admits a stamps-only
+   transition or nothing. **Claim amounts ARE frozen by rules after
+   `submitted` and the certified lines and approved header after `approved`
+   since ADR-58 (M2-B2, NOT YET DEPLOYED)** — a submitted claim admits
+   approval or rejection, an approved, rejected or invoiced one admits
+   nothing; what is NOT frozen there is anything inside `lineItems` beyond
+   its count (item 36). **One narrow exception (ADR-34):** a variation's
    `originRfiId`/`originRfiNumber`/`originRfiTitle` **are** frozen by rules once
    it leaves `draft` — nothing else on the variation is.
    **Exception: issued `clientInvoices`, posted `clientReceipts`, posted
@@ -1131,7 +1256,11 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
    exists and is approved — they cannot verify it is not already invoiced. Proven
    unenforced by `tests/rules/supplierInvoices.rules.test.js`.
 4. **Creator vs approver segregation** — nothing prevents the claim (or
-   variation) creator from approving their own document.
+   variation) creator from approving their own document. Since ADR-58 the
+   claim's `submittedBy` / `approvedBy` are **verified** actors (`==
+   request.auth.uid`), so the record of WHO is trustworthy even though the two
+   may be the same person — permitted by decision; an opt-in policy needs
+   product approval.
 5. **Supplier-scoped subcontractor access** — ⚠️ **superseded in direction by
    ADR-56 (M2-A):** `subcontractor` / `client` can now read **no** PO, claim,
    budget line or cost code at all (LIVE since 27 October 2026). What remains deferred is
@@ -1885,6 +2014,58 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
 
     Every item above is **proven unenforced** by a passing test in
     `frontend/tests/rules/purchaseOrders.rules.test.js`, so the ceiling is
+    documented as explicitly as the floor.
+
+36. **Progress-claim line, aggregate, sibling and concurrency gaps (ADR-58,
+    M2-B2).** The `progressClaims` block now enforces the lifecycle, the
+    immutable identity, the audit and transition stamps, the create-time
+    source-PO / currency / project consistency, the whole-cent claimed and
+    approved headers, the approved-subtotal cap and the +1 revision (see
+    *Progress Claims — rules-enforced lifecycle* above). What it **cannot**
+    enforce, and what must never be described as enforced:
+
+    - **ONE OPEN CLAIM PER PO.** `hasOpenClaim` runs against the live
+      subscription in the hook and the page (the PO picker hides POs with a
+      draft / submitted / under-review claim). Rules have no list, query or
+      count, so a second open claim on the same PO is **ACCEPTED by rules** —
+      proven. Two simultaneous creators remain item 3; SHIELD check 4 lists
+      more than one open claim per PO after the fact.
+    - **CUMULATIVE CLAIMING.** The `previouslyApproved` seed, "claimed to date
+      cannot be below the previously approved amount", "at least one line
+      claims something" and the warn-only over-PO marker live in
+      `validateClaimDraft` / `buildClaimLine` and the editor. Rules see one
+      document: a negative `claimedThisPeriod` whose header still balances, a
+      claim above the PO line value, and a `claimedSubtotal` unrelated to its
+      lines are all ACCEPTED.
+    - **THE SHAPE OF EACH `lineItems[]` ELEMENT** — `poLineIndex`,
+      `costCodeId`, `costCodeName`, `description`, `poLineTotal`,
+      `previouslyApproved`, `claimedToDate`, `claimedThisPeriod`,
+      `approvedThisPeriod` are wholly unverified (no iteration). Only the
+      COUNT is pinned (to the PO's at create; to the stored count on edit and
+      approval). A certified line above its own claimed amount that still
+      sums under the claimed subtotal is ACCEPTED (the per-line bound is
+      `approvedLineError`, client-only); so is a wrong `poLineIndex`, which
+      moves Remaining Committed exactly as it moves Actual (item 34).
+    - **THE MIXED-MODE OVERLAP** with a direct supplier invoice on the same PO
+      line — item 34; ACCEPTED, proven.
+    - **THE STALE GUARD IS RULES-ASSISTED, NOT RULES-PROVEN.** The rule
+      requires `revision == stored + 1`; the client transaction writes the
+      revision it REVIEWED + 1 after confirming the server copy's status and
+      revision, so a write over a newer copy fails. A direct-SDK caller who
+      reads first and writes `stored + 1` passes — proven. True compare-and-
+      set needs a backend.
+    - **GST on a half-cent boundary** — as item 35: the half-up value and one
+      cent below are both admitted on a boundary of the NET (including a
+      negative net reached through a legacy negative retention at approval);
+      off a boundary the pin is exact; totals are always exact.
+    - **Claim-number uniqueness** (the counter is client-writable, item 6),
+      **that `supplierId` names a real contact** (the PO's value is pinned,
+      not its existence), **creator ≠ approver** (permitted by decision,
+      item 4), and **a rejection reason** (`assessmentNotes` stays optional —
+      a product choice, not a rules gap).
+
+    Every item above is **proven unenforced** by a passing test in
+    `frontend/tests/rules/progressClaims.rules.test.js`, so the ceiling is
     documented as explicitly as the floor.
 
 The intended remediation is server-side enforcement (Cloud Functions and/or

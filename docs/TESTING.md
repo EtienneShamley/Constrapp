@@ -59,7 +59,7 @@ That script runs
   inert here. The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **1629 in total across 24 files** (1550 across 23 files before ADR-57: `purchaseOrders.rules.test.js` adds **79**; the `externalRoles` PO fixtures were revised to the ADR-57 shape with no change to its assertions or count; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §33):
+- Tests — **1731 in total across 25 files** (1629 across 24 files before ADR-58: `progressClaims.rules.test.js` adds **102**; the `externalRoles` claim fixtures and its one PO seed, and the PO suite's one claim-create case, were revised to the ADR-58 shape with no change to any assertion or count; 1550 across 23 files before ADR-57: `purchaseOrders.rules.test.js` adds **79**; the `externalRoles` PO fixtures were revised to the ADR-57 shape; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §33 and §34):
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -416,6 +416,102 @@ That script runs
     numbers, a `supplierId` naming no contact, an unknown but well-formed
     project currency, and a blind last-write-wins draft edit are **all ACCEPTED
     by rules**.
+  - `frontend/tests/rules/progressClaims.rules.test.js` — **102 tests**
+    covering every case in §34 below (Progress Claim Lifecycle Security,
+    ADR-58 / M2-B2). Until M2-B2 this block enforced role and tenancy and
+    nothing else while `supplierInvoices` get()s a claim's `status` and Actual
+    / Remaining Committed / FFC / Cash Flow / SHIELD trust its fields. It
+    asserts the roles / membership / tenant matrix (three financial roles can
+    create, read, edit, submit, approve and reject; `subcontractor`, `client`,
+    orphan, anonymous and the other tenant denied; delete blocked for every
+    role × six statuses), **valid create** (the hook payload for each role; a
+    pre-Contacts `supplierId: null` PO and claim; retention, a five-digit
+    number, blank refs, a retention equal to the subtotal, a cumulative second
+    claim; the REAL `claimTotals` accepted on the half-cent boundaries where
+    floating point rounds down — net 40.15, 41.05, 80.85, 327,680.05 — and
+    where it rounds up — 0.05, 1,234.45 — with and without a retention moving
+    the net onto the boundary; 200 lines against a 200-line PO), the
+    **source-PO `get()`** (no PO, empty / null / numeric `poId`; draft,
+    pending, closed and cancelled POs refused; a PO in another project or
+    company unreachable; a foreign `poNumber`, `supplierName` or `supplierId`
+    refused; a line count other than the PO's refused), **currency and project
+    consistency** (the project's explicit currency; the company `baseCurrency`
+    fallback; the `AUD` fallback; every other code refused; malformed codes;
+    a non-existent project), the **create shape** (born draft — every other
+    status refused even with plausible stamps; creator and audit stamps
+    against `request.time` with three skewed clocks each; every lifecycle
+    stamp, every approved value and the assessment notes null / empty; the
+    exact 33-key set — each key missing and two extra keys refused; number
+    pattern, supplier-name bound, revision 1, `externalRefs` map, reserved
+    `variationId` null; claimRef / notes bounds, five bad `periodEnding`
+    shapes, zero lines, 201 lines, a non-list), the **claimed money** (a
+    negative retention — the floor; a retention above the subtotal; a zero
+    or negative subtotal; non-numeric money in every key; `total` one cent
+    off; GST one cent off, zero, and the PO formula refused once retention is
+    withheld; on a boundary half-up and one below accepted, one above and two
+    below refused; an NZD project at 10% vs 15%; a header unrelated to its
+    lines ACCEPTED — DC36), the **draft edit** (the hook payload; a second
+    edit at revision 3; a pre-ADR-58 document gaining the stamps; missing /
+    forged / client-clock stamps refused; status, stamp, approved-value and
+    notes moves refused; eleven identity rewrites refused; line-count change,
+    shape and money breaks refused; every content key refused on `submitted`
+    / `under_review` / `approved` / `rejected` / `invoiced` — the freeze after
+    submit), the **revision** (same, +2, string, null, 0 and missing refused
+    on every branch; a stored 7 takes 8 only; a legacy document with no key
+    takes 1; two writers who both reviewed revision 1 — the second plain
+    write is refused and the first stands), the **legal transitions** (submit
+    with stamps; approve in full, partially and at zero with the certified
+    lines and header; approval with a stored retention clamped to the
+    certified subtotal and never rewritten; `under_review` → approved /
+    rejected; withdraw from draft, reject with notes from submitted; creator
+    self-submit and self-approve; legacy documents without `*By` /
+    `updatedAt` keys, with a NEGATIVE legacy retention, and with neither
+    `externalRefs` nor `supplierId` taking every write), the **illegal
+    transitions** (draft → approved / under_review / invoiced; submitted →
+    draft / re-submit / under_review / invoiced; approved terminal — reopen,
+    re-approve, reject and the reserved `invoiced` all refused; rejected and
+    invoiced terminal from every target; unknown statuses from every state; a
+    no-line draft cannot be submitted; a bare re-stamp of a draft is an
+    accepted empty edit), **transition purity** (fourteen kinds of smuggled
+    content on submit, thirteen on reject, fourteen on approve incl. the
+    claimed header, the retention and the identity; another transition's
+    stamps; forged actors on all three; three skewed clocks per stamp;
+    missing audit stamps), the **approval money** (`approvedSubtotal` one cent
+    above the stored `claimedSubtotal` refused; negative and non-numeric
+    refused; GST one cent off, zero and the PO formula refused with a stored
+    retention; the boundary allowance on the approved side; the certified
+    line COUNT pinned while a per-line over-certification that sums under
+    the claimed subtotal is ACCEPTED — DC36), **direct-SDK bypasses** (create
+    already approved / against no PO / against another supplier's PO; a full
+    setDoc rewriting a submitted claim's lines, supplier or PO; moving an
+    approved claim's cost to another PO, supplier or project or changing its
+    certified value; reviving a rejected claim or reopening an approved one;
+    stripping stamps or provenance), the **claim-to-invoice lifecycle and the
+    M1 figures** (a claim raised, submitted and approved through the new
+    rules is a valid `progress_claim` invoice source while draft, submitted
+    and rejected are not; posting the invoice writes nothing to the claim, a
+    direct `invoiced` write is refused, and `invoicedClaimIds` hands the cost
+    over at read time; Actual 1,000 / Remaining Committed 1,500 / pending
+    exposure derived from a claim approved under the new rules with the added
+    keys changing nothing; a rejected claim contributes nothing and the next
+    claim seeds from the certified amounts; a claim whose PO is later
+    cancelled still edits, submits and approves while no new claim can be
+    raised), **the REAL guarded transactions**
+    `lib/progressClaimActions.js → runUpdateClaimDraft / runTransitionClaim`
+    against the rules (exact draft write with rebuilt lines; STALE on a
+    revision moved underneath and on a status moved underneath, with nothing
+    written, then the fresh copy saves; invalid edits refused before any
+    read; submit / approve with cent-normalised amounts / reject each +1; a
+    STALE assessment never overwrites the first assessor; illegal move,
+    reserved target, over-certification and missing document refused before
+    any write; a denied role is PERMISSION; a legacy draft edits and submits
+    acquiring the keys). Finally **seven tests assert the security CEILING
+    honestly** (Deferred Control 36): a second open claim on the same PO,
+    junk `lineItems` elements, a header unrelated to its lines and cumulative
+    claiming above the PO line, creator == approver and duplicate claim
+    numbers, the mixed-mode overlap with a direct invoice, a read-then-write
+    `stored + 1` stale bypass, and a line below its previously approved
+    amount whose header balances are **all ACCEPTED by rules**.
   - `frontend/tests/rules/drawings.rules.test.js` — **86 tests** over the drawing
     master and its `revisions` subcollection: the **broad read** (all six Company
     A roles read masters and revisions, cross-company and unauthenticated denied),
@@ -1487,7 +1583,7 @@ financial effect, so the invariance checks below are the important ones.**
 - [ ] With no sent POs: claims tab disables creation and links to Purchase Orders.
 - [ ] New claim: only **sent** POs (without an open claim) appear in the selector.
 - [ ] Selecting a PO lists its lines with "of {PO line total}" and pre-filled claimed-to-date; totals footer shows Claimed this period, Retention, GST 10%, Total payable.
-- [ ] Retention: entering more than the subtotal clamps to subtotal; GST is 10% of (subtotal − retention).
+- [ ] Retention: entering more than the subtotal clamps to subtotal; GST is 10% of (subtotal − retention). A **negative** retention is refused in the editor (*Retention cannot be negative*) — and by rules once ADR-58 is published.
 - [ ] A claim with all lines at zero this period cannot be created.
 - [ ] Claim numbers are sequential company-wide (`PC-0001`, …).
 
@@ -1509,6 +1605,7 @@ financial effect, so the invariance checks below are the important ones.**
 - [ ] **Assess → Approve** → certified amounts are bounded by the **edited** claimed amounts (entering more is rejected); Claimed falls, Actual rises by the certified total; a claim-sourced Supplier Invoice reconciles as normal.
 - [ ] **Withdraw** a separate draft → it becomes Rejected with no **Edit**, and its PO becomes claimable again.
 - [ ] **Stale edit:** tab A opens Edit on a draft; tab B Submits (or Withdraws) it → tab A shows *"This progress claim is no longer Draft. Close the editor and review the latest version."* and Save is disabled; a save attempted at that moment is refused with the same message.
+- [ ] **Concurrent draft edit (ADR-58):** tab A and tab B both open Edit on the same draft; tab B saves a change → tab A's Save is refused with *"PC-000n was changed by another user since you loaded it. Review the latest version and retry — your entries are kept."*, the editor stays open with every entry intact, and the register shows tab B's figures; closing and re-opening the editor then saves. The same refusal protects **Assess**: two assessors on one submitted claim — the second Approve / Reject is refused naming the claim's new status, and the first assessment stands.
 - [ ] A draft claim whose PO has since been **Closed or Cancelled** is still editable, with a muted advisory naming the PO's new status.
 - [ ] A legacy claim with `supplierId: null` is editable and shows its stored free-text supplier name.
 - [ ] Editor is usable at 375 / 768 / 1280 px (context block stacks on mobile; line grid wraps as at create).
@@ -1523,6 +1620,7 @@ financial effect, so the invariance checks below are the important ones.**
 
 - [ ] While a PO has a draft/submitted claim, it disappears from the new-claim selector.
 - [ ] After that claim is approved or rejected/withdrawn, the PO becomes claimable again.
+- [ ] ⚠️ This is **client-only** (Deferred Control 36): rules cannot see sibling claims, so a direct write can still raise a second open claim; SHIELD check 4 lists it.
 
 ## 10. Overclaim Warnings
 
@@ -6144,3 +6242,75 @@ tested):
       Out and the Commercial margin before and after the release on a project
       with data → identical. Raise a supplier invoice against a PO sent through
       the new rules → succeeds; a progress claim against it → succeeds.
+
+## 34. Progress Claim Lifecycle Security — M2-B2 (ADR-58)
+
+Automated: `tests/rules/progressClaims.rules.test.js` (**102**, new — see §0),
+`tests/unit/progressClaimActions.test.js` (**23**, new — the exact draft-edit
+and transition writes, revision arithmetic, check order, stale detection over
+a scripted transaction, error kinds) and the **9** ADR-58 cases added to
+`tests/unit/progressClaims.test.js` (the retention floor and line ceiling in
+`validateClaimDraft`, the stamp map, and a sweep of every subtotal from $0.01
+to $10,000.00 plus 100,000 (subtotal, retention) pairs and 20,000 negative
+legacy retentions through the REAL `claimTotals` against the rules'
+exact-or-boundary GST check on the NET; the update-payload replica is now the
+module's own `draftUpdate` and carries `revision + 1` and the stamps). The
+revised `externalRoles.rules.test.js` claim fixtures (and its one PO seed, now
+`sent` with a close as its update) and the PO suite's one claim-create case
+carry the ADR-58 shape; every assertion and count is unchanged. Full rules
+suite: **25 files / 1731 tests**; unit **55 files / 3421 tests**; lint 0 / 0;
+build green — all run locally on 27 October 2026 on arm64 Java 17. Rules file
+**224,528 bytes** (207,567 after M2-B1; 197,035 live) against the
+245,000-byte budget.
+
+**Status: IMPLEMENTED, NOT YET DEPLOYED.** Nothing the rules enforce below is
+true in production until `frontend/firestore.rules` is published and confirmed
+live — and the rules may be published **only after** the M2-B2 Hosting build
+is live (the ADR-40 ordering gate: the live bundle sends no `updatedAt` /
+`updatedBy` / `submittedBy` / `rejectedBy` and never increments `revision`, so
+publishing first breaks every claim create, edit, submit, approve and reject —
+and, because the same ruleset carries M2-B1, every PO write). See
+DEPLOYMENT.md → *M2-B2 release order* (one Hosting deploy, one rules publish,
+for M1 + M2-B1 + M2-B2).
+
+Manual acceptance — at most three checks, run **after both deploy steps**,
+against production, by the product owner (every rules invariant is automated
+in §0; these prove the deployed build and the published ruleset are the ones
+tested):
+
+- [ ] **The deployed build and the published ruleset are this release.** On a
+      project with a sent PO, raise a draft claim, edit it (change one line
+      and the retention), submit it, assess it → certify less than claimed on
+      one line → Approve; withdraw a second draft: all succeed, and in the
+      Firestore console the approved document shows `submittedBy` and
+      `approvedBy` = your uid, `submittedAt` / `approvedAt`, `updatedAt` /
+      `updatedBy`, `rejectedBy: null`, `revision: 3` (create 1, edit 2,
+      submit 3 → approve 4 if edited; count the writes), and the withdrawn one
+      `rejectedBy` = your uid. Firebase console → Firestore → Rules: the active
+      version's timestamp is after the publish, the editor finds `ADR-58` in
+      the `progressClaims` block (and `ADR-57` in `purchaseOrders`), and
+      `diff <(pbpaste) frontend/firestore.rules` is empty (**224,528** bytes).
+- [ ] **The guards and the rules both hold.** Open the same submitted claim's
+      Assess dialog in two tabs; approve in tab A, then approve in tab B → tab
+      B shows the red *"… is now Approved, not Submitted …"* reason, keeps its
+      entries, and the first certified figures stand; Budget Actual, FFC and
+      Remaining Committed reflect tab A's figures exactly once. Then, in the
+      Firebase console (a direct write, as a financial-role identity), attempt
+      to edit that approved claim's `approvedSubtotal`, set `status` back to
+      `submitted`, or set `status: 'invoiced'` → *Missing or insufficient
+      permissions* each time; attempt to create a claim document with
+      `status: 'approved'` → refused. (A console write of a SECOND draft claim
+      on the same PO with the correct shape, your uid, server timestamps and
+      `revision: 1` **succeeds** — one open claim per PO is client-only, DC36 —
+      and SHIELD check 4 then lists it; this is the documented ceiling, not a
+      failure.)
+- [ ] **Legacy documents, the invoice hand-over and downstream figures are
+      unaffected.** Pick a claim created before this release (no
+      `submittedBy` key in the console): a draft one edits and submits; a
+      submitted one approves or rejects; the document gains the new keys and
+      `revision` 2. Raise a supplier invoice from a claim approved through the
+      new rules → it reconciles and posts; the claim stays `approved` and
+      Actual is unchanged in total (the invoice replaces the claim). Record
+      Budget Committed, Claimed, Actual, FFC, Forecast Cash Out and the
+      Commercial margin before and after the release on a project with data →
+      identical.

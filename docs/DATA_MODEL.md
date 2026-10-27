@@ -423,10 +423,25 @@ in place through the single create/edit editor. Editable: `periodEnding`,
 `claimRef`, `notes`, `retention` and each line's cumulative `claimedToDate` —
 nothing else. `claimNumber`, `poId`/`poNumber`, `supplierId`/`supplierName` and
 every field below marked as a stamp, snapshot or approved value are **immutable
-after create** at the product/client level; wrong PO or supplier → withdraw and
-raise a new claim. ⚠️ Both the draft-only edit and the `submitted` freeze are
-**client-side only** — rules check tenant and role, not status (SECURITY.md
-Deferred Controls 1 and 2).
+after create**; wrong PO or supplier → withdraw and raise a new claim.
+
+**Lifecycle, immutability and stamps are RULES-ENFORCED since ADR-58 (M2-B2,
+NOT YET DEPLOYED).** A claim is born `draft` with the exact key set below,
+the creator / audit stamps at server time, the project's resolved `currency`
+and `revision` 1, against a `get()`-verified **sent** PO of the same project
+whose `poNumber`, `supplierName`, `supplierId` and **line count** it must
+carry; the draft edit admits exactly the editable keys (line count fixed);
+`draft → submitted`, `submitted|under_review → approved` and
+`draft|submitted|under_review → rejected` are the only transitions, each with
+`*By == request.auth.uid` and `*At == request.time`; the claimed header and
+retention freeze at `submitted`, the certified lines and approved header
+freeze at `approved`; `under_review` and `invoiced` are unauthorable targets;
+approved / rejected / invoiced are terminal; every update carries
+`revision == stored + 1` and `updatedAt`/`updatedBy`. Whole-cent headers on
+both sides (retention ≥ 0 and ≤ subtotal, GST 10% of the net, approved
+subtotal ≤ claimed subtotal). `lineItems` CONTENTS, one open claim per PO,
+cumulative claiming and the mixed-mode overlap stay client-only (SECURITY.md
+→ *Progress Claims — rules-enforced lifecycle*, Deferred Control 36).
 
 | Field | Type | Notes |
 |---|---|---|
@@ -435,17 +450,19 @@ Deferred Controls 1 and 2).
 | `poId`, `poNumber`, `supplierName`, `supplierId` | | Denormalised from the PO at creation |
 | `periodEnding` | string | Date string (may be empty) |
 | `claimRef` | string | Supplier's own reference |
-| `variationId` | string \| null | **Reserved forward-link** to a Supplier Variation. Always `null` in the current branch — the Variations foundation does **not** wire claim-against-variation yet (claim documents are never modified). Activated in a later phase (claim-against-variation linkage) |
-| `lineItems` | array | **Embedded, and the line SET IS FIXED**: exactly one line per PO line, created one-to-one when the claim is raised. Lines are never added, removed or reordered — `poLineIndex` is downstream identity. A draft edit authors only each line's `claimedToDate`; every identity field is rebuilt from the stored line and `claimedThisPeriod` is re-derived (ADR-37). See below |
+| `variationId` | string \| null | **Reserved forward-link** to a Supplier Variation. Always `null` — **rules require null at create and freeze it** (ADR-58); the Variations foundation does **not** wire claim-against-variation yet. Activated in a later phase (needs a rules change) |
+| `lineItems` | array | **Embedded, and the line SET IS FIXED**: exactly one line per PO line, created one-to-one when the claim is raised. Lines are never added, removed or reordered — `poLineIndex` is downstream identity. A draft edit authors only each line's `claimedToDate`; every identity field is rebuilt from the stored line and `claimedThisPeriod` is re-derived (ADR-37). **Rules pin the COUNT** (to the PO's at create, 1–200; to the stored count on edit and approval) — element contents are client-only (DC36). See below |
 | `retention` | number | Ex-GST amount withheld, clamped to subtotal |
-| `claimedSubtotal`, `claimedGst`, `claimedTotal` | number | GST applies to (subtotal − retention) |
-| `approvedSubtotal`, `approvedGst`, `approvedTotal` | number \| null | Null until approved; frozen after |
-| `assessmentNotes`, `notes` | string | |
-| `currency`, `revision` | | **Audit snapshot** of the project currency at write time (never read for display; historical `AUD` values are never rewritten), 1 |
-| `submittedAt`, `approvedAt`, `rejectedAt`, `invoicedAt` | timestamp \| null | Stamped on transition |
-| `approvedBy` | uid \| null | |
+| `claimedSubtotal`, `claimedGst`, `claimedTotal` | number | GST applies to (subtotal − retention). **Whole-cent header rules-enforced at create and draft edit** (ADR-58): `retention >= 0` and `<= claimedSubtotal`, `claimedSubtotal > 0`, GST exactly 10% of the net half-up (one cent below on a half-cent boundary), total exact; frozen from `submitted` |
+| `approvedSubtotal`, `approvedGst`, `approvedTotal` | number \| null | Null until approved; **written once by the approve transition and frozen forever** — `approvedSubtotal <= claimedSubtotal`, the stored `retention` clamped to it, the same GST pin, total exact (rules-enforced, ADR-58) |
+| `assessmentNotes`, `notes` | string | `assessmentNotes` empty at create, written by approve or reject only (≤ 5000) |
+| `currency` | string | **Audit snapshot** of the project currency at write time (never read for display; historical `AUD` values are never rewritten) — rules pin it to the project's resolved currency at create and freeze it |
+| `revision` | number | **1 at create; EXACTLY +1 on every update, rules-enforced** (ADR-58). The client transactions write the revision they reviewed + 1 after confirming the server copy's status and revision, so a stale edit or assessment is refused (rules-ASSISTED — a direct caller who reads first passes; DC36). Every claim written before ADR-58 holds 1; a missing key reads as 0. **No consumer reads it** |
+| `submittedAt`, `approvedAt`, `rejectedAt`, `invoicedAt` | timestamp \| null | Stamped on transition, `== request.time`; `invoicedAt` is reserved — no path writes it |
+| `submittedBy`, `approvedBy`, `rejectedBy` | uid \| null | **The verified actor** (`== request.auth.uid`, ADR-58). `submittedBy` / `rejectedBy` are absent on documents written before M2-B2 and acquired on the next valid write |
 | `externalRefs` | map | Reserved for accounting integrations |
-| `createdAt` / `createdBy` | timestamp / uid | |
+| `createdAt` / `createdBy` | timestamp / uid | `== request.time` / `== request.auth.uid` at create; immutable |
+| `updatedAt` / `updatedBy` | timestamp / uid | **Audit stamps, required on every write since ADR-58**; absent on documents written before M2-B2 |
 
 Each claim line item:
 
@@ -458,8 +475,9 @@ Each claim line item:
                           //   per-line value in a draft edit
   claimedThisPeriod,      // ALWAYS derived: roundMoney(claimedToDate − previouslyApproved);
                           //   a caller-supplied figure is never trusted
-  approvedThisPeriod }    // null until assessed; certified ex-GST amount.
-                          //   Forced null on every rebuilt draft line
+  approvedThisPeriod }    // null until assessed; certified ex-GST amount, WHOLE-CENT
+                          //   (normalised at approval, ADR-58). Forced null on every
+                          //   rebuilt draft line; written once by approve, then frozen
 ```
 
 ## …/projects/{projectId}/supplierInvoices/{invoiceId}

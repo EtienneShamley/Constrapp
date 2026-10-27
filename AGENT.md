@@ -177,7 +177,11 @@ frontend/
                     text, fail-closed guard; pure, client-only, DC35), purchaseOrderActions.js (ADR-57 — the ONE guarded
                     send / close / cancel transaction, SDK injected; refuses a
                     stale copy and re-checks the cancel policy against server
-                    copies),
+                    copies), progressClaimActions.js (ADR-58 — the two
+                    revision-guarded claim transactions, draft edit and
+                    submit / approve / reject, SDK injected; refuses a copy
+                    whose status OR revision moved; rebuilds lines over the
+                    server copy; certified amounts normalised to cents),
                     quantBoq.js (Quant™ 1B — pure unit alias table with
                     factor 1 only, link state, the per-item aggregate of
                     eligible linked measurements summed unrounded and rounded
@@ -288,9 +292,25 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
                                              — lib/poCancellation.js, re-checked in
                                              the guarded transaction lib/purchaseOrderActions.js) and lineItems
                                              contents are CLIENT-only (DC35)
-  …/progressClaims/{claimId}                 claimNumber, status, poId, cumulative lineItems[], retention,
-                                             claimed/approved subtotal-gst-total — reads restricted to financial
-                                             roles (ADR-56); write lifecycle CLIENT-only until M2-B
+  …/progressClaims/{claimId}                 claimNumber, status, poId/poNumber, supplierId/supplierName (from the
+                                             PO), cumulative lineItems[] (one per PO line — COUNT rules-pinned),
+                                             retention, claimed/approved subtotal-gst-total, revision, submittedAt/By,
+                                             approvedAt/By, rejectedAt/By, invoicedAt (reserved), createdAt/By,
+                                             updatedAt/By — reads restricted to financial roles (ADR-56); LIFECYCLE
+                                             (born draft against a get()-verified SENT same-project PO with number,
+                                             supplier and line count pinned; draft → submitted; submitted|under_review
+                                             → approved; draft|submitted|under_review → rejected; nothing enters
+                                             under_review or invoiced; approved/rejected/invoiced terminal),
+                                             DRAFT-ONLY EDITING, CLAIMED HEADER FROZEN AT SUBMIT, APPROVED VALUES
+                                             FROZEN FOREVER, ACTOR == CALLER + SERVER-TIME STAMPS, WHOLE-CENT HEADERS
+                                             ON BOTH SIDES (retention ≥ 0 and ≤ subtotal; GST 10% of the net, exact or
+                                             one cent below on a boundary; approved subtotal ≤ claimed subtotal) and
+                                             REVISION EXACTLY +1 are RULES-ENFORCED (ADR-58, M2-B2, NOT YET DEPLOYED —
+                                             Hosting first, rules second); the draft edit and every transition run
+                                             through revision-guarded transactions (lib/progressClaimActions.js —
+                                             stale copy refused, entries kept); one open claim per PO, cumulative
+                                             claiming, lineItems contents and the mixed-mode guard are CLIENT-only
+                                             (DC36)
   …/supplierInvoices/{invoiceId}             invoiceNumber (SI-####), status, source, poId, progressClaimId,
                                              ex-GST lineItems[] w/ per-line taxCode, retention, subtotal-gst-net-total —
                                              accounts payable; reads restricted to financial roles. LIFECYCLE +
@@ -497,9 +517,9 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
 - **Cash Flow consumes cash records and writes only its own timing lines — gross cash only.** Every figure is derived at read time in `lib/cashFlow.js` across three layers: **actual** (posted Client Receipts / Supplier Payments via `cashInRows()`/`cashOutRows()`), **automatic near-term forecast** (positive remaining on issued Client Invoices at gross, and on posted Supplier Invoices at `payableTotal`, timed by `dueDate` **month**), and **manual longer-term timing** (`cashFlowLines`). It consumes the **total transaction `amount`** (never `allocatedTotal`) on the **transaction date** (`receiptDate`/`paymentDate`, never `createdAt`/`postedAt`) and groups by `date.slice(0, 7)`. **THE BOUNDARY RULE: months before the current month are ACTUAL ONLY** — no forecast amount, automatic or manual, ever lands in a past month, which is what makes actual-vs-forecast provably non-double-counting. Past-due and undated invoice balances are **never guessed into a month**; they are reported untimed. Cash Flow **writes only `cashFlowLines`** — no receipt, payment, invoice, PO, claim, variation, forecast line, budget line, or baseline is ever mutated. A timing line stores an expected **gross** `amount` plus, separately, the **ex-GST `sourceAmountExGst`** it represents (completeness only — the two bases are never added together); invoice source types are **excluded** so an invoice balance can never be timed twice; approved-claim cost sits **inside** Remaining Committed and is never an additive second denominator. The cumulative position starts at **zero** and is net project cash movement, **never presented as a bank balance** (no bank account, opening balance, financing, retention release, or GST/BAS remittance is modelled — each is warned about, never silently adjusted). **A failed subscription is reported as unavailable, never as a genuine zero.**
 - **Tenders are a decision trail, not a financial document set.** Tender packages hold scope (≥1 cost codes + free text) and **no amounts**; bids hold ex-GST per-cost-code lines with **NO stored `bidTotal`** and packages store **NO `awardTotal`** — rules cannot sum an array, so a stored header total would be forgeable (the Credit Notes header-vs-lines lesson). Every figure derives through the `lib/tenders.js → assessBid` **validity gate**: a bid with any malformed line is invalid whole — total `null`, never a partial sum, never $0 — and is excluded from comparison and award. **An award creates NO Purchase Order and changes NO financial figure** (no budget, committed, claimed, actual, invoiced, forecast, margin, or cash-flow effect); the Awarded Bid Value derives from the rules-frozen awarded bid and is **never netted against POs** (no Award → PO linkage exists). Comparison variance uses **Approved Budget − Bid** (positive = under budget) and shows *no budget* rather than comparing against zero. The **closing date is informational only** — nothing blocks a late bid, anywhere. Tender bids (incl. void) are currency-lock evidence; packages never lock
 - **Retention Releases are an authorisation, not a document type of any other kind.** A Retention Release makes retention **already withheld** on a posted supplier invoice **payable**. It is **not** a supplier invoice, tax invoice, credit note, or payment, carries **no cost code**, and moves **no cash** — only a posted Supplier Payment does. Held is derived from posted invoices, released from **posted** releases, and paid stays derived from payment allocations; **nothing is written onto a supplier invoice** and `retention`/`retentionGst`/`retentionTotal` are immutable for its life. Partial releases are supported and their GST is the **cumulative rounding delta** (`round((prev+amount)×10%) − round(prev×10%)`), which telescopes exactly to `retentionGst`/`retentionTotal` — never each release rounding its own share. Rules enforce the target invoice, the **per-document** cap, and the exact GST formula; the **cumulative** cap is client-only and **hard-blocked in the UI** (no acknowledgement override) — see DC24. **Retention *paid* is not derivable and must never be reported**, and a failed release read must never be treated as "nothing released" (ADR-30)
-- PO line items freeze once a PO leaves `draft`; claim amounts freeze once submitted; approved amounts are frozen forever; supplier invoices freeze once `posted` (and posted invoices cannot be cancelled/unposted)
+- PO line items freeze once a PO leaves `draft` (rules-enforced, ADR-57); claim amounts freeze once submitted and approved amounts are frozen forever (rules-enforced, ADR-58 — both NOT YET DEPLOYED); supplier invoices freeze once `posted` (and posted invoices cannot be cancelled/unposted)
 - Lifecycles are forward-only; financial documents are never deleted — cancellation/rejection is a status change
-- One open Progress Claim per PO at a time; claims are cumulative (claimed-to-date per PO line)
+- One open Progress Claim per PO at a time (client-enforced only — rules cannot see sibling claims, DC36); claims are cumulative (claimed-to-date per PO line)
 - POs snapshot `supplierName` from the chosen contact at write time (`supplierId` is the live link); contact edits or archiving never rewrite issued documents, and POs/claims with `supplierId: null` (pre-Contacts) render from the snapshot and are never backfilled
 - **One currency per project; a currency is a label, never a conversion.** There is **no FX conversion**, no exchange rates, and no mixed-currency transactions. Money is formatted **only** through `formatCurrency(amount, currencyCode)` in `lib/formatters.js` with the currency resolved by `lib/currency.js` (`project.currency` → `company.baseCurrency` → `AUD`) — never hard-code a currency code or a `$`. Project currency **locks** once the project holds any monetary value (non-zero `budget`, budget lines, POs incl. draft/cancelled, claims, invoices, receipts, **supplier payments (incl. draft/void)**, variations, non-null forecast inputs, established baseline); Cost Codes and Contacts never lock. The lock *condition* is client-enforced (rules cannot enumerate subcollections); the *ratchet* is rules-enforced once set (ADR-21)
 - **Currency is not tax.** `GST_RATE` remains a flat Australian 10% and every "GST 10%" label is Australian. Selecting another country changes the currency label only — never describe Constrapp as tax-compliant outside Australia

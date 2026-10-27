@@ -8,6 +8,7 @@ import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
 import { claimLineConflictError } from '../../lib/poLineRecognition'
+import { ClaimWriteError } from '../../lib/progressClaimActions'
 import { PO_STATUS, PO_STATUS_LABELS } from '../../lib/purchaseOrders'
 import {
   CLAIM_STATUS, CLAIM_STATUS_LABELS, CLAIM_BADGE_VARIANTS,
@@ -96,7 +97,9 @@ function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, p
         }))
 
   const totals     = claimTotals(builtLines.map(l => l.claimedThisPeriod), retention)
-  const draftError = validateClaimDraft({ lineItems: builtLines })
+  // Includes the retention floor (ADR-58) — a negative retention is refused
+  // here, in the hook and by the rules alike.
+  const draftError = validateClaimDraft({ lineItems: builtLines, retention })
   // ONE RECOGNITION PATH PER PO LINE (ADR-55). A claim may not claim a PO line
   // that a DIRECT supplier invoice already occupies — the two paths cannot be
   // reconciled per line and Actual would count the line twice. CLIENT-ONLY
@@ -129,6 +132,9 @@ function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, p
       }
       onClose()
     } catch (err) {
+      // A STALE refusal (another user submitted, withdrew or edited this draft
+      // — ADR-58) lands here with its reason; the editor stays open with every
+      // entry intact so nothing the user typed is lost.
       setError(err?.message || 'Failed to save. Check your connection and try again.')
       setSaving(false)
     }
@@ -321,8 +327,13 @@ function AssessProgressClaimModal({ claim, currencyCode, onClose, onTransition }
         assessmentNotes,
       })
       onClose()
-    } catch {
-      setError('Failed to save. Check your connection and try again.')
+    } catch (err) {
+      // A guarded refusal (stale copy, invalid amounts, permission — ADR-58)
+      // carries its reason; the modal stays open with the certified amounts
+      // and notes intact.
+      setError(err instanceof ClaimWriteError && err.message
+        ? err.message
+        : 'Failed to save. Check your connection and try again.')
       setSaving(false)
     }
   }
@@ -456,7 +467,11 @@ export default function ProjectProgressClaims() {
     try {
       await transitionStatus(claim, nextStatus, extras)
     } catch (err) {
-      setActionError('Failed to update status. Check your connection and try again.')
+      // The guarded transaction names the reason (stale copy, illegal move,
+      // permission, offline — ADR-58); anything else keeps the generic text.
+      setActionError(err instanceof ClaimWriteError && err.message
+        ? err.message
+        : 'Failed to update status. Check your connection and try again.')
       throw err
     }
   }
@@ -465,8 +480,10 @@ export default function ProjectProgressClaims() {
   // document from the subscribed collection by id and refuses to write unless it
   // is STILL a draft, so an editor left open across a submit / withdraw by
   // another action, tab or user can never write stale draft content back. The
-  // hook keeps its own draft guard as the final client-side check. Two concurrent
-  // draft editors remain last-write-wins.
+  // hook's transaction then re-checks status AND revision against the SERVER
+  // copy (ADR-58), so two concurrent draft editors are no longer
+  // last-write-wins: the second save is refused with a reason and keeps its
+  // entries.
   async function handleUpdate(claimId, data) {
     const live = progressClaims.find(c => c.id === claimId)
     if (!live || live.status !== CLAIM_STATUS.DRAFT) {

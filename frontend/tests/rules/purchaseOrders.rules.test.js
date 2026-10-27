@@ -793,15 +793,25 @@ describe('dependent collections are unaffected', () => {
     await assertFails(setDoc(invoiceRef(ctx(USERS.qs), 'inv3'), invoicePayload(USERS.qs, 'dep2')))
   })
 
-  it('a progress claim against a sent PO still creates (the claim block is unchanged in M2-B1)', async () => {
-    await seed('dep3', 'sent')
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'cl1'), {
-      claimNumber: 'PC-0001', status: 'draft', poId: 'dep3', poNumber: 'PO-0001', supplierName: 'BuildCo Pty Ltd', supplierId: 'contact1',
-      claimRef: '', periodEnding: '', variationId: null, lineItems: [], retention: 0, claimedSubtotal: 0, claimedGst: 0, claimedTotal: 0,
+  it('a progress claim against a PO sent through these rules creates; against a draft or cancelled one it does not (ADR-58 get()s the PO)', async () => {
+    // The ADR-58 claim shape (hooks/useProgressClaims.jsx): one claim line per
+    // PO line, a balanced claimed header, the creator / audit stamps.
+    const claim = (poId) => ({
+      claimNumber: 'PC-0001', status: 'draft', poId, poNumber: 'PO-0001', supplierName: 'BuildCo Pty Ltd', supplierId: 'contact1',
+      claimRef: '', periodEnding: '', variationId: null,
+      lineItems: [{ poLineIndex: 0, costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'Slab pour',
+        poLineTotal: 2500, previouslyApproved: 0, claimedToDate: 1000, claimedThisPeriod: 1000, approvedThisPeriod: null }],
+      retention: 0, claimedSubtotal: 1000, claimedGst: 100, claimedTotal: 1100,
       approvedSubtotal: null, approvedGst: null, approvedTotal: null, notes: '', assessmentNotes: '', currency: 'AUD', revision: 1,
-      submittedAt: null, approvedAt: null, rejectedAt: null, invoicedAt: null, approvedBy: null, externalRefs: {},
-      createdAt: serverTimestamp(), createdBy: USERS.qs.uid,
-    }))
+      submittedAt: null, submittedBy: null, approvedAt: null, approvedBy: null, rejectedAt: null, rejectedBy: null, invoicedAt: null,
+      externalRefs: {}, createdAt: serverTimestamp(), createdBy: USERS.qs.uid, updatedAt: serverTimestamp(), updatedBy: USERS.qs.uid,
+    })
+    await seed('dep3', 'draft')
+    await assertFails(setDoc(claimRef(ctx(USERS.qs), 'cl0'), claim('dep3')))
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 'dep3'), sendWrite(USERS.qs)))
+    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'cl1'), claim('dep3')))
+    await seed('dep4', 'cancelled')
+    await assertFails(setDoc(claimRef(ctx(USERS.qs), 'cl2'), claim('dep4')))
   })
 })
 
