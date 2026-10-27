@@ -59,7 +59,7 @@ That script runs
   inert here. The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **1372 in total across 22 files: 1326 Firestore + 46 Storage** (1365 before ADR-54; the seven Quant 1D cases #65–#71 in `takeoff.rules.test.js` were added on 26 October 2026 and parse, but the implementation machine had no arm64 JDK, so their first emulator run is the reviewer's — see §30):
+- Tests — **1550 in total across 23 files** (1372 across 22 files before ADR-56: `externalRoles.rules.test.js` adds **176**, and the revised read groups of `costCodes` / `budgetLines` add one case each; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §32):
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -452,6 +452,24 @@ That script runs
     unlock a path; and the **catch-all deny** for arbitrary paths, a
     company-shaped but unapproved collection, and drawing objects nested one
     folder too deep or too shallow.
+  - `frontend/tests/rules/externalRoles.rules.test.js` — **176 tests**, the
+    **ADR-56 (M2-A) financial read containment**. For each of `costCodes`,
+    `budgetLines`, `purchaseOrders` and `progressClaims`, **get** and **list**
+    are proven ALLOWED for `company_admin` / `project_manager` / `qs` and
+    DENIED for `subcontractor`, `client`, `super_admin`, an **unknown role**
+    (`auditor`), a membership document with **no role**, a signed-in user with
+    **no membership document**, an **anonymous** caller and a financial role
+    in **another company** (both directions); the **write rules are proven
+    unchanged** (financial roles still create and update, every other identity
+    still cannot, delete still blocked); **no alternate match grants access**
+    (a collection-group query over each name and a document nested below a
+    contained document are denied for admin and subcontractor alike); and the
+    **neighbouring surfaces are pinned in both directions** — `projects` and
+    `drawings` still read for every company member and still deny another
+    tenant / orphan / anonymous, project-visibility `documents` still read for
+    external roles while `internal` ones still deny them, external roles still
+    cannot write projects or drawings, and the Storage drawing / document
+    objects behave exactly as before (requires both emulators).
   - All sixteen run for `company_admin`, `project_manager`, `qs`,
     `subcontractor`, `client`, an unauthenticated caller, and a financial-role
     user in a **second company**; the projects, tender, activities, drawings,
@@ -1963,15 +1981,18 @@ unpinnable and their amounts floating on the company base currency.
   writable, the Company Settings currency pin still succeeds on it, a legacy
   status may be corrected once and a valid one can never regress); the `qs`
   ratchet branch proven unaffected; and non-writer roles still refused.
-- `frontend/tests/rules/costCodes.rules.test.js` — **new, 51 tests**: the read
-  audience and tenant isolation; create by the three writer roles and refused for
+- `frontend/tests/rules/costCodes.rules.test.js` — **52 tests** (51 before ADR-56): the read
+  audience (**financial roles only since ADR-56**; subcontractor / client /
+  super_admin denied — the earlier "every role reads" case was revised, not
+  weakened, because it pinned the P0 exposure) and tenant isolation; create by the three writer roles and refused for
   the rest; provenance immutability; the update key allow-list; every field shape
   and length bound; `isActive` reversible in **both** directions and a legacy
   document with no `isActive` key still writable; deletes blocked for every role;
   and **Group F proves the documented gap** — duplicate codes are accepted at the
   boundary, because rules cannot query siblings.
-- `frontend/tests/rules/budgetLines.rules.test.js` — **new, 65 tests**: the read
-  audience and tenant isolation; create shape (`costCodeId` required, `budgeted`
+- `frontend/tests/rules/budgetLines.rules.test.js` — **66 tests** (65 before ADR-56): the read
+  audience (**financial roles only since ADR-56**; subcontractor / client /
+  super_admin denied — revised for the same reason) and tenant isolation; create shape (`costCodeId` required, `budgeted`
   numeric ≥ 0, zero accepted, negative rejected); **`costCodeId` re-pointing
   rejected** (alone, smuggled, and deleted); **`costCodeName` re-snapshot
   rejected**; the vestigial `committed`/`actual`/`invoiced` frozen; provenance
@@ -4396,10 +4417,18 @@ Firestore Security Rules are the only trust boundary — these checks confirm th
 - [ ] Signed in as a `subcontractor` or `client` role user, **Contacts, Supplier
   Invoices, Client Invoices, Client Receipts, Supplier Payments, Variations,
   Tenders (packages AND bids — competitor pricing), Forecast, Commercial,
-  BOQ, and RFIs** all show no data — reads are blocked by rules, not merely
-  absent from the nav.
-- [ ] The same user **can** still read company members' Projects, Cost Codes,
-  Budget Lines, POs, and Progress Claims (the intended coarser read model).
+  BOQ, RFIs and — since ADR-56 — Cost Codes, Budget Lines, Purchase Orders
+  and Progress Claims** all show no data — reads are blocked by rules, not
+  merely absent from the nav. **AUTOMATED for the four ADR-56 collections —
+  see §0** (`externalRoles.rules.test.js`).
+- [ ] The same user **can** still read the company's Projects (name, status,
+  currency), Drawings and project-visibility Documents — the remaining
+  member-readable set, still **company-wide, not project-scoped** (Deferred
+  Control 20; external onboarding stays NOT SAFE until M2-A2).
+  ⚠️ **Correction (ADR-56):** until 27 October 2026 this item stated that the
+  same user could read Cost Codes, Budget Lines, POs and Progress Claims "by
+  intent". That was the confirmed P0 exposure, not product intent; it is
+  removed by ADR-56 and must never be re-recorded as expected behaviour.
 - [ ] **Project Timeline:** a `subcontractor`/`client` user is denied the
   programme entirely (the tab shows the "not available" card), while a `qs` user
   **can** read it. **AUTOMATED — see §0** (`activities.rules.test.js`).
@@ -5945,3 +5974,42 @@ code and a saved Uncommitted CTC of 150 on it:
       register scrolls horizontally inside its card. **No PO, claim, invoice,
       payment, credit note, variation, budget line, forecast line, cash-flow
       line or baseline document changed.**
+
+## 32. Financial Read-Access Containment — M2-A (ADR-56)
+
+Automated: `tests/rules/externalRoles.rules.test.js` (176, new) and the revised
+read groups of `costCodes.rules.test.js` (52) and `budgetLines.rules.test.js`
+(66) — see §0. Full rules suite: **23 files / 1550 tests**, run locally on
+27 October 2026 on arm64 Java 17 and required green in Azure CI. Rules file
+**197,035 bytes** (196,622 before) against the 245,000-byte budget. **Rules-only
+release — no Hosting deploy**; the live bundle is unchanged.
+
+**Status: IMPLEMENTED, NOT YET DEPLOYED.** Nothing below is true in production
+until `frontend/firestore.rules` is published and confirmed live
+(DEPLOYMENT.md). Whether any `subcontractor` / `client` user exists in
+production is **NOT VERIFIED** from the repository.
+
+Manual acceptance — at most three checks, run **after** the publish, against
+production, by the product owner:
+
+- [ ] **The published ruleset is this one.** Firebase console → Firestore →
+      Rules: the active version's timestamp is after the publish, the editor
+      finds `ADR-56` in the `costCodes`, `budgetLines`, `purchaseOrders` and
+      `progressClaims` comments, and `wc -c frontend/firestore.rules` matches
+      the pasted text at **197,035** bytes (`diff <(pbpaste)
+      frontend/firestore.rules` is empty).
+- [ ] **A controlled external-role read is denied.** Using a **non-production
+      test tenant** (or the emulator with the published file), sign in as a
+      provisioned `subcontractor` and open a project's **Budget**, **Cost
+      Codes**, **Purchase Orders** and **Progress Claims** tabs: each shows the
+      amber *unavailable / could not be loaded* state, never a register, and
+      DevTools → Network → the `Listen/channel` stream carries
+      `"status": "PERMISSION_DENIED"` for exactly those four collection paths;
+      the **Documents → Drawings** tab still lists drawings. Do **not** create a
+      subcontractor account in the production tenant for this check.
+- [ ] **Financial roles are unaffected.** As `company_admin`, `project_manager`
+      and `qs`, open Budget, Cost Codes, Purchase Orders, Progress Claims,
+      Overview, Dashboard, Forecast and Commercial on a project with data: every
+      figure renders as before the publish (record Budgeted, Committed, Actual,
+      FFC and Margin before and after → identical), a draft PO and a draft claim
+      can be created and edited, and no *Unavailable* banner appears.

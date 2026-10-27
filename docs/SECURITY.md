@@ -81,23 +81,28 @@ Controls now in place:
 
 ## Current Rules by Collection
 
-Shared pattern: *read* requires being an authenticated member of the company in
-the path; *write* additionally requires role ∈ {`company_admin`,
-`project_manager`, `qs`} (called "financial roles" below); *delete* is blocked
-everywhere. **Contacts and counters are exceptions: reads are also restricted
-to financial roles.**
+Shared pattern: *write* requires an authenticated member of the company in the
+path whose role ∈ {`company_admin`, `project_manager`, `qs`} (called "financial
+roles" below); *delete* is blocked everywhere. **Reads are restricted to the
+financial roles on every commercially sensitive collection** — since ADR-56
+(M2-A) that includes `costCodes`, `budgetLines`, `purchaseOrders` and
+`progressClaims`, which until then were readable by any company member (the
+confirmed P0 exposure, below). The collections any provisioned member may still
+read are `companies`, `projects`, `drawings` (+ revisions) and
+project-visibility `documents` — company-wide, not project-scoped (Deferred
+Control 20).
 
 | Path | Read | Create/Update | Delete |
 |---|---|---|---|
 | `users/{uid}` | own doc only | **blocked** — client-read-only; provisioned out of band | **blocked** |
 | `companies/{companyId}` | company member | **`company_admin`, four currency fields only** (`countryCode`, `baseCurrency`, `currencyUpdatedAt`, `currencyUpdatedBy`); create blocked | blocked |
 | `…/projects/{id}` | company member | `company_admin`, `project_manager`; **`qs`: `currencyLocked` false→true only** | blocked |
-| `…/costCodes/{id}` | company member | financial roles | blocked — deactivate via `isActive` |
+| `…/costCodes/{id}` | **financial roles only** (ADR-56; was company member) | financial roles | blocked — deactivate via `isActive` |
 | `…/contacts/{id}` | **financial roles only** | financial roles | blocked — archive via `isActive` |
-| `…/projects/{id}/budgetLines/{id}` | company member | financial roles | blocked |
+| `…/projects/{id}/budgetLines/{id}` | **financial roles only** (ADR-56; was company member) | financial roles | blocked |
 | `…/projects/{id}/boqItems/{id}` | **financial roles only** | financial roles, **create active-only; transitions, post-void immutability and the `amount == quantity × rate` invariant rules-enforced; the optional `quantApplied` map (ADR-52) absent at create and, on an edit, preserved verbatim or fresh — exact keys, `by == caller`, `at == request.time`, `quantity == the written quantity`** — the version guard on edits and the Quant apply is CLIENT-only (DC33) | blocked — void via status |
-| `…/projects/{id}/purchaseOrders/{id}` | company member | financial roles | blocked — cancel via status |
-| `…/projects/{id}/progressClaims/{id}` | company member | financial roles | blocked — reject via status |
+| `…/projects/{id}/purchaseOrders/{id}` | **financial roles only** (ADR-56; was company member) | financial roles — **no lifecycle, shape, money or stamp validation (M2-B)** | blocked — cancel via status |
+| `…/projects/{id}/progressClaims/{id}` | **financial roles only** (ADR-56; was company member) | financial roles — **no lifecycle, shape, money or stamp validation (M2-B)** | blocked — reject via status |
 | `…/projects/{id}/supplierInvoices/{id}` | **financial roles only** | financial roles | blocked — cancel via status |
 | `…/projects/{id}/clientInvoices/{id}` | **financial roles only** | financial roles, **create draft-only; transitions and issued-immutability rules-enforced** | blocked — void via status |
 | `…/projects/{id}/clientReceipts/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability and the scalar amount invariant rules-enforced** | blocked — void via status |
@@ -123,11 +128,12 @@ to financial roles.**
 Contacts reads are deliberately tighter than the shared pattern: the directory
 holds third-party PII (names, phones, emails, ABNs, payment terms), so
 `subcontractor` and `client` users must not read the company's full contact
-book. Financial documents still render supplier identity for those roles via
-the `supplierName` snapshot on POs/claims — no contact read required.
+book. Since ADR-56 those roles read no PO or claim either; for financial roles
+the `supplierName` snapshot on POs/claims still renders supplier identity with
+no contact read.
 
-**Supplier invoices reads are likewise restricted to financial roles** (tighter
-than the POs/claims read pattern): the accounts-payable register exposes supplier
+**Supplier invoices reads are likewise restricted to financial roles** (the
+posture POs and claims adopted in ADR-56): the accounts-payable register exposes supplier
 billing detail, so `subcontractor` and `client` users must not read it.
 
 ## Supplier Invoices — rules-enforced lifecycle (ADR-40)
@@ -950,30 +956,34 @@ coarser model:
 | `super_admin` | **No special powers** — treated as an ordinary company member (cannot even write projects) |
 | `company_admin`, `project_manager` | Write access to everything writable |
 | `qs` | Same, except projects |
-| `subcontractor`, `client` | Read-only across the whole company — **not** scoped to their own projects/POs |
+| `subcontractor`, `client` | Read `companies`, `projects`, `drawings` / revisions and project-visibility `documents` across the **whole company** — **not** scoped to their own projects (DC20). **No financial collection since ADR-56** (M2-A — IMPLEMENTED, NOT YET DEPLOYED: the live ruleset still grants the pre-ADR-56 reads until it is published) |
 
 The fine-grained per-module access matrix in PRODUCT.md is product intent, not
 implementation.
 
-> **⚠️ P0 — UNRESOLVED, scheduled for M2. Company-wide financial read exposure
-> for `subcontractor` / `client` (verified against `frontend/firestore.rules`
-> on 27 October 2026, ADR-55 report).** The `projects`, `costCodes`, `budgetLines`, `purchaseOrders` and
-> `progressClaims` blocks allow **read** to any authenticated member of the
-> company (`companyId` match only — rules 94–95, 170–171, 210–211, 390–391,
-> 408–409; TESTING.md §17b records this as the intended coarse model). A user
-> provisioned with either role therefore reads **every project's** approved
-> budget by cost code, **every supplier's** purchase-order pricing and every
-> progress claim, company-wide — not only their own. Six financial tabs
-> (Budget, Cost Codes, Purchase Orders, Progress Claims, Supplier Invoices,
-> Variations) also render for these roles with write actions the rules will
-> reject; hiding those tabs would **not** secure the collections, only the
-> rules can. **Scoping needs project-scoped membership and therefore a trusted
-> backend (Deferred Control 20) and is the separately approved M2/M3 security
-> work. Until it lands, do not provision `subcontractor` or `client` users.**
-> Whether any such user exists in production cannot be verified from this
-> repository (membership is provisioned out of band, ADR-27) — check
-> `users/{uid}.role` in the console before assuming the exposure is only
-> latent.
+> **⚠️ P0 — CONTAINED IN THE REPOSITORY (ADR-56, M2-A), NOT YET DEPLOYED.
+> Company-wide financial read exposure for `subcontractor` / `client`.**
+> Until ADR-56 the `costCodes`, `budgetLines`, `purchaseOrders` and
+> `progressClaims` blocks allowed **read** to any authenticated member of the
+> company (`companyId` match only), so a user provisioned with either role read
+> **every project's** approved budget by cost code, **every supplier's**
+> purchase-order pricing and every progress claim, company-wide. ADR-56 moves
+> those four read sets to the `financialMember()` predicate the other twenty
+> sensitive collections use; `tests/rules/externalRoles.rules.test.js` (176
+> cases) proves the denial for `subcontractor`, `client`, `super_admin`, an
+> unknown role, a role-less membership, an orphan uid, an anonymous caller and
+> another tenant, for `get` and `list`, and proves `projects`, `drawings`,
+> `documents` and Storage unchanged. **Production is remediated only when the
+> revised ruleset is published and confirmed live** (DEPLOYMENT.md) — code
+> completion is not remediation. **External-user onboarding remains NOT SAFE**
+> after M2-A: `projects`, `drawings`, revisions, project-visibility `documents`
+> and their Storage objects stay readable company-wide (Deferred Control 20)
+> until project-level scoping (M2-A2) is implemented and verified. **Whether any
+> `subcontractor` / `client` user exists in production is NOT VERIFIED** from
+> this repository (membership is provisioned out of band, ADR-27) — check
+> `users/{uid}.role` in the console; if any exist, disable the Auth account or
+> remove the membership document until the ruleset is live. The PO / claim
+> **write** rules remain unvalidated beyond tenant and role (M2-B).
 
 Since ADR-27 the enforced `role` in that table is **settable only out of band**:
 `users/{uid}` is client-read-only, so no user can move themselves between the
@@ -1022,8 +1032,12 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
    unenforced by `tests/rules/supplierInvoices.rules.test.js`.
 4. **Creator vs approver segregation** — nothing prevents the claim (or
    variation) creator from approving their own document.
-5. **Supplier-scoped subcontractor access** — subcontractors can read all
-   company POs/claims, not just those matching their `supplierId`.
+5. **Supplier-scoped subcontractor access** — ⚠️ **superseded in direction by
+   ADR-56 (M2-A):** `subcontractor` / `client` can now read **no** PO, claim,
+   budget line or cost code at all (NOT YET DEPLOYED). What remains deferred is
+   the opposite capability — a supplier reading **only its own** POs and
+   claims — which needs a `users/{uid}` → contact link and query-constrained
+   list rules (M3 supplier portal). There is no self-service claim flow today.
 6. **Counter tamper protection** — any financial-role user can set
    `counters/*.next` to an arbitrary value; rules don't require +1 increments.
 7. **Audit logging** — no audit trail beyond `createdBy`/`approvedBy` and
@@ -1174,8 +1188,14 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     and in Storage alike. Rules cannot narrow this without a membership model
     (per-project member documents or custom claims), which is a redesign
     deliberately out of scope. A rules test asserts the limitation rather than
-    leaving it implicit. Until it lands, provision `subcontractor` and `client`
-    accounts only for companies whose whole drawing set they may see.
+    leaving it implicit. **ADR-56 (M2-A) removed the four financial collections
+    from the member-readable set**, so this control now concerns `projects`,
+    `drawings`, revisions, project-visibility `documents` and their Storage
+    objects only; project-level scoping (M2-A2 — a provisioned `projectIds`
+    list on `users/{uid}`, fail-closed when absent) is the separate follow-on.
+    Until it lands, external-user onboarding is **NOT SAFE**: provision
+    `subcontractor` and `client` accounts only for companies whose whole
+    drawing and document set they may see.
 21. **File bytes are never inspected.** Storage Rules enforce content type,
     object name and size from **upload metadata**; they cannot verify that the
     bytes are what the metadata claims, and there is **no antivirus scanning**
@@ -2031,8 +2051,9 @@ the security-specific gate is:
 - [ ] Read/write role sets are correct; PII and commercially sensitive
       collections (Contacts, Supplier Invoices, **Client Invoices**, Client
       Receipts, **Supplier Payments**, Variations, **Tender Packages, Tender
-      Bids**, Forecast Lines, Commercial Baseline, Counters) restrict
-      **reads** to financial roles.
+      Bids**, Forecast Lines, Commercial Baseline, Counters, and — since
+      ADR-56 — **Cost Codes, Budget Lines, Purchase Orders, Progress Claims**)
+      restrict **reads** to financial roles.
 - [ ] The `clientInvoices` lifecycle rules still permit exactly
       draft-edit / draft→issued / draft|issued→void, still require
       `issuedBy`/`voidedBy` to equal the caller and the stamps to equal

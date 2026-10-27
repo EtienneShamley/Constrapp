@@ -145,6 +145,42 @@ writes a new field, so the earlier bundle reads every document unchanged. The
 figures then revert to the pre-ADR-55 derivation (the known overstatement),
 which is why the rollback should be brief.
 
+**Financial Read-Access Containment — M2-A (ADR-56): IMPLEMENTED — NOT YET
+DEPLOYED. RULES-ONLY — no Hosting deploy, no migration, no schema change.**
+The revised `frontend/firestore.rules` (**197,035 bytes**; 196,622 before)
+restricts **reads** of `costCodes`, `budgetLines`, `purchaseOrders` and
+`progressClaims` to the three financial roles. It changes **no write rule, no
+other collection and not `storage.rules`**, and it needs **no ordering gate**:
+it adds no field and tightens no `hasOnly`, so the live bundle keeps working
+for every financial role, while a `subcontractor` / `client` session's four
+subscriptions start receiving `PERMISSION_DENIED` and the pages show their
+*unavailable* state (ADR-41/44) — the intended outcome. **Production is
+remediated only once the ruleset is confirmed live.** This release is
+independent of the M1 Hosting hold: M2-A can be published before, after or
+without the M1 Hosting deploy.
+
+1. Feature review; commit and merge to `main`; Azure CI green (lint → unit →
+   **rules** → build — the rules step is the gate for this release).
+2. **Confirm the live ruleset first** (procedure below) and record its
+   timestamp and byte count (expected: the 1D / M1 ruleset, 196,622 bytes).
+3. **Publish `frontend/firestore.rules`** (procedure below). No Hosting step.
+4. **Confirm the live version** is the published one (search for `ADR-56`;
+   `diff <(pbpaste) frontend/firestore.rules` empty; 197,035 bytes).
+5. **Verify in production** per TESTING.md §32 (published version confirmed;
+   a controlled external-role read denied — in a non-production tenant or the
+   emulator, never by provisioning an external user in production; financial
+   roles unaffected) and record the outcome here.
+6. Close the milestone: mark ADR-56 LIVE here, in SECURITY.md and ROADMAP.md.
+
+**Rollback.** Re-publish the previous ruleset (196,622 bytes, the 1D / M1
+version). No data, document or bundle is affected either way — rules read
+nothing new and write nothing. Rolling back **restores the P0 exposure**, so it
+should be a last resort and brief. **What rollback cannot do:** it cannot undo
+any read an external user performed while the exposure was live, and it does
+not change whether such users exist (NOT VERIFIED — check `users/{uid}.role`
+in the console; disable or de-provision any `subcontractor` / `client` account
+until the revised ruleset is live).
+
 **Quant™ 1B (ADR-52): LIVE IN PRODUCTION (October 2026).** Released in the
 order below — rules published and confirmed live first, then Hosting — and
 verified per TESTING.md §28; the repository records the month. The original

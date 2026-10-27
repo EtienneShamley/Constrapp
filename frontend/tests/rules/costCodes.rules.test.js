@@ -18,7 +18,10 @@ import { doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, serverTimestamp
 // correction could rewrite provenance or invent fields.
 //
 // The enforced contract, in full:
-//   · READ    — any provisioned member of the owning company, every role.
+//   · READ    — company_admin / project_manager / qs ONLY (ADR-56, M2-A).
+//               Until ADR-56 every provisioned member could read; that was
+//               the confirmed P0 exposure, not a contract — see
+//               tests/rules/externalRoles.rules.test.js for the full audience.
 //   · CREATE  — company_admin / project_manager / qs.
 //   · UPDATE  — the same three roles, restricted to `code`, `name`, `category`,
 //               `unit`, `isActive` and the audit stamps, with `createdAt` /
@@ -135,15 +138,27 @@ beforeEach(async () => {
 
 // ── A. READ ─────────────────────────────────────────────────────────────────
 //
-// Role-agnostic on purpose: a cost code is a taxonomy label, not commercially
-// sensitive, and every role's screens render cost-code names.
+// ADR-56 (M2-A) narrowed the audience from every company member to the three
+// financial roles: the taxonomy is the budget structure, and the budget lines,
+// POs and claims that hang off it are already financial-role-only. The earlier
+// expectation here ("every provisioned role can read") was revised
+// deliberately — it pinned the exposure, not a product contract. External-role
+// screens that need a cost-code NAME read the frozen `costCodeName` snapshot
+// on the document they are shown, never this collection.
 
 describe('costCodes — read', () => {
-  it('every provisioned Company A role can read a cost code', async () => {
+  it('the three financial roles can read a cost code', async () => {
     await seed()
-    for (const key of ['admin', 'pm', 'qs', 'sub', 'client', 'sadmin']) {
+    for (const key of WRITERS) {
       const snap = await assertSucceeds(getDoc(codeRef(ctx(USERS[key]))))
       expect(snap.data().code).toBe('03-100')
+    }
+  })
+
+  it('subcontractor, client and super_admin CANNOT read a cost code (ADR-56)', async () => {
+    await seed()
+    for (const key of NON_WRITERS) {
+      await assertFails(getDoc(codeRef(ctx(USERS[key]))))
     }
   })
 
