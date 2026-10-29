@@ -56,6 +56,9 @@ Controls now in place:
   `companyId` / `projectId` as arguments because path wildcards are not in
   scope at that level — every call site passes its own match's wildcards.
   `variations` keeps its ADR-59 predicate verbatim as `variationMember()`.
+- **M3-A (ADR-61, 29 October 2026, NOT YET DEPLOYED)** adds the award →
+  PO source link to the `purchaseOrders` and `tenderPackages` blocks:
+  **201,523 → 207,620 bytes** (+6,097), 37,380 under the budget.
 - **Size compliance is not deployment proof.** The emulator suite proves the
   repo file; the size test proves it can be published; only the console shows
   what is live — see [DEPLOYMENT.md](DEPLOYMENT.md) → *Verifying which rules
@@ -116,7 +119,7 @@ Control 20).
 | `…/contacts/{id}` | **financial roles only** | financial roles | blocked — archive via `isActive` |
 | `…/projects/{id}/budgetLines/{id}` | **financial roles only** (ADR-56; was company member) | financial roles | blocked |
 | `…/projects/{id}/boqItems/{id}` | **financial roles only** | financial roles, **create active-only; transitions, post-void immutability and the `amount == quantity × rate` invariant rules-enforced; the optional `quantApplied` map (ADR-52) absent at create and, on an edit, preserved verbatim or fresh — exact keys, `by == caller`, `at == request.time`, `quantity == the written quantity`** — the version guard on edits and the Quant apply is CLIENT-only (DC33) | blocked — void via status |
-| `…/projects/{id}/purchaseOrders/{id}` | **financial roles only** (ADR-56; was company member) | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time and the project's resolved currency; draft-only content edits (`hasOnly`); `draft\|pending_approval → sent`, `sent → closed`, `draft\|pending_approval → cancelled`, `sent → cancelled` each stamps-only with actor == caller and time == `request.time`; identity, money and earlier stamps frozen after send; `subtotal + gst == total` in cents and `gst` exactly 10% half-up (one cent below also accepted on a half-cent boundary only); nothing enters `pending_approval`; closed / cancelled terminal — ALL RULES-ENFORCED (ADR-57, M2-B1, live since 27 October 2026)**. `lineItems` contents, Σ lineTotal and the linked claim / invoice / supplier-variation cancel policy are client-only (DC35) | blocked — cancel via status |
+| `…/projects/{id}/purchaseOrders/{id}` | **financial roles only** (ADR-56; was company member) | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time and the project's resolved currency; draft-only content edits (`hasOnly`); `draft\|pending_approval → sent`, `sent → closed`, `draft\|pending_approval → cancelled`, `sent → cancelled` each stamps-only with actor == caller and time == `request.time`; identity, money and earlier stamps frozen after send; `subtotal + gst == total` in cents and `gst` exactly 10% half-up (one cent below also accepted on a half-cent boundary only); nothing enters `pending_approval`; closed / cancelled terminal — ALL RULES-ENFORCED (ADR-57, M2-B1, live since 27 October 2026)**. **Since ADR-61 (M3-A, not yet deployed): the OPTIONAL source triple `sourceTenderPackageId / sourceTenderBidId / sourceTenderNumber` is admitted at create only all-present and `get()`-verified against an AWARDED same-project package and its RECEIVED winning bid (supplier id + name match), with the package pointing back at this PO after the commit (`getAfter()`); frozen for life.** `lineItems` contents, Σ lineTotal, the linked claim / invoice / supplier-variation cancel policy (DC35) and that a raised PO's lines equal the bid's (DC38) are client-only | blocked — cancel via status |
 | `…/projects/{id}/progressClaims/{id}` | **financial roles only** (ADR-56; was company member) | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time, the project's resolved currency and a `get()` on the source PO (same project, exists, `sent`; number, supplier identity and line count pinned); draft-only content edits (`hasOnly`, line count fixed); `draft → submitted`, `submitted\|under_review → approved`, `draft\|submitted\|under_review → rejected` each with actor == caller and time == `request.time` (approval also carrying the certified lines, the approved header and the notes); claimed header frozen after submit, approved values frozen forever; whole-cent headers on both sides (retention ≥ 0 and ≤ subtotal, GST exactly 10% of the net half-up or one cent below on a boundary, totals exact, approved subtotal ≤ claimed subtotal); `revision` exactly +1 on every update; `under_review` / `invoiced` unauthorable; approved / rejected / invoiced terminal — ALL RULES-ENFORCED (ADR-58, M2-B2, live since 27 October 2026)**. `lineItems` contents, Σ lines, one open claim per PO, cumulative ceilings, the mixed-mode overlap and creator ≠ approver are client-only (DC36) | blocked — reject via status |
 | `…/projects/{id}/supplierInvoices/{id}` | **financial roles only** | financial roles | blocked — cancel via status |
 | `…/projects/{id}/clientInvoices/{id}` | **financial roles only** | financial roles, **create draft-only; transitions and issued-immutability rules-enforced** | blocked — void via status |
@@ -124,7 +127,7 @@ Control 20).
 | `…/projects/{id}/supplierPayments/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability and the scalar amount invariant rules-enforced** | blocked — void via status |
 | `…/projects/{id}/supplierCreditNotes/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability, the header cent invariant, AND the target-invoice checks (exists, posted, zero retention, supplier/currency match, grossTotal ≤ payableTotal) rules-enforced via a `get()` on the target at create, draft edit, and posting** | blocked — void via status |
 | `…/projects/{id}/variations/{id}` | **financial roles only** | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time, the project's resolved currency, a type-consistent counterparty (`CV-` client / `SV-` supplier, the other side null) and — for a PO-linked supplier variation — a `get()` on the source PO (same project, exists, `sent`\|`closed`; number and supplier snapshot pinned); draft-only content edits (`hasOnly`, line count free); `draft → submitted`, `submitted\|under_review → approved`, `submitted\|under_review → rejected`, `draft\|submitted\|under_review → withdrawn` each with actor == caller and time == `request.time` (approval also carrying the certified lines, the SIGNED approved header, the notes and the dates); submitted header frozen after submit, approved values frozen forever; SIGNED whole-cent headers on both sides (never clamped; `subtotal + gst == total` exact); `revision` exactly +1 on every update; the originating-RFI link (`originRfi*`) rules-verified via a `get()` when it changes and frozen outside `draft` (ADR-34); reserved statuses unauthorable; approved / rejected / withdrawn terminal — ALL RULES-ENFORCED (ADR-59, M2-B3, live since 27 October 2026)**. `lineItems` contents, the header GST against the lines, notes-required-when-differing, uniqueness and creator ≠ approver are client-only (DC37) | blocked — reject/withdraw via status |
-| `…/projects/{id}/tenderPackages/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, issued-scope freeze, the closingDate/notes carve-out, and award integrity (bid exists · same package · received · name snapshot · once) rules-enforced** | blocked — cancel via status |
+| `…/projects/{id}/tenderPackages/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, issued-scope freeze, the closingDate/notes carve-out, and award integrity (bid exists · same package · received · name snapshot · once) rules-enforced; since ADR-61 (M3-A, not yet deployed) an AWARDED package records the ONE current PO raised from it — `raisedPoId / raisedPoNumber / raisedPoAt / raisedPoBy`, written once (branch f) or again only after the linked PO is `get()`-verified CANCELLED (branch g), actor == caller, time == `request.time`, and only in the commit that creates that PO (`getAfter()`)** | blocked — cancel via status |
 | `…/projects/{id}/tenderBids/{id}` | **financial roles only** | financial roles, **create received-only against an issued same-project package with a real supplier/subcontractor contact; edits/voids only while the package stays issued; bids freeze on award/cancel** | blocked — void via status |
 | `…/projects/{id}/forecastLines/{id}` | **financial roles only** | financial roles | blocked — clear via `null`, never deleted |
 | `…/projects/{id}/cashFlowLines/{id}` | **financial roles only** | financial roles, **create active-only; transitions and post-void immutability rules-enforced** | blocked — void via status |
@@ -324,6 +327,29 @@ the guarded transaction `lib/purchaseOrderActions.js` against the server
 copies of the records the client knew about), `lineItems` **contents**,
 `subtotal == Σ lineTotal`, PO-number uniqueness, that `supplierId` names a real
 contact, and the version guard on draft edits — see **Deferred Control 35**.
+
+**Award-raised POs (ADR-61, M3-A — NOT YET DEPLOYED).** A PO may be born
+from an awarded tender package. *Rules-enforced
+(`tests/rules/awardToPo.rules.test.js`):* the three source keys are admitted
+by `exactKeys()`'s `hasOnly` but not its `hasAll`, so a manual or legacy
+create carries none; when ANY is present all three must be non-empty strings
+and `sourceTenderValid()` holds — `get()` of the same-project package:
+`status == 'awarded'`, `awardedBidId == sourceTenderBidId`, `tenderNumber ==
+sourceTenderNumber`; `get()` of the same-project bid: `tenderPackageId ==
+sourceTenderPackageId`, `status == 'received'`, `bidderContactId ==
+supplierId`, `bidderName == supplierName`; and `getAfter(package).raisedPoId
+== poId` — the package must point back at this PO once the commit lands, so a
+PO citing an award cannot be created outside the transaction that records
+the link (a dangling or spoofed source is refused; a batch that also updates
+the package is admitted only through the package's own branches f / g). The
+three keys are frozen for life by `corePreserved()` (absent keys compare as
+null, so legacy documents are unaffected) and a manual PO can never acquire
+them. Every ADR-57 create invariant still applies. *Client-enforced only
+(Deferred Control 38):* that the PO's `lineItems` are the bid's lines mapped
+one-to-one and that `subtotal` equals the Awarded Bid Value (rules cannot
+iterate either array — a header that balances is accepted whatever the
+lines, proven); the supplier contact's active state; the same-supplier
+duplicate WARNING; the review blockers in `lib/awardToPo.js`.
 
 ⚠️ **Publishing these rules requires the ADR-40 ordering gate.** The block
 requires `updatedAt`/`updatedBy` on every write and the `*By` stamps on every
@@ -931,6 +957,26 @@ Received edits and voids are permitted **only while the package remains
 `issued`** — once it is awarded or cancelled, **every bid write is rejected**,
 which is what freezes the awarded bid's lines and makes the derived award
 value trustworthy. Void is terminal; delete is blocked.
+
+**The award → PO back-link (ADR-61, M3-A — NOT YET DEPLOYED).** An AWARDED
+package may record the ONE current purchase order raised from it, in four
+keys — `raisedPoId`, `raisedPoNumber`, `raisedPoAt`, `raisedPoBy` — absent or
+null on every package until a PO is raised (create admits either; the
+draft-edit branch preserves them; every transition branch's `hasOnly`
+excludes them). Branch **(f)** writes the link once: `awarded → awarded`,
+`changedKeys().hasOnly` of the four keys + audit stamps, the stored link
+null, `raisedPoBy == request.auth.uid`, `raisedPoAt == request.time`, and —
+through `getAfter()`, because the PO is created in the SAME transaction and
+`get()` cannot see it — the linked PO must stand after the commit as a
+`draft` whose `createdAt == request.time` (created in this commit, not a
+pre-existing document), whose `poNumber` equals `raisedPoNumber`, and whose
+`sourceTenderPackageId` / `sourceTenderBidId` name THIS package and ITS
+`awardedBidId`. Branch **(g)** re-links only when the stored link is a string,
+the new id differs, and `get()` of the previously linked PO reads
+`cancelled`. A back-link without its PO, a back-link to a pre-existing PO, a
+second active link, a forged actor or time, and any smuggled content are all
+refused — proven. The two blocks therefore pair the PO's source and the
+package's link atomically; neither half can exist alone.
 
 **⚠️ NO STORED TOTALS — deliberate.** Bids store no `bidTotal` and packages
 store no `awardTotal`: rules cannot iterate or sum an array, so a stored
@@ -2286,6 +2332,46 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     Every item above is **proven unenforced** by a passing test in
     `frontend/tests/rules/variations.rules.test.js`, so the ceiling is
     documented as explicitly as the floor.
+
+38. **Award-raised purchase orders — what the source link cannot prove
+    (ADR-61, M3-A).** Rules pair a raised PO with its package atomically
+    (source triple `get()`-verified against the awarded package and its
+    winning bid; the package's back-link `getAfter()`-verified against the
+    PO created in the same commit; both frozen for life; re-link only after
+    a `get()`-verified cancellation — see *Purchase Orders* and *Tenders*
+    above). What they **cannot** enforce, and what must never be described
+    as enforced:
+
+    - **THAT THE PO LINES ARE THE BID LINES.** Rules cannot iterate either
+      array, so a raised PO whose `lineItems` differ from the bid's — fewer
+      lines, other cost codes, other amounts — is ACCEPTED when its header
+      balances (proven: a one-line $5 PO against a $1,250.15 bid). The
+      one-to-one mapping (qty 1, blank unit, rate = amount) and the
+      subtotal-equals-awarded-value check live in `lib/awardToPo.js` and
+      are re-run by the hook before the transaction; the transaction
+      re-reads the bid's lines and refuses a copy that differs from the one
+      reviewed (STALE). A direct-SDK caller can raise any lines they like
+      against an award — the PO is then an ordinary draft, counted through
+      its own lines once sent, exactly like a manual PO.
+    - **THE SUPPLIER CONTACT'S STATE.** Rules verify the bid's
+      `bidderContactId` / `bidderName` snapshot, not that the contact is
+      active or still typed supplier / subcontractor; the proposal blocks an
+      archived or missing contact and warns on a retyped or renamed one.
+    - **DUPLICATION AGAINST MANUAL POs.** One current linked PO per award is
+      rules-enforced; that a MANUAL PO to the same supplier covers the same
+      scope is unknowable — the dialog lists such POs as a warning that says
+      it cannot tell, never as a finding.
+    - **THE RAISE STATE SHOWN TO THE USER** is read from the PO register
+      (`raiseState`): a loading or failed register reads as unknown and
+      disables the action; it is never read as "none raised".
+    - **A CONCURRENT LOSER'S ERROR KIND.** Two users raising at once get one
+      PO; the loser is refused either by its retried read (ALREADY_RAISED)
+      or by the rules against the winner's committed state (PERMISSION) —
+      both refusals, proven in the emulator.
+
+    Every item above is **proven** by a passing test in
+    `frontend/tests/rules/awardToPo.rules.test.js` or
+    `frontend/tests/unit/awardToPo.test.js`.
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this

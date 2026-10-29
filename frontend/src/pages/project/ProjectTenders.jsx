@@ -12,8 +12,15 @@ import { useTenderBids } from '../../hooks/useTenderBids'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { useContacts } from '../../hooks/useContacts'
+import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { PO_SUPPLIER_TYPES } from '../../lib/contacts'
 import { isFinancialRole } from '../../lib/margin'
+import { PO_STATUS_LABELS, PO_BADGE_VARIANTS } from '../../lib/purchaseOrders'
+import {
+  RAISE_STATE, raiseState, currentLinkedPurchaseOrder, linkedPurchaseOrders,
+  raisePurchaseOrderGate, buildAwardPurchaseOrderProposal,
+} from '../../lib/awardToPo'
+import RaisePurchaseOrderModal from './tenders/RaisePurchaseOrderModal'
 import {
   TENDER_STATUS, TENDER_STATUS_LABELS, TENDER_BADGE_VARIANTS,
   BID_STATUS_LABELS, BID_BADGE_VARIANTS,
@@ -767,11 +774,16 @@ function ComparisonSection({ pkg, bids, budgetLines, currencyCode }) {
 function PackageDetailModal({
   pkg, bids, bidsUnavailable, budgetLines, currencyCode,
   onClose, onAddBid, onEditBid, onVoidBid, onAward, onCancel, onEditIssued, onIssue, onEditDraft,
+  // M3-A (ADR-61): the PO register and the raise action.
+  purchaseOrders, raiseGate, onRaisePo, onOpenPo,
 }) {
   const money = (n) => formatCurrency(n, currencyCode)
   const packageBids = bidsForPackage(bids, pkg.id)
   const awarded = awardedBidValue(pkg, bids)
   const activeBids = receivedBidsForPackage(bids, pkg.id)
+  const linkState = raiseState(pkg, purchaseOrders)
+  const linkedPo = currentLinkedPurchaseOrder(pkg, purchaseOrders)
+  const linkedHistory = linkedPurchaseOrders(pkg, purchaseOrders)
 
   return (
     <ModalShell base wide title={`${pkg.tenderNumber} — ${pkg.name}`} onClose={onClose}>
@@ -826,10 +838,48 @@ function PackageDetailModal({
             </p>
             <p className="m-0 mt-1.5 text-[11px] text-brand-muted">
               A tender decision value only, derived from the frozen awarded bid&apos;s lines. It is not a
-              commitment: no purchase order was created, it is never netted against POs, and it appears in no
-              budget, forecast, margin, or cash-flow figure. Raise the PO separately when ready.
+              commitment and appears in no budget, forecast, margin, or cash-flow figure. The purchase order
+              raised from it below is the commitment — once it is sent.
             </p>
             {pkg.awardNotes && <p className="m-0 mt-1.5 text-[12px] text-brand-text">Decision notes: {pkg.awardNotes}</p>}
+
+            {/* Purchase order raised from this award (M3-A, ADR-61). The link
+                state is read from the PO register: a failed or loading
+                register reads as unknown, never as "none raised". */}
+            <div className="mt-3 pt-3 border-t border-brand-border/60 flex flex-wrap items-center gap-2">
+              {raiseGate.pending ? (
+                <p className="m-0 text-[12px] text-brand-muted">Loading purchase orders…</p>
+              ) : linkedPo ? (
+                <>
+                  <p className="m-0 text-[13px] text-brand-text">
+                    Purchase order: <span className="font-semibold">{linkedPo.poNumber}</span>
+                    {' '}<Badge label={PO_STATUS_LABELS[linkedPo.status] ?? linkedPo.status} variant={PO_BADGE_VARIANTS[linkedPo.status]} sm />
+                    {' '}<span className="text-[12px] text-brand-muted">{money(linkedPo.subtotal || 0)} ex-GST</span>
+                  </p>
+                  <Btn sm variant="ghost" onClick={() => onOpenPo(linkedPo)}>Open PO</Btn>
+                  {linkState === RAISE_STATE.CANCELLED && (
+                    <Btn sm variant="success" onClick={() => onRaisePo(pkg)} disabled={!raiseGate.allowed}>Raise again…</Btn>
+                  )}
+                </>
+              ) : linkState === RAISE_STATE.UNKNOWN ? (
+                <p className="m-0 text-[12px] text-brand-amber">
+                  This award names {pkg.raisedPoNumber || 'a purchase order'} that the register could not show — raising is disabled.
+                </p>
+              ) : (
+                <>
+                  <p className="m-0 text-[12px] text-brand-muted">No purchase order has been raised from this award.</p>
+                  <Btn sm variant="success" onClick={() => onRaisePo(pkg)} disabled={!raiseGate.allowed}>Raise purchase order…</Btn>
+                </>
+              )}
+            </div>
+            {!raiseGate.pending && !raiseGate.allowed && raiseGate.reason && linkState !== RAISE_STATE.ACTIVE && (
+              <p className="m-0 mt-1 text-[11px] text-brand-amber">{raiseGate.reason}</p>
+            )}
+            {linkedHistory.length > 1 && (
+              <p className="m-0 mt-1 text-[11px] text-brand-muted">
+                Earlier purchase orders from this award: {linkedHistory.filter(po => po.id !== linkedPo?.id).map(po => `${po.poNumber} (${PO_STATUS_LABELS[po.status] ?? po.status})`).join(', ')}
+              </p>
+            )}
           </div>
         )}
 
@@ -923,8 +973,12 @@ export default function ProjectTenders() {
     createTenderBid, updateTenderBid, voidTenderBid,
   } = useTenderBids(mid)
   const { budgetLines } = useBudgetLines(mid)
-  const { costCodes } = useCostCodes()
-  const { contacts } = useContacts()
+  const { costCodes, costCodesLoading, costCodesError } = useCostCodes()
+  const { contacts, contactsLoading, contactsError } = useContacts()
+  // M3-A (ADR-61): the PO register, for the award's linked PO and the raise.
+  const {
+    purchaseOrders, purchaseOrdersLoading, purchaseOrdersError, createPurchaseOrderFromAward,
+  } = usePurchaseOrders(mid)
 
   const [editing, setEditing]           = useState(null) // pkg | 'new' | null
   const [issuing, setIssuing]           = useState(null)
@@ -935,6 +989,7 @@ export default function ProjectTenders() {
   const [awarding, setAwarding]         = useState(null) // pkg
   const [cancelling, setCancelling]     = useState(null) // pkg
   const [voidingBid, setVoidingBid]     = useState(null) // { pkg, bid }
+  const [raising, setRaising]           = useState(null) // pkg id
   const [statusFilter, setStatusFilter] = useState('all')
   const [search, setSearch]             = useState('')
 
@@ -947,6 +1002,33 @@ export default function ProjectTenders() {
 
   // The detail modal reads the LIVE package so an award/void refreshes in place.
   const detailPkg = detailId ? (tenderPackages.find(p => p.id === detailId) ?? null) : null
+
+  // The raise dialog likewise reads the LIVE package, bid and registers, so
+  // the proposal it shows is the one the transaction will re-verify.
+  const raisingPkg = raising ? (tenderPackages.find(p => p.id === raising) ?? null) : null
+  const raisingBid = raisingPkg?.awardedBidId ? (tenderBids.find(b => b.id === raisingPkg.awardedBidId) ?? null) : null
+  const gateInputs = {
+    costCodes, contacts, projectCurrency: currencyCode, purchaseOrders,
+    purchaseOrdersLoading, purchaseOrdersError,
+    bidsLoading: tenderBidsLoading, bidsError: tenderBidsError,
+    contactsLoading, contactsError, costCodesLoading, costCodesError,
+  }
+  const detailGate = detailPkg
+    ? raisePurchaseOrderGate({ pkg: detailPkg, bid: tenderBids.find(b => b.id === detailPkg.awardedBidId) ?? null, ...gateInputs })
+    : null
+  const raisingProposal = raisingPkg
+    ? buildAwardPurchaseOrderProposal({ pkg: raisingPkg, bid: raisingBid, costCodes, contacts, projectCurrency: currencyCode, purchaseOrders })
+    : null
+
+  const openPurchaseOrder = (po) => navigate(`/projects/${projectId}/purchase-orders?po=${po.id}`)
+
+  async function confirmRaise() {
+    const { poId } = await createPurchaseOrderFromAward({
+      tenderPackage: raisingPkg, bid: raisingBid, costCodes, contacts, purchaseOrders,
+    })
+    setRaising(null)
+    navigate(`/projects/${projectId}/purchase-orders?po=${poId}`)
+  }
 
   const filtered = tenderPackages.filter(p => {
     if (statusFilter !== 'all' && p.status !== statusFilter) return false
@@ -986,7 +1068,7 @@ export default function ProjectTenders() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3.5">
         <p className="text-[13px] text-brand-muted m-0">
           Tender packages put to market, the bids received, and the award decision — the step between estimate
-          and commitment. Awards create no purchase order.
+          and commitment. An award creates no purchase order by itself; raise the draft PO from it when ready.
         </p>
         <div className="flex items-center gap-2">
           {bidderContacts.length === 0 && (
@@ -1091,7 +1173,8 @@ export default function ProjectTenders() {
 
       <p className="m-0 mt-3 text-[11px] text-brand-muted">
         A tender is a decision record, not a financial document: nothing here changes Budget, Committed, Actual,
-        Invoiced, Forecast, Margin, or Cash Flow, and an award creates no purchase order. Closing dates are
+        Invoiced, Forecast, Margin, or Cash Flow, and an award creates no purchase order by itself — the draft PO
+        raised from it counts only once it is sent. Closing dates are
         informational only — Constrapp does not block late bids. Bid totals are derived from lines on every read;
         no total is stored.
       </p>
@@ -1171,6 +1254,17 @@ export default function ProjectTenders() {
         />
       )}
 
+      {raisingPkg && raisingProposal && (
+        <RaisePurchaseOrderModal
+          pkg={raisingPkg}
+          bid={raisingBid}
+          proposal={raisingProposal}
+          currencyCode={currencyCode}
+          onClose={() => setRaising(null)}
+          onConfirm={confirmRaise}
+        />
+      )}
+
       {detailPkg && (
         <PackageDetailModal
           pkg={detailPkg}
@@ -1178,6 +1272,10 @@ export default function ProjectTenders() {
           bidsUnavailable={tenderBidsError}
           budgetLines={budgetLines}
           currencyCode={currencyCode}
+          purchaseOrders={purchaseOrders}
+          raiseGate={detailGate}
+          onRaisePo={(p) => setRaising(p.id)}
+          onOpenPo={openPurchaseOrder}
           onClose={() => setDetailId(null)}
           onAddBid={(p) => setAddingBidTo(p)}
           onEditBid={(p, b) => setEditingBid({ pkg: p, bid: b })}

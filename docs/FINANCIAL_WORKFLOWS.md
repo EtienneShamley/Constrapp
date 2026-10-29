@@ -68,7 +68,16 @@ backwards, and `closed`/`cancelled` are terminal. `pending_approval` is
 
 - **Draft** — editable description, notes and lines via the single
   create/edit editor (ADR-36); supplier fixed at creation. Wrong supplier →
-  cancel and recreate. Not committed — a draft edit moves no figure.
+  cancel and recreate. Not committed — a draft edit moves no figure. **A
+  draft may also be born from an awarded tender package (ADR-61, M3-A — not
+  yet deployed):** *Raise purchase order…* on the award builds the draft from
+  the winning bid — supplier from the bid, one line per bid line (qty 1,
+  blank unit, rate = the ex-GST amount, so the subtotal equals the Awarded
+  Bid Value to the cent), description from the package — after a review
+  dialog and one explicit confirmation. It is an ordinary draft from then on:
+  edit it, send it, cancel it. It carries three immutable source keys and the
+  package carries the link back; one current PO per award, a second only
+  after the first is cancelled. **Raising never sends.**
 - **Sent** — lines and amounts freeze permanently. The PO now counts toward
   Committed and becomes claimable. `sentAt` stamped.
 - **Closed** — work complete; still counts toward Committed; takes no further
@@ -1197,12 +1206,25 @@ excluded from every calculation.
 touches none of the six budget figures, no forecast, no margin, and no cash
 flow; the **Awarded Bid Value** shown on the Tender pages is derived from the
 rules-frozen awarded bid's lines and is a tender decision value only — it is
-**never netted against Purchase Orders** (V1 has no Award → PO linkage, and
-such netting is wrong whenever packages share cost codes or POs span
-packages). Raising the PO remains a separate, deliberate act ("Raise PO from
-Award" is future work). Tender reads: the comparison **reads** budget lines;
-tender writes: packages, bids, the counter, and the currency-lock flag —
-nothing else, ever.
+**never netted against Purchase Orders** and never added beside them.
+
+**Raising the PO is a separate, deliberate act (ADR-61, M3-A — not yet
+deployed).** On an awarded package, *Raise purchase order…* opens a review
+of the proposed draft — supplier from the bid, one PO line per bid line,
+subtotal = Awarded Bid Value, GST added by `poTotals` at commitment, the
+bid's exclusions and notes shown but never copied into the PO — and one
+confirmation creates a **DRAFT** PO in one transaction with the package
+back-link (`lib/awardToPoActions.js`). The draft moves nothing; **sending it
+is the moment the award becomes commitment**, counted once through the PO's
+own lines by the unchanged ADR-55 formulas. One current linked PO per award
+(rules-enforced); *Raise again* only after the linked PO is cancelled; the
+cancelled PO keeps its source. A bid the validity gate rejects, a sub-cent
+amount, a missing cost code, an archived supplier or a currency mismatch
+BLOCKS the raise — nothing is clamped, omitted or transformed. Tender reads:
+the comparison **reads** budget lines and the Tenders tab now **reads** the PO
+register for the link state; tender writes: packages, bids, the counter, the
+currency-lock flag and — through the raise — the PO, the PO counter and the
+package back-link. Nothing else, ever.
 
 **Currency.** A package holds no amounts and never locks the project currency;
 recording the first **bid** locks it in the same transaction (a voided bid
@@ -1552,14 +1574,15 @@ fails it is `INVALID`, totals nothing and blocks the apply.
 
 ### Tender and Award *(implemented — foundation; see the Tenders section above)*
 
-Tender packages, manual bid capture, read-time Tender Comparison, and the award
-decision record are **implemented** (ADR-32 Part 2), scoped by **cost codes +
-free-text scope** and financially inert. Still planned: assembling packages
-from **BOQ items** (an optional frozen scope schedule at issue — a separate
-follow-up now that both foundations coexist), subcontractor invitations, item-level **bid levelling**
-against the estimate, and **"Raise PO from Award"** — the explicit transfer of
-the awarded bid into a commitment. Award-to-PO transfer will snapshot values at
-the transfer point, mirroring the existing snapshot idiom.
+Tender packages, manual bid capture, read-time Tender Comparison, the award
+decision record (ADR-32 Part 2) and **"Raise PO from Award"** (ADR-61, M3-A —
+implemented, not yet deployed: the explicit, reviewed transfer of the awarded
+bid into a linked DRAFT purchase order, snapshotting supplier and lines at the
+transfer point) are **implemented**, scoped by **cost codes + free-text scope**.
+Still planned: assembling packages from **BOQ items** (an optional frozen scope
+schedule at issue — a separate follow-up now that both foundations coexist),
+subcontractor invitations, item-level **bid levelling** against the estimate,
+several POs per award, and award rescission.
 
 ### Variations *(implemented — foundation)*
 

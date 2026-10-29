@@ -406,12 +406,19 @@ financial roles (ADR-56).
 | `createdAt` / `createdBy` | timestamp / uid | Rules require `createdBy == request.auth.uid` and `createdAt == request.time` at create, and freeze both for life |
 | `updatedAt` / `updatedBy` | timestamp / uid | **ADR-57 addition** (M2-B1). Required by rules on **every** write — create, draft edit, and all three transitions (`updatedBy == request.auth.uid`, `updatedAt == request.time`). Absent on POs written before M2-B1; required only of the *incoming* document, so those acquire it on their next valid write. Last-write only — no field-level history (Deferred Control 7) |
 
+| `sourceTenderPackageId`, `sourceTenderBidId`, `sourceTenderNumber` | string (OPTIONAL) | **ADR-61 (M3-A — not yet deployed).** Present TOGETHER on a PO raised from an awarded tender package; **absent** on a manual or legacy PO (never null, never partial, never backfilled). Rules: admitted by the create `hasOnly` (not `hasAll`); when present, `get()`-verified — the same-project package is `awarded`, its `awardedBidId` is the cited bid and its `tenderNumber` the snapshot; the bid is `received`, of that package, and its `bidderContactId` / `bidderName` equal the PO's `supplierId` / `supplierName`; and the package points back at this PO after the commit (`getAfter`). Frozen for life (`corePreserved`, absent keys compare as null). No financial selector reads them — a raised PO counts exactly like a manual one, through its status and lines |
+
 ⚠️ **Publishing the ADR-57 rules needs the ADR-40 ordering gate** — the
 pre-M2-B1 bundle sends neither the audit stamps nor the `*By` stamps, so the
 application build ships first and the rules second ([DEPLOYMENT.md](DEPLOYMENT.md)).
+**The ADR-61 keys are the reverse case: RULES FIRST** — the old bundle never
+writes them, the new rules accept every old write, and the new bundle's raise
+needs the new rules.
 
 Each line item: `{ costCodeId, costCodeName, description, qty, unit, unitPrice, lineTotal }`
-(`lineTotal` = qty × unitPrice, ex-GST, rounded to cents).
+(`lineTotal` = qty × unitPrice, ex-GST, rounded to cents). On an award-raised
+PO each line is one bid line: `qty 1`, `unit ''`, `unitPrice` = the ex-GST bid
+amount, `costCodeName` re-snapshotted from the live library (ADR-61).
 
 ## …/projects/{projectId}/progressClaims/{claimId}
 
@@ -1650,11 +1657,13 @@ Bids. Creating a package therefore does **not** lock the project currency.
 | `issuedAt`/`issuedBy`, `awardedAt`/`awardedBy`, `cancelledAt`/`cancelledBy` | ts / uid | Null until each transition. Rules force the actor to the caller and the stamp to `request.time` |
 | `createdAt`/`createdBy` | ts / uid | Set once; rules reject any later change |
 | `updatedAt`/`updatedBy` | ts / uid | Refreshed on **every** write path |
+| `raisedPoId`, `raisedPoNumber`, `raisedPoAt`, `raisedPoBy` | string \| null, string \| null, ts \| null, uid \| null | **ADR-61 (M3-A — not yet deployed).** The ONE CURRENT purchase order raised from this award. Absent on packages created before M3-A and null on new ones until a PO is raised (rules accept either at create and preserve them through the draft edit). Written by branch (f) once — in the SAME commit that creates the PO, `getAfter()`-verified: a `draft` created in this commit, numbered as recorded, citing this package and its `awardedBidId`; actor == caller, time == `request.time` — and by branch (g) again only when the previously linked PO is `get()`-verified `cancelled`. The cancelled PO keeps its own source keys, so the history of every PO raised from an award is read from the PO register, never from here |
 
 **⚠️ Deliberately NOT stored:** `awardTotal` (see the bid section — no stored
 header totals, ever), `currency` (no amounts to label), `projectId` (the path
 carries it — the ADR-24 precedent), `attachments`/`externalRefs` (tender
-documents are explicitly deferred; nothing is reserved).
+documents are explicitly deferred; nothing is reserved), a list of raised POs
+(the PO's own `sourceTenderPackageId` is the history — ADR-61).
 
 **Lifecycle (rules-enforced, ADR-22 standard):** create draft-only with null
 stamps and empty award/cancel fields; draft edits change content only;
@@ -1751,7 +1760,7 @@ exactly as budget lines, PO lines, claim lines, and invoice lines already do.
 | **Estimates** | Rates + margin/overheads applied to BOQ items → estimate; BOQ → Budget transfer | Priced per cost code |
 | ~~**Tender packages / bids / awards**~~ | **Implemented** as `tenderPackages` + `tenderBids` above (ADR-32 Part 2) — cost-code + free-text scope, manual bids, read-time Tender Comparison, award as a decision record | Package `costCodes[]` and bid `lineItems[]` carry `costCodeId` |
 | **BOQ scope schedule on tenders** | Optional frozen snapshot of BOQ items onto a package at issue (future, separate design) | Adds `boqItemId` per schedule line |
-| **"Raise PO from Award"** | Explicit Award → PO linkage (V1 deliberately creates no PO and infers no awarded-vs-committed netting) | Transfers the awarded bid's cost-coded amounts into a draft PO |
+| ~~**"Raise PO from Award"**~~ | **Implemented** as the ADR-61 source triple on `purchaseOrders` + the back-link on `tenderPackages` (M3-A — not yet deployed): one guarded transaction creates a DRAFT PO from the awarded bid and links the two atomically; no awarded-vs-committed netting is inferred | Each PO line carries the bid line's `costCodeId` |
 | **Budget Adjustments** | Internal budget transfers/revisions (no external counterparty) — **a distinct future document type, not a variation** | Reallocate budget by cost code |
 | **Forecast period snapshots** | Immutable monthly cost-to-complete snapshots + prior-period comparison (the *current* per-cost-code forecast inputs are **implemented** above as `forecastLines`) | Aggregated by cost code |
 | **Final account records** | Closing budget-vs-actual reconciliation | Reconciled per cost code |

@@ -77,6 +77,69 @@ export function poTotals(lineItems) {
 
 export const formatPoNumber = (n) => `PO-${String(n).padStart(4, '0')}`
 
+// ── Source provenance (M3-A, ADR-61) ─────────────────────────────────────────
+//
+// A PO raised from an awarded tender carries three OPTIONAL, IMMUTABLE keys
+// naming its source. They are absent on a manual or legacy PO — never null,
+// never partial — and rules verify them against the awarded package and its
+// winning bid at create (and the package's back-link, through getAfter()).
+// No financial selector reads them: a raised PO is counted exactly like a
+// manual one, through its own status and lines.
+export const PO_SOURCE_KEYS = ['sourceTenderPackageId', 'sourceTenderBidId', 'sourceTenderNumber']
+
+export const isAwardRaisedPo = (po) =>
+  typeof po?.sourceTenderPackageId === 'string' && po.sourceTenderPackageId.length > 0
+
+// THE ONE PO DOCUMENT SHAPE. Both create paths — the manual editor
+// (hooks/usePurchaseOrders.jsx → createPurchaseOrder) and the award raise
+// (→ createPurchaseOrderFromAward) — build their document here, so the key
+// set, the header derivation, the trims, the stamps and the lifecycle nulls
+// cannot drift. `now` is the injected serverTimestamp() sentinel; `source` is
+// null for a manual PO or { tenderPackageId, tenderBidId, tenderNumber }.
+export function buildPurchaseOrderDocument({
+  poNumber, supplierName, supplierId, description, notes, lineItems, currency, uid, now, source = null,
+}) {
+  const { subtotal, gst, total } = poTotals(lineItems)
+  const docData = {
+    poNumber,
+    status:      PO_STATUS.DRAFT,
+    supplierName: String(supplierName ?? '').trim(),
+    supplierId:  supplierId || null,
+    description: String(description ?? '').trim(),
+    lineItems,
+    subtotal,
+    gst,
+    total,
+    // Audit snapshot of the currency this PO was raised in (the frozen
+    // supplierName/costCodeName idiom). The PROJECT currency remains the
+    // display authority — this field is never read for rendering.
+    currency,
+    revision:    1,
+    notes:       String(notes ?? '').trim(),
+    // Lifecycle stamps — born null. Each transition writes its own (at, by)
+    // pair; rules require the actor to be the caller and the time to be the
+    // server's (ADR-57).
+    sentAt:      null,
+    sentBy:      null,
+    closedAt:    null,
+    closedBy:    null,
+    cancelledAt: null,
+    cancelledBy: null,
+    externalRefs: {},
+    createdAt:   now,
+    createdBy:   uid,
+    // Audit stamps — required by rules on EVERY write since ADR-57.
+    updatedAt:   now,
+    updatedBy:   uid,
+  }
+  if (source) {
+    docData.sourceTenderPackageId = source.tenderPackageId
+    docData.sourceTenderBidId     = source.tenderBidId
+    docData.sourceTenderNumber    = source.tenderNumber
+  }
+  return docData
+}
+
 // TOTAL CONTRACTUAL COMMITMENT — { costCodeId: Σ lineTotal } across every
 // sent/closed PO, ex-GST. This is the full ordered value and is deliberately
 // kept apart from Remaining Committed below: it never matures, never nets a

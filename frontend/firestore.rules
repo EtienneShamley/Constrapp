@@ -432,9 +432,46 @@ service cloud.firestore {
     // (lineItems, the cancel policy) is docs/SECURITY.md → Deferred Control 35.
     match /companies/{companyId}/projects/{projectId}/purchaseOrders/{poId} {
       // Exact key set of a document the app creates (hooks/usePurchaseOrders.jsx).
+      // The three M3-A source keys (ADR-61) are OPTIONAL at create: absent on a
+      // manual or legacy PO, all present on an award-raised one.
       function exactKeys() {
-        return request.resource.data.keys().hasOnly(['poNumber', 'status', 'supplierName', 'supplierId', 'description', 'lineItems', 'subtotal', 'gst', 'total', 'currency', 'revision', 'notes', 'sentAt', 'sentBy', 'closedAt', 'closedBy', 'cancelledAt', 'cancelledBy', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+        return request.resource.data.keys().hasOnly(['poNumber', 'status', 'supplierName', 'supplierId', 'description', 'lineItems', 'subtotal', 'gst', 'total', 'currency', 'revision', 'notes', 'sentAt', 'sentBy', 'closedAt', 'closedBy', 'cancelledAt', 'cancelledBy', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'sourceTenderPackageId', 'sourceTenderBidId', 'sourceTenderNumber'])
             && request.resource.data.keys().hasAll(['poNumber', 'status', 'supplierName', 'supplierId', 'description', 'lineItems', 'subtotal', 'gst', 'total', 'currency', 'revision', 'notes', 'sentAt', 'sentBy', 'closedAt', 'closedBy', 'cancelledAt', 'cancelledBy', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']);
+      }
+      // M3-A (ADR-61): an award-raised PO cites its source. Either all three
+      // keys are absent (manual / legacy), or all three are present and
+      // get()-verified: the package is awarded, its winning bid is the cited
+      // bid, that bid is received and names this PO's supplier, and — through
+      // getAfter(), because the raise is ONE transaction — the package points
+      // back at this PO once the commit lands. No source can be spoofed onto
+      // a PO without the package's own branch (f)/(g) admitting the link.
+      function tenderPkgPath() {
+        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/tenderPackages/$(request.resource.data.sourceTenderPackageId);
+      }
+      function tenderBidPath() {
+        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/tenderBids/$(request.resource.data.sourceTenderBidId);
+      }
+      function sourceAbsent() {
+        return !request.resource.data.keys().hasAny(['sourceTenderPackageId', 'sourceTenderBidId', 'sourceTenderNumber']);
+      }
+      function sourceTenderValid() {
+        let d = request.resource.data;
+        let pkg = get(tenderPkgPath()).data;
+        let bid = get(tenderBidPath()).data;
+        return d.sourceTenderPackageId is string
+            && d.sourceTenderPackageId.size() > 0
+            && d.sourceTenderBidId is string
+            && d.sourceTenderBidId.size() > 0
+            && d.sourceTenderNumber is string
+            && d.sourceTenderNumber.size() > 0
+            && pkg.status == 'awarded'
+            && pkg.awardedBidId == d.sourceTenderBidId
+            && pkg.tenderNumber == d.sourceTenderNumber
+            && bid.tenderPackageId == d.sourceTenderPackageId
+            && bid.status == 'received'
+            && bid.bidderContactId == d.supplierId
+            && bid.bidderName == d.supplierName
+            && getAfter(tenderPkgPath()).data.raisedPoId == poId;
       }
       // Identity written once. `supplierId` is null on a pre-Contacts PO
       // (ADR-15) and is never backfilled.
@@ -520,6 +557,9 @@ service cloud.firestore {
             && d.get('currency', null) == p.get('currency', null)
             && d.get('revision', null) == p.get('revision', null)
             && d.get('externalRefs', null) == p.get('externalRefs', null)
+            && d.get('sourceTenderPackageId', null) == p.get('sourceTenderPackageId', null)
+            && d.get('sourceTenderBidId', null) == p.get('sourceTenderBidId', null)
+            && d.get('sourceTenderNumber', null) == p.get('sourceTenderNumber', null)
             && d.createdAt == p.createdAt
             && d.createdBy == p.createdBy;
       }
@@ -534,7 +574,8 @@ service cloud.firestore {
                   && contentShapeValid()
                   && moneyValid()
                   && exists(projectPath(companyId, projectId))
-                  && request.resource.data.currency == resolvedCurrency(companyId, projectId);
+                  && request.resource.data.currency == resolvedCurrency(companyId, projectId)
+                  && (sourceAbsent() || sourceTenderValid());
 
       // `resource != null` first — a denied create is also measured against
       // this rule (see the supplierInvoices note on the 1000-expression ceiling).
@@ -1980,6 +2021,38 @@ service cloud.firestore {
       function awardedBid() {
         return get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/tenderBids/$(request.resource.data.awardedBidId)).data;
       }
+      // M3-A (ADR-61): the one CURRENT purchase order raised from this award.
+      // Absent or null on every package until a PO is raised.
+      function raisedPoPath(id) {
+        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/purchaseOrders/$(id);
+      }
+      function backlinkPreserved() {
+        let d = request.resource.data;
+        let p = resource.data;
+        return d.get('raisedPoId', null) == p.get('raisedPoId', null)
+            && d.get('raisedPoNumber', null) == p.get('raisedPoNumber', null)
+            && d.get('raisedPoAt', null) == p.get('raisedPoAt', null)
+            && d.get('raisedPoBy', null) == p.get('raisedPoBy', null);
+      }
+      // The PO this raise links, as it stands AFTER the commit (getAfter —
+      // it is created in the same transaction, so get() cannot see it): a
+      // draft CREATED IN THIS COMMIT (createdAt == request.time), numbered as
+      // recorded, citing THIS package and the awarded bid.
+      function raisedPoValid() {
+        let d = request.resource.data;
+        let po = getAfter(raisedPoPath(d.raisedPoId)).data;
+        return d.raisedPoId is string
+            && d.raisedPoId.size() > 0
+            && d.raisedPoNumber is string
+            && d.raisedPoNumber.size() > 0
+            && d.raisedPoBy == request.auth.uid
+            && d.raisedPoAt == request.time
+            && po.status == 'draft'
+            && po.createdAt == request.time
+            && po.poNumber == d.raisedPoNumber
+            && po.sourceTenderPackageId == packageId
+            && po.sourceTenderBidId == resource.data.awardedBidId;
+      }
 
       allow read: if financialMember(companyId);
 
@@ -2000,7 +2073,12 @@ service cloud.firestore {
                   && request.resource.data.awardedBidId == null
                   && request.resource.data.awardedBidderName == null
                   && request.resource.data.awardNotes == ''
-                  && request.resource.data.cancelReason == '';
+                  && request.resource.data.cancelReason == ''
+                  // No PO link can be forged at creation (keys absent or null).
+                  && request.resource.data.get('raisedPoId', null) == null
+                  && request.resource.data.get('raisedPoNumber', null) == null
+                  && request.resource.data.get('raisedPoAt', null) == null
+                  && request.resource.data.get('raisedPoBy', null) == null;
 
       allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
                     // (a) DRAFT EDIT — commercial content (name, description,
@@ -2021,6 +2099,7 @@ service cloud.firestore {
                       && request.resource.data.awardedBidderName == resource.data.awardedBidderName
                       && request.resource.data.awardNotes == resource.data.awardNotes
                       && request.resource.data.cancelReason == resource.data.cancelReason
+                      && backlinkPreserved()
                     )
                     ||
                     // (b) DRAFT -> ISSUED. A separate stamp-only operation
@@ -2077,6 +2156,30 @@ service cloud.firestore {
                       && request.resource.data.cancelledAt == request.time
                       && request.resource.data.cancelReason is string
                       && request.resource.data.cancelReason.trim().size() > 0
+                    )
+                    ||
+                    // (f) RAISE PO (M3-A, ADR-61) — an AWARDED package records
+                    //     the ONE draft PO raised from it, once. Only in the
+                    //     transaction that creates that PO (getAfter).
+                    (
+                      resource.data.status == 'awarded'
+                      && request.resource.data.status == 'awarded'
+                      && changedKeys().hasOnly(['raisedPoId', 'raisedPoNumber', 'raisedPoAt', 'raisedPoBy', 'updatedAt', 'updatedBy'])
+                      && resource.data.get('raisedPoId', null) == null
+                      && raisedPoValid()
+                    )
+                    ||
+                    // (g) RE-RAISE — only once the previously linked PO is
+                    //     CANCELLED (get(), already committed), and never to
+                    //     the same PO. The cancelled PO keeps its source keys.
+                    (
+                      resource.data.status == 'awarded'
+                      && request.resource.data.status == 'awarded'
+                      && changedKeys().hasOnly(['raisedPoId', 'raisedPoNumber', 'raisedPoAt', 'raisedPoBy', 'updatedAt', 'updatedBy'])
+                      && resource.data.get('raisedPoId', null) is string
+                      && request.resource.data.raisedPoId != resource.data.raisedPoId
+                      && get(raisedPoPath(resource.data.raisedPoId)).data.status == 'cancelled'
+                      && raisedPoValid()
                     )
                   );
 

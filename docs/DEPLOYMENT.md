@@ -521,6 +521,57 @@ no data impact and no loss of any M2 control. ⚠️ Never roll back further
 than M2-B3: an older ruleset would remove the M2-B1 / M2-B2 / M2-B3
 enforcement the live bundle relies on.
 
+**Awarded Tender → Linked Draft PO — M3-A (ADR-61): IMPLEMENTED — NOT YET
+DEPLOYED. RULES AND HOSTING; RULES FIRST (the Quant™ 1B order, the reverse
+of the ADR-40 gate).** The M3-A ruleset (`frontend/firestore.rules`,
+**207,620 bytes**; it CONTAINS the ADR-60 refactor) admits three OPTIONAL
+keys on a PO create and two new `tenderPackages` branches. The live bundle
+never writes any of them, so the new ruleset accepts every write the live
+bundle issues; the new bundle's *Raise purchase order…* writes the new keys,
+which the live `hasOnly` would REFUSE — so the rules must be live before the
+bundle. ⚠️ **ADR-60 is not independently confirmed live.** Publishing the
+M3-A file also publishes ADR-60; the Lead Architect's order is to confirm
+ADR-60's publication on its own first (step 1), so the ADR-60 equivalence
+record stays clean.
+
+Release, in order, each a separate approved action:
+
+1. **Confirm ADR-60 is published** (the procedure above; expected live:
+   201,523 bytes, `Shared helpers (ADR-60)` present). If it is not, publish
+   and verify it per TESTING.md §36 before anything below.
+2. Lead Architect review of M3-A; merge to `main`; Azure CI green (lint →
+   unit → **rules** → build).
+3. `cd frontend && npm run lint && npm run test:unit && npm run test:rules &&
+   npm run build` — green; the size test passes (207,620 bytes against the
+   245,000-byte budget).
+4. **Publish `frontend/firestore.rules`** (procedure above). Confirm the live
+   version is the published one (search `ADR-61`; `diff <(pbpaste)
+   frontend/firestore.rules` empty; **207,620** bytes). The live bundle keeps
+   working: manual PO create, edit, send, close and cancel, and every tender
+   write, are unchanged against the new rules (proven by the unchanged
+   suites plus `awardToPo.rules.test.js` → *roles, tenancy, legacy and manual
+   compatibility*).
+5. `firebase deploy --only hosting --project constrapp-69b5d`; confirm the
+   deployed asset hashes match the local build.
+6. **Verify in production** per TESTING.md §37 (raise once, highlight,
+   refuse twice; nothing moves until Send; manual path and re-raise) and
+   record the outcome here.
+7. Close the milestone: mark M3-A LIVE here, in SECURITY.md, ROADMAP.md,
+   TESTING.md, DATA_MODEL.md, FINANCIAL_WORKFLOWS.md, PRODUCT.md and AGENT.md.
+
+**Rollback.** *Hosting alone:* redeploy the previous bundle — linked POs
+stay readable and editable (the old bundle ignores the three source keys and
+the package's back-link; it merely stops showing them and offers no raise);
+nothing is orphaned, because the source keys live on the PO and the link on
+the package, both frozen. *Rules alone (to the ADR-60 file, 201,523 bytes):*
+safe at any time — the ADR-60 `corePreserved` reads no source key, unchanged
+keys never appear in `changedKeys()`, and an awarded package takes no write
+under the old branches, so every existing linked PO still edits, sends,
+closes and cancels; only the raise action is refused until the rules return.
+*Both:* the same, in either order. ⚠️ Never roll rules back further than
+M2-B3. No migration, backfill or data rewrite is involved in either
+direction, and no rollback removes an M2 control.
+
 **Quant™ 1B (ADR-52): LIVE IN PRODUCTION (October 2026).** Released in the
 order below — rules published and confirmed live first, then Hosting — and
 verified per TESTING.md §28; the repository records the month. The original
