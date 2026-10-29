@@ -59,7 +59,7 @@ That script runs
   inert here. The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **1726 in total across 25 files** (unchanged by ADR-60 — the rules capacity refactor touched no test file and the whole suite re-ran green against the refactored ruleset on 27 October 2026, see §36; 1731 across 25 files before ADR-59: `variations.rules.test.js` was rewritten from 107 to **102** cases — every ADR-34 case kept in the new write shape, the old "forgery accepted", "smuggling allowed", "legacy keys absent on create" and "identical triple on an approved document" cases replaced by their refusals, the freeze re-proven per status and per role, and the PO link / counterparty / type proven frozen from creation; no other suite changed; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §35; 1629 across 24 files before ADR-58: `progressClaims.rules.test.js` adds **102**; the `externalRoles` claim fixtures and its one PO seed, and the PO suite's one claim-create case, were revised to the ADR-58 shape with no change to any assertion or count; 1550 across 23 files before ADR-57: `purchaseOrders.rules.test.js` adds **79**; the `externalRoles` PO fixtures were revised to the ADR-57 shape; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §33 and §34):
+- Tests — **1759 in total across 26 files** (M3-A / ADR-61 adds `awardToPo.rules.test.js`, **33** cases — the getAfter() feasibility proof, the source / back-link rules, immutability, duplicate protection and re-raise, roles / tenancy / legacy / manual paths, and the app's own raise transaction incl. two concurrent raises; no other suite changed; run locally on 29 October 2026 on the native arm64 Java 17 — see §37; 1726 across 25 files before ADR-61, unchanged by ADR-60 — the rules capacity refactor touched no test file and the whole suite re-ran green against the refactored ruleset on 27 October 2026, see §36; 1731 across 25 files before ADR-59: `variations.rules.test.js` was rewritten from 107 to **102** cases — every ADR-34 case kept in the new write shape, the old "forgery accepted", "smuggling allowed", "legacy keys absent on create" and "identical triple on an approved document" cases replaced by their refusals, the freeze re-proven per status and per role, and the PO link / counterparty / type proven frozen from creation; no other suite changed; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §35; 1629 across 24 files before ADR-58: `progressClaims.rules.test.js` adds **102**; the `externalRoles` claim fixtures and its one PO seed, and the PO suite's one claim-create case, were revised to the ADR-58 shape with no change to any assertion or count; 1550 across 23 files before ADR-57: `purchaseOrders.rules.test.js` adds **79**; the `externalRoles` PO fixtures were revised to the ADR-57 shape; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §33 and §34):
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -6482,3 +6482,76 @@ publish, by the product owner:
       budget lines, POs, claims, invoices, variations, forecast lines, the
       baseline or contacts (the §32 method); another user's `users/{uid}`
       remains unreadable to everyone.
+
+## 37. Awarded Tender → Linked Draft Purchase Order — M3-A (ADR-61)
+
+Automated: `tests/rules/awardToPo.rules.test.js` (**33**, new — see §0): the
+Phase 0 feasibility proof (PO create + package back-link succeed as ONE batch
+for every financial role; a PO with source keys but no back-link is denied; a
+back-link without its PO is denied; a back-link to a PRE-EXISTING draft —
+even one citing the package — is denied; both halves roll back when either is
+invalid and the counter does not advance; an overwrite of an existing PO
+inside the batch is denied), the source rules (package not awarded; bid not
+the awarded one / void / other package / missing; tender number, supplier id
+or name mismatch; partial or malformed triple; every ADR-57 create invariant;
+other-project and other-company packages), immutability (draft edit, the
+three transitions, a manual PO can never acquire provenance, the back-link
+untouchable by every other branch, no pre-filled link at create), duplicate
+protection and re-raise (a second raise refused while the first is draft or
+sent; after cancellation a re-raise relinks and the cancelled PO keeps its
+source; never back to the same PO; a link naming a vanished PO; forged actor
+/ time / smuggled content), roles / tenancy / legacy / manual compatibility,
+the normal tender workflow unchanged, and the app's transaction
+`lib/awardToPoActions.js` against the real rules (counter 2 → 3, exact
+document, every role; the currency lock in the same commit, a QS included;
+ALREADY_RAISED with nothing written; **two concurrent raises → one PO, one
+link, one increment**; re-raise after cancellation; STALE; a denied role is
+PERMISSION with nothing written; and the DC38 ceiling — lines unrelated to the
+bid are ACCEPTED by rules when the header balances). `tests/unit/awardToPo
+.test.js` (**30**): the one-to-one mapping, subtotal == Awarded Bid Value over
+a 300-fixture sweep, exclusions shown never copied, 100 lines, every blocker
+(package status, bid missing / void / wrong / other package, validity gate,
+sub-cent amount, missing cost code, archived / missing supplier, currency
+mismatch, active / unknown link) and warning (inactive code, retyped /
+renamed contact, same-supplier POs), the link-state helpers, the fail-closed
+gate over loading / failed sources, the shared `buildPurchaseOrderDocument`
+(23 keys manual, +3 award) and the financial regression (a raised draft
+contributes nothing; sending commits exactly the bid lines; the award is never
+added). `tests/unit/awardToPoActions.test.js` (**10**): the exact writes and
+their order, every refusal writes nothing, re-raise, SDK error mapping. Rules
+suite **26 files / 1759 tests**; unit **58 files / 3491 tests**; lint 0 / 0;
+build green; `git diff --check` clean — all run locally on 29 October 2026 on
+arm64 Java 17. Rules file **207,620 bytes** (201,523 before) against the
+245,000-byte budget.
+
+**Status: IMPLEMENTED, NOT YET DEPLOYED.** Rules first, then Hosting — see
+DEPLOYMENT.md → *M3-A release order*. **No production transaction is part of
+this section's automation**; the checks below are run once, after both
+publish steps, on a project the product owner chooses.
+
+Manual acceptance — at most three checks, run **after both publish steps**,
+against production, by the product owner (every rules invariant is automated
+above; these prove the published ruleset and the deployed build are the ones
+tested):
+
+- [ ] **Raise, highlight, refuse twice.** Open an awarded tender package →
+      *Raise purchase order…* → the review dialog shows the supplier, one
+      line per bid line, *Subtotal = awarded bid value*, GST 10%, the bid's
+      exclusions (if any) and the draft-only statement → *Create draft
+      purchase order*. The Purchase Orders tab opens with the new draft
+      highlighted at the top, *From TP-####* beneath its number, and the
+      normal Edit / Send / Cancel controls. Back on the package, the award
+      panel shows *Purchase order: PO-#### Draft* with *Open PO* and **no**
+      raise button; the register row shows no second raise path.
+- [ ] **Nothing moves until Send.** Note the Budget tab's Committed and
+      Forecast Final Cost for the bid's cost codes before raising; after
+      raising they are unchanged. Send the draft: Committed rises by exactly
+      the PO subtotal, which equals the Awarded Bid Value on the Tenders tab,
+      and that value itself is unchanged. (A test project, or cancel the PO
+      afterwards if it has no claims or invoices.)
+- [ ] **Manual path and re-raise.** Raise a manual PO on the same project
+      through *+ New Purchase Order* (no source text appears), edit and send
+      it as before. Cancel the linked draft from the first check (on a test
+      project): the package now offers *Raise again…*; it creates a new
+      draft, the package links to it, and the cancelled PO still shows
+      *From TP-####*.

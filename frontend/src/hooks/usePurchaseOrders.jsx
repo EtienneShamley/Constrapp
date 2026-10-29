@@ -9,9 +9,13 @@ import { useCompany } from './useCompany'
 import { useProject } from './useProject'
 import { stageProjectCurrencyLock } from './projectCurrencyLock'
 import { resolveProjectCurrency } from '../lib/currency'
-import { PO_STATUS, canTransition, poTotals, formatPoNumber, lineTotal, validatePoDraft } from '../lib/purchaseOrders'
+import {
+  PO_STATUS, canTransition, poTotals, formatPoNumber, lineTotal, validatePoDraft, buildPurchaseOrderDocument,
+} from '../lib/purchaseOrders'
 import { PO_CANCEL_BLOCKER_KIND, poCancellationGuard } from '../lib/poCancellation'
 import { runTransitionPurchaseOrder, PoWriteError, PO_WRITE_ERROR } from '../lib/purchaseOrderActions'
+import { buildAwardPurchaseOrderProposal } from '../lib/awardToPo'
+import { runRaisePurchaseOrderFromAward, AWARD_PO_ERROR } from '../lib/awardToPoActions'
 
 export function usePurchaseOrders(projectId) {
   const { user }    = useAuth()
@@ -88,42 +92,62 @@ export function usePurchaseOrders(projectId) {
 
       tx.set(counterRef, { next: next + 1 }, { merge: true })
 
-      const { subtotal, gst, total } = poTotals(lineItems)
-      tx.set(poRef, {
-        poNumber:    formatPoNumber(next),
-        status:      PO_STATUS.DRAFT,
-        supplierName: supplierName.trim(),
-        supplierId:  supplierId || null,
-        description: description?.trim() || '',
-        lineItems,
-        subtotal,
-        gst,
-        total,
-        // Audit snapshot of the currency this PO was raised in (the frozen
-        // supplierName/costCodeName idiom). The PROJECT currency remains the
-        // display authority — this field is never read for rendering, so a
-        // project can never show mixed currencies. Historical documents keep
-        // their stored 'AUD' and are never rewritten.
-        currency:    projectCurrency,
-        revision:    1,
-        notes:       notes?.trim() || '',
-        // Lifecycle stamps — born null. Each transition writes its own
-        // (at, by) pair; Firestore rules require the actor to be the caller
-        // and the time to be the server's (ADR-57).
-        sentAt:      null,
-        sentBy:      null,
-        closedAt:    null,
-        closedBy:    null,
-        cancelledAt: null,
-        cancelledBy: null,
-        externalRefs: {},
-        createdAt:   serverTimestamp(),
-        createdBy:   user.uid,
-        // Audit stamps — required by rules on EVERY write since ADR-57.
-        updatedAt:   serverTimestamp(),
-        updatedBy:   user.uid,
-      })
+      // THE one document shape (lib/purchaseOrders.js → buildPurchaseOrderDocument,
+      // shared with the award raise below). No source keys on a manual PO.
+      // Historical documents keep their stored currency and are never rewritten.
+      tx.set(poRef, buildPurchaseOrderDocument({
+        poNumber: formatPoNumber(next),
+        supplierName, supplierId, description, notes, lineItems,
+        currency: projectCurrency,
+        uid: user.uid,
+        now: serverTimestamp(),
+      }))
       commitLock()
+    })
+  }, [companyId, projectId, user, projectCurrency])
+
+  // Raises a DRAFT PO from an AWARDED tender package and its winning bid
+  // (M3-A, ADR-61). The proposal — supplier from the bid, one PO line per bid
+  // line, description from the package — is rebuilt here from the live
+  // libraries (lib/awardToPo.js) and refused on any blocker; the write is the
+  // guarded transaction in lib/awardToPoActions.js: counter + PO + package
+  // back-link + currency lock in ONE commit, with the package's current link
+  // re-read on the server so a double click, a second tab or a concurrent
+  // user cannot raise two active POs from one award. The PO is born draft;
+  // nothing here sends it. Returns { poId, poNumber }.
+  const createPurchaseOrderFromAward = useCallback(async ({
+    tenderPackage, bid, costCodes, contacts, purchaseOrders: register,
+  }) => {
+    if (!companyId || !projectId || !user) throw new Error('Not authenticated')
+    const proposal = buildAwardPurchaseOrderProposal({
+      pkg: tenderPackage, bid, costCodes, contacts, projectCurrency, purchaseOrders: register,
+    })
+    if (!proposal.ok) throw new PoWriteError(AWARD_PO_ERROR.BLOCKED, proposal.blockers[0])
+
+    const projectBase = ['companies', companyId, 'projects', projectId]
+    const refs = {
+      counterRef:    doc(db, 'companies', companyId, 'counters', 'purchaseOrders'),
+      packageRef:    doc(db, ...projectBase, 'tenderPackages', tenderPackage.id),
+      bidRef:        doc(db, ...projectBase, 'tenderBids', bid.id),
+      poRef:         doc(collection(db, ...projectBase, 'purchaseOrders')),
+      previousPoRef: tenderPackage.raisedPoId ? doc(db, ...projectBase, 'purchaseOrders', tenderPackage.raisedPoId) : null,
+    }
+    return runRaisePurchaseOrderFromAward({
+      db, uid: user.uid, runTransaction, serverTimestamp, refs,
+      seen: { pkg: tenderPackage, bid },
+      buildDocument: ({ poNumber, now }) => buildPurchaseOrderDocument({
+        poNumber,
+        supplierName: proposal.supplierName,
+        supplierId:   proposal.supplierId,
+        description:  proposal.description,
+        notes:        proposal.notes,
+        lineItems:    proposal.lineItems,
+        currency:     projectCurrency,
+        uid:          user.uid,
+        now,
+        source: { tenderPackageId: tenderPackage.id, tenderBidId: bid.id, tenderNumber: tenderPackage.tenderNumber },
+      }),
+      stageCurrencyLock: (tx) => stageProjectCurrencyLock(tx, companyId, projectId),
     })
   }, [companyId, projectId, user, projectCurrency])
 
@@ -203,5 +227,8 @@ export function usePurchaseOrders(projectId) {
     })
   }, [companyId, projectId, user])
 
-  return { purchaseOrders, purchaseOrdersLoading, purchaseOrdersError, createPurchaseOrder, updatePurchaseOrder, transitionStatus }
+  return {
+    purchaseOrders, purchaseOrdersLoading, purchaseOrdersError,
+    createPurchaseOrder, createPurchaseOrderFromAward, updatePurchaseOrder, transitionStatus,
+  }
 }

@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useOutletContext, useNavigate } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { useOutletContext, useNavigate, useSearchParams } from 'react-router-dom'
 import Card from '../../components/Card'
 import Btn from '../../components/Btn'
 import Badge from '../../components/Badge'
@@ -15,7 +15,7 @@ import { PoWriteError } from '../../lib/purchaseOrderActions'
 import { selectableCostCodes, activeCostCodes } from '../../lib/costCodes'
 import {
   PO_STATUS, PO_STATUS_LABELS, PO_BADGE_VARIANTS,
-  poTotals, EMPTY_PO_FORM_LINE, poLineToForm, buildPoLineItem, validatePoDraft,
+  poTotals, EMPTY_PO_FORM_LINE, poLineToForm, buildPoLineItem, validatePoDraft, isAwardRaisedPo,
 } from '../../lib/purchaseOrders'
 import {
   ENTITY_TYPE, CONTACT_TYPE, CONTACT_TYPE_LABELS, PO_SUPPLIER_TYPES,
@@ -221,6 +221,15 @@ function PurchaseOrderEditorModal({ po = null, costCodes, contacts, projectId, c
                 <p className={labelCls}>Status</p>
                 <Badge label={PO_STATUS_LABELS[po.status] ?? po.status} variant={PO_BADGE_VARIANTS[po.status]} sm />
               </div>
+              {isAwardRaisedPo(po) && (
+                <div className="sm:col-span-3">
+                  <p className={labelCls}>Source</p>
+                  <p className={infoCls}>Raised from tender {po.sourceTenderNumber}</p>
+                  <p className="m-0 text-[11px] text-brand-muted">
+                    The lines came from the awarded bid; edit them freely — the link to the award is kept.
+                  </p>
+                </div>
+              )}
             </div>
           )}
 
@@ -417,6 +426,12 @@ export default function ProjectPurchaseOrders() {
   const navigate = useNavigate()
   const { projectId, currencyCode } = useOutletContext()
   const money = (n) => formatCurrency(n, currencyCode)
+  // `?po=<id>` highlights one row — how the Tenders tab hands over a PO it
+  // just raised (M3-A). A highlight, nothing more: the row keeps its usual
+  // controls and an unknown id simply highlights nothing.
+  const [searchParams] = useSearchParams()
+  const highlightId = searchParams.get('po')
+  const highlightRef = useRef(null)
 
   const { purchaseOrders, purchaseOrdersLoading, createPurchaseOrder, updatePurchaseOrder, transitionStatus } = usePurchaseOrders(projectId)
   // Linked records for the cancellation guard (ADR-57). All three reads are
@@ -489,6 +504,15 @@ export default function ProjectPurchaseOrders() {
     ? (purchaseOrders.find(p => p.id === editing.id) ?? editing)
     : null
 
+  // Bring the highlighted row into view once the register has it. No state
+  // is set here — the effect only scrolls.
+  const highlightFound = !!highlightId && purchaseOrders.some(p => p.id === highlightId)
+  useEffect(() => {
+    if (highlightFound && highlightRef.current && typeof highlightRef.current.scrollIntoView === 'function') {
+      highlightRef.current.scrollIntoView({ block: 'center' })
+    }
+  }, [highlightFound, highlightId])
+
   return (
     <div>
       <div className="flex items-center justify-between gap-3 mb-3.5">
@@ -553,8 +577,17 @@ export default function ProjectPurchaseOrders() {
               </thead>
               <tbody>
                 {purchaseOrders.map(po => (
-                  <tr key={po.id} className="border-b border-brand-border hover:bg-brand-card transition-colors">
-                    <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">{po.poNumber}</td>
+                  <tr
+                    key={po.id}
+                    ref={po.id === highlightId ? highlightRef : undefined}
+                    className={`border-b border-brand-border hover:bg-brand-card transition-colors ${po.id === highlightId ? 'bg-brand-accent/10 ring-1 ring-inset ring-brand-accent/40' : ''}`}
+                  >
+                    <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">
+                      {po.poNumber}
+                      {isAwardRaisedPo(po) && (
+                        <span className="block text-[11px] font-normal text-brand-muted">From {po.sourceTenderNumber}</span>
+                      )}
+                    </td>
                     <td className="px-3.5 py-3 text-[13px] text-brand-text">{po.supplierName}</td>
                     <td className="px-3.5 py-3 text-[12px] text-brand-muted">{po.description || '—'}</td>
                     <td className="px-3.5 py-3 text-[12px] text-brand-muted">

@@ -15,7 +15,7 @@ Preconstruction → Procurement → Delivery → Cost Control → Forecasting �
 | Phase | What happens | Modules (status) |
 |---|---|---|
 | **Preconstruction** | Measure quantities, build the BOQ, estimate, transfer to an approved budget | **Drawings** *(implemented — foundation)*; **Quant™ 1A manual takeoff** *(live in production — measurement records)*; **Quant™ 1B** *(live in production — link a measurement to a BOQ item and explicitly apply the reviewed total, ADR-52)*; **Quant™ 1C** *(live in production since 23 October 2026; 1C-A area-geometry correctness, draft protection, full geometry editing, on-sheet selection, anchored pan/zoom, accessible dialogs; 1C-B read-only project summary, attention list and Open-in-Quant traceability — no schema or rules change, ADR-53)*; **Quant™ 1D** *(live in production since 26 October 2026 — manual opening and void deductions, ADR-54)*; **BOQ** *(implemented — foundation)*; Estimating incl. BOQ → Budget transfer *(planned)*; **Cost Codes**, **Budgets** *(implemented)* |
-| **Procurement** | Tender packages, subcontractor invitations, bid levelling, award, commitment | **Tender & Award** *(implemented — foundation)*; subcontractor invitations, bid levelling, and Award → PO transfer *(planned)* → **Purchase Orders** *(implemented)* |
+| **Procurement** | Tender packages, subcontractor invitations, bid levelling, award, commitment | **Tender & Award** *(implemented — foundation)*; **Award → linked draft PO** *(implemented — M3-A, ADR-61; not yet deployed)*; subcontractor invitations and bid levelling *(planned)* → **Purchase Orders** *(implemented)* |
 | **Delivery** | Scope variations, cumulative progress claims against commitments | **Variations** *(implemented — foundation)*; **Progress Claims** *(implemented)* |
 | **Cost Control** | Supplier invoices, actual cost, payments/credit notes | **Supplier Invoices**, **Supplier Payments**, **Supplier Credit Notes** *(implemented)*; Retention Release *(future)* |
 | **Revenue Control** | Client invoices issued against the contract sum and approved client variations; receivables, and the cash received to settle them | **Client Invoices / Accounts Receivable**, **Client Receipts** *(implemented — foundation)* |
@@ -171,7 +171,11 @@ frontend/                  The entire application (run all npm commands here)
                            stages the project currency ratchet inside a caller's
                            transaction so monetary writes and the lock are atomic
     lib/                   firebase.js, formatters.js, currency.js, nav.js, projectTabs.js,
-                           purchaseOrders.js, progressClaims.js, supplierInvoices.js,
+                           purchaseOrders.js (incl. buildPurchaseOrderDocument — the ONE
+                           PO document shape for the manual and the award-raised
+                           create, ADR-61), awardToPo.js + awardToPoActions.js
+                           (M3-A: the bid → PO proposal and the guarded raise
+                           transaction, ADR-61), progressClaims.js, supplierInvoices.js,
                            supplierCreditNotes.js (reduction records against posted
                            supplier invoices), clientInvoices.js,
                            payments.js (shared, direction-agnostic),
@@ -321,7 +325,11 @@ ProtectedRoute (redirects to /login when signed out)
    │       `commercial/retention` = Supplier Retention register + Retention
    │        Release (ADR-30);
    │       the `tenders` route renders the Tender register — packages, bids,
-   │        Tender Comparison, and the award decision record; financial roles only)
+   │        Tender Comparison, the award decision record and, since ADR-61,
+   │        "Raise purchase order…" on an awarded package (review dialog in
+   │        pages/project/tenders/RaisePurchaseOrderModal.jsx; success hands
+   │        over to `purchase-orders?po=<id>`, which highlights the new draft);
+   │        financial roles only)
    │    boq                  Bill of Quantities (ProjectBoq — measured items,
    │                          derived amounts, read-time BOQ-vs-budget comparison;
    │                          since ADR-52 an active item with linked Quant
@@ -388,7 +396,7 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Supplier Retention & Retention Release | Implemented (foundation) — read-time register grouped by supplier; retention **held** derived from posted invoices, **released** from posted `retentionReleases`; partial releases with cumulative-snapshot GST; **no client retention, no retention due/DLP dates, no retention-paid attribution** (ADR-30) |
 | Cash Flow (actual + forecast) | Implemented (foundation) — read-time monthly actual, automatic invoice due-date forecast, manual `cashFlowLines` timing, projected cumulative/closing position, completeness, untimed reporting, peak funding with suppression, and a two-panel chart that consumes those derived rows without re-deriving them (ADR-26); **no date filtering, not a bank balance** |
 | Variations (client + supplier) | Implemented (foundation) |
-| Tenders (packages, bids, comparison, award) | Implemented (foundation) — cost-code + free-text scope (BOQ-independent), manual bids, read-time comparison, award as a decision record; **no stored totals, no PO creation, closing date informational** |
+| Tenders (packages, bids, comparison, award) | Implemented (foundation) — cost-code + free-text scope (BOQ-independent), manual bids, read-time comparison, award as a decision record; **no stored totals, closing date informational**; since M3-A (ADR-61, not yet deployed) an award raises ONE linked **draft** PO through a reviewed, confirmed, guarded transaction — never sent automatically |
 | Forecast Cost to Complete | Implemented (foundation) — read-time, cost-side |
 | Project Margin (Commercial tab) | Implemented (foundation) — read-time, ex-GST; commercial baseline is the only stored input |
 | Dashboard | **Premium Dashboard v2 (ADR-45)** over Analytics v1 (ADR-42) — portfolio counts and status breakdown (null until the projects read settles — never a false 0) and the register (table from `lg:`, cards below) from the existing projects subscription (no new listener, no money); plus a financial-role-only **Project Snapshot** for one selected project (`?project=<id>`): four headline KPIs, the remaining established figures, and a plain-SVG **Budget, cost & revenue** chart. The snapshot child mounts ten existing project-scoped hooks and renders `lib/projectSnapshot.js`, which only composes `projectForecastTotals` / `computeMargin` / `payablesSummary`. Beside the chart, a programme-role-only **Programme** panel mounts the one added subscription (`useProjectActivities`, selected project only) and renders `timelineSummary` counts — no completion %. No portfolio money, no rules change |
