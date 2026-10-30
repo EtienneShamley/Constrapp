@@ -2,7 +2,7 @@ import {
   VARIATION_TYPE, VARIATION_STATUS, VARIATION_STATUS_LABELS, VARIATION_TRANSITION_STAMPS,
   canTransition, variationTotals, validateApprovedAmounts, buildApprovedLineItems,
   validateVariationDraft, stripApprovedFromLines, normaliseOriginRfi, isEligibleOriginRfi,
-  isPoLinkedSupplierVariation, isCommitmentApplied, shouldApplyOnApproval,
+  isPoLinkedSupplierVariation, isCommitmentApplied, isScopeCommitted, shouldApplyOnApproval,
   commitmentApplyEligibility, COMMITMENT_APPLY_BLOCKER,
 } from './variations'
 import { PO_STATUS_LABELS } from './purchaseOrders'
@@ -194,6 +194,12 @@ export async function runUpdateVariationDraft({ db, variationRef, seen, data, ui
 // supplier variation and on the legacy Apply branch.
 export const commitmentStamps = (uid, now) => ({ commitmentAppliedAt: now, commitmentAppliedBy: uid })
 
+// The new-scope commitment pair (M3-B2, ADR-63): the SECOND, independent pair,
+// written with the applied pair on every PO-linked approve (FINAL rules require
+// both) and by the legacy Commit when missing. Same rules posture: actor ==
+// caller, time == server, stored value null before the write.
+export const scopeStamps = (uid, now) => ({ scopeCommittedAt: now, scopeCommittedBy: uid })
+
 // The exact update a transition writes — status, the transition's (at, by)
 // pair, the two audit stamps and the revision; for SUBMIT also the submitted
 // date (kept when already set); for APPROVE the certified lines
@@ -231,7 +237,8 @@ export function transitionUpdate(live, nextStatus, { approvedAmounts, assessment
       assessmentNotes:  assessmentNotes?.trim() || '',
       approvedDate:     live.approvedDate || today,
       effectiveDate:    live.effectiveDate || live.approvedDate || today,
-      ...(applyCommitment ? commitmentStamps(uid, now) : {}),
+      // ADR-62 + ADR-63: approve, apply AND commit new scope in ONE write.
+      ...(applyCommitment ? { ...commitmentStamps(uid, now), ...scopeStamps(uid, now) } : {}),
     }
   }
   if (nextStatus === VARIATION_STATUS.REJECTED && assessmentNotes?.trim()) {
@@ -304,22 +311,29 @@ export async function runTransitionVariation({ db, variationRef, poRef = null, s
   return outcome
 }
 
-// ── Legacy Apply to commitment (M3-B1, ADR-62) ───────────────────────────────
+// ── Legacy Apply / Commit new scope (M3-B1 ADR-62 · M3-B2 ADR-63) ────────────
 //
 // The ONE-TIME application of an already-APPROVED, PO-linked supplier variation
-// that carries no commitment stamps (approved before M3-B1, or approved while
-// its PO was not sent/closed). The write is the stamp pair + revision + audit
-// stamps, nothing else — approved money, lines, PO link and every lifecycle
-// stamp stay frozen. Rules admit exactly this write (branch (f)): approved →
-// approved, stored stamps null, actor == caller, time == server, revision + 1,
-// and the PO sent/closed through get(). The "stored stamps must be null"
-// precondition makes a second apply RULES-REFUSED, not merely client-refused,
-// so two users or two tabs cannot both apply; the revision guard is, as on
-// every other variation write, rules-ASSISTED (DC37).
+// whose stamp pairs are not all present: approved before M3-B1 (no pair at all)
+// or applied under M3-B1 (the ADR-62 pair present, the ADR-63 scope pair
+// absent). The write is EXACTLY the MISSING pair(s) + revision + audit stamps,
+// nothing else — a present pair is NEVER rewritten, and approved money, lines,
+// PO link and every lifecycle stamp stay frozen. Rules admit exactly this write
+// (branch (f)): approved → approved, each written pair's stored value null,
+// actor == caller, time == server, revision + 1, the PO sent/closed through
+// get(). The per-pair "stored value must be null" precondition makes a repeat
+// RULES-REFUSED, not merely client-refused, so two users or two tabs cannot
+// both commit; the revision guard is, as on every other variation write,
+// rules-ASSISTED (DC37).
 
-// The exact update the legacy Apply writes. Exported for the unit suite.
+// The exact update the legacy action writes: the pairs the live copy lacks.
+// Exported for the unit suite.
 export function applyCommitmentUpdate(live, uid, now) {
-  return { ...commitmentStamps(uid, now), revision: nextRevision(live), updatedAt: now, updatedBy: uid }
+  return {
+    ...(isCommitmentApplied(live) ? {} : commitmentStamps(uid, now)),
+    ...(isScopeCommitted(live) ? {} : scopeStamps(uid, now)),
+    revision: nextRevision(live), updatedAt: now, updatedBy: uid,
+  }
 }
 
 function applyBlockerKind(blocker) {
@@ -334,7 +348,9 @@ export async function runApplyVariationCommitment({ db, variationRef, poRef, see
   if (!poRef) throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, 'The purchase order reference is required to apply a variation to its commitment.')
   // Decide on the reviewed copy first (status, type, link, stamps) so a plainly
   // ineligible variation never opens a transaction. The PO is unknown here, so
-  // a PO-related refusal can only come from the server read below.
+  // a PO-related refusal can only come from the server read below; the
+  // reviewed copy's own lines decide "nothing to commit" (the server copy
+  // decides again below).
   const pre = commitmentApplyEligibility(seen, [{ id: seen.poId, status: 'sent' }])
   if (!pre.eligible) throw new VariationWriteError(applyBlockerKind(pre.blocker), pre.message)
 
@@ -344,7 +360,7 @@ export async function runApplyVariationCommitment({ db, variationRef, poRef, see
       const snap = await tx.get(variationRef)
       if (!snap.exists()) return { kind: VARIATION_WRITE_ERROR.MISSING }
       const live = { id: snap.id, ...snap.data() }
-      if (isCommitmentApplied(live)) return { kind: VARIATION_WRITE_ERROR.ALREADY_APPLIED }
+      if (isCommitmentApplied(live) && isScopeCommitted(live)) return { kind: VARIATION_WRITE_ERROR.ALREADY_APPLIED }
       const stale = staleMessage(seen, live)
       if (stale) return { kind: VARIATION_WRITE_ERROR.STALE, message: stale }
       const poSnap = await tx.get(poRef)
@@ -352,7 +368,7 @@ export async function runApplyVariationCommitment({ db, variationRef, poRef, see
       const eligibility = commitmentApplyEligibility(live, po ? [po] : [])
       if (!eligibility.eligible) return { kind: applyBlockerKind(eligibility.blocker), message: eligibility.message }
       tx.update(variationRef, applyCommitmentUpdate(live, uid, serverTimestamp()))
-      return { kind: null }
+      return { kind: null, applied: eligibility.missing.applied, scopeCommitted: eligibility.missing.scope }
     })
   } catch (err) {
     if (err instanceof VariationWriteError) throw err

@@ -37,6 +37,8 @@ import { commitmentEffectPreview, PO_LINK_STATE } from '../../src/lib/variationC
 //   Forecast / Margin / Snapshot / Cash Flow / PULSE consistency.
 
 const APPLIED = { commitmentAppliedAt: { seconds: 1_700_000_000, nanoseconds: 0 }, commitmentAppliedBy: 'u_qs' }
+// The ADR-63 scope-commitment pair (M3-B2) — positive new-scope lines mature only with it.
+const SCOPE   = { scopeCommittedAt: { seconds: 1_700_000_100, nanoseconds: 0 }, scopeCommittedBy: 'u_qs' }
 
 const PO = {
   id: 'po1', poNumber: 'PO-0001', status: PO_STATUS.SENT, supplierId: 'sup1', supplierName: 'Steel Co', subtotal: 100_000,
@@ -241,10 +243,11 @@ describe('new-scope and mixed variations', () => {
     expect(p.rollups.approvedSupplierVariations).toBe(p.rollups.appliedSupplierVariations + p.rollups.unappliedSupplierVariations)
   })
 
-  it('a new-scope-only variation carries the stamp but is AWAITING M3-B2 — never "fully incorporated": nothing matures, the whole amount stays exposure, nothing disappears', () => {
+  it('a new-scope-only variation carries the applied stamp but, with no scope commit, is NEW SCOPE AWAITING COMMIT — never "fully incorporated": nothing matures, the whole amount stays exposure, nothing disappears', () => {
     const inc = variationIncorporation(newOnly, [PO])
     expect(inc.state).toBe(INCORPORATION_STATE.NOT_INCORPORATED)
-    expect(INCORPORATION_STATE_LABELS[inc.state]).toBe('Awaiting M3-B2')
+    expect(INCORPORATION_STATE_LABELS[inc.state]).toBe('New scope awaiting commit')
+    expect(inc.scopeCommitted).toBe(false)
     expect(inc).toMatchObject({ applied: true, gross: 4_000, matured: 0, outstanding: 4_000 })
     const p = position({ variations: [newOnly] })
     expect(p.adj.byPoLine).toEqual({})
@@ -313,18 +316,29 @@ describe('eligibility, the approve-time decision and the stamp predicates', () =
     expect(isPoLinkedSupplierVariation({ ...approvedLinked, variationType: 'client' })).toBe(false)
   })
 
-  it('every blocker, in order: not supplier, manual mode, not approved, already applied, PO missing, PO not committed', () => {
+  it('every blocker, in order: not supplier, manual mode, not approved, already applied, PO missing, PO not committed — and the ADR-63 missing-pair report', () => {
     const b = (v, pos = [PO]) => commitmentApplyEligibility(v, pos).blocker
     expect(b({ ...approvedLinked, variationType: 'client' })).toBe(COMMITMENT_APPLY_BLOCKER.NOT_SUPPLIER)
     expect(b({ ...approvedLinked, poId: null })).toBe(COMMITMENT_APPLY_BLOCKER.MANUAL_MODE)
     expect(b({ ...approvedLinked, status: 'submitted' })).toBe(COMMITMENT_APPLY_BLOCKER.NOT_APPROVED)
     expect(b({ ...approvedLinked, status: 'rejected' })).toBe(COMMITMENT_APPLY_BLOCKER.NOT_APPROVED)
+    // Applied with existing-line amounts only: nothing further to record.
     expect(b(applied('a', [svLine(1)]))).toBe(COMMITMENT_APPLY_BLOCKER.ALREADY_APPLIED)
+    // Applied AND scope-committed: nothing further to record either.
+    expect(b(applied('a', [svLine(1), svLine(500, { poLineIndex: null })], SCOPE))).toBe(COMMITMENT_APPLY_BLOCKER.ALREADY_APPLIED)
     expect(b(approvedLinked, [])).toBe(COMMITMENT_APPLY_BLOCKER.PO_MISSING)
     expect(b(approvedLinked, [{ ...PO, status: 'cancelled' }])).toBe(COMMITMENT_APPLY_BLOCKER.PO_NOT_COMMITTED)
     expect(b(approvedLinked, [{ ...PO, status: 'draft' }])).toBe(COMMITMENT_APPLY_BLOCKER.PO_NOT_COMMITTED)
-    expect(commitmentApplyEligibility(approvedLinked, [PO])).toMatchObject({ eligible: true, blocker: null, po: PO })
+    // Never applied: the legacy Apply writes both pairs.
+    expect(commitmentApplyEligibility(approvedLinked, [PO])).toMatchObject({ eligible: true, blocker: null, po: PO, missing: { applied: true, scope: true } })
     expect(commitmentApplyEligibility(approvedLinked, [{ ...PO, status: 'closed' }]).eligible).toBe(true)
+    // Applied under M3-B1 with a positive new-scope line: the scope pair only ("Commit new scope").
+    const b1Applied = applied('b1', [svLine(1), svLine(500, { poLineIndex: null, costCodeId: 'W' })])
+    expect(commitmentApplyEligibility(b1Applied, [PO])).toMatchObject({ eligible: true, missing: { applied: false, scope: true } })
+    // …but a NEGATIVE new-scope line alone is nothing to commit.
+    expect(b(applied('b1n', [svLine(1), svLine(-500, { poLineIndex: null, costCodeId: 'W' })]))).toBe(COMMITMENT_APPLY_BLOCKER.ALREADY_APPLIED)
+    // The PO blockers still decide for a scope-only commit.
+    expect(b(b1Applied, [{ ...PO, status: 'cancelled' }])).toBe(COMMITMENT_APPLY_BLOCKER.PO_NOT_COMMITTED)
   })
 
   it('shouldApplyOnApproval: PO-linked supplier + sent/closed PO only', () => {
@@ -352,9 +366,14 @@ describe('eligibility, the approve-time decision and the stamp predicates', () =
     const bad = variationIncorporation(applied('x', [svLine(12_000), svLine(50, { poLineIndex: 9 })]), [PO])
     expect(bad).toMatchObject({ state: INCORPORATION_STATE.EXCEPTION, applied: true, gross: 12_050, matured: 12_000, outstanding: 50, invalid: 50 })
     expect(INCORPORATION_STATE_LABELS[bad.state]).toBe('Invalid — needs review')
-    // A negative new-scope line keeps its sign in the outstanding exposure.
+    // A negative new-scope line keeps its sign in the outstanding exposure and
+    // names its own review state (ADR-63): it is never matured or claimed.
     const negNew = variationIncorporation(applied('n', [svLine(12_000), svLine(-2_000, { poLineIndex: null, costCodeId: 'W' })]), [PO])
-    expect(negNew).toMatchObject({ state: INCORPORATION_STATE.PARTIAL, gross: 10_000, matured: 12_000, outstanding: -2_000 })
+    expect(negNew).toMatchObject({ state: INCORPORATION_STATE.NEGATIVE_NEW_SCOPE, gross: 10_000, matured: 12_000, outstanding: -2_000, negativeNewScope: -2_000 })
+    expect(INCORPORATION_STATE_LABELS[negNew.state]).toBe('Negative new scope — review')
+    // …even once the scope commit is recorded: the negative line still matures nothing.
+    const negNewCommitted = variationIncorporation(applied('nc', [svLine(12_000), svLine(-2_000, { poLineIndex: null, costCodeId: 'W' })], SCOPE), [PO])
+    expect(negNewCommitted).toMatchObject({ state: INCORPORATION_STATE.NEGATIVE_NEW_SCOPE, matured: 12_000, outstanding: -2_000, committedNewScope: 0 })
   })
 })
 
@@ -369,20 +388,29 @@ describe('the commercial-effect preview (Assess and legacy Apply)', () => {
     expect(pv.poLines).toEqual([{
       poLineIndex: 0, costCodeId: 'X', costCodeName: '05-200 — Steel', description: 'Structural steel',
       original: 100_000, currentAdjustment: 2_000, currentRevised: 102_000, recognised: 40_000, currentRemaining: 62_000,
-      delta: 12_000, revisedAfter: 114_000, remainingAfter: 74_000, negativeAfter: false,
+      delta: 12_000, revisedAfter: 114_000, remainingAfter: 74_000, negativeAfter: false, overRecognised: false,
     }])
     expect(pv.newScope.map(l => l.amount)).toEqual([4_000])
-    expect(pv.totals).toEqual({ matured: 12_000, newScope: 4_000, invalid: 0, remainingBefore: 62_000, remainingAfter: 74_000 })
+    // ADR-63: approving commits the 4,000 positive new-scope line too, so it is
+    // part of what matures; the new-scope totals are reported apart.
+    expect(pv).toMatchObject({ willCommitScope: true, alreadyScopeCommitted: false, overRecognitionWarning: false })
+    expect(pv.totals).toEqual({ matured: 16_000, newScope: 4_000, newScopeCommittable: 4_000, newScopeNegative: 0, invalid: 0, remainingBefore: 62_000, remainingAfter: 74_000 })
+    // Already scope-committed: the new scope is not counted as maturing again.
+    const already = commitmentEffectPreview({ ...base, variation: { ...candidate, ...APPLIED, ...SCOPE } })
+    expect(already).toMatchObject({ willCommitScope: false, alreadyScopeCommitted: true })
+    expect(already.totals.matured).toBe(12_000)
   })
 
   it('CTC warning only when a POSITIVE saved Uncommitted CTC sits on an affected cost code and the variation will apply; never a proof', () => {
     expect(commitmentEffectPreview({ ...base, forecastLines: [{ id: 'X', costCodeId: 'X', uncommittedCostToComplete: 12_000 }] })).toMatchObject({
-      ctcWarning: true, costCodes: [{ costCodeId: 'X', delta: 12_000, uncommittedCtc: 12_000, ctcWarning: true }],
+      ctcWarning: true, costCodes: [{ costCodeId: 'X', delta: 12_000, uncommittedCtc: 12_000, ctcWarning: true }, { costCodeId: 'W', delta: 4_000, uncommittedCtc: null, ctcWarning: false }],
     })
     expect(commitmentEffectPreview({ ...base, forecastLines: [{ id: 'X', costCodeId: 'X', uncommittedCostToComplete: 0 }] }).ctcWarning).toBe(false)
     expect(commitmentEffectPreview({ ...base, forecastLines: [{ id: 'X', costCodeId: 'X', uncommittedCostToComplete: null }] }).ctcWarning).toBe(false)
-    // CTC on the NEW-SCOPE code (W) is not an applied-commitment overlap in B1.
-    expect(commitmentEffectPreview({ ...base, forecastLines: [{ id: 'W', costCodeId: 'W', uncommittedCostToComplete: 999 }] }).ctcWarning).toBe(false)
+    // ADR-63: the NEW-SCOPE code (W) IS an affected code once the approve commits the new scope.
+    expect(commitmentEffectPreview({ ...base, forecastLines: [{ id: 'W', costCodeId: 'W', uncommittedCostToComplete: 999 }] }).ctcWarning).toBe(true)
+    // …but not when the scope is already committed (nothing new enters commitment on W).
+    expect(commitmentEffectPreview({ ...base, variation: { ...candidate, ...APPLIED, ...SCOPE }, forecastLines: [{ id: 'W', costCodeId: 'W', uncommittedCostToComplete: 999 }] }).ctcWarning).toBe(false)
     // A cancelled PO: nothing applies, so nothing can overlap.
     const cancelled = commitmentEffectPreview({ ...base, purchaseOrders: [{ ...PO, status: 'cancelled' }], forecastLines: [{ id: 'X', costCodeId: 'X', uncommittedCostToComplete: 12_000 }] })
     expect(cancelled).toMatchObject({ poState: PO_LINK_STATE.NOT_COMMITTED, willApply: false, ctcWarning: false })

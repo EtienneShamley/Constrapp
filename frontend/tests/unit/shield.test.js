@@ -691,11 +691,14 @@ describe('check 4 — commitment state conflicts', () => {
       // G (ADR-62): the fixture's claims carry no line items, so no recognised
       // claim sits on a PO line — the dedicated block below builds the cases.
       [STATE_CONFLICT.CLAIM_ABOVE_REVISED_LINE]:    0,
+      // H (ADR-63): no claim line names a variation source here — the dedicated
+      // block in tests/unit/newScopeClaims.test.js builds the cases.
+      [STATE_CONFLICT.INVALID_CLAIM_SOURCE_LINE]:   0,
     })
     expect(c.values.conflictCount).toBe(8)
     expect(c.evidence).toHaveLength(8)
     expect(new Set(c.evidence.map(r => r.id)).size).toBe(8)
-    expect(Object.keys(STATE_CONFLICT)).toHaveLength(7)
+    expect(Object.keys(STATE_CONFLICT)).toHaveLength(8)
   })
 
   it('A · cancelled PO with a posted invoice and an approved claim', () => {

@@ -124,6 +124,8 @@ function invoicePayload(user, {
     poNumber:        'PO-0001',
     progressClaimId: source === 'progress_claim' ? CLAIM_APPROVED : null,
     claimNumber:     source === 'progress_claim' ? 'PC-0001' : null,
+    // ADR-63: the number of variation-origin lines (0 — no new-scope line here).
+    variationLineCount: 0,
 
     invoiceDate:  '2026-08-05',
     receivedDate: '2026-08-06',
@@ -1436,5 +1438,110 @@ describe('DEFERRED CONTROLS — these gaps are real and must never be reported a
     await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'dc14'), lineEdit(USERS.qs, {
       attachments: ['anything'], externalRefs: { xero: 'INV-1' },
     })))
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// M3-B2 (ADR-63) — variation-origin invoice lines and the `variationLineCount`
+// guard: a claim that carries variation lines can be invoiced only by a client
+// that declares the count (the pre-M3-B2 bundle never does), the count is
+// bounded by the claim's and frozen, a direct PO invoice carries none, and the
+// last line's shape must match the count.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const CLAIM_VAR = 'claim_var'
+const varInvLine = (amount) => line(amount, 'gst', { poLineIndex: null, variationId: 'svScoped', variationNumber: 'SV-0007', variationLineIndex: 0, description: 'New scope' })
+async function seedVariationClaim() {
+  await testEnv.withSecurityRulesDisabled(async (c) => {
+    const now = Timestamp.now()
+    await setDoc(doc(c.firestore(), `companies/${COMPANY_A}/projects/${PROJECT_A}/progressClaims`, CLAIM_VAR), {
+      claimNumber: 'PC-0007', status: 'approved', poId: PO_SENT, poNumber: 'PO-0001', supplierName: 'BuildCo Pty Ltd', supplierId: 'contact1',
+      claimRef: '', periodEnding: '', variationId: null, variationLineCount: 1,
+      lineItems: [
+        { poLineIndex: 0, costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'Slab', poLineTotal: 10000, previouslyApproved: 0, claimedToDate: 0, claimedThisPeriod: 0, approvedThisPeriod: 0 },
+        { poLineIndex: null, variationId: 'svScoped', variationNumber: 'SV-0007', variationLineIndex: 0, variationLineTotal: 4000, poLineTotal: null, costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'New scope', previouslyApproved: 0, claimedToDate: 2000, claimedThisPeriod: 2000, approvedThisPeriod: 2000 },
+      ],
+      retention: 0, claimedSubtotal: 2000, claimedGst: 200, claimedTotal: 2200, approvedSubtotal: 2000, approvedGst: 200, approvedTotal: 2200,
+      notes: '', assessmentNotes: '', currency: 'AUD', revision: 2,
+      submittedAt: now, submittedBy: 'u_admin', approvedAt: now, approvedBy: 'u_admin', rejectedAt: null, rejectedBy: null, invoicedAt: null,
+      externalRefs: {}, createdAt: now, createdBy: 'u_admin', updatedAt: now, updatedBy: 'u_admin',
+    })
+  })
+}
+const fromVarClaim = (user, over = {}) => invoicePayload(user, { source: 'progress_claim', progressClaimId: CLAIM_VAR, claimNumber: 'PC-0007', lines: [varInvLine(2000)], variationLineCount: 1, ...over })
+
+describe('ADR-63 — the claim-sourced variationLineCount guard', () => {
+  it('the NEW bundle raises an invoice from a claim with a variation line: count 1 and the variation-origin line → accepted for every financial role; the identity is stored', async () => {
+    await seedVariationClaim()
+    for (const user of [USERS.admin, USERS.pm, USERS.qs]) {
+      await assertSucceeds(setDoc(invRef(ctx(user), `nv_${user.uid}`), fromVarClaim(user)))
+    }
+    let stored
+    await testEnv.withSecurityRulesDisabled(async (c) => { stored = (await getDoc(invRef(c.firestore(), 'nv_u_qs'))).data() })
+    expect(stored.variationLineCount).toBe(1)
+    expect(stored.lineItems[0]).toMatchObject({ poLineIndex: null, variationId: 'svScoped', variationLineIndex: 0 })
+  })
+
+  it('the OLD bundle’s payload against that claim — no count key, the line attributed to PO line 0 — is REFUSED, so a posted invoice can never carry the new-scope work onto PO line 0', async () => {
+    await seedVariationClaim()
+    const old = fromVarClaim(USERS.qs, { lines: [line(2000)] })
+    delete old.variationLineCount
+    await assertFails(setDoc(invRef(ctx(USERS.qs), 'old'), old))
+    // Even with the right line shape, the count must be declared.
+    const noCount = fromVarClaim(USERS.qs)
+    delete noCount.variationLineCount
+    await assertFails(setDoc(invRef(ctx(USERS.qs), 'old2'), noCount))
+  })
+
+  it('the count is bounded by the claim’s and must match the last line’s shape: above the claim, negative, non-integer, or a mismatched last line is refused; 0 with no variation line stored is allowed', async () => {
+    await seedVariationClaim()
+    const db = ctx(USERS.qs)
+    await assertFails(setDoc(invRef(db, 'b1'), fromVarClaim(USERS.qs, { variationLineCount: 2 })))
+    await assertFails(setDoc(invRef(db, 'b2'), fromVarClaim(USERS.qs, { variationLineCount: -1 })))
+    await assertFails(setDoc(invRef(db, 'b3'), fromVarClaim(USERS.qs, { variationLineCount: 1.5 })))
+    await assertFails(setDoc(invRef(db, 'b4'), fromVarClaim(USERS.qs, { variationLineCount: 1, lines: [line(2000)] })))
+    await assertFails(setDoc(invRef(db, 'b5'), fromVarClaim(USERS.qs, { variationLineCount: 1, lines: [line(2000, 'gst', { poLineIndex: 0, variationId: 'svScoped', variationLineIndex: 0 })] })))
+    await assertFails(setDoc(invRef(db, 'b6'), fromVarClaim(USERS.qs, { variationLineCount: 0, lines: [varInvLine(2000)] })))
+    // The variation line was certified at zero and is not stored: count 0, PO lines only → accepted.
+    await assertSucceeds(setDoc(invRef(db, 'b7'), fromVarClaim(USERS.qs, { variationLineCount: 0, lines: [line(10)] })))
+  })
+
+  it('a claim WITHOUT variation lines takes an absent key (old bundle) or 0 (new bundle), never a positive count', async () => {
+    const db = ctx(USERS.qs)
+    const absent = invoicePayload(USERS.qs, { source: 'progress_claim' })
+    delete absent.variationLineCount
+    await assertSucceeds(setDoc(invRef(db, 'c1'), absent))
+    await assertSucceeds(setDoc(invRef(db, 'c2'), invoicePayload(USERS.qs, { source: 'progress_claim', variationLineCount: 0 })))
+    await assertFails(setDoc(invRef(db, 'c3'), invoicePayload(USERS.qs, { source: 'progress_claim', variationLineCount: 1, lines: [varInvLine(2000)] })))
+  })
+
+  it('a direct PO invoice carries no variation line: count 0 or absent passes, count 1 (with or without a variation-shaped line) is refused', async () => {
+    const db = ctx(USERS.qs)
+    const absent = invoicePayload(USERS.qs)
+    delete absent.variationLineCount
+    await assertSucceeds(setDoc(invRef(db, 'd1'), absent))
+    await assertSucceeds(setDoc(invRef(db, 'd2'), invoicePayload(USERS.qs, { variationLineCount: 0 })))
+    await assertFails(setDoc(invRef(db, 'd3'), invoicePayload(USERS.qs, { variationLineCount: 1, lines: [varInvLine(2000)] })))
+    await assertFails(setDoc(invRef(db, 'd4'), invoicePayload(USERS.qs, { variationLineCount: 1 })))
+    await assertFails(setDoc(invRef(db, 'd5'), invoicePayload(USERS.qs, { variationLineCount: 0, lines: [varInvLine(2000)] })))
+  })
+
+  it('variationLineCount is frozen for the invoice’s life (header edit, line edit, approve, post); the lifecycle itself is unchanged', async () => {
+    await seedVariationClaim()
+    await seed('f1', 'draft', USERS.admin, { source: 'progress_claim', progressClaimId: CLAIM_VAR, claimNumber: 'PC-0007', variationLineCount: 1, lineItems: [varInvLine(2000)] })
+    const db = ctx(USERS.qs)
+    await assertFails(updateDoc(invRef(db, 'f1'), headerEdit(USERS.qs, { variationLineCount: 0 })))
+    await assertFails(updateDoc(invRef(db, 'f1'), headerEdit(USERS.qs, { variationLineCount: 2 })))
+    await assertSucceeds(updateDoc(invRef(db, 'f1'), headerEdit(USERS.qs)))
+    await assertFails(updateDoc(invRef(db, 'f1'), approveWrite(USERS.qs, { variationLineCount: 0 })))
+    await assertSucceeds(updateDoc(invRef(db, 'f1'), approveWrite(USERS.qs)))
+    await assertSucceeds(updateDoc(invRef(db, 'f1'), postWrite(USERS.qs)))
+    await seed('f2', 'draft')
+    await assertFails(updateDoc(invRef(db, 'f2'), lineEdit(USERS.qs, { variationLineCount: 1 })))
+  })
+
+  it('NOT enforced (DC40): rules cannot compare the invoice lines to the claim’s — a count of 1 with a variation line naming a DIFFERENT variation, or a different amount, is ACCEPTED (client reconciliation + SHIELD)', async () => {
+    await seedVariationClaim()
+    await assertSucceeds(setDoc(invRef(ctx(USERS.qs), 'n1'), fromVarClaim(USERS.qs, { lines: [line(9000, 'gst', { poLineIndex: null, variationId: 'svElsewhere', variationLineIndex: 4 })] })))
   })
 })

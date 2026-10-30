@@ -651,13 +651,53 @@ service cloud.firestore {
             || ((netC % 10 == 5 || netC % 10 == -5) && gstC == gstCents(netC) - 1);
       }
       // Exact key set of a document the app creates (hooks/useProgressClaims.jsx).
+      // M3-B2 (ADR-63): `variationLineCount` — the number of variation-origin
+      // lines after the PO lines — is REQUIRED by this FINAL file (the STAGE-1
+      // transitional ruleset makes it optional for the M3-B1 bundle; marked line).
       function exactKeys() {
-        return request.resource.data.keys().hasOnly(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
-            && request.resource.data.keys().hasAll(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']);
+        return request.resource.data.keys().hasOnly(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'variationLineCount', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+            && request.resource.data.keys().hasAll(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'variationLineCount', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']); // ADR-63 FINAL: variationLineCount is REQUIRED at create
+      }
+      // The number of variation-origin lines a claim declares (absent reads 0 —
+      // every pre-M3-B2 document).
+      function variationLineCount(d) {
+        return d.get('variationLineCount', 0);
+      }
+      // The honest rules-level shape of a line set with `n` variation-origin
+      // lines after the PO lines (ADR-63): rules cannot iterate `lineItems`,
+      // but they can INDEX it — the FIRST and LAST variation-origin lines must
+      // carry a null `poLineIndex` and a string `variationId`, and with n == 0
+      // the last line must carry no `variationId`. A pre-M3-B2 client's
+      // rebuild writes every line with a numeric index and no variation id, so
+      // its draft edit of a claim that holds variation lines is REFUSED here
+      // (nothing written) instead of silently moving those lines to PO line 0.
+      // Element contents beyond this stay client-only (DC40).
+      function variationLinesShaped(lines, n) {
+        return n == 0
+            ? lines[lines.size() - 1].get('variationId', null) == null
+            : (lines[lines.size() - 1].get('poLineIndex', 0) == null
+               && lines[lines.size() - 1].get('variationId', null) is string
+               && lines[lines.size() - n].get('poLineIndex', 0) == null
+               && lines[lines.size() - n].get('variationId', null) is string);
+      }
+      // On an update the first and last variation-origin lines must also keep
+      // the stored identity (variation id and line index).
+      function variationLinesPreserved() {
+        let n = variationLineCount(resource.data);
+        let d = request.resource.data.lineItems;
+        let p = resource.data.lineItems;
+        return variationLinesShaped(d, n)
+            && (n == 0
+                || (d[d.size() - 1].get('variationId', null) == p[p.size() - 1].get('variationId', null)
+                    && d[d.size() - 1].get('variationLineIndex', null) == p[p.size() - 1].get('variationLineIndex', null)
+                    && d[d.size() - n].get('variationId', null) == p[p.size() - n].get('variationId', null)
+                    && d[d.size() - n].get('variationLineIndex', null) == p[p.size() - n].get('variationLineIndex', null)));
       }
       // Identity written once. `supplierId` is null on a claim raised from a
-      // pre-Contacts PO (ADR-15); `variationId` is a RESERVED forward link and
-      // must be null (the claim-against-variation linkage is not wired).
+      // pre-Contacts PO (ADR-15); `variationId` is a RESERVED header and stays
+      // null — several variations may share one claim, so the variation
+      // identity lives on the LINES (ADR-63); `variationLineCount` is a
+      // non-negative integer.
       function identityShapeValid() {
         let d = request.resource.data;
         return d.claimNumber is string
@@ -669,6 +709,8 @@ service cloud.firestore {
             && d.supplierName.size() <= 200
             && (d.supplierId == null || (d.supplierId is string && d.supplierId.size() > 0))
             && d.variationId == null
+            && d.get('variationLineCount', 0) is int
+            && d.get('variationLineCount', 0) >= 0
             && d.currency is string
             && d.currency.matches('^[A-Z]{3}$')
             && d.revision == 1
@@ -767,19 +809,26 @@ service cloud.firestore {
       // Tier-2 source validation — CREATE ONLY. The PO is a scalar reference,
       // so it CAN be get()-ed: it must exist in THIS project and be `sent`
       // (lib/progressClaims.js → CLAIMABLE_PO_STATUSES), and the claim's
-      // number, supplier snapshot and line COUNT must be the PO's (the line
-      // set is one-per-PO-line, ADR-37). The path is built inside the guarded
-      // branch, never before it. Repeated access to one document within one
-      // evaluation is a single billed read.
+      // number, supplier snapshot and line COUNT must be the PO's lines plus
+      // the declared variation-origin lines (one per PO line, ADR-37; plus the
+      // new-scope lines, ADR-63, whose shape is pinned at the ends). The path
+      // is built inside the guarded branch, never before it. Repeated access to
+      // one document within one evaluation is a single billed read.
+      // The PO is bound ONCE (`let po`) — every repeated `get(poPath(…)).data`
+      // spent from the engine's 1000-expression ceiling, which the create
+      // evaluation reached in the emulator once the ADR-63 checks were added.
+      // A missing PO makes `.data` error, which denies exactly as `exists()` did.
       function sourcePoValid() {
         let d = request.resource.data;
-        return exists(poPath(companyId, projectId))
-            && get(poPath(companyId, projectId)).data.status == 'sent'
-            && get(poPath(companyId, projectId)).data.poNumber == d.poNumber
-            && get(poPath(companyId, projectId)).data.supplierName == d.supplierName
-            && get(poPath(companyId, projectId)).data.get('supplierId', null) == d.supplierId
-            && get(poPath(companyId, projectId)).data.lineItems is list
-            && get(poPath(companyId, projectId)).data.lineItems.size() == d.lineItems.size();
+        let po = get(poPath(companyId, projectId)).data;
+        let n = d.get('variationLineCount', 0);
+        return po.status == 'sent'
+            && po.poNumber == d.poNumber
+            && po.supplierName == d.supplierName
+            && po.get('supplierId', null) == d.supplierId
+            && po.lineItems is list
+            && po.lineItems.size() + n == d.lineItems.size()
+            && variationLinesShaped(d.lineItems, n);
       }
       // The identity no update may rewrite. Optional keys are read through
       // get(key, null) on BOTH sides so a document written before ADR-58 (no
@@ -795,6 +844,7 @@ service cloud.firestore {
             && d.supplierName == p.supplierName
             && d.get('supplierId', null) == p.get('supplierId', null)
             && d.get('variationId', null) == p.get('variationId', null)
+            && d.get('variationLineCount', null) == p.get('variationLineCount', null)
             && d.get('currency', null) == p.get('currency', null)
             && d.get('externalRefs', null) == p.get('externalRefs', null)
             && d.createdAt == p.createdAt
@@ -835,6 +885,7 @@ service cloud.firestore {
                       && contentShapeValid()
                       && claimedMoneyValid()
                       && request.resource.data.lineItems.size() == resource.data.lineItems.size()
+                      && variationLinesPreserved()
                     )
                     ||
                     // (b) SUBMIT — THE CLAIMED-MONEY FREEZE POINT and the
@@ -867,6 +918,7 @@ service cloud.firestore {
                       && request.resource.data.approvedAt == request.time
                       && request.resource.data.lineItems is list
                       && request.resource.data.lineItems.size() == resource.data.lineItems.size()
+                      && variationLinesPreserved()
                       && notesBounded()
                       && approvedMoneyValid()
                     )
@@ -920,7 +972,8 @@ service cloud.firestore {
             && d.claimNumber      == p.claimNumber
             && d.paymentTerms     == p.paymentTerms
             && d.paidAt           == p.paidAt
-            && d.adjustsInvoiceId == p.adjustsInvoiceId;
+            && d.adjustsInvoiceId == p.adjustsInvoiceId
+            && d.get('variationLineCount', null) == p.get('variationLineCount', null);
       }
       // Lifecycle stamps a content edit may not forge. `cancelledBy` is read
       // through get(key, null) on BOTH sides: it is an ADR-40 addition, so every
@@ -980,7 +1033,23 @@ service cloud.firestore {
             && d.lineItems.size() >= 1
             && d.lineItems.size() <= 200
             && d.attachments is list
-            && d.externalRefs is map;
+            && d.externalRefs is map
+            && variationLinesShaped(d);
+      }
+      // M3-B2 (ADR-63): `variationLineCount` — the number of variation-origin
+      // lines (copied from the source claim; 0 on a direct PO invoice) — is a
+      // non-negative integer when present (absent reads 0: every pre-M3-B2
+      // document), and the LAST line matches it: a null `poLineIndex` and a
+      // string `variationId` when > 0, no `variationId` when 0. Rules cannot
+      // iterate the list; this is the honest ceiling (DC40).
+      function variationLinesShaped(d) {
+        let n = d.get('variationLineCount', 0);
+        let last = d.lineItems[d.lineItems.size() - 1];
+        return n is int
+            && n >= 0
+            && (n == 0
+                ? last.get('variationId', null) == null
+                : (last.get('poLineIndex', 0) == null && last.get('variationId', null) is string));
       }
       // The SCALAR arithmetic guarantee rules CAN give: every stored total must
       // agree with every other stored total, in whole cents. The lines themselves
@@ -1069,21 +1138,35 @@ service cloud.firestore {
             && exists(poPath(companyId, projectId))
             && get(poPath(companyId, projectId)).data.status in ['sent', 'closed'];
       }
+      // The claim is bound ONCE (`let claim`, read after the id is known to be
+      // a non-empty string by the caller's short-circuit) — the create
+      // evaluation sits near the engine's 1000-expression ceiling (see below).
+      // M3-B2 (ADR-63): a claim that carries variation-origin lines may be
+      // invoiced only by a client that DECLARES a variation-line count (at most
+      // the claim's — lines certified at zero are not stored). The pre-M3-B2
+      // bundle writes no such key and is refused, so it can never raise an
+      // invoice that attributes those lines to PO line 0. A claim without
+      // variation lines takes an absent key or 0.
       function sourceClaimValid() {
-        return request.resource.data.progressClaimId is string
-            && request.resource.data.progressClaimId.size() > 0
-            && exists(claimPath())
-            && get(claimPath()).data.status == 'approved';
+        let claim = get(claimPath()).data;
+        let cc = claim.get('variationLineCount', 0);
+        let ic = request.resource.data.get('variationLineCount', null);
+        return claim.status == 'approved'
+            && (cc == 0 ? (ic == null || ic == 0) : (ic is int && ic >= 0 && ic <= cc));
       }
       // A direct_po invoice must carry NO claim reference: a posted invoice's
       // progressClaimId excludes that claim from the claim side of Actual
       // (lib/supplierInvoices.js → invoicedClaimIds), so a forged one would
-      // silently erase an approved claim from the cost position.
+      // silently erase an approved claim from the cost position — and no
+      // variation-origin line (ADR-63: new scope is invoiced from the claim).
       function sourceRefsValid() {
         return sourcePoValid()
             && (request.resource.data.source == 'direct_po'
-                  ? request.resource.data.progressClaimId == null
-                  : sourceClaimValid());
+                  ? (request.resource.data.progressClaimId == null
+                     && request.resource.data.get('variationLineCount', 0) == 0)
+                  : (request.resource.data.progressClaimId is string
+                     && request.resource.data.progressClaimId.size() > 0
+                     && sourceClaimValid()));
       }
 
       // A document is BORN DRAFT, STAMPED BY ITS CREATOR, AND UNSTAMPED BY EVERY
@@ -1266,9 +1349,39 @@ service cloud.firestore {
         return d.commitmentAppliedBy == request.auth.uid
             && d.commitmentAppliedAt == request.time;
       }
+      // M3-B2 (ADR-63): the second, independent pair — the new-scope commitment.
+      // Written with the applied pair on a PO-linked approve (branch c) or by
+      // the one-time legacy Commit (branch f); never on a client / manual-mode
+      // variation, never at create.
+      function scopeAbsent(d) {
+        return !d.keys().hasAny(['scopeCommittedAt', 'scopeCommittedBy']);
+      }
+      function scopeStamped(d) {
+        return d.scopeCommittedBy == request.auth.uid
+            && d.scopeCommittedAt == request.time;
+      }
+      // One get(): a missing PO makes `.data` error, which denies.
       function poCommitted() {
-        return exists(poPath(companyId, projectId))
-            && get(poPath(companyId, projectId)).data.status in ['sent', 'closed'];
+        return get(poPath(companyId, projectId)).data.status in ['sent', 'closed'];
+      }
+      // (f) APPLY / COMMIT NEW SCOPE (M3-B1 ADR-62 · M3-B2 ADR-63) — the
+      // ONE-TIME legacy write of the stamp pair(s) an APPROVED, PO-linked
+      // supplier variation lacks: the missing pair(s) + revision + audit stamps
+      // and nothing else, while the PO is sent/closed. EACH written pair's
+      // stored value must be null/absent, so a repeat is refused by rules and a
+      // present pair is never rewritten; approved money, lines and the PO link
+      // stay frozen (outside the list). `changedKeys()` is bound ONCE — every
+      // diff spends from the 1000-expression ceiling.
+      function legacyCommitValid() {
+        let ck = changedKeys();
+        let d = request.resource.data;
+        let p = resource.data;
+        return ck.hasOnly(['commitmentAppliedAt', 'commitmentAppliedBy', 'scopeCommittedAt', 'scopeCommittedBy', 'revision', 'updatedAt', 'updatedBy'])
+            && ck.hasAny(['commitmentAppliedAt', 'scopeCommittedAt'])
+            && (!ck.hasAny(['commitmentAppliedAt', 'commitmentAppliedBy'])
+                || (p.get('commitmentAppliedAt', null) == null && p.get('commitmentAppliedBy', null) == null && appliedStamped(d)))
+            && (!ck.hasAny(['scopeCommittedAt', 'scopeCommittedBy'])
+                || (p.get('scopeCommittedAt', null) == null && p.get('scopeCommittedBy', null) == null && scopeStamped(d)));
       }
       // The RFI this candidate cites, in THIS company and THIS project (ADR-34).
       function originRfiDoc(d) {
@@ -1301,7 +1414,7 @@ service cloud.firestore {
       }
       // Exact key set of a document the app creates (hooks/useVariations.jsx).
       function exactKeys() {
-        return request.resource.data.keys().hasOnly(['variationNumber', 'variationType', 'status', 'title', 'description', 'reason', 'clientId', 'clientName', 'clientRef', 'supplierId', 'supplierName', 'supplierRef', 'poId', 'poNumber', 'originRfiId', 'originRfiNumber', 'originRfiTitle', 'lineItems', 'submittedSubtotal', 'submittedGst', 'submittedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'forecastAmount', 'identifiedDate', 'submittedDate', 'responseDueDate', 'approvedDate', 'effectiveDate', 'currency', 'revision', 'notes', 'assessmentNotes', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'withdrawnAt', 'withdrawnBy', 'attachments', 'externalRefs', 'supersededByVariationId', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'commitmentAppliedAt', 'commitmentAppliedBy'])
+        return request.resource.data.keys().hasOnly(['variationNumber', 'variationType', 'status', 'title', 'description', 'reason', 'clientId', 'clientName', 'clientRef', 'supplierId', 'supplierName', 'supplierRef', 'poId', 'poNumber', 'originRfiId', 'originRfiNumber', 'originRfiTitle', 'lineItems', 'submittedSubtotal', 'submittedGst', 'submittedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'forecastAmount', 'identifiedDate', 'submittedDate', 'responseDueDate', 'approvedDate', 'effectiveDate', 'currency', 'revision', 'notes', 'assessmentNotes', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'withdrawnAt', 'withdrawnBy', 'attachments', 'externalRefs', 'supersededByVariationId', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'commitmentAppliedAt', 'commitmentAppliedBy', 'scopeCommittedAt', 'scopeCommittedBy'])
             && request.resource.data.keys().hasAll(['variationNumber', 'variationType', 'status', 'title', 'description', 'reason', 'clientId', 'clientName', 'clientRef', 'supplierId', 'supplierName', 'supplierRef', 'poId', 'poNumber', 'originRfiId', 'originRfiNumber', 'originRfiTitle', 'lineItems', 'submittedSubtotal', 'submittedGst', 'submittedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'forecastAmount', 'identifiedDate', 'submittedDate', 'responseDueDate', 'approvedDate', 'effectiveDate', 'currency', 'revision', 'notes', 'assessmentNotes', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'withdrawnAt', 'withdrawnBy', 'attachments', 'externalRefs', 'supersededByVariationId', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']);
       }
       // Tier-2 source validation — CREATE ONLY, supplier variations that name a
@@ -1310,13 +1423,17 @@ service cloud.firestore {
       // poNumber and supplier snapshot must be the PO's. Never re-checked: a
       // variation survives its PO's later cancellation (the PO cancel guard is
       // the client's, DC35).
+      // The PO is bound ONCE (`let po`): the variations create evaluation
+      // reached the engine's 1000-expression ceiling in the emulator once the
+      // ADR-63 keys were added. A missing PO makes `.data` error, which denies
+      // exactly as `exists()` did.
       function sourcePoValid() {
         let d = request.resource.data;
-        return exists(poPath(companyId, projectId))
-            && get(poPath(companyId, projectId)).data.status in ['sent', 'closed']
-            && get(poPath(companyId, projectId)).data.poNumber == d.poNumber
-            && get(poPath(companyId, projectId)).data.supplierName == d.supplierName
-            && get(poPath(companyId, projectId)).data.get('supplierId', null) == d.supplierId;
+        let po = get(poPath(companyId, projectId)).data;
+        return po.status in ['sent', 'closed']
+            && po.poNumber == d.poNumber
+            && po.supplierName == d.supplierName
+            && po.get('supplierId', null) == d.supplierId;
       }
       // Identity written once: type-discriminated number and counterparty, the
       // other type's block all null, reserved fields at their reserved values.
@@ -1380,7 +1497,8 @@ service cloud.firestore {
             && d.approvedSubtotal == null && d.approvedGst == null && d.approvedTotal == null
             && d.approvedDate == ''
             && d.assessmentNotes == ''
-            && appliedAbsent(d);
+            && appliedAbsent(d)
+            && scopeAbsent(d);
       }
 
       allow read: if variationMember();
@@ -1443,13 +1561,15 @@ service cloud.firestore {
                     //     time == server). A missing / cancelled / draft PO
                     //     REFUSES the approval (withdraw or reject instead).
                     //     Manual-mode and client variations (poId null) never
-                    //     carry the pair. The STAGE-1 transitional ruleset
-                    //     (scripts/build-transitional-rules.mjs) differs from
-                    //     this FINAL file in exactly the one marked line below.
+                    //     carry the pair. M3-B2 (ADR-63): the same write also
+                    //     carries the new-scope pair (`scopeCommitted*`),
+                    //     REQUIRED by this FINAL file. The STAGE-1 transitional
+                    //     ruleset (scripts/build-transitional-rules.mjs)
+                    //     differs from this FINAL file only in the marked lines.
                     (
                       resource.data.status in ['submitted', 'under_review']
                       && request.resource.data.status == 'approved'
-                      && changedKeys().hasOnly(['status', 'lineItems', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'assessmentNotes', 'approvedDate', 'effectiveDate', 'approvedAt', 'approvedBy', 'revision', 'updatedAt', 'updatedBy', 'commitmentAppliedAt', 'commitmentAppliedBy'])
+                      && changedKeys().hasOnly(['status', 'lineItems', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'assessmentNotes', 'approvedDate', 'effectiveDate', 'approvedAt', 'approvedBy', 'revision', 'updatedAt', 'updatedBy', 'commitmentAppliedAt', 'commitmentAppliedBy', 'scopeCommittedAt', 'scopeCommittedBy'])
                       && request.resource.data.approvedBy == request.auth.uid
                       && request.resource.data.approvedAt == request.time
                       && request.resource.data.lineItems is list
@@ -1460,10 +1580,10 @@ service cloud.firestore {
                       && isDate(request.resource.data.effectiveDate)
                       && moneyValid(request.resource.data.approvedSubtotal, request.resource.data.approvedGst, request.resource.data.approvedTotal)
                       && (resource.data.poId == null
-                          ? appliedAbsent(request.resource.data)
+                          ? (appliedAbsent(request.resource.data) && scopeAbsent(request.resource.data))
                           : (resource.data.variationType == 'supplier'
                               && poCommitted()
-                              && appliedStamped(request.resource.data))) // ADR-62 FINAL: the pair is REQUIRED on a PO-linked approve
+                              && appliedStamped(request.resource.data) && scopeStamped(request.resource.data))) // ADR-63 FINAL: BOTH pairs are REQUIRED on a PO-linked approve
                     )
                     ||
                     // (d) REJECT (terminal) — stamps plus the optional notes.
@@ -1485,22 +1605,13 @@ service cloud.firestore {
                       && request.resource.data.withdrawnAt == request.time
                     )
                     ||
-                    // (f) APPLY TO COMMITMENT (M3-B1, ADR-62) — the ONE-TIME
-                    //     legacy application of an APPROVED, PO-linked supplier
-                    //     variation that carries no stamps: the pair + revision
-                    //     + audit stamps and nothing else, while the PO is
-                    //     sent/closed. The stored pair must be null/absent, so a
-                    //     repeat is refused by rules; approved money, lines and
-                    //     the PO link stay frozen (outside the list).
+                    // (f) APPLY / COMMIT NEW SCOPE — see legacyCommitValid() above.
                     (
                       resource.data.status == 'approved'
                       && request.resource.data.status == 'approved'
                       && resource.data.variationType == 'supplier'
                       && resource.data.poId is string
-                      && resource.data.get('commitmentAppliedAt', null) == null
-                      && resource.data.get('commitmentAppliedBy', null) == null
-                      && changedKeys().hasOnly(['commitmentAppliedAt', 'commitmentAppliedBy', 'revision', 'updatedAt', 'updatedBy'])
-                      && appliedStamped(request.resource.data)
+                      && legacyCommitValid()
                       && poCommitted()
                     )
                   );

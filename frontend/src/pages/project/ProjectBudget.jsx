@@ -11,11 +11,11 @@ import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
 import { useSupplierCreditNotes } from '../../hooks/useSupplierCreditNotes'
 import { useVariations } from '../../hooks/useVariations'
-import { remainingCommittedByCostCode, PO_STATUS } from '../../lib/purchaseOrders'
-import { actualClaimsByCostCode, claimedPendingByCostCode, recognisedClaimsByPoLine } from '../../lib/progressClaims'
-import { invoicedByCostCode, invoicedClaimIds, postedInvoicedByPoLine } from '../../lib/supplierInvoices'
+import { actualClaimsByCostCode, claimedPendingByCostCode } from '../../lib/progressClaims'
+import { invoicedByCostCode } from '../../lib/supplierInvoices'
 import { creditedByCostCode, CREDIT_READ_ERROR_NOTICE } from '../../lib/supplierCreditNotes'
-import { appliedSupplierVariationAdjustments, unappliedSupplierVariationsByCostCode } from '../../lib/variations'
+import { unappliedSupplierVariationsByCostCode } from '../../lib/variations'
+import { remainingCommitment, closedResidualCommitment } from '../../lib/commitment'
 import {
   availableFigure, displayFigure, figureState, FIGURE_STATE, SNAPSHOT_SOURCE_LABELS,
 } from '../../lib/projectSnapshot'
@@ -224,20 +224,19 @@ export default function ProjectBudget() {
   //   remainingCommittedByCostCode — shared with Forecast, Commercial, Cash
   //   Flow and PULSE. Committed is deliberately NOT restored by a credit note
   //   (ADR-31): credit lines carry no poLineIndex.
-  const superseded = invoicedClaimIds(supplierInvoices)
-  const invoicedByLine = postedInvoicedByPoLine(supplierInvoices)
-  const recognisedByLine = recognisedClaimsByPoLine(progressClaims, superseded)
-  // Applied approved supplier variations (M3-B1, ADR-62) revise the PO line
-  // value the nets apply to — THE shared adjustment map, computed once here.
-  const adjustments = appliedSupplierVariationAdjustments(variations, purchaseOrders)
-  const committedMap = remainingCommittedByCostCode(purchaseOrders, invoicedByLine, recognisedByLine, adjustments.byPoLine)
-  // Closed-PO residual — the same formula restricted to CLOSED POs: commitment
-  // still open on an order marked complete. Left INSIDE Committed (a closed PO
-  // is still a commitment) and flagged for QS judgement, exactly as the
-  // Forecast tab does; never silently released.
-  const closedResidualMap = remainingCommittedByCostCode(
-    purchaseOrders.filter(po => po.status === PO_STATUS.CLOSED), invoicedByLine, recognisedByLine, adjustments.byPoLine,
-  )
+  // THE ONE combined derivation (lib/commitment.js, ADR-55 · ADR-62 · ADR-63):
+  // PO lines revised by applied existing-line variations, plus committed
+  // new-scope variation lines as commitment lines in their own right, each
+  // netted by posted invoices and approved claims not yet invoiced.
+  const commitmentSources = { purchaseOrders, progressClaims, supplierInvoices, variations }
+  const commitment = remainingCommitment(commitmentSources)
+  const { superseded, adjustments } = commitment
+  const committedMap = commitment.byCostCode
+  // Closed-PO residual — the same composition restricted to CLOSED POs:
+  // commitment still open on an order marked complete. Left INSIDE Committed
+  // (a closed PO is still a commitment) and flagged for QS judgement, exactly
+  // as the Forecast tab does; never silently released.
+  const closedResidualMap = closedResidualCommitment(commitmentSources).byCostCode
   // Invoiced = ex-GST posted/paid supplier invoice lines by cost code, NET of
   //   posted valid-target Supplier Credit Notes. Signed, never clamped — an
   //   over-credited cost code goes negative and stays visible.
@@ -258,14 +257,16 @@ export default function ProjectBudget() {
   // Claimed = uncertified exposure (submitted/under review claims). Unchanged.
   const claimedMap = claimedPendingByCostCode(progressClaims)
 
-  // Supplier variations (ADR-62). APPLIED approved PO-linked variations are
-  // already INSIDE Committed above (by the PO line's cost code) and are shown
-  // for transparency; UNAPPLIED approved value — legacy variations not yet
-  // applied, new-scope lines awaiting M3-B2, invalid links — is the SEPARATE
-  // exposure figure, never added to Committed. Commitment Exposure = Committed
-  // + unapplied, so no amount is in both. Ex-GST.
-  const appliedVarMap  = adjustments.byCostCode
-  const supplierVarMap = unappliedSupplierVariationsByCostCode(variations, purchaseOrders)
+  // Supplier variations (ADR-62 · ADR-63). APPLIED existing-line amounts and
+  // COMMITTED NEW-SCOPE lines are already INSIDE Committed above (by the PO
+  // line's / the new-scope line's cost code) and are shown for transparency;
+  // UNAPPLIED approved value — legacy variations not yet applied, new scope not
+  // yet committed, negative new scope, invalid links — is the SEPARATE exposure
+  // figure, never added to Committed. Commitment Exposure = Committed +
+  // unapplied, so no amount is in both. Ex-GST.
+  const appliedVarMap      = adjustments.byCostCode
+  const committedNewScopeMap = adjustments.committedNewScopeByCostCode
+  const supplierVarMap     = unappliedSupplierVariationsByCostCode(variations, purchaseOrders)
 
   // POs/invoices can hit cost codes that have no budget line yet — surface those
   // as warning rows rather than hiding the commitment or cost.
@@ -301,6 +302,7 @@ export default function ProjectBudget() {
   // exposure; `appliedVariations` is already inside Committed (shown, not added).
   totals.supplierVariations = Object.values(supplierVarMap).reduce((sum, v) => sum + v, 0)
   totals.appliedVariations  = Object.values(appliedVarMap).reduce((sum, v) => sum + v, 0)
+  totals.committedNewScope  = Object.values(committedNewScopeMap).reduce((sum, v) => sum + v, 0)
   const commitmentExposure  = totals.committed + totals.supplierVariations
 
   const remaining     = totals.budgeted - totals.actual
@@ -399,11 +401,16 @@ export default function ProjectBudget() {
         {/* Read-time variation figures (ADR-62). Applied supplier variations
             are INSIDE Committed and shown for transparency; unapplied value is
             the separate exposure Commitment Exposure adds — never both. */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 mt-3 pt-3 border-t border-brand-border">
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3.5 mt-3 pt-3 border-t border-brand-border">
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Applied Supplier Variations</p>
             <p className="text-lg font-bold text-brand-text">{cell('appliedSupplierVariations', totals.appliedVariations)}</p>
-            <p className="m-0 text-[11px] text-brand-muted">already inside Committed</p>
+            <p className="m-0 text-[11px] text-brand-muted">existing PO lines — already inside Committed</p>
+          </div>
+          <div>
+            <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Committed New Scope</p>
+            <p className="text-lg font-bold text-brand-text">{cell('committedNewScopeVariations', totals.committedNewScope)}</p>
+            <p className="m-0 text-[11px] text-brand-muted">new-scope variation lines — already inside Committed</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Unapplied Supplier Variations</p>
@@ -417,10 +424,11 @@ export default function ProjectBudget() {
         </div>
         <p className="m-0 mt-2 text-[11px] text-brand-muted">
           Committed is the remaining open commitment: each PO line (revised by approved supplier variations applied to
-          it) less what has been invoiced and less any approved claim already counted in Actual, so a cost is never in
-          both. Commitment Exposure = Committed + Unapplied Supplier Variations (ex-GST) — approved variations not yet
-          applied to a purchase order, new-scope variation lines awaiting M3-B2, and variations whose PO link could not
-          be incorporated. All figures are ex-GST and derived at read time.
+          it) and each committed new-scope variation line, less what has been invoiced and less any approved claim
+          already counted in Actual, so a cost is never in both. Commitment Exposure = Committed + Unapplied Supplier
+          Variations (ex-GST) — approved variations not yet applied to a purchase order, new scope not yet committed,
+          negative new-scope lines, and variations whose PO link could not be incorporated. All figures are ex-GST and
+          derived at read time.
         </p>
       </Card>
 

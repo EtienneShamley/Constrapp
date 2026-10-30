@@ -202,16 +202,23 @@ describe('buildClaimLine', () => {
     expect(Object.keys(built).sort()).toEqual(STORED_LINE_KEYS)
   })
 
-  it('handles legacy / partial / malformed sources safely — never undefined or NaN', () => {
+  it('handles legacy / partial / malformed sources safely — never undefined or NaN, and NEVER an invented PO line 0 (ADR-63)', () => {
     for (const src of [null, undefined, 'nonsense', 42, {}]) {
       const built = buildClaimLine(src, { claimedToDate: '100' })
       expect(Object.keys(built).sort()).toEqual(STORED_LINE_KEYS)
       expect(built).toMatchObject({
-        poLineIndex: 0, costCodeId: '', costCodeName: '', description: '',
+        // A source with no valid integer index yields NULL — validateClaimDraft
+        // then refuses the line set rather than attributing it to PO line 0.
+        poLineIndex: null, costCodeId: '', costCodeName: '', description: '',
         poLineTotal: 0, previouslyApproved: 0, claimedToDate: 100,
         claimedThisPeriod: 100, approvedThisPeriod: null,
       })
       for (const v of Object.values(built)) expect(Number.isNaN(v)).toBe(false)
+      expect(validateClaimDraft({ lineItems: [built] })).toMatch(/source line identity is missing or malformed/)
+    }
+    // A string, float or negative index is malformed too — never rounded or coerced.
+    for (const idx of ['0', '2', 1.5, -1, NaN]) {
+      expect(buildClaimLine(storedLine({ poLineIndex: idx }), { claimedToDate: '1' }).poLineIndex).toBeNull()
     }
   })
 
@@ -235,7 +242,10 @@ describe('buildClaimLine', () => {
 // ── C. validateClaimDraft ────────────────────────────────────────────────────
 
 describe('validateClaimDraft', () => {
-  const line = (claimedThisPeriod, o = {}) => storedLine({ claimedThisPeriod, ...o })
+  // Each fixture line gets its own PO line index: since ADR-63 a line set with
+  // a duplicated source identity is refused (the dedicated block below).
+  let nextIdx = 0
+  const line = (claimedThisPeriod, o = {}) => storedLine({ poLineIndex: nextIdx++, claimedThisPeriod, ...o })
 
   it('rejects a claim with no lines', () => {
     expect(validateClaimDraft({ lineItems: [] })).toBe('A progress claim needs at least one line')
@@ -278,9 +288,20 @@ describe('validateClaimDraft', () => {
   })
 
   it('treats a missing / malformed claimedThisPeriod as 0', () => {
-    expect(validateClaimDraft({ lineItems: [{}, { claimedThisPeriod: 'abc' }] }))
+    expect(validateClaimDraft({ lineItems: [{ poLineIndex: 0 }, { poLineIndex: 1, claimedThisPeriod: 'abc' }] }))
       .toBe('A progress claim must claim an amount on at least one line')
-    expect(validateClaimDraft({ lineItems: [null, line(10)] })).toBeNull()
+    expect(validateClaimDraft({ lineItems: [{ poLineIndex: 7 }, line(10)] })).toBeNull()
+  })
+
+  it('ADR-63: a line with no valid source identity, or a source line claimed twice, is refused — never repaired or re-attributed', () => {
+    expect(validateClaimDraft({ lineItems: [null, line(10)] })).toMatch(/^Line 1: the source line identity is missing or malformed/)
+    expect(validateClaimDraft({ lineItems: [{}, line(10)] })).toMatch(/^Line 1: the source line identity/)
+    expect(validateClaimDraft({ lineItems: [storedLine({ poLineIndex: null, claimedThisPeriod: 5 })] })).toMatch(/^Line 1: the source line identity/)
+    expect(validateClaimDraft({ lineItems: [storedLine({ poLineIndex: 2, claimedThisPeriod: 5 }), storedLine({ poLineIndex: 2, claimedThisPeriod: 5 })], poId: 'po1' }))
+      .toBe('Line 2: PO line 3 appears more than once — a source line may be claimed once per document')
+    // The identity check comes right after the count checks, before the amount checks.
+    expect(validateClaimDraft({ lineItems: [storedLine({ poLineIndex: 0, claimedThisPeriod: -1 }), storedLine({ poLineIndex: 0, claimedThisPeriod: 1 })] }))
+      .toMatch(/appears more than once/)
   })
 
   it('says nothing about claimRef, periodEnding, notes or retention — none are required', () => {

@@ -369,6 +369,7 @@ function CommercialWorkspace({ projectId, currencyCode }) {
   const acvCell      = show('clientVariations', m.approvedClientVariations)
   const pcvCell      = show('clientVariations', m.pendingClientVariationExposure)
   const applSvCell   = show('appliedSupplierVariations', m.appliedSupplierVariations)
+  const newScopeCell = show('committedNewScopeVariations', m.committedNewScopeVariations)
   const asvCell      = show('supplierVariationExposure', m.unappliedSupplierVariations)
   const psvCell      = show('supplierVariationExposure', m.pendingSupplierVariationExposure)
 
@@ -466,7 +467,8 @@ function CommercialWorkspace({ projectId, currencyCode }) {
       {/* ── Supplier cost exposure (context) ───────────────────────────────── */}
       <Card className="mb-3.5">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
-          <Metric label="Applied Supplier Variations" cell={applSvCell} help="Inside Forecast Final Cost via Remaining Committed" />
+          <Metric label="Applied Supplier Variations" cell={applSvCell} help="Existing PO lines — inside Forecast Final Cost via Remaining Committed" />
+          <Metric label="Committed New Scope" cell={newScopeCell} help="New-scope variation lines — inside Forecast Final Cost via Remaining Committed" />
           <Metric label="Unapplied Supplier Variation Exposure" cell={asvCell} />
           <Metric label="Pending Supplier Variation Exposure" cell={psvCell} />
         </div>

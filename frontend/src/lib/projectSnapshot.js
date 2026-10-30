@@ -148,6 +148,10 @@ export const FIGURE_DEPENDENCIES = {
   //   · applied supplier variations — the applied part of the same split
   //     (already inside Remaining Committed; shown for transparency)
   appliedSupplierVariations: ['variations', 'purchaseOrders'],
+  //   · committed new-scope variations (ADR-63) — positive new-scope lines of
+  //     scope-committed variations, commitment lines INSIDE Remaining
+  //     Committed; the same two sources decide the split
+  committedNewScopeVariations: ['variations', 'purchaseOrders'],
   forecastRows:              FORECAST_ROW_SOURCES,
   contractBaseline:          ['baseline'],
   clientVariations:          ['variations'],

@@ -304,9 +304,9 @@ describe('runTransitionVariation — checks, stale detection and the write', () 
 // ── M3-B1 (ADR-62): commitment application in the approve write, and the legacy Apply ──
 
 import {
-  runApplyVariationCommitment, applyCommitmentUpdate, commitmentStamps,
+  runApplyVariationCommitment, applyCommitmentUpdate, commitmentStamps, scopeStamps,
 } from '../../src/lib/variationActions'
-import { VARIATION_COMMITMENT_KEYS } from '../../src/lib/variations'
+import { VARIATION_COMMITMENT_KEYS, SCOPE_COMMITMENT_KEYS } from '../../src/lib/variations'
 
 const PO_SENT = { id: 'po1', poNumber: 'PO-0001', status: 'sent', lineItems: [{ costCodeId: 'cc1', lineTotal: 100_000 }] }
 const PO_CANCELLED = { ...PO_SENT, status: 'cancelled' }
@@ -318,16 +318,20 @@ const linked = (o = {}) => variation({
 const approveExtras = { approvedAmounts: [1000, -200], assessmentNotes: '' }
 
 describe('transitionUpdate — approve with / without the commitment stamps', () => {
-  it('applyCommitment: true adds exactly the two stamps (actor, server time) to the approve write; false adds nothing', () => {
+  it('applyCommitment: true adds exactly the FOUR stamps — the ADR-62 applied pair and the ADR-63 scope pair (actor, server time) — to the approve write; false adds nothing', () => {
     const live = linked()
     const withStamps = transitionUpdate(live, VARIATION_STATUS.APPROVED, { ...approveExtras, applyCommitment: true }, 'u_qs', NOW, TODAY)
     const without = transitionUpdate(live, VARIATION_STATUS.APPROVED, approveExtras, 'u_qs', NOW, TODAY)
     expect(withStamps.commitmentAppliedAt).toBe(NOW)
     expect(withStamps.commitmentAppliedBy).toBe('u_qs')
-    for (const k of VARIATION_COMMITMENT_KEYS) expect(without).not.toHaveProperty(k)
-    const strip = (o) => { const c = { ...o }; for (const k of VARIATION_COMMITMENT_KEYS) delete c[k]; return c }
+    expect(withStamps.scopeCommittedAt).toBe(NOW)
+    expect(withStamps.scopeCommittedBy).toBe('u_qs')
+    const ALL_KEYS = [...VARIATION_COMMITMENT_KEYS, ...SCOPE_COMMITMENT_KEYS]
+    for (const k of ALL_KEYS) expect(without).not.toHaveProperty(k)
+    const strip = (o) => { const c = { ...o }; for (const k of ALL_KEYS) delete c[k]; return c }
     expect(strip(withStamps)).toEqual(without)   // approved money, lines, notes, dates identical either way
     expect(commitmentStamps('u', NOW)).toEqual({ commitmentAppliedAt: NOW, commitmentAppliedBy: 'u' })
+    expect(scopeStamps('u', NOW)).toEqual({ scopeCommittedAt: NOW, scopeCommittedBy: 'u' })
   })
 
   it('applyCommitment on a manual-mode supplier or a client variation is refused as INVALID', () => {
@@ -419,14 +423,23 @@ describe('runApplyVariationCommitment — the one-time legacy Apply', () => {
     ...o,
   })
 
-  it('applyCommitmentUpdate is exactly the stamp pair + revision + audit stamps', () => {
-    expect(applyCommitmentUpdate({ revision: 2 }, 'u_pm', NOW)).toEqual({
-      commitmentAppliedAt: NOW, commitmentAppliedBy: 'u_pm', revision: 3, updatedAt: NOW, updatedBy: 'u_pm',
-    })
+  const BOTH_PAIRS = { commitmentAppliedAt: NOW, commitmentAppliedBy: 'u_pm', scopeCommittedAt: NOW, scopeCommittedBy: 'u_pm' }
+
+  it('applyCommitmentUpdate writes exactly the MISSING pair(s) + revision + audit stamps — a present pair is never rewritten (ADR-63)', () => {
+    // Nothing applied: both pairs.
+    expect(applyCommitmentUpdate({ revision: 2 }, 'u_pm', NOW)).toEqual({ ...BOTH_PAIRS, revision: 3, updatedAt: NOW, updatedBy: 'u_pm' })
     expect(applyCommitmentUpdate({}, 'u', NOW).revision).toBe(1)
+    // Applied under M3-B1: the scope pair only; the applied pair is untouched.
+    expect(applyCommitmentUpdate({ revision: 3, commitmentAppliedAt: 'earlier', commitmentAppliedBy: 'u_x' }, 'u_pm', NOW)).toEqual({
+      scopeCommittedAt: NOW, scopeCommittedBy: 'u_pm', revision: 4, updatedAt: NOW, updatedBy: 'u_pm',
+    })
+    // Scope committed without the applied pair (not a shape the app writes, but never overwritten either).
+    expect(applyCommitmentUpdate({ revision: 3, scopeCommittedAt: 'earlier', scopeCommittedBy: 'u_x' }, 'u_pm', NOW)).toEqual({
+      commitmentAppliedAt: NOW, commitmentAppliedBy: 'u_pm', revision: 4, updatedAt: NOW, updatedBy: 'u_pm',
+    })
   })
 
-  it('refuses BEFORE any read: no uid, no id, no poRef, not approved, manual mode, client, already applied', async () => {
+  it('refuses BEFORE any read: no uid, no id, no poRef, not approved, manual mode, client, already applied (both pairs, or applied with no positive new scope)', async () => {
     const seen = approvedLinked()
     const { runTransaction, writes } = fakeDb({ v1: seen, po1: PO_SENT })
     const run = (over) => runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen, ...over }))
@@ -437,24 +450,49 @@ describe('runApplyVariationCommitment — the one-time legacy Apply', () => {
     await expectKind(run({ seen: approvedLinked({ status: 'rejected' }) }), VARIATION_WRITE_ERROR.INVALID)
     await expectKind(run({ seen: approvedLinked({ poId: null, poNumber: null }) }), VARIATION_WRITE_ERROR.INVALID)
     await expectKind(run({ seen: approvedLinked({ variationType: VARIATION_TYPE.CLIENT }) }), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run({ seen: approvedLinked({ ...BOTH_PAIRS }) }), VARIATION_WRITE_ERROR.ALREADY_APPLIED)
+    // Applied under M3-B1 with existing-line amounts only: there is no new scope to commit.
     await expectKind(run({ seen: approvedLinked({ commitmentAppliedAt: NOW, commitmentAppliedBy: 'u_x' }) }), VARIATION_WRITE_ERROR.ALREADY_APPLIED)
     expect(writes).toHaveLength(0)
   })
 
-  it('writes the stamps once over the reviewed copy when the server PO is sent or closed', async () => {
+  it('writes BOTH pairs once over the reviewed copy when the server PO is sent or closed (nothing applied before)', async () => {
     for (const status of ['sent', 'closed']) {
       const seen = approvedLinked()
       const { runTransaction, writes } = fakeDb({ v1: seen, po1: { ...PO_SENT, status } })
       const out = await runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen, uid: 'u_pm' }))
-      expect(out).toEqual({ kind: null })
-      expect(writes).toEqual([{ ref: 'v1', data: { commitmentAppliedAt: NOW, commitmentAppliedBy: 'u_pm', revision: 3, updatedAt: NOW, updatedBy: 'u_pm' } }])
+      expect(out).toEqual({ kind: null, applied: true, scopeCommitted: true })
+      expect(writes).toEqual([{ ref: 'v1', data: { ...BOTH_PAIRS, revision: 3, updatedAt: NOW, updatedBy: 'u_pm' } }])
     }
   })
 
-  it('a SECOND apply (the server copy already stamped) is refused as ALREADY_APPLIED with nothing written — before the stale check', async () => {
+  it('ADR-63 — a variation applied under M3-B1 with a positive new-scope line takes the SCOPE pair only ("Commit new scope"); the applied pair is untouched', async () => {
+    const seen = approvedLinked({
+      revision: 3, commitmentAppliedAt: 'earlier', commitmentAppliedBy: 'u_x',
+      lineItems: [line({ poLineIndex: 0, approvedAmount: 1000, approvedGst: 100 }), line({ poLineIndex: null, approvedAmount: 4000, approvedGst: 400, costCodeId: 'W' })],
+    })
+    const { runTransaction, writes } = fakeDb({ v1: seen, po1: PO_SENT })
+    const out = await runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen, uid: 'u_pm' }))
+    expect(out).toEqual({ kind: null, applied: false, scopeCommitted: true })
+    expect(writes).toEqual([{ ref: 'v1', data: { scopeCommittedAt: NOW, scopeCommittedBy: 'u_pm', revision: 4, updatedAt: NOW, updatedBy: 'u_pm' } }])
+    // A NEGATIVE new-scope line alone is nothing to commit.
+    const negative = approvedLinked({ commitmentAppliedAt: 'earlier', commitmentAppliedBy: 'u_x', lineItems: [line({ poLineIndex: null, approvedAmount: -3000, approvedGst: -300 })] })
+    const neg = fakeDb({ v1: negative, po1: PO_SENT })
+    await expectKind(runApplyVariationCommitment(base({ runTransaction: neg.runTransaction, poRef: 'po1', seen: negative })), VARIATION_WRITE_ERROR.ALREADY_APPLIED)
+    expect(neg.writes).toHaveLength(0)
+  })
+
+  it('a SECOND apply (the server copy already carries both pairs) is refused as ALREADY_APPLIED with nothing written — before the stale check', async () => {
+    const seen = approvedLinked()
+    const { runTransaction, writes } = fakeDb({ v1: { ...seen, ...commitmentStamps('u_other', NOW), ...scopeStamps('u_other', NOW), revision: 3 }, po1: PO_SENT })
+    await expectKind(runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen })), VARIATION_WRITE_ERROR.ALREADY_APPLIED)
+    expect(writes).toHaveLength(0)
+  })
+
+  it('a server copy that gained ONLY the applied pair underneath (an M3-B1 apply) is STALE for this reviewed copy — the revision moved; nothing written', async () => {
     const seen = approvedLinked()
     const { runTransaction, writes } = fakeDb({ v1: { ...seen, ...commitmentStamps('u_other', NOW), revision: 3 }, po1: PO_SENT })
-    await expectKind(runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen })), VARIATION_WRITE_ERROR.ALREADY_APPLIED)
+    await expectKind(runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen })), VARIATION_WRITE_ERROR.STALE)
     expect(writes).toHaveLength(0)
   })
 
@@ -473,10 +511,11 @@ describe('runApplyVariationCommitment — the one-time legacy Apply', () => {
     }
     const first = await runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen, uid: 'u_a' }))
     const second = await expectKind(runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen, uid: 'u_b' })), VARIATION_WRITE_ERROR.ALREADY_APPLIED)
-    expect(first).toEqual({ kind: null })
+    expect(first).toEqual({ kind: null, applied: true, scopeCommitted: true })
     expect(second.message).toMatch(/already been applied/)
     expect(writes).toHaveLength(1)
     expect(docs.v1.commitmentAppliedBy).toBe('u_a')
+    expect(docs.v1.scopeCommittedBy).toBe('u_a')
   })
 
   it('a STALE copy (revision moved underneath) and a missing document are refused with nothing written', async () => {

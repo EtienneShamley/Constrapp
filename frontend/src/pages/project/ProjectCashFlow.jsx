@@ -599,6 +599,10 @@ export default function ProjectCashFlow() {
                     <span>Applied supplier variations (in Rem. Committed)</span>
                     <span className="tabular-nums">{variationsError ? '—' : money(m.appliedSupplierVariations)}</span>
                   </p>
+                  <p className="m-0 text-[11.5px] text-brand-text flex justify-between gap-2" title="Committed new-scope variation lines — inside Remaining Committed, timed through it, never added again">
+                    <span>Committed new scope (in Rem. Committed)</span>
+                    <span className="tabular-nums">{variationsError ? '—' : money(m.committedNewScopeVariations)}</span>
+                  </p>
                   <p className="m-0 text-[11.5px] text-brand-text flex justify-between gap-2">
                     <span>Unapplied supplier variations</span>
                     <span className="tabular-nums">{variationsError ? '—' : money(m.unappliedSupplierVariations)}</span>

@@ -11,9 +11,10 @@ import { stageProjectCurrencyLock } from './projectCurrencyLock'
 import { resolveProjectCurrency } from '../lib/currency'
 import {
   CLAIM_STATUS, CLAIMABLE_PO_STATUSES, canTransition, claimTotals,
-  formatClaimNumber, hasOpenClaim, validateClaimDraft,
+  formatClaimNumber, hasOpenClaim, validateClaimDraft, claimVariationLineCount,
 } from '../lib/progressClaims'
-import { runUpdateClaimDraft, runTransitionClaim } from '../lib/progressClaimActions'
+import { runUpdateClaimDraft, runTransitionClaim, variationSourceError } from '../lib/progressClaimActions'
+import { isVariationOriginLine } from '../lib/sourceLine'
 
 export function useProgressClaims(projectId) {
   const { user }    = useAuth()
@@ -85,17 +86,33 @@ export function useProgressClaims(projectId) {
   // server time, the exact key set and the whole-cent claimed header. The
   // one-open-claim check below stays CLIENT-ONLY (rules cannot see sibling
   // claims — SECURITY.md Deferred Control 36).
-  const createProgressClaim = useCallback(async ({ po, periodEnding, claimRef, notes, retention, variationId, lineItems }) => {
+  //
+  // M3-B2 (ADR-63): a claim may carry VARIATION-ORIGIN lines after the PO
+  // lines — one per positive new-scope line of an approved, applied,
+  // scope-committed supplier variation on this PO. The header
+  // `variationLineCount` records how many (rules pin the line count to the
+  // PO's lines + this number). Every referenced variation AND the PO are
+  // re-read INSIDE the transaction and the sources re-validated on the server
+  // copies (approved · supplier · same PO · scope-committed · line exists · new
+  // scope · positive · cost code matches); a stale or missing source refuses
+  // the create with nothing written. Line CONTENTS stay client-only (DC40).
+  // The reserved header `variationId` stays null — several variations may
+  // share one claim, so the identity lives on the lines.
+  const createProgressClaim = useCallback(async ({ po, periodEnding, claimRef, notes, retention, lineItems }) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (!CLAIMABLE_PO_STATUSES.includes(po.status)) throw new Error('Claims can only be raised against sent purchase orders')
     if (hasOpenClaim(progressClaims, po.id)) throw new Error('This purchase order already has an open claim')
     // The same draft validation the editor and the draft edit apply — the
     // hook is the domain boundary, the editor's disabled button is not.
-    const draftError = validateClaimDraft({ lineItems, retention })
+    const draftError = validateClaimDraft({ lineItems, retention, poId: po.id })
     if (draftError) throw new Error(draftError)
+    const variationLineCount = claimVariationLineCount(lineItems)
+    const variationIds = [...new Set(lineItems.filter(isVariationOriginLine).map(li => li.variationId))]
 
     const counterRef  = doc(db, 'companies', companyId, 'counters', 'progressClaims')
     const claimDocRef = doc(collection(db, 'companies', companyId, 'projects', projectId, 'progressClaims'))
+    const poRef       = doc(db, 'companies', companyId, 'projects', projectId, 'purchaseOrders', po.id)
+    const variationRefs = variationIds.map(id => doc(db, 'companies', companyId, 'projects', projectId, 'variations', id))
 
     await runTransaction(db, async (tx) => {
       const counterSnap = await tx.get(counterRef)
@@ -105,6 +122,19 @@ export function useProgressClaims(projectId) {
       // together — the project can never hold amounts with a still-changeable
       // currency. Firestore requires all transaction reads before any writes.
       const commitLock = await stageProjectCurrencyLock(tx, companyId, projectId)
+      // Source re-validation on the SERVER copies (ADR-63) — fail closed.
+      const poSnap = await tx.get(poRef)
+      const livePo = poSnap.exists() ? { id: poSnap.id, ...poSnap.data() } : null
+      if (!livePo || !CLAIMABLE_PO_STATUSES.includes(livePo.status)) {
+        throw new Error(`${po.poNumber || 'The purchase order'} is no longer a sent purchase order on the server, so the claim was not created.`)
+      }
+      const liveVariations = []
+      for (const ref of variationRefs) {
+        const snap = await tx.get(ref)
+        liveVariations.push(snap.exists() ? { id: snap.id, ...snap.data() } : null)
+      }
+      const sourceError = variationSourceError(lineItems, { po: livePo, variations: liveVariations, variationIds })
+      if (sourceError) throw new Error(sourceError)
 
       tx.set(counterRef, { next: next + 1 }, { merge: true })
 
@@ -118,7 +148,8 @@ export function useProgressClaims(projectId) {
         supplierId:   po.supplierId ?? null,
         claimRef:     claimRef?.trim() || '',
         periodEnding: periodEnding || '',
-        variationId:  variationId ?? null,
+        variationId:  null,
+        variationLineCount,
         lineItems,
         retention:        totals.retention,
         claimedSubtotal:  totals.subtotal,

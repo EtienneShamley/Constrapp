@@ -86,17 +86,20 @@ function SummaryCards({ figures, currencyCode }) {
       </Card>
 
       <Card className="mb-3.5">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
-          <Figure label="Applied Supplier Variations" figure={figures.appliedSupplierVariations} money={money} help="Inside Remaining Committed" />
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3.5">
+          <Figure label="Applied Supplier Variations" figure={figures.appliedSupplierVariations} money={money} help="Existing PO lines — inside Remaining Committed" />
+          <Figure label="Committed New Scope" figure={figures.committedNewScopeVariations} money={money} help="New-scope variation lines — inside Remaining Committed" />
           <Figure label="Unapplied Supplier Variation Exposure" figure={figures.unappliedSupplierVariations} money={money} />
           <Figure label="Pending Supplier Variation Exposure" figure={figures.pendingSupplierVariationExposure} money={money} />
         </div>
         <p className="m-0 mt-3 text-[11px] text-brand-muted">
           An approved supplier variation applied to its purchase order is already inside Remaining Committed (and so
-          inside Forecast Final Cost) and is matured by the same claims and invoices as the original PO line. Unapplied
-          exposure — approved variations not yet applied, new-scope lines awaiting M3-B2, and pending variations — is
-          shown separately and is <span className="font-semibold">not</span> added to Forecast Final Cost. If you previously
-          folded an approved variation into Uncommitted Cost to Complete, remove it there once the variation is applied.
+          inside Forecast Final Cost) and is matured by the same claims and invoices as the original PO line; a
+          committed new-scope line is a commitment line in its own right, matured by the claims and invoices raised
+          against it. Unapplied exposure — approved variations not yet applied, new scope not yet committed, negative
+          new-scope lines, and pending variations — is shown separately and is <span className="font-semibold">not</span>
+          {' '}added to Forecast Final Cost. If you previously folded an approved variation into Uncommitted Cost to
+          Complete, remove it there once the variation is applied or its new scope committed.
         </p>
       </Card>
     </>
@@ -218,6 +221,7 @@ function ForecastWorkspace({ projectId, currencyCode }) {
     varianceToBudget:                 fig('varianceToBudget', rollups.varianceToBudget),
     approvedSupplierVariations:       fig('supplierVariationExposure', rollups.approvedSupplierVariations),
     appliedSupplierVariations:        fig('appliedSupplierVariations', rollups.appliedSupplierVariations),
+    committedNewScopeVariations:      fig('committedNewScopeVariations', rollups.committedNewScopeVariations),
     unappliedSupplierVariations:      fig('supplierVariationExposure', rollups.unappliedSupplierVariations),
     pendingSupplierVariationExposure: fig('supplierVariationExposure', rollups.pendingSupplierVariationExposure),
   }
@@ -434,7 +438,10 @@ function ForecastWorkspace({ projectId, currencyCode }) {
                       </td>
 
                       {/* Applied Supplier Variations — already inside Rem. Committed (ADR-62) */}
-                      <td className={tdCls} title="Applied approved supplier variations — already inside Remaining Committed">{row.appliedSupplierVariations ? money(row.appliedSupplierVariations) : '—'}</td>
+                      <td className={tdCls} title="Applied approved supplier variations (existing PO lines) and committed new-scope lines — both already inside Remaining Committed">
+                        {row.appliedSupplierVariations ? money(row.appliedSupplierVariations) : '—'}
+                        {row.committedNewScopeVariations ? <span className="block text-[11px] text-brand-muted">+ {money(row.committedNewScopeVariations)} new scope</span> : null}
+                      </td>
 
                       {/* Unapplied Supplier Variations (exposure, context) */}
                       <td className={tdCls}>{row.unappliedSupplierVariations ? money(row.unappliedSupplierVariations) : '—'}</td>

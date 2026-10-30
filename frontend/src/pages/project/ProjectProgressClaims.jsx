@@ -8,15 +8,16 @@ import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
 import { useVariations } from '../../hooks/useVariations'
-import { appliedSupplierVariationAdjustments } from '../../lib/variations'
+import { appliedSupplierVariationAdjustments, claimableNewScopeLines } from '../../lib/variations'
 import { claimLineConflictError } from '../../lib/poLineRecognition'
 import { ClaimWriteError } from '../../lib/progressClaimActions'
 import { PO_STATUS, PO_STATUS_LABELS, roundMoney } from '../../lib/purchaseOrders'
+import { isVariationOriginLine } from '../../lib/sourceLine'
 import {
   CLAIM_STATUS, CLAIM_STATUS_LABELS, CLAIM_BADGE_VARIANTS,
   CLAIMABLE_PO_STATUSES, CLAIM_PENDING_STATUSES,
-  approvedLineError, buildClaimLine, claimLineToForm, claimTotals,
-  hasOpenClaim, previouslyApprovedByPoLine, validateClaimDraft,
+  approvedLineError, buildClaimLine, buildVariationClaimLine, claimLineCeiling, claimLineToForm, claimTotals,
+  hasOpenClaim, previouslyApprovedByPoLine, previouslyApprovedByVariationLine, validateClaimDraft,
 } from '../../lib/progressClaims'
 
 const inputCls    = 'w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
@@ -45,13 +46,17 @@ function TotalsFooter({ totals, heading, currencyCode }) {
 // notes, retention, and the cumulative claimed-to-date on each line.
 //
 // THE LINE SET IS FIXED — one line per PO line, created one-to-one when the
-// claim was raised. There is no add, remove or reorder control in either mode:
-// `poLineIndex` is the identity previouslyApprovedByPoLine and the supplier
-// invoice seeding path both key off. In edit mode every line's identity is read
-// from the claim's OWN stored line, so the editor cannot repoint a line at a
-// different PO line or cost code. Line building and validation are the shared
-// pure helpers in lib/progressClaims.js so the two modes cannot drift.
-function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, progressClaims, supplierInvoices = [], adjustmentsByPoLine = {}, currencyCode, onClose, onSave }) {
+// claim was raised, followed (M3-B2, ADR-63) by one line per CLAIMABLE
+// new-scope variation line on that PO (a positive new-scope line of an
+// approved, applied, scope-committed supplier variation). There is no add,
+// remove or reorder control in either mode: the SOURCE-LINE IDENTITY
+// (`poLineIndex`, or `variationId` + `variationLineIndex`) is what
+// previouslyApprovedBy*, the recognition selectors and the supplier invoice
+// seeding path key off. In edit mode every line's identity is read from the
+// claim's OWN stored line, so the editor cannot repoint a line at a different
+// PO line, variation line or cost code. Line building and validation are the
+// shared pure helpers in lib/progressClaims.js so the two modes cannot drift.
+function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, progressClaims, supplierInvoices = [], variations = [], adjustmentsByPoLine = {}, currencyCode, onClose, onSave }) {
   const money  = (n) => formatCurrency(n, currencyCode)
   const isEdit = !!claim
 
@@ -71,14 +76,24 @@ function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, p
   // a claim whose PO has since been closed or cancelled stays editable.
   const po      = isEdit ? null : (claimablePOs.find(p => p.id === poId) ?? null)
   const prevMap = po ? previouslyApprovedByPoLine(progressClaims, po.id) : {}
+  // Claimable new-scope variation lines on this PO (ADR-63), appended after
+  // the PO lines, each seeded at its own approved-to-date position.
+  const newScopeRows = po ? claimableNewScopeLines(variations, po) : []
+  const prevVarMap   = previouslyApprovedByVariationLine(progressClaims)
+  const seedFor = (nextPo) => {
+    const prevPo  = previouslyApprovedByPoLine(progressClaims, nextPo.id)
+    const prevVar = previouslyApprovedByVariationLine(progressClaims)
+    return [
+      ...(nextPo.lineItems ?? []).map((_, idx) => String(prevPo[idx] || 0)),
+      ...claimableNewScopeLines(variations, nextPo).map(r => String(prevVar[r.variationId]?.[r.lineIndex] || 0)),
+    ]
+  }
 
   const selectPo = (e) => {
     const nextPo = claimablePOs.find(p => p.id === e.target.value)
     setPoId(e.target.value)
     // Cumulative entry: each line starts at its approved-to-date position.
-    setClaimedToDate((nextPo?.lineItems ?? []).map((_, idx) =>
-      String(previouslyApprovedByPoLine(progressClaims, nextPo.id)[idx] || 0)
-    ))
+    setClaimedToDate(nextPo ? seedFor(nextPo) : [])
   }
   const setLineClaimed = (idx) => (e) => {
     const value = e.target.value
@@ -86,22 +101,33 @@ function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, p
   }
 
   // Identity always comes from the source line, never from form state. CREATE
-  // reads the PO's lines (supplying the index and the previously-approved seed);
-  // EDIT reads the claim's own stored lines and supplies nothing but the amount.
+  // reads the PO's lines (supplying the index and the previously-approved seed)
+  // then the claimable variation lines (identity and ceiling from the variation
+  // line); EDIT reads the claim's own stored lines and supplies nothing but the
+  // amount. A null PO index is never turned into 0 (lib/sourceLine.js).
+  const poLineCount = po?.lineItems?.length ?? 0
   const builtLines = isEdit
     ? (claim.lineItems ?? []).map((li, idx) =>
         buildClaimLine(li, { claimedToDate: claimedToDate[idx] }))
-    : (po?.lineItems ?? []).map((li, idx) =>
-        buildClaimLine(li, {
-          poLineIndex:        idx,
-          previouslyApproved: prevMap[idx] || 0,
-          claimedToDate:      claimedToDate[idx],
-        }))
+    : [
+        ...(po?.lineItems ?? []).map((li, idx) =>
+          buildClaimLine(li, {
+            poLineIndex:        idx,
+            previouslyApproved: prevMap[idx] || 0,
+            claimedToDate:      claimedToDate[idx],
+          })),
+        ...newScopeRows.map((row, j) =>
+          buildVariationClaimLine(row, {
+            previouslyApproved: prevVarMap[row.variationId]?.[row.lineIndex] || 0,
+            claimedToDate:      claimedToDate[poLineCount + j],
+          })),
+      ]
 
   const totals     = claimTotals(builtLines.map(l => l.claimedThisPeriod), retention)
-  // Includes the retention floor (ADR-58) — a negative retention is refused
-  // here, in the hook and by the rules alike.
-  const draftError = validateClaimDraft({ lineItems: builtLines, retention })
+  // Includes the retention floor (ADR-58) and the source-line identity check
+  // (ADR-63) — a negative retention or a malformed / duplicated line identity
+  // is refused here, in the hook and (for the retention) by the rules alike.
+  const draftError = validateClaimDraft({ lineItems: builtLines, retention, poId: isEdit ? claim?.poId : po?.id })
   // ONE RECOGNITION PATH PER PO LINE (ADR-55). A claim may not claim a PO line
   // that a DIRECT supplier invoice already occupies — the two paths cannot be
   // reconciled per line and Actual would count the line twice. CLIENT-ONLY
@@ -135,7 +161,11 @@ function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, p
         // order, one per stored line.
         await onSave({ periodEnding, claimRef, notes, retention, claimedToDate })
       } else {
-        await onSave({ po, periodEnding, claimRef, notes, retention, variationId: null, lineItems: builtLines })
+        // The header `variationId` stays null (several variations may share one
+        // claim — the identity is on the lines); the hook derives
+        // `variationLineCount` from the lines and re-validates every variation
+        // source inside the transaction (ADR-63).
+        await onSave({ po, periodEnding, claimRef, notes, retention, lineItems: builtLines })
       }
       onClose()
     } catch (err) {
@@ -235,16 +265,26 @@ function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, p
               </label>
               <div className="flex flex-col gap-2">
                 {builtLines.map((line, idx) => {
-                  const adjustment = adjustmentFor(line.poLineIndex)
-                  const ceiling = roundMoney((Number(line.poLineTotal) || 0) + adjustment)
+                  const variationOrigin = isVariationOriginLine(line)
+                  const adjustment = variationOrigin ? 0 : adjustmentFor(line.poLineIndex)
+                  // PO line: revised value (PO line + applied SVs); variation
+                  // line: the approved new-scope amount (ADR-63). Warn-only.
+                  const ceiling = claimLineCeiling(line, adjustment)
                   const overclaimed = line.claimedToDate > ceiling
                   return (
                     <div key={idx} className="grid grid-cols-2 sm:grid-cols-[2fr_2fr_1fr_1fr_1fr] gap-2 items-center">
-                      <p className="m-0 text-[12px] text-brand-text truncate">{line.costCodeName || '—'}</p>
+                      <p className="m-0 text-[12px] text-brand-text truncate">
+                        {variationOrigin && (
+                          <span className="text-brand-accent font-semibold" title="New-scope work from an approved, committed supplier variation — recognised against the variation line, not a PO line">
+                            {line.variationNumber || 'SV'} L{(line.variationLineIndex ?? 0) + 1} ·{' '}
+                          </span>
+                        )}
+                        {line.costCodeName || '—'}
+                      </p>
                       <p className="m-0 text-[12px] text-brand-muted truncate">{line.description || '—'}</p>
                       <div>
-                        <p className="m-0 text-[12px] text-brand-muted whitespace-nowrap" title={adjustment ? `PO line ${money(line.poLineTotal)} + applied supplier variations ${money(adjustment)}` : undefined}>
-                          of {money(ceiling)}{adjustment ? ' (incl. SV)' : ''}
+                        <p className="m-0 text-[12px] text-brand-muted whitespace-nowrap" title={variationOrigin ? 'Approved new-scope variation line amount' : (adjustment ? `PO line ${money(line.poLineTotal)} + applied supplier variations ${money(adjustment)}` : undefined)}>
+                          of {money(ceiling)}{variationOrigin ? ' (new scope)' : (adjustment ? ' (incl. SV)' : '')}
                         </p>
                         {isEdit && line.previouslyApproved > 0 && (
                           <p className="m-0 text-[11px] text-brand-muted whitespace-nowrap">approved {money(line.previouslyApproved)}</p>
@@ -266,8 +306,14 @@ function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, p
                 })}
               </div>
               <p className="m-0 mt-1.5 text-[11px] text-brand-muted">
-                Amounts are cumulative — enter total claimed to date per line. Previously approved amounts are pre-filled and cannot be reduced. ⚠ marks a claim above the PO line value including any applied supplier variations.
+                Amounts are cumulative — enter total claimed to date per line. Previously approved amounts are pre-filled and cannot be reduced. ⚠ marks a claim above the PO line value including any applied supplier variations, or above a new-scope variation line’s approved amount.
                 A line already invoiced directly must stay at zero — a PO line is recognised through claims or direct invoices, never both.
+                {!isEdit && po && newScopeRows.length > 0 && (
+                  <> New-scope lines come from approved supplier variations on {po.poNumber} whose new scope has been committed; they are claimed cumulatively against their own approved amount.</>
+                )}
+                {!isEdit && po && newScopeRows.length === 0 && (
+                  <> No committed new-scope variation line is claimable on {po.poNumber} — commit a variation’s new scope on the Variations tab first.</>
+                )}
               </p>
               {conflictError && (
                 <p className="m-0 mt-1.5 text-[12px] text-brand-red" role="alert">{conflictError}</p>
@@ -373,7 +419,10 @@ function AssessProgressClaimModal({ claim, currencyCode, onClose, onTransition }
               {(claim.lineItems ?? []).map((li, idx) => (
                 <div key={idx}>
                   <div className="grid grid-cols-2 sm:grid-cols-[2fr_2fr_1fr_1fr] gap-2 items-center">
-                    <p className="m-0 text-[12px] text-brand-text truncate">{li.costCodeName || '—'}</p>
+                    <p className="m-0 text-[12px] text-brand-text truncate">
+                      {isVariationOriginLine(li) && <span className="text-brand-accent font-semibold">{li.variationNumber || 'SV'} L{(li.variationLineIndex ?? 0) + 1} · </span>}
+                      {li.costCodeName || '—'}
+                    </p>
                     <p className="m-0 text-[12px] text-brand-muted truncate">{li.description || '—'}</p>
                     <p className="m-0 text-[12px] text-brand-muted whitespace-nowrap">claimed {money(li.claimedThisPeriod || 0)}</p>
                     <input
@@ -461,9 +510,10 @@ export default function ProjectProgressClaims() {
   // invoiced directly cannot be claimed. A failed read leaves the list empty
   // and the guard silent — the guard is client-only either way.
   const { supplierInvoices } = useSupplierInvoices(projectId)
-  // Read for the over-claim WARNING threshold only (ADR-62): applied approved
-  // supplier variations revise a PO line's contractual value. A failed read
-  // leaves the map empty and the threshold at the PO line — warn-only either way.
+  // Read for the over-claim WARNING threshold (ADR-62: applied approved
+  // supplier variations revise a PO line's contractual value) and for the
+  // claimable new-scope variation lines the editor appends (ADR-63). A failed
+  // read leaves the map empty and offers no new-scope line — never a wrong one.
   const { variations } = useVariations(projectId)
   const adjustmentsByPoLine = appliedSupplierVariationAdjustments(variations, purchaseOrders).byPoLine
   const [editing, setEditing]           = useState(null)   // 'new' | draft claim | null
@@ -599,6 +649,7 @@ export default function ProjectProgressClaims() {
           claimablePOs={claimablePOs}
           progressClaims={progressClaims}
           supplierInvoices={supplierInvoices}
+          variations={variations}
           adjustmentsByPoLine={adjustmentsByPoLine}
           onClose={() => setEditing(null)}
           onSave={editing === 'new' ? createProgressClaim : (data) => handleUpdate(editing.id, data)}

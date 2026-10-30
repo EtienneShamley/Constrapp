@@ -1,4 +1,5 @@
 import { PO_STATUS, GST_RATE, roundMoney } from './purchaseOrders'
+import { isVariationOriginLine, indexOrNull, variationLineCountOf } from './sourceLine'
 
 // ── Supplier Invoices (accounts payable) ─────────────────────────────────────
 // Supplier invoices are the cost-side "bills" a company receives from its
@@ -331,18 +332,32 @@ export function invoiceLineToForm(line) {
 // claimSourcedDriftError relies on. The flag changes only which figure the GST is
 // computed from — it never affects identity, the stored `amount`, or the refusal
 // to trust a caller-supplied `gstAmount`.
+//
+// ⚠️ A NULL `poLineIndex` IS NEVER COERCED TO 0 (M3-B2, ADR-63). A source that
+// carries a `variationId` (a variation-origin claim line, or a stored
+// variation-origin invoice line) keeps `poLineIndex: null` and carries
+// `variationId`, `variationNumber` and `variationLineIndex`; the recognition
+// selectors key it by that identity (postedInvoicedByVariationLine) and NEVER
+// by PO line. A PO-origin source without a valid integer index yields
+// `poLineIndex: null`, which the create and edit paths refuse
+// (sourceLineIdentityError) instead of attributing the line to PO line 0.
 export function buildInvoiceLine(source, { amount, taxCode, poLineIndex, gstFromUnroundedAmount = false } = {}) {
   const src = source && typeof source === 'object' ? source : {}
   const str = (v) => (typeof v === 'string' ? v : '')
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
 
-  const idx = poLineIndex ?? src.poLineIndex
+  const variationOrigin = isVariationOriginLine(src)
+  const idx = variationOrigin ? null : indexOrNull(poLineIndex ?? src.poLineIndex)
   const raw = num(amount)
   const amt = roundMoney(raw)
   const tc  = typeof taxCode === 'string' ? taxCode : ''
 
+  const identity = variationOrigin
+    ? { poLineIndex: null, variationId: src.variationId, variationNumber: str(src.variationNumber), variationLineIndex: indexOrNull(src.variationLineIndex) }
+    : { poLineIndex: idx }
+
   return {
-    poLineIndex:  num(idx),
+    ...identity,
     costCodeId:   str(src.costCodeId),
     costCodeName: str(src.costCodeName),
     description:  str(src.description),
@@ -351,6 +366,12 @@ export function buildInvoiceLine(source, { amount, taxCode, poLineIndex, gstFrom
     gstAmount:    gstForLine(gstFromUnroundedAmount ? raw : amt, tc),
   }
 }
+
+// Number of variation-origin lines on an invoice — the header
+// `variationLineCount` (ADR-63). A claim-sourced invoice's count may be BELOW
+// its claim's (lines certified at zero are not stored); rules pin it to at
+// most the claim's and require the key whenever the claim carries any.
+export const invoiceVariationLineCount = (lineItems) => variationLineCountOf(lineItems)
 
 // Positional-pairing guard for the `direct_po` draft-edit contract: the caller
 // supplies one amount and one tax code per STORED line, in stored order. A length
@@ -528,21 +549,46 @@ export function postedInvoicedByPoLine(invoices) {
     if (!inv.poId) continue
     const forPo = map[inv.poId] ?? (map[inv.poId] = {})
     for (const li of inv.lineItems ?? []) {
-      if (li.poLineIndex == null) continue
+      if (isVariationOriginLine(li) || li.poLineIndex == null) continue
       forPo[li.poLineIndex] = roundMoney((forPo[li.poLineIndex] || 0) + (Number(li.amount) || 0))
     }
   }
   return map
 }
 
-// { poId: ex-GST posted/paid total } — invoiced-to-date per PO, for the
-// over-invoicing warning against the PO total.
+// { [variationId]: { [variationLineIndex]: ex-GST posted/paid amount } } —
+// invoiced-to-date per committed new-scope VARIATION line (M3-B2, ADR-63); the
+// variation-line twin of postedInvoicedByPoLine and one of the two nets on a
+// variation line's Remaining Committed. Keyed by the line's own identity, never
+// by PO line.
+export function postedInvoicedByVariationLine(invoices) {
+  const map = {}
+  for (const inv of invoices ?? []) {
+    if (!SI_COUNTING_STATUSES.includes(inv.status)) continue
+    for (const li of inv.lineItems ?? []) {
+      if (!isVariationOriginLine(li)) continue
+      const idx = indexOrNull(li.variationLineIndex)
+      if (idx === null) continue
+      const forVar = map[li.variationId] ?? (map[li.variationId] = {})
+      forVar[idx] = roundMoney((forVar[idx] || 0) + (Number(li.amount) || 0))
+    }
+  }
+  return map
+}
+
+// { poId: ex-GST posted/paid total } — invoiced-to-date per PO against the
+// PO's OWN lines, for the over-invoicing warning against the PO total.
+// Variation-origin lines are recognised against their variation line's own
+// ceiling (ADR-63) and are excluded here, so a posted new-scope invoice never
+// reads as over-invoicing of the PO subtotal; legacy lines without an index
+// still count toward the PO total as before.
 export function postedInvoicedByPo(invoices) {
   const map = {}
   for (const inv of invoices) {
     if (!SI_COUNTING_STATUSES.includes(inv.status)) continue
     if (!inv.poId) continue
     for (const li of inv.lineItems ?? []) {
+      if (isVariationOriginLine(li)) continue
       map[inv.poId] = roundMoney((map[inv.poId] || 0) + (Number(li.amount) || 0))
     }
   }
@@ -560,7 +606,7 @@ export function directInvoicedPoLines(invoices, poId, { excludeInvoiceId = null 
     if (inv.status === SI_STATUS.CANCELLED) continue
     if (excludeInvoiceId && inv.id === excludeInvoiceId) continue
     for (const li of inv.lineItems ?? []) {
-      if (li.poLineIndex == null || !((Number(li.amount) || 0) > 0)) continue
+      if (isVariationOriginLine(li) || li.poLineIndex == null || !((Number(li.amount) || 0) > 0)) continue
       const list = map[li.poLineIndex] ?? (map[li.poLineIndex] = [])
       list.push(inv.invoiceNumber || inv.id)
     }
@@ -578,7 +624,7 @@ export function postedDirectInvoicedByPoLine(invoices) {
     if (!inv.poId || inv.source !== SI_SOURCE.DIRECT_PO) continue
     const forPo = map[inv.poId] ?? (map[inv.poId] = {})
     for (const li of inv.lineItems ?? []) {
-      if (li.poLineIndex == null) continue
+      if (isVariationOriginLine(li) || li.poLineIndex == null) continue
       forPo[li.poLineIndex] = roundMoney((forPo[li.poLineIndex] || 0) + (Number(li.amount) || 0))
     }
   }
