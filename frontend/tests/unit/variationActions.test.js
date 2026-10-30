@@ -300,3 +300,221 @@ describe('runTransitionVariation — checks, stale detection and the write', () 
     expect(new VariationWriteError('nonsense').message).toBe(VARIATION_WRITE_ERROR_MESSAGES.unknown)
   })
 })
+
+// ── M3-B1 (ADR-62): commitment application in the approve write, and the legacy Apply ──
+
+import {
+  runApplyVariationCommitment, applyCommitmentUpdate, commitmentStamps,
+} from '../../src/lib/variationActions'
+import { VARIATION_COMMITMENT_KEYS } from '../../src/lib/variations'
+
+const PO_SENT = { id: 'po1', poNumber: 'PO-0001', status: 'sent', lineItems: [{ costCodeId: 'cc1', lineTotal: 100_000 }] }
+const PO_CANCELLED = { ...PO_SENT, status: 'cancelled' }
+const linked = (o = {}) => variation({
+  status: VARIATION_STATUS.SUBMITTED, poId: 'po1', poNumber: 'PO-0001',
+  lineItems: [line({ poLineIndex: 0 }), line({ costCodeId: 'cc2', submittedAmount: -200, submittedGst: 0, taxCode: TAX_CODE.GST_FREE })],
+  ...o,
+})
+const approveExtras = { approvedAmounts: [1000, -200], assessmentNotes: '' }
+
+describe('transitionUpdate — approve with / without the commitment stamps', () => {
+  it('applyCommitment: true adds exactly the two stamps (actor, server time) to the approve write; false adds nothing', () => {
+    const live = linked()
+    const withStamps = transitionUpdate(live, VARIATION_STATUS.APPROVED, { ...approveExtras, applyCommitment: true }, 'u_qs', NOW, TODAY)
+    const without = transitionUpdate(live, VARIATION_STATUS.APPROVED, approveExtras, 'u_qs', NOW, TODAY)
+    expect(withStamps.commitmentAppliedAt).toBe(NOW)
+    expect(withStamps.commitmentAppliedBy).toBe('u_qs')
+    for (const k of VARIATION_COMMITMENT_KEYS) expect(without).not.toHaveProperty(k)
+    const strip = (o) => { const c = { ...o }; for (const k of VARIATION_COMMITMENT_KEYS) delete c[k]; return c }
+    expect(strip(withStamps)).toEqual(without)   // approved money, lines, notes, dates identical either way
+    expect(commitmentStamps('u', NOW)).toEqual({ commitmentAppliedAt: NOW, commitmentAppliedBy: 'u' })
+  })
+
+  it('applyCommitment on a manual-mode supplier or a client variation is refused as INVALID', () => {
+    expect(() => transitionUpdate(linked({ poId: null, poNumber: null }), VARIATION_STATUS.APPROVED, { ...approveExtras, applyCommitment: true }, 'u', NOW, TODAY))
+      .toThrow(/names a purchase order/)
+    expect(() => transitionUpdate(linked({ variationType: VARIATION_TYPE.CLIENT }), VARIATION_STATUS.APPROVED, { ...approveExtras, applyCommitment: true }, 'u', NOW, TODAY))
+      .toThrow(/names a purchase order/)
+  })
+
+  it('submit, reject and withdraw never carry the stamps, whatever is passed', () => {
+    for (const next of [VARIATION_STATUS.SUBMITTED, VARIATION_STATUS.REJECTED, VARIATION_STATUS.WITHDRAWN]) {
+      const live = next === VARIATION_STATUS.SUBMITTED ? linked({ status: 'draft' }) : linked()
+      const w = transitionUpdate(live, next, { applyCommitment: true }, 'u', NOW, TODAY)
+      for (const k of VARIATION_COMMITMENT_KEYS) expect(w, next).not.toHaveProperty(k)
+    }
+  })
+})
+
+describe('runTransitionVariation — the approve-time decision over the SERVER copy of the PO', () => {
+  it('a PO-linked supplier variation whose PO is sent on the server is approved AND applied in one write', async () => {
+    const live = linked()
+    const { runTransaction, writes } = fakeDb({ v1: live, po1: PO_SENT })
+    const out = await runTransitionVariation(base({ runTransaction, poRef: 'po1', seen: live, nextStatus: VARIATION_STATUS.APPROVED, extras: approveExtras }))
+    expect(out).toEqual({ kind: null, commitmentApplied: true })
+    expect(writes).toHaveLength(1)
+    expect(writes[0].data).toMatchObject({ status: 'approved', commitmentAppliedAt: NOW, commitmentAppliedBy: 'u_qs', revision: 2 })
+  })
+
+  it('a closed PO applies too', async () => {
+    const live = linked()
+    const { runTransaction, writes } = fakeDb({ v1: live, po1: { ...PO_SENT, status: 'closed' } })
+    const out = await runTransitionVariation(base({ runTransaction, poRef: 'po1', seen: live, nextStatus: VARIATION_STATUS.APPROVED, extras: approveExtras }))
+    expect(out.commitmentApplied).toBe(true)
+    expect(writes[0].data.commitmentAppliedBy).toBe('u_qs')
+  })
+
+  it('Correction A — a cancelled, draft, pending or MISSING PO on the server REFUSES the approval (PO_INVALID) with nothing written and a specific, actionable message', async () => {
+    for (const po of [PO_CANCELLED, { ...PO_SENT, status: 'draft' }, { ...PO_SENT, status: 'pending_approval' }, undefined]) {
+      const live = linked()
+      const docs = { v1: live }
+      if (po) docs.po1 = po
+      const { runTransaction, writes } = fakeDb(docs)
+      const err = await expectKind(runTransitionVariation(base({ runTransaction, poRef: 'po1', seen: live, nextStatus: VARIATION_STATUS.APPROVED, extras: approveExtras })), VARIATION_WRITE_ERROR.PO_INVALID)
+      expect(err.message, String(po?.status)).toMatch(po ? /is (Cancelled|Draft|Pending Approval); a supplier variation can only be approved while its purchase order is sent or closed/ : /could not be found in this project/)
+      expect(err.message).toMatch(/Withdraw or reject/)
+      expect(writes).toHaveLength(0)
+    }
+  })
+
+  it('Correction A — a PO-linked supplier approve with NO poRef is refused BEFORE any read (never an unapplied fallback)', async () => {
+    const reads = []
+    const live = linked()
+    const tx = { get: async (ref) => { reads.push(ref); return { exists: () => true, id: ref, data: () => live } }, update: () => {} }
+    await expectKind(runTransitionVariation(base({ runTransaction: async (_d, body) => body(tx), seen: live, nextStatus: VARIATION_STATUS.APPROVED, extras: approveExtras })), VARIATION_WRITE_ERROR.PO_INVALID)
+    expect(reads).toEqual([])
+  })
+
+  it('a stale PO (sent when reviewed, cancelled on the server) is decided on the SERVER copy — refused, nothing written', async () => {
+    const live = linked()
+    const { runTransaction, writes } = fakeDb({ v1: live, po1: PO_CANCELLED })
+    await expectKind(runTransitionVariation(base({ runTransaction, poRef: 'po1', seen: { ...live }, nextStatus: VARIATION_STATUS.APPROVED, extras: approveExtras })), VARIATION_WRITE_ERROR.PO_INVALID)
+    expect(writes).toHaveLength(0)
+  })
+
+  it('manual-mode and client variations keep their lifecycle: approved without reading a PO, without stamps', async () => {
+    for (const live of [linked({ poId: null, poNumber: null }), linked({ variationType: VARIATION_TYPE.CLIENT, poId: null, poNumber: null })]) {
+      const reads = []
+      const tx = { get: async (ref) => { reads.push(ref); return { exists: () => true, id: ref, data: () => live } }, update: () => {} }
+      const out = await runTransitionVariation(base({ runTransaction: async (_d, body) => body(tx), seen: live, nextStatus: VARIATION_STATUS.APPROVED, extras: approveExtras }))
+      expect(reads).toEqual(['v1'])
+      expect(out.commitmentApplied).toBe(false)
+    }
+  })
+
+  it('a manual-mode supplier variation with a poRef supplied by mistake reads no PO and applies nothing', async () => {
+    const reads = []
+    const live = linked({ poId: null, poNumber: null })
+    const tx = { get: async (ref) => { reads.push(ref); return { exists: () => true, id: ref, data: () => (ref === 'v1' ? live : PO_SENT) } }, update: () => {} }
+    const out = await runTransitionVariation(base({ runTransaction: async (_d, body) => body(tx), poRef: 'po1', seen: live, nextStatus: VARIATION_STATUS.APPROVED, extras: approveExtras }))
+    expect(reads).toEqual(['v1'])
+    expect(out.commitmentApplied).toBe(false)
+  })
+})
+
+describe('runApplyVariationCommitment — the one-time legacy Apply', () => {
+  const approvedLinked = (o = {}) => linked({
+    status: VARIATION_STATUS.APPROVED, revision: 2,
+    lineItems: [line({ poLineIndex: 0, approvedAmount: 1000, approvedGst: 100 })], approvedSubtotal: 1000, approvedGst: 100, approvedTotal: 1100,
+    ...o,
+  })
+
+  it('applyCommitmentUpdate is exactly the stamp pair + revision + audit stamps', () => {
+    expect(applyCommitmentUpdate({ revision: 2 }, 'u_pm', NOW)).toEqual({
+      commitmentAppliedAt: NOW, commitmentAppliedBy: 'u_pm', revision: 3, updatedAt: NOW, updatedBy: 'u_pm',
+    })
+    expect(applyCommitmentUpdate({}, 'u', NOW).revision).toBe(1)
+  })
+
+  it('refuses BEFORE any read: no uid, no id, no poRef, not approved, manual mode, client, already applied', async () => {
+    const seen = approvedLinked()
+    const { runTransaction, writes } = fakeDb({ v1: seen, po1: PO_SENT })
+    const run = (over) => runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen, ...over }))
+    await expectKind(run({ uid: null }), VARIATION_WRITE_ERROR.PERMISSION)
+    await expectKind(run({ seen: {} }), VARIATION_WRITE_ERROR.MISSING)
+    await expectKind(run({ poRef: null }), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run({ seen: approvedLinked({ status: 'submitted' }) }), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run({ seen: approvedLinked({ status: 'rejected' }) }), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run({ seen: approvedLinked({ poId: null, poNumber: null }) }), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run({ seen: approvedLinked({ variationType: VARIATION_TYPE.CLIENT }) }), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run({ seen: approvedLinked({ commitmentAppliedAt: NOW, commitmentAppliedBy: 'u_x' }) }), VARIATION_WRITE_ERROR.ALREADY_APPLIED)
+    expect(writes).toHaveLength(0)
+  })
+
+  it('writes the stamps once over the reviewed copy when the server PO is sent or closed', async () => {
+    for (const status of ['sent', 'closed']) {
+      const seen = approvedLinked()
+      const { runTransaction, writes } = fakeDb({ v1: seen, po1: { ...PO_SENT, status } })
+      const out = await runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen, uid: 'u_pm' }))
+      expect(out).toEqual({ kind: null })
+      expect(writes).toEqual([{ ref: 'v1', data: { commitmentAppliedAt: NOW, commitmentAppliedBy: 'u_pm', revision: 3, updatedAt: NOW, updatedBy: 'u_pm' } }])
+    }
+  })
+
+  it('a SECOND apply (the server copy already stamped) is refused as ALREADY_APPLIED with nothing written — before the stale check', async () => {
+    const seen = approvedLinked()
+    const { runTransaction, writes } = fakeDb({ v1: { ...seen, ...commitmentStamps('u_other', NOW), revision: 3 }, po1: PO_SENT })
+    await expectKind(runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen })), VARIATION_WRITE_ERROR.ALREADY_APPLIED)
+    expect(writes).toHaveLength(0)
+  })
+
+  it('two concurrent applies from the same reviewed copy: the first wins, the second is refused, exactly one write lands', async () => {
+    const seen = approvedLinked()
+    const docs = { v1: { ...seen }, po1: PO_SENT }
+    const writes = []
+    // A fake Firestore that APPLIES each committed write to the document, so
+    // the second transaction reads the first one's stamps.
+    const runTransaction = async (_db, body) => {
+      const tx = {
+        get: async (ref) => ({ exists: () => docs[ref] !== undefined, id: ref, data: () => docs[ref] }),
+        update: (ref, data) => { writes.push({ ref, data }); docs[ref] = { ...docs[ref], ...data } },
+      }
+      return body(tx)
+    }
+    const first = await runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen, uid: 'u_a' }))
+    const second = await expectKind(runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen, uid: 'u_b' })), VARIATION_WRITE_ERROR.ALREADY_APPLIED)
+    expect(first).toEqual({ kind: null })
+    expect(second.message).toMatch(/already been applied/)
+    expect(writes).toHaveLength(1)
+    expect(docs.v1.commitmentAppliedBy).toBe('u_a')
+  })
+
+  it('a STALE copy (revision moved underneath) and a missing document are refused with nothing written', async () => {
+    const seen = approvedLinked()
+    const moved = fakeDb({ v1: { ...seen, revision: 5 }, po1: PO_SENT })
+    const err = await expectKind(runApplyVariationCommitment(base({ runTransaction: moved.runTransaction, poRef: 'po1', seen })), VARIATION_WRITE_ERROR.STALE)
+    expect(err.message).toMatch(/changed by another user/)
+    expect(moved.writes).toHaveLength(0)
+    const gone = fakeDb({ po1: PO_SENT })
+    await expectKind(runApplyVariationCommitment(base({ runTransaction: gone.runTransaction, poRef: 'po1', seen })), VARIATION_WRITE_ERROR.MISSING)
+  })
+
+  it('a cancelled, draft or missing PO on the SERVER refuses the apply as INVALID, naming the reason', async () => {
+    const seen = approvedLinked()
+    for (const po of [PO_CANCELLED, { ...PO_SENT, status: 'draft' }, undefined]) {
+      const docs = { v1: seen }
+      if (po) docs.po1 = po
+      const { runTransaction, writes } = fakeDb(docs)
+      const err = await expectKind(runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen })), VARIATION_WRITE_ERROR.INVALID)
+      expect(err.message).toMatch(po ? /not sent or closed/ : /could not be found/)
+      expect(writes).toHaveLength(0)
+    }
+  })
+
+  it('a legacy document with no revision key applies at revision 1 and acquires the audit stamps', async () => {
+    const legacy = approvedLinked()
+    delete legacy.revision
+    const { runTransaction, writes } = fakeDb({ v1: legacy, po1: PO_SENT })
+    await runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen: legacy }))
+    expect(writes[0].data.revision).toBe(1)
+  })
+
+  it('maps SDK error codes exactly as the other transactions do', async () => {
+    const seen = approvedLinked()
+    for (const [code, kind] of [['permission-denied', VARIATION_WRITE_ERROR.PERMISSION], ['unavailable', VARIATION_WRITE_ERROR.OFFLINE], ['not-found', VARIATION_WRITE_ERROR.MISSING], ['weird', VARIATION_WRITE_ERROR.UNKNOWN]]) {
+      const runTransaction = async () => { const e = new Error('boom'); e.code = code; throw e }
+      await expectKind(runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen })), kind)
+    }
+    expect(VARIATION_WRITE_ERROR_MESSAGES[VARIATION_WRITE_ERROR.ALREADY_APPLIED]).toMatch(/already been applied/)
+  })
+})

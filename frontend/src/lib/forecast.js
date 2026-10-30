@@ -13,6 +13,8 @@ import { creditedByCostCode } from './supplierCreditNotes'
 import {
   approvedSupplierVariationsByCostCode,
   pendingSupplierVariationExposureByCostCode,
+  appliedSupplierVariationAdjustments,
+  unappliedSupplierVariationsByCostCode,
 } from './variations'
 
 // ── Forecast Cost to Complete (strictly cost-side) ───────────────────────────
@@ -30,11 +32,14 @@ import {
 //   Variance to Budget    = Budgeted − Forecast Final Cost
 //        (positive ⇒ forecast under budget; negative ⇒ forecast over budget)
 //
-// Supplier Variations (approved and pending) do NOT yet mature against claims or
-// invoices, so they are deliberately NOT added into Forecast Final Cost and there
-// is intentionally no "FFC including variation exposure" total. They are surfaced
-// as separate exposure context; the forecaster consciously folds the still-to-come
-// portion into Uncommitted Cost to Complete.
+// Supplier variations (M3-B1, ADR-62): an APPLIED, approved, PO-linked supplier
+// variation adjusts the PO line it extends, so its amount is INSIDE Remaining
+// Committed (and therefore FFC) through the one formula, matured by the same
+// claims and invoices as base work. Everything else approved — unapplied legacy
+// variations, new-scope lines awaiting M3-B2, invalid links — is UNAPPLIED
+// exposure: surfaced as separate context, never added into FFC, and never
+// double-counted beside the applied amounts. Pending variations stay exposure.
+// There is intentionally no "FFC including unapplied exposure" total.
 
 // Normalises a possibly null / blank / non-numeric value to a finite number for
 // calculation. A forecast line uses `null` to mean "not forecast"; null (and any
@@ -133,13 +138,16 @@ export function buildForecastRows({
   const superseded = invoicedClaimIds(supplierInvoices)
   const invByPoLine = postedInvoicedByPoLine(supplierInvoices)
   const recognisedByPoLine = recognisedClaimsByPoLine(progressClaims, superseded)
-  const committedMap = remainingCommittedByCostCode(purchaseOrders, invByPoLine, recognisedByPoLine)
+  // Applied supplier-variation adjustments (M3-B1) — THE shared map, computed
+  // once here and handed to the one Remaining Committed formula.
+  const adjustments = appliedSupplierVariationAdjustments(variations, purchaseOrders)
+  const committedMap = remainingCommittedByCostCode(purchaseOrders, invByPoLine, recognisedByPoLine, adjustments.byPoLine)
 
   // Closed-PO residual open commitment — same formula, restricted to closed POs,
   // so every consumer can flag commitment still open on a completed PO for QS
   // judgement. It is NOT removed from Remaining Committed.
   const closedPurchaseOrders = purchaseOrders.filter(po => po.status === PO_STATUS.CLOSED)
-  const closedResidualMap = remainingCommittedByCostCode(closedPurchaseOrders, invByPoLine, recognisedByPoLine)
+  const closedResidualMap = remainingCommittedByCostCode(closedPurchaseOrders, invByPoLine, recognisedByPoLine, adjustments.byPoLine)
 
   // Actual — approved claims not superseded by a posted/paid invoice + posted/paid
   // invoice lines − posted valid-target credit notes (the Budget-page
@@ -159,8 +167,13 @@ export function buildForecastRows({
     actualMap[cc] = roundMoney((claimActualMap[cc] || 0) + (invoicedMap[cc] || 0) - (creditedMap[cc] || 0))
   }
 
-  // Supplier variation exposure — separate context, never added to any total.
+  // Supplier variation figures (ADR-62). `approvedSVMap` is the GROSS approved
+  // total by cost code (unchanged meaning); it splits exactly into the APPLIED
+  // part (inside Remaining Committed above) and the UNAPPLIED part (separate
+  // exposure, never added to any total). Pending stays exposure.
   const approvedSVMap = approvedSupplierVariationsByCostCode(variations)
+  const appliedSVMap = adjustments.byCostCode
+  const unappliedSVMap = unappliedSupplierVariationsByCostCode(variations, purchaseOrders)
   const pendingSVMap = pendingSupplierVariationExposureByCostCode(variations)
 
   // Budget lines (a code may in principle have more than one line — sum them).
@@ -215,7 +228,12 @@ export function buildForecastRows({
       // Flow can time it as its own future cash basis (cash leaves when the
       // invoice is paid, not when the claim is approved); never added to FFC.
       approvedClaimsAwaitingInvoice: claimActualMap[id] || 0,
+      // Gross approved supplier variations (meaning unchanged) = applied +
+      // unapplied. Applied is already INSIDE remainingCommitted; unapplied is
+      // the only part shown as separate exposure (ADR-62).
       approvedSupplierVariations: approvedSVMap[id] || 0,
+      appliedSupplierVariations: appliedSVMap[id] || 0,
+      unappliedSupplierVariations: unappliedSVMap[id] || 0,
       pendingSupplierVariationExposure: pendingSVMap[id] || 0,
       // The stored authored input (number | null); null = not forecast.
       storedUncommittedCostToComplete: forecast
@@ -279,6 +297,8 @@ export function forecastRollups(rows) {
     costToComplete: 0,
     forecastFinalCost: 0,
     approvedSupplierVariations: 0,
+    appliedSupplierVariations: 0,
+    unappliedSupplierVariations: 0,
     pendingSupplierVariationExposure: 0,
     closedResidual: 0,
     approvedClaimsAwaitingInvoice: 0,
@@ -293,6 +313,8 @@ export function forecastRollups(rows) {
     acc.costToComplete += safeNumber(r.costToComplete)
     acc.forecastFinalCost += safeNumber(r.forecastFinalCost)
     acc.approvedSupplierVariations += safeNumber(r.approvedSupplierVariations)
+    acc.appliedSupplierVariations += safeNumber(r.appliedSupplierVariations)
+    acc.unappliedSupplierVariations += safeNumber(r.unappliedSupplierVariations)
     acc.pendingSupplierVariationExposure += safeNumber(r.pendingSupplierVariationExposure)
     acc.closedResidual += safeNumber(r.closedResidual)
     acc.approvedClaimsAwaitingInvoice += safeNumber(r.approvedClaimsAwaitingInvoice)
@@ -310,6 +332,8 @@ export function forecastRollups(rows) {
     forecastFinalCost: forecastFinalCostValue,
     varianceToBudget: roundMoney(budgeted - forecastFinalCostValue),
     approvedSupplierVariations: roundMoney(acc.approvedSupplierVariations),
+    appliedSupplierVariations: roundMoney(acc.appliedSupplierVariations),
+    unappliedSupplierVariations: roundMoney(acc.unappliedSupplierVariations),
     pendingSupplierVariationExposure: roundMoney(acc.pendingSupplierVariationExposure),
     closedResidual: roundMoney(acc.closedResidual),
     approvedClaimsAwaitingInvoice: roundMoney(acc.approvedClaimsAwaitingInvoice),

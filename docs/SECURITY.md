@@ -43,7 +43,7 @@ Controls now in place:
   rationale, the enforced controls and the client-only gaps for every
   collection live in this document's per-collection sections, the Deferred
   Controls list and the ADRs — nothing was dropped, only de-duplicated.
-- **ADR-60 (27 October 2026, NOT YET DEPLOYED)** recovered the headroom M2-B3
+- **ADR-60 (27 October 2026; LIVE since 29 October 2026, published as part of the M3-A ruleset and confirmed by the product owner)** recovered the headroom M2-B3
   had consumed: thirteen helpers are declared once at the
   `match /databases/{database}/documents` scope (`financialMember(companyId)`,
   `sameCompany(companyId)`, `memberRole()`, `changedKeys()`, `updateStamped()`,
@@ -56,9 +56,18 @@ Controls now in place:
   `companyId` / `projectId` as arguments because path wildcards are not in
   scope at that level — every call site passes its own match's wildcards.
   `variations` keeps its ADR-59 predicate verbatim as `variationMember()`.
-- **M3-A (ADR-61, 29 October 2026, NOT YET DEPLOYED)** adds the award →
+- **M3-A (ADR-61, 29 October 2026, LIVE since 29 October 2026)** adds the award →
   PO source link to the `purchaseOrders` and `tenderPackages` blocks:
   **201,523 → 207,620 bytes** (+6,097), 37,380 under the budget.
+- **M3-B1 (ADR-62, 30 October 2026, NOT YET DEPLOYED)** adds the
+  commitment-application pair and branch (f) to the `variations` block only.
+  Two artifacts: the FINAL `firestore.rules` **207,620 → 210,926 bytes**
+  (+3,306; 34,074 under the budget) and the derived STAGE-1
+  `firestore.transitional.rules` **211,378 bytes** (one rule line and a
+  five-line header differ; `scripts/build-transitional-rules.mjs`, pinned by
+  `tests/unit/rulesTransitional.test.js`). One extra `get()` (the PO) on every
+  PO-linked approve and on the legacy Apply — three document reads on those
+  writes, five on create as before.
 - **Size compliance is not deployment proof.** The emulator suite proves the
   repo file; the size test proves it can be published; only the console shows
   what is live — see [DEPLOYMENT.md](DEPLOYMENT.md) → *Verifying which rules
@@ -328,7 +337,7 @@ copies of the records the client knew about), `lineItems` **contents**,
 `subtotal == Σ lineTotal`, PO-number uniqueness, that `supplierId` names a real
 contact, and the version guard on draft edits — see **Deferred Control 35**.
 
-**Award-raised POs (ADR-61, M3-A — NOT YET DEPLOYED).** A PO may be born
+**Award-raised POs (ADR-61, M3-A — LIVE since 29 October 2026).** A PO may be born
 from an awarded tender package. *Rules-enforced
 (`tests/rules/awardToPo.rules.test.js`):* the three source keys are admitted
 by `exactKeys()`'s `hasOnly` but not its `hasAll`, so a manual or legacy
@@ -493,8 +502,9 @@ financial-role caller with the Firebase SDK could create a variation already
 `approved` with any header, rewrite an approved variation's lines, header,
 counterparty or PO, convert a supplier variation into a client one, revive a
 rejected one, forge `approvedBy`, or store a header unrelated to its own
-total. **Nothing below is enforced in production until the revised ruleset is
-published** (DEPLOYMENT.md → *M2-B3 release order*).
+total. **Everything below has been enforced in production since the M2-B3
+ruleset was published on 27 October 2026** (DEPLOYMENT.md → *M2-B3 release
+order*); the ADR-62 additions at the end of this section are NOT yet deployed.
 
 **Reads** stay restricted to `company_admin` / `project_manager` / `qs`.
 **Delete** stays blocked for every role and every status.
@@ -622,6 +632,81 @@ document, the link keys are compared through `get(key, null)`, a missing
 `revision` reads as 0, and the exact key set applies to `create` only, so a
 pre-ADR-59 variation stays editable, submittable, approvable, rejectable and
 withdrawable and acquires the new fields on its next valid write.
+
+### Commitment application (ADR-62, M3-B1 — IMPLEMENTED, NOT YET DEPLOYED)
+
+**The approved supplier variation is the commitment adjustment.** Whether its
+approved amounts have been APPLIED to the PO it names is recorded by two
+optional keys, `commitmentAppliedAt` / `commitmentAppliedBy`, and nothing is
+ever written onto the PO. **A PO-linked supplier variation is approved AND
+applied in ONE write** (branch c): its PO must exist in this project and be
+sent/closed, and the pair must be present — a missing, cancelled, draft or
+pending PO REFUSES the approval (withdraw or reject the variation, or raise it
+again against a current PO; there is no fallback to an unapplied approval —
+Correction A). Variations approved BEFORE M3-B1 carry no pair and stay
+UNAPPLIED exposure until a financial-role user applies them exactly once
+through branch (f) *Apply to commitment*.
+
+**Two reproducible rulesets.** `firestore.rules` is the FINAL ruleset (pair
+REQUIRED on every PO-linked approve). `firestore.transitional.rules` is the
+STAGE-1 ruleset published first, while the pre-M3-B1 bundle is still served:
+derived by `scripts/build-transitional-rules.mjs`, it differs in exactly one
+rule line — the pair is OPTIONAL on branch (c) — and in nothing else (the PO
+must still be sent/closed; a present pair must still be the caller's at server
+time). Temporary compatibility only; replaced by the FINAL file once the new
+bundle is live (DEPLOYMENT.md → *M3-B1 release order*).
+
+*Rules-enforced (`tests/rules/variations.rules.test.js`, the ADR-62 blocks):*
+
+- the pair is **absent at create** (present, or present as null, is refused —
+  `appliedAbsent`), and can ride on no draft edit, submit, reject or withdraw
+  (outside every `hasOnly` list);
+- on **approve** (branch c) of a document with a string `poId` (a PO-linked
+  supplier variation): the PO (`poPath`, this project's path — another project's
+  or tenant's PO never resolves) must exist and be `sent` or `closed`
+  (`poCommitted()` — one `get()`) in BOTH rulesets, so a cancelled, draft,
+  pending, missing or other-project PO refuses the approval with or without
+  the pair; and the pair must be present with `commitmentAppliedBy ==
+  request.auth.uid`, `commitmentAppliedAt == request.time` (FINAL) — or absent
+  or so stamped (STAGE-1 transitional, for the pre-M3-B1 bundle only). A
+  document with `poId == null` (manual-mode supplier, client) approves exactly
+  as before and can never carry the pair. A client clock, another actor or half
+  the pair is refused in both rulesets;
+- the **legacy Apply** (branch f) requires `approved → approved`, a `supplier`
+  variation with a string `poId`, the stored pair null/absent, `changedKeys()`
+  ⊆ {the pair, `revision`, `updatedAt`, `updatedBy`}, the stamps as above,
+  `revision == stored + 1` and the PO sent/closed through `get()` — so a
+  **repeat is refused by the RULES**, not merely by the client, and approved
+  money, lines, PO link, counterparty and every lifecycle stamp stay frozen
+  (a bundled change fails the whole write);
+- roles and tenancy as before (`variationMember()`); delete still blocked;
+  legacy documents without audit stamps apply and acquire them.
+
+*Client-enforced only (deferred — never describe these as enforced):* **which
+lines mature** — rules cannot read `lineItems`, so the per-line classification
+(`poLineIndex` present and in range, cost code equal to the PO line's, amount
+finite → EXISTING_LINE; absent index → NEW_SCOPE; anything else → INVALID,
+listed as SHIELD check 4 condition F and kept in unapplied exposure) and the
+maturation arithmetic itself are `lib/variations.js`; **the PO's state after
+application** (the PO is read at approve / apply time only — cancelling it
+afterwards leaves the pair in place; the client then reports the exception and
+counts nothing); the **stale guard** (rules-assisted, as DC37); the **CTC
+overlap warning and acknowledgement** (`lib/variationCommitment.js`) — see
+**Deferred Control 39**. The transactions are `lib/variationActions.js →
+runTransitionVariation` (reads the PO after the variation) and
+`runApplyVariationCommitment`.
+
+⚠️ **Publishing is a THREE-STAGE sequence** (DEPLOYMENT.md → *M3-B1 release
+order*): Stage 1 the TRANSITIONAL ruleset (the live bundle's plain approve stays
+valid; invalid PO states already refused; the new stamped approve accepted);
+Stage 2 the new Hosting bundle; Stage 3 the FINAL ruleset (pair required). An
+old-bundle tab still open after Stage 3 is refused — with no write — on exactly
+one action, the approve of a PO-linked supplier variation (its create, edit,
+submit, reject, withdraw and every manual-mode / client action still pass);
+a reload loads the new bundle. Rules-first is claimed safe ONLY because
+`tests/rules/variationsTransitional.rules.test.js` proves the Stage-1 file
+against both payloads and `tests/rules/variations.rules.test.js` proves the
+FINAL file denies the unstamped PO-linked approve.
 
 ## Client Invoices — deliberately stricter than every other collection
 
@@ -958,7 +1043,7 @@ Received edits and voids are permitted **only while the package remains
 which is what freezes the awarded bid's lines and makes the derived award
 value trustworthy. Void is terminal; delete is blocked.
 
-**The award → PO back-link (ADR-61, M3-A — NOT YET DEPLOYED).** An AWARDED
+**The award → PO back-link (ADR-61, M3-A — LIVE since 29 October 2026).** An AWARDED
 package may record the ONE current purchase order raised from it, in four
 keys — `raisedPoId`, `raisedPoNumber`, `raisedPoAt`, `raisedPoBy` — absent or
 null on every package until a PO is raised (create admits either; the
@@ -2372,6 +2457,59 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     Every item above is **proven** by a passing test in
     `frontend/tests/rules/awardToPo.rules.test.js` or
     `frontend/tests/unit/awardToPo.test.js`.
+
+39. **Applied supplier variations — what the commitment stamps cannot prove
+    (ADR-62, M3-B1).** Rules enforce WHEN the `commitmentAppliedAt/By` pair may
+    be written (approve of a PO-linked supplier variation, or once by the
+    legacy Apply), by whom, at what time, against a PO that is sent/closed at
+    that moment, and that nothing else moves with it (see *Variations* above).
+    What they **cannot** enforce, and what must never be described as enforced:
+
+    - **WHICH LINES MATURE, AND BY HOW MUCH.** Rules cannot read `lineItems`,
+      so an applied variation whose `poLineIndex` is out of range, whose line
+      cost code differs from the PO line's, or whose amount is not a number
+      is ACCEPTED by rules (proven). The classification — EXISTING_LINE
+      (matures on that PO line), NEW_SCOPE (unapplied exposure awaiting M3-B2),
+      INVALID (unapplied exposure + SHIELD check 4 condition F) — and the
+      revised-line arithmetic are `lib/variations.js →
+      appliedSupplierVariationAdjustments`, re-derived at read time by every
+      consumer from the one map. Nothing is ever counted against a different
+      PO line or cost code, and no record is rewritten.
+    - **THE PO'S STATE AFTER APPLICATION.** The PO is `get()`-verified
+      sent/closed when the pair is written and never re-checked; a PO
+      cancelled afterwards (itself a client-only policy, DC35) leaves the pair
+      in place. The client then counts nothing for that variation and lists it
+      as condition F; the amount stays in unapplied exposure.
+    - **THE CTC OVERLAP.** Whether a saved Uncommitted Cost to Complete
+      already contains an applied variation is unknowable from the records;
+      the Assess / Apply dialogs warn when a positive CTC sits on an affected
+      cost code and require an acknowledgement, and nothing is subtracted
+      automatically (`lib/variationCommitment.js → commitmentEffectPreview`).
+    - **THE STALE GUARD** is rules-assisted exactly as DC37 describes; the
+      one-time nature of the legacy Apply, by contrast, IS rules-proven (the
+      stored pair must be null).
+    - **A CONCURRENT LOSER'S ERROR KIND.** Two users applying at once get one
+      application; the loser is refused by its re-read (ALREADY_APPLIED), by
+      the revision guard (STALE) or by the rules against the winner's state
+      (PERMISSION) — all refusals, proven in the emulator.
+    - **RECOGNITION ABOVE THE REVISED LINE.** Rules cannot compare a claim's
+      certified value with a PO line or a variation, so an approved claim
+      above the line (warn-only by product decision) or a negative variation
+      applied below what was already recognised is ACCEPTED; Remaining
+      Committed floors the line at 0 and SHIELD check 4 condition G lists it
+      (claim recognition and posted invoicing as separate figures, the ADR-55
+      hand-over never counted twice, credit notes never netted). Nothing is
+      adjusted automatically.
+    - **DURING STAGE 1 ONLY**, a PO-linked approve from the pre-M3-B1 bundle
+      lands without the pair; that document is a legacy unapplied variation
+      with the one-time Apply available — the FINAL ruleset denies such a
+      write.
+
+    Every item above is **proven** by a passing test in
+    `frontend/tests/rules/variations.rules.test.js` (the ADR-62 blocks),
+    `frontend/tests/rules/variationsTransitional.rules.test.js`,
+    `frontend/tests/unit/variationCommitment.test.js` or
+    `frontend/tests/unit/shield.test.js`.
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this

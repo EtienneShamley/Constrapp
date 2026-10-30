@@ -666,7 +666,7 @@ export function evaluatePulse({ sources = {}, sourceStates = {}, now = new Date(
   }
   const rows = projectForecastRows(forecastSources)
   const totals = projectForecastTotals(forecastSources)
-  const margin = computeMargin({ baseline, variations, forecastFinalCost: totals.forecastFinalCost })
+  const margin = computeMargin({ baseline, variations, forecastFinalCost: totals.forecastFinalCost, purchaseOrders })
 
   const byId = {
     [INDICATOR.FORECAST_OVER_BUDGET]:       evaluateForecastOverBudget(rows, totals, sourceStates),

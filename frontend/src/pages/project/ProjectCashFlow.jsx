@@ -170,8 +170,8 @@ export default function ProjectCashFlow() {
     [costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines],
   )
   const m = useMemo(
-    () => computeMargin({ baseline, variations, forecastFinalCost: forecastTotals.forecastFinalCost }),
-    [baseline, variations, forecastTotals.forecastFinalCost],
+    () => computeMargin({ baseline, variations, forecastFinalCost: forecastTotals.forecastFinalCost, purchaseOrders }),
+    [baseline, variations, forecastTotals.forecastFinalCost, purchaseOrders],
   )
   const established = isBaselineEstablished(baseline)
   const availableToInvoice = useMemo(
@@ -595,9 +595,13 @@ export default function ProjectCashFlow() {
               <div>
                 <p className={labelCls}>Exposure — context only</p>
                 <div className="space-y-1">
+                  <p className="m-0 text-[11.5px] text-brand-text flex justify-between gap-2" title="Already inside Remaining Committed — timed through it, never added again">
+                    <span>Applied supplier variations (in Rem. Committed)</span>
+                    <span className="tabular-nums">{variationsError ? '—' : money(m.appliedSupplierVariations)}</span>
+                  </p>
                   <p className="m-0 text-[11.5px] text-brand-text flex justify-between gap-2">
-                    <span>Approved supplier variations</span>
-                    <span className="tabular-nums">{variationsError ? '—' : money(m.approvedSupplierVariations)}</span>
+                    <span>Unapplied supplier variations</span>
+                    <span className="tabular-nums">{variationsError ? '—' : money(m.unappliedSupplierVariations)}</span>
                   </p>
                   <p className="m-0 text-[11.5px] text-brand-text flex justify-between gap-2">
                     <span>Pending supplier variations</span>

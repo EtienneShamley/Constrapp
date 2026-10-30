@@ -99,15 +99,19 @@ export const SNAPSHOT_SOURCE_LABELS = {
 // buildForecastRows / computeMargin / payablesSummary):
 //   · Actual        — claims (certified, not superseded), posted invoices,
 //                     posted valid-target credit notes
-//   · Rem. Committed — sent/closed PO lines net of posted invoice lines AND of
-//                     approved claims not yet invoiced (ADR-55; credits
+//   · Rem. Committed — sent/closed PO lines (REVISED by applied approved
+//                     supplier variations, ADR-62) net of posted invoice lines
+//                     AND of approved claims not yet invoiced (ADR-55; credits
 //                     deliberately do not restore it — ADR-31)
 //   · Uncommitted CTC — saved forecast lines
-//   · Variations feed only supplier-variation EXPOSURE on the cost side, which
-//     is never in Forecast Final Cost; they feed margin through approved client
-//     variations (Current Contract Sum).
+//   · Variations: an APPLIED PO-linked supplier variation adjusts Remaining
+//     Committed (so `variations` is an FFC source since ADR-62 — a loading or
+//     failed variations read must make Remaining Committed and FFC
+//     UNAVAILABLE, never a figure that silently omits the adjustment);
+//     unapplied / pending supplier exposure is context only; approved client
+//     variations feed margin (Current Contract Sum).
 const FFC_SOURCES = [
-  'purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes', 'forecastLines',
+  'purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes', 'variations', 'forecastLines',
 ]
 
 // Every source buildForecastRows reads to decide WHICH cost codes exist (the
@@ -122,7 +126,7 @@ export const FORECAST_ROW_SOURCES = [
 export const FIGURE_DEPENDENCIES = {
   approvedBudget:     ['budgetLines'],
   actual:             ['progressClaims', 'supplierInvoices', 'supplierCreditNotes'],
-  remainingCommitted: ['purchaseOrders', 'progressClaims', 'supplierInvoices'],
+  remainingCommitted: ['purchaseOrders', 'progressClaims', 'supplierInvoices', 'variations'],
   forecastFinalCost:  FFC_SOURCES,
   varianceToBudget:   ['budgetLines', ...FFC_SOURCES],
   margin:             ['baseline', 'variations', ...FFC_SOURCES],
@@ -130,8 +134,9 @@ export const FIGURE_DEPENDENCIES = {
   costComposition:    ['budgetLines', ...FFC_SOURCES],
   // ── Project tabs (Forecast, Commercial, Overview — ADR-44) ──
   // Traced through forecastRollups / computeMargin exactly as above:
-  //   · supplier variation exposure — approved/pending supplier variations only
-  //     (never in FFC)
+  //   · supplier variation exposure — gross approved / unapplied / pending
+  //     supplier variations; the applied-vs-unapplied split reads the PO
+  //     register too (ADR-62), so both sources gate it
   //   · forecast rows — the cost-code union; see FORECAST_ROW_SOURCES
   //   · contract baseline — Original Contract Value, Original Approved Budget,
   //     Original Planned Profit / Margin % read the stored baseline only
@@ -139,7 +144,10 @@ export const FIGURE_DEPENDENCIES = {
   //   · Current Contract Sum (= Forecast Revenue) — baseline + approved client
   //     variations
   //   · Margin Movement — Forecast Gross Profit − Original Planned Profit
-  supplierVariationExposure: ['variations'],
+  supplierVariationExposure: ['variations', 'purchaseOrders'],
+  //   · applied supplier variations — the applied part of the same split
+  //     (already inside Remaining Committed; shown for transparency)
+  appliedSupplierVariations: ['variations', 'purchaseOrders'],
   forecastRows:              FORECAST_ROW_SOURCES,
   contractBaseline:          ['baseline'],
   clientVariations:          ['variations'],
@@ -153,13 +161,15 @@ export const FIGURE_DEPENDENCIES = {
   //   · Claimed — submitted / under-review claim lines (uncertified exposure)
   //   · Invoiced — posted invoice lines net of posted valid-target credits
   //   · Remaining — Budgeted − Actual
-  //   · Commitment Exposure — Remaining Committed + approved supplier variations
+  //   · Commitment Exposure — Remaining Committed + UNAPPLIED supplier
+  //     variations (ADR-62: applied ones are already inside Remaining Committed)
   //   · Closed-PO residual — Remaining Committed restricted to closed POs
+  //     (revised by applied variations, so `variations` gates it too)
   claimedExposure:    ['progressClaims'],
   invoiced:           ['supplierInvoices', 'supplierCreditNotes'],
   remainingBudget:    ['budgetLines', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes'],
   commitmentExposure: ['purchaseOrders', 'progressClaims', 'supplierInvoices', 'variations'],
-  closedResidual:     ['purchaseOrders', 'progressClaims', 'supplierInvoices'],
+  closedResidual:     ['purchaseOrders', 'progressClaims', 'supplierInvoices', 'variations'],
 }
 
 // The margin figure has one extra, figure-specific state: the commercial
@@ -194,7 +204,7 @@ export function projectSnapshot({ sources = {}, sourceStates = {}, currencyCode 
     budgetLines, purchaseOrders, progressClaims, supplierInvoices,
     supplierCreditNotes, variations, forecastLines,
   })
-  const m = computeMargin({ baseline, variations, forecastFinalCost: totals.forecastFinalCost })
+  const m = computeMargin({ baseline, variations, forecastFinalCost: totals.forecastFinalCost, purchaseOrders })
   const payables = payablesSummary(
     supplierInvoices, supplierPayments, supplierCreditNotes, releasedByInvoiceId(retentionReleases),
   )

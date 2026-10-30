@@ -182,7 +182,10 @@ frontend/                  The entire application (run all npm commands here)
                            clientReceipts.js, supplierPayments.js, cashFlow.js
                            (pure monthly cash aggregation), cashFlowChart.js
                            (chart presentation transform — no arithmetic),
-                           variations.js, forecast.js, margin.js,
+                           variations.js (incl. the ADR-62 commitment-application
+                           selectors — THE one applied-adjustment map), variationCommitment.js
+                           (ADR-62 — the pure commercial-effect preview the Assess and Apply
+                           dialogs render), forecast.js, margin.js,
                            poLineRecognition.js (ADR-55 — one recognition path per PO line:
                            authoring guards for direct invoices and claims, and the
                            mixed-mode overlap detection SHIELD check 4 reads),
@@ -395,7 +398,7 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Supplier Credit Notes | Implemented (foundation) — reduction records against exactly one posted, retention-free supplier invoice; rules-enforced lifecycle **with target-invoice `get()` checks**; read-time subtraction from Invoiced/Actual/Remaining Payable; lives inside the Supplier Invoices view; **no client credit notes, no refunds** |
 | Supplier Retention & Retention Release | Implemented (foundation) — read-time register grouped by supplier; retention **held** derived from posted invoices, **released** from posted `retentionReleases`; partial releases with cumulative-snapshot GST; **no client retention, no retention due/DLP dates, no retention-paid attribution** (ADR-30) |
 | Cash Flow (actual + forecast) | Implemented (foundation) — read-time monthly actual, automatic invoice due-date forecast, manual `cashFlowLines` timing, projected cumulative/closing position, completeness, untimed reporting, peak funding with suppression, and a two-panel chart that consumes those derived rows without re-deriving them (ADR-26); **no date filtering, not a bank balance** |
-| Variations (client + supplier) | Implemented (foundation) |
+| Variations (client + supplier) | Implemented (foundation); **M3-B1 supplier-variation commitment integration (ADR-62) implemented — not yet deployed** |
 | Tenders (packages, bids, comparison, award) | Implemented (foundation) — cost-code + free-text scope (BOQ-independent), manual bids, read-time comparison, award as a decision record; **no stored totals, closing date informational**; since M3-A (ADR-61, not yet deployed) an award raises ONE linked **draft** PO through a reviewed, confirmed, guarded transaction — never sent automatically |
 | Forecast Cost to Complete | Implemented (foundation) — read-time, cost-side |
 | Project Margin (Commercial tab) | Implemented (foundation) — read-time, ex-GST; commercial baseline is the only stored input |

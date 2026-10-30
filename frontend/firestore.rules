@@ -1255,6 +1255,21 @@ service cloud.firestore {
       function idOrNull(v) {
         return v == null || (v is string && v.size() > 0);
       }
+      // M3-B1 (ADR-62): the commitment-application pair. Absent on every
+      // document until an approve of a PO-linked supplier variation whose PO is
+      // sent/closed (branch c) or the one-time legacy Apply (branch f) writes
+      // it — actor == caller, time == server, PO re-read through poPath().
+      function appliedAbsent(d) {
+        return !d.keys().hasAny(['commitmentAppliedAt', 'commitmentAppliedBy']);
+      }
+      function appliedStamped(d) {
+        return d.commitmentAppliedBy == request.auth.uid
+            && d.commitmentAppliedAt == request.time;
+      }
+      function poCommitted() {
+        return exists(poPath(companyId, projectId))
+            && get(poPath(companyId, projectId)).data.status in ['sent', 'closed'];
+      }
       // The RFI this candidate cites, in THIS company and THIS project (ADR-34).
       function originRfiDoc(d) {
         return get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/rfis/$(d.originRfiId)).data;
@@ -1286,7 +1301,7 @@ service cloud.firestore {
       }
       // Exact key set of a document the app creates (hooks/useVariations.jsx).
       function exactKeys() {
-        return request.resource.data.keys().hasOnly(['variationNumber', 'variationType', 'status', 'title', 'description', 'reason', 'clientId', 'clientName', 'clientRef', 'supplierId', 'supplierName', 'supplierRef', 'poId', 'poNumber', 'originRfiId', 'originRfiNumber', 'originRfiTitle', 'lineItems', 'submittedSubtotal', 'submittedGst', 'submittedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'forecastAmount', 'identifiedDate', 'submittedDate', 'responseDueDate', 'approvedDate', 'effectiveDate', 'currency', 'revision', 'notes', 'assessmentNotes', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'withdrawnAt', 'withdrawnBy', 'attachments', 'externalRefs', 'supersededByVariationId', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+        return request.resource.data.keys().hasOnly(['variationNumber', 'variationType', 'status', 'title', 'description', 'reason', 'clientId', 'clientName', 'clientRef', 'supplierId', 'supplierName', 'supplierRef', 'poId', 'poNumber', 'originRfiId', 'originRfiNumber', 'originRfiTitle', 'lineItems', 'submittedSubtotal', 'submittedGst', 'submittedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'forecastAmount', 'identifiedDate', 'submittedDate', 'responseDueDate', 'approvedDate', 'effectiveDate', 'currency', 'revision', 'notes', 'assessmentNotes', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'withdrawnAt', 'withdrawnBy', 'attachments', 'externalRefs', 'supersededByVariationId', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'commitmentAppliedAt', 'commitmentAppliedBy'])
             && request.resource.data.keys().hasAll(['variationNumber', 'variationType', 'status', 'title', 'description', 'reason', 'clientId', 'clientName', 'clientRef', 'supplierId', 'supplierName', 'supplierRef', 'poId', 'poNumber', 'originRfiId', 'originRfiNumber', 'originRfiTitle', 'lineItems', 'submittedSubtotal', 'submittedGst', 'submittedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'forecastAmount', 'identifiedDate', 'submittedDate', 'responseDueDate', 'approvedDate', 'effectiveDate', 'currency', 'revision', 'notes', 'assessmentNotes', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'withdrawnAt', 'withdrawnBy', 'attachments', 'externalRefs', 'supersededByVariationId', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']);
       }
       // Tier-2 source validation — CREATE ONLY, supplier variations that name a
@@ -1364,7 +1379,8 @@ service cloud.firestore {
             && d.withdrawnAt == null && d.withdrawnBy == null
             && d.approvedSubtotal == null && d.approvedGst == null && d.approvedTotal == null
             && d.approvedDate == ''
-            && d.assessmentNotes == '';
+            && d.assessmentNotes == ''
+            && appliedAbsent(d);
       }
 
       allow read: if variationMember();
@@ -1420,10 +1436,20 @@ service cloud.firestore {
                     //     SIGNED approved header, the notes, the approved and
                     //     effective dates and its own stamps. Approved amounts
                     //     are unbounded against submitted by product decision.
+                    //     M3-B1 (ADR-62): a PO-linked SUPPLIER variation is
+                    //     approved AND applied in ONE write — its PO must exist
+                    //     in THIS project and be sent/closed (get()), and the
+                    //     commitment stamps must be present (actor == caller,
+                    //     time == server). A missing / cancelled / draft PO
+                    //     REFUSES the approval (withdraw or reject instead).
+                    //     Manual-mode and client variations (poId null) never
+                    //     carry the pair. The STAGE-1 transitional ruleset
+                    //     (scripts/build-transitional-rules.mjs) differs from
+                    //     this FINAL file in exactly the one marked line below.
                     (
                       resource.data.status in ['submitted', 'under_review']
                       && request.resource.data.status == 'approved'
-                      && changedKeys().hasOnly(['status', 'lineItems', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'assessmentNotes', 'approvedDate', 'effectiveDate', 'approvedAt', 'approvedBy', 'revision', 'updatedAt', 'updatedBy'])
+                      && changedKeys().hasOnly(['status', 'lineItems', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'assessmentNotes', 'approvedDate', 'effectiveDate', 'approvedAt', 'approvedBy', 'revision', 'updatedAt', 'updatedBy', 'commitmentAppliedAt', 'commitmentAppliedBy'])
                       && request.resource.data.approvedBy == request.auth.uid
                       && request.resource.data.approvedAt == request.time
                       && request.resource.data.lineItems is list
@@ -1433,6 +1459,11 @@ service cloud.firestore {
                       && request.resource.data.approvedDate != ''
                       && isDate(request.resource.data.effectiveDate)
                       && moneyValid(request.resource.data.approvedSubtotal, request.resource.data.approvedGst, request.resource.data.approvedTotal)
+                      && (resource.data.poId == null
+                          ? appliedAbsent(request.resource.data)
+                          : (resource.data.variationType == 'supplier'
+                              && poCommitted()
+                              && appliedStamped(request.resource.data))) // ADR-62 FINAL: the pair is REQUIRED on a PO-linked approve
                     )
                     ||
                     // (d) REJECT (terminal) — stamps plus the optional notes.
@@ -1452,6 +1483,25 @@ service cloud.firestore {
                       && changedKeys().hasOnly(['status', 'withdrawnAt', 'withdrawnBy', 'revision', 'updatedAt', 'updatedBy'])
                       && request.resource.data.withdrawnBy == request.auth.uid
                       && request.resource.data.withdrawnAt == request.time
+                    )
+                    ||
+                    // (f) APPLY TO COMMITMENT (M3-B1, ADR-62) — the ONE-TIME
+                    //     legacy application of an APPROVED, PO-linked supplier
+                    //     variation that carries no stamps: the pair + revision
+                    //     + audit stamps and nothing else, while the PO is
+                    //     sent/closed. The stored pair must be null/absent, so a
+                    //     repeat is refused by rules; approved money, lines and
+                    //     the PO link stay frozen (outside the list).
+                    (
+                      resource.data.status == 'approved'
+                      && request.resource.data.status == 'approved'
+                      && resource.data.variationType == 'supplier'
+                      && resource.data.poId is string
+                      && resource.data.get('commitmentAppliedAt', null) == null
+                      && resource.data.get('commitmentAppliedBy', null) == null
+                      && changedKeys().hasOnly(['commitmentAppliedAt', 'commitmentAppliedBy', 'revision', 'updatedAt', 'updatedBy'])
+                      && appliedStamped(request.resource.data)
+                      && poCommitted()
                     )
                   );
 

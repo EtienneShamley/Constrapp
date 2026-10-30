@@ -86,14 +86,17 @@ function SummaryCards({ figures, currencyCode }) {
       </Card>
 
       <Card className="mb-3.5">
-        <div className="grid grid-cols-2 gap-3.5">
-          <Figure label="Approved Supplier Variation Exposure" figure={figures.approvedSupplierVariations} money={money} />
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+          <Figure label="Applied Supplier Variations" figure={figures.appliedSupplierVariations} money={money} help="Inside Remaining Committed" />
+          <Figure label="Unapplied Supplier Variation Exposure" figure={figures.unappliedSupplierVariations} money={money} />
           <Figure label="Pending Supplier Variation Exposure" figure={figures.pendingSupplierVariationExposure} money={money} />
         </div>
         <p className="m-0 mt-3 text-[11px] text-brand-muted">
-          Supplier variation exposure is shown separately because variations do not yet mature against claims or
-          invoices and may overlap Actual or manually forecast cost. It is <span className="font-semibold">not</span> added
-          to Forecast Final Cost — account for the remaining expected variation cost within Uncommitted Cost to Complete.
+          An approved supplier variation applied to its purchase order is already inside Remaining Committed (and so
+          inside Forecast Final Cost) and is matured by the same claims and invoices as the original PO line. Unapplied
+          exposure — approved variations not yet applied, new-scope lines awaiting M3-B2, and pending variations — is
+          shown separately and is <span className="font-semibold">not</span> added to Forecast Final Cost. If you previously
+          folded an approved variation into Uncommitted Cost to Complete, remove it there once the variation is applied.
         </p>
       </Card>
     </>
@@ -214,6 +217,8 @@ function ForecastWorkspace({ projectId, currencyCode }) {
     forecastFinalCost:                fig('forecastFinalCost', rollups.forecastFinalCost),
     varianceToBudget:                 fig('varianceToBudget', rollups.varianceToBudget),
     approvedSupplierVariations:       fig('supplierVariationExposure', rollups.approvedSupplierVariations),
+    appliedSupplierVariations:        fig('appliedSupplierVariations', rollups.appliedSupplierVariations),
+    unappliedSupplierVariations:      fig('supplierVariationExposure', rollups.unappliedSupplierVariations),
     pendingSupplierVariationExposure: fig('supplierVariationExposure', rollups.pendingSupplierVariationExposure),
   }
 
@@ -385,7 +390,7 @@ function ForecastWorkspace({ projectId, currencyCode }) {
             <table className="w-full border-collapse">
               <thead>
                 <tr className="bg-brand-card border-b border-brand-border">
-                  {['Cost Code', 'Budgeted', 'Actual', 'Rem. Committed', 'Appr. Supplier Var.', 'Pending Supplier Exp.', 'Rem. Budget Ref.', 'Uncommitted CTC', 'Cost to Complete', 'Forecast Final Cost', 'Variance', 'Notes', 'Last Updated', ''].map((h, i) => (
+                  {['Cost Code', 'Budgeted', 'Actual', 'Rem. Committed', 'Applied SV', 'Unapplied Supplier Var.', 'Pending Supplier Exp.', 'Rem. Budget Ref.', 'Uncommitted CTC', 'Cost to Complete', 'Forecast Final Cost', 'Variance', 'Notes', 'Last Updated', ''].map((h, i) => (
                     <th key={i} className={thCls}>{h}</th>
                   ))}
                 </tr>
@@ -428,8 +433,11 @@ function ForecastWorkspace({ projectId, currencyCode }) {
                         )}
                       </td>
 
-                      {/* Approved Supplier Variations (context) */}
-                      <td className={tdCls}>{row.approvedSupplierVariations ? money(row.approvedSupplierVariations) : '—'}</td>
+                      {/* Applied Supplier Variations — already inside Rem. Committed (ADR-62) */}
+                      <td className={tdCls} title="Applied approved supplier variations — already inside Remaining Committed">{row.appliedSupplierVariations ? money(row.appliedSupplierVariations) : '—'}</td>
+
+                      {/* Unapplied Supplier Variations (exposure, context) */}
+                      <td className={tdCls}>{row.unappliedSupplierVariations ? money(row.unappliedSupplierVariations) : '—'}</td>
 
                       {/* Pending Supplier Variation Exposure (context) */}
                       <td className={tdCls}>{row.pendingSupplierVariationExposure ? money(row.pendingSupplierVariationExposure) : '—'}</td>

@@ -140,22 +140,64 @@ export function buildPurchaseOrderDocument({
   return docData
 }
 
-// TOTAL CONTRACTUAL COMMITMENT — { costCodeId: Σ lineTotal } across every
-// sent/closed PO, ex-GST. This is the full ordered value and is deliberately
-// kept apart from Remaining Committed below: it never matures, never nets a
-// claim or an invoice, and answers "what have we ordered?" rather than "what
-// is still to be recognised?".
-export function committedByCostCode(purchaseOrders) {
+// ── Applied variation adjustments (M3-B1, ADR-62) ────────────────────────────
+//
+// `adjustmentsByPoLine` is lib/variations.js → appliedSupplierVariationAdjustments
+// (…).byPoLine: { [poId]: { [poLineIndex]: Σ signed approved amount } } over
+// APPLIED, approved, PO-linked supplier variations whose line names this PO
+// line. It is the ONLY way a variation reaches a commitment figure, and the PO
+// document itself is never written (ADR-7 / ADR-57). Every function below
+// defaults it to `{}`, so a caller that does not pass it sees the pre-M3-B1
+// figures exactly.
+const adjustmentFor = (adjustmentsByPoLine, poId, idx) =>
+  roundMoney(Number(adjustmentsByPoLine?.[poId]?.[idx]) || 0)
+
+// REVISED contractual value of one PO line: lineTotal + Σ applied adjustments.
+// Signed — a negative variation lowers it, and nothing is clamped here (a
+// negative result is a commercial anomaly SHIELD lists, not a figure to hide).
+export const revisedLineTotal = (li, adjustment = 0) =>
+  roundMoney((Number(li?.lineTotal) || 0) + (Number(adjustment) || 0))
+
+// { [poId]: { [poLineIndex]: { original, adjustment, revised } } } across
+// sent/closed POs — the per-line contractual position every commitment
+// consumer and SHIELD check 3 compare against.
+export function revisedCommitmentByPoLine(purchaseOrders, adjustmentsByPoLine = {}) {
   const map = {}
   for (const po of purchaseOrders) {
     if (!PO_COMMITTED_STATUSES.includes(po.status)) continue
-    for (const li of po.lineItems ?? []) {
-      if (!li.costCodeId) continue
-      map[li.costCodeId] = roundMoney((map[li.costCodeId] || 0) + (li.lineTotal || 0))
-    }
+    const forPo = {}
+    ;(po.lineItems ?? []).forEach((li, idx) => {
+      const original = roundMoney(Number(li.lineTotal) || 0)
+      const adjustment = adjustmentFor(adjustmentsByPoLine, po.id, idx)
+      forPo[idx] = { original, adjustment, revised: revisedLineTotal(li, adjustment) }
+    })
+    map[po.id] = forPo
   }
   return map
 }
+
+// TOTAL CONTRACTUAL COMMITMENT — { costCodeId: Σ revised line value } across
+// every sent/closed PO, ex-GST. With no adjustments this is the ORIGINAL
+// contractual commitment (Σ lineTotal); with the applied-variation map it is
+// the REVISED contractual commitment. Deliberately kept apart from Remaining
+// Committed below: it never matures, never nets a claim or an invoice, and
+// answers "what have we ordered?" rather than "what is still to be
+// recognised?". Attributed to the PO LINE's cost code.
+export function committedByCostCode(purchaseOrders, adjustmentsByPoLine = {}) {
+  const map = {}
+  for (const po of purchaseOrders) {
+    if (!PO_COMMITTED_STATUSES.includes(po.status)) continue
+    ;(po.lineItems ?? []).forEach((li, idx) => {
+      if (!li.costCodeId) return
+      map[li.costCodeId] = roundMoney((map[li.costCodeId] || 0) + revisedLineTotal(li, adjustmentFor(adjustmentsByPoLine, po.id, idx)))
+    })
+  }
+  return map
+}
+
+// The ORIGINAL contractual commitment — Σ lineTotal, no adjustment — kept as a
+// named figure so original and revised can be shown side by side.
+export const originalCommittedByCostCode = (purchaseOrders) => committedByCostCode(purchaseOrders, {})
 
 // Remaining Committed — THE ONE open-commitment formula (ADR-55).
 //
@@ -190,11 +232,22 @@ export function committedByCostCode(purchaseOrders) {
 // PO line and does NOT reduce commitment — the pre-ADR-55 reading, which errs
 // toward overstating open commitment rather than hiding it.
 //
+// APPLIED VARIATION ADJUSTMENTS (M3-B1, ADR-62). The line's contractual value
+// is its REVISED value — lineTotal + Σ applied approved supplier-variation
+// amounts on that line (`adjustmentsByPoLine`, see above) — so an applied
+// positive variation raises the ceiling the nets apply to and a negative one
+// lowers it. The ADR-55 hand-over is untouched: the same invoiced and
+// recognised maps are subtracted once each, so an approved claim for
+// variation work leaves Remaining Committed at the moment it enters Actual,
+// exactly as base work does. New-scope variation lines carry no PO line index
+// and are NOT in this map (they stay in unapplied exposure until M3-B2).
+//
 // `invoicedByPoLine`  — supplierInvoices.postedInvoicedByPoLine
 //                       → { [poId]: { [poLineIndex]: ex-GST amount } }
 // `recognisedByPoLine` — progressClaims.recognisedClaimsByPoLine
 //                       → { [poId]: { [poLineIndex]: ex-GST approved amount } }
-export function remainingCommittedByPoLine(purchaseOrders, invoicedByPoLine = {}, recognisedByPoLine = {}) {
+// `adjustmentsByPoLine` — variations.appliedSupplierVariationAdjustments().byPoLine
+export function remainingCommittedByPoLine(purchaseOrders, invoicedByPoLine = {}, recognisedByPoLine = {}, adjustmentsByPoLine = {}) {
   const map = {}
   for (const po of purchaseOrders) {
     if (!PO_COMMITTED_STATUSES.includes(po.status)) continue
@@ -202,8 +255,9 @@ export function remainingCommittedByPoLine(purchaseOrders, invoicedByPoLine = {}
     const recForPo = recognisedByPoLine[po.id] ?? {}
     const forPo = {}
     ;(po.lineItems ?? []).forEach((li, idx) => {
+      const revised = revisedLineTotal(li, adjustmentFor(adjustmentsByPoLine, po.id, idx))
       const remaining = Math.max(
-        roundMoney((li.lineTotal || 0) - (invForPo[idx] || 0) - (recForPo[idx] || 0)),
+        roundMoney(revised - (invForPo[idx] || 0) - (recForPo[idx] || 0)),
         0,
       )
       forPo[idx] = remaining
@@ -217,9 +271,9 @@ export function remainingCommittedByPoLine(purchaseOrders, invoicedByPoLine = {}
 // the line's cost code. Lines with no cost code are skipped (they cannot reach
 // a budget row); exhausted lines contribute nothing and a code with no open
 // commitment is absent from the map (never a negative).
-export function remainingCommittedByCostCode(purchaseOrders, invoicedByPoLine = {}, recognisedByPoLine = {}) {
+export function remainingCommittedByCostCode(purchaseOrders, invoicedByPoLine = {}, recognisedByPoLine = {}, adjustmentsByPoLine = {}) {
   const map = {}
-  const byLine = remainingCommittedByPoLine(purchaseOrders, invoicedByPoLine, recognisedByPoLine)
+  const byLine = remainingCommittedByPoLine(purchaseOrders, invoicedByPoLine, recognisedByPoLine, adjustmentsByPoLine)
   for (const po of purchaseOrders) {
     const forPo = byLine[po.id]
     if (!forPo) continue

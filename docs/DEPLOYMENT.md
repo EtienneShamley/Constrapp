@@ -521,9 +521,12 @@ no data impact and no loss of any M2 control. ⚠️ Never roll back further
 than M2-B3: an older ruleset would remove the M2-B1 / M2-B2 / M2-B3
 enforcement the live bundle relies on.
 
-**Awarded Tender → Linked Draft PO — M3-A (ADR-61): IMPLEMENTED — NOT YET
-DEPLOYED. RULES AND HOSTING; RULES FIRST (the Quant™ 1B order, the reverse
-of the ADR-40 gate).** The M3-A ruleset (`frontend/firestore.rules`,
+**Awarded Tender → Linked Draft PO — M3-A (ADR-61): LIVE IN PRODUCTION since
+29 October 2026 (rules published first, then Hosting; confirmed by the product
+owner that day — the publish timestamps are not recorded here). The ADR-60
+ruleset went live with it. The record below is kept as the order used. RULES
+AND HOSTING; RULES FIRST (the Quant™ 1B order, the reverse of the ADR-40
+gate).** The M3-A ruleset (`frontend/firestore.rules`,
 **207,620 bytes**; it CONTAINS the ADR-60 refactor) admits three OPTIONAL
 keys on a PO create and two new `tenderPackages` branches. The live bundle
 never writes any of them, so the new ruleset accepts every write the live
@@ -571,6 +574,138 @@ closes and cancels; only the raise action is refused until the rules return.
 *Both:* the same, in either order. ⚠️ Never roll rules back further than
 M2-B3. No migration, backfill or data rewrite is involved in either
 direction, and no rollback removes an M2 control.
+
+**Supplier Variation Commitment Integration — M3-B1 (ADR-62): IMPLEMENTED —
+NOT YET DEPLOYED. THREE STAGES: TRANSITIONAL RULES → HOSTING → FINAL RULES.
+Both rulesets are committed, derived and emulator-tested; Rules-first is
+claimed safe only on the strength of those tests.**
+
+*The compatibility question, answered from the rules text and the suites.*
+The FINAL ruleset (`frontend/firestore.rules`, **210,926 bytes**) requires, on
+every approve of a PO-linked supplier variation, the commitment pair
+(`commitmentAppliedAt == request.time`, `commitmentAppliedBy == caller`) AND a
+PO that exists in this project and is sent/closed. The pre-M3-B1 production
+bundle approves such a variation WITHOUT the pair, so publishing the FINAL
+ruleset while that bundle is served would refuse every such approval — an
+outage. Publishing the new bundle while the M3-A ruleset is live would refuse
+every stamped approve (the live `hasOnly` on branch (c) at `a0c44e9` has no
+`commitmentApplied*` key) and *Apply to commitment* would match no branch —
+also an outage. Neither can go first against the other, so a STAGE-1
+TRANSITIONAL ruleset bridges the window:
+
+- `frontend/firestore.transitional.rules` (**211,378 bytes**) is DERIVED from
+  the FINAL file by `node scripts/build-transitional-rules.mjs` (also
+  `npm run rules:transitional`; `npm run rules:transitional:check` exits 1 if
+  the committed copy is stale, and `tests/unit/rulesTransitional.test.js` fails
+  the unit suite on the same condition). It differs from the FINAL file in
+  exactly ONE rule line — the pair is OPTIONAL on branch (c) — plus a five-line
+  header; grep the live ruleset for `ADR-62 TRANSITIONAL` / `ADR-62 FINAL` to
+  see which stage is published. Everything else is identical: the PO must be
+  sent/closed for ANY PO-linked approve (Correction A holds from Stage 1), a
+  present pair must be the caller's at server time, the legacy Apply (branch f)
+  is one-time, every M2 / M3 control is unchanged.
+- Proof, old client × Stage 1: `tests/rules/variationsTransitional.rules.test.js`
+  — the plain PO-linked approve is ACCEPTED (and the document is then
+  legacy-applicable), create / submit / withdraw unchanged.
+- Proof, new client × Stage 1: the same file — the stamped approve is ACCEPTED;
+  the legacy Apply passes once and is refused on repeat.
+- Proof, both clients × Stage 1: a cancelled / draft / pending / missing /
+  other-project PO refuses BOTH payloads; forged stamps, stamps at create,
+  manual / client semantics, roles and tenancy unchanged.
+- Proof, new client × FINAL: `tests/rules/variations.rules.test.js` — stamped
+  approve accepted for every role; the unstamped PO-linked approve (an
+  old-bundle tab) DENIED for every role with nothing written; manual-mode and
+  client approvals unchanged; the legacy Apply once.
+- `firebase.json` is unchanged (`firestore.rules` for the emulators; Hosting
+  `public: dist` with the SPA rewrite); publishing is manual through the
+  console as for every ruleset (procedure above), pasting the text of whichever
+  file the stage names. No Firebase CLI argument is involved in a rules publish.
+
+Release, in order, each a separate approved action:
+
+1. **Confirm the live ruleset is M3-A** (procedure above): search `ADR-61`,
+   `diff <(pbpaste) frontend/firestore.rules` against `a0c44e9` empty,
+   **207,620** bytes.
+2. Lead Architect review of M3-B1; merge to `main`; Azure CI green (lint →
+   unit → **rules** → build). `cd frontend && npm run lint && npm run test:unit
+   && npm run test:rules && npm run build && npm run rules:transitional:check`
+   — green locally too.
+3. **STAGE 1 — publish `frontend/firestore.transitional.rules`** (procedure
+   above). Confirm the live version: search `ADR-62 TRANSITIONAL`;
+   `diff <(pbpaste) frontend/firestore.transitional.rules` empty; **211,378**
+   bytes. The live (pre-M3-B1) bundle keeps working in full; from this moment a
+   PO-linked supplier variation whose PO is cancelled can no longer be approved
+   by anyone (withdraw or reject it instead).
+4. **STAGE 2 — `firebase deploy --only hosting --project constrapp-69b5d`**
+   (the existing command; `--only hosting` and `--project` are both required);
+   confirm the deployed asset hashes match the local build. The new bundle
+   approves PO-linked supplier variations WITH the pair (approve + apply in one
+   write), offers *Apply to commitment* on legacy approved variations, and
+   reads the new selectors (revised Committed, Applied / Unapplied figures,
+   SHIELD conditions F and G).
+5. **Verify Stage 2 in production** per TESTING.md §38 checks 1–3 (approve
+   applies and the revised Committed / FFC figures move by exactly the
+   variation; recognition and a negative variation; legacy Apply once).
+6. **STAGE 3 — publish `frontend/firestore.rules` (FINAL)**. Confirm the live
+   version: search `ADR-62 FINAL`; `diff <(pbpaste) frontend/firestore.rules`
+   empty; **210,926** bytes. From this moment an unstamped PO-linked approve is
+   denied. **Old-bundle tabs:** a browser tab that still runs the pre-M3-B1
+   bundle (no service worker exists, so only an un-reloaded tab) is refused —
+   with nothing written — on exactly one action, the approve of a PO-linked
+   supplier variation; it sees the ADR-59 permission message ("You do not have
+   permission to change variations on this project") and a reload loads the
+   new bundle. Its create, draft edit, submit, reject, withdraw and every
+   manual-mode / client action still pass. Do not publish Stage 3 until Stage
+   2 is verified (step 5); a reasonable delay (the next working day) lets open
+   tabs reload naturally.
+7. Close the milestone: mark M3-B1 LIVE here, in SECURITY.md, ROADMAP.md,
+   TESTING.md, DATA_MODEL.md, FINANCIAL_WORKFLOWS.md, PRODUCT.md and AGENT.md;
+   record the Stage-1 and Stage-3 byte counts seen in the console. Tell the QS
+   team to review Uncommitted Cost to Complete on every cost code where an
+   approved supplier variation was folded in (the dialogs warn and require
+   acknowledgement, but the review is theirs — nothing is subtracted
+   automatically).
+
+**Rollback — three different questions.** *Security compatibility* (does every
+bundle × ruleset pair refuse what it must and accept what the served bundle
+writes), *database integrity* (is any document orphaned, rewritten or made
+unreadable), and *financial reporting correctness* (do the figures on screen
+mean what the records now say) have different answers.
+
+- **Before the first application** (no variation carries the pair — check with
+  a console query on `variations` for `commitmentAppliedAt`): every step is
+  reversible in all three senses. Stage 3 → Stage 1: republish the transitional
+  file at any time (a superset). Stage 2 → previous bundle: redeploy `a0c44e9`
+  (the transitional rules accept everything it writes). Stage 1 → M3-A rules:
+  republish the M3-A file only while the pre-M3-B1 bundle is served.
+- **After the first application** — stamped variations exist and the QS may
+  have released Uncommitted CTC on the strength of the revised Committed:
+  - *Security and integrity:* a Hosting rollback to `a0c44e9` is still safe
+    (the old bundle writes nothing new and reads the stamped documents without
+    error; nothing is orphaned or rewritten) PROVIDED the transitional ruleset
+    is live (Stage 3 → Stage 1 first, otherwise the old bundle's approvals
+    fail). Rules alone back to the transitional file is safe at any time.
+    ⚠️ Never roll rules back to M3-A once stamped documents exist with the new
+    bundle served, and never below M2-B3.
+  - *Financial correctness:* a Hosting rollback to `a0c44e9` is NOT safe. The
+    old bundle does not read the pair, so every applied variation drops back
+    out of Remaining Committed into "exposure", and Committed, Forecast Final
+    Cost, Variance, Margin, Cash Flow's cost basis and PULSE revert to the
+    pre-M3-B1 reading while the records — and any CTC the QS released — say
+    otherwise: the project understates its forecast by the applied amounts.
+    **There is no financially safe rollback to the pre-M3-B1 bundle once
+    applied data exists.** The recovery path is FORWARD: fix on the M3-B1
+    code line and redeploy, or, if a feature must be withdrawn, deploy a
+    RECOVERY BUNDLE built from this branch with the Approve-and-apply and
+    *Apply to commitment* actions disabled but every selector intact, so the
+    figures keep reading the stamps. If the pre-M3-B1 bundle must be served
+    regardless, record the limitation and instruct the QS to treat every
+    *Approved Supplier Variations* figure as commitment already recognised
+    elsewhere until the forward fix lands.
+
+No migration, backfill or data rewrite is involved in any direction; a stamp
+already written is an audit fact, never deleted. No rollback removes an M2
+control.
 
 **Quant™ 1B (ADR-52): LIVE IN PRODUCTION (October 2026).** Released in the
 order below — rules published and confirmed live first, then Hosting — and
