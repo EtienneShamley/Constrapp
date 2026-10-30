@@ -12,8 +12,8 @@ import {
 } from 'firebase/firestore'
 import { poTotals, lineTotal, roundMoney, remainingCommittedByCostCode, committedByCostCode } from '../../src/lib/purchaseOrders'
 import {
-  CLAIM_STATUS, claimTotals, buildClaimLine, actualClaimsByCostCode, recognisedClaimsByPoLine,
-  claimedPendingByCostCode, previouslyApprovedByPoLine,
+  CLAIM_STATUS, claimTotals, buildClaimLine, buildVariationClaimLine, actualClaimsByCostCode, recognisedClaimsByPoLine,
+  recognisedClaimsByVariationLine, claimedPendingByCostCode, previouslyApprovedByPoLine, previouslyApprovedByVariationLine,
 } from '../../src/lib/progressClaims'
 import { invoiceTotals, gstForLine, invoicedClaimIds, postedInvoicedByPoLine } from '../../src/lib/supplierInvoices'
 import {
@@ -135,6 +135,8 @@ function claimPayload(user, { lines = DEFAULT_LINES, retention = 0, ...overrides
     claimNumber: 'PC-0001', status: 'draft', poId: PO_ID, poNumber: 'PO-0001',
     supplierName: 'BuildCo Pty Ltd', supplierId: 'contact1',
     claimRef: 'S-1', periodEnding: '2026-08-31', variationId: null,
+    // ADR-63: the number of variation-origin lines after the PO lines (0 here).
+    variationLineCount: 0,
     lineItems: lines,
     retention: t.retention, claimedSubtotal: t.subtotal, claimedGst: t.gst, claimedTotal: t.total,
     approvedSubtotal: null, approvedGst: null, approvedTotal: null,
@@ -1333,5 +1335,180 @@ describe('NOT ENFORCED by rules — proven, so the ceiling is documented (DC36)'
   it('a claimed line below its previously approved amount (negative claimedThisPeriod) is ACCEPTED when the header still balances', async () => {
     const lines = [{ ...DEFAULT_LINES[0], previouslyApproved: 1500, claimedToDate: 1000, claimedThisPeriod: -500 }, { ...DEFAULT_LINES[1], claimedToDate: 1500, claimedThisPeriod: 1500 }]
     await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'n11'), claimPayload(USERS.qs, { lines })))
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// M3-B2 (ADR-63) — variation-origin claim lines: the `variationLineCount`
+// header, the count pin (PO lines + count), the first/last-line shape pins
+// that stop a pre-M3-B2 client rewriting variation lines onto PO line 0, and
+// what stays client-only (DC40).
+// ═════════════════════════════════════════════════════════════════════════════
+
+const VAR_ROW = { variationId: 'svScoped', variationNumber: 'SV-0007', lineIndex: 0, amount: 4000, costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'New scope' }
+const VAR_ROW_2 = { ...VAR_ROW, variationId: 'svOther', variationNumber: 'SV-0008', lineIndex: 2, amount: 1500, costCodeId: 'cc2', costCodeName: '05-200 — Steel' }
+const varLine = (toDate = 2000, prev = 0, row = VAR_ROW) => buildVariationClaimLine(row, { previouslyApproved: prev, claimedToDate: toDate })
+// A claim with the two PO lines and one variation-origin line after them.
+const VAR_LINES = [...claimLines([1000, 0]), varLine(2000)]
+const varPayload = (user, extra = {}) => claimPayload(user, { lines: VAR_LINES, variationLineCount: 1, ...extra })
+// hooks → draftUpdate over STORED lines: identity preserved, amounts re-authored.
+function varDraftEdit(user, { lines = [...claimLines([1500, 800]), varLine(3000)], retention = 0, revision = 2, ...extra } = {}) {
+  const t = claimTotals(lines.map(li => li.claimedThisPeriod), retention)
+  return { claimRef: 'S-1b', periodEnding: '2026-09-30', notes: 'Revised', lineItems: lines, retention: t.retention, claimedSubtotal: t.subtotal, claimedGst: t.gst, claimedTotal: t.total, revision, ...stamps(user), ...extra }
+}
+// What a pre-M3-B2 client's buildClaimLine would write for the variation line:
+// `poLineIndex` coerced to 0, the variation keys dropped.
+const oldClientRebuild = (li) => {
+  const { variationId, variationNumber, variationLineIndex, variationLineTotal, ...rest } = li   // eslint-disable-line no-unused-vars
+  return { ...rest, poLineIndex: 0, poLineTotal: 0 }
+}
+
+describe('ADR-63 — create with variation-origin lines', () => {
+  it('every financial role creates a claim with PO lines + one variation line when the count says 1; the header and line identity are stored as written', async () => {
+    for (const user of FINANCIAL) {
+      await assertSucceeds(setDoc(claimRef(ctx(user), `v_${user.uid}`), varPayload(user)))
+      const c = await readClaim(`v_${user.uid}`)
+      expect(c.variationLineCount).toBe(1)
+      expect(c.variationId).toBeNull()
+      expect(c.lineItems[2]).toMatchObject({ poLineIndex: null, variationId: 'svScoped', variationLineIndex: 0, variationLineTotal: 4000 })
+    }
+    // Several variation lines, from several variations, in one claim.
+    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'multi'), claimPayload(USERS.qs, { lines: [...claimLines([1000, 0]), varLine(2000), varLine(500, 0, VAR_ROW_2)], variationLineCount: 2 })))
+  })
+
+  it('FINAL RULES — a create WITHOUT the variationLineCount key (the M3-B1 bundle) is refused; a negative, fractional or string count is refused', async () => {
+    const noKey = claimPayload(USERS.qs)
+    delete noKey.variationLineCount
+    await assertFails(setDoc(claimRef(ctx(USERS.qs), 'nk'), noKey))
+    for (const bad of [-1, 1.5, '1', null]) {
+      await assertFails(setDoc(claimRef(ctx(USERS.qs), 'bad'), claimPayload(USERS.qs, { variationLineCount: bad })))
+    }
+  })
+
+  it('the count pin: PO lines + variationLineCount must equal the line count — a variation line without its count, a count without its line, and a wrong count are refused', async () => {
+    const db = ctx(USERS.qs)
+    await assertFails(setDoc(claimRef(db, 'p1'), claimPayload(USERS.qs, { lines: VAR_LINES, variationLineCount: 0 })))
+    await assertFails(setDoc(claimRef(db, 'p2'), claimPayload(USERS.qs, { lines: VAR_LINES, variationLineCount: 2 })))
+    await assertFails(setDoc(claimRef(db, 'p3'), claimPayload(USERS.qs, { variationLineCount: 1 })))
+    await assertFails(setDoc(claimRef(db, 'p4'), claimPayload(USERS.qs, { lines: claimLines([1000, 0]).slice(0, 1), variationLineCount: 1 })))
+  })
+
+  it('the shape pins: the first and last variation lines must carry a null poLineIndex and a string variationId; with count 0 the last line must carry no variationId', async () => {
+    const db = ctx(USERS.qs)
+    await assertFails(setDoc(claimRef(db, 's1'), varPayload(USERS.qs, { lines: [...claimLines([1000, 0]), oldClientRebuild(varLine(2000))] })))
+    await assertFails(setDoc(claimRef(db, 's2'), varPayload(USERS.qs, { lines: [...claimLines([1000, 0]), { ...varLine(2000), poLineIndex: 0 }] })))
+    await assertFails(setDoc(claimRef(db, 's3'), varPayload(USERS.qs, { lines: [...claimLines([1000, 0]), { ...varLine(2000), variationId: null }] })))
+    await assertFails(setDoc(claimRef(db, 's4'), varPayload(USERS.qs, { lines: [...claimLines([1000, 0]), { ...varLine(2000), variationId: 7 }] })))
+    // Count 2: the FIRST variation line (index size − 2) is pinned too.
+    await assertFails(setDoc(claimRef(db, 's5'), claimPayload(USERS.qs, { lines: [...claimLines([1000, 0]), oldClientRebuild(varLine(2000)), varLine(500, 0, VAR_ROW_2)], variationLineCount: 2 })))
+    // Count 0 but the last line carries a variation id → refused.
+    await assertFails(setDoc(claimRef(db, 's6'), claimPayload(USERS.qs, { lines: [claimLines([1000, 0])[0], { ...varLine(2000) }], variationLineCount: 0 })))
+  })
+})
+
+describe('ADR-63 — OLD-CLIENT PROTECTION on update: a pre-M3-B2 draft edit cannot move variation lines onto PO line 0', () => {
+  const t = claimTotals(VAR_LINES.map(li => li.claimedThisPeriod), 0)
+  const seedVar = (id, status = 'draft', extra = {}) =>
+    seed(id, status, USERS.admin, { lineItems: VAR_LINES, variationLineCount: 1, claimedSubtotal: t.subtotal, claimedGst: t.gst, claimedTotal: t.total, ...extra })
+
+  it('the NEW bundle’s draft edit (identity preserved, amounts re-authored) passes; the OLD bundle’s rebuild (variation line → PO line 0, keys dropped) is REFUSED with nothing written', async () => {
+    await seedVar('e1')
+    const db = ctx(USERS.qs)
+    const oldShape = varDraftEdit(USERS.qs, { lines: [...claimLines([1500, 800]), oldClientRebuild(varLine(3000))] })
+    await assertFails(updateDoc(claimRef(db, 'e1'), oldShape))
+    const before = await readClaim('e1')
+    expect(before.revision).toBe(1)
+    expect(before.lineItems[2].variationId).toBe('svScoped')
+    await assertSucceeds(updateDoc(claimRef(db, 'e1'), varDraftEdit(USERS.qs)))
+    const after = await readClaim('e1')
+    expect(after.lineItems[2]).toMatchObject({ poLineIndex: null, variationId: 'svScoped', variationLineIndex: 0, claimedToDate: 3000 })
+    expect(after.variationLineCount).toBe(1)
+  })
+
+  it('a draft edit that re-points the variation line (another variation id or line index) or drops/changes the count is refused', async () => {
+    await seedVar('e2')
+    const db = ctx(USERS.qs)
+    await assertFails(updateDoc(claimRef(db, 'e2'), varDraftEdit(USERS.qs, { lines: [...claimLines([1500, 800]), { ...varLine(3000), variationId: 'svOther' }] })))
+    await assertFails(updateDoc(claimRef(db, 'e2'), varDraftEdit(USERS.qs, { lines: [...claimLines([1500, 800]), { ...varLine(3000), variationLineIndex: 1 }] })))
+    await assertFails(updateDoc(claimRef(db, 'e2'), varDraftEdit(USERS.qs, { variationLineCount: 0 })))
+    await assertFails(updateDoc(claimRef(db, 'e2'), varDraftEdit(USERS.qs, { variationLineCount: 2 })))
+    expect((await readClaim('e2')).revision).toBe(1)
+  })
+
+  it('approval preserves the identity: the certified lines keep the variation keys; an approve that rewrites them is refused', async () => {
+    await seedVar('a1', 'submitted')
+    const approvedLines = VAR_LINES.map((li, idx) => ({ ...li, approvedThisPeriod: [1000, 0, 2000][idx] }))
+    const tt = claimTotals([1000, 0, 2000], 0)
+    const good = { status: 'approved', lineItems: approvedLines, approvedSubtotal: tt.subtotal, approvedGst: tt.gst, approvedTotal: tt.total, assessmentNotes: '', approvedAt: serverTimestamp(), approvedBy: USERS.pm.uid, revision: 2, ...stamps(USERS.pm) }
+    const rewritten = { ...good, lineItems: [approvedLines[0], approvedLines[1], oldClientRebuild(approvedLines[2])] }
+    await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'a1'), rewritten))
+    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'a1'), good))
+    const c = await readClaim('a1')
+    expect(c.lineItems[2]).toMatchObject({ variationId: 'svScoped', variationLineIndex: 0, approvedThisPeriod: 2000 })
+    // The recognition selectors key the certified amount by the VARIATION line, never PO line 0.
+    expect(recognisedClaimsByVariationLine([c])).toEqual({ svScoped: { 0: 2000 } })
+    expect(recognisedClaimsByPoLine([c])).toEqual({ [PO_ID]: { 0: 1000, 1: 0 } })
+    expect(previouslyApprovedByVariationLine([c])).toEqual({ svScoped: { 0: 2000 } })
+    expect(previouslyApprovedByPoLine([c], PO_ID)).toEqual({ 0: 1000, 1: 0 })
+  })
+
+  // A LEGACY claim: no variationLineCount key (every pre-M3-B2 document), PO
+  // lines only, no audit stamps — absent reads 0 on every path.
+  const seedLegacyNoCount = async (id, status) => {
+    await seed(id, status, USERS.admin, {}, { legacy: true })
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      const { deleteField } = await import('firebase/firestore')
+      await updateDoc(doc(c.firestore(), claimsPath(), id), { variationLineCount: deleteField() })
+    })
+    expect(await readClaim(id)).not.toHaveProperty('variationLineCount')
+  }
+
+  it('a LEGACY claim (no variationLineCount key, PO lines only) still EDITS — absent reads 0, never backfilled', async () => {
+    await seedLegacyNoCount('legE', 'draft')
+    await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 'legE'), draftEdit(USERS.qs)))
+    expect(await readClaim('legE')).not.toHaveProperty('variationLineCount')
+  })
+
+  it('a LEGACY claim (no variationLineCount key) still SUBMITS', async () => {
+    await seedLegacyNoCount('legS', 'draft')
+    await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 'legS'), submitWrite(USERS.qs)))
+  })
+
+  it('a LEGACY claim (no variationLineCount key) still APPROVES — the certified lines keep their PO identity', async () => {
+    await seedLegacyNoCount('legA', 'submitted')
+    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'legA'), approveWrite(USERS.pm)))
+    const c = await readClaim('legA')
+    expect(c.status).toBe('approved')
+    expect(c).not.toHaveProperty('variationLineCount')
+  })
+
+  it('the app’s runUpdateClaimDraft over a claim with a variation line passes the real rules and keeps the identity', async () => {
+    await seedVar('tx')
+    const db = ctx(USERS.qs)
+    const seen = await readClaim('tx')
+    await runUpdateClaimDraft({
+      db, claimRef: claimRef(db, 'tx'), seen, data: { periodEnding: '2026-09-30', claimRef: 'S-2', notes: '', retention: 0, claimedToDate: ['1200', '0', '3500'] },
+      uid: USERS.qs.uid, runTransaction, serverTimestamp,
+    })
+    const after = await readClaim('tx')
+    expect(after.revision).toBe(2)
+    expect(after.lineItems[2]).toMatchObject({ poLineIndex: null, variationId: 'svScoped', variationLineIndex: 0, variationLineTotal: 4000, claimedToDate: 3500, claimedThisPeriod: 3500 })
+  })
+})
+
+describe('ADR-63 — NOT enforced by rules (Deferred Control 40)', () => {
+  it('rules cannot see whether the variation exists, is approved, scope-committed, on this PO, positive, or matches the cost code and ceiling — a create naming a NONEXISTENT variation with a wrong cost code and ceiling is ACCEPTED (the create transaction and SHIELD check 4 condition H are the controls)', async () => {
+    const forged = varLine(2000, 0, { ...VAR_ROW, variationId: 'svNowhere', amount: 999_999, costCodeId: 'cc9', costCodeName: 'Wrong' })
+    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'f1'), claimPayload(USERS.qs, { lines: [...claimLines([1000, 0]), forged], variationLineCount: 1 })))
+  })
+
+  it('rules pin only the FIRST and LAST variation lines: with three variation lines the middle one can be malformed and is ACCEPTED (the client identity check refuses it)', async () => {
+    const middle = { ...varLine(10, 0, VAR_ROW_2), poLineIndex: 0, variationId: undefined }
+    delete middle.variationId
+    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'f2'), claimPayload(USERS.qs, { lines: [...claimLines([1000, 0]), varLine(2000), middle, varLine(5, 0, { ...VAR_ROW_2, lineIndex: 3 })], variationLineCount: 3 })))
+  })
+
+  it('a duplicated variation line in one claim is ACCEPTED by rules (sourceLineIdentityError refuses it in the app)', async () => {
+    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'f3'), claimPayload(USERS.qs, { lines: [...claimLines([1000, 0]), varLine(2000), varLine(2000)], variationLineCount: 2 })))
   })
 })

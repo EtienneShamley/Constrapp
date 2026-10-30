@@ -1,8 +1,36 @@
 import {
   CLAIM_STATUS, CLAIM_STATUS_LABELS, CLAIM_TRANSITION_STAMPS, canTransition, claimTotals,
   validateApprovedAmounts, buildClaimLine, claimedToDateCountError, validateClaimDraft,
+  claimVariationLineIssue, CLAIM_VARIATION_LINE_ISSUE_LABELS,
 } from './progressClaims'
 import { roundMoney } from './purchaseOrders'
+import { sourceLineIdentityError, isVariationOriginLine, sourceLineLabel } from './sourceLine'
+import { classifyCommitmentLines } from './variations'
+
+// ── Variation-origin source validation at CREATE (M3-B2, ADR-63) ─────────────
+//
+// Run by hooks/useProgressClaims.jsx INSIDE the create transaction over the
+// SERVER copies of the PO and of every variation the lines name: each
+// variation-origin line must be backed, right now, by a positive new-scope
+// line of an approved, applied, scope-committed supplier variation on THIS PO
+// with the same cost code and ceiling. Fail closed: the first problem names
+// the line and the reason, and nothing is written. Rules cannot read the lines
+// (DC40), so this transaction is the only source check these lines get.
+export function variationSourceError(lineItems, { po, variations = [], variationIds = [] } = {}) {
+  const byId = new Map()
+  ;(variations ?? []).forEach((v, i) => { if (v?.id) byId.set(v.id, v); else if (variationIds[i]) byId.set(variationIds[i], null) })
+  const lines = Array.isArray(lineItems) ? lineItems : []
+  for (let i = 0; i < lines.length; i++) {
+    const li = lines[i]
+    if (!isVariationOriginLine(li)) continue
+    const variation = byId.has(li.variationId) ? byId.get(li.variationId) : null
+    const issue = claimVariationLineIssue(li, { variation, po, classify: classifyCommitmentLines })
+    if (issue) {
+      return `Line ${i + 1} (${sourceLineLabel(li)}): ${CLAIM_VARIATION_LINE_ISSUE_LABELS[issue] ?? issue} on the server, so the claim was not created. Review the variation and try again.`
+    }
+  }
+  return null
+}
 
 // ── Guarded progress-claim writes (ADR-58, M2-B2) ────────────────────────────
 //
@@ -106,7 +134,10 @@ export function draftUpdate(live, { periodEnding, claimRef, notes, retention, cl
   const lineItems = live.lineItems.map((storedLine, idx) =>
     buildClaimLine(storedLine, { claimedToDate: claimedToDate[idx] })
   )
-  const draftError = validateClaimDraft({ lineItems, retention })
+  // Includes the source-line identity check (ADR-63): a stored line whose
+  // identity is malformed or duplicated — e.g. one rewritten by a pre-M3-B2
+  // client — is REFUSED here rather than re-attributed to PO line 0.
+  const draftError = validateClaimDraft({ lineItems, retention, poId: live?.poId })
   if (draftError) throw new ClaimWriteError(CLAIM_WRITE_ERROR.INVALID, draftError)
   const totals = claimTotals(lineItems.map(li => li.claimedThisPeriod), retention)
   return {
@@ -181,6 +212,11 @@ export function transitionUpdate(live, nextStatus, { approvedAmounts, assessment
     const amounts = normaliseApprovedAmounts(approvedAmounts)
     const validationError = validateApprovedAmounts(live?.lineItems, amounts)
     if (validationError) throw new ClaimWriteError(CLAIM_WRITE_ERROR.INVALID, validationError)
+    // ADR-63: certification freezes the lines forever, so a stored line set
+    // whose source identities are malformed or duplicated is refused BEFORE it
+    // can enter Actual — withdraw and re-raise the claim instead.
+    const identityError = sourceLineIdentityError(live?.lineItems, { poId: live?.poId })
+    if (identityError) throw new ClaimWriteError(CLAIM_WRITE_ERROR.INVALID, `${identityError}. Withdraw this claim and raise it again.`)
     const lineItems = live.lineItems.map((li, idx) => ({ ...li, approvedThisPeriod: amounts[idx] }))
     const totals = claimTotals(amounts, live.retention)
     return {

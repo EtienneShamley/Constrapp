@@ -176,7 +176,7 @@ const COLLECTIONS = {
     seed: {
       claimNumber: 'PC-0001', status: 'draft', poId: 'seeded' /* SEED_ID — the one seeded PO */, poNumber: 'PO-0001',
       supplierName: 'Acme Concrete', supplierId: 'contact1', claimRef: 'INV-77', periodEnding: '2026-02-28',
-      variationId: null,
+      variationId: null, variationLineCount: 0,
       lineItems: [{ poLineIndex: 0, costCodeId: 'cc1', costCodeName: '03-100 — Concrete Slab', description: 'Pour',
         poLineTotal: 800, previouslyApproved: 0, claimedToDate: 300, claimedThisPeriod: 300, approvedThisPeriod: null }],
       retention: 0, claimedSubtotal: 300, claimedGst: 30, claimedTotal: 330,
@@ -189,7 +189,7 @@ const COLLECTIONS = {
     },
     create: (user) => ({
       claimNumber: 'PC-0002', status: 'draft', poId: 'seeded' /* SEED_ID — the one seeded PO */, poNumber: 'PO-0001',
-      supplierName: 'Acme Concrete', supplierId: 'contact1', claimRef: '', periodEnding: '', variationId: null,
+      supplierName: 'Acme Concrete', supplierId: 'contact1', claimRef: '', periodEnding: '', variationId: null, variationLineCount: 0,
       lineItems: [{ poLineIndex: 0, costCodeId: 'cc1', costCodeName: '03-100 — Concrete Slab', description: 'Pour',
         poLineTotal: 800, previouslyApproved: 0, claimedToDate: 100, claimedThisPeriod: 100, approvedThisPeriod: null }],
       retention: 0, claimedSubtotal: 100, claimedGst: 10, claimedTotal: 110,

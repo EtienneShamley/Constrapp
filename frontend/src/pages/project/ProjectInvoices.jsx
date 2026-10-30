@@ -13,6 +13,7 @@ import { useContacts } from '../../hooks/useContacts'
 import { useRetentionReleases } from '../../hooks/useRetentionReleases'
 import { releasedByInvoiceId } from '../../lib/retention'
 import { CLAIM_STATUS } from '../../lib/progressClaims'
+import { isVariationOriginLine } from '../../lib/sourceLine'
 import { directInvoiceConflictError, mixedModePoLineConflicts, mixedModeOverlapTotal } from '../../lib/poLineRecognition'
 import {
   SI_STATUS, SI_STATUS_LABELS, SI_BADGE_VARIANTS, SI_SOURCE,
@@ -269,7 +270,12 @@ function SupplierInvoiceEditorModal({
     } else {
       poLines.forEach((li, idx) => {
         poToDate += forPo[idx] || 0
-        const amt = claim ? roundMoney(sourceLines[idx]?.approvedThisPeriod || 0) : (Number(amounts[idx]) || 0)
+        // A claim's PO-origin lines are matched by their OWN poLineIndex, never
+        // by position; its variation-origin lines (ADR-63) are not PO lines and
+        // take no part in this PO-line advisory.
+        const amt = claim
+          ? roundMoney(sourceLines.find(l => !isVariationOriginLine(l) && l.poLineIndex === idx)?.approvedThisPeriod || 0)
+          : (Number(amounts[idx]) || 0)
         if (roundMoney((forPo[idx] || 0) + amt) > roundMoney(li.lineTotal || 0)) overLineIdx.add(idx)
       })
     }
@@ -516,7 +522,14 @@ function SupplierInvoiceEditorModal({
                   const readOnlyAmount = claimSourced || (!isEdit && !!claim)
                   return (
                     <div key={idx} className="grid grid-cols-2 sm:grid-cols-[2fr_2fr_1fr_1.2fr] gap-2 items-center">
-                      <p className="m-0 text-[12px] text-brand-text truncate">{line.costCodeName || '—'}</p>
+                      <p className="m-0 text-[12px] text-brand-text truncate">
+                        {isVariationOriginLine(line) && (
+                          <span className="text-brand-accent font-semibold" title="New-scope work from a committed supplier variation line — recognised against that line, never a PO line (ADR-63)">
+                            {line.variationNumber || 'SV'} L{(line.variationLineIndex ?? 0) + 1} ·{' '}
+                          </span>
+                        )}
+                        {line.costCodeName || '—'}
+                      </p>
                       <p className="m-0 text-[12px] text-brand-muted truncate">{line.description || '—'}</p>
                       {readOnlyAmount ? (
                         <p className={`m-0 text-[12px] whitespace-nowrap ${over ? 'text-brand-amber' : 'text-brand-text'}`}>
@@ -680,7 +693,10 @@ function InvoiceDetailModal({ invoice, reconciliation, allocatedPayments, credit
               <tbody>
                 {(invoice.lineItems ?? []).map((li, i) => (
                   <tr key={i} className="border-b border-brand-border last:border-b-0">
-                    <td className="px-3.5 py-2.5 text-[12px] text-brand-text">{li.costCodeName || '—'}</td>
+                    <td className="px-3.5 py-2.5 text-[12px] text-brand-text">
+                      {isVariationOriginLine(li) && <span className="text-brand-accent font-semibold">{li.variationNumber || 'SV'} L{(li.variationLineIndex ?? 0) + 1} · </span>}
+                      {li.costCodeName || '—'}
+                    </td>
                     <td className="px-3.5 py-2.5 text-[12px] text-brand-muted">{li.description || '—'}</td>
                     <td className="px-3.5 py-2.5 text-[13px] text-brand-text whitespace-nowrap">{money(li.amount || 0)}</td>
                     <td className="px-3.5 py-2.5 text-[12px] text-brand-muted whitespace-nowrap">{TAX_CODE_LABELS[li.taxCode] ?? li.taxCode}</td>

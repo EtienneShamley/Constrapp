@@ -14,8 +14,9 @@ import {
   canTransition, invoiceTotals, formatSupplierInvoiceNumber, claimHasActiveInvoice,
   claimReconciliationError, retentionFloorError,
   isEditableInvoice, isClaimSourced, buildInvoiceLine, invoiceLineInputCountError,
-  validateInvoiceDraft, claimSourcedDriftError,
+  validateInvoiceDraft, claimSourcedDriftError, invoiceVariationLineCount,
 } from '../lib/supplierInvoices'
+import { sourceLineIdentityError } from '../lib/sourceLine'
 
 export function useSupplierInvoices(projectId) {
   const { user }    = useAuth()
@@ -108,6 +109,16 @@ export function useSupplierInvoices(projectId) {
     const retentionError = retentionFloorError(retention)
     if (retentionError) throw new Error(retentionError)
 
+    // ADR-63: every stored line carries exactly one well-formed source
+    // identity (a PO line, or a variation line copied from the claim) and no
+    // source line twice; a direct PO invoice carries no variation line at all.
+    const identityError = sourceLineIdentityError(lineItems, { poId })
+    if (identityError) throw new Error(identityError)
+    const variationLineCount = invoiceVariationLineCount(lineItems)
+    if (source !== SI_SOURCE.PROGRESS_CLAIM && variationLineCount > 0) {
+      throw new Error('A direct purchase-order invoice cannot carry variation lines — invoice new-scope work from the approved progress claim.')
+    }
+
     const totals = invoiceTotals(lineItems, retention)
     // A claim-sourced invoice must pay exactly the approved claim's certified
     // GST and total — block creation if it does not reconcile.
@@ -146,6 +157,12 @@ export function useSupplierInvoices(projectId) {
         poNumber:        poNumber ?? null,
         progressClaimId: progressClaimId ?? null,
         claimNumber:     claimNumber ?? null,
+        // ADR-63: how many stored lines are variation-origin (0 on a direct PO
+        // invoice). Rules require it to be declared whenever the source claim
+        // carries variation lines and bound it by the claim's count, so a
+        // client that does not know variation lines can never raise an
+        // invoice from such a claim; frozen for the invoice's life.
+        variationLineCount,
 
         // Dates and terms.
         invoiceDate:  invoiceDate  || '',

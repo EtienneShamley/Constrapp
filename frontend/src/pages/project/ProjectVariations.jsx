@@ -92,7 +92,8 @@ function SummaryCards({ variations, purchaseOrders, currencyCode }) {
       <p className="m-0 mt-3 text-[11px] text-brand-muted">
         All figures are ex-GST and derived at read time. Only approved variations count. An approved supplier
         variation APPLIED to its purchase order adjusts that PO's Committed figure and is matured by the same claims and
-        invoices; unapplied amounts (legacy approvals not yet applied, new-scope lines awaiting M3-B2) are exposure only.
+        invoices; positive new-scope lines whose scope is COMMITTED are committed, claimable lines in their own right.
+        Unapplied amounts (legacy approvals not yet applied, new scope not yet committed, negative new scope) are exposure only.
       </p>
     </Card>
   )
@@ -613,11 +614,16 @@ function OriginRfiSelect({ value, onChange, eligibleRfis, historical = null }) {
 function CommitmentEffectPanel({ preview, mode, currencyCode, acknowledged, onAcknowledge }) {
   const money = (n) => formatCurrency(n, currencyCode)
   if (!preview?.applicable) return null
-  const { po, poState, willApply, poLines, newScope, invalid, costCodes, ctcWarning, totals } = preview
+  const {
+    po, poState, willApply, willCommitScope, alreadyScopeCommitted, poLines, newScopePositive, newScopeNegative, invalid, costCodes,
+    ctcWarning, overRecognitionWarning, overRecognisedPoLines, totals,
+  } = preview
   const poLabel = po?.poNumber || 'the linked purchase order'
   const cellCls = 'px-2 py-1.5 text-[12px] text-brand-text whitespace-nowrap'
   const headCls = 'px-2 py-1.5 text-[10.5px] font-bold text-brand-muted uppercase tracking-[0.4px] text-left whitespace-nowrap'
   const verb = mode === 'apply' ? 'Applying' : 'Approving'
+  // One acknowledgement covers both warnings (CTC overlap, over-recognition).
+  const needsAck = ctcWarning || overRecognitionWarning
 
   return (
     <div className="border border-brand-border rounded-lg px-3 py-3 flex flex-col gap-2.5" data-testid="commitment-effect">
@@ -674,19 +680,65 @@ function CommitmentEffectPanel({ preview, mode, currencyCode, acknowledged, onAc
         </div>
       )}
 
-      {willApply && poLines.length === 0 && (
+      {willApply && poLines.length === 0 && newScopePositive.length === 0 && (
         <p className="m-0 text-[12px] text-brand-amber">
-          ⚠ No line of this variation extends an existing PO line, so nothing matures into {poLabel}'s commitment. It will be recorded as applied, but the
-          whole amount stays as unapplied exposure until M3-B2.
+          ⚠ No line of this variation extends an existing PO line and none is positive new scope, so nothing matures into {poLabel}'s commitment. It will be
+          recorded as applied, and its amount stays as signed exposure.
         </p>
       )}
 
-      {newScope.length > 0 && (
-        <p className="m-0 text-[12px] text-brand-amber">
-          ⚠ {newScope.length} new-scope {newScope.length === 1 ? 'line' : 'lines'} ({money(totals.newScope)}) {newScope.length === 1 ? 'is' : 'are'} not on an existing PO line.
-          {willApply ? ' This variation will be PARTIALLY incorporated: ' : ' '}New-scope amounts stay as unapplied exposure, are not claimable against this PO yet, and are
-          labelled "awaiting M3-B2". Nothing is dropped from the totals.
-        </p>
+      {newScopePositive.length > 0 && (
+        <div className="text-[12px]" data-testid="new-scope-effect">
+          <p className={`m-0 font-semibold ${willCommitScope ? 'text-brand-text' : 'text-brand-amber'}`}>
+            {willCommitScope ? '✓' : '⚠'} {newScopePositive.length} new-scope {newScopePositive.length === 1 ? 'line' : 'lines'} ({money(totals.newScopeCommittable)}) {newScopePositive.length === 1 ? 'is' : 'are'} not on an existing PO line.
+          </p>
+          <ul className="m-0 mt-1 pl-4 list-disc text-brand-text">
+            {newScopePositive.map(l => (
+              <li key={l.lineIndex}>Line {l.lineIndex + 1}{l.costCodeName ? ` (${l.costCodeName})` : ''}{l.description ? ` — ${l.description}` : ''}: {money(l.amount)}</li>
+            ))}
+          </ul>
+          <p className="m-0 mt-1 text-brand-muted">
+            {willCommitScope
+              ? `${verb} commits this new scope: each line becomes committed, claimable scope in its own right (ceiling = its approved amount, on its own cost code), enters Remaining Committed and Forecast Final Cost now, and is matured by the progress claims and invoices raised against it. It is never attributed to a PO line.`
+              : alreadyScopeCommitted
+                ? 'This new scope is already committed and claimable; nothing changes for it.'
+                : 'New-scope amounts stay as unapplied exposure and are not claimable until the scope commit is recorded.'}
+          </p>
+        </div>
+      )}
+
+      {newScopeNegative.length > 0 && (
+        <div className="text-[12px] text-brand-amber" data-testid="negative-new-scope">
+          <p className="m-0 font-semibold">⚠ {newScopeNegative.length} negative new-scope {newScopeNegative.length === 1 ? 'line' : 'lines'} ({money(totals.newScopeNegative)}) — accounting review required.</p>
+          <ul className="m-0 mt-1 pl-4 list-disc">
+            {newScopeNegative.map(l => (
+              <li key={l.lineIndex}>Line {l.lineIndex + 1}{l.costCodeName ? ` (${l.costCodeName})` : ''}: {money(l.amount)}</li>
+            ))}
+          </ul>
+          <p className="m-0 mt-1 text-brand-muted">
+            A negative amount on no PO line is never matured into commitment, never claimed and never turned into a credit note automatically. It stays
+            as signed exposure and is listed on SHIELD. To reduce a PO line, raise the reduction against that line; to recover money already invoiced,
+            raise a supplier credit note.
+          </p>
+        </div>
+      )}
+
+      {overRecognitionWarning && (
+        <div className="text-[12px] text-brand-red" data-testid="over-recognition-warning">
+          <p className="m-0 font-semibold">
+            ⚠ Potential overlap: {poLabel} already has recognition above its revised line value on {overRecognisedPoLines.length === 1 ? 'one line' : `${overRecognisedPoLines.length} lines`}.
+          </p>
+          <ul className="m-0 mt-1 pl-4 list-disc">
+            {overRecognisedPoLines.map(r => (
+              <li key={r.poLineIndex}>Line {r.poLineIndex + 1}{r.costCodeName ? ` (${r.costCodeName})` : ''}: recognised {money(r.recognised)} against a revised value of {money(r.revised)} (excess {money(r.excess)})</li>
+            ))}
+          </ul>
+          <p className="m-0 mt-1 text-brand-muted">
+            New-scope work may already have been claimed against a base PO line before it could be claimed in its own right. Committing this new scope
+            would then carry that work in Remaining Committed as well as in Actual. This is a possibility, not proof: nothing is reassigned or rewritten.
+            Review the claims on {poLabel} before confirming; the acknowledgement below is required.
+          </p>
+        </div>
       )}
 
       {invalid.length > 0 && (
@@ -720,10 +772,6 @@ function CommitmentEffectPanel({ preview, mode, currencyCode, acknowledged, onAc
                 which would double-count Forecast Final Cost. This warning does not prove an overlap exists. Nothing is subtracted automatically: review the Forecast tab
                 after confirming.
               </p>
-              <label className="flex items-start gap-2 mt-1.5 text-[12px] text-brand-text cursor-pointer min-h-[44px]">
-                <input type="checkbox" className="mt-1" checked={!!acknowledged} onChange={e => onAcknowledge?.(e.target.checked)} />
-                <span>I have noted the saved Uncommitted Cost to Complete on {costCodes.filter(c => c.ctcWarning).map(c => c.costCodeName || c.costCodeId).join(', ')} and will review it on the Forecast tab.</span>
-              </label>
             </>
           ) : (
             <p className="m-0 mt-1 text-[11px] text-brand-muted">No positive Uncommitted Cost to Complete is saved on these cost codes, so no overlap is possible there.</p>
@@ -731,10 +779,23 @@ function CommitmentEffectPanel({ preview, mode, currencyCode, acknowledged, onAc
         </div>
       )}
 
+      {needsAck && (
+        <label className="flex items-start gap-2 mt-1.5 text-[12px] text-brand-text cursor-pointer min-h-[44px]">
+          <input type="checkbox" className="mt-1" checked={!!acknowledged} onChange={e => onAcknowledge?.(e.target.checked)} />
+          <span>
+            I have reviewed the warnings above
+            {ctcWarning ? ` (saved Uncommitted Cost to Complete on ${costCodes.filter(c => c.ctcWarning).map(c => c.costCodeName || c.costCodeId).join(', ')})` : ''}
+            {overRecognitionWarning ? ` (recognition above the revised value on ${poLabel})` : ''}
+            {' '}and understand that nothing is adjusted automatically.
+          </span>
+        </label>
+      )}
+
       <p className="m-0 text-[11px] text-brand-muted">
         The purchase order document is never modified. {willApply
-          ? 'Applied amounts revise the PO line’s contractual value and are matured by the same claims and invoices as the original line; they are counted once, in Remaining Committed.'
+          ? 'Applied amounts revise the PO line’s contractual value and are matured by the same claims and invoices as the original line; committed new-scope lines are commitment lines in their own right. Every amount is counted once, in Remaining Committed.'
           : 'Nothing is applied to a commitment by this action.'}
+        {alreadyScopeCommitted && willApply ? ' New scope on this variation is already committed.' : ''}
       </p>
     </div>
   )
@@ -755,12 +816,21 @@ function ApplyCommitmentModal({ variation, purchaseOrders, progressClaims, suppl
 
   const eligibility = commitmentApplyEligibility(variation, purchaseOrders)
   const preview = commitmentEffectPreview({ variation, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines })
-  const needsAck = preview.ctcWarning && !acknowledged
+  const needsAck = (preview.ctcWarning || preview.overRecognitionWarning) && !acknowledged
   const valid = eligibility.eligible && !needsAck
+  // Legacy variations come in two shapes (ADR-62 / ADR-63): never applied (the
+  // action applies AND commits new scope), or applied under M3-B1 with the new
+  // scope not yet committed (the action commits the new scope only).
+  const scopeOnly = eligibility.eligible && !eligibility.missing.applied && eligibility.missing.scope
+  const actionLabel = scopeOnly ? 'Commit new scope' : 'Apply to commitment'
 
   async function handle() {
     if (!valid) return
-    if (!window.confirm(`Apply ${variation.variationNumber} to ${eligibility.po?.poNumber ?? variation.poNumber}'s commitment? ${money(preview.totals.matured)} will enter Remaining Committed. This is recorded once and cannot be undone.`)) return
+    const target = eligibility.po?.poNumber ?? variation.poNumber
+    const text = scopeOnly
+      ? `Commit ${variation.variationNumber}'s new scope on ${target}? ${money(preview.totals.newScopeCommittable)} of new-scope work becomes committed, claimable scope and enters Remaining Committed. This is recorded once and cannot be undone.`
+      : `Apply ${variation.variationNumber} to ${target}'s commitment? ${money(preview.totals.matured)} will enter Remaining Committed${preview.willCommitScope ? ` (including ${money(preview.totals.newScopeCommittable)} of committed new scope)` : ''}. This is recorded once and cannot be undone.`
+    if (!window.confirm(text)) return
     setSaving(true)
     setError(null)
     try {
@@ -778,15 +848,21 @@ function ApplyCommitmentModal({ variation, purchaseOrders, progressClaims, suppl
       <div className="relative z-10 w-full max-w-[820px] max-h-[90vh] overflow-y-auto bg-brand-surface border border-brand-border rounded-xl shadow-2xl">
         <div className="flex items-center justify-between px-5 py-4 border-b border-brand-border">
           <h2 className="text-[15px] font-bold text-brand-text m-0">
-            Apply {variation.variationNumber} to commitment — {variation.poNumber || '—'}
+            {scopeOnly ? `Commit ${variation.variationNumber}'s new scope` : `Apply ${variation.variationNumber} to commitment`} — {variation.poNumber || '—'}
           </h2>
           <button onClick={onClose} aria-label="Close" className="text-brand-muted hover:text-brand-text text-xl leading-none cursor-pointer min-w-[44px] min-h-[44px] flex items-center justify-center">×</button>
         </div>
         <div className="px-5 py-4 flex flex-col gap-3.5">
           <p className="m-0 text-[12px] text-brand-muted">
-            This variation was approved before applied commitments existed (or while its purchase order was not sent or closed), so its approved value
-            {' '}{money(variation.approvedSubtotal || 0)} has been shown as exposure only. Applying it moves the amounts on existing PO lines into
-            {' '}{variation.poNumber || 'the PO'}'s Remaining Committed. The approval itself — amounts, notes, dates, approver — is unchanged.
+            {scopeOnly
+              ? <>This variation is applied to {variation.poNumber || 'the PO'}'s commitment, but its new-scope lines were approved before new scope could be
+                  committed and claimed in its own right, so they have been shown as exposure only. Committing the new scope makes each positive new-scope
+                  line a committed, claimable line (ceiling = its approved amount) inside Remaining Committed. The approval and the existing-line
+                  application are unchanged.</>
+              : <>This variation was approved before applied commitments existed (or while its purchase order was not sent or closed), so its approved value
+                  {' '}{money(variation.approvedSubtotal || 0)} has been shown as exposure only. Applying it moves the amounts on existing PO lines into
+                  {' '}{variation.poNumber || 'the PO'}'s Remaining Committed and commits any positive new-scope lines as claimable scope. The approval
+                  itself — amounts, notes, dates, approver — is unchanged.</>}
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-[12px] text-brand-text">
             <div><span className="block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px]">Variation</span>{variation.variationNumber} · {variation.title}</div>
@@ -798,7 +874,7 @@ function ApplyCommitmentModal({ variation, purchaseOrders, progressClaims, suppl
           {error && <p className="m-0 text-[12px] text-brand-red">{error}</p>}
           <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
             <Btn variant="ghost" type="button" onClick={onClose} sm disabled={saving}>Cancel</Btn>
-            <Btn sm type="button" disabled={saving || !valid} onClick={handle}>{saving ? 'Applying…' : 'Apply to commitment'}</Btn>
+            <Btn sm type="button" disabled={saving || !valid} onClick={handle}>{saving ? 'Saving…' : actionLabel}</Btn>
           </div>
         </div>
       </div>
@@ -836,13 +912,14 @@ function AssessVariationModal({ variation, purchaseOrders = [], progressClaims =
   const preview = commitmentEffectPreview({
     variation: { ...variation, lineItems: previewLines }, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines,
   })
-  const needsAck = preview.ctcWarning && !ctcAcknowledged
+  const needsAck = (preview.ctcWarning || preview.overRecognitionWarning) && !ctcAcknowledged
   // Correction A (ADR-62): a PO-linked supplier variation is approved AND
   // applied in one write, so a missing / cancelled / draft PO blocks approval
   // here (UX mirror) and in the transaction and the rules (the controls).
+  // ADR-63: the same write commits any positive new scope.
   const poBlocksApproval = preview.applicable && !preview.willApply
   const confirmText = preview.willApply
-    ? `Approve ${variation.variationNumber}? Approved amounts freeze permanently, and ${money(preview.totals.matured)} is applied to ${preview.po?.poNumber ?? variation.poNumber}'s commitment.`
+    ? `Approve ${variation.variationNumber}? Approved amounts freeze permanently, and ${money(preview.totals.matured)} is applied to ${preview.po?.poNumber ?? variation.poNumber}'s commitment${preview.willCommitScope ? ` (including ${money(preview.totals.newScopeCommittable)} of new scope committed as claimable)` : ''}.`
     : `Approve ${variation.variationNumber}? Approved amounts freeze permanently.`
 
   async function handle(nextStatus) {
@@ -934,7 +1011,7 @@ function AssessVariationModal({ variation, purchaseOrders = [], progressClaims =
             <Btn variant="ghost" type="button" onClick={onClose} sm disabled={saving}>Cancel</Btn>
             <Btn variant="danger" sm type="button" disabled={saving} onClick={() => handle(VARIATION_STATUS.REJECTED)}>Reject</Btn>
             <Btn sm type="button" disabled={saving || !!validationError || needsAck || poBlocksApproval} onClick={() => handle(VARIATION_STATUS.APPROVED)}>
-              {saving ? 'Saving…' : preview.willApply ? 'Approve & apply to commitment' : 'Approve'}
+              {saving ? 'Saving…' : preview.willApply ? (preview.willCommitScope ? 'Approve, apply & commit new scope' : 'Approve & apply to commitment') : 'Approve'}
             </Btn>
           </div>
         </div>
@@ -947,14 +1024,15 @@ function RowActions({ variation, purchaseOrders, onTransition, onAssess, onEdit,
   const confirmThen = (label, nextStatus) => () => {
     if (window.confirm(`${label} ${variation.variationNumber}?`)) onTransition(variation, nextStatus).catch(() => {})
   }
-  // Legacy Apply (ADR-62): an approved, PO-linked supplier variation without
-  // commitment stamps, whose PO is sent/closed in the register.
+  // Legacy Apply (ADR-62) / Commit new scope (ADR-63): an approved, PO-linked
+  // supplier variation missing a stamp pair, whose PO is sent/closed.
   if (variation.status === VARIATION_STATUS.APPROVED) {
     const eligibility = commitmentApplyEligibility(variation, purchaseOrders)
     if (!eligibility.eligible) return null
+    const scopeOnly = !eligibility.missing.applied && eligibility.missing.scope
     return (
       <div className="flex gap-1.5 justify-end">
-        <Btn sm variant="success" onClick={() => onApply(variation)}>Apply to commitment</Btn>
+        <Btn sm variant="success" onClick={() => onApply(variation)}>{scopeOnly ? 'Commit new scope' : 'Apply to commitment'}</Btn>
       </div>
     )
   }
@@ -988,12 +1066,13 @@ function IncorporationTag({ variation, purchaseOrders, currencyCode }) {
   const cls = inc.state === INCORPORATION_STATE.INCORPORATED ? 'text-brand-accent'
     : inc.state === INCORPORATION_STATE.EXCEPTION ? 'text-brand-red'
     : 'text-brand-amber'
-  // The PROCESS stamp and the AMOUNTS are shown apart (Correction C): gross
-  // approved · incorporated into the PO commitment · still separate exposure.
+  // The PROCESS stamps and the AMOUNTS are shown apart (Correction C): gross
+  // approved · incorporated into commitment · still separate exposure.
   return (
     <span className="block text-[11px] text-brand-muted whitespace-nowrap" title={INCORPORATION_STATE_HELP[inc.state]}>
       <span className={`font-semibold ${cls}`}>{INCORPORATION_STATE_LABELS[inc.state]}</span>
       {inc.applied ? ' · applied' : ' · not applied'}
+      {inc.counts.newScopePositive > 0 ? (inc.scopeCommitted ? ' · new scope committed' : ' · new scope uncommitted') : ''}
       <span className="block">approved {money(inc.gross)} · in commitment {money(inc.matured)} · exposure {money(inc.outstanding)}</span>
     </span>
   )

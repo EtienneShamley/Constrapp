@@ -596,22 +596,25 @@ describe('buildInvoiceLine — identity from the source, money re-derived', () =
     expect(built.gstAmount).toBe(0)
   })
 
-  it('coerces a malformed amount, index and identity to safe values', () => {
+  it('coerces a malformed amount and identity strings to safe values — but a malformed index is NULL, never PO line 0 (ADR-63)', () => {
     const built = buildInvoiceLine({ poLineIndex: 'x', costCodeId: 7, costCodeName: null, description: undefined },
       { amount: 'abc', taxCode: null })
     expect(built).toEqual({
-      poLineIndex: 0, costCodeId: '', costCodeName: '', description: '',
+      poLineIndex: null, costCodeId: '', costCodeName: '', description: '',
       amount: 0, taxCode: '', gstAmount: 0,
     })
+    for (const idx of ['0', 1.5, -1, NaN, null, undefined]) {
+      expect(buildInvoiceLine({ poLineIndex: idx }, { amount: 1, taxCode: TAX_CODE.GST }).poLineIndex).toBeNull()
+    }
   })
 
   it('accepts a numeric-string amount from a form input', () => {
     expect(buildInvoiceLine(line(), { amount: '250.50', taxCode: TAX_CODE.GST })).toMatchObject({ amount: 250.5, gstAmount: 25.05 })
   })
 
-  it('survives a null/undefined source and missing options', () => {
+  it('survives a null/undefined source and missing options (index null — no source line is invented)', () => {
     expect(buildInvoiceLine(null)).toEqual({
-      poLineIndex: 0, costCodeId: '', costCodeName: '', description: '',
+      poLineIndex: null, costCodeId: '', costCodeName: '', description: '',
       amount: 0, taxCode: '', gstAmount: 0,
     })
     expect(buildInvoiceLine(undefined, undefined).amount).toBe(0)

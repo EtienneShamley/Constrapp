@@ -11,6 +11,7 @@ import {
   approvedSupplierVariationsTotal,
   pendingSupplierVariationExposureTotal,
   appliedSupplierVariationsTotal,
+  committedNewScopeTotal,
   unappliedSupplierVariationsTotal,
 } from './variations'
 
@@ -147,9 +148,11 @@ export function computeMargin({ baseline, variations = [], forecastFinalCost = 0
 
   const approvedClientVariations = approvedClientVariationsTotal(variations)
   const pendingClientVariationExposure = pendingClientVariationExposureTotal(variations)
-  // Gross approved (meaning unchanged) = applied (inside FFC) + unapplied (exposure).
+  // Gross approved (meaning unchanged) = applied existing-line + committed new
+  // scope (both inside FFC, ADR-62 / ADR-63) + unapplied (exposure).
   const approvedSupplierVariations = approvedSupplierVariationsTotal(variations)
   const appliedSupplierVariations = appliedSupplierVariationsTotal(variations, purchaseOrders)
+  const committedNewScopeVariations = committedNewScopeTotal(variations, purchaseOrders)
   const unappliedSupplierVariations = unappliedSupplierVariationsTotal(variations, purchaseOrders)
   const pendingSupplierVariationExposure = pendingSupplierVariationExposureTotal(variations)
 
@@ -166,6 +169,7 @@ export function computeMargin({ baseline, variations = [], forecastFinalCost = 0
     pendingClientVariationExposure,
     approvedSupplierVariations,
     appliedSupplierVariations,
+    committedNewScopeVariations,
     unappliedSupplierVariations,
     pendingSupplierVariationExposure,
     currentContractSum: ccs,
