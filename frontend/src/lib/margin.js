@@ -10,6 +10,8 @@ import {
   pendingClientVariationExposureTotal,
   approvedSupplierVariationsTotal,
   pendingSupplierVariationExposureTotal,
+  appliedSupplierVariationsTotal,
+  unappliedSupplierVariationsTotal,
 } from './variations'
 
 // ── Project Margin (read-time; strictly ex-GST) ──────────────────────────────
@@ -32,11 +34,13 @@ import {
 //   Original Planned Margin % = Original Planned Profit ÷ Original Contract Value × 100
 //   Margin Movement           = Forecast Gross Profit − Original Planned Profit
 //
-// Supplier Variation exposure (approved AND pending) is deliberately NEVER added
-// into Forecast Final Cost — it does not yet mature against claims/invoices, so
-// auto-adding it would double-count once the varied PO is invoiced (see ADR-19).
-// Pending Client Variations are separate revenue exposure, never in Forecast
-// Revenue. Both are surfaced as context only.
+// Supplier variations (M3-B1, ADR-62): an APPLIED approved PO-linked supplier
+// variation is inside Forecast Final Cost through Remaining Committed (the one
+// formula in lib/purchaseOrders.js); it is never added again here. UNAPPLIED
+// supplier exposure (legacy approved variations not yet applied, new-scope
+// lines awaiting M3-B2, invalid links) and PENDING exposure are NEVER added
+// into Forecast Final Cost — they are surfaced as context only. Pending Client
+// Variations are separate revenue exposure, never in Forecast Revenue.
 
 // Roles permitted to read commercial baseline & margin data. This is a UX-only
 // mirror of the Firestore rules, which are the ENFORCED boundary — never treat
@@ -131,7 +135,11 @@ export function isBaselineEstablished(baseline) {
 // margin cards, so margin business logic lives in exactly one place. `variations`
 // and `forecastFinalCost` are the already-derived read-time figures; `baseline`
 // is the stored commercial baseline document (or null when not yet set).
-export function computeMargin({ baseline, variations = [], forecastFinalCost = 0 }) {
+// `purchaseOrders` (ADR-62) resolves which approved supplier variations are
+// APPLIED to a live PO commitment; with no register every applied variation
+// reads as an exception and lands in `unappliedSupplierVariations` — the
+// conservative (exposure) reading, never a silent zero.
+export function computeMargin({ baseline, variations = [], forecastFinalCost = 0, purchaseOrders = [] }) {
   const originalContractValue = isBaselineEstablished(baseline)
     ? baseline.originalContractValue
     : null
@@ -139,7 +147,10 @@ export function computeMargin({ baseline, variations = [], forecastFinalCost = 0
 
   const approvedClientVariations = approvedClientVariationsTotal(variations)
   const pendingClientVariationExposure = pendingClientVariationExposureTotal(variations)
+  // Gross approved (meaning unchanged) = applied (inside FFC) + unapplied (exposure).
   const approvedSupplierVariations = approvedSupplierVariationsTotal(variations)
+  const appliedSupplierVariations = appliedSupplierVariationsTotal(variations, purchaseOrders)
+  const unappliedSupplierVariations = unappliedSupplierVariationsTotal(variations, purchaseOrders)
   const pendingSupplierVariationExposure = pendingSupplierVariationExposureTotal(variations)
 
   const ccs = currentContractSum(originalContractValue, approvedClientVariations)
@@ -154,6 +165,8 @@ export function computeMargin({ baseline, variations = [], forecastFinalCost = 0
     approvedClientVariations,
     pendingClientVariationExposure,
     approvedSupplierVariations,
+    appliedSupplierVariations,
+    unappliedSupplierVariations,
     pendingSupplierVariationExposure,
     currentContractSum: ccs,
     forecastRevenue: revenue,

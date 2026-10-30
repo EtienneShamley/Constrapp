@@ -2,7 +2,10 @@ import {
   VARIATION_TYPE, VARIATION_STATUS, VARIATION_STATUS_LABELS, VARIATION_TRANSITION_STAMPS,
   canTransition, variationTotals, validateApprovedAmounts, buildApprovedLineItems,
   validateVariationDraft, stripApprovedFromLines, normaliseOriginRfi, isEligibleOriginRfi,
+  isPoLinkedSupplierVariation, isCommitmentApplied, shouldApplyOnApproval,
+  commitmentApplyEligibility, COMMITMENT_APPLY_BLOCKER,
 } from './variations'
+import { PO_STATUS_LABELS } from './purchaseOrders'
 
 // ── Guarded variation writes (ADR-59, M2-B3) ─────────────────────────────────
 //
@@ -33,21 +36,25 @@ import {
 // real transactions against the real rules.
 
 export const VARIATION_WRITE_ERROR = {
-  STALE:      'stale',
-  MISSING:    'missing',
-  INVALID:    'invalid',
-  PERMISSION: 'permission',
-  OFFLINE:    'offline',
-  UNKNOWN:    'unknown',
+  STALE:           'stale',
+  MISSING:         'missing',
+  INVALID:         'invalid',
+  ALREADY_APPLIED: 'already_applied', // M3-B1 — the commitment stamps are already set
+  PO_INVALID:      'po_invalid',      // M3-B1 — the linked PO is missing or not sent/closed; approval refused
+  PERMISSION:      'permission',
+  OFFLINE:         'offline',
+  UNKNOWN:         'unknown',
 }
 
 export const VARIATION_WRITE_ERROR_MESSAGES = {
-  [VARIATION_WRITE_ERROR.STALE]:      'This variation changed since you loaded it. Review the latest version and retry — your entries are kept.',
-  [VARIATION_WRITE_ERROR.MISSING]:    'This variation no longer exists.',
-  [VARIATION_WRITE_ERROR.INVALID]:    'This change is not valid for the variation as it stands.',
-  [VARIATION_WRITE_ERROR.PERMISSION]: 'You do not have permission to change variations on this project.',
-  [VARIATION_WRITE_ERROR.OFFLINE]:    'Could not reach the server. Check your connection and try again — nothing was saved.',
-  [VARIATION_WRITE_ERROR.UNKNOWN]:    'The change did not complete. Nothing was saved — try again.',
+  [VARIATION_WRITE_ERROR.STALE]:           'This variation changed since you loaded it. Review the latest version and retry — your entries are kept.',
+  [VARIATION_WRITE_ERROR.MISSING]:         'This variation no longer exists.',
+  [VARIATION_WRITE_ERROR.INVALID]:         'This change is not valid for the variation as it stands.',
+  [VARIATION_WRITE_ERROR.ALREADY_APPLIED]: 'This variation has already been applied to its purchase order commitment. Nothing was changed.',
+  [VARIATION_WRITE_ERROR.PO_INVALID]:      'The linked purchase order is missing or is not sent or closed, so this variation cannot be approved. Withdraw or reject it, or raise it again against a current purchase order.',
+  [VARIATION_WRITE_ERROR.PERMISSION]:      'You do not have permission to change variations on this project.',
+  [VARIATION_WRITE_ERROR.OFFLINE]:         'Could not reach the server. Check your connection and try again — nothing was saved.',
+  [VARIATION_WRITE_ERROR.UNKNOWN]:         'The change did not complete. Nothing was saved — try again.',
 }
 
 export class VariationWriteError extends Error {
@@ -181,15 +188,23 @@ export async function runUpdateVariationDraft({ db, variationRef, seen, data, ui
 
 // ── Transitions ──────────────────────────────────────────────────────────────
 
+// The commitment-application stamp pair (M3-B1, ADR-62): rules require
+// `commitmentAppliedBy == request.auth.uid` and `commitmentAppliedAt ==
+// request.time`, and admit the pair only on the approve branch of a PO-linked
+// supplier variation and on the legacy Apply branch.
+export const commitmentStamps = (uid, now) => ({ commitmentAppliedAt: now, commitmentAppliedBy: uid })
+
 // The exact update a transition writes — status, the transition's (at, by)
 // pair, the two audit stamps and the revision; for SUBMIT also the submitted
 // date (kept when already set); for APPROVE the certified lines
 // (buildApprovedLineItems over the SERVER lines — identity and tax code carried,
 // signed amounts in cents, GST per line), the SIGNED approved header, the
-// assessment notes and the approved / effective dates; for REJECT the notes
-// only when given. Exported so the unit suite can pin the contract without
-// Firestore. `today` is injectable for tests.
-export function transitionUpdate(live, nextStatus, { approvedAmounts, assessmentNotes } = {}, uid, now, today = todayIso()) {
+// assessment notes, the approved / effective dates and — when `applyCommitment`
+// is true (the SERVER copy of the PO is sent/closed, decided inside the
+// transaction) — the commitment stamps; for REJECT the notes only when given.
+// Exported so the unit suite can pin the contract without Firestore. `today` is
+// injectable for tests.
+export function transitionUpdate(live, nextStatus, { approvedAmounts, assessmentNotes, applyCommitment = false } = {}, uid, now, today = todayIso()) {
   const stamps = VARIATION_TRANSITION_STAMPS[nextStatus]
   if (!stamps) {
     throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, `A move to ${label(nextStatus)} is reserved and has no application path yet.`)
@@ -202,6 +217,9 @@ export function transitionUpdate(live, nextStatus, { approvedAmounts, assessment
   if (nextStatus === VARIATION_STATUS.APPROVED) {
     const validationError = validateApprovedAmounts(live?.lineItems, approvedAmounts, assessmentNotes)
     if (validationError) throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, validationError)
+    if (applyCommitment && !isPoLinkedSupplierVariation(live)) {
+      throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, 'Only a supplier variation that names a purchase order can be applied to a commitment.')
+    }
     const lineItems = buildApprovedLineItems(live.lineItems, approvedAmounts)
     const approved  = variationTotals(lineItems, 'approved')
     return {
@@ -213,6 +231,7 @@ export function transitionUpdate(live, nextStatus, { approvedAmounts, assessment
       assessmentNotes:  assessmentNotes?.trim() || '',
       approvedDate:     live.approvedDate || today,
       effectiveDate:    live.effectiveDate || live.approvedDate || today,
+      ...(applyCommitment ? commitmentStamps(uid, now) : {}),
     }
   }
   if (nextStatus === VARIATION_STATUS.REJECTED && assessmentNotes?.trim()) {
@@ -221,7 +240,18 @@ export function transitionUpdate(live, nextStatus, { approvedAmounts, assessment
   return base
 }
 
-export async function runTransitionVariation({ db, variationRef, seen, nextStatus, extras = {}, uid, runTransaction, serverTimestamp, today }) {
+// `poRef` (M3-B1, ADR-62 Correction A) — the document reference of the
+// variation's PO, REQUIRED by the hook for an APPROVE of a PO-linked supplier
+// variation. It is read INSIDE the transaction, after the variation, so the
+// decision is made on the SERVER copy: the PO must exist in this project and be
+// sent/closed, and the approve write then carries the commitment stamps
+// (approve + apply in ONE write, `commitmentApplied: true`). A missing, draft,
+// pending or cancelled PO — or a PO-linked approve with no `poRef` — is REFUSED
+// (PO_INVALID) with nothing written; there is NO fallback to an unapplied
+// approval. The rules enforce the same: the pair and a sent/closed PO are
+// required on every PO-linked approve (FINAL ruleset), and the PO state is
+// required even by the Stage-1 transitional ruleset.
+export async function runTransitionVariation({ db, variationRef, poRef = null, seen, nextStatus, extras = {}, uid, runTransaction, serverTimestamp, today }) {
   if (!uid) throw new VariationWriteError(VARIATION_WRITE_ERROR.PERMISSION)
   if (!seen?.id) throw new VariationWriteError(VARIATION_WRITE_ERROR.MISSING)
   if (!canTransition(seen.status, nextStatus)) {
@@ -229,7 +259,10 @@ export async function runTransitionVariation({ db, variationRef, seen, nextStatu
   }
   // A reserved target, or invalid certified amounts, is refused BEFORE any
   // read; the amounts are validated again over the server copy below.
-  transitionUpdate(seen, nextStatus, extras, uid, null, today)
+  transitionUpdate(seen, nextStatus, { ...extras, applyCommitment: false }, uid, null, today)
+  if (nextStatus === VARIATION_STATUS.APPROVED && isPoLinkedSupplierVariation(seen) && !poRef) {
+    throw new VariationWriteError(VARIATION_WRITE_ERROR.PO_INVALID, 'The purchase order reference is required to approve a variation that names a purchase order.')
+  }
 
   let outcome
   try {
@@ -240,7 +273,85 @@ export async function runTransitionVariation({ db, variationRef, seen, nextStatu
       const stale = staleMessage(seen, live)
       if (stale) return { kind: VARIATION_WRITE_ERROR.STALE, message: stale }
       if (!canTransition(live.status, nextStatus)) return { kind: VARIATION_WRITE_ERROR.INVALID }
-      tx.update(variationRef, transitionUpdate(live, nextStatus, extras, uid, serverTimestamp(), today))
+
+      // All reads before the write. The PO is read for an approve of a
+      // PO-linked supplier variation; its SERVER state decides, and anything
+      // but a sent/closed PO refuses the approval outright (Correction A).
+      let applyCommitment = false
+      if (nextStatus === VARIATION_STATUS.APPROVED && isPoLinkedSupplierVariation(live)) {
+        if (!poRef) return { kind: VARIATION_WRITE_ERROR.PO_INVALID, message: 'The purchase order reference is required to approve a variation that names a purchase order.' }
+        const poSnap = await tx.get(poRef)
+        const po = poSnap.exists() ? { id: poSnap.id, ...poSnap.data() } : null
+        const name = live.variationNumber || 'This variation'
+        if (!po) {
+          return { kind: VARIATION_WRITE_ERROR.PO_INVALID, message: `${live.poNumber || 'The linked purchase order'} could not be found in this project, so ${name} cannot be approved. Withdraw or reject it, or raise it again against a current purchase order.` }
+        }
+        if (!shouldApplyOnApproval(live, po)) {
+          const status = PO_STATUS_LABELS[po.status] ?? String(po.status ?? 'unknown')
+          return { kind: VARIATION_WRITE_ERROR.PO_INVALID, message: `${po.poNumber || live.poNumber} is ${status}; a supplier variation can only be approved while its purchase order is sent or closed. Withdraw or reject ${name}, or raise it again against a current purchase order.` }
+        }
+        applyCommitment = true
+      }
+
+      tx.update(variationRef, transitionUpdate(live, nextStatus, { ...extras, applyCommitment }, uid, serverTimestamp(), today))
+      return { kind: null, commitmentApplied: applyCommitment }
+    })
+  } catch (err) {
+    if (err instanceof VariationWriteError) throw err
+    throw new VariationWriteError(variationWriteErrorKind(err?.code), undefined, err)
+  }
+  if (outcome.kind) throw new VariationWriteError(outcome.kind, outcome.message)
+  return outcome
+}
+
+// ── Legacy Apply to commitment (M3-B1, ADR-62) ───────────────────────────────
+//
+// The ONE-TIME application of an already-APPROVED, PO-linked supplier variation
+// that carries no commitment stamps (approved before M3-B1, or approved while
+// its PO was not sent/closed). The write is the stamp pair + revision + audit
+// stamps, nothing else — approved money, lines, PO link and every lifecycle
+// stamp stay frozen. Rules admit exactly this write (branch (f)): approved →
+// approved, stored stamps null, actor == caller, time == server, revision + 1,
+// and the PO sent/closed through get(). The "stored stamps must be null"
+// precondition makes a second apply RULES-REFUSED, not merely client-refused,
+// so two users or two tabs cannot both apply; the revision guard is, as on
+// every other variation write, rules-ASSISTED (DC37).
+
+// The exact update the legacy Apply writes. Exported for the unit suite.
+export function applyCommitmentUpdate(live, uid, now) {
+  return { ...commitmentStamps(uid, now), revision: nextRevision(live), updatedAt: now, updatedBy: uid }
+}
+
+function applyBlockerKind(blocker) {
+  return blocker === COMMITMENT_APPLY_BLOCKER.ALREADY_APPLIED ? VARIATION_WRITE_ERROR.ALREADY_APPLIED : VARIATION_WRITE_ERROR.INVALID
+}
+
+// `poRef` is REQUIRED: the PO is re-read inside the transaction and must be
+// sent/closed on the server. `seen` is the copy the user reviewed.
+export async function runApplyVariationCommitment({ db, variationRef, poRef, seen, uid, runTransaction, serverTimestamp }) {
+  if (!uid) throw new VariationWriteError(VARIATION_WRITE_ERROR.PERMISSION)
+  if (!seen?.id) throw new VariationWriteError(VARIATION_WRITE_ERROR.MISSING)
+  if (!poRef) throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, 'The purchase order reference is required to apply a variation to its commitment.')
+  // Decide on the reviewed copy first (status, type, link, stamps) so a plainly
+  // ineligible variation never opens a transaction. The PO is unknown here, so
+  // a PO-related refusal can only come from the server read below.
+  const pre = commitmentApplyEligibility(seen, [{ id: seen.poId, status: 'sent' }])
+  if (!pre.eligible) throw new VariationWriteError(applyBlockerKind(pre.blocker), pre.message)
+
+  let outcome
+  try {
+    outcome = await runTransaction(db, async (tx) => {
+      const snap = await tx.get(variationRef)
+      if (!snap.exists()) return { kind: VARIATION_WRITE_ERROR.MISSING }
+      const live = { id: snap.id, ...snap.data() }
+      if (isCommitmentApplied(live)) return { kind: VARIATION_WRITE_ERROR.ALREADY_APPLIED }
+      const stale = staleMessage(seen, live)
+      if (stale) return { kind: VARIATION_WRITE_ERROR.STALE, message: stale }
+      const poSnap = await tx.get(poRef)
+      const po = poSnap.exists() ? { id: poSnap.id, ...poSnap.data() } : null
+      const eligibility = commitmentApplyEligibility(live, po ? [po] : [])
+      if (!eligibility.eligible) return { kind: applyBlockerKind(eligibility.blocker), message: eligibility.message }
+      tx.update(variationRef, applyCommitmentUpdate(live, uid, serverTimestamp()))
       return { kind: null }
     })
   } catch (err) {

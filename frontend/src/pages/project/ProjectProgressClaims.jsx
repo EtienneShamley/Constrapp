@@ -7,9 +7,11 @@ import { formatCurrency } from '../../lib/formatters'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
+import { useVariations } from '../../hooks/useVariations'
+import { appliedSupplierVariationAdjustments } from '../../lib/variations'
 import { claimLineConflictError } from '../../lib/poLineRecognition'
 import { ClaimWriteError } from '../../lib/progressClaimActions'
-import { PO_STATUS, PO_STATUS_LABELS } from '../../lib/purchaseOrders'
+import { PO_STATUS, PO_STATUS_LABELS, roundMoney } from '../../lib/purchaseOrders'
 import {
   CLAIM_STATUS, CLAIM_STATUS_LABELS, CLAIM_BADGE_VARIANTS,
   CLAIMABLE_PO_STATUSES, CLAIM_PENDING_STATUSES,
@@ -49,7 +51,7 @@ function TotalsFooter({ totals, heading, currencyCode }) {
 // from the claim's OWN stored line, so the editor cannot repoint a line at a
 // different PO line or cost code. Line building and validation are the shared
 // pure helpers in lib/progressClaims.js so the two modes cannot drift.
-function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, progressClaims, supplierInvoices = [], currencyCode, onClose, onSave }) {
+function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, progressClaims, supplierInvoices = [], adjustmentsByPoLine = {}, currencyCode, onClose, onSave }) {
   const money  = (n) => formatCurrency(n, currencyCode)
   const isEdit = !!claim
 
@@ -106,6 +108,11 @@ function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, p
   // (Deferred Control 34); mirrored on the invoice editor. The claim's OWN
   // stored lines are the subject of an edit and are not another record.
   const conflictPo = isEdit ? livePo : po
+  // The over-claim WARNING threshold is the line's REVISED contractual value
+  // (PO line + applied approved supplier variations, M3-B1 / ADR-62) — the
+  // same ceiling Remaining Committed nets. Still warn-only, never a block.
+  const ceilingPoId = isEdit ? claim?.poId : po?.id
+  const adjustmentFor = (idx) => roundMoney(Number(adjustmentsByPoLine?.[ceilingPoId]?.[idx]) || 0)
   const conflictError = conflictPo
     ? claimLineConflictError({ po: conflictPo, lineItems: builtLines, supplierInvoices })
     : null
@@ -228,13 +235,17 @@ function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, p
               </label>
               <div className="flex flex-col gap-2">
                 {builtLines.map((line, idx) => {
-                  const overclaimed = line.claimedToDate > line.poLineTotal
+                  const adjustment = adjustmentFor(line.poLineIndex)
+                  const ceiling = roundMoney((Number(line.poLineTotal) || 0) + adjustment)
+                  const overclaimed = line.claimedToDate > ceiling
                   return (
                     <div key={idx} className="grid grid-cols-2 sm:grid-cols-[2fr_2fr_1fr_1fr_1fr] gap-2 items-center">
                       <p className="m-0 text-[12px] text-brand-text truncate">{line.costCodeName || '—'}</p>
                       <p className="m-0 text-[12px] text-brand-muted truncate">{line.description || '—'}</p>
                       <div>
-                        <p className="m-0 text-[12px] text-brand-muted whitespace-nowrap">of {money(line.poLineTotal)}</p>
+                        <p className="m-0 text-[12px] text-brand-muted whitespace-nowrap" title={adjustment ? `PO line ${money(line.poLineTotal)} + applied supplier variations ${money(adjustment)}` : undefined}>
+                          of {money(ceiling)}{adjustment ? ' (incl. SV)' : ''}
+                        </p>
                         {isEdit && line.previouslyApproved > 0 && (
                           <p className="m-0 text-[11px] text-brand-muted whitespace-nowrap">approved {money(line.previouslyApproved)}</p>
                         )}
@@ -255,7 +266,7 @@ function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, p
                 })}
               </div>
               <p className="m-0 mt-1.5 text-[11px] text-brand-muted">
-                Amounts are cumulative — enter total claimed to date per line. Previously approved amounts are pre-filled and cannot be reduced. ⚠ marks a claim above the PO line value.
+                Amounts are cumulative — enter total claimed to date per line. Previously approved amounts are pre-filled and cannot be reduced. ⚠ marks a claim above the PO line value including any applied supplier variations.
                 A line already invoiced directly must stay at zero — a PO line is recognised through claims or direct invoices, never both.
               </p>
               {conflictError && (
@@ -450,6 +461,11 @@ export default function ProjectProgressClaims() {
   // invoiced directly cannot be claimed. A failed read leaves the list empty
   // and the guard silent — the guard is client-only either way.
   const { supplierInvoices } = useSupplierInvoices(projectId)
+  // Read for the over-claim WARNING threshold only (ADR-62): applied approved
+  // supplier variations revise a PO line's contractual value. A failed read
+  // leaves the map empty and the threshold at the PO line — warn-only either way.
+  const { variations } = useVariations(projectId)
+  const adjustmentsByPoLine = appliedSupplierVariationAdjustments(variations, purchaseOrders).byPoLine
   const [editing, setEditing]           = useState(null)   // 'new' | draft claim | null
   const [assessing, setAssessing]       = useState(null)
   const [actionError, setActionError]   = useState(null)
@@ -583,6 +599,7 @@ export default function ProjectProgressClaims() {
           claimablePOs={claimablePOs}
           progressClaims={progressClaims}
           supplierInvoices={supplierInvoices}
+          adjustmentsByPoLine={adjustmentsByPoLine}
           onClose={() => setEditing(null)}
           onSave={editing === 'new' ? createProgressClaim : (data) => handleUpdate(editing.id, data)}
         />

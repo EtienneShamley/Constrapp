@@ -1,8 +1,8 @@
-import { roundMoney, PO_STATUS, PO_STATUS_LABELS, PO_COMMITTED_STATUSES } from './purchaseOrders'
-import { CLAIM_STATUS_LABELS, CLAIM_OPEN_STATUSES, CLAIM_APPROVED_STATUSES } from './progressClaims'
+import { roundMoney, PO_STATUS, PO_STATUS_LABELS, PO_COMMITTED_STATUSES, revisedCommitmentByPoLine } from './purchaseOrders'
+import { CLAIM_STATUS_LABELS, CLAIM_OPEN_STATUSES, CLAIM_APPROVED_STATUSES, recognisedClaimsByPoLine } from './progressClaims'
 import {
   SI_STATUS, SI_STATUS_LABELS, SI_COUNTING_STATUSES,
-  invoiceTotals, normaliseInvoiceRef, postedInvoicedByPoLine, postedInvoicedByPo,
+  invoiceTotals, normaliseInvoiceRef, postedInvoicedByPoLine, postedInvoicedByPo, invoicedClaimIds,
 } from './supplierInvoices'
 import { toCents, safeAmount } from './payments'
 import {
@@ -13,7 +13,10 @@ import { creditNoteExceptions, postedSupplierCreditNotes } from './supplierCredi
 import {
   releaseExceptions, overReleasedRows, retentionInvoiceRows, releasedByInvoiceId, postedRetentionReleases,
 } from './retention'
-import { VARIATION_TYPE, VARIATION_APPROVED_STATUSES, approvedSupplierVariationsTotal } from './variations'
+import {
+  VARIATION_TYPE, VARIATION_APPROVED_STATUSES, approvedSupplierVariationsTotal,
+  appliedSupplierVariationAdjustments, isCommitmentApplied,
+} from './variations'
 import { mixedModePoLineConflicts } from './poLineRecognition'
 import { figureState, FIGURE_STATE, SNAPSHOT_SOURCE_LABELS } from './projectSnapshot'
 
@@ -38,6 +41,12 @@ import { figureState, FIGURE_STATE, SNAPSHOT_SOURCE_LABELS } from './projectSnap
 //                            status constants
 //   Approved supplier variations on a PO
 //                          → lib/variations.js  approvedSupplierVariationsTotal
+//   Applied variation adjustments (M3-B1, ADR-62)
+//                          → lib/variations.js  appliedSupplierVariationAdjustments
+//                            and lib/purchaseOrders.js  revisedCommitmentByPoLine
+//                            (the same revised PO-line value Remaining Committed
+//                            nets — check 3 compares against it; check 4 lists
+//                            the applied lines that could not be incorporated)
 //   Mixed-mode PO lines     → lib/poLineRecognition.js  mixedModePoLineConflicts
 //                            (ADR-55 — the same posted-direct and recognised-
 //                            claim maps Remaining Committed nets)
@@ -127,15 +136,16 @@ export const SHIELD_SOURCE_LABELS = Object.fromEntries(
 //   · duplicates     — supplier invoices only
 //   · integrity      — supplier invoices only
 //   · over-invoicing — POs and posted invoices, plus variations for the
-//                      approved-supplier-variation context column
-//   · state conflict — POs, claims and invoices
+//                      revised (applied-variation) PO value and the context columns
+//   · state conflict — POs, claims and invoices, plus variations for the
+//                      applied-but-not-incorporated condition (F, ADR-62)
 //   · exceptions     — the Remaining Payable composition (ADR-42): invoices,
 //                      payments, credit notes and retention releases
 export const CHECK_DEPENDENCIES = {
   [CHECK.DUPLICATE_INVOICE_REFERENCES]: ['supplierInvoices'],
   [CHECK.INVOICE_INTEGRITY]:            ['supplierInvoices'],
   [CHECK.PO_OVER_INVOICING]:            ['purchaseOrders', 'supplierInvoices', 'variations'],
-  [CHECK.COMMITMENT_STATE_CONFLICTS]:   ['purchaseOrders', 'progressClaims', 'supplierInvoices'],
+  [CHECK.COMMITMENT_STATE_CONFLICTS]:   ['purchaseOrders', 'progressClaims', 'supplierInvoices', 'variations'],
   [CHECK.FINANCIAL_EXCEPTIONS]:         ['supplierInvoices', 'supplierPayments', 'supplierCreditNotes', 'retentionReleases'],
 }
 
@@ -537,11 +547,14 @@ const OVER_INVOICING_COLUMNS = [
   { key: 'poStatusLabel',           label: 'PO status',                kind: COLUMN.TEXT },
   { key: 'levelLabel',              label: 'Level',                    kind: COLUMN.TEXT },
   { key: 'description',             label: 'Line',                     kind: COLUMN.TEXT },
-  { key: 'poAmount',                label: 'PO value (ex-GST)',        kind: COLUMN.MONEY },
+  { key: 'originalAmount',          label: 'Original PO value (ex-GST)', kind: COLUMN.MONEY },
+  { key: 'appliedAdjustment',       label: 'Applied SVs (ex-GST)',     kind: COLUMN.MONEY },
+  { key: 'poAmount',                label: 'Revised PO value (ex-GST)', kind: COLUMN.MONEY },
   { key: 'invoiced',                label: 'Posted invoiced (ex-GST)', kind: COLUMN.MONEY },
   { key: 'excess',                  label: 'Excess',                   kind: COLUMN.MONEY },
   { key: 'approvedVariationsTotal', label: 'Approved SVs on PO',       kind: COLUMN.MONEY },
   { key: 'approvedVariationCount',  label: 'SVs',                      kind: COLUMN.INT },
+  { key: 'appliedVariationCount',   label: 'Applied SVs',              kind: COLUMN.INT },
 ]
 
 function evaluatePoOverInvoicing(purchaseOrders, supplierInvoices, variations, sourceStates) {
@@ -554,12 +567,17 @@ function evaluatePoOverInvoicing(purchaseOrders, supplierInvoices, variations, s
   const byPo = postedInvoicedByPo(supplierInvoices ?? [])
   const invoicedPoIds = Object.keys(byPo)
 
-  // Approved SUPPLIER variations that reference the PO — context only. The
+  // Approved SUPPLIER variations that reference the PO — context columns. The
   // total is the existing signed selector applied to the PO's own variations;
-  // it is never deducted from anything.
+  // it is never deducted from anything. The APPLIED ones (ADR-62) are a
+  // different matter: their existing-line amounts are inside the REVISED PO
+  // line value through the one shared adjustment map, so the comparison below
+  // is against the revised ceiling, exactly as Remaining Committed nets it.
   const variationsForPo = (poId) =>
     (variations ?? []).filter(v => v && v.variationType === VARIATION_TYPE.SUPPLIER
       && VARIATION_APPROVED_STATUSES.includes(v.status) && v.poId === poId)
+  const adjustments = appliedSupplierVariationAdjustments(variations ?? [], pos)
+  const revisedByPo = revisedCommitmentByPoLine(pos, adjustments.byPoLine)
 
   const evidence = []
   let lineExcessTotal = 0
@@ -573,14 +591,20 @@ function evaluatePoOverInvoicing(purchaseOrders, supplierInvoices, variations, s
     const context = {
       approvedVariationCount: svs.length,
       approvedVariationsTotal: svs.length > 0 ? approvedSupplierVariationsTotal(svs) : null,
+      appliedVariationCount: svs.filter(isCommitmentApplied).length,
     }
+    const revisedLines = revisedByPo[po.id] ?? {}
+    const appliedOnPo = roundMoney(Object.values(revisedLines).reduce((s, r) => s + safeAmount(r.adjustment), 0))
     const base = { poId: po.id, poNumber: po.poNumber || '', poStatus: po.status, poStatusLabel: poStatusLabel(po.status), ...context }
     const poLines = Array.isArray(po.lineItems) ? po.lineItems : []
 
     for (const idx of Object.keys(forPo).map(Number).sort((a, b) => a - b)) {
       const invoiced = roundMoney(safeAmount(forPo[idx]))
       const poLine = poLines[idx]
-      const lineValue = poLine ? roundMoney(safeAmount(poLine.lineTotal)) : 0
+      const originalValue = poLine ? roundMoney(safeAmount(poLine.lineTotal)) : 0
+      const appliedAdjustment = poLine ? roundMoney(safeAmount(revisedLines[idx]?.adjustment)) : 0
+      // The REVISED contractual ceiling (ADR-62) — original + applied variations.
+      const lineValue = poLine ? roundMoney(originalValue + appliedAdjustment) : 0
       const excess = roundMoney(invoiced - lineValue)
       if (!isPositiveCents(excess)) continue
       lineExcessTotal = roundMoney(lineExcessTotal + excess)
@@ -594,6 +618,8 @@ function evaluatePoOverInvoicing(purchaseOrders, supplierInvoices, variations, s
         description: poLine
           ? [poLine.costCodeName, poLine.description].filter(Boolean).join(' · ')
           : 'Invoice lines reference a PO line index that does not exist on this PO',
+        originalAmount: originalValue,
+        appliedAdjustment,
         poAmount: lineValue,
         invoiced,
         excess,
@@ -601,7 +627,8 @@ function evaluatePoOverInvoicing(purchaseOrders, supplierInvoices, variations, s
     }
 
     const invoicedTotal = roundMoney(safeAmount(byPo[po.id]))
-    const poSubtotal = roundMoney(safeAmount(po.subtotal))
+    const poOriginal = roundMoney(safeAmount(po.subtotal))
+    const poSubtotal = roundMoney(poOriginal + appliedOnPo)
     const poExcess = roundMoney(invoicedTotal - poSubtotal)
     if (isPositiveCents(poExcess)) {
       poExcessTotal = roundMoney(poExcessTotal + poExcess)
@@ -612,7 +639,9 @@ function evaluatePoOverInvoicing(purchaseOrders, supplierInvoices, variations, s
         level: 'po',
         levelLabel: 'PO total',
         poLineIndex: null,
-        description: 'Posted invoiced total against the PO subtotal',
+        description: 'Posted invoiced total against the PO subtotal (revised by applied variations)',
+        originalAmount: poOriginal,
+        appliedAdjustment: appliedOnPo,
         poAmount: poSubtotal,
         invoiced: invoicedTotal,
         excess: poExcess,
@@ -635,9 +664,10 @@ function evaluatePoOverInvoicing(purchaseOrders, supplierInvoices, variations, s
   }
 
   const caveats = [
-    'This is commercial exposure, not necessarily an error: an approved supplier variation, a credit note still to ' +
-    'be raised, or an agreed contractual change may explain it. Approved supplier variations linked to the PO are ' +
-    'shown for context and are never deducted. A human review decides.',
+    'This is commercial exposure, not necessarily an error: an approved supplier variation not yet applied, a credit ' +
+    'note still to be raised, or an agreed contractual change may explain it. Supplier variations APPLIED to the PO ' +
+    'commitment are already inside the revised PO value compared here; approved variations not applied are shown ' +
+    'for context and are never deducted. A human review decides.',
     'Line excess and PO-level excess are reported separately and must not be added together: the PO-level figure ' +
     'is net of lines invoiced below their value, so the same excess can appear in both.',
     'Remaining Committed floors each PO line at zero, so an over-invoiced line shows no negative commitment on the ' +
@@ -695,6 +725,22 @@ export const STATE_CONFLICT = {
   //     has superseded. Actual counts both; nothing in the records can say
   //     which is the duplicate, so the line is listed for reconciliation.
   MIXED_MODE_PO_LINE:        'mixed_mode_po_line',
+  // F · ADR-62 — an approved supplier variation APPLIED to its PO commitment
+  //     whose line could not be incorporated: the PO is missing or no longer
+  //     sent/closed, the PO line index does not exist, the line's cost code
+  //     disagrees with the PO line, the amount is not a number, or the applied
+  //     adjustments drive a PO line's revised value negative. The amount stays
+  //     in unapplied exposure; nothing is counted against another line.
+  VARIATION_NOT_INCORPORATED: 'variation_not_incorporated',
+  // G · ADR-62 — recognition on a PO line (approved claims not yet superseded
+  //     + posted invoices, the exact ADR-55 nets) exceeds the line's REVISED
+  //     contractual value (original + applied variations). Arises when a
+  //     negative variation lowers the ceiling below what was already
+  //     recognised, or when a claim was approved above the line before the
+  //     variation that covers it was applied. Listed only when approved CLAIM
+  //     recognition takes part (an invoice-only overrun is check 3's);
+  //     Remaining Committed floors the line at 0, so this is the only list.
+  CLAIM_ABOVE_REVISED_LINE:   'claim_above_revised_line',
 }
 
 const STATE_CONFLICT_LABELS = {
@@ -703,6 +749,8 @@ const STATE_CONFLICT_LABELS = {
   [STATE_CONFLICT.MULTIPLE_OPEN_CLAIMS]:       'More than one open claim on the PO',
   [STATE_CONFLICT.MULTIPLE_INVOICES_PER_CLAIM]: 'More than one active invoice for the claim',
   [STATE_CONFLICT.MIXED_MODE_PO_LINE]:         'PO line counted through both a direct invoice and an approved claim',
+  [STATE_CONFLICT.VARIATION_NOT_INCORPORATED]: 'Applied supplier variation not incorporated in the PO commitment',
+  [STATE_CONFLICT.CLAIM_ABOVE_REVISED_LINE]:   'Recognised claims exceed the revised PO line value',
 }
 
 const STATE_CONFLICT_COLUMNS = [
@@ -716,7 +764,7 @@ const STATE_CONFLICT_COLUMNS = [
 
 const money = (v) => (finite(v) ? roundMoney(Number(v)) : null)
 
-function evaluateCommitmentStateConflicts(purchaseOrders, progressClaims, supplierInvoices, sourceStates) {
+function evaluateCommitmentStateConflicts(purchaseOrders, progressClaims, supplierInvoices, variations, sourceStates) {
   const id = CHECK.COMMITMENT_STATE_CONFLICTS
   const gated = gate(id, sourceStates)
   if (gated) return gated
@@ -834,6 +882,72 @@ function evaluateCommitmentStateConflicts(purchaseOrders, progressClaims, suppli
     })
   }
 
+  // F · applied supplier-variation lines that could not be incorporated
+  //     (ADR-62) — the same exception rows the Budget / Forecast exposure
+  //     figures keep OUT of Remaining Committed. Listed, never offset.
+  const adjustments = appliedSupplierVariationAdjustments((variations ?? []).filter(Boolean), pos)
+  for (const ex of adjustments.exceptions) {
+    const lineLabel = ex.poLineIndex == null ? `line ${ex.lineIndex + 1}` : `PO line ${ex.poLineIndex + 1}`
+    push(STATE_CONFLICT.VARIATION_NOT_INCORPORATED, {
+      id: `${STATE_CONFLICT.VARIATION_NOT_INCORPORATED}:${ex.variationId ?? ex.poId}:${ex.lineIndex ?? 'po'}:${ex.poLineIndex ?? 'na'}`,
+      ...poRef(ex.poId, ex.poNumber),
+      recordId: ex.variationId, recordKind: ex.kind === 'negative_revised_line' ? 'poLine' : 'variation',
+      recordNumber: ex.kind === 'negative_revised_line'
+        ? `${ex.poNumber || ex.poId} ${lineLabel} — revised value below zero`
+        : `${ex.variationNumber || ex.variationId} ${lineLabel} — ${ex.issueLabel}`,
+      recordStatus: ex.issue, recordStatusLabel: ex.issueLabel,
+      amount: money(ex.amount),
+      issue: ex.issue, variationNumber: ex.variationNumber, poLineIndex: ex.poLineIndex, lineIndex: ex.lineIndex,
+      costCodeId: ex.costCodeId, costCodeName: ex.costCodeName,
+    })
+  }
+
+  // G · recognition above the REVISED line value where approved claims take
+  //     part (ADR-62 Correction D). recognised = approved claim value not yet
+  //     superseded by a posted claim-sourced invoice + posted invoices on the
+  //     line — the ADR-55 hand-over, so a claim and its replacement invoice are
+  //     never both counted. Credit notes carry no PO line index (ADR-31) and
+  //     do not reduce this figure. Claim recognition and posted invoicing are
+  //     carried as separate columns beside the revised value.
+  const revisedByPo = revisedCommitmentByPoLine(pos, adjustments.byPoLine)
+  const supersededClaims = invoicedClaimIds(invoices)
+  const recognisedClaims = recognisedClaimsByPoLine(claims, supersededClaims)
+  const postedByLine = postedInvoicedByPoLine(invoices)
+  for (const po of pos) {
+    const lines = revisedByPo[po.id]
+    if (!lines) continue
+    for (const idxKey of Object.keys(lines)) {
+      const idx = Number(idxKey)
+      const claimsOnLine = roundMoney(safeAmount(recognisedClaims[po.id]?.[idx]))
+      if (!isPositiveCents(claimsOnLine)) continue
+      const invoicedOnLine = roundMoney(safeAmount(postedByLine[po.id]?.[idx]))
+      const recognised = roundMoney(claimsOnLine + invoicedOnLine)
+      const { original, adjustment, revised } = lines[idx]
+      const excess = roundMoney(recognised - revised)
+      if (!isPositiveCents(excess)) continue
+      const li = (po.lineItems ?? [])[idx] ?? {}
+      const claimNumbers = [...new Set(claims
+        .filter(cl => cl.poId === po.id && CLAIM_APPROVED_STATUSES.includes(cl.status) && !supersededClaims.has(cl.id)
+          && (cl.lineItems ?? []).some(l => l.poLineIndex === idx && isPositiveCents(safeAmount(l.approvedThisPeriod))))
+        .map(cl => cl.claimNumber || cl.id))]
+      const invoiceNumbers = [...new Set(invoices
+        .filter(inv => inv.poId === po.id && SI_COUNTING_STATUSES.includes(inv.status)
+          && (inv.lineItems ?? []).some(l => l.poLineIndex === idx && isPositiveCents(safeAmount(l.amount))))
+        .map(inv => inv.invoiceNumber || inv.id))]
+      push(STATE_CONFLICT.CLAIM_ABOVE_REVISED_LINE, {
+        id: `${STATE_CONFLICT.CLAIM_ABOVE_REVISED_LINE}:${po.id}:${idx}`, ...poRef(po.id, po.poNumber),
+        recordId: `${po.id}:${idx}`, recordKind: 'poLine',
+        recordNumber: `Line ${idx + 1} — claims ${claimNumbers.join(', ') || '—'} · posted ${invoiceNumbers.join(', ') || '—'}`,
+        recordStatus: null, recordStatusLabel: adjustment < 0 ? 'Recognised above the line as reduced by a negative variation' : 'Recognised above the revised line value',
+        amount: excess,
+        poLineIndex: idx, originalAmount: original, appliedAdjustment: adjustment, revisedLineValue: revised,
+        recognisedClaims: claimsOnLine, postedInvoiced: invoicedOnLine, recognised,
+        claimNumbers, invoiceNumbers,
+        costCodeId: li.costCodeId || '', costCodeName: li.costCodeName || '',
+      })
+    }
+  }
+
   const values = {
     poCount: pos.length,
     claimCount: claims.length,
@@ -848,10 +962,20 @@ function evaluateCommitmentStateConflicts(purchaseOrders, progressClaims, suppli
     'A PO line counted through both a direct invoice and an approved claim is listed with the overlapping amount. ' +
     'Actual and Remaining Committed are left exactly as the records say — nothing is reclassified or offset; ' +
     'reconcile by cancelling or crediting the record that should not stand.',
+    'An applied supplier variation that could not be incorporated (missing or cancelled PO, a PO line that does not ' +
+    'exist, a cost-code mismatch, or a revised PO line value below zero) keeps its amount in unapplied exposure — ' +
+    'it is never counted against another PO line or cost code, and no source document is edited.',
+    'Recognised claims above a revised PO line value are listed with claim recognition and posted invoicing as ' +
+    'separate figures (a claim and its posted invoice are never both counted). Remaining Committed floors the line ' +
+    'at zero, so this is the only place the overrun appears. Supplier credit notes carry no PO line index and do ' +
+    'not reduce the recognition compared here; a negative variation never creates a credit note. Reconcile by ' +
+    'reviewing the claim, the variation or the PO — nothing is adjusted automatically.',
     NOT_WRONGDOING_CAVEAT,
   ]
 
-  if (pos.length === 0 && claims.length === 0 && invoices.length === 0) {
+  // An applied variation naming a PO the project does not hold is still a
+  // finding on an otherwise empty register (condition F) — never "needs data".
+  if (pos.length === 0 && claims.length === 0 && invoices.length === 0 && evidence.length === 0) {
     return check(id, SHIELD_STATE.NEEDS_DATA, {
       reason: NEEDS_DATA_REASON.NO_RECORDS,
       headline: 'No purchase orders, claims or supplier invoices yet',
@@ -868,7 +992,9 @@ function evaluateCommitmentStateConflicts(purchaseOrders, progressClaims, suppli
       explanation:
         'Each row is one related record whose status conflicts with its purchase order or claim: cost counted ' +
         'against an uncommitted PO, an open claim on a closed PO, more than one open claim per PO, more than ' +
-        'one active invoice per claim, or a PO line recognised through both a direct invoice and an approved claim.',
+        'one active invoice per claim, a PO line recognised through both a direct invoice and an approved claim, ' +
+        'an applied supplier variation that could not be incorporated in its PO commitment, or approved claim ' +
+        'recognition above a PO line\u2019s revised contractual value.',
       values,
       evidence,
       evidenceColumns: STATE_CONFLICT_COLUMNS,
@@ -878,7 +1004,7 @@ function evaluateCommitmentStateConflicts(purchaseOrders, progressClaims, suppli
 
   return check(id, SHIELD_STATE.NO_ISSUE, {
     headline: 'Purchase order, claim and invoice states agree',
-    explanation: 'No uncommitted PO carries counted cost, no closed or cancelled PO has an open claim, each PO has at most one open claim, each claim at most one active invoice, and no PO line is counted through both a direct invoice and an approved claim.',
+    explanation: 'No uncommitted PO carries counted cost, no closed or cancelled PO has an open claim, each PO has at most one open claim, each claim at most one active invoice, no PO line is counted through both a direct invoice and an approved claim, every applied supplier variation is incorporated in its PO commitment, and no PO line\u2019s recognised claims exceed its revised contractual value.',
     values,
     caveats: [caveats[0]],
   })
@@ -1046,7 +1172,7 @@ export function evaluateShield({ sources = {}, sourceStates = {}, currencyCode }
     [CHECK.DUPLICATE_INVOICE_REFERENCES]: evaluateDuplicateInvoiceReferences(supplierInvoices, sourceStates),
     [CHECK.INVOICE_INTEGRITY]:            evaluateInvoiceIntegrity(supplierInvoices, sourceStates),
     [CHECK.PO_OVER_INVOICING]:            evaluatePoOverInvoicing(purchaseOrders, supplierInvoices, variations, sourceStates),
-    [CHECK.COMMITMENT_STATE_CONFLICTS]:   evaluateCommitmentStateConflicts(purchaseOrders, progressClaims, supplierInvoices, sourceStates),
+    [CHECK.COMMITMENT_STATE_CONFLICTS]:   evaluateCommitmentStateConflicts(purchaseOrders, progressClaims, supplierInvoices, variations, sourceStates),
     [CHECK.FINANCIAL_EXCEPTIONS]:         evaluateFinancialExceptions(
       { supplierInvoices, supplierPayments, supplierCreditNotes, retentionReleases }, sourceStates,
     ),

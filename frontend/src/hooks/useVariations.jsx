@@ -14,9 +14,9 @@ import {
   canTransition, variationTotals,
   formatClientVariationNumber, formatSupplierVariationNumber,
   normaliseOriginRfi, isEligibleOriginRfi,
-  validateVariationDraft,
+  validateVariationDraft, isPoLinkedSupplierVariation,
 } from '../lib/variations'
-import { runUpdateVariationDraft, runTransitionVariation } from '../lib/variationActions'
+import { runUpdateVariationDraft, runTransitionVariation, runApplyVariationCommitment } from '../lib/variationActions'
 
 export function useVariations(projectId) {
   const { user }    = useAuth()
@@ -228,17 +228,51 @@ export function useVariations(projectId) {
   // date. Exactly what the rules' transition branches admit. The reserved
   // under_review / disputed / superseded have no application path; approved,
   // rejected and withdrawn are terminal — approved amounts freeze forever.
+  //
+  // M3-B1 (ADR-62): approving a PO-LINKED SUPPLIER variation also applies it
+  // to the PO's commitment in the SAME write when the PO is sent/closed on the
+  // server — the transaction reads the PO after the variation and writes the
+  // `commitmentAppliedAt/By` pair the rules verify (actor, server time, PO
+  // state). A cancelled, draft or missing PO approves the variation as
+  // UNAPPLIED exposure instead; nothing is refused. Returns the outcome
+  // (`commitmentApplied`), so the page can say which happened.
   const transitionStatus = useCallback(async (variation, nextStatus, { approvedAmounts, assessmentNotes } = {}) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (!canTransition(variation.status, nextStatus)) {
       throw new Error(`Cannot move a ${variation.status} variation to ${nextStatus}`)
     }
     const variationRef = doc(db, 'companies', companyId, 'projects', projectId, 'variations', variation.id)
-    await runTransitionVariation({
-      db, variationRef, seen: variation, nextStatus, extras: { approvedAmounts, assessmentNotes },
+    const poRef = nextStatus === VARIATION_STATUS.APPROVED && isPoLinkedSupplierVariation(variation)
+      ? doc(db, 'companies', companyId, 'projects', projectId, 'purchaseOrders', variation.poId)
+      : null
+    return runTransitionVariation({
+      db, variationRef, poRef, seen: variation, nextStatus, extras: { approvedAmounts, assessmentNotes },
       uid: user.uid, runTransaction, serverTimestamp,
     })
   }, [companyId, projectId, user])
 
-  return { variations, variationsLoading, variationsError, createVariation, updateVariation, transitionStatus }
+  // Legacy Apply (M3-B1, ADR-62): the one-time application of an approved,
+  // PO-linked supplier variation that carries no commitment stamps. ONE guarded
+  // transaction (lib/variationActions.js → runApplyVariationCommitment): the
+  // server copy must still be approved, unapplied and at the revision the user
+  // reviewed; the PO must exist and be sent/closed on the server; the write is
+  // the stamp pair + revision + audit stamps. Rules enforce the stamps, the
+  // null precondition (so a repeat is refused by the database), the PO state
+  // and the allow-list independently.
+  const applyVariationCommitment = useCallback(async (variation) => {
+    if (!companyId || !projectId || !user) throw new Error('Not authenticated')
+    if (!isPoLinkedSupplierVariation(variation)) throw new Error('This variation names no purchase order')
+    const base = ['companies', companyId, 'projects', projectId]
+    return runApplyVariationCommitment({
+      db,
+      variationRef: doc(db, ...base, 'variations', variation.id),
+      poRef:        doc(db, ...base, 'purchaseOrders', variation.poId),
+      seen: variation, uid: user.uid, runTransaction, serverTimestamp,
+    })
+  }, [companyId, projectId, user])
+
+  return {
+    variations, variationsLoading, variationsError,
+    createVariation, updateVariation, transitionStatus, applyVariationCommitment,
+  }
 }

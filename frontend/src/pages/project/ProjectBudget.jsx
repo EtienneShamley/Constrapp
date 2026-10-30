@@ -15,7 +15,7 @@ import { remainingCommittedByCostCode, PO_STATUS } from '../../lib/purchaseOrder
 import { actualClaimsByCostCode, claimedPendingByCostCode, recognisedClaimsByPoLine } from '../../lib/progressClaims'
 import { invoicedByCostCode, invoicedClaimIds, postedInvoicedByPoLine } from '../../lib/supplierInvoices'
 import { creditedByCostCode, CREDIT_READ_ERROR_NOTICE } from '../../lib/supplierCreditNotes'
-import { approvedSupplierVariationsByCostCode } from '../../lib/variations'
+import { appliedSupplierVariationAdjustments, unappliedSupplierVariationsByCostCode } from '../../lib/variations'
 import {
   availableFigure, displayFigure, figureState, FIGURE_STATE, SNAPSHOT_SOURCE_LABELS,
 } from '../../lib/projectSnapshot'
@@ -227,13 +227,16 @@ export default function ProjectBudget() {
   const superseded = invoicedClaimIds(supplierInvoices)
   const invoicedByLine = postedInvoicedByPoLine(supplierInvoices)
   const recognisedByLine = recognisedClaimsByPoLine(progressClaims, superseded)
-  const committedMap = remainingCommittedByCostCode(purchaseOrders, invoicedByLine, recognisedByLine)
+  // Applied approved supplier variations (M3-B1, ADR-62) revise the PO line
+  // value the nets apply to — THE shared adjustment map, computed once here.
+  const adjustments = appliedSupplierVariationAdjustments(variations, purchaseOrders)
+  const committedMap = remainingCommittedByCostCode(purchaseOrders, invoicedByLine, recognisedByLine, adjustments.byPoLine)
   // Closed-PO residual — the same formula restricted to CLOSED POs: commitment
   // still open on an order marked complete. Left INSIDE Committed (a closed PO
   // is still a commitment) and flagged for QS judgement, exactly as the
   // Forecast tab does; never silently released.
   const closedResidualMap = remainingCommittedByCostCode(
-    purchaseOrders.filter(po => po.status === PO_STATUS.CLOSED), invoicedByLine, recognisedByLine,
+    purchaseOrders.filter(po => po.status === PO_STATUS.CLOSED), invoicedByLine, recognisedByLine, adjustments.byPoLine,
   )
   // Invoiced = ex-GST posted/paid supplier invoice lines by cost code, NET of
   //   posted valid-target Supplier Credit Notes. Signed, never clamped — an
@@ -255,11 +258,14 @@ export default function ProjectBudget() {
   // Claimed = uncertified exposure (submitted/under review claims). Unchanged.
   const claimedMap = claimedPendingByCostCode(progressClaims)
 
-  // Approved Supplier Variations by cost code — a SEPARATE read-time figure that
-  // does NOT alter the six canonical figures above. Committed is unchanged; this
-  // is surfaced alongside as Commitment Exposure (Committed + approved supplier
-  // variations). It does not yet mature against claims or invoices. Ex-GST.
-  const supplierVarMap = approvedSupplierVariationsByCostCode(variations)
+  // Supplier variations (ADR-62). APPLIED approved PO-linked variations are
+  // already INSIDE Committed above (by the PO line's cost code) and are shown
+  // for transparency; UNAPPLIED approved value — legacy variations not yet
+  // applied, new-scope lines awaiting M3-B2, invalid links — is the SEPARATE
+  // exposure figure, never added to Committed. Commitment Exposure = Committed
+  // + unapplied, so no amount is in both. Ex-GST.
+  const appliedVarMap  = adjustments.byCostCode
+  const supplierVarMap = unappliedSupplierVariationsByCostCode(variations, purchaseOrders)
 
   // POs/invoices can hit cost codes that have no budget line yet — surface those
   // as warning rows rather than hiding the commitment or cost.
@@ -291,8 +297,10 @@ export default function ProjectBudget() {
   totals.actual    = Object.values(actualMap).reduce((sum, v) => sum + v, 0)
   totals.claimed   = Object.values(claimedMap).reduce((sum, v) => sum + v, 0)
   totals.invoiced  = Object.values(invoicedMap).reduce((sum, v) => sum + v, 0)
-  // Separate, non-canonical figures (do not change Committed or Remaining).
+  // Separate, non-canonical figures. `supplierVariations` is the UNAPPLIED
+  // exposure; `appliedVariations` is already inside Committed (shown, not added).
   totals.supplierVariations = Object.values(supplierVarMap).reduce((sum, v) => sum + v, 0)
+  totals.appliedVariations  = Object.values(appliedVarMap).reduce((sum, v) => sum + v, 0)
   const commitmentExposure  = totals.committed + totals.supplierVariations
 
   const remaining     = totals.budgeted - totals.actual
@@ -388,13 +396,19 @@ export default function ProjectBudget() {
         </div>
         <ProgBar value={ready('remainingBudget') ? usagePercent : 0} colour={usagePercent >= 100 ? 'brand-red' : 'brand-accent'} />
 
-        {/* Read-time variation figures — kept SEPARATE from the six canonical
-            figures above. Committed is unchanged; Commitment Exposure adds
-            approved supplier variations for visibility only. */}
-        <div className="grid grid-cols-2 gap-3.5 mt-3 pt-3 border-t border-brand-border">
+        {/* Read-time variation figures (ADR-62). Applied supplier variations
+            are INSIDE Committed and shown for transparency; unapplied value is
+            the separate exposure Commitment Exposure adds — never both. */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 mt-3 pt-3 border-t border-brand-border">
           <div>
-            <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Approved Supplier Variations</p>
+            <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Applied Supplier Variations</p>
+            <p className="text-lg font-bold text-brand-text">{cell('appliedSupplierVariations', totals.appliedVariations)}</p>
+            <p className="m-0 text-[11px] text-brand-muted">already inside Committed</p>
+          </div>
+          <div>
+            <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Unapplied Supplier Variations</p>
             <p className="text-lg font-bold text-brand-text">{cell('supplierVariationExposure', totals.supplierVariations)}</p>
+            <p className="m-0 text-[11px] text-brand-muted">exposure — not yet in Committed</p>
           </div>
           <div>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Commitment Exposure</p>
@@ -402,10 +416,11 @@ export default function ProjectBudget() {
           </div>
         </div>
         <p className="m-0 mt-2 text-[11px] text-brand-muted">
-          Committed is the remaining open commitment: each PO line less what has been invoiced and less any approved
-          claim already counted in Actual, so a cost is never in both. Commitment Exposure = Committed + approved
-          Supplier Variations (ex-GST) — approved variation amounts do not yet mature against progress claims or
-          supplier invoices. All figures are ex-GST and derived at read time.
+          Committed is the remaining open commitment: each PO line (revised by approved supplier variations applied to
+          it) less what has been invoiced and less any approved claim already counted in Actual, so a cost is never in
+          both. Commitment Exposure = Committed + Unapplied Supplier Variations (ex-GST) — approved variations not yet
+          applied to a purchase order, new-scope variation lines awaiting M3-B2, and variations whose PO link could not
+          be incorporated. All figures are ex-GST and derived at read time.
         </p>
       </Card>
 
@@ -457,7 +472,7 @@ export default function ProjectBudget() {
             <table className="w-full border-collapse min-w-[980px]">
               <thead>
                 <tr className="bg-brand-card border-b border-brand-border">
-                  {['Cost Code', 'Budgeted', 'Committed', 'Appr. Supplier Var.', 'Actual', 'Invoiced', 'Remaining', ''].map(h => (
+                  {['Cost Code', 'Budgeted', 'Committed', 'Unapplied Supplier Var.', 'Actual', 'Invoiced', 'Remaining', ''].map(h => (
                     <th key={h} className="text-left px-3.5 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px]">
                       {h}
                     </th>

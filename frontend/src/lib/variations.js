@@ -482,3 +482,353 @@ export function validateVariationDraft({ title, lineItems } = {}) {
 export function stripApprovedFromLines(lineItems) {
   return (lineItems ?? []).map(li => ({ ...li, approvedAmount: null, approvedGst: null }))
 }
+
+// ── Commitment application (M3-B1, ADR-62) ───────────────────────────────────
+//
+// An APPROVED supplier variation that names a PO is the auditable commitment
+// adjustment to that PO — the PO document itself is never edited, revised or
+// re-issued (ADR-7 / ADR-57). Whether a variation's approved amounts have been
+// APPLIED to the PO's commitment is recorded by two optional, rules-stamped
+// keys on the variation (actor == caller, time == server, written once):
+//
+//   commitmentAppliedAt   Timestamp
+//   commitmentAppliedBy   uid
+//
+// A newly approved, PO-linked supplier variation whose PO is still sent/closed
+// receives the pair IN THE APPROVE TRANSITION (approval is the financial
+// trigger — there is no second approval workflow). A variation approved before
+// M3-B1 carries no stamps and stays UNAPPLIED — exposure only, exactly as
+// before — until a user explicitly applies it through the one-time, rules-
+// idempotent Apply (lib/variationActions.js → runApplyVariationCommitment).
+// Manual-mode supplier variations (poId null) and client variations never gain
+// the keys and never adjust a PO commitment.
+//
+// LINE-LEVEL TREATMENT. Each approved line is classified against the PO:
+//   · EXISTING_LINE — `poLineIndex` names a PO line whose cost code matches the
+//     line's snapshot: the signed approved amount raises or lowers that PO
+//     line's contractual value (revised = lineTotal + Σ adjustments) and
+//     therefore its Remaining Committed (lib/purchaseOrders.js), attributed to
+//     the PO LINE's cost code. Matured once per variation per PO line.
+//   · NEW_SCOPE     — `poLineIndex` null: committed work with no claimable PO
+//     line identity yet. In B1 it does NOT enter Remaining Committed; it stays
+//     visible as unapplied exposure, labelled "awaiting M3-B2", and is never
+//     dropped from a total.
+//   · INVALID       — the PO is missing from the register or not sent/closed,
+//     the index is out of range, the cost code disagrees with the PO line, or
+//     the amount is not a finite number. Nothing is counted against a different
+//     line or cost code: the amount stays in unapplied exposure and the line is
+//     listed as an exception (SHIELD check 4 condition F).
+// Everything here is a pure read-time derivation over the two registers; no
+// document is written, offset or repaired, and a negative variation never
+// becomes a credit note or an Actual-cost offset.
+
+export const VARIATION_COMMITMENT_KEYS = ['commitmentAppliedAt', 'commitmentAppliedBy']
+
+export const isPoLinkedSupplierVariation = (v) =>
+  v?.variationType === VARIATION_TYPE.SUPPLIER && typeof v.poId === 'string' && v.poId.length > 0
+
+export const isCommitmentApplied = (v) =>
+  v?.commitmentAppliedAt != null
+  && typeof v.commitmentAppliedBy === 'string' && v.commitmentAppliedBy.length > 0
+
+// Statuses in which a PO can carry an applied adjustment (the Remaining
+// Committed statuses). Mirrors lib/purchaseOrders.js → PO_COMMITTED_STATUSES
+// without importing it into the hot path twice.
+const COMMITMENT_PO_STATUSES = [PO_STATUS.SENT, PO_STATUS.CLOSED]
+
+export const COMMITMENT_LINE_KIND = {
+  EXISTING_LINE: 'existing_line',
+  NEW_SCOPE:     'new_scope',
+  INVALID:       'invalid',
+}
+
+export const COMMITMENT_LINE_ISSUE = {
+  PO_MISSING:         'po_missing',          // the variation's PO is not in the register
+  PO_NOT_COMMITTED:   'po_not_committed',    // the PO is draft / pending / cancelled
+  LINE_OUT_OF_RANGE:  'line_out_of_range',   // poLineIndex names no PO line
+  COST_CODE_MISMATCH: 'cost_code_mismatch',  // the line's cost code is not the PO line's
+  AMOUNT_INVALID:     'amount_invalid',      // approvedAmount is not a finite number
+}
+
+export const COMMITMENT_LINE_ISSUE_LABELS = {
+  [COMMITMENT_LINE_ISSUE.PO_MISSING]:         'Purchase order not found in this project',
+  [COMMITMENT_LINE_ISSUE.PO_NOT_COMMITTED]:   'Purchase order is not sent or closed',
+  [COMMITMENT_LINE_ISSUE.LINE_OUT_OF_RANGE]:  'PO line index does not exist on the purchase order',
+  [COMMITMENT_LINE_ISSUE.COST_CODE_MISMATCH]: 'Cost code differs from the referenced PO line',
+  [COMMITMENT_LINE_ISSUE.AMOUNT_INVALID]:     'Approved amount is not a valid number',
+}
+
+const finiteOrNull = (v) => {
+  if (v === null || v === undefined || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? roundMoney(n) : null
+}
+
+// Classifies every line of `variation` against `po` (the PO document the
+// variation names, or null when the register does not hold it). Pure; never
+// mutates its inputs. Each row:
+//   { lineIndex, kind, issue, poLineIndex, amount, costCodeId, costCodeName,
+//     description, poLineCostCodeId }
+// `amount` is the SIGNED approved amount in cents (null when not finite);
+// `costCodeId` is the PO line's for EXISTING_LINE and the line's own snapshot
+// otherwise, so an invalid line is never attributed to a different code.
+export function classifyCommitmentLines(variation, po) {
+  const poLines = Array.isArray(po?.lineItems) ? po.lineItems : []
+  const poProblem = !po
+    ? COMMITMENT_LINE_ISSUE.PO_MISSING
+    : (!COMMITMENT_PO_STATUSES.includes(po.status) ? COMMITMENT_LINE_ISSUE.PO_NOT_COMMITTED : null)
+
+  return (variation?.lineItems ?? []).map((li, lineIndex) => {
+    const amount = finiteOrNull(li?.approvedAmount)
+    const base = {
+      lineIndex,
+      poLineIndex:  Number.isInteger(li?.poLineIndex) ? li.poLineIndex : null,
+      amount,
+      costCodeId:   typeof li?.costCodeId === 'string' ? li.costCodeId : '',
+      costCodeName: typeof li?.costCodeName === 'string' ? li.costCodeName : '',
+      description:  typeof li?.description === 'string' ? li.description : '',
+      poLineCostCodeId: null,
+    }
+    if (amount === null) return { ...base, kind: COMMITMENT_LINE_KIND.INVALID, issue: COMMITMENT_LINE_ISSUE.AMOUNT_INVALID }
+    if (li?.poLineIndex === null || li?.poLineIndex === undefined) {
+      return { ...base, kind: COMMITMENT_LINE_KIND.NEW_SCOPE, issue: null }
+    }
+    if (poProblem) return { ...base, kind: COMMITMENT_LINE_KIND.INVALID, issue: poProblem }
+    if (!Number.isInteger(li.poLineIndex) || li.poLineIndex < 0 || li.poLineIndex >= poLines.length) {
+      return { ...base, kind: COMMITMENT_LINE_KIND.INVALID, issue: COMMITMENT_LINE_ISSUE.LINE_OUT_OF_RANGE }
+    }
+    const poLine = poLines[li.poLineIndex] ?? {}
+    const poCode = typeof poLine.costCodeId === 'string' ? poLine.costCodeId : ''
+    if (!poCode || poCode !== base.costCodeId) {
+      return { ...base, kind: COMMITMENT_LINE_KIND.INVALID, issue: COMMITMENT_LINE_ISSUE.COST_CODE_MISMATCH, poLineCostCodeId: poCode || null }
+    }
+    return {
+      ...base,
+      kind: COMMITMENT_LINE_KIND.EXISTING_LINE,
+      issue: null,
+      poLineCostCodeId: poCode,
+      costCodeName: poLine.costCodeName || base.costCodeName,
+    }
+  })
+}
+
+// How much of a variation's approved value has actually reached the PO's
+// commitment — decided by the LINE-LEVEL financial treatment, never by the
+// process stamp alone (ADR-62 Correction C). A stamped variation whose lines
+// are all new scope is "awaiting M3-B2", never "incorporated".
+export const INCORPORATION_STATE = {
+  NOT_APPLICABLE:   'not_applicable',           // client, or manual-mode supplier — no PO commitment exists
+  NOT_APPROVED:     'not_approved',             // draft / submitted / rejected / withdrawn
+  UNAPPLIED:        'unapplied',                // approved, PO-linked, no stamps — not yet applied (legacy)
+  INCORPORATED:     'incorporated',             // applied; EVERY approved amount is in the revised PO commitment
+  PARTIAL:          'partially_incorporated',   // applied; existing-line amounts matured, new-scope amounts remain exposure
+  NOT_INCORPORATED: 'not_incorporated',         // applied; new scope only — nothing claimable through a PO line (awaiting M3-B2)
+  EXCEPTION:        'exception',                // applied; source integrity or financial conflict on at least one line
+}
+
+export const INCORPORATION_STATE_LABELS = {
+  [INCORPORATION_STATE.NOT_APPLICABLE]:   'No PO commitment',
+  [INCORPORATION_STATE.NOT_APPROVED]:     'Not approved',
+  [INCORPORATION_STATE.UNAPPLIED]:        'Not yet applied',
+  [INCORPORATION_STATE.INCORPORATED]:     'Fully incorporated',
+  [INCORPORATION_STATE.PARTIAL]:          'Partially incorporated',
+  [INCORPORATION_STATE.NOT_INCORPORATED]: 'Awaiting M3-B2',
+  [INCORPORATION_STATE.EXCEPTION]:        'Invalid — needs review',
+}
+
+// One-line explanation per state, for the register and the dialogs.
+export const INCORPORATION_STATE_HELP = {
+  [INCORPORATION_STATE.NOT_APPLICABLE]:   'A client or no-PO supplier variation adjusts no purchase order commitment.',
+  [INCORPORATION_STATE.NOT_APPROVED]:     'Only an approved variation can adjust a commitment.',
+  [INCORPORATION_STATE.UNAPPLIED]:        'Approved before M3-B1 — its full approved amount is separate exposure until it is explicitly applied to the PO commitment.',
+  [INCORPORATION_STATE.INCORPORATED]:     'Every approved amount is inside the revised PO line commitment.',
+  [INCORPORATION_STATE.PARTIAL]:          'Existing-line amounts are inside the revised PO commitment; new-scope amounts remain separate exposure until M3-B2.',
+  [INCORPORATION_STATE.NOT_INCORPORATED]: 'Applied, but every line is new scope: nothing is claimable through a PO line yet, so the whole approved amount remains separate exposure until M3-B2.',
+  [INCORPORATION_STATE.EXCEPTION]:        'At least one line cannot be incorporated (missing or non-committed PO, PO line not found, cost-code mismatch, invalid amount). Those amounts remain separate exposure and are listed on SHIELD.',
+}
+
+const sumAmounts = (rows) => roundMoney(rows.reduce((s, r) => s + (r.amount ?? 0), 0))
+
+// The approved value of a supplier variation, signed, summed from its lines
+// (the stored header is not trusted for this — the lines are what mature).
+const grossApproved = (variation) =>
+  roundMoney((variation?.lineItems ?? []).reduce((s, li) => s + (Number(li?.approvedAmount) || 0), 0))
+
+// The incorporation of ONE variation against the PO register.
+//   { state, applied, po, lines, gross, matured, outstanding, newScope, invalid,
+//     counts: { existing, newScope, invalid } }
+// `applied` is the PROCESS stamp (the pair is present); `matured` is the
+// signed amount actually inside the revised PO commitment; `outstanding` =
+// gross − matured is the signed amount still shown as separate exposure
+// (new-scope + invalid lines, or everything while unapplied). The STATE is
+// decided by the amounts, never by the stamp alone (Correction C).
+export function variationIncorporation(variation, purchaseOrders) {
+  const gross = grossApproved(variation)
+  const empty = { applied: false, po: null, lines: [], gross, matured: 0, outstanding: gross, newScope: 0, invalid: 0, counts: { existing: 0, newScope: 0, invalid: 0 } }
+  if (!isPoLinkedSupplierVariation(variation)) return { state: INCORPORATION_STATE.NOT_APPLICABLE, ...empty }
+  if (!VARIATION_APPROVED_STATUSES.includes(variation.status)) return { state: INCORPORATION_STATE.NOT_APPROVED, ...empty, gross: 0, outstanding: 0 }
+  const po = (purchaseOrders ?? []).find(p => p?.id === variation.poId) ?? null
+  if (!isCommitmentApplied(variation)) return { state: INCORPORATION_STATE.UNAPPLIED, ...empty, po }
+
+  const lines = classifyCommitmentLines(variation, po)
+  const existing = lines.filter(l => l.kind === COMMITMENT_LINE_KIND.EXISTING_LINE)
+  const newScope = lines.filter(l => l.kind === COMMITMENT_LINE_KIND.NEW_SCOPE)
+  const invalid  = lines.filter(l => l.kind === COMMITMENT_LINE_KIND.INVALID)
+  const counts = { existing: existing.length, newScope: newScope.length, invalid: invalid.length }
+  const matured = sumAmounts(existing)
+  const totals = { matured, outstanding: roundMoney(gross - matured), newScope: sumAmounts(newScope), invalid: sumAmounts(invalid) }
+
+  let state
+  if (invalid.length > 0) state = INCORPORATION_STATE.EXCEPTION
+  else if (existing.length > 0 && newScope.length > 0) state = INCORPORATION_STATE.PARTIAL
+  else if (existing.length > 0) state = INCORPORATION_STATE.INCORPORATED
+  else state = INCORPORATION_STATE.NOT_INCORPORATED
+  return { state, applied: true, po, lines, gross, ...totals, counts }
+}
+
+// THE ONE shared adjustment map every commitment consumer reads (Budget,
+// Forecast, Commercial, Overview, Dashboard, Cash Flow, PULSE, SHIELD, the
+// claim editor). Over APPLIED, approved, PO-linked supplier variations:
+//   byPoLine         { [poId]: { [poLineIndex]: Σ signed amount } }  — EXISTING_LINE
+//                    lines on a sent/closed PO only; the input to
+//                    lib/purchaseOrders.js → remainingCommittedByPoLine
+//   byCostCode       the same, grouped by the PO LINE's cost code
+//   newScopeByCostCode   applied NEW_SCOPE lines, by the line's own cost code
+//   exceptions       one row per INVALID line and per PO line whose revised
+//                    value is negative — listed, never counted elsewhere
+//   incorporations   { [variationId]: variationIncorporation(...) }
+// Lines are aggregated once per variation per PO line; a variation document
+// appears once in `incorporations`, so nothing can be applied twice at read
+// time regardless of how the register is ordered.
+export function appliedSupplierVariationAdjustments(variations, purchaseOrders) {
+  const byPoLine = {}
+  const byCostCode = {}
+  const newScopeByCostCode = {}
+  const exceptions = []
+  const incorporations = {}
+  const seen = new Set()
+
+  for (const v of variations ?? []) {
+    if (!v || !isPoLinkedSupplierVariation(v) || !VARIATION_APPROVED_STATUSES.includes(v.status) || !isCommitmentApplied(v)) continue
+    if (v.id && seen.has(v.id)) continue
+    if (v.id) seen.add(v.id)
+    const inc = variationIncorporation(v, purchaseOrders)
+    if (v.id) incorporations[v.id] = inc
+    for (const l of inc.lines) {
+      if (l.kind === COMMITMENT_LINE_KIND.EXISTING_LINE) {
+        const forPo = byPoLine[v.poId] ?? (byPoLine[v.poId] = {})
+        forPo[l.poLineIndex] = roundMoney((forPo[l.poLineIndex] || 0) + l.amount)
+        byCostCode[l.poLineCostCodeId] = roundMoney((byCostCode[l.poLineCostCodeId] || 0) + l.amount)
+      } else if (l.kind === COMMITMENT_LINE_KIND.NEW_SCOPE) {
+        if (l.costCodeId) newScopeByCostCode[l.costCodeId] = roundMoney((newScopeByCostCode[l.costCodeId] || 0) + l.amount)
+      } else {
+        exceptions.push({
+          kind: 'invalid_line', issue: l.issue, issueLabel: COMMITMENT_LINE_ISSUE_LABELS[l.issue] ?? l.issue,
+          variationId: v.id ?? null, variationNumber: v.variationNumber || '',
+          poId: v.poId, poNumber: v.poNumber || inc.po?.poNumber || '', poStatus: inc.po?.status ?? null,
+          lineIndex: l.lineIndex, poLineIndex: l.poLineIndex, amount: l.amount,
+          costCodeId: l.costCodeId, costCodeName: l.costCodeName, poLineCostCodeId: l.poLineCostCodeId,
+        })
+      }
+    }
+  }
+
+  // A PO line whose revised contractual value is negative (adjustments below
+  // the original line) is a commercial anomaly: Remaining Committed floors it
+  // at zero, so it is listed here rather than hidden.
+  for (const po of purchaseOrders ?? []) {
+    const forPo = byPoLine[po?.id]
+    if (!forPo) continue
+    ;(po.lineItems ?? []).forEach((li, idx) => {
+      if (!(idx in forPo)) return
+      const revised = roundMoney((Number(li?.lineTotal) || 0) + forPo[idx])
+      if (revised < 0) {
+        exceptions.push({
+          kind: 'negative_revised_line', issue: 'negative_revised_line', issueLabel: 'Revised PO line value is negative',
+          variationId: null, variationNumber: '', poId: po.id, poNumber: po.poNumber || '', poStatus: po.status ?? null,
+          lineIndex: null, poLineIndex: idx, amount: revised,
+          costCodeId: li?.costCodeId || '', costCodeName: li?.costCodeName || '', poLineCostCodeId: li?.costCodeId || null,
+        })
+      }
+    })
+  }
+
+  return { byPoLine, byCostCode, newScopeByCostCode, exceptions, incorporations }
+}
+
+// Approved supplier-variation value NOT inside Remaining Committed, by cost
+// code: every line of an unapplied variation, plus the new-scope and invalid
+// lines of an applied one. Signed, never clamped. By construction
+//   approvedSupplierVariationsByCostCode == applied.byCostCode + this map
+// (per cost code), so nothing is counted twice and nothing disappears.
+export function unappliedSupplierVariationsByCostCode(variations, purchaseOrders) {
+  const map = {}
+  const add = (costCodeId, amount) => {
+    if (!costCodeId) return
+    map[costCodeId] = roundMoney((map[costCodeId] || 0) + (amount ?? 0))
+  }
+  for (const v of variations ?? []) {
+    if (!v || v.variationType !== VARIATION_TYPE.SUPPLIER || !VARIATION_APPROVED_STATUSES.includes(v.status)) continue
+    const applied = isPoLinkedSupplierVariation(v) && isCommitmentApplied(v)
+    if (!applied) {
+      for (const li of v.lineItems ?? []) add(li?.costCodeId, Number(li?.approvedAmount) || 0)
+      continue
+    }
+    const inc = variationIncorporation(v, purchaseOrders)
+    for (const l of inc.lines) {
+      if (l.kind === COMMITMENT_LINE_KIND.EXISTING_LINE) continue
+      add(l.costCodeId, l.amount ?? 0)
+    }
+  }
+  return map
+}
+
+const sumMap = (map) => roundMoney(Object.values(map).reduce((s, v) => s + (Number(v) || 0), 0))
+
+export const unappliedSupplierVariationsTotal = (variations, purchaseOrders) =>
+  sumMap(unappliedSupplierVariationsByCostCode(variations, purchaseOrders))
+
+export const appliedSupplierVariationsTotal = (variations, purchaseOrders) =>
+  sumMap(appliedSupplierVariationAdjustments(variations, purchaseOrders).byCostCode)
+
+// ── Apply eligibility (legacy Apply and the approve-time decision) ───────────
+
+export const COMMITMENT_APPLY_BLOCKER = {
+  NOT_SUPPLIER:     'not_supplier',
+  MANUAL_MODE:      'manual_mode',
+  NOT_APPROVED:     'not_approved',
+  ALREADY_APPLIED:  'already_applied',
+  PO_MISSING:       'po_missing',
+  PO_NOT_COMMITTED: 'po_not_committed',
+}
+
+export const COMMITMENT_APPLY_BLOCKER_MESSAGES = {
+  [COMMITMENT_APPLY_BLOCKER.NOT_SUPPLIER]:     'Only supplier variations adjust a purchase order commitment.',
+  [COMMITMENT_APPLY_BLOCKER.MANUAL_MODE]:      'This variation names no purchase order, so there is no commitment to adjust.',
+  [COMMITMENT_APPLY_BLOCKER.NOT_APPROVED]:     'Only an approved variation can be applied to a commitment.',
+  [COMMITMENT_APPLY_BLOCKER.ALREADY_APPLIED]:  'This variation has already been applied to its purchase order commitment.',
+  [COMMITMENT_APPLY_BLOCKER.PO_MISSING]:       'The linked purchase order could not be found in this project.',
+  [COMMITMENT_APPLY_BLOCKER.PO_NOT_COMMITTED]: 'The linked purchase order is not sent or closed, so the variation cannot be applied to its commitment.',
+}
+
+// Whether `variation` may be applied to its PO's commitment right now, against
+// the PO register. `po` is the resolved PO (or null). Pure; the transaction in
+// lib/variationActions.js re-runs the same decision against the SERVER copies.
+export function commitmentApplyEligibility(variation, purchaseOrders) {
+  const po = (purchaseOrders ?? []).find(p => p?.id === variation?.poId) ?? null
+  const refuse = (blocker) => ({ eligible: false, blocker, message: COMMITMENT_APPLY_BLOCKER_MESSAGES[blocker], po })
+  if (variation?.variationType !== VARIATION_TYPE.SUPPLIER) return refuse(COMMITMENT_APPLY_BLOCKER.NOT_SUPPLIER)
+  if (!isPoLinkedSupplierVariation(variation)) return refuse(COMMITMENT_APPLY_BLOCKER.MANUAL_MODE)
+  if (!VARIATION_APPROVED_STATUSES.includes(variation.status)) return refuse(COMMITMENT_APPLY_BLOCKER.NOT_APPROVED)
+  if (isCommitmentApplied(variation)) return refuse(COMMITMENT_APPLY_BLOCKER.ALREADY_APPLIED)
+  if (!po) return refuse(COMMITMENT_APPLY_BLOCKER.PO_MISSING)
+  if (!COMMITMENT_PO_STATUSES.includes(po.status)) return refuse(COMMITMENT_APPLY_BLOCKER.PO_NOT_COMMITTED)
+  return { eligible: true, blocker: null, message: null, po }
+}
+
+// The approve-time decision over the SERVER copy of the PO: a PO-linked
+// supplier variation may be approved — and is applied in the same write — iff
+// its PO exists and is sent/closed. Anything else REFUSES the approval
+// (ADR-62 Correction A; the variation is withdrawn or rejected instead).
+export const shouldApplyOnApproval = (variation, po) =>
+  isPoLinkedSupplierVariation(variation) && !!po && COMMITMENT_PO_STATUSES.includes(po.status)

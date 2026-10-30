@@ -10,6 +10,11 @@ import { useContacts } from '../../hooks/useContacts'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { selectableCostCodes } from '../../lib/costCodes'
 import { useRfis } from '../../hooks/useRfis'
+import { useProgressClaims } from '../../hooks/useProgressClaims'
+import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
+import { useForecastLines } from '../../hooks/useForecastLines'
+import { PO_STATUS_LABELS } from '../../lib/purchaseOrders'
+import { commitmentEffectPreview, PO_LINK_STATE } from '../../lib/variationCommitment'
 import { CONTACT_TYPE, PO_SUPPLIER_TYPES } from '../../lib/contacts'
 import {
   VARIATION_TYPE, VARIATION_TYPE_LABELS, VARIATION_TYPE_HELP,
@@ -24,6 +29,9 @@ import {
   openVariationCount,
   eligibleOriginRfis, normaliseOriginRfi, originRfiLabel, hasOriginRfi,
   EMPTY_VARIATION_FORM_LINE, variationLineToForm, buildVariationLineItem, validateVariationDraft,
+  INCORPORATION_STATE, INCORPORATION_STATE_LABELS, INCORPORATION_STATE_HELP, variationIncorporation, commitmentApplyEligibility,
+  appliedSupplierVariationsTotal, unappliedSupplierVariationsTotal,
+  COMMITMENT_LINE_ISSUE_LABELS,
 } from '../../lib/variations'
 import { VariationWriteError } from '../../lib/variationActions'
 
@@ -54,22 +62,26 @@ function TaxSelect({ value, onChange, disabled }) {
   )
 }
 
-function SummaryCards({ variations, currencyCode }) {
+function SummaryCards({ variations, purchaseOrders, currencyCode }) {
   const money = (n) => formatCurrency(n, currencyCode)
 
+  // Approved supplier variations (gross) = applied (inside Committed) +
+  // unapplied (exposure) — ADR-62. Shown as the two parts, never both ways.
   const cards = [
-    { label: 'Approved Supplier Variations',  value: approvedSupplierVariationsTotal(variations) },
+    { label: 'Applied Supplier Variations',   value: appliedSupplierVariationsTotal(variations, purchaseOrders), help: 'inside Committed' },
+    { label: 'Unapplied Supplier Exposure',   value: unappliedSupplierVariationsTotal(variations, purchaseOrders), help: `of ${money(approvedSupplierVariationsTotal(variations))} approved` },
     { label: 'Pending Supplier Exposure',     value: pendingSupplierVariationExposureTotal(variations) },
     { label: 'Approved Client Variations',    value: approvedClientVariationsTotal(variations) },
     { label: 'Pending Client Exposure',       value: pendingClientVariationExposureTotal(variations) },
   ]
   return (
     <Card className="mb-3.5">
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3.5">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
         {cards.map(c => (
           <div key={c.label}>
             <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">{c.label}</p>
             <p className="text-lg font-bold text-brand-text">{money(c.value)}</p>
+            {c.help && <p className="m-0 text-[11px] text-brand-muted">{c.help}</p>}
           </div>
         ))}
         <div>
@@ -78,9 +90,9 @@ function SummaryCards({ variations, currencyCode }) {
         </div>
       </div>
       <p className="m-0 mt-3 text-[11px] text-brand-muted">
-        All figures are ex-GST and derived at read time. Only approved variations count. Approved Supplier
-        Variation amounts feed Commitment Exposure on the Budget tab — they do not yet mature against progress
-        claims or supplier invoices.
+        All figures are ex-GST and derived at read time. Only approved variations count. An approved supplier
+        variation APPLIED to its purchase order adjusts that PO's Committed figure and is matured by the same claims and
+        invoices; unapplied amounts (legacy approvals not yet applied, new-scope lines awaiting M3-B2) are exposure only.
       </p>
     </Card>
   )
@@ -586,15 +598,224 @@ function OriginRfiSelect({ value, onChange, eligibleRfis, historical = null }) {
   )
 }
 
+// ── Commercial effect (M3-B1, ADR-62) ────────────────────────────────────────
+// Shown in the Assess modal (for a PO-linked supplier variation) and in the
+// legacy Apply dialog: per PO line the current value, what has been recognised,
+// the remaining commitment, and the revised value and remaining commitment
+// after application; new-scope and invalid lines listed apart; and, per
+// affected cost code, the saved Uncommitted Cost to Complete — because the
+// pre-M3-B1 guidance told the QS to fold expected variation cost into it. A
+// positive CTC is a WARNING that the variation MAY already be in it; it proves
+// nothing, nothing is subtracted automatically, and the QS must review it
+// (acknowledged explicitly before confirming). Everything shown is
+// lib/variationCommitment.js → commitmentEffectPreview over live subscriptions.
+
+function CommitmentEffectPanel({ preview, mode, currencyCode, acknowledged, onAcknowledge }) {
+  const money = (n) => formatCurrency(n, currencyCode)
+  if (!preview?.applicable) return null
+  const { po, poState, willApply, poLines, newScope, invalid, costCodes, ctcWarning, totals } = preview
+  const poLabel = po?.poNumber || 'the linked purchase order'
+  const cellCls = 'px-2 py-1.5 text-[12px] text-brand-text whitespace-nowrap'
+  const headCls = 'px-2 py-1.5 text-[10.5px] font-bold text-brand-muted uppercase tracking-[0.4px] text-left whitespace-nowrap'
+  const verb = mode === 'apply' ? 'Applying' : 'Approving'
+
+  return (
+    <div className="border border-brand-border rounded-lg px-3 py-3 flex flex-col gap-2.5" data-testid="commitment-effect">
+      <p className="m-0 text-[12px] font-bold text-brand-text">Commercial effect on {poLabel}</p>
+
+      {poState === PO_LINK_STATE.MISSING && (
+        <p className="m-0 text-[12px] text-brand-red" role="alert">
+          ⚠ {poLabel} could not be found in this project. {mode === 'apply'
+            ? 'The variation cannot be applied to a commitment.'
+            : 'This variation cannot be approved: a supplier variation that names a purchase order is approved and applied together, and its purchase order must exist and be sent or closed. Withdraw or reject it, or raise it again against a current purchase order.'}
+        </p>
+      )}
+      {poState === PO_LINK_STATE.NOT_COMMITTED && (
+        <p className="m-0 text-[12px] text-brand-red" role="alert">
+          ⚠ {poLabel} is {PO_STATUS_LABELS[po.status] ?? po.status}, not sent or closed. {mode === 'apply'
+            ? 'The variation cannot be applied to its commitment.'
+            : 'This variation cannot be approved while its purchase order is not sent or closed (the database refuses the write too). Withdraw or reject it, or raise it again against a current purchase order.'}
+        </p>
+      )}
+
+      {willApply && poLines.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse">
+            <thead>
+              <tr className="border-b border-brand-border">
+                {['PO line', 'Current value', 'Recognised', 'Remaining now', 'This variation', 'Revised value', 'Remaining after'].map(h => (
+                  <th key={h} className={headCls}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {poLines.map(r => (
+                <tr key={r.poLineIndex} className="border-b border-brand-border">
+                  <td className={`${cellCls} whitespace-normal`}>
+                    Line {r.poLineIndex + 1} · {r.costCodeName || '—'}
+                    {r.currentAdjustment !== 0 && (
+                      <span className="block text-[11px] text-brand-muted">PO {money(r.original)} + applied SVs {money(r.currentAdjustment)}</span>
+                    )}
+                  </td>
+                  <td className={cellCls}>{money(r.currentRevised)}</td>
+                  <td className={cellCls}>{money(r.recognised)}</td>
+                  <td className={cellCls}>{money(r.currentRemaining)}</td>
+                  <td className={`${cellCls} font-semibold`}>{r.delta >= 0 ? '+' : ''}{money(r.delta)}</td>
+                  <td className={`${cellCls} font-semibold ${r.negativeAfter ? 'text-brand-red' : ''}`}>{money(r.revisedAfter)}{r.negativeAfter ? ' ⚠' : ''}</td>
+                  <td className={`${cellCls} font-semibold`}>{money(r.remainingAfter)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="m-0 mt-1.5 text-[11px] text-brand-muted">
+            Remaining commitment on these lines moves from {money(totals.remainingBefore)} to {money(totals.remainingAfter)}. Recognised = posted supplier
+            invoices + approved claims not yet invoiced on the line; a negative variation lowers the ceiling and never creates a credit note or reduces Actual.
+          </p>
+        </div>
+      )}
+
+      {willApply && poLines.length === 0 && (
+        <p className="m-0 text-[12px] text-brand-amber">
+          ⚠ No line of this variation extends an existing PO line, so nothing matures into {poLabel}'s commitment. It will be recorded as applied, but the
+          whole amount stays as unapplied exposure until M3-B2.
+        </p>
+      )}
+
+      {newScope.length > 0 && (
+        <p className="m-0 text-[12px] text-brand-amber">
+          ⚠ {newScope.length} new-scope {newScope.length === 1 ? 'line' : 'lines'} ({money(totals.newScope)}) {newScope.length === 1 ? 'is' : 'are'} not on an existing PO line.
+          {willApply ? ' This variation will be PARTIALLY incorporated: ' : ' '}New-scope amounts stay as unapplied exposure, are not claimable against this PO yet, and are
+          labelled "awaiting M3-B2". Nothing is dropped from the totals.
+        </p>
+      )}
+
+      {invalid.length > 0 && (
+        <div className="text-[12px] text-brand-red">
+          <p className="m-0 font-semibold">⚠ {invalid.length} {invalid.length === 1 ? 'line cannot' : 'lines cannot'} be incorporated ({money(totals.invalid)}):</p>
+          <ul className="m-0 mt-1 pl-4 list-disc">
+            {invalid.map(l => (
+              <li key={l.lineIndex}>Line {l.lineIndex + 1}{l.costCodeName ? ` (${l.costCodeName})` : ''}: {COMMITMENT_LINE_ISSUE_LABELS[l.issue] ?? l.issue}</li>
+            ))}
+          </ul>
+          <p className="m-0 mt-1 text-brand-muted">These amounts stay in unapplied exposure and are listed on SHIELD. They are never counted against another PO line or cost code.</p>
+        </div>
+      )}
+
+      {willApply && costCodes.length > 0 && (
+        <div>
+          <p className="m-0 text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Uncommitted Cost to Complete on affected cost codes</p>
+          <ul className="m-0 pl-0 list-none flex flex-col gap-0.5">
+            {costCodes.map(c => (
+              <li key={c.costCodeId} className={`text-[12px] ${c.ctcWarning ? 'text-brand-amber' : 'text-brand-text'}`}>
+                {c.costCodeName || c.costCodeId}: commitment {c.delta >= 0 ? '+' : ''}{money(c.delta)} · saved Uncommitted CTC {c.uncommittedCtc === null ? 'not forecast' : money(c.uncommittedCtc)}
+                {c.ctcWarning && ' ⚠'}
+              </li>
+            ))}
+          </ul>
+          {ctcWarning ? (
+            <>
+              <p className="m-0 mt-1.5 text-[12px] text-brand-amber">
+                ⚠ A positive Uncommitted Cost to Complete is saved on a cost code this variation adjusts. Before M3-B1 the Forecast tab asked you to fold approved
+                supplier variations into that input, so this variation MAY already be inside it — {verb.toLowerCase()} it adds the same amount to Remaining Committed,
+                which would double-count Forecast Final Cost. This warning does not prove an overlap exists. Nothing is subtracted automatically: review the Forecast tab
+                after confirming.
+              </p>
+              <label className="flex items-start gap-2 mt-1.5 text-[12px] text-brand-text cursor-pointer min-h-[44px]">
+                <input type="checkbox" className="mt-1" checked={!!acknowledged} onChange={e => onAcknowledge?.(e.target.checked)} />
+                <span>I have noted the saved Uncommitted Cost to Complete on {costCodes.filter(c => c.ctcWarning).map(c => c.costCodeName || c.costCodeId).join(', ')} and will review it on the Forecast tab.</span>
+              </label>
+            </>
+          ) : (
+            <p className="m-0 mt-1 text-[11px] text-brand-muted">No positive Uncommitted Cost to Complete is saved on these cost codes, so no overlap is possible there.</p>
+          )}
+        </div>
+      )}
+
+      <p className="m-0 text-[11px] text-brand-muted">
+        The purchase order document is never modified. {willApply
+          ? 'Applied amounts revise the PO line’s contractual value and are matured by the same claims and invoices as the original line; they are counted once, in Remaining Committed.'
+          : 'Nothing is applied to a commitment by this action.'}
+      </p>
+    </div>
+  )
+}
+
+// ── Legacy Apply to commitment (M3-B1, ADR-62) ───────────────────────────────
+// For an APPROVED, PO-linked supplier variation that carries no commitment
+// stamps (approved before M3-B1, or while its PO was not sent/closed). One
+// explicit confirmation; the hook's guarded transaction re-reads the variation
+// and the PO on the server, and the rules refuse a repeat (the stored stamps
+// must be null) — so two tabs or two users cannot both apply it.
+
+function ApplyCommitmentModal({ variation, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines, currencyCode, onClose, onApply }) {
+  const money = (n) => formatCurrency(n, currencyCode)
+  const [acknowledged, setAcknowledged] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError]   = useState(null)
+
+  const eligibility = commitmentApplyEligibility(variation, purchaseOrders)
+  const preview = commitmentEffectPreview({ variation, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines })
+  const needsAck = preview.ctcWarning && !acknowledged
+  const valid = eligibility.eligible && !needsAck
+
+  async function handle() {
+    if (!valid) return
+    if (!window.confirm(`Apply ${variation.variationNumber} to ${eligibility.po?.poNumber ?? variation.poNumber}'s commitment? ${money(preview.totals.matured)} will enter Remaining Committed. This is recorded once and cannot be undone.`)) return
+    setSaving(true)
+    setError(null)
+    try {
+      await onApply(variation)
+      onClose()
+    } catch (err) {
+      setError(writeErrorMessage(err, 'Failed to apply. Check your connection and try again.'))
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-[820px] max-h-[90vh] overflow-y-auto bg-brand-surface border border-brand-border rounded-xl shadow-2xl">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-brand-border">
+          <h2 className="text-[15px] font-bold text-brand-text m-0">
+            Apply {variation.variationNumber} to commitment — {variation.poNumber || '—'}
+          </h2>
+          <button onClick={onClose} aria-label="Close" className="text-brand-muted hover:text-brand-text text-xl leading-none cursor-pointer min-w-[44px] min-h-[44px] flex items-center justify-center">×</button>
+        </div>
+        <div className="px-5 py-4 flex flex-col gap-3.5">
+          <p className="m-0 text-[12px] text-brand-muted">
+            This variation was approved before applied commitments existed (or while its purchase order was not sent or closed), so its approved value
+            {' '}{money(variation.approvedSubtotal || 0)} has been shown as exposure only. Applying it moves the amounts on existing PO lines into
+            {' '}{variation.poNumber || 'the PO'}'s Remaining Committed. The approval itself — amounts, notes, dates, approver — is unchanged.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-[12px] text-brand-text">
+            <div><span className="block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px]">Variation</span>{variation.variationNumber} · {variation.title}</div>
+            <div><span className="block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px]">Purchase order</span>{variation.poNumber || '—'} · {variation.supplierName || '—'}</div>
+            <div><span className="block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px]">Approved (ex-GST)</span>{money(variation.approvedSubtotal || 0)}</div>
+          </div>
+          {!eligibility.eligible && <p className="m-0 text-[12px] text-brand-red">{eligibility.message}</p>}
+          <CommitmentEffectPanel preview={preview} mode="apply" currencyCode={currencyCode} acknowledged={acknowledged} onAcknowledge={setAcknowledged} />
+          {error && <p className="m-0 text-[12px] text-brand-red">{error}</p>}
+          <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
+            <Btn variant="ghost" type="button" onClick={onClose} sm disabled={saving}>Cancel</Btn>
+            <Btn sm type="button" disabled={saving || !valid} onClick={handle}>{saving ? 'Applying…' : 'Apply to commitment'}</Btn>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Assess ───────────────────────────────────────────────────────────────────
 
-function AssessVariationModal({ variation, currencyCode, onClose, onTransition }) {
+function AssessVariationModal({ variation, purchaseOrders = [], progressClaims = [], supplierInvoices = [], variations = [], forecastLines = [], currencyCode, onClose, onTransition }) {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const [approvedAmounts, setApprovedAmounts] = useState(
     (variation.lineItems ?? []).map(li => String(li.submittedAmount ?? 0))
   )
   const [assessmentNotes, setAssessmentNotes] = useState('')
+  const [ctcAcknowledged, setCtcAcknowledged] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState(null)
 
@@ -608,9 +829,25 @@ function AssessVariationModal({ variation, currencyCode, onClose, onTransition }
   const needsNotes   = approvalNeedsNotes(variation.lineItems, approvedAmounts)
   const validationError = validateApprovedAmounts(variation.lineItems, approvedAmounts, assessmentNotes)
 
+  // Commercial effect of THESE certified amounts on the linked PO (ADR-62) —
+  // approval of a PO-linked supplier variation applies them in the same write
+  // while the PO is sent/closed. A positive saved Uncommitted CTC on an affected
+  // cost code must be acknowledged before approving (see the panel).
+  const preview = commitmentEffectPreview({
+    variation: { ...variation, lineItems: previewLines }, purchaseOrders, progressClaims, supplierInvoices, variations, forecastLines,
+  })
+  const needsAck = preview.ctcWarning && !ctcAcknowledged
+  // Correction A (ADR-62): a PO-linked supplier variation is approved AND
+  // applied in one write, so a missing / cancelled / draft PO blocks approval
+  // here (UX mirror) and in the transaction and the rules (the controls).
+  const poBlocksApproval = preview.applicable && !preview.willApply
+  const confirmText = preview.willApply
+    ? `Approve ${variation.variationNumber}? Approved amounts freeze permanently, and ${money(preview.totals.matured)} is applied to ${preview.po?.poNumber ?? variation.poNumber}'s commitment.`
+    : `Approve ${variation.variationNumber}? Approved amounts freeze permanently.`
+
   async function handle(nextStatus) {
-    if (nextStatus === VARIATION_STATUS.APPROVED && validationError) return
-    if (nextStatus === VARIATION_STATUS.APPROVED && !window.confirm(`Approve ${variation.variationNumber}? Approved amounts freeze permanently.`)) return
+    if (nextStatus === VARIATION_STATUS.APPROVED && (validationError || needsAck || poBlocksApproval)) return
+    if (nextStatus === VARIATION_STATUS.APPROVED && !window.confirm(confirmText)) return
     if (nextStatus === VARIATION_STATUS.REJECTED && !window.confirm(`Reject ${variation.variationNumber}?`)) return
     setSaving(true)
     setError(null)
@@ -631,7 +868,7 @@ function AssessVariationModal({ variation, currencyCode, onClose, onTransition }
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-[760px] max-h-[90vh] overflow-y-auto bg-brand-surface border border-brand-border rounded-xl shadow-2xl">
+      <div className="relative z-10 w-full max-w-[820px] max-h-[90vh] overflow-y-auto bg-brand-surface border border-brand-border rounded-xl shadow-2xl">
         <div className="flex items-center justify-between px-5 py-4 border-b border-brand-border">
           <h2 className="text-[15px] font-bold text-brand-text m-0">
             Assess {variation.variationNumber} — {variation.clientName || variation.supplierName || '—'}
@@ -688,14 +925,16 @@ function AssessVariationModal({ variation, currencyCode, onClose, onTransition }
             <p className="m-0 font-bold">Approved total <span className="ml-2">{money(totals.total)}</span></p>
           </div>
 
+          <CommitmentEffectPanel preview={preview} mode="approve" currencyCode={currencyCode} acknowledged={ctcAcknowledged} onAcknowledge={setCtcAcknowledged} />
+
           {validationError && <p className="m-0 text-[12px] text-brand-red">{validationError}</p>}
           {error && <p className="text-[12px] text-brand-red">{error}</p>}
 
           <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
             <Btn variant="ghost" type="button" onClick={onClose} sm disabled={saving}>Cancel</Btn>
             <Btn variant="danger" sm type="button" disabled={saving} onClick={() => handle(VARIATION_STATUS.REJECTED)}>Reject</Btn>
-            <Btn sm type="button" disabled={saving || !!validationError} onClick={() => handle(VARIATION_STATUS.APPROVED)}>
-              {saving ? 'Saving…' : 'Approve'}
+            <Btn sm type="button" disabled={saving || !!validationError || needsAck || poBlocksApproval} onClick={() => handle(VARIATION_STATUS.APPROVED)}>
+              {saving ? 'Saving…' : preview.willApply ? 'Approve & apply to commitment' : 'Approve'}
             </Btn>
           </div>
         </div>
@@ -704,9 +943,20 @@ function AssessVariationModal({ variation, currencyCode, onClose, onTransition }
   )
 }
 
-function RowActions({ variation, onTransition, onAssess, onEdit }) {
+function RowActions({ variation, purchaseOrders, onTransition, onAssess, onEdit, onApply }) {
   const confirmThen = (label, nextStatus) => () => {
     if (window.confirm(`${label} ${variation.variationNumber}?`)) onTransition(variation, nextStatus).catch(() => {})
+  }
+  // Legacy Apply (ADR-62): an approved, PO-linked supplier variation without
+  // commitment stamps, whose PO is sent/closed in the register.
+  if (variation.status === VARIATION_STATUS.APPROVED) {
+    const eligibility = commitmentApplyEligibility(variation, purchaseOrders)
+    if (!eligibility.eligible) return null
+    return (
+      <div className="flex gap-1.5 justify-end">
+        <Btn sm variant="success" onClick={() => onApply(variation)}>Apply to commitment</Btn>
+      </div>
+    )
   }
   if (variation.status === VARIATION_STATUS.DRAFT) {
     return (
@@ -728,14 +978,41 @@ function RowActions({ variation, onTransition, onAssess, onEdit }) {
   return null
 }
 
+// The register's incorporation label (ADR-62) — how much of an approved
+// supplier variation has reached its PO's commitment. Nothing for client or
+// manual-mode variations, or before approval.
+function IncorporationTag({ variation, purchaseOrders, currencyCode }) {
+  const money = (n) => formatCurrency(n, currencyCode)
+  const inc = variationIncorporation(variation, purchaseOrders)
+  if (inc.state === INCORPORATION_STATE.NOT_APPLICABLE || inc.state === INCORPORATION_STATE.NOT_APPROVED) return null
+  const cls = inc.state === INCORPORATION_STATE.INCORPORATED ? 'text-brand-accent'
+    : inc.state === INCORPORATION_STATE.EXCEPTION ? 'text-brand-red'
+    : 'text-brand-amber'
+  // The PROCESS stamp and the AMOUNTS are shown apart (Correction C): gross
+  // approved · incorporated into the PO commitment · still separate exposure.
+  return (
+    <span className="block text-[11px] text-brand-muted whitespace-nowrap" title={INCORPORATION_STATE_HELP[inc.state]}>
+      <span className={`font-semibold ${cls}`}>{INCORPORATION_STATE_LABELS[inc.state]}</span>
+      {inc.applied ? ' · applied' : ' · not applied'}
+      <span className="block">approved {money(inc.gross)} · in commitment {money(inc.matured)} · exposure {money(inc.outstanding)}</span>
+    </span>
+  )
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ProjectVariations() {
   const { projectId, currencyCode } = useOutletContext()
   const money = (n) => formatCurrency(n, currencyCode)
 
-  const { variations, variationsLoading, createVariation, updateVariation, transitionStatus } = useVariations(projectId)
+  const { variations, variationsLoading, createVariation, updateVariation, transitionStatus, applyVariationCommitment } = useVariations(projectId)
   const { purchaseOrders } = usePurchaseOrders(projectId)
+  // Read for the commercial-effect preview only (ADR-62): what the linked PO
+  // has recognised and the saved Uncommitted CTC per cost code. The page
+  // writes none of them.
+  const { progressClaims } = useProgressClaims(projectId)
+  const { supplierInvoices } = useSupplierInvoices(projectId)
+  const { forecastLines } = useForecastLines(projectId)
   const { contacts, contactsError } = useContacts()
   const { costCodes, costCodesError } = useCostCodes()
   // Originating-RFI candidates (evidence link, ADR-34) — read only; the
@@ -744,6 +1021,7 @@ export default function ProjectVariations() {
   const eligibleRfis = useMemo(() => eligibleOriginRfis(rfis), [rfis])
   const [editing, setEditing]         = useState(null)   // 'new' | draft variation | null
   const [assessing, setAssessing]     = useState(null)
+  const [applying, setApplying]       = useState(null)   // approved variation awaiting legacy Apply
   const [actionError, setActionError] = useState(null)
   const [typeTab, setTypeTab]         = useState('all')  // 'all' | 'client' | 'supplier'
   const [search, setSearch]           = useState('')
@@ -783,6 +1061,19 @@ export default function ProjectVariations() {
     }
   }
 
+  // Legacy Apply (ADR-62) — the LIVE copy is resolved by id so a stale row can
+  // never be applied; the hook's transaction re-reads the server copies.
+  async function handleApply(variation) {
+    setActionError(null)
+    const live = variations.find(v => v.id === variation.id) ?? variation
+    try {
+      await applyVariationCommitment(live)
+    } catch (err) {
+      setActionError(writeErrorMessage(err, 'Failed to apply the variation to its commitment. Check your connection and try again.'))
+      throw err
+    }
+  }
+
   // Draft edit — stale-editor guard (ADR-35). The save path resolves the LIVE
   // document from the subscribed collection by id and refuses to write unless
   // it is STILL a draft, so an editor left open across a submit / withdraw by
@@ -805,7 +1096,7 @@ export default function ProjectVariations() {
 
   return (
     <div>
-      <SummaryCards variations={variations} currencyCode={currencyCode} />
+      <SummaryCards variations={variations} purchaseOrders={purchaseOrders} currencyCode={currencyCode} />
 
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3.5">
         <div className="flex gap-1">
@@ -902,7 +1193,10 @@ export default function ProjectVariations() {
                       )}
                     </td>
                     <td className="px-3.5 py-3 text-[13px] text-brand-text">{counterpartyOf(v) || '—'}</td>
-                    <td className="px-3.5 py-3 text-[12px] text-brand-muted whitespace-nowrap">{v.poNumber || '—'}</td>
+                    <td className="px-3.5 py-3 text-[12px] text-brand-muted whitespace-nowrap">
+                      {v.poNumber || '—'}
+                      <IncorporationTag variation={v} purchaseOrders={purchaseOrders} currencyCode={currencyCode} />
+                    </td>
                     <td className="px-3.5 py-3 text-[13px] text-brand-text whitespace-nowrap">{money(v.submittedTotal || 0)}</td>
                     <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">
                       {v.approvedTotal == null ? '—' : money(v.approvedTotal)}
@@ -911,7 +1205,7 @@ export default function ProjectVariations() {
                       <Badge label={VARIATION_STATUS_LABELS[v.status] ?? v.status} variant={VARIATION_BADGE_VARIANTS[v.status]} sm />
                     </td>
                     <td className="px-3.5 py-3">
-                      <RowActions variation={v} onTransition={handleTransition} onAssess={setAssessing} onEdit={setEditing} />
+                      <RowActions variation={v} purchaseOrders={purchaseOrders} onTransition={handleTransition} onAssess={setAssessing} onEdit={setEditing} onApply={setApplying} />
                     </td>
                   </tr>
                 ))}
@@ -945,8 +1239,27 @@ export default function ProjectVariations() {
         <AssessVariationModal
           currencyCode={currencyCode}
           variation={assessing}
+          purchaseOrders={purchaseOrders}
+          progressClaims={progressClaims}
+          supplierInvoices={supplierInvoices}
+          variations={variations}
+          forecastLines={forecastLines}
           onClose={() => setAssessing(null)}
           onTransition={handleTransition}
+        />
+      )}
+      {applying && (
+        <ApplyCommitmentModal
+          key={applying.id}
+          currencyCode={currencyCode}
+          variation={variations.find(v => v.id === applying.id) ?? applying}
+          purchaseOrders={purchaseOrders}
+          progressClaims={progressClaims}
+          supplierInvoices={supplierInvoices}
+          variations={variations}
+          forecastLines={forecastLines}
+          onClose={() => setApplying(null)}
+          onApply={handleApply}
         />
       )}
     </div>

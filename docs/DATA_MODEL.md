@@ -399,14 +399,14 @@ financial roles (ADR-56).
 | `lineItems` | array | **Embedded**; editable while `draft` (add/remove/reorder, cost code, description, qty, unit, rate — `costCodeName` re-snapshotted from the live list on save, ADR-36); frozen once the PO leaves draft. **Rules enforce the draft-only edit and the freeze after send, and bound the list to 1–200 elements** (a draft with no line cannot be sent). Element CONTENTS are unverifiable by rules (DC35): `validatePoDraft` additionally refuses a negative qty / rate since ADR-57 |
 | `subtotal`, `gst`, `total` | number | Denormalised from lines; GST = 10% of subtotal (flat, whatever the currency). **Rules: all `>= 0`; `cents(subtotal) + cents(gst) == cents(total)` exactly; `cents(gst) == floor((cents(subtotal) + 5) / 10)` exactly, or — only when `cents(subtotal) % 10 == 5` — one cent below it** (the app's `poTotals` rounds some half-cent boundaries down in floating point: 40.15 → 4.01; the deviation is provably never upward and never off a boundary). `subtotal == Σ lineTotal` is NOT verified (DC35). Frozen after send |
 | `currency` | string | **Audit snapshot** of the project currency at write time (frozen, like `supplierName`/`costCodeName`). **Never read for display** — the project currency is the display authority, so a project can never render mixed currencies. Documents created before this foundation keep their stored `AUD` and are **never rewritten**. **Rules (ADR-57): at create must equal the project's resolved currency — the project's well-formed `currency`, else the company's well-formed `baseCurrency`, else `AUD` (`lib/currency.js → resolveProjectCurrency`, via two `get()`s); the project must exist; frozen afterwards** |
-| `revision` | number | 1 today. Rules: a number at create, frozen (no version guard uses it — draft edits are last-write-wins, DC35) |
+| `revision` | number | 1 today. Rules: a number at create, frozen (no version guard uses it — draft edits are last-write-wins, DC35). **A PO is never revised or amended in place (ADR-7 / ADR-57 / ADR-62): an approved supplier variation applied to it adjusts the line's contractual value at READ TIME only** |
 | `sentAt`, `closedAt`, `cancelledAt` | timestamp \| null | Stamped on transition. **Rules: all null at create; the transition's own stamp `== request.time`; a transition may touch no other stamp** |
 | `sentBy`, `closedBy`, `cancelledBy` | uid \| null | **ADR-57 additions** — the actor of each transition, `== request.auth.uid` by rules. Null at create. **Absent on POs written before M2-B1**; rules compare them through `get(key, null)`, so those documents stay sendable, closable and cancellable and acquire the key on that transition |
 | `externalRefs` | map | Empty today; reserved for accounting integrations (Xero/MYOB/QuickBooks IDs). Rules: a map at create, frozen (a future integration write needs a rules change) |
 | `createdAt` / `createdBy` | timestamp / uid | Rules require `createdBy == request.auth.uid` and `createdAt == request.time` at create, and freeze both for life |
 | `updatedAt` / `updatedBy` | timestamp / uid | **ADR-57 addition** (M2-B1). Required by rules on **every** write — create, draft edit, and all three transitions (`updatedBy == request.auth.uid`, `updatedAt == request.time`). Absent on POs written before M2-B1; required only of the *incoming* document, so those acquire it on their next valid write. Last-write only — no field-level history (Deferred Control 7) |
 
-| `sourceTenderPackageId`, `sourceTenderBidId`, `sourceTenderNumber` | string (OPTIONAL) | **ADR-61 (M3-A — not yet deployed).** Present TOGETHER on a PO raised from an awarded tender package; **absent** on a manual or legacy PO (never null, never partial, never backfilled). Rules: admitted by the create `hasOnly` (not `hasAll`); when present, `get()`-verified — the same-project package is `awarded`, its `awardedBidId` is the cited bid and its `tenderNumber` the snapshot; the bid is `received`, of that package, and its `bidderContactId` / `bidderName` equal the PO's `supplierId` / `supplierName`; and the package points back at this PO after the commit (`getAfter`). Frozen for life (`corePreserved`, absent keys compare as null). No financial selector reads them — a raised PO counts exactly like a manual one, through its status and lines |
+| `sourceTenderPackageId`, `sourceTenderBidId`, `sourceTenderNumber` | string (OPTIONAL) | **ADR-61 (M3-A — live since 29 October 2026).** Present TOGETHER on a PO raised from an awarded tender package; **absent** on a manual or legacy PO (never null, never partial, never backfilled). Rules: admitted by the create `hasOnly` (not `hasAll`); when present, `get()`-verified — the same-project package is `awarded`, its `awardedBidId` is the cited bid and its `tenderNumber` the snapshot; the bid is `received`, of that package, and its `bidderContactId` / `bidderName` equal the PO's `supplierId` / `supplierName`; and the package points back at this PO after the commit (`getAfter`). Frozen for life (`corePreserved`, absent keys compare as null). No financial selector reads them — a raised PO counts exactly like a manual one, through its status and lines |
 
 ⚠️ **Publishing the ADR-57 rules needs the ADR-40 ordering gate** — the
 pre-M2-B1 bundle sends neither the audit stamps nor the `*By` stamps, so the
@@ -414,6 +414,17 @@ application build ships first and the rules second ([DEPLOYMENT.md](DEPLOYMENT.m
 **The ADR-61 keys are the reverse case: RULES FIRST** — the old bundle never
 writes them, the new rules accept every old write, and the new bundle's raise
 needs the new rules.
+
+**Applied supplier variations (ADR-62, M3-B1 — implemented, not yet deployed).**
+Nothing is written onto a PO. An approved supplier variation that names this PO
+and carries the rules-stamped `commitmentAppliedAt/By` pair (see *variations*)
+revises the PO LINE its `poLineIndex` names at read time — `revised = lineTotal
++ Σ applied approved amounts` (`lib/purchaseOrders.js → revisedLineTotal`,
+`revisedCommitmentByPoLine`, `committedByCostCode(pos, adjustments)`), the
+ceiling the ADR-55 Remaining Committed nets apply to. `committedByCostCode(pos)`
+with no adjustments is the ORIGINAL contractual commitment; with the applied map
+it is the REVISED one. Lines with no `poLineIndex` (new scope) adjust nothing in
+M3-B1.
 
 Each line item: `{ costCodeId, costCodeName, description, qty, unit, unitPrice, lineTotal }`
 (`lineTotal` = qty × unitPrice, ex-GST, rounded to cents). On an award-raised
@@ -942,6 +953,13 @@ with `subtotal + gst == total` exact on both sides — never clamped, never
 bounded against submitted. `lineItems` CONTENTS, the header GST against the
 lines, notes-required-when-differing and uniqueness stay client-only
 (SECURITY.md → *Variations — rules-enforced lifecycle*, Deferred Control 37).
+**Commitment application (ADR-62, M3-B1 — implemented, not yet deployed):** a
+PO-linked supplier variation approves ONLY with `commitmentAppliedAt/By` and ONLY
+while its PO exists in this project and is sent/closed (approve + apply in one
+write; a cancelled, draft or missing PO refuses the approval); branch (f) applies
+a legacy approved, stamp-less one exactly once. The Stage-1 transitional ruleset
+makes the pair optional on that one branch for the pre-M3-B1 bundle, nothing else. Line CONTENTS stay unverifiable, so which
+lines mature is the client's classification (Deferred Control 39).
 
 | Field | Type | Notes |
 |---|---|---|
@@ -973,6 +991,7 @@ lines, notes-required-when-differing and uniqueness stay client-only
 | `attachments` | array | **Reserved** — always `[]`; no Storage uploads yet |
 | `externalRefs` | map | **Reserved** — accounting-system IDs |
 | `supersededByVariationId` | string \| null | **Reserved** — revision workflow; null at create and frozen (rules) |
+| `commitmentAppliedAt`, `commitmentAppliedBy` | timestamp, uid (OPTIONAL) | **ADR-62 (M3-B1 — implemented, not yet deployed).** The commitment-application pair: present TOGETHER once an approved, PO-linked SUPPLIER variation has been applied to its PO's commitment; **absent** otherwise (never null; absent at create by rules). REQUIRED by the FINAL rules on the approve of any PO-linked supplier variation (branch c; the PO must exist here and be sent/closed — otherwise the approval is refused, never approved unapplied), or written once by the legacy *Apply* (branch f) on an approved document whose pair is still absent — `commitmentAppliedBy == request.auth.uid`, `commitmentAppliedAt == request.time`, the PO `get()`-verified sent/closed, both rules-enforced; a repeat Apply is refused by rules (stored pair must be null); manual-mode supplier and client variations can never carry the pair. Read by `lib/variations.js → isCommitmentApplied / appliedSupplierVariationAdjustments`: an applied variation's EXISTING-LINE amounts (a `poLineIndex` whose cost code matches the PO line) revise that PO line at read time; its new-scope and invalid lines stay in unapplied exposure. Absent on every variation written before M3-B1 (legacy = unapplied = the pre-ADR-62 figures, unchanged) |
 | `createdAt` / `createdBy` | timestamp / uid | `== request.time` / `== request.auth.uid` at create; immutable (ADR-59) |
 | `updatedAt` / `updatedBy` | timestamp / uid | **ADR-59 addition (M2-B3).** Required by rules on **every** write — create, draft edit and all four transitions. Absent on variations written before M2-B3; required only of the *incoming* document, so those acquire it on their next valid write |
 
@@ -1014,8 +1033,8 @@ re-derived) and the `originRfi*` triple. Every draft line's `approvedAmount`/
 `assessmentNotes`, `submittedDate`/`approvedDate`, every `…At`/`…By` stamp,
 `currency`, `revision`, `forecastAmount`, `attachments`, `externalRefs`,
 `supersededByVariationId`, `createdAt`/`createdBy` — and `notes`, which has no
-editor input and passes through unchanged. **Since ADR-59 (M2-B3, NOT YET
-DEPLOYED) that immutability is RULES-ENFORCED**: the draft-edit branch's
+editor input and passes through unchanged. **Since ADR-59 (M2-B3, live since
+27 October 2026) that immutability is RULES-ENFORCED**: the draft-edit branch's
 `hasOnly` list is exactly the editable keys above plus `revision`,
 `updatedAt`, `updatedBy`, and every other branch is stamps-only, so none of
 these fields can move on any update. The edit runs through a revision-guarded
@@ -1657,7 +1676,7 @@ Bids. Creating a package therefore does **not** lock the project currency.
 | `issuedAt`/`issuedBy`, `awardedAt`/`awardedBy`, `cancelledAt`/`cancelledBy` | ts / uid | Null until each transition. Rules force the actor to the caller and the stamp to `request.time` |
 | `createdAt`/`createdBy` | ts / uid | Set once; rules reject any later change |
 | `updatedAt`/`updatedBy` | ts / uid | Refreshed on **every** write path |
-| `raisedPoId`, `raisedPoNumber`, `raisedPoAt`, `raisedPoBy` | string \| null, string \| null, ts \| null, uid \| null | **ADR-61 (M3-A — not yet deployed).** The ONE CURRENT purchase order raised from this award. Absent on packages created before M3-A and null on new ones until a PO is raised (rules accept either at create and preserve them through the draft edit). Written by branch (f) once — in the SAME commit that creates the PO, `getAfter()`-verified: a `draft` created in this commit, numbered as recorded, citing this package and its `awardedBidId`; actor == caller, time == `request.time` — and by branch (g) again only when the previously linked PO is `get()`-verified `cancelled`. The cancelled PO keeps its own source keys, so the history of every PO raised from an award is read from the PO register, never from here |
+| `raisedPoId`, `raisedPoNumber`, `raisedPoAt`, `raisedPoBy` | string \| null, string \| null, ts \| null, uid \| null | **ADR-61 (M3-A — live since 29 October 2026).** The ONE CURRENT purchase order raised from this award. Absent on packages created before M3-A and null on new ones until a PO is raised (rules accept either at create and preserve them through the draft edit). Written by branch (f) once — in the SAME commit that creates the PO, `getAfter()`-verified: a `draft` created in this commit, numbered as recorded, citing this package and its `awardedBidId`; actor == caller, time == `request.time` — and by branch (g) again only when the previously linked PO is `get()`-verified `cancelled`. The cancelled PO keeps its own source keys, so the history of every PO raised from an award is read from the PO register, never from here |
 
 **⚠️ Deliberately NOT stored:** `awardTotal` (see the bid section — no stored
 header totals, ever), `currency` (no amounts to label), `projectId` (the path
@@ -1760,7 +1779,7 @@ exactly as budget lines, PO lines, claim lines, and invoice lines already do.
 | **Estimates** | Rates + margin/overheads applied to BOQ items → estimate; BOQ → Budget transfer | Priced per cost code |
 | ~~**Tender packages / bids / awards**~~ | **Implemented** as `tenderPackages` + `tenderBids` above (ADR-32 Part 2) — cost-code + free-text scope, manual bids, read-time Tender Comparison, award as a decision record | Package `costCodes[]` and bid `lineItems[]` carry `costCodeId` |
 | **BOQ scope schedule on tenders** | Optional frozen snapshot of BOQ items onto a package at issue (future, separate design) | Adds `boqItemId` per schedule line |
-| ~~**"Raise PO from Award"**~~ | **Implemented** as the ADR-61 source triple on `purchaseOrders` + the back-link on `tenderPackages` (M3-A — not yet deployed): one guarded transaction creates a DRAFT PO from the awarded bid and links the two atomically; no awarded-vs-committed netting is inferred | Each PO line carries the bid line's `costCodeId` |
+| ~~**"Raise PO from Award"**~~ | **Implemented** as the ADR-61 source triple on `purchaseOrders` + the back-link on `tenderPackages` (M3-A — live since 29 October 2026): one guarded transaction creates a DRAFT PO from the awarded bid and links the two atomically; no awarded-vs-committed netting is inferred | Each PO line carries the bid line's `costCodeId` |
 | **Budget Adjustments** | Internal budget transfers/revisions (no external counterparty) — **a distinct future document type, not a variation** | Reallocate budget by cost code |
 | **Forecast period snapshots** | Immutable monthly cost-to-complete snapshots + prior-period comparison (the *current* per-cost-code forecast inputs are **implemented** above as `forecastLines`) | Aggregated by cost code |
 | **Final account records** | Closing budget-vs-actual reconciliation | Reconciled per cost code |
@@ -1779,7 +1798,8 @@ a design assessment, a hook, and (where a new collection is introduced) a manual
 - POs → contacts via `supplierId`, with `supplierName` snapshotted at write time (same pattern as `costCodeName`). Null `supplierId` = pre-Contacts PO; render from the snapshot.
 - Claims → POs via `poId`, with `poNumber`/`supplierName`/`supplierId`/`poLineTotal` snapshotted. Claims inherit supplier identity from the PO — they never reference contacts directly.
 - Variations → cost codes via `costCodeId` (with `costCodeName` snapshot) on every line; supplier variations → one PO via `poId` (with `poNumber`/`supplierName` snapshot) and optionally a PO line via `poLineIndex`; client variations → a client contact via `clientId`/`clientName`. Approved variations affect figures **only at read time** — no PO/claim/invoice/budget-line mutation.
-- `progressClaims.variationId` is a **reserved** forward-link to a Supplier Variation — still `null`; the Variations foundation does not wire claim-against-variation yet.
+- Applied supplier variations → PO lines (ADR-62, M3-B1): `commitmentAppliedAt/By` on the variation + `poLineIndex` on its lines; read-time only — the PO is never written, and new-scope lines (no `poLineIndex`) await M3-B2.
+- `progressClaims.variationId` is a **reserved** forward-link to a Supplier Variation — still `null`; claim-against-variation (new-scope lines) is M3-B2.
 - Supplier invoices → POs via `poId` (required; one PO per invoice) and → approved claims via `progressClaimId` (source `progress_claim` only). Supplier identity is snapshotted from the PO/claim (`supplierId`/`supplierName`) — invoices never read contacts for identity. Invoice lines link to PO lines via `poLineIndex`. Claims are **never** mutated or stamped when invoiced; double-counting is avoided at read time (see [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md)).
 - Forecast lines → cost codes via `costCodeId`, which is **also the document ID** (one current forecast per cost code). They store only the manual `uncommittedCostToComplete` + `notes`; every displayed figure is derived at read time and never written back (`lib/forecast.js`). Forecast lines never mutate POs, claims, invoices, variations, or budget lines.
 - The commercial baseline → a client contact via `clientId` (with a frozen `clientName` snapshot); optional. It stores contract inputs only — every margin figure is derived at read time from the baseline, approved client variations, and Forecast Final Cost, and is never written back to the baseline or any other document.

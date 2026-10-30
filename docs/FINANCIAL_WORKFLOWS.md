@@ -121,21 +121,33 @@ derived — the ADR-55 formulas read the same fields they always did.
 
 ### Committed-cost calculation
 
-Two figures, deliberately kept apart (ADR-55):
+Three figures, deliberately kept apart (ADR-55, ADR-62):
 
 ```
-Total commitment(costCode)    = Σ lineTotal of every line with that costCodeId
+Original commitment(costCode) = Σ lineTotal of every line with that costCodeId
                                 across POs in status ∈ { sent, closed }
-                                (lib/purchaseOrders.js → committedByCostCode — never matures)
+                                (lib/purchaseOrders.js → originalCommittedByCostCode — never matures)
+
+Revised line value(PO line)   = lineTotal + Σ APPLIED approved supplier-variation amounts
+                                whose poLineIndex names this line (signed; M3-B1, ADR-62 —
+                                lib/variations.js → appliedSupplierVariationAdjustments().byPoLine,
+                                lib/purchaseOrders.js → revisedLineTotal)
+Revised commitment(costCode)  = Σ revised line value, attributed to the PO LINE's cost code
+                                (committedByCostCode(pos, adjustments) — never matures)
 
 Remaining Committed(costCode) = Σ over the same lines of
-                                max(0, lineTotal
+                                max(0, revised line value
                                        − posted/paid supplier-invoice amount on the line
                                        − approved claim value on the line NOT yet superseded
                                          by a posted claim-sourced invoice)
                                 (lib/purchaseOrders.js → remainingCommittedByCostCode —
                                  THE one formula every Committed figure uses)
 ```
+
+An applied variation only moves the ceiling the two nets apply to; the nets are
+subtracted once each, so the ADR-55 claim → invoice hand-over is unchanged and a
+claim for variation work leaves Remaining Committed at the moment it enters
+Actual, exactly as base work does. The PO document is never written (ADR-7).
 
 *Committed* on the Budget, Forecast, Commercial, Dashboard, Cash Flow and
 PULSE surfaces is **Remaining Committed**: ordered and **not yet recognised as
@@ -1336,18 +1348,24 @@ All derived figures group PO/claim **line items by `costCodeId`** and are ex-GST
 | **Invoiced** | Σ ex-GST line `amount` of supplier invoices in `posted`/`paid` **− Σ ex-GST line `amount` of posted valid-target supplier credit notes**, grouped by cost code (signed, never clamped) | Derived from invoices − credit notes |
 | **Remaining** | `Budgeted − Actual` (per line and in total) | Computed |
 
-**The six canonical figures are unchanged by Variations.** The Budget page adds
-two **separate, clearly-labelled** read-time figures sourced from approved supplier
-variations (`lib/variations.js`), and **does not** alter the Committed formula:
+**Supplier variations and the six figures (ADR-62, M3-B1 — implemented, not yet
+deployed).** An approved supplier variation that names a sent/closed PO and has
+been **applied** (the rules-stamped `commitmentAppliedAt/By` pair, written by the
+approve transition or the one-time legacy *Apply*) revises the PO line it
+extends — so its existing-line amounts are INSIDE Committed above, matured by
+the same claims and invoices. The Budget page adds three **separate,
+clearly-labelled** read-time figures (`lib/variations.js`):
 
 | Figure | Definition | Source |
 |---|---|---|
-| **Approved Supplier Variations** | Σ approved supplier-variation line `approvedAmount` by cost code (signed; not clamped) | Derived from variations |
-| **Commitment Exposure** | `Committed + Approved Supplier Variations` (ex-GST) — **not** "Adjusted Committed" | Computed |
+| **Applied Supplier Variations** | Σ applied existing-line `approvedAmount`, by the PO LINE's cost code (signed) — **already inside Committed**, shown for transparency, never added again | `appliedSupplierVariationAdjustments().byCostCode` |
+| **Unapplied Supplier Variations** | Σ approved `approvedAmount` NOT inside Committed: every line of an unapplied (legacy) variation, plus the new-scope and invalid lines of an applied one (signed; not clamped) | `unappliedSupplierVariationsByCostCode` |
+| **Commitment Exposure** | `Committed + Unapplied Supplier Variations` (ex-GST) — **not** "Adjusted Committed" | Computed |
 
-Commitment Exposure is explicitly **separate** from Committed: approved variation
-amounts **do not yet mature** against progress claims or supplier invoices. UI
-helper text states this.
+By construction `Approved Supplier Variations (gross) = Applied + Unapplied` per
+cost code, so no amount is in two figures. Before M3-B1 every approved variation
+was unapplied and Commitment Exposure was `Committed + Approved Supplier
+Variations`; a legacy project reads exactly the same until a variation is applied.
 
 ### Committed means *remaining open commitment* — ordered and not yet recognised as Actual
 
@@ -1576,7 +1594,7 @@ fails it is `INVALID`, totals nothing and blocks the apply.
 
 Tender packages, manual bid capture, read-time Tender Comparison, the award
 decision record (ADR-32 Part 2) and **"Raise PO from Award"** (ADR-61, M3-A —
-implemented, not yet deployed: the explicit, reviewed transfer of the awarded
+live since 29 October 2026: the explicit, reviewed transfer of the awarded
 bid into a linked DRAFT purchase order, snapshotting supplier and lines at the
 transfer point) are **implemented**, scoped by **cost codes + free-text scope**.
 Still planned: assembling packages from **BOQ items** (an optional frozen scope
@@ -1656,14 +1674,37 @@ credits/omissions and are **not** clamped.
   **never** mutate POs/claims/invoices, and **do not** directly affect Claimed,
   Invoiced, or Actual. Negative approved supplier variations reduce the total;
   nothing is clamped to zero.
+- **Applied supplier variations (M3-B1, ADR-62).** A PO-linked supplier
+  variation is **approved and applied in one write** (`commitmentAppliedAt/By`,
+  rules-stamped) and only while its PO exists and is sent/closed — a cancelled,
+  draft or missing PO REFUSES the approval (withdraw or reject it, or raise it
+  again against a current PO); one approved before M3-B1 stays unapplied until
+  an explicit one-time *Apply to commitment*. The register shows, apart from
+  the stamp, the gross approved amount, the amount inside the revised PO
+  commitment and the outstanding separate exposure, with one of five states:
+  *Fully incorporated*, *Partially incorporated*, *Awaiting M3-B2* (new scope
+  only), *Not yet applied*, *Invalid — needs review*. Applied
+  **existing-line** amounts (`poLineIndex` present, cost code matching the PO
+  line) revise that PO line inside Remaining Committed and are matured by the
+  same claims and invoices; **new-scope** lines (no `poLineIndex`) stay as
+  unapplied exposure "awaiting M3-B2" (a variation with both shows *Partially
+  incorporated*); invalid lines (missing / non-committed PO, out-of-range index,
+  cost-code mismatch, non-numeric amount) mature nothing, stay in exposure and
+  are listed by SHIELD check 4 condition F. A negative applied variation lowers
+  the ceiling (the line floors at 0) — it never creates a credit note or an
+  Actual offset; when recognised claims already exceed the lowered ceiling (or a
+  claim was approved above the line before its covering variation was applied)
+  SHIELD check 4 condition G lists the PO line with claim recognition and posted
+  invoicing shown apart (the ADR-55 hand-over counted once). The PO document is
+  never written.
 - **Approved Client Variations** are derived as revenue totals at read time and do
   **not** alter the cost Budget. Revenue and supplier-cost variations stay strictly
   separate.
 
-**Deferred (not in this foundation):** claim-against-variation and
-invoice-against-variation linkage (the reserved `progressClaims.variationId` stays
-`null`; no variation references are added to PO/claim/invoice line items), and
-maturing variation commitment against claims/invoices. **Internal Budget
+**Deferred (M3-B2):** claim-against-variation and invoice-against-variation
+linkage for NEW-SCOPE variation lines (the reserved `progressClaims.variationId`
+stays `null`; no variation references are added to PO/claim/invoice line items
+yet), a unified recognition key and the relaxed claim line-count pin. **Internal Budget
 Adjustments** (budget transfers/revisions with no external counterparty) are a
 **separate future document type**, deliberately *not* modelled as variations.
 
@@ -1720,16 +1761,24 @@ otherwise 0). It is **never** auto-applied: remaining budget is a target, not a
 prediction — assuming it equals remaining cost would force Variance to zero and
 hide overruns.
 
-**Supplier variations are separate exposure, never added to the forecast.**
-Approved and pending supplier variations **do not yet mature** against claims or
-invoices, so they are shown as **separate context** (Approved Supplier Variation
-Exposure, Pending Supplier Variation Exposure) and are **not** added into Forecast
-Final Cost. There is deliberately **no "Forecast Final Cost including variation
-exposure" total** — because a variation cannot yet be attributed against the claims
-or invoices on its PO, auto-adding it would double-count it the moment the varied
-PO is invoiced. The forecaster instead consciously folds the remaining expected
-variation cost into **Uncommitted Cost to Complete**. (Client variations are
-revenue-side and do **not** appear on the cost forecast at all.)
+**Applied supplier variations are inside the forecast once; unapplied and pending
+exposure never (ADR-62).** An approved supplier variation APPLIED to its PO is
+inside Remaining Committed — and so inside Forecast Final Cost — through the one
+formula, and is matured by the same claims and invoices as the original PO line.
+Unapplied approved value (legacy variations not yet applied, new-scope lines
+awaiting M3-B2, invalid links) and pending variations are shown as **separate
+context** (Applied Supplier Variations, Unapplied Supplier Variation Exposure,
+Pending Supplier Variation Exposure) and are **not** added into Forecast Final
+Cost. There is deliberately **no "Forecast Final Cost including exposure"
+total**. **CTC double-counting review (required of the QS):** before M3-B1 this
+page asked the forecaster to fold approved supplier variations into **Uncommitted
+Cost to Complete**; once a variation is applied that amount is in Remaining
+Committed, so any CTC that still contains it double-counts FFC. The Assess and
+Apply dialogs show the saved CTC on each affected cost code, warn when it is
+positive (a possibility, never a proof) and require an acknowledgement before
+confirming; **nothing is subtracted automatically** — the QS reviews and edits
+CTC on this tab. (Client variations are revenue-side and do **not** appear on the
+cost forecast at all.)
 
 **Cost-code union.** The Forecast table includes every cost code that appears in
 **any** of: budget lines, sent/closed PO lines, Actual, posted/paid supplier
@@ -2065,11 +2114,12 @@ Margin Movement            = Forecast Gross Profit − Original Planned Profit
 **Variations stay separate.** **Approved client variations** raise Current Contract
 Sum (signed — negative approved client variations reduce it, never clamped).
 **Pending client variations** are shown as separate **revenue exposure** and are
-**not** in Forecast Revenue. **Approved and pending supplier variations** are shown as
-separate **cost exposure** and are **never** added to Forecast Final Cost (they do not
-yet mature against claims/invoices — auto-adding would double-count once the varied PO
-is invoiced; the forecaster folds real expected variation cost into Uncommitted Cost
-to Complete on the Forecast tab).
+**not** in Forecast Revenue. **Applied supplier variations** (ADR-62) are inside Forecast Final
+Cost through Remaining Committed, once; **unapplied and pending supplier variations**
+are shown as separate **cost exposure** and are **never** added to Forecast Final Cost
+(unapplied value has no recognition path yet — new-scope lines await M3-B2; the QS
+removes from Uncommitted Cost to Complete any variation cost folded in before it was
+applied).
 
 **Currency.** Margin values are **ex-GST** and display in the **project's**
 currency. The baseline stores no `currency` field and needs none — it inherits the
@@ -2106,11 +2156,11 @@ cost-to-complete, cash flow, and the final account.
   credit notes remain future work.
 - **Attachments** — the reserved `attachments: []` array on invoices anchors
   future Firebase Storage uploads (invoice PDFs); no uploads today.
-- **Variation → claim/invoice linkage** — the reserved `variationId` on claims
-  will link a Supplier Variation into claiming; invoice-against-variation and
-  maturing variation commitment against claims/invoices follow. The Variations
-  foundation itself is implemented (see above); only this downstream linkage is
-  deferred.
+- **Variation → claim/invoice linkage for NEW-SCOPE lines (M3-B2)** — the
+  reserved `variationId` on claims will give new-scope variation lines a
+  claimable identity; claim-sourced invoice lines follow. Existing-line
+  variation commitment already matures through the PO line it extends (M3-B1,
+  ADR-62).
 - **Budget Adjustments** — internal budget transfers/revisions (no external
   counterparty) as a distinct future document type, separate from Variations.
 - **Xero / MYOB / QuickBooks** — the empty `externalRefs` map on POs, claims, and

@@ -64,8 +64,8 @@ function MarginCards({ currencyCode, costCodes, budgetLines, purchaseOrders, pro
     [costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines],
   )
   const m = useMemo(
-    () => computeMargin({ baseline, variations, forecastFinalCost: forecastTotals.forecastFinalCost }),
-    [baseline, variations, forecastTotals.forecastFinalCost],
+    () => computeMargin({ baseline, variations, forecastFinalCost: forecastTotals.forecastFinalCost, purchaseOrders }),
+    [baseline, variations, forecastTotals.forecastFinalCost, purchaseOrders],
   )
 
   if (baselineLoading) return null

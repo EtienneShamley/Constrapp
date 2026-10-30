@@ -93,6 +93,14 @@ const SOURCES = {
       lineItems: [{ costCodeId: 'cc7', approvedAmount: 50 }] },
     { id: 'v4', variationType: 'supplier', status: 'submitted', submittedSubtotal: 70,
       lineItems: [{ costCodeId: 'cc2', submittedAmount: 70 }] },
+    // ADR-62 (M3-B1): an APPLIED, PO-linked supplier variation extends po1 line 0
+    // by 120, so `variations` is a DECLARED source of remainingCommitted / FFC
+    // (a failed variations read must make them UNAVAILABLE, never a figure that
+    // silently omits the adjustment), and the PO register decides applied vs
+    // unapplied, so `purchaseOrders` is a DECLARED source of the exposure figures.
+    { id: 'v5', variationType: 'supplier', status: 'approved', poId: 'po1', poNumber: 'PO-0001', approvedSubtotal: 120,
+      commitmentAppliedAt: { seconds: 1, nanoseconds: 0 }, commitmentAppliedBy: 'u_qs',
+      lineItems: [{ costCodeId: 'cc1', poLineIndex: 0, approvedAmount: 120 }] },
   ],
   forecastLines: [
     { id: 'cc1', costCodeId: 'cc1', uncommittedCostToComplete: 150 },
@@ -110,7 +118,7 @@ const emptied = (source) => ({ ...SOURCES, [source]: source === 'baseline' ? nul
 function evaluate(sources) {
   const { baseline, ...rest } = sources
   const totals = projectForecastTotals(rest)
-  const m = computeMargin({ baseline, variations: sources.variations, forecastFinalCost: totals.forecastFinalCost })
+  const m = computeMargin({ baseline, variations: sources.variations, forecastFinalCost: totals.forecastFinalCost, purchaseOrders: sources.purchaseOrders })
   const rows = buildForecastRows(rest).map(r => composeForecastRow(r, r.storedUncommittedCostToComplete))
   return {
     approvedBudget:            totals.budgeted,
@@ -121,7 +129,9 @@ function evaluate(sources) {
     margin:                    [m.forecastGrossProfit, m.forecastMarginPct],
     supplierVariationExposure: [
       totals.approvedSupplierVariations, totals.pendingSupplierVariationExposure,
+      totals.appliedSupplierVariations, totals.unappliedSupplierVariations,
       m.approvedSupplierVariations, m.pendingSupplierVariationExposure,
+      m.appliedSupplierVariations, m.unappliedSupplierVariations,
     ],
     forecastRows:              [rows, totals.lineCount, totals.unforecastedCount, totals.overBudgetCount],
     contractBaseline:          [m.originalContractValue, m.originalApprovedBudget, m.originalPlannedProfit, m.originalPlannedMarginPct],
@@ -250,15 +260,22 @@ describe('credit-note failure: dependent figures are Unavailable (D1), the rest 
 // ── Dashboard invariance ─────────────────────────────────────────────────────
 
 describe('Dashboard: ADR-42 snapshot figures and dependencies are unchanged', () => {
-  it('the eight original dependency lists are byte-identical (remainingCommitted gained progressClaims in ADR-55)', () => {
-    const FFC = ['purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes', 'forecastLines']
+  it('the eight original dependency lists are byte-identical (remainingCommitted gained progressClaims in ADR-55 and variations in ADR-62)', () => {
+    const FFC = ['purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes', 'variations', 'forecastLines']
     expect(FIGURE_DEPENDENCIES.approvedBudget).toEqual(['budgetLines'])
     expect(FIGURE_DEPENDENCIES.actual).toEqual(['progressClaims', 'supplierInvoices', 'supplierCreditNotes'])
     // ADR-55 — deliberate change, not drift: Remaining Committed now nets the
     // approved claim value Actual recognises on each PO line, so a loading or
     // failed claims read must make it UNAVAILABLE, never a figure that silently
     // omits the netting. The perturbation suite above proves claims move it.
-    expect(FIGURE_DEPENDENCIES.remainingCommitted).toEqual(['purchaseOrders', 'progressClaims', 'supplierInvoices'])
+    // ADR-62 — deliberate change, not drift: an APPLIED approved supplier
+    // variation revises the PO line value the nets apply to, so a loading or
+    // failed variations read must make Remaining Committed (and every FFC
+    // figure) UNAVAILABLE, never a settled figure with a zero adjustment. The
+    // perturbation suite above proves variations move it.
+    expect(FIGURE_DEPENDENCIES.remainingCommitted).toEqual(['purchaseOrders', 'progressClaims', 'supplierInvoices', 'variations'])
+    expect(FIGURE_DEPENDENCIES.supplierVariationExposure).toEqual(['variations', 'purchaseOrders'])
+    expect(FIGURE_DEPENDENCIES.appliedSupplierVariations).toEqual(['variations', 'purchaseOrders'])
     expect(FIGURE_DEPENDENCIES.forecastFinalCost).toEqual(FFC)
     expect(FIGURE_DEPENDENCIES.varianceToBudget).toEqual(['budgetLines', ...FFC])
     expect(FIGURE_DEPENDENCIES.margin).toEqual(['baseline', 'variations', ...FFC])

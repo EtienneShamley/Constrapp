@@ -13,7 +13,7 @@ import { postedInvoicedByPoLine, postedInvoicedByPo, invoiceTotals, SI_COUNTING_
 import { allocationExceptions, payablesSummary, overReconciledPayableRows } from '../../src/lib/supplierPayments'
 import { creditNoteExceptions } from '../../src/lib/supplierCreditNotes'
 import { releaseExceptions, overReleasedRows, retentionInvoiceRows, releasedByInvoiceId } from '../../src/lib/retention'
-import { approvedSupplierVariationsTotal } from '../../src/lib/variations'
+import { approvedSupplierVariationsTotal, appliedSupplierVariationAdjustments } from '../../src/lib/variations'
 import { FINANCIAL_ROLES } from '../../src/lib/margin'
 import { PROJECT_TABS } from '../../src/lib/projectTabs'
 import { MODULE_NAMES } from '../../src/lib/moduleBranding'
@@ -201,6 +201,12 @@ const SOURCES = {
     { id: 'v2', variationNumber: 'SV-0002', variationType: 'supplier', status: 'submitted', poId: 'po1', submittedSubtotal: 99,  lineItems: [] },
     { id: 'v3', variationNumber: 'CV-0001', variationType: 'client',   status: 'approved',  poId: 'po1', approvedSubtotal: 5000, lineItems: [] }, // client: never PO context
     { id: 'v4', variationNumber: 'SV-0003', variationType: 'supplier', status: 'approved',  poId: 'po5', approvedSubtotal: -20, lineItems: [] },
+    // ADR-62: APPLIED to po3 but its line names cost code cc9 where po3 line 0 is
+    // cc4 — a cost-code mismatch. Nothing matures (no adjustment on po3); the
+    // line is check 4 condition F, which makes `variations` a DECLARED source.
+    { id: 'v5', variationNumber: 'SV-0004', variationType: 'supplier', status: 'approved',  poId: 'po3', poNumber: 'PO-0003', approvedSubtotal: 40,
+      commitmentAppliedAt: { seconds: 1, nanoseconds: 0 }, commitmentAppliedBy: 'u_qs',
+      lineItems: [{ costCodeId: 'cc9', costCodeName: '99-100 — Other', poLineIndex: 0, approvedAmount: 40 }] },
   ],
 }
 
@@ -403,7 +409,7 @@ describe('dependency isolation — each check waits on exactly the sources that 
       [CHECK.DUPLICATE_INVOICE_REFERENCES]: ['supplierInvoices'],
       [CHECK.INVOICE_INTEGRITY]:            ['supplierInvoices'],
       [CHECK.PO_OVER_INVOICING]:            ['purchaseOrders', 'supplierInvoices', 'variations'],
-      [CHECK.COMMITMENT_STATE_CONFLICTS]:   ['purchaseOrders', 'progressClaims', 'supplierInvoices'],
+      [CHECK.COMMITMENT_STATE_CONFLICTS]:   ['purchaseOrders', 'progressClaims', 'supplierInvoices', 'variations'],
       [CHECK.FINANCIAL_EXCEPTIONS]:         ['supplierInvoices', 'supplierPayments', 'supplierCreditNotes', 'retentionReleases'],
     })
   })
@@ -670,7 +676,7 @@ describe('check 3 — purchase order over-invoicing exposure', () => {
 describe('check 4 — commitment state conflicts', () => {
   const c = get(CHECK.COMMITMENT_STATE_CONFLICTS)
 
-  it('finds exactly the four approved conditions, one row per related record', () => {
+  it('finds exactly the approved conditions, one row per related record', () => {
     expect(c.state).toBe(SHIELD_STATE.FINDING)
     expect(c.values.byCondition).toEqual({
       [STATE_CONFLICT.UNCOMMITTED_PO_WITH_COST]:    2,
@@ -680,11 +686,16 @@ describe('check 4 — commitment state conflicts', () => {
       // E (ADR-55): the fixture's claims carry no line items, so no PO line is
       // recognised through both paths here — the dedicated test below builds one.
       [STATE_CONFLICT.MIXED_MODE_PO_LINE]:          0,
+      // F (ADR-62): v5 is applied to po3 with a cost-code mismatch.
+      [STATE_CONFLICT.VARIATION_NOT_INCORPORATED]:  1,
+      // G (ADR-62): the fixture's claims carry no line items, so no recognised
+      // claim sits on a PO line — the dedicated block below builds the cases.
+      [STATE_CONFLICT.CLAIM_ABOVE_REVISED_LINE]:    0,
     })
-    expect(c.values.conflictCount).toBe(7)
-    expect(c.evidence).toHaveLength(7)
-    expect(new Set(c.evidence.map(r => r.id)).size).toBe(7)
-    expect(Object.keys(STATE_CONFLICT)).toHaveLength(5)
+    expect(c.values.conflictCount).toBe(8)
+    expect(c.evidence).toHaveLength(8)
+    expect(new Set(c.evidence.map(r => r.id)).size).toBe(8)
+    expect(Object.keys(STATE_CONFLICT)).toHaveLength(7)
   })
 
   it('A · cancelled PO with a posted invoice and an approved claim', () => {
@@ -1086,5 +1097,191 @@ describe('ProjectShield page — role gate, subscriptions, isolation, no writes'
   it('the restricted view says what is restricted and why, without opening a subscription', () => {
     expect(wrapper).toContain('SHIELD checks are restricted')
     expect(wrapper).toContain('Firestore')
+  })
+})
+
+// ── 8 · ADR-62 (M3-B1): applied supplier variations in checks 3 and 4 ────────
+//
+// Check 3 compares posted invoicing against the REVISED PO line value (original
+// + applied approved supplier-variation amounts on that line — the exact ceiling
+// Remaining Committed nets); unapplied variations stay context. Check 4 gains
+// condition F: an applied variation line that could not be incorporated.
+
+const APPLIED = { commitmentAppliedAt: { seconds: 1, nanoseconds: 0 }, commitmentAppliedBy: 'u_qs' }
+const appliedSv = (id, poId, poNumber, lines, over = {}) => ({
+  id, variationNumber: `SV-${id}`, variationType: 'supplier', status: 'approved', poId, poNumber,
+  approvedSubtotal: lines.reduce((s, l) => s + l.approvedAmount, 0), lineItems: lines, ...APPLIED, ...over,
+})
+
+describe('check 3 — the revised contractual ceiling (ADR-62)', () => {
+  // po1: line 0 = 800 (posted 1100), line 1 = 400 (posted 700), subtotal 1200 (posted 1800).
+  const svLine0 = appliedSv('a1', 'po1', 'PO-0001', [{ costCodeId: 'cc1', costCodeName: '03-100 — Concrete', poLineIndex: 0, approvedAmount: 300 }])
+  const sources = { ...SOURCES, variations: [...SOURCES.variations, svLine0] }
+  const c = get(CHECK.PO_OVER_INVOICING, sources)
+
+  it('an applied variation on a line raises that line\'s ceiling: line 0 is no longer over-invoiced, line 1 still is, and the PO total compares against the revised subtotal', () => {
+    const rows = c.evidence.filter(r => r.poId === 'po1')
+    expect(rows.map(r => r.id)).toEqual(['po1:line:1', 'po1:po'])
+    expect(rows[0]).toMatchObject({ level: 'line', poLineIndex: 1, originalAmount: 400, appliedAdjustment: 0, poAmount: 400, invoiced: 700, excess: 300 })
+    expect(rows[1]).toMatchObject({ level: 'po', originalAmount: 1200, appliedAdjustment: 300, poAmount: 1500, invoiced: 1800, excess: 300 })
+    expect(c.values).toMatchObject({ lineExcessTotal: 300, poExcessTotal: 300 })
+  })
+
+  it('the context columns distinguish approved from applied, and the applied amount equals the shared adjustment map', () => {
+    const adj = appliedSupplierVariationAdjustments(sources.variations, sources.purchaseOrders)
+    expect(adj.byPoLine.po1).toEqual({ 0: 300 })
+    for (const r of c.evidence.filter(r => r.poId === 'po1')) {
+      expect(r.approvedVariationCount).toBe(2)   // v1 (unapplied) + a1 (applied)
+      expect(r.appliedVariationCount).toBe(1)
+    }
+    expect(c.caveats.join(' ')).toMatch(/APPLIED to the PO commitment are already inside the revised PO value/)
+  })
+
+  it('an UNAPPLIED approved variation changes no ceiling — the pre-ADR-62 rows are unchanged', () => {
+    const unapplied = { ...svLine0, commitmentAppliedAt: undefined, commitmentAppliedBy: undefined }
+    const r = get(CHECK.PO_OVER_INVOICING, { ...SOURCES, variations: [...SOURCES.variations, unapplied] })
+    expect(r.evidence.filter(x => x.poId === 'po1').map(x => [x.id, x.poAmount, x.excess])).toEqual([
+      ['po1:line:0', 800, 300], ['po1:line:1', 400, 300], ['po1:po', 1200, 600],
+    ])
+  })
+
+  it('a NEGATIVE applied variation lowers the ceiling and the excess grows by exactly that amount', () => {
+    const neg = appliedSv('n1', 'po1', 'PO-0001', [{ costCodeId: 'cc1', costCodeName: '03-100 — Concrete', poLineIndex: 0, approvedAmount: -100 }])
+    const r = get(CHECK.PO_OVER_INVOICING, { ...SOURCES, variations: [neg] })
+    expect(r.evidence.find(x => x.id === 'po1:line:0')).toMatchObject({ originalAmount: 800, appliedAdjustment: -100, poAmount: 700, excess: 400 })
+    expect(r.evidence.find(x => x.id === 'po1:po')).toMatchObject({ poAmount: 1100, excess: 700 })
+  })
+
+  it('a variation applied to a cancelled PO, or with an invalid line, adjusts no ceiling', () => {
+    const onCancelled = appliedSv('c1', 'po2', 'PO-0002', [{ costCodeId: 'cc3', poLineIndex: 0, approvedAmount: 999 }])
+    const outOfRange = appliedSv('o1', 'po1', 'PO-0001', [{ costCodeId: 'cc1', poLineIndex: 7, approvedAmount: 999 }])
+    const r = get(CHECK.PO_OVER_INVOICING, { ...SOURCES, variations: [onCancelled, outOfRange] })
+    expect(r.evidence.filter(x => x.poId === 'po1').map(x => [x.id, x.poAmount, x.appliedAdjustment])).toEqual([
+      ['po1:line:0', 800, 0], ['po1:line:1', 400, 0], ['po1:po', 1200, 0],
+    ])
+  })
+})
+
+describe('check 4 — condition F: applied supplier variation not incorporated (ADR-62)', () => {
+  const c = get(CHECK.COMMITMENT_STATE_CONFLICTS)
+
+  it('the fixture\'s cost-code mismatch is listed once with the variation, the PO, the issue and the amount', () => {
+    const rows = c.evidence.filter(r => r.condition === STATE_CONFLICT.VARIATION_NOT_INCORPORATED)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      poNumber: 'PO-0003', poStatusLabel: 'Closed', recordKind: 'variation', recordId: 'v5', variationNumber: 'SV-0004',
+      issue: 'cost_code_mismatch', recordStatusLabel: 'Cost code differs from the referenced PO line', amount: 40, poLineIndex: 0, lineIndex: 0,
+    })
+    expect(rows[0].recordNumber).toBe('SV-0004 PO line 1 — Cost code differs from the referenced PO line')
+    expect(c.caveats.join(' ')).toMatch(/never counted against another PO line or cost code/)
+  })
+
+  it('an applied variation on a CANCELLED PO is listed (PO not committed) and the amount stays out of every ceiling', () => {
+    const v = appliedSv('x1', 'po2', 'PO-0002', [{ costCodeId: 'cc3', poLineIndex: 0, approvedAmount: 150 }])
+    const r = get(CHECK.COMMITMENT_STATE_CONFLICTS, { ...EMPTY, purchaseOrders: SOURCES.purchaseOrders, variations: [v] })
+    expect(r.state).toBe(SHIELD_STATE.FINDING)
+    expect(r.evidence.map(x => [x.condition, x.poNumber, x.poStatusLabel, x.issue, x.amount])).toEqual([
+      [STATE_CONFLICT.VARIATION_NOT_INCORPORATED, 'PO-0002', 'Cancelled', 'po_not_committed', 150],
+    ])
+    expect(appliedSupplierVariationAdjustments([v], SOURCES.purchaseOrders).byPoLine).toEqual({})
+  })
+
+  it('an applied variation whose PO is missing is a FINDING even on an otherwise empty register — never "needs data"', () => {
+    const v = appliedSv('m1', 'po_gone', 'PO-0099', [{ costCodeId: 'cc1', poLineIndex: 0, approvedAmount: 10 }])
+    const r = get(CHECK.COMMITMENT_STATE_CONFLICTS, { ...EMPTY, variations: [v] })
+    expect(r.state).toBe(SHIELD_STATE.FINDING)
+    expect(r.evidence[0]).toMatchObject({ condition: STATE_CONFLICT.VARIATION_NOT_INCORPORATED, poStatusLabel: 'Not found', issue: 'po_missing', amount: 10 })
+  })
+
+  it('an out-of-range PO line index and a negative revised line value are both listed', () => {
+    const outOfRange = appliedSv('o2', 'po1', 'PO-0001', [{ costCodeId: 'cc1', poLineIndex: 9, approvedAmount: 5 }])
+    const tooNegative = appliedSv('n2', 'po1', 'PO-0001', [{ costCodeId: 'cc1', costCodeName: '03-100 — Concrete', poLineIndex: 0, approvedAmount: -900 }])
+    const r = get(CHECK.COMMITMENT_STATE_CONFLICTS, { ...EMPTY, purchaseOrders: SOURCES.purchaseOrders, variations: [outOfRange, tooNegative] })
+    const rows = r.evidence.filter(x => x.condition === STATE_CONFLICT.VARIATION_NOT_INCORPORATED)
+    expect(rows.map(x => [x.issue, x.amount, x.recordKind])).toEqual([
+      ['line_out_of_range', 5, 'variation'],
+      ['negative_revised_line', -100, 'poLine'],   // 800 − 900
+    ])
+    // The −900 still nets the line (Remaining Committed floors at 0) — it is listed, not hidden or zeroed.
+    expect(appliedSupplierVariationAdjustments([tooNegative], SOURCES.purchaseOrders).byPoLine.po1).toEqual({ 0: -900 })
+  })
+
+  it('a correctly incorporated applied variation raises no condition F', () => {
+    const ok = appliedSv('k1', 'po1', 'PO-0001', [{ costCodeId: 'cc1', costCodeName: '03-100 — Concrete', poLineIndex: 0, approvedAmount: 120 }])
+    const r = get(CHECK.COMMITMENT_STATE_CONFLICTS, { ...EMPTY, purchaseOrders: [SOURCES.purchaseOrders[0]], variations: [ok] })
+    expect(r.state).toBe(SHIELD_STATE.NO_ISSUE)
+    expect(r.explanation).toMatch(/every applied supplier variation is incorporated/)
+  })
+})
+
+describe('check 4 — condition G: recognised claims above the revised PO line value (ADR-62 Correction D)', () => {
+  // po4: one line cc5 of 1,000, sent. Claims and invoices built per case.
+  const po4 = SOURCES.purchaseOrders[3]
+  const claimOn = (id, approvedThisPeriod, over = {}) => ({
+    id, claimNumber: `PC-${id}`, status: 'approved', poId: 'po4', poNumber: 'PO-0004', approvedSubtotal: approvedThisPeriod, claimedSubtotal: approvedThisPeriod,
+    lineItems: [{ poLineIndex: 0, costCodeId: 'cc5', costCodeName: '05-100 — Roof', poLineTotal: 1000, previouslyApproved: 0, claimedToDate: approvedThisPeriod, claimedThisPeriod: approvedThisPeriod, approvedThisPeriod }],
+    ...over,
+  })
+  const claimInvoice = (id, cl, amount) => ({
+    id, invoiceNumber: `SI-${id}`, supplierInvoiceNumber: `X-${id}`, status: 'posted', source: 'progress_claim', poId: 'po4', poNumber: 'PO-0004', progressClaimId: cl.id, claimNumber: cl.claimNumber,
+    supplierId: 'sup4', supplierName: 'Roof Co', currency: 'AUD', invoiceDate: '2026-01-10', dueDate: '2026-02-10',
+    lineItems: [{ poLineIndex: 0, costCodeId: 'cc5', costCodeName: '05-100 — Roof', description: 'Roof', amount, taxCode: 'gst', gstAmount: amount / 10 }],
+    ...totals(amount, amount / 10),
+  })
+  const g = (sources) => get(CHECK.COMMITMENT_STATE_CONFLICTS, { ...EMPTY, purchaseOrders: [po4], ...sources })
+  const rowsG = (r) => r.evidence.filter(x => x.condition === STATE_CONFLICT.CLAIM_ABOVE_REVISED_LINE)
+
+  it('a valid partial claim within the revised line raises nothing (no false positive); an approved claim exactly at the ceiling raises nothing', () => {
+    expect(rowsG(g({ progressClaims: [claimOn('a', 400)] }))).toEqual([])
+    expect(rowsG(g({ progressClaims: [claimOn('b', 1000)] }))).toEqual([])
+    const plus = appliedSv('p', 'po4', 'PO-0004', [{ costCodeId: 'cc5', costCodeName: '05-100 — Roof', poLineIndex: 0, approvedAmount: 200 }])
+    expect(rowsG(g({ progressClaims: [claimOn('c', 1200)], variations: [plus] }))).toEqual([])
+  })
+
+  it('a NEGATIVE applied variation that lowers the ceiling below what a claim already recognised is listed with the PO, cost code, revised value and the claim', () => {
+    const neg = appliedSv('n', 'po4', 'PO-0004', [{ costCodeId: 'cc5', costCodeName: '05-100 — Roof', poLineIndex: 0, approvedAmount: -300 }])
+    const r = g({ progressClaims: [claimOn('d', 900)], variations: [neg] })
+    const rows = rowsG(r)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      poNumber: 'PO-0004', poStatusLabel: 'Sent', costCodeId: 'cc5', costCodeName: '05-100 — Roof', poLineIndex: 0,
+      originalAmount: 1000, appliedAdjustment: -300, revisedLineValue: 700, recognisedClaims: 900, postedInvoiced: 0, recognised: 900, amount: 200,
+      claimNumbers: ['PC-d'], invoiceNumbers: [], recordStatusLabel: 'Recognised above the line as reduced by a negative variation',
+    })
+    expect(r.state).toBe(SHIELD_STATE.FINDING)
+    expect(r.caveats.join(' ')).toMatch(/a claim and its posted invoice are never both counted/)
+  })
+
+  it('a claim approved ABOVE the original line before the covering variation is applied is listed; applying the variation then clears it', () => {
+    const before = g({ progressClaims: [claimOn('e', 1150)] })
+    expect(rowsG(before)[0]).toMatchObject({ revisedLineValue: 1000, recognisedClaims: 1150, amount: 150, recordStatusLabel: 'Recognised above the revised line value' })
+    const cover = appliedSv('v', 'po4', 'PO-0004', [{ costCodeId: 'cc5', costCodeName: '05-100 — Roof', poLineIndex: 0, approvedAmount: 150 }])
+    expect(rowsG(g({ progressClaims: [claimOn('e', 1150)], variations: [cover] }))).toEqual([])
+  })
+
+  it('the claim → invoice hand-over never double counts: posting the claim\'s invoice leaves the same single row with the recognition moved from the claim column to the invoice column', () => {
+    const neg = appliedSv('n', 'po4', 'PO-0004', [{ costCodeId: 'cc5', costCodeName: '05-100 — Roof', poLineIndex: 0, approvedAmount: -300 }])
+    const cl = claimOn('f', 900)
+    const claimed = rowsG(g({ progressClaims: [cl], variations: [neg] }))
+    const invoiced = rowsG(g({ progressClaims: [cl], supplierInvoices: [claimInvoice('f', cl, 900)], variations: [neg] }))
+    expect(claimed[0]).toMatchObject({ recognisedClaims: 900, postedInvoiced: 0, recognised: 900, amount: 200 })
+    // Once the claim is superseded by its posted invoice, the recognition is invoice-only: that overrun is check 3's, not G's.
+    expect(invoiced).toEqual([])
+    const check3 = get(CHECK.PO_OVER_INVOICING, { ...EMPTY, purchaseOrders: [po4], progressClaims: [cl], supplierInvoices: [claimInvoice('f', cl, 900)], variations: [neg] })
+    expect(check3.evidence.find(x => x.id === 'po4:line:0')).toMatchObject({ poAmount: 700, invoiced: 900, excess: 200 })
+  })
+
+  it('a partly invoiced claim counts claim and invoice recognition ONCE each (ADR-55 nets) — the excess is recognised − revised', () => {
+    const cl1 = claimOn('h1', 500)                       // superseded by its posted invoice below
+    const cl2 = claimOn('h2', 500, { id: 'h2' })          // approved, awaiting invoice
+    const r = rowsG(g({ progressClaims: [cl1, cl2], supplierInvoices: [claimInvoice('h1', cl1, 500)], variations: [appliedSv('m', 'po4', 'PO-0004', [{ costCodeId: 'cc5', costCodeName: '05-100 — Roof', poLineIndex: 0, approvedAmount: -200 }])] }))
+    expect(r[0]).toMatchObject({ recognisedClaims: 500, postedInvoiced: 500, recognised: 1000, revisedLineValue: 800, amount: 200, claimNumbers: ['PC-h2'], invoiceNumbers: ['SI-h1'] })
+  })
+
+  it('an invoice-only overrun (no approved claim on the line) is check 3\'s and never condition G; a loading or failed variations read makes the check unavailable, never a zero adjustment', () => {
+    const direct = { ...claimInvoice('d1', { id: 'none', claimNumber: '' }, 1200), source: 'direct_po', progressClaimId: null, claimNumber: null }
+    expect(rowsG(g({ supplierInvoices: [direct] }))).toEqual([])
+    expect(get(CHECK.COMMITMENT_STATE_CONFLICTS, SOURCES, withState({ variations: settled(false, true) })).state).toBe(SHIELD_STATE.UNAVAILABLE)
+    expect(get(CHECK.COMMITMENT_STATE_CONFLICTS, SOURCES, withState({ variations: settled(true) })).state).toBe(SHIELD_STATE.LOADING)
   })
 })

@@ -314,8 +314,8 @@ function CommercialWorkspace({ projectId, currencyCode }) {
   )
 
   const m = useMemo(
-    () => computeMargin({ baseline, variations, forecastFinalCost: forecastTotals.forecastFinalCost }),
-    [baseline, variations, forecastTotals.forecastFinalCost],
+    () => computeMargin({ baseline, variations, forecastFinalCost: forecastTotals.forecastFinalCost, purchaseOrders }),
+    [baseline, variations, forecastTotals.forecastFinalCost, purchaseOrders],
   )
 
   const clientContacts = useMemo(
@@ -368,7 +368,8 @@ function CommercialWorkspace({ projectId, currencyCode }) {
   const movementCell = show('marginMovement', m.marginMovement)
   const acvCell      = show('clientVariations', m.approvedClientVariations)
   const pcvCell      = show('clientVariations', m.pendingClientVariationExposure)
-  const asvCell      = show('supplierVariationExposure', m.approvedSupplierVariations)
+  const applSvCell   = show('appliedSupplierVariations', m.appliedSupplierVariations)
+  const asvCell      = show('supplierVariationExposure', m.unappliedSupplierVariations)
   const psvCell      = show('supplierVariationExposure', m.pendingSupplierVariationExposure)
 
   const pageSources = figureState(Object.keys(sourceStates), sourceStates)
@@ -464,14 +465,16 @@ function CommercialWorkspace({ projectId, currencyCode }) {
 
       {/* ── Supplier cost exposure (context) ───────────────────────────────── */}
       <Card className="mb-3.5">
-        <div className="grid grid-cols-2 gap-3.5">
-          <Metric label="Approved Supplier Variation Exposure" cell={asvCell} />
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+          <Metric label="Applied Supplier Variations" cell={applSvCell} help="Inside Forecast Final Cost via Remaining Committed" />
+          <Metric label="Unapplied Supplier Variation Exposure" cell={asvCell} />
           <Metric label="Pending Supplier Variation Exposure" cell={psvCell} />
         </div>
         <p className="m-0 mt-3 text-[11px] text-brand-muted">
-          Supplier variation exposure is shown separately and is <span className="font-semibold">not</span> added to Forecast
-          Final Cost — variations do not yet mature against claims or invoices. Fold the remaining expected variation cost into
-          Uncommitted Cost to Complete on the Forecast tab.
+          Approved supplier variations applied to a purchase order are inside Forecast Final Cost through Remaining
+          Committed, once. Unapplied and pending supplier variation exposure is shown separately and is
+          <span className="font-semibold"> not</span> added to Forecast Final Cost. Remove from Uncommitted Cost to
+          Complete any variation cost you folded in before it was applied.
         </p>
       </Card>
 

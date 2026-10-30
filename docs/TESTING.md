@@ -59,7 +59,7 @@ That script runs
   inert here. The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
   command for Storage Rules is a command that eventually stops being run.
-- Tests — **1759 in total across 26 files** (M3-A / ADR-61 adds `awardToPo.rules.test.js`, **33** cases — the getAfter() feasibility proof, the source / back-link rules, immutability, duplicate protection and re-raise, roles / tenancy / legacy / manual paths, and the app's own raise transaction incl. two concurrent raises; no other suite changed; run locally on 29 October 2026 on the native arm64 Java 17 — see §37; 1726 across 25 files before ADR-61, unchanged by ADR-60 — the rules capacity refactor touched no test file and the whole suite re-ran green against the refactored ruleset on 27 October 2026, see §36; 1731 across 25 files before ADR-59: `variations.rules.test.js` was rewritten from 107 to **102** cases — every ADR-34 case kept in the new write shape, the old "forgery accepted", "smuggling allowed", "legacy keys absent on create" and "identical triple on an approved document" cases replaced by their refusals, the freeze re-proven per status and per role, and the PO link / counterparty / type proven frozen from creation; no other suite changed; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §35; 1629 across 24 files before ADR-58: `progressClaims.rules.test.js` adds **102**; the `externalRoles` claim fixtures and its one PO seed, and the PO suite's one claim-create case, were revised to the ADR-58 shape with no change to any assertion or count; 1550 across 23 files before ADR-57: `purchaseOrders.rules.test.js` adds **79**; the `externalRoles` PO fixtures were revised to the ADR-57 shape; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §33 and §34):
+- Tests — **1796 in total across 27 files** (M3-B1 / ADR-62 adds **28** cases to `variations.rules.test.js` and the new `variationsTransitional.rules.test.js`, **9** cases against the Stage-1 transitional ruleset — — the stamps on approve for every role and against a closed PO, the pre-M3-B1 approve payload still accepted, refusals on a cancelled / draft PO, manual-mode and client variations, forged or half stamps, stamps at create or on any other branch, the legacy Apply once and refused on repeat for every revision, from every non-approved status, with bundled changes, forged actor / time / revision, denied roles, a legacy document, the app's transactions incl. two concurrent applies and a stale copy, and the DC39 ceiling; M3-A / ADR-61 adds `awardToPo.rules.test.js`, **33** cases — the getAfter() feasibility proof, the source / back-link rules, immutability, duplicate protection and re-raise, roles / tenancy / legacy / manual paths, and the app's own raise transaction incl. two concurrent raises; no other suite changed; run locally on 29 October 2026 on the native arm64 Java 17 — see §37; 1726 across 25 files before ADR-61, unchanged by ADR-60 — the rules capacity refactor touched no test file and the whole suite re-ran green against the refactored ruleset on 27 October 2026, see §36; 1731 across 25 files before ADR-59: `variations.rules.test.js` was rewritten from 107 to **102** cases — every ADR-34 case kept in the new write shape, the old "forgery accepted", "smuggling allowed", "legacy keys absent on create" and "identical triple on an approved document" cases replaced by their refusals, the freeze re-proven per status and per role, and the PO link / counterparty / type proven frozen from creation; no other suite changed; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §35; 1629 across 24 files before ADR-58: `progressClaims.rules.test.js` adds **102**; the `externalRoles` claim fixtures and its one PO seed, and the PO suite's one claim-create case, were revised to the ADR-58 shape with no change to any assertion or count; 1550 across 23 files before ADR-57: `purchaseOrders.rules.test.js` adds **79**; the `externalRoles` PO fixtures were revised to the ADR-57 shape; the full suite was run locally on 27 October 2026 on the native arm64 Java 17 — see §33 and §34):
   - `frontend/tests/rules/users.rules.test.js` — **26 tests** covering the
     `users/{uid}` membership document (ADR-27): own-profile read succeeds;
     same-company, cross-company, unauthenticated and `company_admin` reads of
@@ -719,9 +719,18 @@ npm run test:unit
 - `frontend/tests/unit/pulseAttention.test.js` — **65 tests** over
   `lib/pulseAttention.js` and `lib/pulseAcknowledgementActions.js` (PULSE™ 1B,
   ADR-49): see §25.
+- `frontend/tests/unit/variationCommitment.test.js` — **32 tests** over the
+  M3-B1 commitment application (ADR-62): see §38 — the worked cases A–E
+  (100,000 + 12,000; claim 5,000; full claim and invoice; −8,000; a prior
+  claim), several variations on one line, several lines and cost codes, mixed
+  and new-scope-only variations, legacy unapplied, invalid links, negative
+  revised lines, duplicate documents, eligibility and the approve-time
+  decision, the commercial-effect preview and the CTC warning, and
+  Forecast / Margin / Snapshot / Cash Flow / PULSE consistency; plus **16**
+  cases added to `variationActions.test.js` and **10** to `shield.test.js`.
 - `frontend/tests/unit/rulesSize.test.js` — **5 tests** pinning the
-  `firestore.rules` SOURCE-SIZE budget (ADR-51 hotfix; 201,523 bytes after
-  ADR-60): under the approved
+  `firestore.rules` SOURCE-SIZE budget (ADR-51 hotfix; 210,926 bytes after
+  ADR-62, 207,620 after M3-A): under the approved
   **245,000 UTF-8 bytes** and under Firestore's **262,144-byte** publish limit,
   measured in bytes (the file is not pure ASCII), with real headroom between
   the two; `storage.rules` far below. Passing proves the file CAN be published —
@@ -6457,7 +6466,8 @@ helper renames; every deleted local body normalised-identical to its shared
 replacement; every call in every block resolved to one definition with the
 right arity; the two comment-only passes byte-identical in non-comment text.
 
-**Status: IMPLEMENTED, NOT YET DEPLOYED.** Rules-only; the live bundle is
+**Status: LIVE IN PRODUCTION since 29 October 2026** (published as part of the
+M3-A ruleset and confirmed by the product owner). Rules-only; the live bundle is
 unaffected either way, so there is no ordering gate. See DEPLOYMENT.md →
 *ADR-60 release order*.
 
@@ -6524,10 +6534,11 @@ build green; `git diff --check` clean — all run locally on 29 October 2026 on
 arm64 Java 17. Rules file **207,620 bytes** (201,523 before) against the
 245,000-byte budget.
 
-**Status: IMPLEMENTED, NOT YET DEPLOYED.** Rules first, then Hosting — see
-DEPLOYMENT.md → *M3-A release order*. **No production transaction is part of
-this section's automation**; the checks below are run once, after both
-publish steps, on a project the product owner chooses.
+**Status: LIVE IN PRODUCTION since 29 October 2026** (rules first, then
+Hosting — see DEPLOYMENT.md → *M3-A release order*; confirmed by the product
+owner that day). **No production transaction is part of this section's
+automation**; the checks below are the acceptance record, run on a project the
+product owner chooses.
 
 Manual acceptance — at most three checks, run **after both publish steps**,
 against production, by the product owner (every rules invariant is automated
@@ -6555,3 +6566,108 @@ tested):
       project): the package now offers *Raise again…*; it creates a new
       draft, the package links to it, and the cancelled PO still shows
       *From TP-####*.
+
+
+## 38. Supplier Variation Commitment Integration — M3-B1 (ADR-62)
+
+Automated: `tests/rules/variations.rules.test.js` (**+27**, the four ADR-62
+blocks): approve WITH the commitment stamps for every financial role against a
+sent PO and a closed PO (the document is then read by
+`appliedSupplierVariationAdjustments` as `{ PO: { line 0: 900 } }` and Remaining
+Committed rises 2,500 → 3,400); under the **FINAL** rules the pre-M3-B1
+approve payload (no stamps; an old-bundle tab) is **DENIED on a PO-linked
+variation for every role** with nothing written while a manual-mode plain
+approve still passes; a cancelled / draft / pending PO refuses the approval with
+AND without the pair (the variation stays submitted and can still be withdrawn);
+a missing PO and another project's PO refuse both payloads while a legacy
+approved unstamped document stays readable and applicable; refused on a
+manual-mode and a client variation; forged stamps (another actor, client clocks, half the pair);
+the pair refused at create (present or null) and on a draft edit, submit, reject
+or withdraw; the legacy Apply for every role (stamps + revision + audit only,
+every other field byte-identical), refused on repeat with every revision, on
+every non-approved status, on manual / client, on a cancelled / draft PO, with
+any bundled change, with forged actor / time / revision / audit, for every
+denied role, and succeeding on a legacy document; the app's transactions
+against the real rules (approve-and-apply in one write; a cancelled or missing
+PO refuses the approval as PO_INVALID with an actionable message and nothing
+written; apply once then ALREADY_APPLIED; **two concurrent applies → one
+application, one revision**; STALE then the fresh copy; cancelled PO INVALID;
+denied role PERMISSION); and the DC39 ceiling (invalid lines ACCEPTED by rules
+and classified by the client; a PO cancelled after application keeps the pair).
+`tests/unit/variationCommitment.test.js` (**32**): cases A–E of the brief
+through the real selectors, several variations per line, several lines / cost
+codes, mixed and new-scope-only, legacy unapplied unchanged, invalid links
+never attributed elsewhere, negative revised line listed and floored, duplicate
+documents once, eligibility and `shouldApplyOnApproval`, the commercial-effect
+preview and CTC warning, Forecast / Margin / Dashboard snapshot (variations now
+gate Remaining Committed and FFC) / Cash Flow basis / PULSE.
+`tests/rules/variationsTransitional.rules.test.js` (**9**, against
+`firestore.transitional.rules`): the OLD bundle's PO-linked approve without the
+pair ACCEPTED for every role on a sent and a closed PO and the document then
+legacy-applicable once; create / submit / withdraw unchanged; the NEW bundle's
+stamped approve ACCEPTED; a cancelled / draft / pending / missing /
+other-project PO refuses BOTH payloads; manual / client semantics, forged
+stamps, stamps at create, roles and tenancy unchanged.
+`tests/unit/rulesTransitional.test.js` (**7**): the committed transitional file
+equals the generator's output, the two files differ in exactly one rule line,
+the PO-state requirement is in both, both under budget, the generator refuses a
+source without exactly one marker. `tests/unit/variationActions.test.js`
+(**+19**): the approve write with and without the pair, the server-side PO
+decision — cancelled / draft / pending / missing PO refused as PO_INVALID with
+an actionable message and nothing written, no poRef refused before any read, a
+stale PO decided on the server copy, manual / client unchanged — the legacy
+Apply contract, two concurrent applies, stale, missing, cancelled PO, SDK error
+mapping. `tests/unit/shield.test.js` (**+16**): check 3 against the revised
+ceiling, check 4 condition F, and condition G (a valid partial claim and a claim
+at the ceiling never list; a negative variation below a recognised claim lists
+with PO, cost code, revised value, claim and invoice recognition apart; a claim
+approved above the line before its covering variation lists and clears once
+the variation is applied; the claim → invoice hand-over leaves one row with the
+recognition moved between columns and never doubles; a partly invoiced claim
+counts each once; an invoice-only overrun is check 3's; a failed or loading
+variations read is unavailable, never zero). `financialReliability.test.js` and `shield.test.js`
+dependency pins updated (variations is an FFC source; check 4 reads variations).
+Rules suite **27 files / 1796 tests**; unit **60 files / 3592 tests**; lint
+0 / 0; build green; `git diff --check` clean — all run locally on 30 October
+2026 on arm64 Java 17. FINAL rules file **210,926 bytes** (207,620 before),
+transitional **211,378**, against the 245,000-byte budget.
+
+**Status: IMPLEMENTED, NOT YET DEPLOYED.** Three stages — transitional rules,
+Hosting, FINAL rules — see DEPLOYMENT.md → *M3-B1 release order*. **No production transaction is part of
+this section's automation**; the checks below are run once, after both publish
+steps, on a project the product owner chooses.
+
+Manual acceptance — at most three checks, run **after both publish steps**,
+against production, by the product owner (every rules invariant is automated
+above; these prove the published ruleset and the deployed build are the ones
+tested):
+
+- [ ] **Approve applies.** On a sent PO of a known value (say 100,000 on one
+      cost code, no claims), raise a supplier variation in PO mode with one
+      line against that PO line for 12,000; submit; *Assess* shows the
+      *Commercial effect* panel (current 100,000 → revised 112,000, remaining
+      112,000) and, if a positive Uncommitted CTC is saved on that cost code,
+      the acknowledgement; the button reads *Approve & apply to commitment*.
+      Approve. The register row shows *Fully incorporated · applied* with
+      approved 12,000 · in commitment 12,000 · exposure 0; the Budget
+      tab's Committed for the cost code reads 112,000, *Applied Supplier
+      Variations* 12,000, *Unapplied* 0, Commitment Exposure 112,000; the
+      Forecast tab's Remaining Committed and Forecast Final Cost rose by
+      exactly 12,000; the PO document is unchanged (console spot-check:
+      same lines, totals and `updatedAt`).
+- [ ] **Recognition and a negative variation.** Raise a progress claim of
+      5,000 on that line and approve it: Committed 107,000, Actual 5,000,
+      Forecast Final Cost unchanged. Raise, submit and approve a second
+      supplier variation of −8,000 on the same line: Committed 99,000, nothing
+      in Actual changes, no credit note appears. Post a supplier invoice from
+      the claim: Committed and Forecast Final Cost unchanged.
+- [ ] **Legacy Apply, once; invalid PO refused.** A supplier variation
+      approved before this release (PO-linked, PO still sent) shows *Not yet
+      applied* and an *Apply to commitment* action; open it in two browser
+      tabs; confirm in the first (the row changes to *Fully incorporated*,
+      Committed moves by the approved amount); confirm in the second — refused
+      with the already-applied message and no change. A manual-mode (no PO)
+      supplier variation and a client variation show no Apply action. On a
+      test project, cancel a sent PO that carries a SUBMITTED supplier
+      variation (reject its claims first if any): *Assess* on that variation
+      shows the red PO notice and a disabled Approve; Reject still works.
