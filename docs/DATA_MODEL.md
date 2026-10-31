@@ -415,7 +415,7 @@ application build ships first and the rules second ([DEPLOYMENT.md](DEPLOYMENT.m
 writes them, the new rules accept every old write, and the new bundle's raise
 needs the new rules.
 
-**Applied supplier variations (ADR-62, M3-B1 — implemented, not yet deployed).**
+**Applied supplier variations (ADR-62, M3-B1 — LIVE) and committed new-scope lines (ADR-63, M3-B2 — implemented, not yet deployed).**
 Nothing is written onto a PO. An approved supplier variation that names this PO
 and carries the rules-stamped `commitmentAppliedAt/By` pair (see *variations*)
 revises the PO LINE its `poLineIndex` names at read time — `revised = lineTotal
@@ -423,8 +423,11 @@ revises the PO LINE its `poLineIndex` names at read time — `revised = lineTota
 `revisedCommitmentByPoLine`, `committedByCostCode(pos, adjustments)`), the
 ceiling the ADR-55 Remaining Committed nets apply to. `committedByCostCode(pos)`
 with no adjustments is the ORIGINAL contractual commitment; with the applied map
-it is the REVISED one. Lines with no `poLineIndex` (new scope) adjust nothing in
-M3-B1.
+it is the REVISED one. Lines with no `poLineIndex` (new scope) adjust no PO line;
+once the variation is SCOPE-COMMITTED (ADR-63) each POSITIVE one is a commitment
+line of its own (ceiling = its approved amount, on its own cost code) composed with
+the PO lines by `lib/commitment.js → remainingCommitment` — the ONE combined
+Remaining Committed every consumer reads.
 
 Each line item: `{ costCodeId, costCodeName, description, qty, unit, unitPrice, lineTotal }`
 (`lineTotal` = qty × unitPrice, ex-GST, rounded to cents). On an award-raised
@@ -468,8 +471,9 @@ cumulative claiming and the mixed-mode overlap stay client-only (SECURITY.md
 | `poId`, `poNumber`, `supplierName`, `supplierId` | | Denormalised from the PO at creation |
 | `periodEnding` | string | Date string (may be empty) |
 | `claimRef` | string | Supplier's own reference |
-| `variationId` | string \| null | **Reserved forward-link** to a Supplier Variation. Always `null` — **rules require null at create and freeze it** (ADR-58); the Variations foundation does **not** wire claim-against-variation yet. Activated in a later phase (needs a rules change) |
-| `lineItems` | array | **Embedded, and the line SET IS FIXED**: exactly one line per PO line, created one-to-one when the claim is raised. Lines are never added, removed or reordered — `poLineIndex` is downstream identity. A draft edit authors only each line's `claimedToDate`; every identity field is rebuilt from the stored line and `claimedThisPeriod` is re-derived (ADR-37). **Rules pin the COUNT** (to the PO's at create, 1–200; to the stored count on edit and approval) — element contents are client-only (DC36). See below |
+| `variationId` | string \| null | **Reserved header — stays `null` by decision (ADR-63).** Rules require null at create and freeze it (ADR-58). Several variations may share one claim, so the variation identity lives on the LINES (`variationId` + `variationLineIndex` per line, below) — the header is never activated |
+| `variationLineCount` | int | **ADR-63 (M3-B2 — implemented, not yet deployed).** The number of VARIATION-ORIGIN lines after the PO lines (0 when none). Non-negative int; **REQUIRED at create by the FINAL rules** (optional in the Stage-1 transitional ruleset — absent reads 0; every pre-M3-B2 claim has no key); frozen for life (`corePreserved`). Rules pin **`PO lines + variationLineCount == lineItems.size()`** at create and the FIRST / LAST variation-origin lines' shape (null `poLineIndex`, string `variationId`) at create, draft edit and approve — the old-browser guard. Element contents beyond that are client-only (DC40) |
+| `lineItems` | array | **Embedded, and the line SET IS FIXED**: exactly one line per PO line, created one-to-one when the claim is raised, followed (ADR-63) by one line per CLAIMABLE new-scope variation line on that PO (a positive new-scope line of an approved, applied, scope-committed supplier variation — `lib/variations.js → claimableNewScopeLines`). Lines are never added, removed or reordered — the SOURCE-LINE IDENTITY (`poLineIndex`, or `variationId` + `variationLineIndex`; `lib/sourceLine.js`) is downstream identity. A draft edit authors only each line's `claimedToDate`; every identity field is rebuilt from the stored line and `claimedThisPeriod` is re-derived (ADR-37). **Rules pin the COUNT** (to the PO's lines + `variationLineCount` at create, 1–200; to the stored count on edit and approval) and the two end variation lines' shape — other element contents are client-only (DC36 / DC40). See below |
 | `retention` | number | Ex-GST amount withheld, clamped to subtotal |
 | `claimedSubtotal`, `claimedGst`, `claimedTotal` | number | GST applies to (subtotal − retention). **Whole-cent header rules-enforced at create and draft edit** (ADR-58): `retention >= 0` and `<= claimedSubtotal`, `claimedSubtotal > 0`, GST exactly 10% of the net half-up (one cent below on a half-cent boundary), total exact; frozen from `submitted` |
 | `approvedSubtotal`, `approvedGst`, `approvedTotal` | number \| null | Null until approved; **written once by the approve transition and frozen forever** — `approvedSubtotal <= claimedSubtotal`, the stored `retention` clamped to it, the same GST pin, total exact (rules-enforced, ADR-58) |
@@ -497,6 +501,28 @@ Each claim line item:
                           //   (normalised at approval, ADR-58). Forced null on every
                           //   rebuilt draft line; written once by approve, then frozen
 ```
+
+A **variation-origin** claim line (ADR-63) carries, instead of a PO line identity:
+
+```
+{ poLineIndex: null,      // NEVER 0 — lib/sourceLine.js → indexOrNull; a null / malformed
+                          //   index is refused by validateClaimDraft, never coerced
+  variationId,            // the approved, applied, scope-committed supplier variation on this PO
+  variationNumber,        // snapshot ('SV-0007')
+  variationLineIndex,     // the index of the positive NEW_SCOPE line in variation.lineItems
+                          //   (frozen at approval, ADR-59) — the stable cumulative key
+  variationLineTotal,     // ceiling snapshot = that line's approvedAmount (warn-only threshold)
+  poLineTotal: null,
+  costCodeId, costCodeName, description,   // snapshots from the variation line
+  previouslyApproved, claimedToDate, claimedThisPeriod, approvedThisPeriod }   // as above
+```
+
+Keys are collision-safe (`po:{poId}:{idx}` vs `var:{variationId}:{idx}`). Recognition
+on a variation line is keyed by `variationId` + `variationLineIndex`
+(`recognisedClaimsByVariationLine`, `previouslyApprovedByVariationLine`,
+`postedInvoicedByVariationLine`) and NEVER by PO line; every PO-line selector
+skips variation-origin lines. Legacy documents carry no variation keys and no
+`variationLineCount` — absent reads as PO-origin / 0; nothing is backfilled.
 
 ## …/projects/{projectId}/supplierInvoices/{invoiceId}
 
@@ -552,6 +578,7 @@ enforced; see [SECURITY.md](SECURITY.md) → Deferred Control 29.
 | `supplierName` | string | Snapshot from the PO/claim — never re-read |
 | `poId`, `poNumber` | string \| null | The one PO this invoice bills against (snapshot) |
 | `progressClaimId`, `claimNumber` | string \| null | The one approved claim (source `progress_claim`), else null |
+| `variationLineCount` | int (OPTIONAL) | **ADR-63 (M3-B2 — implemented, not yet deployed).** The number of VARIATION-ORIGIN lines stored on the invoice (0 on a `direct_po` invoice; for a `progress_claim` invoice at most the claim's — lines certified at zero are not stored). Absent on every pre-M3-B2 document (reads 0). **Rules:** non-negative int when present, frozen (`corePreserved`), the LAST line's shape must match it, a `direct_po` invoice requires 0/absent, and a `progress_claim` invoice whose claim carries variation lines MUST declare a count ≤ the claim's — the pre-M3-B2 bundle never writes the key and is refused, so no posted invoice can carry new-scope work onto PO line 0 |
 | `invoiceDate` | string | Supplier's tax-invoice date (`YYYY-MM-DD`) |
 | `receivedDate` | string | When the invoice was received |
 | `dueDate` | string | Explicit; seeded from payment terms, editable |
@@ -586,6 +613,14 @@ Each line item:
   taxCode,                // 'gst' (10%) | 'gst_free' | 'input_taxed'
   gstAmount }             // GST for the line: 10% of amount for 'gst', else 0
 ```
+
+A **variation-origin** invoice line (ADR-63 — `progress_claim` only, copied from
+the claim line) carries `poLineIndex: null` plus `variationId`, `variationNumber`,
+`variationLineIndex` (identity preserved by `buildInvoiceLine`; a null index is
+never turned into 0). It is recognised against its variation line
+(`postedInvoicedByVariationLine`) and excluded from every PO-line / PO-total
+selector (`postedInvoicedByPoLine`, `postedInvoicedByPo`, the direct-invoice
+occupancy maps). A `direct_po` invoice never carries one.
 
 GST-inclusive entry may be offered as a UI mode, but storage is always ex-GST +
 `gstAmount`. Contact `gstStatus` is **advisory only** — it can raise a warning
@@ -953,13 +988,16 @@ with `subtotal + gst == total` exact on both sides — never clamped, never
 bounded against submitted. `lineItems` CONTENTS, the header GST against the
 lines, notes-required-when-differing and uniqueness stay client-only
 (SECURITY.md → *Variations — rules-enforced lifecycle*, Deferred Control 37).
-**Commitment application (ADR-62, M3-B1 — implemented, not yet deployed):** a
+**Commitment application (ADR-62, M3-B1 — LIVE; ADR-63, M3-B2 — implemented, not yet deployed):** a
 PO-linked supplier variation approves ONLY with `commitmentAppliedAt/By` and ONLY
 while its PO exists in this project and is sent/closed (approve + apply in one
 write; a cancelled, draft or missing PO refuses the approval); branch (f) applies
 a legacy approved, stamp-less one exactly once. The Stage-1 transitional ruleset
 makes the pair optional on that one branch for the pre-M3-B1 bundle, nothing else. Line CONTENTS stay unverifiable, so which
-lines mature is the client's classification (Deferred Control 39).
+lines mature is the client's classification (Deferred Control 39). ADR-63 adds the
+second pair `scopeCommittedAt/By` (below): required with the applied pair on a
+PO-linked approve (FINAL), or written once by the legacy action for the pair(s)
+still missing; a negative new-scope line is never matured or claimable.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -991,7 +1029,8 @@ lines mature is the client's classification (Deferred Control 39).
 | `attachments` | array | **Reserved** — always `[]`; no Storage uploads yet |
 | `externalRefs` | map | **Reserved** — accounting-system IDs |
 | `supersededByVariationId` | string \| null | **Reserved** — revision workflow; null at create and frozen (rules) |
-| `commitmentAppliedAt`, `commitmentAppliedBy` | timestamp, uid (OPTIONAL) | **ADR-62 (M3-B1 — implemented, not yet deployed).** The commitment-application pair: present TOGETHER once an approved, PO-linked SUPPLIER variation has been applied to its PO's commitment; **absent** otherwise (never null; absent at create by rules). REQUIRED by the FINAL rules on the approve of any PO-linked supplier variation (branch c; the PO must exist here and be sent/closed — otherwise the approval is refused, never approved unapplied), or written once by the legacy *Apply* (branch f) on an approved document whose pair is still absent — `commitmentAppliedBy == request.auth.uid`, `commitmentAppliedAt == request.time`, the PO `get()`-verified sent/closed, both rules-enforced; a repeat Apply is refused by rules (stored pair must be null); manual-mode supplier and client variations can never carry the pair. Read by `lib/variations.js → isCommitmentApplied / appliedSupplierVariationAdjustments`: an applied variation's EXISTING-LINE amounts (a `poLineIndex` whose cost code matches the PO line) revise that PO line at read time; its new-scope and invalid lines stay in unapplied exposure. Absent on every variation written before M3-B1 (legacy = unapplied = the pre-ADR-62 figures, unchanged) |
+| `scopeCommittedAt`, `scopeCommittedBy` | timestamp, uid (OPTIONAL) | **ADR-63 (M3-B2 — implemented, not yet deployed).** The SECOND, independent pair — the new-scope commitment: present TOGETHER once the variation's POSITIVE NEW_SCOPE lines have been committed as claimable commitment lines in their own right (ceiling = the line's `approvedAmount`, on the line's own cost code, identity `variationId` + line index); **absent** otherwise (never null; absent at create by rules). Written WITH the applied pair by the approve of any PO-linked supplier variation (REQUIRED by the FINAL rules; optional in the Stage-1 transitional ruleset for the M3-B1 bundle), or once by the legacy action — "Apply to commitment" writes both pairs on a never-applied variation, "Commit new scope" writes this pair alone on a variation applied under M3-B1 that carries a positive new-scope line — `scopeCommittedBy == request.auth.uid`, `scopeCommittedAt == request.time`, the PO `get()`-verified sent/closed, each written pair's stored value null (a repeat is refused by rules per pair; a present pair is never rewritten). Read by `lib/variations.js → isScopeCommitted / appliedSupplierVariationAdjustments().newScopeLines`. A NEGATIVE new-scope line is never matured or claimable whatever the stamps say (signed exposure, state *Negative new scope — review*). Absent on every variation written before M3-B2 (legacy new scope = exposure, unchanged, until the explicit commit) |
+| `commitmentAppliedAt`, `commitmentAppliedBy` | timestamp, uid (OPTIONAL) | **ADR-62 (M3-B1 — LIVE).** The commitment-application pair: present TOGETHER once an approved, PO-linked SUPPLIER variation has been applied to its PO's commitment; **absent** otherwise (never null; absent at create by rules). REQUIRED by the FINAL rules on the approve of any PO-linked supplier variation (branch c; the PO must exist here and be sent/closed — otherwise the approval is refused, never approved unapplied), or written once by the legacy *Apply* (branch f) on an approved document whose pair is still absent — `commitmentAppliedBy == request.auth.uid`, `commitmentAppliedAt == request.time`, the PO `get()`-verified sent/closed, both rules-enforced; a repeat Apply is refused by rules (stored pair must be null); manual-mode supplier and client variations can never carry the pair. Read by `lib/variations.js → isCommitmentApplied / appliedSupplierVariationAdjustments`: an applied variation's EXISTING-LINE amounts (a `poLineIndex` whose cost code matches the PO line) revise that PO line at read time; its new-scope and invalid lines stay in unapplied exposure. Absent on every variation written before M3-B1 (legacy = unapplied = the pre-ADR-62 figures, unchanged) |
 | `createdAt` / `createdBy` | timestamp / uid | `== request.time` / `== request.auth.uid` at create; immutable (ADR-59) |
 | `updatedAt` / `updatedBy` | timestamp / uid | **ADR-59 addition (M2-B3).** Required by rules on **every** write — create, draft edit and all four transitions. Absent on variations written before M2-B3; required only of the *incoming* document, so those acquire it on their next valid write |
 
@@ -1002,7 +1041,9 @@ Each line item:
   description,
   submittedAmount, submittedGst,  // ex-GST proposed amount + derived GST (signed)
   approvedAmount, approvedGst,     // null until approved; ex-GST certified + derived GST (signed)
-  poLineIndex,                     // supplier only: the PO line this extends, or null (new scope)
+  poLineIndex,                     // supplier only: the PO line this extends, or null (new scope —
+                                   //   claimable in its own right once scope-committed, ADR-63;
+                                   //   negative new scope is never matured or claimed)
   taxCode }                        // 'gst' (10%) | 'gst_free' (0%) | 'input_taxed' (0%)
 ```
 
@@ -1798,8 +1839,9 @@ a design assessment, a hook, and (where a new collection is introduced) a manual
 - POs → contacts via `supplierId`, with `supplierName` snapshotted at write time (same pattern as `costCodeName`). Null `supplierId` = pre-Contacts PO; render from the snapshot.
 - Claims → POs via `poId`, with `poNumber`/`supplierName`/`supplierId`/`poLineTotal` snapshotted. Claims inherit supplier identity from the PO — they never reference contacts directly.
 - Variations → cost codes via `costCodeId` (with `costCodeName` snapshot) on every line; supplier variations → one PO via `poId` (with `poNumber`/`supplierName` snapshot) and optionally a PO line via `poLineIndex`; client variations → a client contact via `clientId`/`clientName`. Approved variations affect figures **only at read time** — no PO/claim/invoice/budget-line mutation.
-- Applied supplier variations → PO lines (ADR-62, M3-B1): `commitmentAppliedAt/By` on the variation + `poLineIndex` on its lines; read-time only — the PO is never written, and new-scope lines (no `poLineIndex`) await M3-B2.
-- `progressClaims.variationId` is a **reserved** forward-link to a Supplier Variation — still `null`; claim-against-variation (new-scope lines) is M3-B2.
+- Applied supplier variations → PO lines (ADR-62, M3-B1): `commitmentAppliedAt/By` on the variation + `poLineIndex` on its lines; read-time only — the PO is never written.
+- Committed new-scope variation lines (ADR-63, M3-B2): `scopeCommittedAt/By` on the variation makes each POSITIVE new-scope line (no `poLineIndex`) a commitment line of its own, keyed `variationId` + line index; claims and claim-sourced invoices reference it through per-line `variationId` + `variationLineIndex` (with `poLineIndex: null`); read-time only — the variation is never written by a claim or an invoice. Negative new-scope lines are referenced by nothing.
+- `progressClaims.variationId` is a **reserved** header that stays `null` by decision (ADR-63): the variation identity lives on the lines, so several variations may share one claim. `progressClaims.variationLineCount` / `supplierInvoices.variationLineCount` count the variation-origin lines (rules-pinned).
 - Supplier invoices → POs via `poId` (required; one PO per invoice) and → approved claims via `progressClaimId` (source `progress_claim` only). Supplier identity is snapshotted from the PO/claim (`supplierId`/`supplierName`) — invoices never read contacts for identity. Invoice lines link to PO lines via `poLineIndex`. Claims are **never** mutated or stamped when invoiced; double-counting is avoided at read time (see [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md)).
 - Forecast lines → cost codes via `costCodeId`, which is **also the document ID** (one current forecast per cost code). They store only the manual `uncommittedCostToComplete` + `notes`; every displayed figure is derived at read time and never written back (`lib/forecast.js`). Forecast lines never mutate POs, claims, invoices, variations, or budget lines.
 - The commercial baseline → a client contact via `clientId` (with a frozen `clientName` snapshot); optional. It stores contract inputs only — every margin figure is derived at read time from the baseline, approved client variations, and Forecast Final Cost, and is never written back to the baseline or any other document.

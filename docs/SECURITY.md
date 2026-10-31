@@ -59,7 +59,24 @@ Controls now in place:
 - **M3-A (ADR-61, 29 October 2026, LIVE since 29 October 2026)** adds the award →
   PO source link to the `purchaseOrders` and `tenderPackages` blocks:
   **201,523 → 207,620 bytes** (+6,097), 37,380 under the budget.
-- **M3-B1 (ADR-62, 30 October 2026, NOT YET DEPLOYED)** adds the
+- **M3-B2 (ADR-63, 31 October 2026, IMPLEMENTED — NOT YET DEPLOYED)** adds the
+  new-scope commitment pair (`variations`), the `variationLineCount` header and
+  the first/last variation-line shape pins (`progressClaims`), and the
+  claim-sourced invoice count guard (`supplierInvoices`): FINAL
+  `firestore.rules` **210,926 → 217,864 bytes** (+6,938; 27,136 under the
+  budget), derived STAGE-1 `firestore.transitional.rules` **218,373 bytes**
+  (two marked rule lines and a five-line header differ). The claims `create`
+  evaluation reached the engine's 1000-expression ceiling in the emulator with
+  the original repeated `get(poPath(…))` calls; the PO and the source claim are
+  now bound ONCE (`let po` / `let claim`) in their source predicates, and the
+  variations branch (f) binds `changedKeys()` once (`legacyCommitValid`).
+  A DENIED claim approve that passes the status gates but fails the money
+  header reports the ceiling message rather than a plain `false` (the
+  pre-M3-B2 ruleset already denied it with an evaluation error) — outcome
+  unchanged, headroom thin: bind repeated reads first on the next change.
+  Document reads are unchanged (claim create 4, invoice create 3, approve 2).
+- **M3-B1 (ADR-62, 30 October 2026, LIVE — confirmed by the product owner after
+  the three-stage release)** adds the
   commitment-application pair and branch (f) to the `variations` block only.
   Two artifacts: the FINAL `firestore.rules` **207,620 → 210,926 bytes**
   (+3,306; 34,074 under the budget) and the derived STAGE-1
@@ -633,7 +650,7 @@ document, the link keys are compared through `get(key, null)`, a missing
 pre-ADR-59 variation stays editable, submittable, approvable, rejectable and
 withdrawable and acquires the new fields on its next valid write.
 
-### Commitment application (ADR-62, M3-B1 — IMPLEMENTED, NOT YET DEPLOYED)
+### Commitment application (ADR-62, M3-B1 — LIVE, confirmed by the product owner after the three-stage release)
 
 **The approved supplier variation is the commitment adjustment.** Whether its
 approved amounts have been APPLIED to the PO it names is recorded by two
@@ -707,6 +724,82 @@ a reload loads the new bundle. Rules-first is claimed safe ONLY because
 `tests/rules/variationsTransitional.rules.test.js` proves the Stage-1 file
 against both payloads and `tests/rules/variations.rules.test.js` proves the
 FINAL file denies the unstamped PO-linked approve.
+
+### New-scope commitment and variation-origin lines (ADR-63, M3-B2 — IMPLEMENTED, NOT YET DEPLOYED)
+
+**Three blocks, additive; every M2 / M3-B1 control unchanged.** M3-B2 gives a
+positive NEW_SCOPE line of an approved supplier variation a commitment identity
+of its own and lets it be claimed and invoiced — without a PO write, a new
+collection, or any change to how EXISTING_LINE amounts mature.
+
+*Rules-enforced (`tests/rules/variations.rules.test.js` — the ADR-63 blocks;
+`tests/rules/progressClaims.rules.test.js` and `tests/rules/supplierInvoices.rules.test.js`
+— the ADR-63 blocks; `tests/rules/variationsTransitional.rules.test.js`):*
+
+- **`variations` — the second pair `scopeCommittedAt` / `scopeCommittedBy`.**
+  Absent at create (present or null refused — `scopeAbsent`); on no draft edit,
+  submit, reject or withdraw; **required together with the ADR-62 applied pair
+  on every PO-linked approve** (FINAL; the Stage-1 file makes the scope pair
+  optional for the M3-B1 bundle, the applied pair stays required) with
+  `scopeCommittedBy == request.auth.uid`, `scopeCommittedAt == request.time`; a
+  `poId == null` document (manual-mode supplier, client) refuses BOTH pairs.
+  Branch (f) is now **per pair**: the write may carry either or both pairs,
+  each written pair's stored value must be null/absent, `changedKeys()` ⊆ {the
+  four keys, `revision`, `updatedAt`, `updatedBy`} with at least one `*At`
+  key present, the stamps as above, the PO sent/closed through `get()` — so a
+  repeat is RULES-refused per pair and a present pair is never rewritten
+  (`applyCommitmentUpdate` writes exactly the missing pair(s)).
+- **`progressClaims` — `variationLineCount`.** A non-negative INT, REQUIRED
+  at create by the FINAL exact key set (optional in Stage 1 — absent reads 0),
+  frozen by `corePreserved`. `sourcePoValid` pins **`PO lines + variationLineCount
+  == lineItems.size()`** (the ADR-58 one-per-PO-line pin, extended). **The
+  shape pins** (`variationLinesShaped`, by list indexing): with n > 0 the
+  FIRST (index `size − n`) and LAST variation-origin lines must carry a null
+  `poLineIndex` and a string `variationId`; with n == 0 the last line must
+  carry no `variationId`. On the draft edit and approve branches
+  `variationLinesPreserved()` additionally requires those two lines to keep the
+  STORED `variationId` and `variationLineIndex`. **This is the old-browser
+  protection** the M3-B2 brief required: a pre-M3-B2 client's `buildClaimLine`
+  rebuilds every line with a numeric index and no variation key, so its draft
+  edit of a claim that holds variation lines is REFUSED in every stage with
+  nothing written — never a silent move of new-scope work onto PO line 0
+  (proven with the exact old-client payload). The header `variationId` stays
+  null and frozen (ADR-58), by decision.
+- **`supplierInvoices` — the claim-sourced count guard.** `variationLineCount`
+  is a non-negative int when present (absent reads 0 — every pre-M3-B2
+  document), frozen by `corePreserved`, and the LAST line's shape must match
+  it (`variationLinesShaped`). `sourceClaimValid` binds the approved claim once
+  and requires: claim count 0 → invoice count absent or 0; claim count > 0 →
+  the invoice MUST DECLARE an int count `0 ≤ n ≤ claim count` (lines certified
+  at zero are not stored). The pre-M3-B2 bundle writes no such key and is
+  REFUSED on any claim that carries variation lines, so no posted invoice can
+  ever carry new-scope work onto PO line 0. A `direct_po` invoice requires 0 or
+  absent. Same claim document as the status `get()` — no extra billed read.
+- roles and tenancy as before; delete still blocked; every pre-M3-B2 claim
+  and invoice (no count key, PO-only lines) edits, submits, approves and posts
+  exactly as before.
+
+*Client-enforced only (deferred — never describe these as enforced):* every
+line other than the two pinned ends; that the lines `variationLineCount`
+declares are real positive new-scope lines of an approved, applied,
+scope-committed supplier variation on THIS PO with the same cost code and
+ceiling (the create transaction re-reads the PO and every referenced variation
+on the server — `lib/progressClaimActions.js → variationSourceError` — and
+SHIELD check 4 condition H lists what no longer resolves); one claim per
+source line and duplicate identities (`lib/sourceLine.js →
+sourceLineIdentityError`, in `validateClaimDraft` and the invoice create
+hook); that a claim-sourced invoice's lines ARE the claim's certified lines
+(`claimReconciliationError`, DC29); cumulative bounds; which lines mature and
+the arithmetic; the PO's state after commitment; the over-recognition and CTC
+overlap warnings — see **Deferred Control 40**.
+
+⚠️ **Publishing is a THREE-STAGE, Firebase-CLI sequence** (DEPLOYMENT.md →
+*M3-B2 release order*): Stage 1 the TRANSITIONAL ruleset through
+`firebase.transitional.json`; Stage 2 the new Hosting bundle; Stage 3 the FINAL
+ruleset through the normal `firebase.json`. After Stage 3 an un-reloaded M3-B1
+tab is refused — with no write — on exactly two actions (the PO-linked
+variation approve and the claim create); the count pin, the shape pins and the
+invoice guard are active from Stage 1.
 
 ## Client Invoices — deliberately stricter than every other collection
 
@@ -2510,6 +2603,70 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     `frontend/tests/rules/variationsTransitional.rules.test.js`,
     `frontend/tests/unit/variationCommitment.test.js` or
     `frontend/tests/unit/shield.test.js`.
+
+40. **New-scope variation lines in claims and invoices — what the count and
+    shape pins cannot prove (ADR-63, M3-B2).** Rules enforce the second stamp
+    pair (when, by whom, once per pair, PO sent/closed, both pairs on a
+    PO-linked approve), the claim header `variationLineCount` (non-negative
+    int, frozen, `PO lines + count == line count` at create), the FIRST and
+    LAST variation-origin lines' shape (null PO index, string variation id) and
+    their stored identity on edit and approve, the invoice count guard (declared
+    and ≤ the claim's whenever the claim carries variation lines; none on a
+    direct PO invoice) and the last invoice line's shape. What they **cannot**
+    enforce, and what must never be described as enforced:
+
+    - **WHICH VARIATION A LINE NAMES, AND WHETHER IT BACKS THE LINE.** Rules
+      cannot read the lines, so a claim whose variation line names a
+      nonexistent, unapproved, unapplied, un-scope-committed or other-PO
+      variation, a wrong line index, a negative or existing-line variation
+      line, a wrong cost code or a wrong ceiling snapshot is ACCEPTED by rules
+      (proven). The create transaction re-reads every referenced variation on
+      the server and refuses (`variationSourceError`); afterwards SHIELD check
+      4 condition H lists the line. The certified amount stays in Actual where
+      the claim put it and nets no commitment line — never re-attributed.
+    - **EVERY LINE OTHER THAN THE TWO PINNED ENDS.** With three or more
+      variation lines a MIDDLE line can be malformed and is ACCEPTED (proven);
+      `sourceLineIdentityError` refuses it in the app and SHIELD H lists it.
+    - **DUPLICATE SOURCE LINES** in one claim (the same variation line twice)
+      are ACCEPTED by rules (proven); refused by `validateClaimDraft` and
+      listed by SHIELD H.
+    - **THE INVOICE LINES AGAINST THE CLAIM.** Rules compare only the counts: a
+      claim-sourced invoice whose variation line names another variation or
+      another amount is ACCEPTED (proven); `claimReconciliationError` (DC29)
+      and SHIELD check 3's variation-line rows are the controls.
+    - **ONE CLAIM PER SOURCE LINE ACROSS CLAIMS** — one open claim per PO is
+      still client-only (DC36); the cumulative `previouslyApprovedByVariationLine`
+      seed is the client's.
+    - **WHICH LINES MATURE, THE ARITHMETIC, THE PO'S STATE AFTER COMMITMENT,
+      THE STALE GUARD** — as DC39, now including the committed new-scope lines
+      and the combined composer (`lib/commitment.js`).
+    - **THE OVER-RECOGNITION WARNING** (a PO line already recognised above its
+      revised value when new scope is committed — the pre-M3-B2 over-claim
+      pattern) and the CTC overlap warning are possibilities shown for
+      acknowledgement, never proofs; nothing is reassigned.
+    - **DURING STAGE 1 ONLY**, a PO-linked approve from the M3-B1 bundle lands
+      with the applied pair and no scope pair, and a claim create from that
+      bundle lands without `variationLineCount`; both are the documented
+      "awaiting commit" / "count 0" readings, and the FINAL ruleset denies such
+      writes.
+
+    **Residual direct-SDK risk, stated plainly:** a financial-role caller using
+    the SDK directly can still write a claim whose variation-origin lines name
+    a variation that does not back them, duplicate a source line within one
+    claim, or malform a MIDDLE variation line; such a line enters Actual at its
+    certified amount and nets NO commitment line (it is never re-attributed to
+    PO line 0 — the builders and the two pinned ends make that shape
+    unreachable through the app and refused at the ends by rules), and SHIELD
+    check 4 condition H lists it. Rules cannot prevent the misstatement of
+    Actual itself; they prevent the silent move onto a PO line. Server-side
+    enforcement remains the remediation.
+
+    Every item above is **proven** by a passing test in
+    `frontend/tests/rules/progressClaims.rules.test.js` and
+    `frontend/tests/rules/supplierInvoices.rules.test.js` (the ADR-63 blocks),
+    `frontend/tests/rules/variationsTransitional.rules.test.js`,
+    `frontend/tests/unit/newScopeClaims.test.js` or
+    `frontend/tests/unit/sourceLine.test.js`.
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this

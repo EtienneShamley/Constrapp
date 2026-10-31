@@ -575,10 +575,126 @@ closes and cancels; only the raise action is refused until the rules return.
 M2-B3. No migration, backfill or data rewrite is involved in either
 direction, and no rollback removes an M2 control.
 
-**Supplier Variation Commitment Integration — M3-B1 (ADR-62): IMPLEMENTED —
-NOT YET DEPLOYED. THREE STAGES: TRANSITIONAL RULES → HOSTING → FINAL RULES.
-Both rulesets are committed, derived and emulator-tested; Rules-first is
-claimed safe only on the strength of those tests.**
+**New-Scope Variation Claim & Invoice Integration — M3-B2 (ADR-63): IMPLEMENTED
+— NOT YET DEPLOYED. THREE STAGES, FIREBASE-CLI DRIVEN: TRANSITIONAL RULES →
+HOSTING → FINAL RULES.**
+
+*What the two rulesets are.* The FINAL ruleset (`frontend/firestore.rules`,
+**217,864 bytes**) requires, on every approve of a PO-linked supplier
+variation, BOTH stamp pairs (the ADR-62 applied pair and the ADR-63 scope
+pair), and requires the `variationLineCount` header on every claim create. The
+M3-B1 bundle now in production writes only the applied pair and no count, so
+the FINAL file cannot be deployed while it is served. The STAGE-1 ruleset
+(`frontend/firestore.transitional.rules`, **218,373 bytes**, derived by
+`node scripts/build-transitional-rules.mjs` — `npm run rules:transitional`,
+checked by `npm run rules:transitional:check` and
+`tests/unit/rulesTransitional.test.js`) differs from FINAL in exactly TWO
+marked rule lines (search `ADR-63 TRANSITIONAL`): the scope pair is OPTIONAL on
+the approve branch (the applied pair stays required; a present scope pair must
+still be the caller's at server time; the PO must still be sent/closed), and
+`variationLineCount` is OPTIONAL at claim create (absent reads 0). Everything
+else — the claim count pin (`PO lines + count == lines`), the first/last
+variation-line shape pins, the per-pair branch (f), the claim-sourced invoice
+count guard — is identical in both files and ACTIVE from Stage 1. Proven by
+`tests/rules/variationsTransitional.rules.test.js` (M3-B1 payload × Stage 1
+accepted; new payload × Stage 1 accepted; pre-M3-B1 payload refused; invalid PO
+refused for every payload; claim and invoice guards active) and by the ADR-63
+blocks of `tests/rules/variations.rules.test.js`,
+`tests/rules/progressClaims.rules.test.js` and
+`tests/rules/supplierInvoices.rules.test.js` against the FINAL file.
+
+*Deployment config.* `frontend/firebase.json` is unchanged (it names
+`firestore.rules` for the emulators and the FINAL stage). Stage 1 uses the
+committed alternate config `frontend/firebase.transitional.json`, which names
+`firestore.transitional.rules` as the Firestore rules source and nothing else —
+the normal config is never rewritten for a temporary deployment. There is no
+`.firebaserc`, so `--project` is mandatory on every command. Every command below
+is run from `frontend/`, each a separate approved action; **none of them is run
+by an implementation task.**
+
+1. **Confirm the live ruleset is ADR-62 FINAL** (procedure under *Verifying
+   which rules version is published*): search `ADR-62 FINAL`, **210,926**
+   bytes.
+2. Lead Architect review of M3-B2; merge to `main`; Azure CI green (lint →
+   unit → **rules** → build). `cd frontend && npm run lint && npm run test:unit
+   && npm run test:rules && npm run build && npm run rules:transitional:check`
+   — green locally too.
+3. **STAGE 1 — deploy the transitional ruleset:**
+   `firebase deploy --only firestore:rules --config firebase.transitional.json --project constrapp-69b5d`.
+   Confirm the live version carries `ADR-63 TRANSITIONAL` and **218,373**
+   bytes. The M3-B1 bundle keeps working in full. From this moment: an invoice
+   raised from a claim that carries variation lines must declare its count (no
+   such claim exists yet, so nothing changes for users), and a claim's variation
+   lines (none exist yet) are shape-pinned.
+4. **STAGE 2 — `firebase deploy --only hosting --project constrapp-69b5d`**
+   (`--only hosting` and `--project` are both required); confirm the deployed
+   asset hashes match the local build. The new bundle approves PO-linked
+   supplier variations with both pairs, offers *Commit new scope* on variations
+   applied under M3-B1 that carry positive new scope, appends claimable
+   new-scope lines to new claims, carries the identity into claim-sourced
+   invoices, and reads the combined Remaining Committed (Budget, Forecast,
+   Commercial, Overview, Dashboard, Cash Flow, PULSE, SHIELD).
+5. **Verify Stage 2 in production** per TESTING.md §39 checks 1–3 (approve
+   commits new scope and Committed / FFC rise by exactly the sum; claim →
+   approve → invoice → post moves the amount once; legacy *Commit new scope*
+   once, refused on repeat, negative new scope offers no commit).
+6. **STAGE 3 — deploy the FINAL ruleset:**
+   `firebase deploy --only firestore:rules --project constrapp-69b5d`.
+   Confirm the live version carries `ADR-63 FINAL` and **217,864** bytes. From
+   this moment an un-reloaded M3-B1 tab (no service worker exists, so only an
+   un-reloaded tab) is refused — with nothing written — on exactly TWO actions:
+   the approve of a PO-linked supplier variation (no scope pair) and the create
+   of a progress claim (no `variationLineCount`); it sees the ADR-59 / ADR-58
+   permission message and a reload loads the new bundle. Every other action
+   still passes. Do not deploy Stage 3 until Stage 2 is verified (step 5); a
+   reasonable delay (the next working day) lets open tabs reload naturally.
+7. Close the milestone: mark M3-B2 LIVE here, in SECURITY.md, ROADMAP.md,
+   TESTING.md, DATA_MODEL.md, FINANCIAL_WORKFLOWS.md, PRODUCT.md and AGENT.md;
+   record the Stage-1 and Stage-3 byte counts seen in the console. Tell the QS
+   team: review Uncommitted Cost to Complete on every cost code where a
+   new-scope variation was folded in, and review any PO line whose recognition
+   already exceeds its revised value before committing that variation's new
+   scope (the dialog warns and requires an acknowledgement; nothing is
+   reassigned automatically).
+
+**Rollback — three different questions** (security compatibility, database
+integrity, financial reporting correctness):
+
+- **Before the first scope commit and the first variation-origin claim line**
+  (check with console queries: `variations` for `scopeCommittedAt`,
+  `progressClaims` for `variationLineCount > 0`): every step reverses in all
+  three senses. Stage 3 → Stage 1: redeploy the transitional file at any time
+  (a superset). Stage 2 → the M3-B1 bundle: redeploy the previous build (the
+  transitional rules accept everything it writes). Stage 1 → ADR-62 FINAL:
+  redeploy the previous `firestore.rules` only while the M3-B1 bundle is served.
+- **After the first scope commit or variation-origin claim line:**
+  - *Security and integrity:* rules back to the STAGE-1 file are safe at any
+    time; never below the ADR-62 FINAL file once both-pair documents exist.
+    A Hosting rollback to the M3-B1 bundle is security- and integrity-SAFE —
+    the invoice count guard refuses that bundle's invoice-from-claim on any
+    claim carrying variation lines, and the shape pins refuse its draft edit of
+    such a claim (nothing is corrupted or written) — PROVIDED the Stage-1 or
+    FINAL ruleset is live.
+  - *Financial correctness:* a Hosting rollback to the M3-B1 bundle is NOT
+    safe. That bundle does not read the scope pair or the variation-origin
+    lines: committed new scope drops back to "exposure", variation-origin claim
+    lines raise Actual without netting any commitment line (FFC overstated),
+    and the recognition those claims represent is invisible to Committed.
+    **Do not roll Hosting back to the M3-B1 frontend once such records exist.**
+    The recovery path is FORWARD: fix on the M3-B2 code line and redeploy, or
+    deploy a RECOVERY BUNDLE built from this branch with the *Commit new scope*
+    action and the claim editor's variation lines disabled but every selector
+    intact, so the figures keep reading the stamps and the lines.
+
+No migration, backfill or data rewrite is involved in any direction; a stamp or
+a line already written is an audit fact, never deleted. No rollback removes an
+M2 or M3-B1 control.
+
+**Supplier Variation Commitment Integration — M3-B1 (ADR-62): LIVE IN
+PRODUCTION — released in the three stages below (transitional rules → Hosting →
+FINAL rules) and confirmed by the product owner; the record of the order is
+kept. Both rulesets were committed, derived and emulator-tested; Rules-first
+was claimed safe only on the strength of those tests.**
 
 *The compatibility question, answered from the rules text and the suites.*
 The FINAL ruleset (`frontend/firestore.rules`, **210,926 bytes**) requires, on
@@ -659,8 +775,9 @@ Release, in order, each a separate approved action:
    2 is verified (step 5); a reasonable delay (the next working day) lets open
    tabs reload naturally.
 7. Close the milestone: mark M3-B1 LIVE here, in SECURITY.md, ROADMAP.md,
-   TESTING.md, DATA_MODEL.md, FINANCIAL_WORKFLOWS.md, PRODUCT.md and AGENT.md;
-   record the Stage-1 and Stage-3 byte counts seen in the console. Tell the QS
+   TESTING.md, DATA_MODEL.md, FINANCIAL_WORKFLOWS.md, PRODUCT.md and AGENT.md
+   (done under ADR-63 on the product owner's confirmation; the console byte
+   counts were not recorded in the repository). Tell the QS
    team to review Uncommitted Cost to Complete on every cost code where an
    approved supplier variation was folded in (the dialogs warn and require
    acknowledgement, but the review is theirs — nothing is subtracted

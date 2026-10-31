@@ -6568,7 +6568,7 @@ tested):
       *From TP-####*.
 
 
-## 38. Supplier Variation Commitment Integration — M3-B1 (ADR-62)
+## 38. Supplier Variation Commitment Integration — M3-B1 (ADR-62) — LIVE (confirmed by the product owner after the three-stage release)
 
 Automated: `tests/rules/variations.rules.test.js` (**+27**, the four ADR-62
 blocks): approve WITH the commitment stamps for every financial role against a
@@ -6671,3 +6671,90 @@ tested):
       test project, cancel a sent PO that carries a SUBMITTED supplier
       variation (reject its claims first if any): *Assess* on that variation
       shows the red PO notice and a disabled Approve; Reject still works.
+
+## 39. New-Scope Variation Claim & Invoice Integration — M3-B2 (ADR-63)
+
+Automated: `tests/unit/sourceLine.test.js` (the one source-line identity: a
+null, string, float or negative index is NEVER coerced to 0; PO-origin vs
+variation-origin vs INVALID; collision-safe keys; duplicate detection).
+`tests/unit/newScopeClaims.test.js` (the brief's lifecycle through the REAL
+selectors — PO 100,000 · SV +12,000 existing · SV +4,000 new scope committed ·
+CTC 10,000: revised 116,000 / remaining 116,000 / FFC 126,000; claim 2,000 →
+remaining 114,000, Actual 2,000, awaiting 2,000, FFC 126,000; invoice posted →
+awaiting 0, nothing twice; second claim 1,500 → remaining 112,500, Actual 3,500,
+awaiting 1,500 (not 3,500); third claim 1,000 with the second still uninvoiced →
+the line floors at 0, Actual 4,500, awaiting 2,500, FFC 126,500 and SHIELD check
+4 G lists the 500; the second and third invoices posted → awaiting 1,000 then 0
+(the sequential A–F block, Actual and Remaining asserted at every step); the
+Cash Flow reconciliation block — posted ≠ paid: unpaid AP from
+`payablesSummary` (gross) and its due-month bucket, cash out from posted
+payments, and the identity FFC = Remaining + awaiting + CTC + posted invoiced
+ex-GST at every step, with a partial payment, a draft payment, a valid and an
+invalid credit note and a negative new-scope variation; two variations on one
+cost code with distinct identities; a PO line claimed 30,000 before the commit;
+the over-recognition warning; a negative −3,000 new scope never matured or
+claimable; a cancelled / missing PO makes new scope INVALID; duplicate and
+forged sources refused by `validateClaimDraft` / `variationSourceError` and
+listed by SHIELD H; check 3 compares variation-line invoices with their own
+ceiling; builders preserve identity; margin, snapshot, cash-flow denominator and
+PULSE carry the one figure). `tests/rules/variations.rules.test.js` (ADR-63
+blocks: both pairs required on approve under FINAL, the M3-B1 payload denied,
+forged / half scope pairs refused, the pair refused on manual / client / create
+/ other branches; per-pair branch f — scope-only commit once on a B1-applied
+document, the full Apply refused there, both pairs once on a never-applied
+document, repeats refused, empty stamp writes refused, cancelled PO and roles
+refused; the app's `runApplyVariationCommitment` writes only the missing pair).
+`tests/rules/progressClaims.rules.test.js` (ADR-63 blocks: create with
+variation lines for every role, several variations per claim, FINAL requires the
+count, bad counts, the count pin, the first/last shape pins; **the old-client
+protection** — the exact pre-M3-B2 rebuild of a variation line is REFUSED on
+draft edit and on approve while the new payload passes; identity re-pointing
+and count changes refused; legacy claims still edit / submit / approve; the
+app's `runUpdateClaimDraft` against the real rules; the DC40 ceiling — forged
+sources, a malformed middle line and a duplicated line are ACCEPTED by rules).
+`tests/rules/supplierInvoices.rules.test.js` (ADR-63 blocks: the new payload
+from a claim with a variation line for every role; the old payload REFUSED;
+count bounded by the claim's and matching the last line; plain claims accept
+absent or 0; direct PO invoices refuse any count > 0 or variation-shaped line;
+`variationLineCount` frozen through the lifecycle; the DC40 ceiling).
+`tests/rules/variationsTransitional.rules.test.js` (the Stage-1 file: the
+M3-B1 approve accepted and then scope-committed once; the new approve accepted;
+the pre-M3-B1 approve refused; Correction A for every payload; the M3-B1 claim
+create without a count and the new create with one both accepted; the count and
+shape pins and the invoice guard ACTIVE; every other control unchanged).
+`tests/unit/rulesTransitional.test.js` (the two marked line pairs; both files
+under budget). Rules suite **27 files / 1,828 tests**; unit **62 files / 3,653 tests**.
+
+Manual (production, after Stage 2 — at most three):
+
+1. **Approve commits new scope.** On a project with a sent PO, raise a supplier
+   variation against it with one existing-line amount and one positive
+   new-scope line, submit and assess it. The Assess modal lists the new-scope
+   line as *committed on approval*, warns about any saved Uncommitted CTC or any
+   PO line already recognised above its revised value, and reads *Approve, apply
+   & commit new scope*. After approval the Variations register shows *Fully
+   incorporated · applied · new scope committed*; Budget **Committed** and
+   **Committed New Scope**, Forecast **Remaining Committed** and **Forecast Final
+   Cost** rise by exactly the existing-line amount + the new-scope amount;
+   **Unapplied Supplier Variations** is unchanged.
+2. **Claim → approve → invoice → post moves the amount once.** Raise a progress
+   claim on that PO: the editor lists the PO lines then the new-scope line
+   (labelled with the variation number, "of <approved amount> (new scope)").
+   Claim part of the new-scope amount, submit, approve. Budget / Forecast:
+   Actual rises by the certified amount, Remaining Committed falls by exactly
+   it, FFC is unchanged, the Cash Flow tab shows it as *approved claims awaiting
+   invoice*. Raise the supplier invoice *From approved claim* (the line keeps
+   the variation label), approve and post it: Actual and Remaining Committed are
+   unchanged, awaiting-invoice falls to zero, the AP balance appears. SHIELD
+   checks 3 and 4 show no finding. Raise a second claim on the same line: it
+   pre-fills at the approved-to-date and claims the remainder cumulatively.
+3. **Legacy commit, once; negative new scope never.** On a variation approved
+   and applied under M3-B1 that carries a positive new-scope line, the register
+   reads *Partially incorporated · new scope uncommitted* and offers **Commit new
+   scope**; confirm it (the dialog shows the effect and requires the
+   acknowledgement when it warns) — Committed and FFC rise by the new-scope
+   amount, the action disappears, and a second tab's attempt is refused with
+   "already been applied". On a variation whose only new-scope line is
+   negative, no commit is offered, the register reads *Negative new scope —
+   review*, the amount stays in Unapplied Supplier Variations (signed) and
+   SHIELD check 4 lists it for review.
