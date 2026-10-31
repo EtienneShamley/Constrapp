@@ -3,6 +3,11 @@ import {
   DAY_WIDTH_PX, ROW_HEIGHT_PX,
   monthStart, monthEnd, monthLabel, daysInMonth,
   isDrawable, ganttWindow, monthTicks, weekTicks, buildGanttModel,
+  // ADR-64
+  GANTT_SCALE, GANTT_SCALE_ORDER, GANTT_SCALE_LABELS, SCALE_DAY_WIDTH_PX, DEFAULT_GANTT_SCALE,
+  isGanttScale, dayWidthForScale, dayTicks, shortDayLabel,
+  actualSpan, finishVarianceDays, planComparisonLabel, ACTUAL_KIND,
+  todayScrollLeft, LABEL_WIDTH_PX, HEADER_HEIGHT_PX,
 } from '../../src/lib/timelineGantt'
 import { ACTIVITY_STATUS } from '../../src/lib/projectTimeline'
 
@@ -315,5 +320,197 @@ describe('gantt model', () => {
     const frozen = JSON.stringify(list)
     buildGanttModel(list, { now: NOW })
     expect(JSON.stringify(list)).toBe(frozen)
+  })
+})
+
+// ── Constrapp GANTT™ (ADR-64): zoom, recorded dates, rows, scroll ────────────
+
+describe('zoom scales — one geometry, three day widths', () => {
+  it('day, week and month, each a day width; week is the default', () => {
+    expect(GANTT_SCALE_ORDER).toEqual(['day', 'week', 'month'])
+    expect(SCALE_DAY_WIDTH_PX).toEqual({ day: DAY_WIDTH_PX, week: 8, month: 3 })
+    expect(DEFAULT_GANTT_SCALE).toBe(GANTT_SCALE.WEEK)
+    for (const s of GANTT_SCALE_ORDER) expect(GANTT_SCALE_LABELS[s]).toBeTruthy()
+    expect(isGanttScale('week')).toBe(true)
+    expect(isGanttScale('year')).toBe(false)
+    expect(dayWidthForScale('month')).toBe(3)
+    expect(dayWidthForScale('nonsense')).toBe(DAY_WIDTH_PX)
+  })
+
+  it('every scale draws exactly the same dates: offsets scale with the day width and nothing else', () => {
+    const list = [
+      activity({ id: 'a', plannedStart: '2026-10-05', plannedFinish: '2026-10-09' }),
+      activity({ id: 'm', isMilestone: true, plannedStart: '2026-11-20', plannedFinish: '2026-11-20', sortOrder: 20 }),
+    ]
+    const models = GANTT_SCALE_ORDER.map(scale => buildGanttModel(list, { now: NOW, scale }))
+    for (const m of models) {
+      expect(m.window).toEqual({ start: '2026-10-01', end: '2026-11-30' })
+      expect(m.totalDays).toBe(61)
+      expect(m.bars.map(b => b.offsetDays)).toEqual([4, 50])
+      expect(m.bars[0].days).toBe(5)
+      expect(m.todayOffsetDays).toBe(14)
+      expect(m.canvasWidth).toBe(61 * m.dayWidth)
+      expect(m.bars[0].x).toBe(4 * m.dayWidth)
+      expect(m.bars[0].width).toBe(5 * m.dayWidth)
+      expect(m.bars[1].milestoneX).toBe(50 * m.dayWidth + m.dayWidth / 2)
+      expect(m.todayX).toBe(14 * m.dayWidth)
+    }
+    expect(models.map(m => m.scale)).toEqual(['day', 'week', 'month'])
+    expect(models.map(m => m.dayWidth)).toEqual([22, 8, 3])
+  })
+
+  it('a single-day activity is one day wide at every scale', () => {
+    for (const scale of GANTT_SCALE_ORDER) {
+      const m = buildGanttModel([activity({ plannedStart: '2026-10-05', plannedFinish: '2026-10-05' })], { now: NOW, scale })
+      expect(m.bars[0]).toMatchObject({ days: 1, width: m.dayWidth })
+    }
+  })
+
+  it('day ticks exist only at day zoom; week ticks carry a date label; the model is otherwise identical', () => {
+    const day   = buildGanttModel([activity()], { now: NOW, scale: 'day' })
+    const week  = buildGanttModel([activity()], { now: NOW, scale: 'week' })
+    const month = buildGanttModel([activity()], { now: NOW, scale: 'month' })
+    expect(day.days).toHaveLength(31)
+    expect(day.days[0]).toMatchObject({ iso: '2026-10-01', offsetDays: 0, x: 0, width: 22, label: '1' })
+    expect(day.days[30]).toMatchObject({ iso: '2026-10-31', label: '31' })
+    expect(week.days).toEqual([])
+    expect(month.days).toEqual([])
+    expect(week.weeks[0]).toMatchObject({ iso: '2026-10-01', label: '1 Oct', width: 56 })
+    expect(week.weeks[4]).toMatchObject({ iso: '2026-10-29', width: 3 * 8 }) // the last partial week
+    expect(shortDayLabel('2027-01-05')).toBe('5 Jan')
+    expect(shortDayLabel('x')).toBe('')
+  })
+
+  it('day ticks cross a month and a year boundary with real month lengths', () => {
+    const ticks = dayTicks('2026-12-30', '2027-01-02', 10)
+    expect(ticks.map(t => t.label)).toEqual(['30', '31', '1', '2'])
+    expect(ticks.map(t => t.x)).toEqual([0, 10, 20, 30])
+    expect(dayTicks('2026-10-05', '2026-10-01', 10)).toEqual([])
+  })
+
+  it('zooming never touches the activities', () => {
+    const list = [activity()]
+    const frozen = JSON.stringify(list)
+    for (const scale of GANTT_SCALE_ORDER) buildGanttModel(list, { now: NOW, scale })
+    expect(JSON.stringify(list)).toBe(frozen)
+  })
+})
+
+describe('recorded (actual) dates — drawn only from what exists', () => {
+  const W = { start: '2026-10-01', end: '2026-10-31' }
+
+  it('start and finish → a span, clamped like a planned bar', () => {
+    const s = actualSpan(activity({ actualStart: '2026-10-06', actualFinish: '2026-10-12' }), W, 10)
+    expect(s).toMatchObject({ kind: ACTUAL_KIND.SPAN, from: '2026-10-06', to: '2026-10-12', offsetDays: 5, days: 7, x: 50, width: 70, clippedStart: false, clippedEnd: false })
+    const clipped = actualSpan(activity({ actualStart: '2026-09-20', actualFinish: '2026-10-03' }), W, 10)
+    expect(clipped).toMatchObject({ kind: ACTUAL_KIND.SPAN, x: 0, days: 3, clippedStart: true })
+  })
+
+  it('start only → a one-day start marker; no finish is ever invented', () => {
+    const s = actualSpan(activity({ actualStart: '2026-10-06' }), W, 10)
+    expect(s).toMatchObject({ kind: ACTUAL_KIND.START, from: '2026-10-06', to: '2026-10-06', days: 1, x: 50, width: 10 })
+  })
+
+  it('finish only (a completed activity whose start was never recorded) → a finish marker', () => {
+    const s = actualSpan(activity({ actualFinish: '2026-10-12', status: ACTIVITY_STATUS.COMPLETED, percentComplete: 100 }), W, 10)
+    expect(s).toMatchObject({ kind: ACTUAL_KIND.FINISH, from: '2026-10-12', to: '2026-10-12', days: 1 })
+  })
+
+  it('a milestone draws a reached marker from its actual finish, and nothing from an actual start alone', () => {
+    const reached = actualSpan(activity({ isMilestone: true, plannedStart: '2026-10-05', plannedFinish: '2026-10-05', actualFinish: '2026-10-07' }), W, 10)
+    expect(reached).toMatchObject({ kind: ACTUAL_KIND.FINISH, from: '2026-10-07' })
+    expect(actualSpan(activity({ isMilestone: true, actualStart: '2026-10-07' }), W, 10)).toBeNull()
+  })
+
+  it('nothing recorded, an invalid date, an inverted pair, or a span outside the window → nothing', () => {
+    expect(actualSpan(activity(), W, 10)).toBeNull()
+    expect(actualSpan(activity({ actualStart: '2026-02-30' }), W, 10)).toBeNull()
+    // Inverted: the start is still a real recorded fact, the pair is not a span.
+    expect(actualSpan(activity({ actualStart: '2026-10-12', actualFinish: '2026-10-06' }), W, 10)).toMatchObject({ kind: ACTUAL_KIND.START })
+    expect(actualSpan(activity({ actualStart: '2027-03-01', actualFinish: '2027-03-05' }), W, 10)).toBeNull()
+    expect(actualSpan(null, W, 10)).toBeNull()
+    expect(actualSpan(activity({ actualStart: '2026-10-06' }), null, 10)).toBeNull()
+  })
+
+  it('the model carries the overlay and widens the window for it', () => {
+    const m = buildGanttModel([activity({ actualStart: '2026-10-06', actualFinish: '2026-11-02' })], { now: NOW, dayWidth: 10 })
+    expect(m.end).toBe('2026-11-30')
+    expect(m.bars[0].actual).toMatchObject({ kind: ACTUAL_KIND.SPAN, days: 28 })
+    expect(m.bars[0].actualStart).toBe('2026-10-06')
+    expect(m.bars[0].actualFinish).toBe('2026-11-02')
+    expect(buildGanttModel([activity()], { now: NOW }).bars[0].actual).toBeNull()
+  })
+})
+
+describe('plan comparison — against the CURRENT plan, never a baseline', () => {
+  it('needs BOTH a valid actual finish and a valid planned finish', () => {
+    expect(finishVarianceDays(activity())).toBeNull()
+    expect(finishVarianceDays(activity({ actualStart: '2026-10-05' }))).toBeNull()
+    expect(finishVarianceDays(activity({ actualFinish: 'x' }))).toBeNull()
+    expect(finishVarianceDays(activity({ plannedFinish: '', actualFinish: '2026-10-09' }))).toBeNull()
+    expect(planComparisonLabel(activity())).toBe('')
+  })
+
+  it('measures late (positive), early (negative) and on the day', () => {
+    expect(finishVarianceDays(activity({ actualFinish: '2026-10-12' }))).toBe(3)
+    expect(finishVarianceDays(activity({ actualFinish: '2026-10-08' }))).toBe(-1)
+    expect(finishVarianceDays(activity({ actualFinish: '2026-10-09' }))).toBe(0)
+  })
+
+  it('labels say "current plan", with singular and plural days, and "Reached" for a milestone', () => {
+    expect(planComparisonLabel(activity({ actualFinish: '2026-10-12' }))).toBe('Finished 3 days after the current plan')
+    expect(planComparisonLabel(activity({ actualFinish: '2026-10-08' }))).toBe('Finished 1 day before the current plan')
+    expect(planComparisonLabel(activity({ actualFinish: '2026-10-09' }))).toBe('Finished on the currently planned day')
+    expect(planComparisonLabel(activity({ isMilestone: true, plannedStart: '2026-10-05', plannedFinish: '2026-10-05', actualFinish: '2026-10-07' })))
+      .toBe('Reached 2 days after the current plan')
+    for (const a of [activity({ actualFinish: '2026-10-12' }), activity({ actualFinish: '2026-10-08' })]) {
+      expect(planComparisonLabel(a)).not.toMatch(/baseline|slip/i)
+    }
+  })
+
+  it('the model carries the comparison on each bar', () => {
+    const m = buildGanttModel([activity({ actualStart: '2026-10-05', actualFinish: '2026-10-12', status: ACTIVITY_STATUS.COMPLETED, percentComplete: 100 })], { now: NOW })
+    expect(m.bars[0].finishVarianceDays).toBe(3)
+    expect(m.bars[0].planComparison).toBe('Finished 3 days after the current plan')
+  })
+})
+
+describe('scroll to today', () => {
+  it('centres the today line in the canvas area beside the sticky label column', () => {
+    // 1000px viewport, 240px labels → 760px of canvas visible; today at 2000px.
+    expect(todayScrollLeft({ todayX: 2000, canvasWidth: 5000, viewportWidth: 1000 })).toBe(2000 - 380)
+    expect(LABEL_WIDTH_PX).toBe(240)
+    expect(HEADER_HEIGHT_PX).toBe(42)
+  })
+
+  it('clamps at both ends and never scrolls past the content', () => {
+    expect(todayScrollLeft({ todayX: 100, canvasWidth: 5000, viewportWidth: 1000 })).toBe(0)
+    // total = 240 + 5000 = 5240; max scrollLeft = 4240.
+    expect(todayScrollLeft({ todayX: 4990, canvasWidth: 5000, viewportWidth: 1000 })).toBe(4240)
+    // Content narrower than the viewport → nothing to scroll.
+    expect(todayScrollLeft({ todayX: 100, canvasWidth: 300, viewportWidth: 1000 })).toBe(0)
+  })
+
+  it('is null when today is outside the window or the inputs are unusable', () => {
+    expect(todayScrollLeft({ todayX: null, canvasWidth: 5000, viewportWidth: 1000 })).toBeNull()
+    expect(todayScrollLeft({ todayX: 10, canvasWidth: NaN, viewportWidth: 1000 })).toBeNull()
+    const m = buildGanttModel([activity({ plannedStart: '2024-01-05', plannedFinish: '2024-01-09' })], { now: NOW })
+    expect(todayScrollLeft({ todayX: m.todayX, canvasWidth: m.canvasWidth, viewportWidth: 1000 })).toBeNull()
+  })
+})
+
+describe('the model as the chart reads it', () => {
+  it('indexes bars by id and carries the join keys grouping needs', () => {
+    const m = buildGanttModel([activity({ costCodeId: 'cc1', responsibleContactId: 'c1' })], { now: NOW })
+    expect(m.barsById.get('a1')).toBe(m.bars[0])
+    expect(m.bars[0]).toMatchObject({ costCodeId: 'cc1', responsibleContactId: 'c1' })
+    expect(buildGanttModel([], { now: NOW }).barsById.size).toBe(0)
+  })
+
+  it('the legacy call shape (dayWidth only) still works and defaults to the day scale', () => {
+    const m = buildGanttModel([activity()], { now: NOW, dayWidth: 10 })
+    expect(m.scale).toBe('day')
+    expect(m.dayWidth).toBe(10)
+    expect(m.days).toHaveLength(31)
   })
 })

@@ -30,38 +30,50 @@ const quantPage  = stripComments(read('pages/project/ProjectQuant.jsx'))
 const pointer   = stripComments(read('pages/Pulse.jsx'))
 const shield    = stripComments(read('pages/Shield.jsx'))
 const quant     = stripComments(read('pages/Quant.jsx'))
+// ADR-64: Constrapp GANTT™ is the ADR-29 programme tab (ProjectTimeline.jsx)
+// under its module name, plus a hidden /gantt pointer.
+const ganttPage = stripComments(read('pages/project/ProjectTimeline.jsx'))
+const gantt     = stripComments(read('pages/Gantt.jsx'))
 const app       = read('App.jsx')
+const ganttHeadingOf = (page) =>
+  page.slice(page.indexOf('function GanttHeading'), page.indexOf('export default function ProjectTimeline'))
 
 describe('exact module branding', () => {
-  it('the four approved full product names, and no others', () => {
+  it('the five approved full product names, and no others', () => {
     expect(MODULE_NAMES).toEqual({
       pulse:  'Constrapp PULSE™',
       shield: 'Constrapp SHIELD™',
       quant:  'Constrapp Quant™',
+      gantt:  'Constrapp GANTT™',
       iq:     'Constrapp IQ™',
     })
   })
 
-  it('the module tab headings and the /pulse, /shield and /quant pointers use the shared names', () => {
+  it('the module tab headings and the /pulse, /shield, /quant and /gantt pointers use the shared names', () => {
     expect(pulsePage).toContain('{MODULE_NAMES.pulse}</h2>')
     expect(shieldPage).toContain('{MODULE_NAMES.shield}</h2>')
     expect(quantPage).toContain('{MODULE_NAMES.quant}</h2>')
+    expect(ganttPage).toContain('{MODULE_NAMES.gantt}</h2>')
     expect(pointer).toContain('title={MODULE_NAMES.pulse}')
     expect(shield).toContain('title={MODULE_NAMES.shield}')
     expect(quant).toContain('title={MODULE_NAMES.quant}')
+    expect(gantt).toContain('title={MODULE_NAMES.gantt}')
   })
 
-  it('the project name stays the page <h1>; the PULSE module heading is an <h2> inside the tab', () => {
+  it('the project name stays the page <h1>; the PULSE and GANTT module headings are an <h2> inside the tab', () => {
     expect(layout).toContain('<h1 className="text-xl font-semibold text-brand-text">{project.name}</h1>')
     expect(pulsePage).not.toContain('<h1')
+    expect(ganttPage).not.toContain('<h1')
   })
 
-  // ADR-51: Quant™ gained its mark (a scale rule) with its page; IQ™ stays deferred.
-  it('PULSE, SHIELD and Quant have a mark — IQ™ is deferred', () => {
+  // ADR-51: Quant™ gained its mark (a scale rule) with its page; ADR-64: GANTT™
+  // gained its mark (three staggered programme bars); IQ™ stays deferred.
+  it('PULSE, SHIELD, Quant and GANTT have a mark — IQ™ is deferred', () => {
     const glyphs = mark.slice(mark.indexOf('const GLYPHS'), mark.indexOf('const TONE'))
     expect(glyphs).toMatch(/pulse:/)
     expect(glyphs).toMatch(/shield:/)
     expect(glyphs).toMatch(/quant:/)
+    expect(glyphs).toMatch(/gantt:/)
     expect(glyphs).not.toMatch(/\biq:/i)
   })
 
@@ -78,17 +90,21 @@ describe('navigation — PULSE tab, no unbuilt module surfaces', () => {
 
   // ADR-50: SHIELD joined as the third tab with its static mark (15 → 16 tabs).
   // ADR-51: Quant joined as the fourth, immediately after SHIELD (16 → 17 tabs).
-  it('PULSE, SHIELD and Quant are the only tabs with a mark, and there are 17 tabs', () => {
+  // ADR-64: GANTT™ is the EXISTING `timeline` tab relabelled with a mark — no
+  // new tab, no new route, still 17 tabs.
+  it('PULSE, SHIELD, Quant and GANTT are the only tabs with a mark, and there are still 17 tabs', () => {
     expect(PROJECT_TABS[2]).toEqual({ to: 'shield', label: 'SHIELD', mark: 'shield' })
     expect(PROJECT_TABS[3]).toEqual({ to: 'quant', label: 'Quant', mark: 'quant' })
-    expect(PROJECT_TABS.filter(t => t.mark).map(t => t.to)).toEqual(['pulse', 'shield', 'quant'])
+    expect(PROJECT_TABS.find(t => t.to === 'timeline')).toEqual({ to: 'timeline', label: 'GANTT', mark: 'gantt' })
+    expect(PROJECT_TABS.filter(t => t.mark).map(t => t.to)).toEqual(['pulse', 'shield', 'quant', 'timeline'])
+    expect(PROJECT_TABS.filter(t => t.to === 'timeline' || t.to === 'gantt')).toHaveLength(1)
     expect(PROJECT_TABS).toHaveLength(17)
   })
 
   it('no IQ project tab, and no sidebar module entry for any module', () => {
     for (const t of PROJECT_TABS) expect(t.to).not.toMatch(/\biq\b|takeoff/i)
     const nav = read('lib/nav.js')
-    expect(nav).not.toMatch(/to:\s*'\/(pulse|shield|quant|iq)'/)
+    expect(nav).not.toMatch(/to:\s*'\/(pulse|shield|quant|gantt|iq)'/)
   })
 
   it('the tab renders the static mark, keeps the shared active styling, and animates nothing', () => {
@@ -99,28 +115,35 @@ describe('navigation — PULSE tab, no unbuilt module surfaces', () => {
     expect(layout).not.toMatch(/animate|animation|ModuleTile/)
   })
 
-  it('routes: project pulse, shield and quant tabs, hidden /pulse, /shield and /quant pointers, no iq route', () => {
+  it('routes: project pulse, shield, quant and timeline tabs, hidden /pulse, /shield, /quant and /gantt pointers, no iq route', () => {
     expect(app).toContain('<Route path="pulse" element={<ProjectPulse />} />')
     expect(app).toContain('<Route path="shield" element={<ProjectShield />} />')
     expect(app).toContain('<Route path="quant" element={<ProjectQuant />} />')
+    // ADR-64: the programme keeps its `timeline` route — no project `gantt` route.
+    expect(app).toContain('<Route path="timeline" element={<ProjectTimeline />} />')
+    expect(app).not.toMatch(/<Route path="gantt" element=\{<Project/)
     expect(app).toContain('<Route path="pulse"          element={<Pulse />} />')
     expect(app).toContain('<Route path="shield"         element={<Shield />} />')
     expect(app).toContain('<Route path="quant"          element={<Quant />} />')
+    expect(app).toContain('<Route path="gantt"          element={<Gantt />} />')
     expect(app).not.toMatch(/path="iq"/)
   })
 })
 
 describe('design tokens — module colours', () => {
-  it('pink, cyan and lime are defined once, as module brand tokens', () => {
+  it('pink, cyan, lime and orange are defined once, as module brand tokens', () => {
     expect(css).toContain('--color-brand-pulse:     #FF6B9D;')
     expect(css).toContain('--color-brand-shield:    #00D4FF;')
     expect(css).toContain('--color-brand-quant:     #A3E635;')
+    expect(css).toContain('--color-brand-gantt:     #FB923C;')
     expect(css.match(/--color-brand-quant:/g)).toHaveLength(1)
+    expect(css.match(/--color-brand-gantt:/g)).toHaveLength(1)
   })
 
   it('the branded files carry no hex colour and no inline style object', () => {
     for (const [f, src] of [['ModuleMark', mark], ['PageHeader', header], ['ProjectDetailLayout', layout],
-      ['ProjectPulse', pulsePage], ['Pulse', pointer], ['Shield', shield], ['ProjectQuant', quantPage], ['Quant', quant]]) {
+      ['ProjectPulse', pulsePage], ['Pulse', pointer], ['Shield', shield], ['ProjectQuant', quantPage], ['Quant', quant],
+      ['ProjectTimeline', ganttPage], ['Gantt', gantt]]) {
       expect(src, f).not.toMatch(/#[0-9a-fA-F]{3,6}\b/)
       expect(src, f).not.toMatch(/style=\{\{/)
     }
@@ -130,9 +153,31 @@ describe('design tokens — module colours', () => {
     expect(mark).toContain("pulse:  'text-brand-pulse'")
     expect(mark).toContain("shield: 'text-brand-shield'")
     expect(mark).toContain("quant:  'text-brand-quant'")
+    expect(mark).toContain("gantt:  'text-brand-gantt'")
+    expect(mark).toContain("gantt:  'bg-brand-gantt/10 border-brand-gantt/20'")
     expect(pointer).toContain('text-brand-pulse')
     expect(shield).toContain('text-brand-shield')
     expect(quant).toContain('text-brand-quant')
+    expect(gantt).toContain('text-brand-gantt')
+  })
+
+  // ADR-64: orange is the GANTT™ mark and dot ONLY. Every bar, marker and
+  // flag on the chart keeps its existing semantic token — in progress blue,
+  // on hold amber, completed accent, overdue red, milestone purple, today
+  // accent, recorded dates text-soft.
+  it('orange is never a programme status colour — the chart and the page use no brand-gantt', () => {
+    const chart = stripComments(read('pages/project/timeline/TimelineGantt.jsx'))
+    const table = stripComments(read('pages/project/timeline/ActivityTable.jsx'))
+    const cards = stripComments(read('pages/project/timeline/ActivityCards.jsx'))
+    const detail = stripComments(read('pages/project/timeline/ActivityDetailModal.jsx'))
+    for (const src of [chart, table, cards, detail]) expect(src).not.toContain('brand-gantt')
+    expect(ganttPage.match(/brand-gantt/g) ?? []).toHaveLength(0) // only via ModuleTile
+    expect(chart).toContain("[ACTIVITY_STATUS.IN_PROGRESS]: 'var(--color-brand-blue)'")
+    expect(chart).toContain("[ACTIVITY_STATUS.ON_HOLD]:     'var(--color-brand-amber)'")
+    expect(chart).toContain("[ACTIVITY_STATUS.COMPLETED]:   'var(--color-brand-accent)'")
+    expect(chart).toContain("{ label: 'Overdue',     colour: 'var(--color-brand-red)' }")
+    expect(chart).toContain("'var(--color-brand-purple)'")
+    expect(chart).toContain('border-l-2 border-brand-accent')
   })
 
   it('lime is never a Quant status colour — errors stay brand-red, review flags brand-amber', () => {
@@ -168,10 +213,11 @@ describe('decorative mark accessibility', () => {
     expect(pointer).toContain('{MODULE_NAMES.pulse}</h3>')
     expect(shield).toContain('{MODULE_NAMES.shield}</h3>')
     expect(quant).toContain('{MODULE_NAMES.quant}</h3>')
+    expect(gantt).toContain('{MODULE_NAMES.gantt}</h3>')
   })
 
   it('no emoji stands in for a module mark', () => {
-    for (const src of [pointer, shield, quant, pulsePage, shieldPage, quantPage]) expect(src).not.toMatch(/💓|🛡|📐|🧠/u)
+    for (const src of [pointer, shield, quant, gantt, pulsePage, shieldPage, quantPage]) expect(src).not.toMatch(/💓|🛡|📐|🧠|📅|📊/u)
   })
 })
 
@@ -205,11 +251,12 @@ describe('the PULSE indicator dot — continuous, gentle, pausable, motion-safe,
     expect(frames).toMatch(/0%, 50%, 100% \{ transform: scale\(1\);\s+box-shadow: 0 0 6px\s+var\(--module-glow, var\(--color-brand-pulse\)\); \}/)
   })
 
-  it('each module dot is its own token — PULSE pink, SHIELD cyan, Quant lime — set through the shared glow property', () => {
+  it('each module dot is its own token — PULSE pink, SHIELD cyan, Quant lime, GANTT orange — set through the shared glow property', () => {
     const dots = mark.slice(mark.indexOf('const DOT'), mark.indexOf('export function ModuleMark'))
     expect(dots).toContain("pulse:  'bg-brand-pulse [--module-glow:var(--color-brand-pulse)]'")
     expect(dots).toContain("shield: 'bg-brand-shield [--module-glow:var(--color-brand-shield)]'")
     expect(dots).toContain("quant:  'bg-brand-quant [--module-glow:var(--color-brand-quant)]'")
+    expect(dots).toContain("gantt:  'bg-brand-gantt [--module-glow:var(--color-brand-gantt)]'")
     expect(dots).not.toMatch(/\biq:/i)
   })
 
@@ -236,9 +283,15 @@ describe('the PULSE indicator dot — continuous, gentle, pausable, motion-safe,
     expect(quantPage).toContain('<ModuleTile module="quant" beat paused={beatPaused} />')
     expect(quantPage).toContain('<BeatToggle paused={beatPaused} onToggle={() => setBeatPaused(p => !p)} subject="glow animation" />')
     expect(quantPage.match(/<ModuleTile[^>]*\bbeat\b/g)).toHaveLength(1)
+    // ADR-64: GANTT™ joins the convention exactly — one beating tile beside
+    // one pause control on the programme page; the pointer stays static.
+    expect(ganttPage).toContain('<ModuleTile module="gantt" beat paused={beatPaused} />')
+    expect(ganttPage).toContain('<BeatToggle paused={beatPaused} onToggle={() => setBeatPaused(p => !p)} subject="glow animation" />')
+    expect(ganttPage.match(/<ModuleTile[^>]*\bbeat\b/g)).toHaveLength(1)
     expect(pointer).not.toMatch(/\bbeat\b|BeatToggle/)
     expect(shield).not.toMatch(/\bbeat\b|animate|BeatToggle/)
     expect(quant).not.toMatch(/\bbeat\b|animate|BeatToggle/)
+    expect(gantt).not.toMatch(/\bbeat\b|animate|BeatToggle/)
   })
 
   it('the pause state lives in each heading, not in the workspace that owns the subscriptions', () => {
@@ -252,6 +305,11 @@ describe('the PULSE indicator dot — continuous, gentle, pausable, motion-safe,
     const quantHeading = quantPage.slice(quantPage.indexOf('function QuantHeading'))
     expect(quantHeading).toContain('const [beatPaused, setBeatPaused] = useState(false)')
     expect(quantPage.slice(quantPage.indexOf('export default function ProjectQuant'), quantPage.indexOf('function QuantHeading'))).not.toMatch(/useState|beatPaused/)
+    // GANTT's heading is a component above the page that owns the programme
+    // subscription; the pause state never reaches that component.
+    const ganttHeading = ganttPage.slice(ganttPage.indexOf('function GanttHeading'), ganttPage.indexOf('export default function ProjectTimeline'))
+    expect(ganttHeading).toContain('const [beatPaused, setBeatPaused] = useState(false)')
+    expect(ganttPage.slice(ganttPage.indexOf('export default function ProjectTimeline'))).not.toMatch(/beatPaused/)
   })
 
   it('no React timer, frame loop or canvas on the branded headings', () => {
@@ -261,6 +319,10 @@ describe('the PULSE indicator dot — continuous, gentle, pausable, motion-safe,
     // The Quant PAGE (gate + heading) has none either; the <canvas> that renders a
     // PDF sheet lives in pages/project/quant/PageViewer.jsx, not beside the dot.
     expect(quantPage).not.toMatch(/setInterval|setTimeout|requestAnimationFrame|<canvas/)
+    // The GANTT page: its only clock is useLocalToday (a midnight timer in its
+    // own hook, ADR-46), and the chart is CSS boxes — no canvas, no frame loop.
+    expect(ganttPage).not.toMatch(/setInterval|setTimeout|requestAnimationFrame|<canvas/)
+    expect(gantt).not.toMatch(/setInterval|setTimeout|requestAnimationFrame|useEffect|useState|<canvas/)
   })
 })
 
@@ -304,13 +366,25 @@ describe('no misleading claims', () => {
   const claims = /\bLIVE\b|real-time|realtime|monitoring|patent|proprietary|world-first|world's first|\bAI\b|\bscore\b/i
 
   it('the pointers and headings make no live, AI or IP claim', () => {
-    for (const [f, src] of [['Shield', shield], ['Pulse', pointer], ['Quant', quant], ['ModuleMark', mark]]) {
+    for (const [f, src] of [['Shield', shield], ['Pulse', pointer], ['Quant', quant], ['Gantt', gantt], ['ModuleMark', mark]]) {
       expect(src, f).not.toMatch(claims)
     }
     const heading = pulsePage.slice(pulsePage.indexOf('<ModuleTile'), pulsePage.indexOf('ex-GST unless stated'))
     expect(heading).not.toMatch(claims)
     const quantHeading = quantPage.slice(quantPage.indexOf('function QuantHeading'))
     expect(quantHeading).not.toMatch(claims)
+    const ganttHeading = ganttPage.slice(ganttPage.indexOf('function GanttHeading'), ganttPage.indexOf('export default function ProjectTimeline'))
+    expect(ganttHeading).not.toMatch(claims)
+  })
+
+  // ADR-64: GANTT™ describes a current-plan programme — never a critical
+  // path, a baseline, automatic rescheduling, a schedule prediction or AI.
+  it('GANTT describes a current-plan programme, never a scheduling engine or prediction', () => {
+    expect(gantt).toContain('Construction programme')
+    expect(ganttPage).toContain('Construction programme')
+    for (const src of [gantt, ganttHeadingOf(ganttPage)]) {
+      expect(src).not.toMatch(/\bAI\b|predict|critical path|baseline|reschedul|optimi[sz]e/i)
+    }
   })
 
   // ADR-51: Quant™ 1A is MANUAL measurement. Its pointer and page say so and
@@ -340,9 +414,19 @@ describe('no misleading claims', () => {
 
 describe('no new data flow or dependency', () => {
   it('branding files read no data: no hook, no Firebase, no subscription', () => {
-    for (const src of [mark, header, read('lib/moduleBranding.js'), pointer, shield, quant]) {
+    for (const src of [mark, header, read('lib/moduleBranding.js'), pointer, shield, quant, gantt]) {
       expect(src).not.toMatch(/from 'firebase|onSnapshot|from '\.\.\/hooks\/|from '\.\.\/\.\.\/hooks\//)
     }
+  })
+
+  // ADR-64: the programme page still opens exactly its ONE activities
+  // subscription (plus the contacts and cost-code lists the editor already
+  // needed) — the chart and the list share it; no second listener was mounted.
+  it('ProjectTimeline still opens exactly one activities subscription', () => {
+    expect(ganttPage.match(/= useProjectActivities\(/g)).toHaveLength(1)
+    expect(ganttPage.match(/= use(ProjectActivities|Contacts|CostCodes)\(/g)).toHaveLength(3)
+    const chart = stripComments(read('pages/project/timeline/TimelineGantt.jsx'))
+    expect(chart).not.toMatch(/from 'firebase|onSnapshot|from '\.\.\/\.\.\/\.\.\/hooks\//)
   })
 
   it('ProjectPulse still opens exactly its eleven subscriptions', () => {

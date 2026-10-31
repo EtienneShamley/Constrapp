@@ -964,6 +964,32 @@ reviewed** (below). Never widen this command.
 Not configured, and out of scope here: a CI deploy stage, Azure secret
 management, custom domains, and cache-control headers.
 
+### Constrapp GANTT™ — Programme 1A1 (ADR-64) — Hosting-only release
+
+**Status: IMPLEMENTED — NOT YET DEPLOYED.** The release is the plain Hosting
+procedure above and nothing else: **no Firestore Rules publish, no Storage
+Rules publish, no index, no migration** — `firestore.rules` is byte-identical
+(217,864 bytes) and the `activities` documents are untouched. Order: Azure CI
+green on the merge (lint → unit → rules → build), then `npm run build` with the
+production `VITE_FIREBASE_*` values, then `firebase deploy --only hosting
+--project constrapp-69b5d`. Verify after deploy: the project tab bar reads
+**GANTT** (static mark, no animation); `/projects/{id}/timeline` opens the
+branded programme with the beating dot and *Pause*; a Dashboard *Open GANTT →*
+link and a PULSE *Open GANTT* link both land on it; Day / Week / Month keep a
+one-day activity on the same date; a bar opens the editor (admin / PM) or the
+read-only detail (QS).
+
+**Rollback:** `firebase hosting:rollback` to the previous release. Because no
+document, field or rule changed, the previous bundle's Timeline tab works
+unchanged on the same data, and old and new bundles can coexist across open
+tabs with no data effect. There is no financial-correctness constraint on
+rolling this release back.
+
+**Not sequenced behind anything by data, but by release hygiene:** confirm
+the M3-B2 (ADR-63) three-stage release has reached its FINAL stage before
+building a GANTT 1A1 bundle from `main`, so that one Hosting deploy never
+carries an unreleased rules-dependent change by accident.
+
 ## Publishing Firestore Rules — Manual Process
 
 The rules source of truth is `frontend/firestore.rules`, but **there is no CLI

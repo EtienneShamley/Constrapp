@@ -22,6 +22,10 @@
   --color-brand-pulse:     #FF6B9D;
   --color-brand-shield:    #00D4FF;
   --color-brand-quant:     #A3E635;
+  /* Constrapp GANTT™ (ADR-64): the module's mark and header dot only. Never a
+     bar, status or overdue colour — in progress stays blue, on hold amber,
+     completed accent, overdue red, milestones purple, today accent. */
+  --color-brand-gantt:     #FB923C;
 
   --font-sans: 'Sora', 'DM Sans', system-ui, sans-serif;
 

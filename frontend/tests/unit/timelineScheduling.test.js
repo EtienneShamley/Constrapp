@@ -179,7 +179,11 @@ describe('desktop and mobile see the same filtered set', () => {
 
   it('the page passes the SAME filtered list to the Gantt, the table and the cards', () => {
     const page = stripComments(read('pages/project/ProjectTimeline.jsx'))
-    expect(page).toContain('<TimelineGantt activities={filtered} now={now} />')
+    // ADR-64: the chart takes its presentation props on separate lines; the
+    // list it draws is still `filtered`, with the one page clock.
+    const chart = page.slice(page.indexOf('<TimelineGantt'), page.indexOf('/>', page.indexOf('<TimelineGantt')))
+    expect(chart).toContain('activities={filtered}')
+    expect(chart).toContain('now={now}')
     expect(page.match(/activities=\{filtered\}/g)).toHaveLength(3)
     expect(page).toContain('hideClosed, due }, now)')
   })

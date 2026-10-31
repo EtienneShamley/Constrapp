@@ -20,6 +20,7 @@ import Subcontractors from './pages/Subcontractors'
 import Pulse          from './pages/Pulse'
 import Shield         from './pages/Shield'
 import Quant          from './pages/Quant'
+import Gantt          from './pages/Gantt'
 import ProjectOverview   from './pages/project/ProjectOverview'
 import ProjectBoq        from './pages/project/ProjectBoq'
 import ProjectBudget     from './pages/project/ProjectBudget'
@@ -117,10 +118,13 @@ export default function App() {
                           badge="Coming in Sprint 4"
                         />
                       } />
-                      {/* Project Timeline — the project programme (ADR-29).
-                          A CURRENT-PLAN schedule: activities, milestones,
-                          responsibility and manually entered progress, with a
-                          read-only Gantt. It writes no financial document and
+                      {/* Constrapp GANTT™ (ADR-64) — the project programme
+                          (ADR-29) under its module name. The ROUTE stays
+                          `timeline` for every existing link. A CURRENT-PLAN
+                          schedule: activities, milestones, responsibility and
+                          manually entered progress, as a Gantt chart (day /
+                          week / month, grouped, keyboard-reachable) and the
+                          activity table. It writes no financial document and
                           no project progress field. */}
                       <Route path="timeline" element={<ProjectTimeline />} />
                       {/* PULSE™ 1A (ADR-47) — six deterministic project health
@@ -161,6 +165,7 @@ export default function App() {
                     <Route path="pulse"          element={<Pulse />} />
                     <Route path="shield"         element={<Shield />} />
                     <Route path="quant"          element={<Quant />} />
+                    <Route path="gantt"          element={<Gantt />} />
 
                     {/* Legacy top-level module routes are retired — Budgets, BOQ, Forecasting, etc.
                         now live under Project Detail. Send anything unmatched back to Projects. */}

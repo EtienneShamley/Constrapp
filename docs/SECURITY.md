@@ -2837,6 +2837,18 @@ unchanged (asserted in the emulator by running the app's own transaction as
 every role). Their stale-version check is **client-side** — see Deferred
 Control 23.
 
+**Constrapp GANTT™ 1A1 (ADR-64) changed no rule, field or index either.** The
+programme tab's new chart (zoom, grouping, sticky layout, keyboard-reachable
+bars, the recorded-dates overlay) and its Chart / List views are presentation
+over the same `activities` subscription; the rules suite was re-run unchanged
+(27 files / 1,828 tests) and `firestore.rules` is byte-identical (217,864
+bytes). Two points to state honestly: (1) the **read-only detail** a `qs`
+user opens from a bar is read-only in the client — the rules, not the dialog,
+are what refuse a `qs` write, exactly as before; (2) the *Finished n days
+after / before the current plan* comparison is a client-side derivation from
+unverified `actualFinish` / `plannedFinish` values (Deferred Control 23) and is
+never slippage against an approved baseline, because none exists.
+
 ## PULSE™ acknowledgements — a management record, `qs` read-only, revision-guarded
 
 The `pulseAcknowledgements` block (ADR-49) follows the `activities` audience

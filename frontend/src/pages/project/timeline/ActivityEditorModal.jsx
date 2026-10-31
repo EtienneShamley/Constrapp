@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import Btn from '../../../components/Btn'
+import ActivityDialog from './ActivityDialog'
 import { todayIso } from '../../../lib/payments'
 import {
   ACTIVITY_STATUS, ACTIVITY_STATUS_ORDER, ACTIVITY_STATUS_LABELS,
@@ -24,31 +25,13 @@ import {
 //     mis-ticked activity is a supported action, not an error
 //   · CANCELLING IS NOT HERE. It has its own modal because it is terminal and
 //     records a reason.
+//   · the shell is ActivityDialog (ADR-64): `role="dialog"`, Tab contained,
+//     Escape closes (not while saving), and focus returns to whatever opened
+//     it — a Gantt bar, a table button or a card button.
 
 const inputCls = 'w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
 const labelCls = 'block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1.5'
 const hintCls  = 'm-0 mt-1 text-[10.5px] text-brand-muted'
-
-function ModalShell({ title, onClose, children }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-[680px] max-h-[90vh] overflow-y-auto bg-brand-surface border border-brand-border rounded-xl shadow-2xl">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-brand-border">
-          <h2 className="text-[15px] font-bold text-brand-text m-0">{title}</h2>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="text-brand-muted hover:text-brand-text text-xl leading-none cursor-pointer min-w-[44px] min-h-[44px] flex items-center justify-center"
-          >
-            ×
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>
-  )
-}
 
 export default function ActivityEditorModal({
   activity,        // existing activity when editing, null when creating
@@ -184,7 +167,7 @@ export default function ActivityEditorModal({
   }
 
   return (
-    <ModalShell title={creating ? 'Add activity' : 'Edit activity'} onClose={onClose}>
+    <ActivityDialog title={creating ? 'Add activity' : 'Edit activity'} titleId="activity-editor-title" onClose={onClose} busy={saving}>
       <form onSubmit={handleSubmit} className="p-5">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="sm:col-span-2">
@@ -192,6 +175,7 @@ export default function ActivityEditorModal({
             <input
               id="activity-name"
               className={inputCls}
+              autoFocus
               maxLength={LIMITS.name}
               placeholder="e.g. Ground floor slab pour"
               value={name}
@@ -415,12 +399,12 @@ export default function ActivityEditorModal({
         {error && <p className="m-0 mt-3 text-[12px] text-brand-red">{error}</p>}
 
         <div className="flex justify-end gap-2 mt-5 pt-4 border-t border-brand-border">
-          <Btn variant="ghost" type="button" onClick={onClose}>Cancel</Btn>
+          <Btn variant="ghost" type="button" onClick={onClose} disabled={saving}>Cancel</Btn>
           <Btn type="submit" disabled={saving}>
             {saving ? 'Saving…' : creating ? 'Add activity' : 'Save activity'}
           </Btn>
         </div>
       </form>
-    </ModalShell>
+    </ActivityDialog>
   )
 }

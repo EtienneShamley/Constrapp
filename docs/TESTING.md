@@ -1194,7 +1194,7 @@ npm run test:unit
   and the milestone rules, cancellation-reason validation, and **input purity**
   (no draft or activity list is ever mutated).
 
-- `frontend/tests/unit/timelineGantt.test.js` — **33 tests** over
+- `frontend/tests/unit/timelineGantt.test.js` — **54 tests** over
   `lib/timelineGantt.js`, the Gantt **geometry transform**. Covers month
   snapping and real month lengths (including February in a leap year), the
   visible window widening for actual dates outside the plan and reaching to
@@ -1205,7 +1205,59 @@ npm run test:unit
   **clipping** with the cut end reported, exclusion of undrawable and
   wholly-out-of-window activities (**reported, never silently dropped**), the
   empty/single-activity/all-milestone cases, row order matching the table, and
-  input purity.
+  input purity. **ADR-64 (21 tests):** the three zoom scales as ONE geometry
+  (identical window, offsets, day counts and today offset at 22 / 8 / 3 px per
+  day; a single-day activity one day wide at every scale; day ticks only at
+  day zoom, week ticks labelled, a day tick run across a month and a year
+  boundary; zooming never mutates the input); the **recorded-dates overlay**
+  (`actualSpan`: span clamped like a bar, start-only and finish-only markers,
+  a reached milestone, nothing for nothing / an invalid date / an inverted pair
+  treated as a start-only fact / a span outside the window; the model widens
+  for it); the **plan comparison** (`finishVarianceDays` needs BOTH valid
+  finishes; late / early / on-the-day; labels that say *current plan* with
+  singular and plural days and *Reached* for a milestone, never *baseline* or
+  *slip*); **scroll-to-today** (centred in the canvas beside the sticky labels,
+  clamped at both ends, null off-window); and the model's `barsById` index,
+  join keys and legacy `dayWidth` call shape.
+
+- `frontend/tests/unit/ganttGrouping.test.js` — **19 tests** over
+  `lib/ganttGrouping.js` and `layoutGanttRows` (ADR-64). The three grouping
+  modes; ungrouped as ONE group in programme order; **cost-code groups** keyed
+  by `costCodeId`, ordered by category then label, labelled from the live cost
+  code else the frozen snapshot, with the category as a hint and the truthful
+  *No category* / *Category unavailable* fallbacks (and the whole set when no
+  cost-code list exists at all — nothing invented), *No cost code* last;
+  **responsible groups** by contact id, alphabetical, *Unassigned* last; every
+  activity in exactly one group with per-group overdue counts; determinism
+  whatever the input order; input purity; the collapse helpers (new Set each
+  time, collapse-all, totals independent of collapse); and **rows over one
+  model** — header + bar rows with stacked `y`, collapsing hides rows but keeps
+  counts and never touches the model's window or today line, an excluded
+  activity is counted but not a row, an array of keys works as well as a Set.
+
+- `frontend/tests/unit/ganttSurface.test.js` — **24 source-level pins** for
+  the GANTT™ 1A1 surface (the betaSurfaces idiom): one scroller with sticky
+  labels and header; zoom as a pressed-state button group, a labelled group
+  select, *Today* disabled off-window; day/week/month tick selection; the chart
+  hidden below `md:` with the cards kept; every bar and milestone a real
+  `<button>` with `aria-label` and a focus ring and **no nested control**; the
+  accessible-name parts; group headers with `aria-expanded` and counts; the
+  overlay `aria-hidden`; nothing drags; activation resolves the record from the
+  loaded programme and routes author → editor, reader or cancelled → detail;
+  the **read-only detail** has no form, Save, quick action or write import; the
+  shared `ActivityDialog` contract and its adoption by editor, cancel and
+  detail (`autoFocus`, no private overlay); the editor's validation and save
+  path unchanged; Chart / List as two views of `filtered`; summary over the
+  whole programme; zoom / grouping / collapse never stored; hook, domain and
+  rules-facing field set untouched; geometry and grouping pure; the Dashboard
+  and PULSE links still target `timeline` labelled *Open GANTT*; tokens only;
+  the current-plan wording; no new dependency.
+  `moduleBranding.test.js` was revised explicitly for the fifth module name,
+  the fourth marked tab (still 17 tabs, `timeline` relabelled), the `/gantt`
+  pointer, the `brand-gantt` token, the DOT / TONE / TILE entries, one beating
+  tile beside one pause control on the programme page, the heading's local
+  pause state, no timer / canvas, no misleading claim, and **orange never a
+  status colour** on the chart, the table, the cards or the detail.
 
 - `frontend/tests/unit/timelineScheduling.test.js` — **74 tests** for the
   Timeline & Scheduling Enhancements (ADR-46): the **Due** filter (overdue
@@ -3798,11 +3850,12 @@ progress bar must be **identical**.
 - [ ] While one action saves, the buttons show *Saving…*/disabled; the outcome
   is announced in the message strip (dismissible).
 
-### 15p-viii. Gantt (read-only, desktop/tablet)
+### 15p-viii. Gantt (desktop/tablet) — since ADR-64 the Constrapp GANTT™ chart; see also §40
 
 - [ ] The Gantt renders at **768px and 1280px** and is **absent below `md:`
   (375px)** — the cards replace it. Confirm no squashed chart appears on a
-  phone.
+  phone. (ADR-64: above `md:` the **Chart / List** toggle selects the chart or
+  the activity table; the toggle itself is absent on a phone.)
 - [ ] Bars sit on a **calendar-day grid**; month headers show each month's real
   day count; weekly gridlines are present.
 - [ ] A **today line** is drawn when today falls inside the visible span, and is
@@ -3814,10 +3867,11 @@ progress bar must be **identical**.
   label — never colour alone. The legend is **textual**.
 - [ ] The whole canvas scrolls **horizontally inside its card** on a long
   programme; the page itself never scrolls sideways.
-- [ ] **Nothing is draggable or resizable**, and clicking a bar changes no date.
-  The footer states there is no drag-to-reschedule and no dependencies.
+- [ ] **Nothing is draggable or resizable**, and clicking a bar changes no date
+  by itself — it opens the existing editor (admin / PM) or the read-only detail
+  (QS); the footer states there is no drag-to-reschedule and no dependencies.
 - [ ] An activity with unusable dates is reported as *not drawn* and still
-  appears in the table — never silently dropped.
+  appears in the activity list — never silently dropped.
 
 ### 15p-ix. The table is the record
 
@@ -6758,3 +6812,65 @@ Manual (production, after Stage 2 — at most three):
    negative, no commit is offered, the register reads *Negative new scope —
    review*, the amount stays in Unapplied Supplier Variations (signed) and
    SHIELD check 4 lists it for review.
+
+## 40. Constrapp GANTT™ — Programme 1A1 (ADR-64) — implemented, NOT YET DEPLOYED
+
+**Automated:** `tests/unit/timelineGantt.test.js` (33 → 54), new
+`tests/unit/ganttGrouping.test.js` (19) and `tests/unit/ganttSurface.test.js`
+(24), `moduleBranding.test.js` / `betaSurfaces.test.js` /
+`timelineScheduling.test.js` pins revised explicitly — unit **64 files /
+3,720 tests**. Rules: **no change**; the full suite re-ran unchanged (27 files
+/ 1,828 tests) and `firestore.rules` is byte-identical (217,864 bytes). The
+chart component itself is still not unit-tested (no jsdom); the three checks
+below cover rendering, interaction and regression by hand. Preconditions: a
+project with a programme of mixed statuses, at least one milestone, one
+overdue activity, one completed activity with both actual dates, one activity
+with an actual start only, cost codes with and without a category, and two
+responsible contacts; an admin / PM login and a QS login.
+
+**Manual acceptance (maximum three):**
+
+1. **Branded module, zoom and sticky layout (1280 px, then 768 px).** The
+   project tab bar reads **GANTT** with a static orange mark (nothing animates
+   in the tab bar). The tab opens at `/projects/{id}/timeline` with the
+   *Constrapp GANTT™ · Construction programme* heading, an orange tile whose
+   corner dot beats gently, and a **Pause** button that stills it (Resume
+   restores it). With the OS *reduce motion* setting on, the dot is still and
+   lit and the Pause button is absent. Switch **Day → Week → Month**: a
+   one-day activity and a milestone sit on the same dates at every zoom (read
+   the row label and the List); the month header widths follow real month
+   lengths; the label column stays put while scrolling sideways and the header
+   stays put while scrolling down; **Today** recentres the today line; the
+   Dashboard *Open GANTT →* link and the PULSE indicator-4 *Open GANTT* link
+   both land here. Group by **Cost code**: groups are ordered by category with
+   the category shown as a hint (a retired code shows *Category unavailable*,
+   not an invented one; *No cost code* is last); collapsing a group hides its
+   rows while its header still shows its count and *n overdue*, and the four
+   summary cards do not change. Bars keep their existing colours — nothing on
+   the canvas is orange.
+
+2. **Keyboard activation, editor, read-only detail.** As admin / PM, Tab to a
+   bar (a visible focus ring appears; a screen reader or the tooltip reads the
+   activity, status, %, planned dates, recorded dates, any *…after / before the
+   current plan* text, *Overdue* and *Opens the editor*), press **Enter**: the
+   existing **Edit activity** dialog opens with focus in the name field; Tab
+   cycles inside the dialog; change the planned finish and save — the bar and
+   the List update together and focus returns to the bar; **Escape** closes
+   the dialog without saving. The completed activity shows a thin
+   recorded-dates line beneath its bar and the detail / name reads *Finished n
+   days after (or before) the current plan*; the start-only activity shows a
+   single start tick and no invented finish. Sign in as **QS**: Enter on a bar
+   opens the **Activity** detail with the same values, one **Close** button and
+   **no Save or status control**; an admin pressing Enter on a *cancelled*
+   activity gets the same read-only detail. On a phone (375 px) the chart and
+   the Chart / List toggle are absent and the grouped cards work as before.
+
+3. **Regression — nothing else moved.** The List view is the unchanged
+   activity table: filters (search, status, responsible, Due, hide closed)
+   narrow the chart and the list identically; quick actions (*Start today*,
+   *Put on hold*, *Complete today*) and **Cancel** behave exactly as §15p;
+   the Dashboard **Programme** panel and PULSE **indicator 4** show the same
+   counts and next milestone as before. Open the Budget and Forecast tabs
+   before and after editing an activity and grouping / zooming the chart:
+   every figure is identical — the programme writes no financial document,
+   and Firestore shows no new field on any activity.
