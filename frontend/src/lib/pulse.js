@@ -134,7 +134,7 @@ export const INDICATOR_LINKS = {
   [INDICATOR.FORECAST_OVER_BUDGET]:       { to: 'forecasting',                 label: 'Open Forecast' },
   [INDICATOR.FORECAST_INCOMPLETE]:        { to: 'forecasting',                 label: 'Open Forecast' },
   [INDICATOR.NEGATIVE_GROSS_PROFIT]:      { to: 'commercial',                  label: 'Open Commercial' },
-  [INDICATOR.OVERDUE_ACTIVITIES]:         { to: 'timeline',                    label: 'Open Timeline' },
+  [INDICATOR.OVERDUE_ACTIVITIES]:         { to: 'timeline',                    label: 'Open GANTT' },
   [INDICATOR.PAST_DUE_SUPPLIER_INVOICES]: { to: 'commercial/supplier-payments', label: 'Open Supplier Payments' },
   [INDICATOR.PENDING_VARIATION_EXPOSURE]: { to: 'variations',                  label: 'Open Variations' },
 }

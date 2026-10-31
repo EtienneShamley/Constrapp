@@ -16,8 +16,8 @@ is the `@theme` block in `frontend/src/index.css` — there is **no**
 - Base styles: border-box reset, body background/colour/font, full-height
   `#root`, and a `pulse-dot` keyframe referenced only by the sidebar's unused
   PULSE™/SHIELD™ branches (neither module is in `lib/nav.js`)
-- `@theme` also defines the finite `--animate-module-beat` animation and its
-  `module-beat` keyframe (ADR-48) — see **Module Branding** below
+- `@theme` also defines the continuous `--animate-module-beat` animation and its
+  one `module-beat` keyframe (ADR-48) — see **Module Branding** below
 
 ## Design Tokens (complete)
 
@@ -40,34 +40,38 @@ is the `@theme` block in `frontend/src/index.css` — there is **no**
 | `brand-pulse` | `#FF6B9D` | Constrapp PULSE™ mark and indicator dot only — never a status (ADR-48) |
 | `brand-shield` | `#00D4FF` | Constrapp SHIELD™ mark only — never a status (ADR-48) |
 | `brand-quant` | `#A3E635` | Constrapp Quant™ mark, header dot, active tool and saved-measurement geometry on the sheet — never a status (ADR-51); errors stay `brand-red`, review flags `brand-amber`, selection `brand-accent` |
+| `brand-gantt` | `#FB923C` | Constrapp GANTT™ mark, tile and header dot ONLY — never a bar, status or overdue colour (ADR-64): on the chart in progress stays `brand-blue`, on hold `brand-amber`, completed `brand-accent`, not started / cancelled `brand-muted`, overdue `brand-red`, milestones `brand-purple`, the today line `brand-accent`, recorded (actual) dates `brand-text-soft` |
 | `--font-sans` | Sora, DM Sans, system-ui | Default font stack |
 
 Do not add new colour values; map new needs onto these tokens. The module
 brand tokens are the only exception: `brand-pulse` and `brand-shield` were
-approved narrowly by ADR-48 to replace existing hard-coded module colours, and
+approved narrowly by ADR-48 to replace existing hard-coded module colours,
 `brand-quant` by ADR-51 when the Quant™ page shipped (the convention ADR-48
-recorded for a module's own token).
+recorded for a module's own token), and `brand-gantt` by ADR-64 when the
+programme tab became Constrapp GANTT™.
 
 ## Module Branding (ADR-48)
 
 - **Names** come from `lib/moduleBranding.js` → `MODULE_NAMES`: *Constrapp
-  PULSE™*, *Constrapp SHIELD™*, *Constrapp Quant™*, *Constrapp IQ™*. Headers use
-  the full name; navigation uses a compact label ("PULSE", no ™).
+  PULSE™*, *Constrapp SHIELD™*, *Constrapp Quant™*, *Constrapp GANTT™*
+  (ADR-64), *Constrapp IQ™*. Headers use the full name; navigation uses a
+  compact label ("PULSE", "GANTT", no ™).
 - **Marks** — `components/ModuleMark.jsx`: `ModuleMark` is a 24-unit, 2px,
   round-capped `currentColor` line SVG (PULSE: heartbeat line; SHIELD: shield
-  outline; Quant: a diagonal scale rule with three graduations, ADR-51),
-  coloured by `text-brand-pulse` / `text-brand-shield` / `text-brand-quant`.
-  Always **decorative** — `aria-hidden="true"`, `focusable="false"`, no
-  `<title>` — and always beside the module name in text. No emoji. IQ™ has no
-  mark until its milestone.
+  outline; Quant: a diagonal scale rule with three graduations, ADR-51; GANTT:
+  three staggered programme bars on a timeline, ADR-64), coloured by
+  `text-brand-pulse` / `text-brand-shield` / `text-brand-quant` /
+  `text-brand-gantt`. Always **decorative** — `aria-hidden="true"`,
+  `focusable="false"`, no `<title>` — and always beside the module name in
+  text. No emoji. IQ™ has no mark until its milestone.
 - **Tile** — `ModuleTile`: the v5 feature tile (36px, `rounded-[10px]`, token
   fill at /10 and border at /20, 18px mark). Pass it to `PageHeader`'s optional
   `mark` prop on a module page.
 - **Motion — the shared advanced-module convention.** Every *live* advanced
   module's **page heading** carries the same luminous dot at its tile's corner
   (`<ModuleTile module="…" beat paused={…} />`): PULSE™ in `brand-pulse`,
-  SHIELD™ in `brand-shield`, Quant™ in `brand-quant` (ADR-51), and IQ™ in its
-  own token when it ships. The dot uses `motion-safe:animate-module-beat`, a gentle continuous
+  SHIELD™ in `brand-shield`, Quant™ in `brand-quant` (ADR-51), GANTT™ in
+  `brand-gantt` (ADR-64), and IQ™ in its own token when it ships. The dot uses `motion-safe:animate-module-beat`, a gentle continuous
   lub-dub (1.8s, `infinite`) that varies only scale (≤1.25) and glow
   (6–11px), never opacity, and always carries a static 6px glow so it stays lit
   between pulses and when paused. There is **one** `module-beat` keyframe: its
@@ -77,16 +81,42 @@ recorded for a module's own token).
   fallback — never a second keyframe per module. A continuous beat **must** sit
   beside a `BeatToggle` (WCAG 2.2.2): a muted 11px Pause / Resume button with a
   44px target, an accessible name that states its subject (`heartbeat
-  animation` for PULSE, `glow animation` for SHIELD and Quant), hidden under
-  reduced motion where the dot is still but lit. The beat is **decorative** and never
+  animation` for PULSE, `glow animation` for SHIELD, Quant and GANTT), hidden
+  under reduced motion where the dot is still but lit. The beat is **decorative** and never
   a claim of background monitoring. Never animate the mark itself, never
   animate the tab bar or a pointer page, and never give an unbuilt module
   (IQ™) a dot before its page exists. Always gate motion with
   `motion-safe:`.
 - **Tabs** — a project tab may carry `mark` in `lib/projectTabs.js` (PULSE,
-  SHIELD since ADR-50 and Quant since ADR-51 — the only three); the layout
-  renders a 14px static mark before the label and keeps the shared active
-  styling.
+  SHIELD since ADR-50, Quant since ADR-51 and GANTT since ADR-64 — the only
+  four; GANTT is the existing `timeline` route relabelled, not a new tab); the
+  layout renders a 14px static mark before the label and keeps the shared
+  active styling.
+- **Constrapp GANTT™ chart (ADR-64).** The programme chart
+  (`pages/project/timeline/TimelineGantt.jsx` over the pure
+  `lib/timelineGantt.js` + `lib/ganttGrouping.js`) is ONE `overflow-auto`
+  scroller (`max-h-[70vh]`) with the 240 px label column `sticky left-0` and
+  the two-line header `sticky top-0`; weekly gridlines (`brand-border/40`) and
+  the today line (`border-l-2 border-brand-accent`) sit behind the rows. A
+  toolbar row holds the **Day / Week / Month** zoom (real buttons with
+  `aria-pressed`, the shared tool-button class, active tint `brand-accent/15`),
+  a labelled **Group by** select, **Collapse all / Expand all** when grouped,
+  and **Today** (disabled when today is off-window). Every planned bar and
+  milestone is a real `<button>` (≥ 6 px wide at month zoom, 14 px tall bar,
+  24 px milestone target) with `focus-visible:outline-brand-accent` and an
+  accessible name carrying activity · status · % · planned dates · recorded
+  dates · plan comparison · overdue · what opens; group headers are buttons
+  with `aria-expanded` and their counts (`· n overdue` in `text-brand-red`).
+  Colours are the ADR-29 status tokens unchanged (see the `brand-gantt` row);
+  the **recorded-dates overlay** is a 4 px `brand-text-soft` line beneath the
+  planned bar (a 2 px tick for a start-only or finish-only record, and for a
+  reached milestone) and is `aria-hidden` — its facts live in the button name.
+  The textual legend names every colour plus *Actual (recorded dates)* and
+  states that comparisons are against the current plan, not a baseline.
+  Above `md:` a pressed-state **Chart / List** toggle (`role="group"`) switches
+  between the chart and the existing activity table over the same filtered
+  set; below `md:` the grouped cards remain the programme and the chart is not
+  rendered. Nothing is draggable.
 - **Quant™ takeoff workspace (ADR-51).** The sheet is a `<canvas>` (PDF) or
   `<img>` filling the box of an `<svg>` whose `viewBox` is the page in canonical
   units and whose `width`/`height` attributes are the CSS size — so geometry
@@ -217,6 +247,11 @@ packages exactly that contract for a form dialog: `role="dialog"`,
 first (else the panel), Escape and the backdrop ignored while `busy`, Tab
 containment, focus returned to the opener on close, and the × button disabled
 while busy. New Quant dialogs use it; other modules may adopt the same shape.
+The programme adopted it in ADR-64: `pages/project/timeline/ActivityDialog.jsx`
+packages the identical contract for the activity editor (`autoFocus` on the
+name), the cancel dialog (`autoFocus` on the reason) and the read-only
+`ActivityDetailModal` (panel focus, Close only); focus returns to the Gantt
+bar, table button or card button that opened them.
 
 **Tables** — inside `<Card padding={false}>`; header row `bg-brand-card` with
 11px bold uppercase muted headers; body rows `border-b border-brand-border

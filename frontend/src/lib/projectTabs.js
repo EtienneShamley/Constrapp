@@ -33,6 +33,12 @@ export const PROJECT_TABS = [
   { to: 'variations',       label: 'Variations' },
   { to: 'commercial',       label: 'Commercial' },
   { to: 'documents',        label: 'Documents' },
-  { to: 'timeline',         label: 'Timeline' },
+  // Constrapp GANTT™ (ADR-64): the ADR-29 project programme — activities,
+  // milestones, the activity table and the Gantt chart — under its module
+  // name. The ROUTE stays `timeline` so every existing link (Dashboard
+  // Programme panel, PULSE indicator 4, bookmarks) still resolves; only the
+  // label and the static mark changed. One collection, one listener, one
+  // editor — never a second scheduler.
+  { to: 'timeline',         label: 'GANTT', mark: 'gantt' },
   { to: 'rfis',             label: 'RFIs' },
 ]

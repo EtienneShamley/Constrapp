@@ -3,25 +3,34 @@ import { useOutletContext } from 'react-router-dom'
 import Card from '../../components/Card'
 import Btn from '../../components/Btn'
 import Stat from '../../components/Stat'
+import { ModuleTile, BeatToggle } from '../../components/ModuleMark'
+import { MODULE_NAMES } from '../../lib/moduleBranding'
 import { useProfile } from '../../hooks/useProfile'
 import { useContacts } from '../../hooks/useContacts'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { useProjectActivities } from '../../hooks/useProjectActivities'
 import { useLocalToday } from '../../hooks/useLocalToday'
 import {
-  ACTIVITY_STATUS_ORDER, ACTIVITY_STATUS_LABELS,
+  ACTIVITY_STATUS, ACTIVITY_STATUS_ORDER, ACTIVITY_STATUS_LABELS,
   DUE_FILTER, DUE_FILTER_OPTIONS,
   canReadProgramme, canAuthorProgramme,
   timelineSummary, sortActivities, filterActivities, responsibleOptions,
   quickActionLabel,
 } from '../../lib/projectTimeline'
+import { DEFAULT_GANTT_SCALE, isGanttScale } from '../../lib/timelineGantt'
+import { GANTT_GROUP, isGanttGroup, toggleGroupKey, collapseAllKeys } from '../../lib/ganttGrouping'
 import TimelineGantt from './timeline/TimelineGantt'
 import ActivityTable from './timeline/ActivityTable'
 import ActivityCards from './timeline/ActivityCards'
 import ActivityEditorModal from './timeline/ActivityEditorModal'
 import ActivityCancelModal from './timeline/ActivityCancelModal'
+import ActivityDetailModal from './timeline/ActivityDetailModal'
 
-// ── Project Timeline — the project programme (ADR-29) ────────────────────────
+// ── Constrapp GANTT™ — the project programme (ADR-29, ADR-46, ADR-64) ────────
+//
+// The ADR-29 Timeline tab under its module name. ONE collection, ONE listener
+// (useProjectActivities), ONE editor — the Gantt chart and the activity list
+// are two VIEWS of the same filtered records, never two registers.
 //
 // THE HONEST FRAME, stated on the page and not only in the docs:
 //
@@ -29,18 +38,53 @@ import ActivityCancelModal from './timeline/ActivityCancelModal'
 //     Constrapp stores no immutable baseline, so "late" means late against the
 //     dates as they stand now — editing a planned date silently redefines "on
 //     time". The page must never claim slippage against an approved programme.
+//     The recorded (actual) dates drawn beneath the plan are compared with the
+//     CURRENT plan and labelled so.
 //   · Progress % is MANUALLY ENTERED and unverified. It is never derived from
 //     dates, from child tasks, or from Progress Claims, and it feeds no budget,
 //     forecast, margin or cash figure.
 //   · Nothing here writes a financial document, and nothing writes
 //     projects/{projectId}.progress.
 //   · There are no dependencies, no critical path and no automatic
-//     rescheduling — nothing moves on its own.
+//     rescheduling — nothing moves on its own. Zoom, grouping and collapse are
+//     presentation state on this page; no stored field exists for them.
 //
-// One clock for the whole screen (`now`), passed down to the Gantt, the table
+// One clock for the whole screen (`now`), passed down to the chart, the list
 // and the cards, so no two panels can disagree about today. It comes from
 // useLocalToday, which moves it forward at local midnight (and on refocus), so
 // a tab left open overnight does not keep showing yesterday's overdue state.
+
+const VIEW = { CHART: 'chart', LIST: 'list' }
+
+const viewBtnCls = (active) =>
+  `inline-flex min-h-[44px] items-center rounded-lg border px-3.5 text-[12px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-brand-accent ${
+    active ? 'border-brand-accent/40 bg-brand-accent/15 text-brand-text' : 'border-brand-border text-brand-muted hover:text-brand-text hover:bg-brand-card'
+  }`
+
+// The branded module heading (ADR-48 convention, as PULSE / SHIELD / Quant):
+// the module tile with its luminous dot, the full product name as an <h2>
+// (the project name owns the page's <h1>), a one-line subtitle, and the
+// Pause / Resume control the continuous beat must sit beside (WCAG 2.2.2).
+// The pause state lives here and is deliberately not persisted.
+function GanttHeading({ canWrite, onAdd, addDisabled }) {
+  const [beatPaused, setBeatPaused] = useState(false)
+  return (
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-center gap-3">
+        <ModuleTile module="gantt" beat paused={beatPaused} />
+        <div className="min-w-0">
+          <h2 className="m-0 text-[15px] font-bold text-brand-text">{MODULE_NAMES.gantt}</h2>
+          <p className="m-0 mt-0.5 text-[12px] text-brand-muted">Construction programme</p>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[11px] font-semibold text-brand-muted">Calendar days · current plan</span>
+        <BeatToggle paused={beatPaused} onToggle={() => setBeatPaused(p => !p)} subject="glow animation" />
+        {canWrite && <Btn onClick={onAdd} disabled={addDisabled}>+ Add activity</Btn>}
+      </div>
+    </div>
+  )
+}
 
 export default function ProjectTimeline() {
   const { projectId } = useOutletContext()
@@ -57,12 +101,18 @@ export default function ProjectTimeline() {
   const [responsible, setResponsible] = useState('')
   const [hideClosed, setHideClosed]   = useState(false)
   const [due, setDue]           = useState(DUE_FILTER.ANY)
+  // Chart presentation state (ADR-64) — nothing here is stored.
+  const [view, setView]         = useState(VIEW.CHART)
+  const [scale, setScaleState]  = useState(DEFAULT_GANTT_SCALE)
+  const [groupBy, setGroupByState] = useState(GANTT_GROUP.NONE)
+  const [collapsed, setCollapsed]  = useState(() => new Set())
   // Quick status actions: the activity id being written, and the outcome
   // message of the last attempt (announced through a live region).
   const [quickBusyId, setQuickBusyId] = useState(null)
   const [quickNotice, setQuickNotice] = useState(null)   // { tone: 'ok' | 'error', text }
   const [editing, setEditing]   = useState(null)   // 'new' | activity | null
   const [cancelling, setCancelling] = useState(null)
+  const [viewing, setViewing]   = useState(null)   // activity | null — the read-only detail
 
   const role = profile?.role
   // ⚠️ UX ONLY. Firestore rules are the trust boundary — these flags hide
@@ -86,6 +136,23 @@ export default function ProjectTimeline() {
 
   function clearFilters() {
     setSearch(''); setStatus(''); setResponsible(''); setHideClosed(false); setDue(DUE_FILTER.ANY)
+  }
+
+  const setScale = (s) => { if (isGanttScale(s)) setScaleState(s) }
+  const setGroupBy = (g) => { if (isGanttGroup(g)) { setGroupByState(g); setCollapsed(new Set()) } }
+  const toggleGroup = (key) => setCollapsed(prev => toggleGroupKey(prev, key))
+  const collapseAll = (groups) => setCollapsed(collapseAllKeys(groups))
+  const expandAll = () => setCollapsed(new Set())
+
+  // A bar was activated on the chart. An author opens the existing editor; a
+  // reader — or anyone on a cancelled activity, which is retained history and
+  // cannot be edited — opens the read-only detail. The record is looked up
+  // from the loaded programme, never from the chart's geometry.
+  function handleActivate(activityId) {
+    const activity = ordered.find(a => a.id === activityId)
+    if (!activity) return
+    if (canWrite && activity.status !== ACTIVITY_STATUS.CANCELLED) setEditing(activity)
+    else setViewing(activity)
   }
 
   // A quick action is a guarded write (see useProjectActivities →
@@ -126,16 +193,8 @@ export default function ProjectTimeline() {
 
   return (
     <div>
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
-        <div>
-          <h2 className="text-[17px] font-semibold text-brand-text m-0">Programme</h2>
-          <p className="m-0 mt-0.5 text-[12px] text-brand-muted">
-            What has to happen, by when, and who owns it — measured against the current plan.
-          </p>
-        </div>
-        {canWrite && (
-          <Btn onClick={() => setEditing('new')} disabled={activitiesError}>+ Add activity</Btn>
-        )}
+      <div className="mb-4">
+        <GanttHeading canWrite={canWrite} onAdd={() => setEditing('new')} addDisabled={activitiesError} />
       </div>
 
       {activitiesError ? (
@@ -146,7 +205,7 @@ export default function ProjectTimeline() {
           </p>
         </Card>
       ) : activitiesLoading ? (
-        <p className="text-[13px] text-brand-muted">Loading programme…</p>
+        <p className="text-[13px] text-brand-muted" role="status">Loading programme…</p>
       ) : ordered.length === 0 ? (
         <Card className="text-center py-14">
           <div className="text-4xl mb-3 leading-none" aria-hidden="true">⏱</div>
@@ -163,7 +222,7 @@ export default function ProjectTimeline() {
         </Card>
       ) : (
         <>
-          {/* ── Summary ──────────────────────────────────────────────── */}
+          {/* ── Summary — the whole programme, whatever is filtered or collapsed ── */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3.5">
             <Card>
               <Stat
@@ -262,7 +321,7 @@ export default function ProjectTimeline() {
                 ? 'Overdue: open activities whose planned finish is before today. Completed and cancelled work is never overdue.'
                 : due === DUE_FILTER.DUE_SOON
                   ? `Due soon: open activities with a planned finish from today to ${summary.dueSoonDays} days ahead — overdue work is not included.`
-                  : 'Filters combine: each one narrows the list further.'}
+                  : 'Filters combine: each one narrows the list further. The chart and the list show the same filtered activities.'}
             </p>
             {filtersActive && (
               <p className="m-0 mt-1.5 text-[11.5px] text-brand-muted">
@@ -308,37 +367,66 @@ export default function ProjectTimeline() {
             </Card>
           ) : (
             <>
-              {/* ── Gantt — DESKTOP/TABLET ONLY ─────────────────────── */}
-              <Card padding={false} className="mb-3.5 hidden md:block">
-                <div className="px-3.5 py-3 border-b border-brand-border">
-                  <p className="text-[13px] font-bold text-brand-text m-0">Programme view</p>
-                  <p className="m-0 mt-0.5 text-[11px] text-brand-muted">
-                    Planned dates on a calendar-day grid. Scroll sideways for the full span.
-                  </p>
-                </div>
-                <TimelineGantt activities={filtered} now={now} />
-              </Card>
+              {/* ── Chart / List — DESKTOP/TABLET: two views of ONE filtered set ── */}
+              <div role="group" aria-label="Programme view" className="hidden md:flex items-center gap-1 mb-3">
+                <button type="button" aria-pressed={view === VIEW.CHART} className={viewBtnCls(view === VIEW.CHART)} onClick={() => setView(VIEW.CHART)}>
+                  Chart
+                </button>
+                <button type="button" aria-pressed={view === VIEW.LIST} className={viewBtnCls(view === VIEW.LIST)} onClick={() => setView(VIEW.LIST)}>
+                  List
+                </button>
+                <span className="ml-2 text-[11px] text-brand-muted">
+                  {filtered.length} {filtered.length === 1 ? 'activity' : 'activities'} · the list is the complete record
+                </span>
+              </div>
 
-              {/* ── Table — DESKTOP/TABLET ──────────────────────────── */}
-              <Card padding={false} className="mb-3.5 hidden md:block">
-                <div className="px-3.5 py-3 border-b border-brand-border">
-                  <p className="text-[13px] font-bold text-brand-text m-0">Activities</p>
-                  <p className="m-0 mt-0.5 text-[11px] text-brand-muted">
-                    The complete record — every figure above is read from here.
-                  </p>
-                </div>
-                <ActivityTable
-                  activities={filtered}
-                  canWrite={canWrite}
-                  onEdit={setEditing}
-                  onCancel={setCancelling}
-                  onQuickAction={handleQuickAction}
-                  quickBusyId={quickBusyId}
-                  now={now}
-                />
-              </Card>
+              {view === VIEW.CHART && (
+                <Card padding={false} className="mb-3.5 hidden md:block">
+                  <div className="px-3.5 py-3 border-b border-brand-border">
+                    <p className="text-[13px] font-bold text-brand-text m-0">Programme chart</p>
+                    <p className="m-0 mt-0.5 text-[11px] text-brand-muted">
+                      Planned dates on a calendar-day grid; recorded dates beneath. Open an activity by clicking its bar or pressing Enter on it.
+                    </p>
+                  </div>
+                  <TimelineGantt
+                    activities={filtered}
+                    now={now}
+                    scale={scale}
+                    onScaleChange={setScale}
+                    groupBy={groupBy}
+                    onGroupByChange={setGroupBy}
+                    costCodes={costCodes}
+                    collapsed={collapsed}
+                    onToggleGroup={toggleGroup}
+                    onCollapseAll={collapseAll}
+                    onExpandAll={expandAll}
+                    onActivate={handleActivate}
+                    canWrite={canWrite}
+                  />
+                </Card>
+              )}
 
-              {/* ── Cards — MOBILE ──────────────────────────────────── */}
+              {view === VIEW.LIST && (
+                <Card padding={false} className="mb-3.5 hidden md:block">
+                  <div className="px-3.5 py-3 border-b border-brand-border">
+                    <p className="text-[13px] font-bold text-brand-text m-0">Activities</p>
+                    <p className="m-0 mt-0.5 text-[11px] text-brand-muted">
+                      The complete record — every figure on the chart is read from here.
+                    </p>
+                  </div>
+                  <ActivityTable
+                    activities={filtered}
+                    canWrite={canWrite}
+                    onEdit={setEditing}
+                    onCancel={setCancelling}
+                    onQuickAction={handleQuickAction}
+                    quickBusyId={quickBusyId}
+                    now={now}
+                  />
+                </Card>
+              )}
+
+              {/* ── Cards — MOBILE: the usable programme on a phone ──── */}
               <div className="md:hidden mb-3.5">
                 <ActivityCards
                   activities={filtered}
@@ -360,7 +448,8 @@ export default function ProjectTimeline() {
               <li>
                 <strong className="text-brand-text-soft">Current plan, not an approved baseline.</strong> “Overdue”
                 means late against the dates as they stand today. Constrapp stores no baseline, so it cannot
-                report slippage against an approved programme.
+                report slippage against an approved programme; the recorded dates on the chart are compared with
+                the current plan only.
               </li>
               <li>
                 <strong className="text-brand-text-soft">Progress % is entered by hand</strong> and is not verified.
@@ -373,11 +462,12 @@ export default function ProjectTimeline() {
               </li>
               <li>
                 <strong className="text-brand-text-soft">No dependencies or critical path.</strong> Nothing
-                reschedules automatically — changing one activity moves nothing else.
+                reschedules automatically — changing one activity moves nothing else, and nothing on the chart
+                can be dragged.
               </li>
               <li>
                 A cost code is an optional label that links an activity to the commercial spine. It is
-                reporting context only.
+                reporting context only — grouping the chart by cost code or responsible party changes no record.
               </li>
               <li>
                 Responsibility is assigned to a company <strong className="text-brand-text-soft">Contact</strong>.
@@ -392,7 +482,7 @@ export default function ProjectTimeline() {
               {!canWrite && (
                 <li>
                   <strong className="text-brand-text-soft">You have read-only access.</strong> Company admins
-                  and project managers author the programme.
+                  and project managers author the programme; opening a bar shows its details.
                 </li>
               )}
             </ul>
@@ -417,6 +507,14 @@ export default function ProjectTimeline() {
           activity={cancelling}
           onCancelActivity={cancelActivity}
           onClose={() => setCancelling(null)}
+        />
+      )}
+
+      {viewing && (
+        <ActivityDetailModal
+          activity={viewing}
+          now={now}
+          onClose={() => setViewing(null)}
         />
       )}
     </div>

@@ -139,10 +139,11 @@ describe('hidden surfaces keep their routes and pages', () => {
     expect(app).toContain('path="reports"')
   })
 
-  it('the pulse, shield and quant routes still exist', () => {
+  it('the pulse, shield, quant and gantt routes still exist', () => {
     expect(app).toContain('path="pulse"')
     expect(app).toContain('path="shield"')
     expect(app).toContain('path="quant"')
+    expect(app).toContain('path="gantt"')
   })
 })
 

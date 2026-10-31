@@ -1272,9 +1272,16 @@ limitation as `daysPastDue`/`isFutureDate`.
 days late, days until due, the horizon grouping (Overdue / This week / Upcoming
 / Later / Completed-Cancelled), the four summary counts, and every Gantt
 coordinate are derived at read time (`lib/projectTimeline.js`,
-`lib/timelineGantt.js`) and never written back. **Deletion is blocked** — cancel
-via status. **No migration**: a project with no `activities` loads normally with
-an empty programme.
+`lib/timelineGantt.js`) and never written back. **Constrapp GANTT™ 1A1
+(ADR-64) adds no field:** the chart's zoom scale, grouping (by `costCodeId` —
+the cost code's `category` is read from the company cost-code list at render
+time and never copied here — or by `responsibleContactId`), collapse state and
+the Chart / List choice are page state only; the recorded-dates overlay and the
+*against current plan* comparison are derived from the existing
+`actualStart` / `actualFinish` / `plannedFinish` (`actualSpan`,
+`finishVarianceDays`) and never stored. **Deletion is blocked** — cancel via
+status. **No migration**: a project with no `activities` loads normally with an
+empty programme.
 
 ## …/projects/{projectId}/pulseAcknowledgements/{indicatorId}
 

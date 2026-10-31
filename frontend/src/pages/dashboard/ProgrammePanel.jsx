@@ -123,7 +123,7 @@ export default function ProgrammePanel({ projectId }) {
           to={`/projects/${projectId}/timeline`}
           className="inline-flex min-h-[44px] items-center text-[12px] text-brand-accent hover:underline"
         >
-          Open Timeline →
+          Open GANTT →
         </Link>
       </div>
       <p className="m-0 mb-4 text-[11px] text-brand-muted">
@@ -157,7 +157,7 @@ export default function ProgrammePanel({ projectId }) {
             to={`/projects/${projectId}/timeline`}
             className="inline-flex min-h-[44px] items-center text-[12px] text-brand-accent hover:underline"
           >
-            Plan activities on the Timeline →
+            Plan activities in GANTT →
           </Link>
         </div>
       )}
