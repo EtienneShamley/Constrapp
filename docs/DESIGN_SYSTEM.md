@@ -137,6 +137,28 @@ programme tab became Constrapp GANTT™.
   the chart discloses *n dependencies are not drawn …* in `brand-amber` under
   the legend (`role="status"`) and never draws more than 1,500 (then none,
   with the same disclosure). Arrows never intercept a bar.
+  **Baselines (ADR-66).** The SELECTED approved baseline is a GHOST behind
+  each bar: a `rounded-md border border-dashed` outline in `brand-text-soft`
+  (top 3 px, 18 px tall, so it shows exactly where the plan has moved and
+  disappears under an unchanged bar), and a hollow 12 px `rotate-45 border`
+  diamond in the same token for a baseline milestone — never a fill, never a
+  status colour, never `brand-gantt`, no animation. The ghost is `aria-hidden`
+  and decorative: the baseline dates, the planned variance (*Planned start +2
+  days, finish +6 days against baseline*) and the recorded-finish variance
+  (*Finished 3 days after the baseline finish*) are in the bar's accessible
+  name, in the List's *vs baseline* column (`+6 d` in `brand-amber` when
+  later, `brand-text-soft` when earlier, muted when unchanged, with the full
+  sentence as its title), on the mobile cards and in the detail's *Against
+  baseline* row. Two legend entries name the outline and the hollow diamond;
+  the legend states either what the outline is or that no approved baseline
+  is shown. The **baseline panel** above the filters holds the *Compare with*
+  select (`aria-label="Baseline version to compare with"`), the *Show / Hide
+  baseline* button (`aria-pressed`), *Capture baseline* for authors, the
+  drafts awaiting review (amber-bordered rows with *Review draft*) and the
+  summary of counts — `Later`, `Milestones later` and `Completed late` tinted
+  `brand-amber` when non-zero, every figure also named in text. The capture
+  and review dialogs render through `ActivityDialog`; the review dialog's
+  drift acknowledgement is a labelled checkbox bound to the drift it lists.
 - **Quant™ takeoff workspace (ADR-51).** The sheet is a `<canvas>` (PDF) or
   `<img>` filling the box of an `<svg>` whose `viewBox` is the page in canonical
   units and whose `width`/`height` attributes are the CSS size — so geometry

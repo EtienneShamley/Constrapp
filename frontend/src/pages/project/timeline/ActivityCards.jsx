@@ -8,6 +8,7 @@ import {
   groupActivities, formatIsoDate, durationLabel, dueLabel, isOverdue,
 } from '../../../lib/projectTimeline'
 import { stateFor, dependencyFlag, dependencyLabel } from '../../../lib/ganttDependencies'
+import { varianceFor, varianceLabel, completionLabel, VARIANCE_KIND } from '../../../lib/ganttBaseline'
 
 // ── Activity cards — the MOBILE programme ────────────────────────────────────
 //
@@ -22,8 +23,11 @@ import { stateFor, dependencyFlag, dependencyLabel } from '../../../lib/ganttDep
 //
 // Every tap target is at least 44px and nothing is hover-only.
 
-export default function ActivityCards({ activities, canWrite, onEdit, onCancel, onQuickAction, quickBusyId, now, dependencyStates }) {
+// ADR-66: `baseline` is { shown, label, comparison } for the selected
+// approved baseline, or null — one comparison line per card, as text.
+export default function ActivityCards({ activities, canWrite, onEdit, onCancel, onQuickAction, quickBusyId, now, dependencyStates, baseline = null }) {
   const groups = groupActivities(activities, now)
+  const baselineShown = Boolean(baseline?.shown && baseline.comparison)
 
   return (
     <div className="space-y-5">
@@ -45,6 +49,8 @@ export default function ActivityCards({ activities, canWrite, onEdit, onCancel, 
                 // ADR-65: dependency state as text — Blocked / Conflict / Review.
                 const dep  = stateFor(dependencyStates, a.id)
                 const flag = dependencyFlag(dep)
+                const v    = baselineShown ? varianceFor(baseline.comparison, a.id) : null
+                const vText = v ? [varianceLabel(v, { isMilestone: a.isMilestone }), completionLabel(v, { isMilestone: a.isMilestone })].filter(Boolean).join(' · ') : ''
                 return (
                   <div
                     key={a.id}
@@ -83,6 +89,12 @@ export default function ActivityCards({ activities, canWrite, onEdit, onCancel, 
                         ? `Date ${formatIsoDate(a.plannedStart)}`
                         : `Planned ${formatIsoDate(a.plannedStart)} → ${formatIsoDate(a.plannedFinish)} · ${durationLabel(a)}`}
                     </p>
+
+                    {vText && (
+                      <p className={`m-0 mt-0.5 text-[11px] ${v.kind === VARIANCE_KIND.IN_BASELINE && v.finishVariance > 0 ? 'text-brand-amber' : 'text-brand-muted'}`}>
+                        {vText}
+                      </p>
+                    )}
 
                     <p className="m-0 mt-0.5 text-[11.5px] text-brand-muted">
                       {a.responsibleName || 'No one assigned'}

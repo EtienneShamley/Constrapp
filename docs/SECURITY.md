@@ -85,6 +85,14 @@ Controls now in place:
   `tests/unit/rulesTransitional.test.js`). One extra `get()` (the PO) on every
   PO-linked approve and on the legacy Apply — three document reads on those
   writes, five on create as before.
+- **GANTT™ 1B (ADR-66, 1 November 2026, IMPLEMENTED — NOT YET DEPLOYED)** adds
+  the two programme-baseline blocks (`programmeBaselines`,
+  `programmeBaselineSnapshots`) before the `activities` block, which is
+  byte-for-byte unchanged: FINAL `firestore.rules` **219,930 → 228,967 bytes**
+  (+9,037; 16,033 under the budget), derived STAGE-1
+  `firestore.transitional.rules` **229,601** (the same three marked lines; no
+  new one — 1B needs no transitional publish). Document reads on the capture
+  pair: five of twenty.
 - **Size compliance is not deployment proof.** The emulator suite proves the
   repo file; the size test proves it can be published; only the console shows
   what is live — see [DEPLOYMENT.md](DEPLOYMENT.md) → *Verifying which rules
@@ -159,6 +167,8 @@ Control 20).
 | `…/projects/{id}/cashFlowLines/{id}` | **financial roles only** | financial roles, **create active-only; transitions and post-void immutability rules-enforced** | blocked — void via status |
 | `…/projects/{id}/commercial/baseline` | **financial roles only** | financial roles | blocked — the single baseline doc is never deleted |
 | `…/projects/{id}/activities/{id}` | **`company_admin`, `project_manager`, `qs`** | **`company_admin`, `project_manager` ONLY — `qs` is READ-ONLY**; shape, closed status set, date/milestone/percentage invariants, cancellation branch and cancelled-terminality rules-enforced | blocked — cancel via status |
+| `…/projects/{id}/programmeBaselines/{id}` | **`company_admin`, `project_manager`, `qs`** | **`company_admin`, `project_manager` ONLY — `qs` is READ-ONLY** (capture AND approve); exact keys, born draft at revision 1 with creator / audit stamps at server time, created ONLY with its snapshot in the same commit (`getAfter()`: same caller, time and `activityCount`); `draft → approved` and `draft → withdrawn` (reasoned) stamps-only with actor == caller, time == `request.time`, `revision` exactly +1; `name` / `reason` / `activityCount` / `createdAt/By` immutable; **approved and withdrawn admit NO update** — all rules-enforced (ADR-66). Middle entries, duplicates, entry-to-source equality and drift at approval are client-only (DC42) | blocked — an approved baseline is never deleted; a draft is withdrawn via status |
+| `…/projects/{id}/programmeBaselineSnapshots/{id}` | **`company_admin`, `project_manager`, `qs`** | **`company_admin`, `project_manager` ONLY**, **create-only** with a `draft` header in the same commit (`getAfter()`); exact keys, `capturedBy == caller`, `capturedAt == request.time`, `activities` a list of 1–2000 with `size() == activityCount`, the FIRST and LAST entries pinned (exact entry keys, source `exists()` in this project, date / milestone / status / progress / revision shape); **`update: false`** for everyone | **blocked for everyone** |
 | `…/projects/{id}/pulseAcknowledgements/{indicatorId}` | **`company_admin`, `project_manager`, `qs`** | **`company_admin`, `project_manager` ONLY — `qs` is READ-ONLY**; six-indicator id allowlist (id == stored `indicatorId`), exact keys, create active/revision 1, re-acknowledge and withdraw transitions, actor == caller, server stamps, non-blank `note` ≤ 500, `reviewBy` shape, `evidenceKeys` list ≤ 200, immutable `createdAt/By`, **`revision` must be exactly +1 on every update** — all rules-enforced (ADR-49) | blocked — withdraw via status |
 | `…/projects/{id}/drawings/{id}` | **any company member** — including `subcontractor` and `client` | **`company_admin`, `project_manager` only — QS excluded**; born-empty create, four `hasOnly` update shapes, +1 revision count, non-whitespace withdraw reason | blocked — withdraw via status |
 | `…/projects/{id}/drawings/{id}/revisions/{id}` | **any company member** | same drawing writers; **file and authored identity immutable**, exact `storagePath` required, legal transitions only | blocked — a revision is never deleted |
@@ -2738,6 +2748,56 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     `frontend/tests/unit/ganttDependencies.test.js` or
     `frontend/tests/unit/activityActions.test.js`.
 
+42. **Programme baselines — what the pair, the pins and the compare-and-set
+    cannot prove (ADR-66, GANTT 1B).** Rules enforce the atomic header +
+    snapshot pair, the header lifecycle and its terminal states, the exact
+    shapes, the list size and count agreement, the FIRST and LAST entries'
+    shape and same-project existence, and that a snapshot is never updated
+    or deleted. What they **cannot** enforce, and what must never be
+    described as enforced:
+
+    - **EVERY ENTRY BETWEEN THE TWO PINNED ENDS.** A middle entry of any
+      shape — garbage, an id naming nothing, an id from another project —
+      is ACCEPTED (proven). The app projects and validates every entry
+      (`validateBaselineEntry`) and refuses the capture by name; the
+      read-time comparison labels an unreadable entry *missing* / *invalid*
+      and never derives a variance from it.
+    - **DUPLICATE ACTIVITY IDS** are ACCEPTED (proven); refused by the app;
+      indexed once at read time.
+    - **ENTRY-TO-SOURCE EQUALITY.** An entry whose dates, status, progress or
+      revision differ from its source activity is ACCEPTED (proven) —
+      `exists()` is all a rule can ask of a referenced document within the
+      access budget. The capture projects the entries from a fresh server
+      read, so through the app they are the source's values at that read.
+    - **THE RESIDUAL RACE.** The capture is a server query followed by a
+      transaction; an activity edited between the two is captured as the
+      query saw it. The stored `revision` per entry makes this DETECTABLE —
+      the review dialog lists it as drift and the approve transaction refuses
+      a drift the approver did not acknowledge by key — but no rule proves
+      the snapshot equals the programme at commit time, and no claim is made
+      that the immutable document proves its entries came from genuine
+      source records.
+    - **DRIFT AT APPROVAL** is a client read and a client acknowledgement.
+      Approval accepts the identified captured snapshot; it does not certify
+      that the live programme cannot change concurrently.
+    - **SELF-APPROVAL** (the capturer approving their own draft) is permitted
+      by decision and displayed; creator ≠ approver segregation stays on the
+      trusted-backend list (ADR-14).
+    - **THE DOCUMENT SIZE CEILING** is a client estimate (900,000 bytes) over
+      Firestore's own 1 MiB refusal; a direct-SDK writer can store up to the
+      hard limit.
+
+    **Residual direct-SDK risk, stated plainly:** a programme writer using the
+    SDK directly can store a fabricated snapshot for a project they may
+    author — first and last entries real, the middle invented. The programme
+    writes no financial document, the baseline is read by no financial
+    selector, and the worst outcome is a misleading variance that the
+    read-time classification labels for review wherever it can. Every item
+    above is **proven** by a passing test in
+    `frontend/tests/rules/programmeBaselines.rules.test.js`,
+    `frontend/tests/unit/ganttBaseline.test.js` or
+    `frontend/tests/unit/programmeBaselineActions.test.js`.
+
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
 is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.
@@ -2936,6 +2996,59 @@ write shape) and nothing else differs. Proven by
 `tests/rules/activities.rules.test.js` (97 cases) and
 `tests/rules/activitiesTransitional.rules.test.js` (7). The limits are Deferred
 Control 41. FINAL `firestore.rules` 219,930 bytes; transitional 220,564.
+
+## Programme baselines — two blocks, one atomic pair, immutable approved history (ADR-66)
+
+Constrapp GANTT™ 1B adds `programmeBaselines/{baselineId}` (the header) and
+`programmeBaselineSnapshots/{baselineId}` (ONE immutable payload per
+baseline), both project-scoped, both with the programme's audience: **read**
+`company_admin` / `project_manager` / `qs`; **capture AND approve**
+`company_admin` / `project_manager` only (`qs` read-only, as for
+`activities`); `subcontractor`, `client` and `super_admin` denied; **delete
+blocked on both**. The `activities` block is byte-for-byte unchanged.
+
+**Rules-enforced:**
+
+- **The pair.** A header is created ONLY when the same commit creates its
+  snapshot (`getAfter(snapshotPath())`: same `activityCount`, `capturedBy ==
+  request.auth.uid`, `capturedAt == request.time`), and a snapshot ONLY when
+  the same commit creates a `draft` header by the same caller at the same
+  server time with the same count (`getAfter(headerPath())`). A header alone,
+  a snapshot alone, a snapshot against a pre-existing header, a mismatched
+  count, another actor or a client clock are all refused (proven both ways).
+- **Header shape and capture pins:** exact keys; non-blank `name` ≤ 120 and
+  `reason` ≤ 500; born `draft`; integer `activityCount` 1–2000; approval and
+  withdrawal fields null / empty at create; `revision == 1`; creator and audit
+  stamps at server time.
+- **Lifecycle:** the ONLY updates are `draft → approved` (changed keys
+  `status`, `approvedAt`, `approvedBy`, `revision`, `updatedAt`, `updatedBy`;
+  actor == caller; time == `request.time`) and `draft → withdrawn` (the
+  withdrawal keys; non-blank reason ≤ 500); `revision` exactly +1; `name`,
+  `reason`, `activityCount`, `createdAt/By` immutable. **No branch admits an
+  update from `approved` or `withdrawn`** — an approved baseline cannot be
+  renamed, withdrawn, re-approved, returned to draft or deleted, by anyone.
+- **Snapshot:** exact keys; `capturedBy == caller`, `capturedAt ==
+  request.time`; `activities` a list of 1–2000 with `size() == activityCount`;
+  the **FIRST and LAST entries** each a map with exactly the ten entry keys, a
+  non-empty id that `exists()` in THIS project's `activities`, a non-blank name
+  ≤ 120, date-only strings with finish ≥ start and a milestone on one day, a
+  status in the five-state set, integer progress 0–100, integer revision ≥ 1,
+  numeric order and a null-or-non-empty cost-code key (two document reads);
+  **`allow update: if false; allow delete: if false`.**
+- **Tenancy:** both blocks through `sameCompany(companyId)` /
+  `memberRole()`; an entry naming an activity in another project or company
+  fails the `exists()` pin.
+
+**Client-only (Deferred Control 42):** every entry between the two pinned
+ends; duplicate activity ids; that an entry's dates, status, progress and
+revision equal its source activity's; that the client's server query and the
+commit saw the same programme (drift); the approver's review of that drift;
+self-approval (permitted by decision). Access budget on the capture
+transaction: the membership document (cached), two `getAfter()` and two
+`exists()` — five of twenty. FINAL `firestore.rules` **228,967 bytes**;
+transitional **229,601** (no new marked line). Proven by
+`tests/rules/programmeBaselines.rules.test.js` (85 cases, including the
+2,000-entry worst-case write and the app's own transactions).
 
 ## PULSE™ acknowledgements — a management record, `qs` read-only, revision-guarded
 

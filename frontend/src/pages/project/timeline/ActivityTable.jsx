@@ -7,6 +7,7 @@ import {
   formatIsoDate, durationLabel, dueLabel, isOverdue, isClosedStatus,
 } from '../../../lib/projectTimeline'
 import { stateFor, dependencyFlag, dependencyLabel } from '../../../lib/ganttDependencies'
+import { varianceFor, varianceShort, varianceLabel, completionLabel, VARIANCE_KIND } from '../../../lib/ganttBaseline'
 
 // ── Activity table — THE RECORD ──────────────────────────────────────────────
 //
@@ -22,7 +23,12 @@ import { stateFor, dependencyFlag, dependencyLabel } from '../../../lib/ganttDep
 const thCls = 'px-3 py-2.5 text-left text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] whitespace-nowrap'
 const tdCls = 'px-3 py-2.5 text-[12px] text-brand-text align-top'
 
-export default function ActivityTable({ activities, canWrite, onEdit, onCancel, onQuickAction, quickBusyId, now, dependencyStates }) {
+// ADR-66: `baseline` is { shown, label, comparison } for the selected
+// approved baseline, or null. The column shows the FINISH variance in
+// calendar days (positive = later than baseline), with the full sentence as
+// its title — a separate measure from Overdue (current plan vs today).
+export default function ActivityTable({ activities, canWrite, onEdit, onCancel, onQuickAction, quickBusyId, now, dependencyStates, baseline = null }) {
+  const baselineShown = Boolean(baseline?.shown && baseline.comparison)
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[1080px] border-collapse">
@@ -33,6 +39,7 @@ export default function ActivityTable({ activities, canWrite, onEdit, onCancel, 
             <th className={thCls}>Cost code</th>
             <th className={thCls}>Planned start</th>
             <th className={thCls}>Planned finish</th>
+            {baselineShown && <th className={`${thCls} text-right`} title={`Planned finish against ${baseline.label || 'the selected baseline'}, in calendar days`}>vs baseline</th>}
             <th className={thCls}>Duration</th>
             <th className={thCls}>Status</th>
             <th className={`${thCls} text-right`}>Progress</th>
@@ -49,6 +56,10 @@ export default function ActivityTable({ activities, canWrite, onEdit, onCancel, 
             // Review — beside the name; the full sentence in the tooltip.
             const dep    = stateFor(dependencyStates, a.id)
             const flag   = dependencyFlag(dep)
+            const v      = baselineShown ? varianceFor(baseline.comparison, a.id) : null
+            const vLabel = v ? [varianceLabel(v, { isMilestone: a.isMilestone }), completionLabel(v, { isMilestone: a.isMilestone })].filter(Boolean).join('. ') : ''
+            const vTone  = !v || v.kind !== VARIANCE_KIND.IN_BASELINE ? 'text-brand-muted'
+              : v.finishVariance > 0 ? 'text-brand-amber font-bold' : v.finishVariance < 0 ? 'text-brand-text-soft font-bold' : 'text-brand-muted'
             return (
               <tr
                 key={a.id}
@@ -99,6 +110,16 @@ export default function ActivityTable({ activities, canWrite, onEdit, onCancel, 
                     </span>
                   )}
                 </td>
+                {baselineShown && (
+                  <td className={`${tdCls} text-right whitespace-nowrap tabular-nums ${vTone}`} title={vLabel || undefined}>
+                    {varianceShort(v)}
+                    {v?.completionVariance !== null && v?.completionVariance !== undefined && (
+                      <span className="block text-[10.5px] font-normal text-brand-muted">
+                        {completionLabel(v, { isMilestone: a.isMilestone })}
+                      </span>
+                    )}
+                  </td>
+                )}
                 <td className={`${tdCls} whitespace-nowrap`}>{durationLabel(a)}</td>
                 <td className={`${tdCls} whitespace-nowrap`}>
                   <Badge

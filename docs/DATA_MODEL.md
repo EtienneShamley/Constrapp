@@ -29,6 +29,8 @@ companies/{companyId}
     forecastLines/{costCodeId}           (deterministic id = costCodeId)
     cashFlowLines/{lineId}               (authored Cash Flow timing inputs)
     activities/{activityId}              (project programme — NON-FINANCIAL)
+    programmeBaselines/{baselineId}      (GANTT™ 1B approved-programme baseline HEADER — random id; NON-FINANCIAL)
+    programmeBaselineSnapshots/{baselineId}  (GANTT™ 1B ONE immutable snapshot per baseline — same id; create-only)
     pulseAcknowledgements/{indicatorId}  (PULSE™ 1B management record — deterministic id = indicator id; NON-FINANCIAL)
     counters/rfis                        (PER-PROJECT RFI numbering — the only project-scoped counter)
     rfis/{rfiId}                         (Requests for Information — NON-FINANCIAL evidence record)
@@ -1210,10 +1212,12 @@ touches `projects/{projectId}.progress`**. Document ids are random and stable.
 Rationale and the full set of deliberate exclusions: **ADR-29**. Access matrix
 (the one place `qs` is read-only): [SECURITY.md](SECURITY.md).
 
-⚠️ **This is a CURRENT-PLAN programme, not approved-baseline variance.** No
-immutable baseline exists, so "overdue" means late against the planned dates *as
-they stand now* — editing a planned date silently redefines "on time". Never
-present a Timeline figure as slippage against an approved programme.
+⚠️ **"Overdue" is measured against the CURRENT plan** — late against the
+planned dates *as they stand now*; editing a planned date redefines "on time".
+Since ADR-66 an **approved programme baseline** may exist beside the programme
+(`programmeBaselines` + `programmeBaselineSnapshots`, below): the variance
+against it is a separate, labelled measure, and no Timeline figure is ever
+presented as slippage against an approved programme unless it is that measure.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -1253,10 +1257,11 @@ corrected, not an audit record. Financial lifecycles are unaffected.
 **Deliberately NOT stored:** `companyId`/`projectId` (the collection path
 carries them — the ADR-24 precedent), `durationDays` (**derived**: a stored
 duration is a third fact that can disagree with the two dates), `baselineStart`/
-`baselineFinish` (speculative — ADR-29 defers baselines; ADR-65 added the
-`predecessors` link but still **no successor list, no stored blocked /
-conflict / cycle state and no dependency revision** — all derived on every
-read), `currency` (an activity holds no money, so **no currency ratchet is
+`baselineFinish` (a baseline is NEVER a field on the activity — ADR-66 keeps
+it in its own immutable snapshot, so an approved date can never be edited
+away; ADR-65 added the `predecessors` link but still **no successor list, no
+stored blocked / conflict / cycle state and no dependency revision** — all
+derived on every read), `currency` (an activity holds no money, so **no currency ratchet is
 engaged**; since ADR-65 creation IS a transaction, but only to verify new
 predecessor sources on the server), any sequential activity number, and any
 stored `overdue`/`isLate` flag (**derived on every read** — a stored flag
@@ -1286,6 +1291,89 @@ the Chart / List choice are page state only; the recorded-dates overlay and the
 `finishVarianceDays`) and never stored. **Deletion is blocked** — cancel via
 status. **No migration**: a project with no `activities` loads normally with an
 empty programme.
+
+## …/projects/{projectId}/programmeBaselines/{baselineId}
+
+**A programme baseline HEADER (Constrapp GANTT™ 1B, ADR-66)** — the lifecycle
+record of one formally captured and approved programme. **Non-financial:** no
+amount, no currency, no counter, no currency ratchet; it writes nothing onto an
+activity or any other document. Its payload is the sibling
+`programmeBaselineSnapshots/{baselineId}` (same random id), created in the SAME
+commit — rules pair the two with `getAfter()` in both directions. Access matrix
+(`qs` read-only, like `activities`): [SECURITY.md](SECURITY.md).
+
+⚠️ **A baseline is planning evidence** — the planned dates as they stood when
+someone approved them. It is not a contractual programme acceptance, an
+extension-of-time entitlement or a delay determination, and approving one
+changes no activity date.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | **Required non-whitespace**, ≤ 120 (rules-enforced); frozen after capture |
+| `reason` | string | **Required non-whitespace**, ≤ 500 — why this programme is being baselined (the re-baseline reason on later versions); frozen |
+| `status` | string | `draft` \| `approved` \| `withdrawn` — **closed set, rules-enforced**. Born `draft`; `draft → approved`, `draft → withdrawn`; **approved and withdrawn are TERMINAL** (no update branch admits them, so an approved baseline is immutable history) |
+| `activityCount` | number | **Integer 1–2000**, must equal the snapshot's `activityCount` and the snapshot list's size (rules-enforced via `getAfter()`); frozen |
+| `approvedAt` / `approvedBy` | timestamp / uid | `null` until approved; then `approvedBy == request.auth.uid` and `approvedAt == request.time` (rules-enforced). **Self-approval is permitted** and the UI shows when `approvedBy == createdBy` |
+| `withdrawnAt` / `withdrawnBy` | timestamp / uid | `null` unless withdrawn; actor and server time rules-enforced |
+| `withdrawReason` | string | `''` unless withdrawn; then **required non-whitespace** ≤ 500 |
+| `revision` | number | `1` at create; **EXACTLY +1** on the one transition (rules-enforced) — the client's compare-and-set reads revision AND `(updatedAt, updatedBy)` |
+| `createdAt` / `createdBy` | timestamp / uid | The CAPTURE — set once at server time by the caller; rules reject any later change |
+| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on every write |
+
+**Derived, never stored:** the ACTIVE baseline (the approved header with the
+greatest `approvedAt`, ties by id), the ORIGINAL (the earliest), ordinals
+(*Baseline 1, 2, …* — stable, because the approved set is append-only),
+designations, and every variance figure (`lib/ganttBaseline.js`). No
+`superseded` status is written when a new version is approved — earlier
+versions stay exactly as approved.
+
+**Deliberately NOT stored:** `projectId` (the path), the snapshot payload (its
+own document, so the headers listener stays small), a stored "active" flag or
+pointer (derived), a sequential baseline number (derived ordinal), the
+approver's drift counts (shown at approval, not persisted), any financial
+field.
+
+## …/projects/{projectId}/programmeBaselineSnapshots/{baselineId}
+
+**ONE immutable snapshot per baseline (ADR-66)** — a bounded list of minimal
+activity entries, **create-only**: no update of any kind and no delete, for
+anyone, in any state. Created ONLY together with a `draft` header in the same
+commit (`getAfter()`: same caller, same server time, same `activityCount`).
+
+| Field | Type | Notes |
+|---|---|---|
+| `activityCount` | number | Integer; `== activities.size()` and `== the header's` (rules-enforced) |
+| `capturedAt` / `capturedBy` | timestamp / uid | `== request.time` / `== request.auth.uid` — the same instant and actor as the header's `createdAt/By` |
+| `activities` | list | **1–2000 entries** in programme order (`compareActivities`), EVERY activity of the project at capture — cancelled history included with its status |
+
+**One entry (exact keys, rules-pinned on the FIRST and LAST entries only):**
+`{ activityId, name, isMilestone, plannedStart, plannedFinish, status,
+percentComplete, revision, sortOrder, costCodeId }` — `activityId` a non-empty
+string that `exists()` in THIS project's `activities`; `name` non-blank ≤ 120;
+date-only strings with `plannedFinish >= plannedStart` and a milestone on one
+day; `status` in the five-state set; integer progress 0–100; integer
+`revision >= 1` (the activity's revision at capture — the drift check compares
+it with the live document); numeric `sortOrder`; `costCodeId` a non-empty
+string or `null` (the join key only — never a name snapshot, never an amount).
+
+**Deliberately NOT in an entry:** description, notes, **actual dates** (facts,
+not plan — the live activity holds them), `predecessors` (a dependency-topology
+snapshot is deferred; ADR-66 records that 1B captures approved programme dates,
+not the historical dependency graph), `responsibleName` / `costCodeName`
+(activities are never deleted, so the live record always resolves them),
+anything financial.
+
+**Size:** estimated client-side by the documented Firestore formula
+(`estimateSnapshotBytes`) and refused above **900,000 bytes** before any
+write; the worst case the rules admit (2,000 entries × 120-character names)
+is ≈ 700 KB, under the 1 MiB document limit (proven by a real write in
+`tests/rules/programmeBaselines.rules.test.js`). Nothing is ever truncated or
+split into per-activity documents.
+
+**What rules cannot prove (Deferred Control 42):** every entry between the two
+pinned ends, duplicate ids, that an entry's dates equal its source activity's,
+and that nothing changed between the client's server query and the commit. The
+app validates every entry, refuses duplicates, and shows the drift at approval.
 
 ## …/projects/{projectId}/pulseAcknowledgements/{indicatorId}
 
