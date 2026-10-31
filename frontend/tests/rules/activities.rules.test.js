@@ -121,19 +121,24 @@ async function seed(id, overrides = {}, user = USERS.admin) {
   })
 }
 
-// The write shapes the app performs.
+// The write shapes the app performs. ADR-65: every update carries EXACTLY the
+// next revision; seeded documents are at revision 1, so the app's write is 2.
 const edit = (user, extra = {}) => ({
-  updatedAt: serverTimestamp(), updatedBy: user.uid, ...extra,
+  revision: 2, updatedAt: serverTimestamp(), updatedBy: user.uid, ...extra,
 })
 const cancelWrite = (user, reason = 'Descoped by client', extra = {}) => ({
   status: 'cancelled',
   cancelReason: reason,
   cancelledAt: serverTimestamp(),
   cancelledBy: user.uid,
+  revision: 2,
   updatedAt: serverTimestamp(),
   updatedBy: user.uid,
   ...extra,
 })
+// One stored predecessor entry (ADR-65), exactly as lib/ganttDependencies.js
+// → toStoredPredecessors writes it.
+const pred = (activityId, lagDays = 0, extra = {}) => ({ activityId, type: 'FS', lagDays, ...extra })
 
 // A full replacement write (setDoc) for shape tests on update.
 const replace = (user, overrides = {}) => ({
@@ -263,10 +268,11 @@ describe('tenant isolation', () => {
 // ── Exact shape ──────────────────────────────────────────────────────────────
 
 describe('exact shape', () => {
-  it('rejects an unknown extra field', async () => {
-    await assertFails(setDoc(actRef(ctx(USERS.pm), 'k1'), payload(USERS.pm, { predecessors: [] })))
+  it('rejects an unknown extra field (an empty `predecessors` list is the one OPTIONAL key — ADR-65)', async () => {
+    await assertSucceeds(setDoc(actRef(ctx(USERS.pm), 'k1'), payload(USERS.pm, { predecessors: [] })))
     await assertFails(setDoc(actRef(ctx(USERS.pm), 'k2'), payload(USERS.pm, { baselineStart: '2026-10-20' })))
     await assertFails(setDoc(actRef(ctx(USERS.pm), 'k3'), payload(USERS.pm, { isAdmin: true })))
+    await assertFails(setDoc(actRef(ctx(USERS.pm), 'k4'), payload(USERS.pm, { successors: [] })))
   })
 
   it('rejects a missing required field', async () => {
@@ -551,17 +557,174 @@ describe('forged audit fields', () => {
 // ── Immutable core ───────────────────────────────────────────────────────────
 
 describe('immutable core', () => {
-  it('rejects rewriting createdAt, createdBy or revision on an edit', async () => {
+  it('rejects rewriting createdAt or createdBy on an edit', async () => {
     await seed('im1')
     await assertFails(updateDoc(actRef(ctx(USERS.pm), 'im1'), edit(USERS.pm, { createdBy: USERS.pm.uid })))
     await assertFails(updateDoc(actRef(ctx(USERS.pm), 'im1'), edit(USERS.pm, { createdAt: serverTimestamp() })))
-    await assertFails(updateDoc(actRef(ctx(USERS.pm), 'im1'), edit(USERS.pm, { revision: 2 })))
   })
 
-  it('rejects rewriting createdAt/createdBy/revision while cancelling', async () => {
+  it('rejects rewriting createdAt/createdBy while cancelling', async () => {
     await seed('im2')
-    await assertFails(updateDoc(actRef(ctx(USERS.pm), 'im2'), cancelWrite(USERS.pm, 'Descoped', { revision: 2 })))
     await assertFails(updateDoc(actRef(ctx(USERS.pm), 'im2'), cancelWrite(USERS.pm, 'Descoped', { createdBy: USERS.pm.uid })))
+    await assertFails(updateDoc(actRef(ctx(USERS.pm), 'im2'), cancelWrite(USERS.pm, 'Descoped', { createdAt: serverTimestamp() })))
+  })
+})
+
+// ── Revision contract (ADR-65) ───────────────────────────────────────────────
+//
+// FINAL ruleset: every update carries EXACTLY stored + 1 — a blind write that
+// does not know the current revision is refused by the RULES, including the
+// 1A1 bundle's unchanged-revision edit (accepted only by the Stage-1
+// transitional ruleset — tests/rules/activitiesTransitional.rules.test.js).
+
+describe('revision contract (ADR-65)', () => {
+  it('create requires revision 1', async () => {
+    await assertSucceeds(setDoc(actRef(ctx(USERS.pm), 'rv0'), payload(USERS.pm, { revision: 1 })))
+    await assertFails(setDoc(actRef(ctx(USERS.pm), 'rv1'), payload(USERS.pm, { revision: 2 })))
+    await assertFails(setDoc(actRef(ctx(USERS.pm), 'rv2'), payload(USERS.pm, { revision: 0 })))
+  })
+
+  it('an edit must carry stored + 1: unchanged (the 1A1 write shape) and +2 are refused', async () => {
+    await seed('rv3')
+    await assertFails(updateDoc(actRef(ctx(USERS.pm), 'rv3'), edit(USERS.pm, { revision: 1, name: 'Old-client edit' })))
+    await assertFails(updateDoc(actRef(ctx(USERS.pm), 'rv3'), edit(USERS.pm, { revision: 3, name: 'Skipped a step' })))
+    await assertFails(updateDoc(actRef(ctx(USERS.pm), 'rv3'), { name: 'No revision at all', updatedAt: serverTimestamp(), updatedBy: USERS.pm.uid }))
+    await assertSucceeds(updateDoc(actRef(ctx(USERS.pm), 'rv3'), edit(USERS.pm, { revision: 2, name: 'Guarded edit' })))
+    // And from 2 to 3 — never back to 2.
+    await assertFails(updateDoc(actRef(ctx(USERS.pm), 'rv3'), edit(USERS.pm, { revision: 2, name: 'Replay' })))
+    await assertSucceeds(updateDoc(actRef(ctx(USERS.pm), 'rv3'), edit(USERS.pm, { revision: 3, name: 'Next' })))
+  })
+
+  it('a legacy document at revision 1 moves to 2 on its first guarded edit (no migration)', async () => {
+    await seed('rv4', { revision: 1 })
+    await assertSucceeds(updateDoc(actRef(ctx(USERS.pm), 'rv4'), edit(USERS.pm, { revision: 2 })))
+    let after = null
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      after = (await getDoc(doc(c.firestore(), activitiesPath(), 'rv4'))).data()
+    })
+    expect(after.revision).toBe(2)
+    expect(after.predecessors).toBeUndefined() // the key is never invented by a rule
+  })
+
+  it('cancellation increments too, and an unchanged revision on cancel is refused', async () => {
+    await seed('rv5')
+    await assertFails(updateDoc(actRef(ctx(USERS.pm), 'rv5'), cancelWrite(USERS.pm, 'Descoped', { revision: 1 })))
+    await assertSucceeds(updateDoc(actRef(ctx(USERS.pm), 'rv5'), cancelWrite(USERS.pm, 'Descoped', { revision: 2 })))
+  })
+
+  it('a non-integer revision is refused', async () => {
+    await seed('rv6')
+    await assertFails(updateDoc(actRef(ctx(USERS.pm), 'rv6'), edit(USERS.pm, { revision: 2.5 })))
+    await assertFails(updateDoc(actRef(ctx(USERS.pm), 'rv6'), edit(USERS.pm, { revision: '2' })))
+  })
+})
+
+// ── Predecessors (ADR-65) ────────────────────────────────────────────────────
+//
+// Optional on the successor; rules pin the list size and the FIRST and LAST
+// entries (shape, type, lag, no self, source EXISTS in this project). What
+// they cannot see — middle entries, duplicates, cycles, a cancelled source —
+// is proven here as ACCEPTED and recorded as Deferred Control 41.
+
+describe('predecessors (ADR-65)', () => {
+  it('absent, an empty list, and a well-formed list are accepted at create and on edit', async () => {
+    await seed('p-a'); await seed('p-b')
+    await assertSucceeds(setDoc(actRef(ctx(USERS.pm), 'p1'), payload(USERS.pm)))
+    await assertSucceeds(setDoc(actRef(ctx(USERS.pm), 'p2'), payload(USERS.pm, { predecessors: [] })))
+    await assertSucceeds(setDoc(actRef(ctx(USERS.pm), 'p3'), payload(USERS.pm, { predecessors: [pred('p-a'), pred('p-b', 5)] })))
+    await seed('p4')
+    await assertSucceeds(updateDoc(actRef(ctx(USERS.pm), 'p4'), edit(USERS.pm, { predecessors: [pred('p-a', 365)] })))
+  })
+
+  it('refuses a non-list, a non-map entry, extra or missing keys, an empty id, and a non-FS type', async () => {
+    await seed('p-a')
+    const bad = [
+      { predecessors: 'p-a' },
+      { predecessors: { activityId: 'p-a' } },
+      { predecessors: ['p-a'] },
+      { predecessors: [{ activityId: 'p-a', type: 'FS', lagDays: 0, note: 'x' }] },
+      { predecessors: [{ activityId: 'p-a', type: 'FS' }] },
+      { predecessors: [{ activityId: '', type: 'FS', lagDays: 0 }] },
+      { predecessors: [{ activityId: 42, type: 'FS', lagDays: 0 }] },
+      { predecessors: [{ activityId: 'p-a', type: 'SS', lagDays: 0 }] },
+      { predecessors: [{ activityId: 'p-a', type: 'fs', lagDays: 0 }] },
+    ]
+    for (const [i, o] of bad.entries()) {
+      await assertFails(setDoc(actRef(ctx(USERS.pm), `pb-${i}`), payload(USERS.pm, o)))
+    }
+  })
+
+  it('lag: 0 and 365 accepted; negative, 366 and non-integer refused', async () => {
+    await seed('p-a')
+    await assertSucceeds(setDoc(actRef(ctx(USERS.pm), 'pl0'), payload(USERS.pm, { predecessors: [pred('p-a', 0)] })))
+    await assertSucceeds(setDoc(actRef(ctx(USERS.pm), 'pl1'), payload(USERS.pm, { predecessors: [pred('p-a', 365)] })))
+    await assertFails(setDoc(actRef(ctx(USERS.pm), 'pl2'), payload(USERS.pm, { predecessors: [pred('p-a', -1)] })))
+    await assertFails(setDoc(actRef(ctx(USERS.pm), 'pl3'), payload(USERS.pm, { predecessors: [pred('p-a', 366)] })))
+    await assertFails(setDoc(actRef(ctx(USERS.pm), 'pl4'), payload(USERS.pm, { predecessors: [pred('p-a', 1.5)] })))
+    await assertFails(setDoc(actRef(ctx(USERS.pm), 'pl5'), payload(USERS.pm, { predecessors: [pred('p-a', '3')] })))
+  })
+
+  it('refuses a direct self-reference and a source that does not exist in THIS project', async () => {
+    await seed('p-a')
+    await assertFails(setDoc(actRef(ctx(USERS.pm), 'ps1'), payload(USERS.pm, { predecessors: [pred('ps1')] })))
+    await assertFails(setDoc(actRef(ctx(USERS.pm), 'ps2'), payload(USERS.pm, { predecessors: [pred('does-not-exist')] })))
+    // The same id exists in ANOTHER company's project — still refused here.
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(doc(c.firestore(), activitiesPath(COMPANY_B), 'elsewhere'), payload(USERS.other))
+    })
+    await assertFails(setDoc(actRef(ctx(USERS.pm), 'ps3'), payload(USERS.pm, { predecessors: [pred('elsewhere')] })))
+    await seed('ps4')
+    await assertFails(updateDoc(actRef(ctx(USERS.pm), 'ps4'), edit(USERS.pm, { predecessors: [pred('ps4')] })))
+  })
+
+  it('accepts 20 entries and refuses 21', async () => {
+    const ids = []
+    for (let i = 0; i < 21; i += 1) { ids.push(`src-${i}`); await seed(`src-${i}`) }
+    await assertSucceeds(setDoc(actRef(ctx(USERS.pm), 'p20'), payload(USERS.pm, { predecessors: ids.slice(0, 20).map(id => pred(id)) })))
+    await assertFails(setDoc(actRef(ctx(USERS.pm), 'p21'), payload(USERS.pm, { predecessors: ids.map(id => pred(id)) })))
+  })
+
+  it('pins the LAST entry as well as the first', async () => {
+    await seed('p-a')
+    await assertFails(setDoc(actRef(ctx(USERS.pm), 'pe1'), payload(USERS.pm, { predecessors: [pred('p-a'), pred('ghost')] })))
+    await assertFails(setDoc(actRef(ctx(USERS.pm), 'pe2'), payload(USERS.pm, { predecessors: [pred('p-a'), pred('p-a', 400)] })))
+    await assertFails(setDoc(actRef(ctx(USERS.pm), 'pe3'), payload(USERS.pm, { predecessors: [pred('p-a'), 'p-a'] })))
+  })
+
+  it('⚠️ ACCEPTS a malformed, missing or self-referencing MIDDLE entry — rules cannot iterate a list (DC41)', async () => {
+    await seed('p-a'); await seed('p-b')
+    await assertSucceeds(setDoc(actRef(ctx(USERS.pm), 'pm1'), payload(USERS.pm, {
+      predecessors: [pred('p-a'), pred('ghost', 999, { type: 'SS' }), pred('p-b')],
+    })))
+    await assertSucceeds(setDoc(actRef(ctx(USERS.pm), 'pm2'), payload(USERS.pm, {
+      predecessors: [pred('p-a'), 'not even a map', pred('p-b')],
+    })))
+    await assertSucceeds(setDoc(actRef(ctx(USERS.pm), 'pm3'), payload(USERS.pm, {
+      predecessors: [pred('p-a'), pred('pm3'), pred('p-b')],
+    })))
+  })
+
+  it('⚠️ ACCEPTS a duplicate, a cancelled source and a cycle — client-only controls (DC41)', async () => {
+    await seed('p-a')
+    await seed('p-x', { status: 'cancelled', cancelReason: 'Descoped', cancelledAt: Timestamp.now(), cancelledBy: USERS.pm.uid })
+    await assertSucceeds(setDoc(actRef(ctx(USERS.pm), 'pd1'), payload(USERS.pm, { predecessors: [pred('p-a'), pred('p-a', 2)] })))
+    await assertSucceeds(setDoc(actRef(ctx(USERS.pm), 'pd2'), payload(USERS.pm, { predecessors: [pred('p-x')] })))
+    // A two-node cycle: p-a depends on pd3, pd3 depends on p-a.
+    await assertSucceeds(setDoc(actRef(ctx(USERS.pm), 'pd3'), payload(USERS.pm, { predecessors: [pred('p-a')] })))
+    await assertSucceeds(updateDoc(actRef(ctx(USERS.pm), 'p-a'), edit(USERS.pm, { predecessors: [pred('pd3')] })))
+  })
+
+  it('cancellation cannot change the predecessor list', async () => {
+    await seed('p-a'); await seed('pc1', { predecessors: [pred('p-a')] })
+    await assertFails(updateDoc(actRef(ctx(USERS.pm), 'pc1'), cancelWrite(USERS.pm, 'Descoped', { predecessors: [] })))
+    await assertSucceeds(updateDoc(actRef(ctx(USERS.pm), 'pc1'), cancelWrite(USERS.pm, 'Descoped')))
+  })
+
+  it('QS, subcontractor, client and another company still cannot write a predecessor', async () => {
+    await seed('p-a'); await seed('pq1')
+    for (const user of [USERS.qs, USERS.sub, USERS.client, USERS.super, USERS.other]) {
+      await assertFails(updateDoc(actRef(ctx(user), 'pq1'), edit(user, { predecessors: [pred('p-a')] })))
+    }
   })
 })
 
@@ -610,9 +773,10 @@ describe('ordinary edits', () => {
     await assertFails(updateDoc(actRef(ctx(USERS.pm), 'e5'), edit(USERS.pm, { status: 'blocked' })))
   })
 
-  it('rejects adding an unknown field through an edit', async () => {
+  it('rejects adding an unknown field, or a malformed predecessor list, through an edit', async () => {
     await seed('e6')
     await assertFails(updateDoc(actRef(ctx(USERS.pm), 'e6'), edit(USERS.pm, { predecessors: ['e5'] })))
+    await assertFails(updateDoc(actRef(ctx(USERS.pm), 'e6'), edit(USERS.pm, { successors: [] })))
   })
 
   it('rejects an edit that omits the update stamps', async () => {
@@ -625,17 +789,29 @@ describe('ordinary edits', () => {
     await assertSucceeds(setDoc(actRef(ctx(USERS.pm), 'so2'), payload(USERS.pm, { sortOrder: 10 })))
   })
 
-  it('⚠️ ACCEPTS a full document overwrite — this collection is last-write-wins', async () => {
+  it('⚠️ ACCEPTS a full document overwrite that carries the correct next revision — the compare-and-set is rules-ASSISTED (ADR-65, DC41)', async () => {
     await seed('lww1')
     let existing = null
     await testEnv.withSecurityRulesDisabled(async (c) => {
       const snap = await getDoc(doc(c.firestore(), activitiesPath(), 'lww1'))
       existing = snap.data()
     })
+    // Without the increment the overwrite is now REFUSED (the 1A1 shape)…
+    await assertFails(setDoc(actRef(ctx(USERS.pm), 'lww1'), replace(USERS.pm, {
+      name: 'Clobbered by the second editor',
+      createdAt: existing.createdAt,
+      createdBy: existing.createdBy,
+      revision: existing.revision,
+      updatedAt: serverTimestamp(),
+      updatedBy: USERS.pm.uid,
+    })))
+    // …but a direct SDK caller who READ the revision can still overwrite: the
+    // rules prove the writer knew the version, not that it merged anything.
     await assertSucceeds(setDoc(actRef(ctx(USERS.pm), 'lww1'), replace(USERS.pm, {
       name: 'Clobbered by the second editor',
       createdAt: existing.createdAt,
       createdBy: existing.createdBy,
+      revision: existing.revision + 1,
       updatedAt: serverTimestamp(),
       updatedBy: USERS.pm.uid,
     })))
@@ -758,7 +934,8 @@ describe('financial isolation', () => {
 //   · a quick action refuses to write over a newer version, and refuses a
 //     deleted activity — nothing is written in either case
 //   · only the intended keys change
-// Rules and the `revision` schema are NOT modified by this release.
+// ADR-65: every quick action now also writes `revision` = stored + 1, which
+// the FINAL rules require.
 
 describe('guarded quick status actions', () => {
   const quick = (user, seen, action, id, db = ctx(user)) => runActivityQuickAction({
@@ -797,7 +974,8 @@ describe('guarded quick status actions', () => {
       expect(after.status).toBe('in_progress')
       expect(after.actualStart).toBe(todayIso(new Date()))
       expect(after.updatedBy).toBe(user.uid)
-      expect(changedKeys(before, after)).toEqual(['actualStart', 'status', 'updatedAt', 'updatedBy'])
+      expect(changedKeys(before, after)).toEqual(['actualStart', 'revision', 'status', 'updatedAt', 'updatedBy'])
+      expect(after.revision).toBe(2)
     })
 
     it(`${user.role}: Complete writes completed / 100 / today's actual finish only`, async () => {
@@ -806,7 +984,7 @@ describe('guarded quick status actions', () => {
       await quick(user, await load('q2', user), QUICK_ACTION.COMPLETE, 'q2')
       const after = await raw('q2')
       expect(after).toMatchObject({ status: 'completed', percentComplete: 100, actualFinish: todayIso(new Date()), actualStart: '2026-01-05' })
-      expect(changedKeys(before, after)).toEqual(['actualFinish', 'percentComplete', 'status', 'updatedAt', 'updatedBy'])
+      expect(changedKeys(before, after)).toEqual(['actualFinish', 'percentComplete', 'revision', 'status', 'updatedAt', 'updatedBy'])
     })
   }
 
@@ -814,7 +992,7 @@ describe('guarded quick status actions', () => {
     await seed('q3', { status: 'in_progress', actualStart: '2026-01-05', percentComplete: 40 })
     const before = await raw('q3')
     await quick(USERS.pm, await load('q3'), QUICK_ACTION.HOLD, 'q3')
-    expect(changedKeys(before, await raw('q3'))).toEqual(['status', 'updatedAt', 'updatedBy'])
+    expect(changedKeys(before, await raw('q3'))).toEqual(['revision', 'status', 'updatedAt', 'updatedBy'])
   })
 
   it('Mark reached on a milestone satisfies the milestone rules (0/100, same day)', async () => {

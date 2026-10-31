@@ -1,30 +1,35 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { ACTIVITY_STATUS, formatIsoDate, durationLabel } from '../../../lib/projectTimeline'
 import {
-  buildGanttModel, layoutGanttRows, todayScrollLeft,
+  buildGanttModel, layoutGanttRows, todayScrollLeft, dependencyArrows, arrowPath,
   GANTT_SCALE, GANTT_SCALE_ORDER, GANTT_SCALE_LABELS,
-  GANTT_ROW, ACTUAL_KIND,
+  GANTT_ROW, ACTUAL_KIND, MAX_ARROWS_DRAWN,
   ROW_HEIGHT_PX, LABEL_WIDTH_PX, HEADER_HEIGHT_PX,
 } from '../../../lib/timelineGantt'
 import {
   GANTT_GROUP, GANTT_GROUP_ORDER, GANTT_GROUP_LABELS, groupGanttActivities,
 } from '../../../lib/ganttGrouping'
+import { stateFor, dependencyLabel, dependencyFlag, DEPENDENCY_STATE } from '../../../lib/ganttDependencies'
 
-// ── Constrapp GANTT™ — the programme chart (ADR-29 → ADR-64) ─────────────────
+// ── Constrapp GANTT™ — the programme chart (ADR-29 → ADR-64 → ADR-65) ────────
 //
-// PRESENTATION ONLY. Every offset, width, tick, row position and marker comes
-// from lib/timelineGantt.js and lib/ganttGrouping.js; this component adds no
-// arithmetic of its own and reads no clock — the page passes one `now` down,
-// so the whole screen agrees on today (the single-clock discipline, ADR-26).
+// PRESENTATION ONLY. Every offset, width, tick, row position, marker and arrow
+// comes from lib/timelineGantt.js, lib/ganttGrouping.js and
+// lib/ganttDependencies.js; this component adds no arithmetic of its own and
+// reads no clock — the page passes one `now` down, so the whole screen agrees
+// on today (the single-clock discipline, ADR-26).
 //
 // ⚠️ NO CHARTING DEPENDENCY. Plain CSS boxes on a fixed day grid inside ONE
 // scroller that scrolls both ways: the label column is sticky to the left and
-// the header is sticky to the top, so a long programme never loses its row
-// names or its dates. Nothing was installed for this.
+// the header is sticky to the top. Dependencies (ADR-65) are ONE SVG overlay
+// behind the rows, `pointer-events: none` and `aria-hidden`, so an arrow can
+// never intercept a bar; every fact an arrow carries is in the bar's
+// accessible name and in the activity detail.
 //
 // ⚠️ ONE MODEL, THREE ZOOMS. Day / week / month change only the day width;
-// grouping and collapsing change only which rows are drawn. The window, the
-// ticks and the today line are computed once per filtered programme and scale.
+// grouping and collapsing change only which rows (and therefore which arrows)
+// are drawn. The window, the ticks and the today line are computed once per
+// filtered programme and scale.
 //
 // ⚠️ READ-ONLY GEOMETRY — no dragging, no resizing, no click-to-reschedule.
 // Activating a bar (click, Enter or Space — it is a real <button>) opens the
@@ -34,10 +39,10 @@ import {
 // ⚠️ NOT RENDERED BELOW `md:` — the page hides it; see ActivityCards.jsx.
 //
 // Accessibility: each bar is a focusable button whose accessible name carries
-// the activity, its status and progress, its planned and recorded dates and
-// its overdue state — never colour alone — and the textual legend names every
-// colour. The ACTIVITY TABLE remains the exact record and the accessible
-// equivalent; the chart is never the only path to the data.
+// the activity, its status and progress, its planned and recorded dates, its
+// dependencies and their state, the overdue / blocked state — never colour
+// alone — and the textual legend names every colour and line style. The
+// ACTIVITY TABLE remains the exact record and the accessible equivalent.
 
 // Every colour is an existing design token, referenced as a CSS variable —
 // no hex is hard-coded here and no token value was changed. The GANTT module
@@ -51,6 +56,18 @@ const STATUS_COLOUR = {
 }
 
 const ACTUAL_COLOUR = 'var(--color-brand-text-soft)'
+
+// Dependency arrows: a well-formed link is muted; a conflict is red and
+// dashed; a link needing review (cycle, cancelled, missing, malformed) is
+// amber and dashed. Text always carries the meaning as well.
+const ARROW_STYLE = {
+  [DEPENDENCY_STATE.VALID]:     { stroke: 'var(--color-brand-muted)',  dash: '' },
+  [DEPENDENCY_STATE.CONFLICT]:  { stroke: 'var(--color-brand-red)',    dash: '5 3' },
+  [DEPENDENCY_STATE.CYCLE]:     { stroke: 'var(--color-brand-amber)',  dash: '3 3' },
+  [DEPENDENCY_STATE.CANCELLED]: { stroke: 'var(--color-brand-amber)',  dash: '3 3' },
+  [DEPENDENCY_STATE.MISSING]:   { stroke: 'var(--color-brand-amber)',  dash: '3 3' },
+  [DEPENDENCY_STATE.MALFORMED]: { stroke: 'var(--color-brand-amber)',  dash: '3 3' },
+}
 
 const LEGEND = [
   { label: 'Not started', colour: STATUS_COLOUR[ACTIVITY_STATUS.NOT_STARTED] },
@@ -82,14 +99,16 @@ function actualSentence(bar) {
   return ` Actual finish ${formatIsoDate(a.to)}, no start recorded.`
 }
 
-function barName(bar, opensEditor) {
+function barName(bar, depState, opensEditor) {
   const planned = bar.isMilestone
     ? `Milestone ${formatIsoDate(bar.plannedStart)}`
     : `Planned ${formatIsoDate(bar.plannedStart)} to ${formatIsoDate(bar.plannedFinish)} (${durationLabel(bar)})`
+  const deps = dependencyLabel(depState)
   return `${bar.name} — ${bar.statusLabel}, ${bar.percentComplete}% complete. ${planned}.`
     + actualSentence(bar)
     + (bar.planComparison ? ` ${bar.planComparison}.` : '')
     + (bar.isOverdue ? ' Overdue.' : '')
+    + (deps ? ` ${deps}` : '')
     + (opensEditor ? ' Opens the editor.' : ' Opens the details.')
 }
 
@@ -99,6 +118,7 @@ export default function TimelineGantt({
   groupBy = GANTT_GROUP.NONE, onGroupByChange, costCodes,
   collapsed, onToggleGroup, onCollapseAll, onExpandAll,
   onActivate, canWrite = false,
+  dependencyStates,
 }) {
   const scrollerRef = useRef(null)
 
@@ -114,6 +134,10 @@ export default function TimelineGantt({
   const { rows, height } = useMemo(
     () => layoutGanttRows(model, groups, collapsed, { ungrouped }),
     [model, groups, collapsed, ungrouped],
+  )
+  const links = useMemo(
+    () => dependencyArrows(rows, dependencyStates),
+    [rows, dependencyStates],
   )
 
   // Centre the today line whenever the window or the zoom changes, so a zoom
@@ -230,15 +254,36 @@ export default function TimelineGantt({
 
             {/* Body */}
             <div className="relative" style={{ height }}>
-              {/* Gridlines and today, behind the rows. Weekly lines are spacing
-                  marks from the window start, not working weeks (Constrapp
-                  models no working calendar). */}
+              {/* Gridlines, today and the dependency arrows, behind the rows.
+                  Weekly lines are spacing marks from the window start, not
+                  working weeks (Constrapp models no working calendar). */}
               <div aria-hidden="true" className="absolute top-0 bottom-0 pointer-events-none" style={{ left: LABEL_WIDTH_PX, width: model.canvasWidth }}>
                 {model.weeks.map(w => (
                   <div key={w.iso} className="absolute top-0 bottom-0 border-l border-brand-border/40" style={{ left: w.x }} />
                 ))}
                 {model.todayX !== null && (
                   <div className="absolute top-0 bottom-0 border-l-2 border-brand-accent" style={{ left: model.todayX }} />
+                )}
+                {links.arrows.length > 0 && (
+                  <svg
+                    className="absolute top-0 left-0 pointer-events-none"
+                    width={model.canvasWidth}
+                    height={height}
+                    viewBox={`0 0 ${model.canvasWidth} ${height}`}
+                    aria-hidden="true"
+                    focusable="false"
+                  >
+                    {links.arrows.map(a => {
+                      const style = ARROW_STYLE[a.state] ?? ARROW_STYLE[DEPENDENCY_STATE.VALID]
+                      return (
+                        <g key={a.key} fill="none" stroke={style.stroke} strokeWidth="1.5" strokeDasharray={style.dash || undefined}>
+                          <path d={arrowPath(a)} />
+                          {/* Arrow head: a small chevron into the successor. */}
+                          <path d={`M${a.toX - 5} ${a.toY - 3.5} L${a.toX} ${a.toY} L${a.toX - 5} ${a.toY + 3.5}`} strokeDasharray="0" />
+                        </g>
+                      )
+                    })}
+                  </svg>
                 )}
               </div>
 
@@ -270,6 +315,7 @@ export default function TimelineGantt({
                   <GanttBarRow
                     key={row.key}
                     bar={row.bar}
+                    depState={stateFor(dependencyStates, row.bar.id)}
                     canvasWidth={model.canvasWidth}
                     opensEditor={canWrite && !row.bar.isCancelled}
                     onActivate={onActivate}
@@ -298,11 +344,28 @@ export default function TimelineGantt({
         <span className="inline-flex items-center gap-1.5 text-[11px] text-brand-muted">
           <span aria-hidden="true" className="inline-block w-0 h-3 border-l-2 border-brand-accent" /> Today
         </span>
+        <span className="inline-flex items-center gap-1.5 text-[11px] text-brand-muted">
+          <span aria-hidden="true" className="inline-block w-4 h-0 border-t border-brand-muted" /> Finish-to-start dependency
+        </span>
+        <span className="inline-flex items-center gap-1.5 text-[11px] text-brand-muted">
+          <span aria-hidden="true" className="inline-block w-4 h-0 border-t border-dashed border-brand-red" /> Dependency conflict
+        </span>
+        <span className="inline-flex items-center gap-1.5 text-[11px] text-brand-muted">
+          <span aria-hidden="true" className="inline-block w-4 h-0 border-t border-dashed border-brand-amber" /> Dependency requires review
+        </span>
         <span className="text-[11px] text-brand-muted">
           Bars show <strong className="text-brand-text-soft">planned</strong> dates; the filled portion is the entered progress %;
           the thin line beneath is what was recorded. Comparisons are against the current plan, not a baseline.
         </span>
       </div>
+
+      {(links.hidden > 0 || links.truncated) && (
+        <p className="m-0 px-3.5 pb-3 text-[11px] text-brand-amber" role="status">
+          {links.truncated
+            ? `${links.drawable} dependencies are not drawn — more than ${MAX_ARROWS_DRAWN} would be on the chart. Every dependency is listed in each activity's details.`
+            : `${links.hidden} ${links.hidden === 1 ? 'dependency is' : 'dependencies are'} not drawn because one end is filtered out, collapsed or not drawable — ${links.hidden === 1 ? 'it is' : 'they are'} still listed in each activity's details.`}
+        </p>
+      )}
 
       {model.excluded.length > 0 && (
         <p className="m-0 px-3.5 pb-3 text-[11px] text-brand-amber">
@@ -313,8 +376,8 @@ export default function TimelineGantt({
 
       <p className="m-0 px-3.5 pb-3.5 text-[11px] text-brand-muted">
         Dates are changed by opening an activity — there is no drag-to-reschedule, and nothing moves
-        automatically: Constrapp has no dependency links or critical path. Calendar days; weekends and
-        public holidays are not modelled.
+        automatically: a dependency is shown, never enforced by moving a date, and Constrapp has no
+        critical path. Calendar days; weekends and public holidays are not modelled.
       </p>
     </div>
   )
@@ -323,10 +386,11 @@ export default function TimelineGantt({
 // One activity row: the sticky label cell and the canvas cell holding the
 // planned bar (a real <button>) and, beneath it, the recorded dates (a
 // decorative span — its facts are in the button's accessible name).
-function GanttBarRow({ bar, canvasWidth, opensEditor, onActivate }) {
+function GanttBarRow({ bar, depState, canvasWidth, opensEditor, onActivate }) {
   const colour = STATUS_COLOUR[bar.status] ?? STATUS_COLOUR[ACTIVITY_STATUS.NOT_STARTED]
-  const name = barName(bar, opensEditor)
+  const name = barName(bar, depState, opensEditor)
   const actual = bar.actual
+  const flag = dependencyFlag(depState)
 
   return (
     <div className="flex" style={{ height: ROW_HEIGHT_PX }}>
@@ -337,9 +401,14 @@ function GanttBarRow({ bar, canvasWidth, opensEditor, onActivate }) {
         <span className={`text-[11.5px] font-semibold truncate ${bar.isCancelled ? 'text-brand-muted line-through' : 'text-brand-text'}`}>
           {bar.isMilestone && <span aria-hidden="true" className="mr-1">◆</span>}
           {bar.name}
+          {depState.count > 0 && (
+            <span className="ml-1.5 text-[10px] font-normal text-brand-muted" title={dependencyLabel(depState)}>
+              ← {depState.count}
+            </span>
+          )}
         </span>
-        <span className={`text-[10px] truncate ${bar.isOverdue ? 'text-brand-red font-bold' : 'text-brand-muted'}`}>
-          {bar.isOverdue ? 'Overdue · ' : ''}{bar.statusLabel} · {bar.percentComplete}%
+        <span className={`text-[10px] truncate ${bar.isOverdue || flag === 'Blocked' || flag === 'Conflict' ? 'text-brand-red font-bold' : flag === 'Review' ? 'text-brand-amber font-bold' : 'text-brand-muted'}`}>
+          {bar.isOverdue ? 'Overdue · ' : ''}{flag ? `${flag} · ` : ''}{bar.statusLabel} · {bar.percentComplete}%
         </span>
       </div>
 
@@ -355,7 +424,7 @@ function GanttBarRow({ bar, canvasWidth, opensEditor, onActivate }) {
           >
             <span
               aria-hidden="true"
-              className={`block rotate-45 ${bar.isOverdue ? 'border-2 border-brand-red' : ''}`}
+              className={`block rotate-45 ${bar.isOverdue || depState.isBlocked ? 'border-2 border-brand-red' : ''}`}
               style={{
                 width: 12,
                 height: 12,
@@ -370,7 +439,7 @@ function GanttBarRow({ bar, canvasWidth, opensEditor, onActivate }) {
             title={name}
             aria-label={name}
             onClick={() => onActivate?.(bar.id)}
-            className={`absolute rounded-md overflow-hidden cursor-pointer focus-visible:outline-2 focus-visible:outline-brand-accent ${bar.isOverdue ? 'ring-1 ring-brand-red' : ''}`}
+            className={`absolute rounded-md overflow-hidden cursor-pointer focus-visible:outline-2 focus-visible:outline-brand-accent ${bar.isOverdue || depState.isBlocked ? 'ring-1 ring-brand-red' : depState.needsReview ? 'ring-1 ring-brand-amber' : ''}`}
             style={{
               left: bar.x,
               top: BAR_TOP,

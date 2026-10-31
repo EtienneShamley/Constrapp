@@ -6,8 +6,9 @@ import {
   formatIsoDate, durationLabel, dueLabel, isOverdue,
 } from '../../../lib/projectTimeline'
 import { planComparisonLabel } from '../../../lib/timelineGantt'
+import { stateFor, dependencyFlag, DEPENDENCY_STATE } from '../../../lib/ganttDependencies'
 
-// ── Read-only activity detail (ADR-64) ───────────────────────────────────────
+// ── Read-only activity detail (ADR-64, ADR-65) ───────────────────────────────
 //
 // What a bar on the Gantt opens for a reader who cannot author the programme
 // (qs — the one role that reads the programme but does not write it, ADR-29),
@@ -30,10 +31,14 @@ function Row({ label, children }) {
   )
 }
 
-export default function ActivityDetailModal({ activity, now, onClose }) {
+export default function ActivityDetailModal({ activity, now, onClose, dependencyStates, successors = [] }) {
   const a = activity ?? {}
   const late = isOverdue(a, now)
   const comparison = planComparisonLabel(a)
+  // ADR-65: the links as derived at read time — every one listed, whatever
+  // the chart could draw. Text, never colour alone.
+  const dep = stateFor(dependencyStates, a.id)
+  const flag = dependencyFlag(dep)
 
   return (
     <ActivityDialog title="Activity" titleId="activity-detail-title" onClose={onClose} panelClassName="max-w-[560px]">
@@ -72,6 +77,41 @@ export default function ActivityDetailModal({ activity, now, onClose }) {
           </Row>
           <Row label="Responsible">{a.responsibleName || <span className="text-brand-muted">Not assigned</span>}</Row>
           <Row label="Cost code">{a.costCodeName || <span className="text-brand-muted">None</span>}</Row>
+          <Row label="Predecessors">
+            {dep.count === 0 ? (
+              <span className="text-brand-muted">None</span>
+            ) : (
+              <>
+                {flag && (
+                  <span className={`block text-[11px] font-bold ${flag === 'Review' ? 'text-brand-amber' : 'text-brand-red'}`}>
+                    {flag === 'Blocked' ? 'Blocked — a predecessor is not finished or needs review'
+                      : flag === 'Conflict' ? 'Starts before a predecessor allows'
+                        : 'A dependency requires review'}
+                  </span>
+                )}
+                <ul className="m-0 mt-0.5 pl-4 space-y-0.5">
+                  {dep.entries.map((e, i) => (
+                    <li key={`${e.activityId}-${i}`} className={e.state === DEPENDENCY_STATE.VALID ? '' : e.state === DEPENDENCY_STATE.CONFLICT ? 'text-brand-red' : 'text-brand-amber'}>
+                      {e.name || e.activityId || 'Malformed entry'}
+                      <span className="text-brand-muted"> · finish to start{e.lagDays > 0 ? ` +${e.lagDays} ${e.lagDays === 1 ? 'day' : 'days'}` : ''}</span>
+                      {e.earliestStart && <span className="text-brand-muted"> · earliest start {formatIsoDate(e.earliestStart)}</span>}
+                      {e.state !== DEPENDENCY_STATE.VALID && <span> · {e.stateLabel}</span>}
+                      {e.state === DEPENDENCY_STATE.VALID && e.finished && <span className="text-brand-muted"> · finished</span>}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </Row>
+          <Row label="Successors">
+            {successors.length === 0 ? (
+              <span className="text-brand-muted">None depend on this activity</span>
+            ) : (
+              <ul className="m-0 pl-4 space-y-0.5">
+                {successors.map(s => <li key={s.id}>{s.name}</li>)}
+              </ul>
+            )}
+          </Row>
           {a.notes && <Row label="Notes">{a.notes}</Row>}
           {a.status === ACTIVITY_STATUS.CANCELLED && (
             <Row label="Cancelled">{a.cancelReason || '—'}</Row>

@@ -509,3 +509,66 @@ export function todayScrollLeft({ todayX, canvasWidth, viewportWidth, labelWidth
 
 // Re-exported so the component imports one module for geometry.
 export { isValidIsoDate, isoToUtcMs, utcMsToIso }
+
+// ── Dependency arrows (Constrapp GANTT™ 1A2, ADR-65) ─────────────────────────
+//
+// Pure geometry for the finish-to-start arrows the chart draws in ONE SVG
+// overlay behind the bars. An arrow exists only when BOTH its rows are drawn
+// (a collapsed group, a filter or an undrawable activity hides the row and
+// therefore the arrow — the count of hidden links is reported, never lost).
+// At most MAX_ARROWS_DRAWN arrows are produced: beyond that the chart draws
+// none and says so, and every link stays readable in the activity detail.
+//
+// Worst case modelled: 2,000 activities × 20 predecessors = 40,000 links —
+// far beyond a sensible SVG; a real programme carries a few hundred.
+export const MAX_ARROWS_DRAWN = 1500
+export const ARROW_ELBOW_PX = 8
+
+const barEndX = (bar) => (bar.isMilestone ? bar.milestoneX + MILESTONE_SIZE_PX / 2 : bar.x + Math.max(bar.width, 1))
+const barStartX = (bar) => (bar.isMilestone ? bar.milestoneX - MILESTONE_SIZE_PX / 2 : bar.x)
+
+// `rows` from layoutGanttRows; `states` from lib/ganttDependencies.js →
+// dependencyStates. Returns { arrows, total, hidden, truncated }.
+export function dependencyArrows(rows, states, { rowHeight = ROW_HEIGHT_PX, limit = MAX_ARROWS_DRAWN } = {}) {
+  const rowById = new Map()
+  for (const r of rows ?? []) if (r.type === GANTT_ROW.BAR) rowById.set(r.bar.id, r)
+  const arrows = []
+  let total = 0
+  let hidden = 0
+  for (const r of rows ?? []) {
+    if (r.type !== GANTT_ROW.BAR) continue
+    const state = states?.get(r.bar.id)
+    if (!state || state.count === 0) continue
+    for (const e of state.entries) {
+      total += 1
+      const from = e.activityId ? rowById.get(e.activityId) : null
+      if (!from) { hidden += 1; continue }
+      arrows.push({
+        key: `${e.activityId}->${r.bar.id}`,
+        fromId: e.activityId,
+        toId: r.bar.id,
+        state: e.state,
+        fromX: barEndX(from.bar),
+        fromY: from.y + rowHeight / 2,
+        toX: barStartX(r.bar),
+        toY: r.y + rowHeight / 2,
+      })
+    }
+  }
+  const truncated = arrows.length > limit
+  return { arrows: truncated ? [] : arrows, total, hidden, truncated, drawable: arrows.length }
+}
+
+// The SVG path for one arrow: out of the predecessor's end, an elbow, into
+// the successor's start. When the successor starts at or before the
+// predecessor's end (a conflict, or a lag-free same-day milestone), the path
+// doubles back below the predecessor row so it never crosses its own bar.
+export function arrowPath(a, { rowHeight = ROW_HEIGHT_PX, elbow = ARROW_ELBOW_PX } = {}) {
+  const { fromX, fromY, toX, toY } = a
+  if (toX >= fromX + elbow * 2) {
+    const midX = fromX + elbow
+    return `M${fromX} ${fromY} H${midX} V${toY} H${toX}`
+  }
+  const down = fromY + (toY >= fromY ? rowHeight / 2 : -rowHeight / 2)
+  return `M${fromX} ${fromY} H${fromX + elbow} V${down} H${toX - elbow} V${toY} H${toX}`
+}

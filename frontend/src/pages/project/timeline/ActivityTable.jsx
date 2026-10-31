@@ -6,6 +6,7 @@ import {
   ACTIVITY_STATUS, ACTIVITY_STATUS_LABELS, ACTIVITY_STATUS_BADGE,
   formatIsoDate, durationLabel, dueLabel, isOverdue, isClosedStatus,
 } from '../../../lib/projectTimeline'
+import { stateFor, dependencyFlag, dependencyLabel } from '../../../lib/ganttDependencies'
 
 // ── Activity table — THE RECORD ──────────────────────────────────────────────
 //
@@ -21,7 +22,7 @@ import {
 const thCls = 'px-3 py-2.5 text-left text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] whitespace-nowrap'
 const tdCls = 'px-3 py-2.5 text-[12px] text-brand-text align-top'
 
-export default function ActivityTable({ activities, canWrite, onEdit, onCancel, onQuickAction, quickBusyId, now }) {
+export default function ActivityTable({ activities, canWrite, onEdit, onCancel, onQuickAction, quickBusyId, now, dependencyStates }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[1080px] border-collapse">
@@ -44,6 +45,10 @@ export default function ActivityTable({ activities, canWrite, onEdit, onCancel, 
           {activities.map((a) => {
             const late   = isOverdue(a, now)
             const closed = isClosedStatus(a.status)
+            // ADR-65: the dependency state, as text — Blocked / Conflict /
+            // Review — beside the name; the full sentence in the tooltip.
+            const dep    = stateFor(dependencyStates, a.id)
+            const flag   = dependencyFlag(dep)
             return (
               <tr
                 key={a.id}
@@ -55,6 +60,21 @@ export default function ActivityTable({ activities, canWrite, onEdit, onCancel, 
                     {a.name}
                   </span>
                   {a.isMilestone && <span className="ml-1.5 text-[10px] font-bold text-brand-purple uppercase">Milestone</span>}
+                  {flag && (
+                    <span
+                      className={`ml-1.5 text-[10px] font-bold uppercase ${flag === 'Review' ? 'text-brand-amber' : 'text-brand-red'}`}
+                      title={dependencyLabel(dep)}
+                    >
+                      {flag}
+                    </span>
+                  )}
+                  {dep.count > 0 && (
+                    <span className="block text-[10.5px] text-brand-muted mt-0.5" title={dependencyLabel(dep)}>
+                      ← {dep.count} {dep.count === 1 ? 'predecessor' : 'predecessors'}
+                      {dep.hasConflict ? ' · starts before a predecessor allows' : ''}
+                      {dep.needsReview ? ' · dependency requires review' : ''}
+                    </span>
+                  )}
                   {a.description && <span className="block text-[10.5px] text-brand-muted mt-0.5">{a.description}</span>}
                   {a.status === ACTIVITY_STATUS.CANCELLED && a.cancelReason && (
                     <span className="block text-[10.5px] text-brand-muted mt-0.5">Cancelled — {a.cancelReason}</span>

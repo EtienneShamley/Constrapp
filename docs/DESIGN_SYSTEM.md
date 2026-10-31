@@ -117,6 +117,26 @@ programme tab became Constrapp GANTT™.
   between the chart and the existing activity table over the same filtered
   set; below `md:` the grouped cards remain the programme and the chart is not
   rendered. Nothing is draggable.
+  **Dependencies (ADR-65).** Finish-to-start links are ONE `<svg>` overlay in
+  the gridline layer behind the rows (`pointer-events-none`, `aria-hidden`,
+  `focusable="false"`), sized to the canvas: an elbow path from the end of the
+  predecessor bar to the start of the successor bar with a chevron head,
+  `stroke-width` 1.5, in `brand-muted` for a well-formed link, **red dashed
+  (`5 3`)** for a schedule conflict and **amber dashed (`3 3`)** for a link
+  requiring review (cycle, cancelled, missing, malformed); a successor that
+  starts at or before the predecessor's end routes the path below the row so
+  it never crosses its own bar. The legend names the three line styles in
+  words. Colour never carries the meaning alone: the row label shows
+  **Blocked / Conflict / Review** as text (red for Blocked and Conflict, amber
+  for Review) plus `← n` for the predecessor count; a blocked bar or
+  milestone gets the red ring, a bar needing review the amber ring; the bar's
+  accessible name ends with the full dependency sentence
+  (`dependencyLabel`); the List and the cards show the same flag and count;
+  the read-only detail lists every predecessor with its state and the
+  activity's successors. An arrow is drawn only when both rows are visible —
+  the chart discloses *n dependencies are not drawn …* in `brand-amber` under
+  the legend (`role="status"`) and never draws more than 1,500 (then none,
+  with the same disclosure). Arrows never intercept a bar.
 - **Quant™ takeoff workspace (ADR-51).** The sheet is a `<canvas>` (PDF) or
   `<img>` filling the box of an `<svg>` whose `viewBox` is the page in canonical
   units and whose `width`/`height` attributes are the CSS size — so geometry
@@ -251,7 +271,20 @@ The programme adopted it in ADR-64: `pages/project/timeline/ActivityDialog.jsx`
 packages the identical contract for the activity editor (`autoFocus` on the
 name), the cancel dialog (`autoFocus` on the reason) and the read-only
 `ActivityDetailModal` (panel focus, Close only); focus returns to the Gantt
-bar, table button or card button that opened them.
+bar, table button or card button that opened them. **ADR-65:** the editor's
+*Predecessors (finish to start)* `<fieldset>` lists each link as a bordered
+row (name · FS · a 76 px lag `<input type="number" min="0" max="365">` · a
+44 px *Remove* button) with its earliest permitted start or its review reason
+beneath in `brand-amber`; the *Add predecessor* `<select>` keeps unavailable
+candidates visible but `disabled` with the reason appended to the option text;
+a schedule conflict renders a `role="alert"` panel (`border-brand-amber/50
+bg-brand-amber/5`) listing the offending links and a 44 px acknowledgement
+checkbox that must be ticked before Save — it unticks itself whenever the
+start date or the links change. A stale save keeps the whole draft, shows the
+conflict sentence in `text-brand-red` under the form and offers a *Reload
+latest* ghost button that re-seeds the form from the current record; an
+offline or failed save reports the failure the same way and never claims
+success.
 
 **Tables** — inside `<Card padding={false}>`; header row `bg-brand-card` with
 11px bold uppercase muted headers; body rows `border-b border-brand-border

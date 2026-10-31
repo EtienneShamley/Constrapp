@@ -1232,9 +1232,10 @@ present a Timeline figure as slippage against an approved programme.
 | `costCodeName` | string | **Frozen snapshot**, ≤ 120; same both-or-neither pairing (rules-enforced) |
 | `sortOrder` | number | Manual programme order. ⚠️ **NOT unique** — rules cannot enforce uniqueness (no query/count) and concurrent creation can tie; display order breaks ties deterministically on planned start, planned finish, name, then id |
 | `notes` | string | Optional, ≤ 500. Where an `on_hold` blocker is recorded |
+| `predecessors` | list \| absent | **OPTIONAL (ADR-65, GANTT 1A2).** Finish-to-start links stored on the SUCCESSOR: `[{ activityId, type: 'FS', lagDays }]`, ≤ 20 entries; `activityId` → a sibling in THIS project's `activities`; `type` is always `'FS'`; `lagDays` an integer **0–365** calendar days. Absent on every pre-1A2 document (read as `[]`); a 1A2 client always writes it (`[]` when none). Rules pin the list type and size and the **FIRST and LAST** entries' shape, type, lag, not-self and same-project `exists()`; everything else (middle entries, duplicates, cancelled sources, cycles) is client-side — Deferred Control 41. A cancelled, missing, malformed or cyclic predecessor **never satisfies** the link; it is retained for review |
 | `cancelReason` | string | **Required non-whitespace** on cancellation, ≤ 500 (rules-enforced); `''` otherwise |
 | `cancelledAt` / `cancelledBy` | timestamp / uid | `null` until cancelled. Rules require `cancelledBy == request.auth.uid` and `cancelledAt == request.time` |
-| `revision` | number | `1` — rules-enforced on create, preserved on update |
+| `revision` | number | `1` on create (rules-enforced); **ADR-65: stored + 1 on every edit and cancel — required by the FINAL ruleset** (the Stage-1 transitional ruleset also accepts an unchanged revision from the 1A1 bundle). Every app write is a transaction that refuses a stale copy by revision AND `(updatedAt, updatedBy)`. A legacy document at 1 moves to 2 on its first 1A2 write — no migration |
 | `createdAt` / `createdBy` | timestamp / uid | Set once; rules reject any later change |
 | `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on **every** write. ⚠️ Records *who wrote last*, **not what changed** |
 
@@ -1252,11 +1253,14 @@ corrected, not an audit record. Financial lifecycles are unaffected.
 **Deliberately NOT stored:** `companyId`/`projectId` (the collection path
 carries them — the ADR-24 precedent), `durationDays` (**derived**: a stored
 duration is a third fact that can disagree with the two dates), `baselineStart`/
-`baselineFinish` or any dependency/predecessor field (speculative — ADR-29
-defers both), `currency` (an activity holds no money, so **no currency ratchet
-is engaged** and creation needs no transaction), any sequential activity number,
-and any stored `overdue`/`isLate` flag (**derived on every read** — a stored
-flag would be wrong by tomorrow).
+`baselineFinish` (speculative — ADR-29 defers baselines; ADR-65 added the
+`predecessors` link but still **no successor list, no stored blocked /
+conflict / cycle state and no dependency revision** — all derived on every
+read), `currency` (an activity holds no money, so **no currency ratchet is
+engaged**; since ADR-65 creation IS a transaction, but only to verify new
+predecessor sources on the server), any sequential activity number, and any
+stored `overdue`/`isLate` flag (**derived on every read** — a stored flag
+would be wrong by tomorrow).
 
 **Dates are date-only strings, not Timestamps.** A programme date is a day on a
 wall chart, not an instant. This follows `lib/payments.js` (`invoiceDate`,

@@ -107,9 +107,13 @@ ADR-52 order again:
    is fixed by Remove; the apply writes the NET and the previous application
    reads *outdated* once a hole changes) and record the outcome here.
 
-**Rollback.** Hosting: redeploy the previous build (`firebase hosting:rollback`
-or re-run the deploy from the 1C commit) — nothing in 1D is needed by earlier
-bundles. Rules: the revised ruleset can stay published after a Hosting
+**Rollback.** Hosting: redeploy the previous build — check out the 1C commit,
+`npm run build`, `firebase deploy --only hosting --project constrapp-69b5d` —
+or use the Firebase Console's Hosting release history (*Rollback* on the
+previous release). ⚠️ There is **no `firebase hosting:rollback` command** in
+the installed firebase-tools (13.35.1; corrected by ADR-65 — the earlier text
+here named one), and `hosting:clone` copies a channel to another channel, not
+a historic release. Nothing in 1D is needed by earlier bundles. Rules: the revised ruleset can stay published after a Hosting
 rollback (it is a strict superset; the 1C bundle never sends the key), and it
 is the recommended state. If the rules themselves must be reverted, re-publish
 the 1C ruleset (196,034 bytes); any measurement that already carries a
@@ -979,16 +983,86 @@ link and a PULSE *Open GANTT* link both land on it; Day / Week / Month keep a
 one-day activity on the same date; a bar opens the editor (admin / PM) or the
 read-only detail (QS).
 
-**Rollback:** `firebase hosting:rollback` to the previous release. Because no
-document, field or rule changed, the previous bundle's Timeline tab works
-unchanged on the same data, and old and new bundles can coexist across open
-tabs with no data effect. There is no financial-correctness constraint on
-rolling this release back.
+**Rollback:** redeploy the previous release — check out the pre-1A1 commit,
+`npm run build`, `firebase deploy --only hosting --project constrapp-69b5d` —
+or use the Firebase Console's Hosting release history (*Rollback* on the
+previous release). ⚠️ There is **no `firebase hosting:rollback` CLI command**
+(firebase-tools 13.35.1 — corrected by ADR-65; `hosting:clone` copies between
+channels or sites, not from history). Because no document, field or rule
+changed in 1A1, the previous bundle's Timeline tab works unchanged on the same
+data, and old and new bundles can coexist across open tabs with no data effect.
+There is no financial-correctness constraint on rolling this release back —
+**but see the GANTT 1A2 order below: once the 1A2 FINAL ruleset is published,
+a pre-1A2 bundle can no longer edit activities.**
 
 **Not sequenced behind anything by data, but by release hygiene:** confirm
 the M3-B2 (ADR-63) three-stage release has reached its FINAL stage before
 building a GANTT 1A1 bundle from `main`, so that one Hosting deploy never
 carries an unreleased rules-dependent change by accident.
+
+### GANTT 1A2 release order — dependencies and the revision contract (ADR-65) — THREE STAGES, Firebase-CLI driven
+
+**Status: IMPLEMENTED — NOT YET DEPLOYED (Rules AND Hosting).** The 1A2
+bundle writes two things the live ruleset refuses — the optional
+`predecessors` key (the live `hasOnly` rejects it) and `revision` + 1 on every
+activity update (the live `corePreserved` pins it) — while the FINAL 1A2
+ruleset refuses what the live (1A1) bundle writes (an unchanged revision). So
+neither "rules first" nor "Hosting first" works alone: the release is the
+M3-B1 / M3-B2 three-stage pattern, with the Stage-1 ruleset derived from the
+FINAL one by `scripts/build-transitional-rules.mjs` (three marked lines: the
+two ADR-63 pairs, preserved, and the ADR-65 activities revision line).
+
+*Preconditions.* Azure CI green on the merge (lint → unit → rules → build);
+`npm run rules:transitional:check` clean; the GANTT 1A1 bundle (and M3-B2's
+FINAL stage) confirmed live, so that the bundle built from `main` carries
+nothing unreleased by accident. Every command below runs from `frontend/`,
+each a separate approved action; **none is run by an implementation task.**
+
+1. **STAGE 1 — publish the TRANSITIONAL ruleset** (accepts the 1A1 bundle's
+   unchanged-revision edit AND the 1A2 bundle's +1; the optional
+   `predecessors` key and its first/last pins are ACTIVE from here):
+   ```bash
+   npm run test:rules                       # both suites green, incl. activitiesTransitional
+   firebase deploy --only firestore:rules --config firebase.transitional.json --project constrapp-69b5d
+   ```
+   `firebase.transitional.json` names `firestore.transitional.rules`; the
+   normal `firebase.json` is never rewritten. Verify in the Console that the
+   published source starts with the `ADR-63 / ADR-65 STAGE-1 TRANSITIONAL
+   RULESET` header (220,564 bytes). The live 1A1 bundle keeps working.
+2. **STAGE 2 — `firebase deploy --only hosting --project constrapp-69b5d`**
+   (`--only hosting` and `--project` both required) after `npm run build` with
+   the production `VITE_FIREBASE_*` values. Verify: a bar's editor shows the
+   *Predecessors* fieldset; adding one and saving advances the document's
+   `revision` to 2; the chart draws the arrow.
+3. **STAGE 3 — publish the FINAL ruleset** (`revision` + 1 REQUIRED on every
+   activity edit and cancel), once no 1A1 tab is expected to be open — keep
+   Stage 1 short, because during it an un-reloaded 1A1 browser can still write
+   without incrementing (Deferred Control 41):
+   ```bash
+   firebase deploy --only firestore:rules --project constrapp-69b5d
+   ```
+   Verify the published source carries `ADR-65 FINAL` (219,930 bytes). An
+   un-reloaded 1A1 tab's edit or cancel is now refused with a permission error;
+   **the refresh path is a page reload** — nothing else is needed.
+
+**Recovery — compatible rules and existing data, always.**
+- *Rules:* at any moment the Stage-1 ruleset may be republished over the FINAL
+  one (it is a strict superset); **never republish the 1A1 ruleset once any
+  activity carries `predecessors`** — its `hasOnly` would make every such
+  document un-editable, and its `corePreserved` would refuse the 1A2 bundle's
+  every save.
+- *Hosting:* a pre-1A2 bundle may be redeployed (check out the 1A1 commit,
+  build, `firebase deploy --only hosting …`, or the Console's release history)
+  **only while the Stage-1 ruleset is published**, because that bundle writes
+  an unchanged revision; under the FINAL ruleset it cannot edit activities.
+  A document already at revision ≥ 2 and carrying `predecessors` is read by
+  the 1A1 bundle without harm (the key is ignored and preserved by its
+  `updateDoc`).
+- *Data:* nothing is migrated and nothing needs undoing — a dependency is a
+  list on the successor; removing it is an ordinary edit.
+- **Prefer a forward fix** for any incompatible state over a rollback.
+- ⚠️ `firebase hosting:rollback` does not exist in firebase-tools 13.35.1;
+  do not plan on it.
 
 ## Publishing Firestore Rules — Manual Process
 
