@@ -5,10 +5,13 @@ import Btn from '../../components/Btn'
 import Stat from '../../components/Stat'
 import { ModuleTile, BeatToggle } from '../../components/ModuleMark'
 import { MODULE_NAMES } from '../../lib/moduleBranding'
+import { useAuth } from '../../hooks/useAuth'
 import { useProfile } from '../../hooks/useProfile'
 import { useContacts } from '../../hooks/useContacts'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { useProjectActivities } from '../../hooks/useProjectActivities'
+import { useProgrammeBaselines } from '../../hooks/useProgrammeBaselines'
+import { useProgrammeBaselineSnapshot } from '../../hooks/useProgrammeBaselineSnapshot'
 import { useLocalToday } from '../../hooks/useLocalToday'
 import {
   ACTIVITY_STATUS, ACTIVITY_STATUS_ORDER, ACTIVITY_STATUS_LABELS,
@@ -20,12 +23,19 @@ import {
 import { DEFAULT_GANTT_SCALE, isGanttScale } from '../../lib/timelineGantt'
 import { GANTT_GROUP, isGanttGroup, toggleGroupKey, collapseAllKeys } from '../../lib/ganttGrouping'
 import { dependencyStates, successorIndex, successorsOf } from '../../lib/ganttDependencies'
+import {
+  ACTIVE_CHOICE, selectedBaseline, approvedBaselines, snapshotEntryIndex, isSnapshotUsable,
+  baselineComparison, baselineSummary, baselineVersionLabel, varianceFor,
+} from '../../lib/ganttBaseline'
 import TimelineGantt from './timeline/TimelineGantt'
 import ActivityTable from './timeline/ActivityTable'
 import ActivityCards from './timeline/ActivityCards'
 import ActivityEditorModal from './timeline/ActivityEditorModal'
 import ActivityCancelModal from './timeline/ActivityCancelModal'
 import ActivityDetailModal from './timeline/ActivityDetailModal'
+import BaselinePanel from './timeline/BaselinePanel'
+import BaselineCaptureModal from './timeline/BaselineCaptureModal'
+import BaselineReviewModal from './timeline/BaselineReviewModal'
 
 // ── Constrapp GANTT™ — the project programme (ADR-29, ADR-46, ADR-64) ────────
 //
@@ -35,20 +45,28 @@ import ActivityDetailModal from './timeline/ActivityDetailModal'
 //
 // THE HONEST FRAME, stated on the page and not only in the docs:
 //
-//   · This is a CURRENT-PLAN programme, not approved-baseline variance.
-//     Constrapp stores no immutable baseline, so "late" means late against the
-//     dates as they stand now — editing a planned date silently redefines "on
-//     time". The page must never claim slippage against an approved programme.
+//   · This is a CURRENT-PLAN programme. "Overdue" means late against the
+//     dates as they stand now — editing a planned date redefines "on time".
 //     The recorded (actual) dates drawn beneath the plan are compared with the
 //     CURRENT plan and labelled so.
+//   · Since Programme 1B (ADR-66) an APPROVED BASELINE may exist beside it:
+//     an immutable copy of the planned dates as captured and approved
+//     (`programmeBaselines` + `programmeBaselineSnapshots`). The variance
+//     against the SELECTED approved version is a separate, clearly labelled
+//     measure — never merged with overdue, the recorded-dates comparison or
+//     the dependency states — and a baseline is planning evidence, not a
+//     contractual programme acceptance. With no approved baseline the page
+//     still never claims slippage against an approved programme.
 //   · Progress % is MANUALLY ENTERED and unverified. It is never derived from
 //     dates, from child tasks, or from Progress Claims, and it feeds no budget,
 //     forecast, margin or cash figure.
 //   · Nothing here writes a financial document, and nothing writes
 //     projects/{projectId}.progress.
-//   · There are no dependencies, no critical path and no automatic
-//     rescheduling — nothing moves on its own. Zoom, grouping and collapse are
-//     presentation state on this page; no stored field exists for them.
+//   · Dependencies (ADR-65) are shown and never enforced by moving a date;
+//     there is no critical path and no automatic rescheduling — nothing moves
+//     on its own. Zoom, grouping, collapse, the baseline choice and whether
+//     the baseline is shown are presentation state on this page; no stored
+//     field exists for them.
 //
 // One clock for the whole screen (`now`), passed down to the chart, the list
 // and the cards, so no two panels can disagree about today. It comes from
@@ -89,6 +107,7 @@ function GanttHeading({ canWrite, onAdd, addDisabled }) {
 
 export default function ProjectTimeline() {
   const { projectId } = useOutletContext()
+  const { user } = useAuth()
   const { profile } = useProfile()
   const { contacts } = useContacts()
   const { costCodes } = useCostCodes()
@@ -96,6 +115,12 @@ export default function ProjectTimeline() {
     activities, activitiesLoading, activitiesError,
     createActivity, updateActivity, cancelActivity, quickUpdateActivity,
   } = useProjectActivities(projectId)
+  // ADR-66: the baseline HEADERS (one bounded listener) and the ONE selected
+  // snapshot (a single-document listener keyed by the choice below).
+  const {
+    baselines, baselinesLoading, baselinesError,
+    captureBaseline, checkDrift, approveBaseline, withdrawBaseline,
+  } = useProgrammeBaselines(projectId)
 
   const [search, setSearch]     = useState('')
   const [status, setStatus]     = useState('')
@@ -114,6 +139,14 @@ export default function ProjectTimeline() {
   const [editing, setEditing]   = useState(null)   // 'new' | activity | null
   const [cancelling, setCancelling] = useState(null)
   const [viewing, setViewing]   = useState(null)   // activity | null — the read-only detail
+  // Baseline presentation state (ADR-66) — nothing here is stored: which
+  // approved version is compared ('active' or an id), whether the ghost
+  // outline is drawn, and the two baseline dialogs.
+  const [baselineChoice, setBaselineChoice] = useState(ACTIVE_CHOICE)
+  const [baselineShown, setBaselineShown]   = useState(true)
+  const [capturing, setCapturing]           = useState(false)
+  const [reviewing, setReviewing]           = useState(null)   // a draft header | null
+  const [baselineNotice, setBaselineNotice] = useState(null)   // { tone, text }
 
   const role = profile?.role
   // ⚠️ UX ONLY. Firestore rules are the trust boundary — these flags hide
@@ -136,6 +169,30 @@ export default function ProjectTimeline() {
   // predecessor still blocks), derived once per snapshot and per local day.
   const depStates = useMemo(() => dependencyStates(ordered, now), [ordered, now])
   const succIndex = useMemo(() => successorIndex(ordered), [ordered])
+
+  // ADR-66: the selected approved baseline (active by default), its ONE
+  // snapshot, and the derived comparison — memoised per programme snapshot
+  // and per baseline snapshot, independent of filters, zoom and grouping.
+  const selectedHeader = useMemo(() => selectedBaseline(baselines, baselineChoice), [baselines, baselineChoice])
+  const selectedBaselineId = selectedHeader?.id ?? null
+  const { snapshot, snapshotLoading, snapshotError } = useProgrammeBaselineSnapshot(projectId, selectedBaselineId)
+  const baselineUsable = Boolean(selectedHeader) && isSnapshotUsable(snapshot)
+  const baselineById = useMemo(() => (baselineUsable ? snapshotEntryIndex(snapshot) : null), [baselineUsable, snapshot])
+  const comparison = useMemo(() => (baselineUsable ? baselineComparison(ordered, snapshot) : null), [baselineUsable, ordered, snapshot])
+  const baselineSummaryValue = useMemo(() => (baselineUsable ? baselineSummary(ordered, snapshot) : null), [baselineUsable, ordered, snapshot])
+  const baselineLabel = selectedHeader ? baselineVersionLabel(baselines, selectedHeader) : ''
+  const baselineView = useMemo(() => ({
+    shown: baselineShown && baselineUsable,
+    label: baselineLabel,
+    byId: baselineById,
+    comparison,
+  }), [baselineShown, baselineUsable, baselineLabel, baselineById, comparison])
+  const approvedCount = approvedBaselines(baselines).length
+  // The draft being reviewed, as it stands NOW in the listener (so a draft
+  // approved or withdrawn elsewhere closes the dialog's stale copy).
+  const reviewingHeader = reviewing ? (baselines.find(b => b.id === reviewing.id) ?? null) : null
+  const { snapshot: reviewSnapshot, snapshotLoading: reviewSnapshotLoading, snapshotError: reviewSnapshotError } =
+    useProgrammeBaselineSnapshot(projectId, reviewingHeader?.id ?? null)
 
   const filtersActive = Boolean(search || status || responsible || hideClosed || due)
 
@@ -183,6 +240,25 @@ export default function ProjectTimeline() {
   async function handleSave(fields, base) {
     if (editing === 'new') await createActivity(fields)
     else await updateActivity(base ?? editing, fields)
+  }
+
+  // Baseline dialogs (ADR-66). The dialogs own their in-flight state; the
+  // page reacts after each transaction settles and announces the outcome.
+  function closeCapture(result) {
+    setCapturing(false)
+    if (result) {
+      setBaselineNotice({ tone: 'ok', text: `Draft baseline captured: ${result.counts.captured} activities (${result.counts.cancelledAtCapture} cancelled history). Review it to approve or withdraw.` })
+    }
+  }
+  function closeReview(result) {
+    setReviewing(null)
+    if (result?.approved) {
+      setBaselineChoice(ACTIVE_CHOICE)
+      setBaselineShown(true)
+      setBaselineNotice({ tone: 'ok', text: 'Baseline approved. It is now the active baseline and cannot be changed; earlier approved baselines are kept.' })
+    } else if (result?.withdrawn) {
+      setBaselineNotice({ tone: 'ok', text: 'Draft baseline withdrawn. Nothing was approved.' })
+    }
   }
 
   if (!canRead) {
@@ -248,6 +324,48 @@ export default function ProjectTimeline() {
             <Card>
               <Stat label="Milestones remaining" value={summary.milestonesRemaining} sub="Not yet reached" />
             </Card>
+          </div>
+
+          {/* ── Programme baseline (ADR-66) — selection, drafts, summary ── */}
+          <BaselinePanel
+            headers={baselines}
+            loading={baselinesLoading}
+            error={baselinesError}
+            snapshot={snapshot}
+            snapshotLoading={snapshotLoading}
+            snapshotError={snapshotError}
+            choice={baselineChoice}
+            onChoice={setBaselineChoice}
+            shown={baselineShown}
+            onToggleShown={() => setBaselineShown(s => !s)}
+            summary={baselineSummaryValue}
+            selectedHeader={selectedHeader}
+            canWrite={canWrite}
+            currentUid={user?.uid ?? null}
+            onCapture={() => { setBaselineNotice(null); setCapturing(true) }}
+            onReview={(draft) => { setBaselineNotice(null); setReviewing(draft) }}
+          />
+
+          {/* Baseline outcome — always in the DOM so screen readers announce it. */}
+          <div aria-live="polite" role="status">
+            {baselineNotice && (
+              <div
+                className={`mb-3.5 rounded-lg border px-3.5 py-2.5 text-[12.5px] flex items-start justify-between gap-3 ${
+                  baselineNotice.tone === 'error'
+                    ? 'border-brand-amber/40 bg-brand-amber/5 text-brand-amber'
+                    : 'border-brand-border bg-brand-surface text-brand-text-soft'}`}
+              >
+                <span>{baselineNotice.text}</span>
+                <button
+                  type="button"
+                  className="text-brand-muted hover:text-brand-text cursor-pointer min-h-[32px] px-1"
+                  onClick={() => setBaselineNotice(null)}
+                  aria-label="Dismiss message"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
           </div>
 
           {/* ── Filters ──────────────────────────────────────────────── */}
@@ -410,6 +528,7 @@ export default function ProjectTimeline() {
                     onActivate={handleActivate}
                     canWrite={canWrite}
                     dependencyStates={depStates}
+                    baseline={baselineView}
                   />
                 </Card>
               )}
@@ -431,6 +550,7 @@ export default function ProjectTimeline() {
                     quickBusyId={quickBusyId}
                     now={now}
                     dependencyStates={depStates}
+                    baseline={baselineView}
                   />
                 </Card>
               )}
@@ -446,6 +566,7 @@ export default function ProjectTimeline() {
                   quickBusyId={quickBusyId}
                   now={now}
                   dependencyStates={depStates}
+                  baseline={baselineView}
                 />
               </div>
             </>
@@ -456,10 +577,13 @@ export default function ProjectTimeline() {
             <p className="text-[12.5px] font-bold text-brand-text m-0 mb-1.5">What this programme is</p>
             <ul className="m-0 pl-4 text-[11.5px] text-brand-muted space-y-1">
               <li>
-                <strong className="text-brand-text-soft">Current plan, not an approved baseline.</strong> “Overdue”
-                means late against the dates as they stand today. Constrapp stores no baseline, so it cannot
-                report slippage against an approved programme; the recorded dates on the chart are compared with
-                the current plan only.
+                <strong className="text-brand-text-soft">Current plan, compared with an approved baseline when one exists.</strong> “Overdue”
+                means late against the dates as they stand today, and the recorded dates on the chart are compared
+                with the current plan. A captured and <strong className="text-brand-text-soft">approved baseline</strong> is
+                an immutable copy of the planned dates at that moment: the variance against it is a separate,
+                labelled measure in calendar days, and it is planning evidence — not a contractual programme
+                acceptance or an extension-of-time entitlement. Without an approved baseline nothing here is
+                slippage against an approved programme.
               </li>
               <li>
                 <strong className="text-brand-text-soft">Progress % is entered by hand</strong> and is not verified.
@@ -471,9 +595,9 @@ export default function ProjectTimeline() {
                 working calendars are not modelled.
               </li>
               <li>
-                <strong className="text-brand-text-soft">No dependencies or critical path.</strong> Nothing
-                reschedules automatically — changing one activity moves nothing else, and nothing on the chart
-                can be dragged.
+                <strong className="text-brand-text-soft">Dependencies are shown, never enforced; there is no critical path.</strong> A
+                finish-to-start link flags a conflict or a blocked start — nothing reschedules automatically,
+                changing one activity moves nothing else, and nothing on the chart can be dragged.
               </li>
               <li>
                 A cost code is an optional label that links an activity to the commercial spine. It is
@@ -484,10 +608,10 @@ export default function ProjectTimeline() {
                 Assigning an internal staff member needs user management, which is not built yet.
               </li>
               <li>
-                Activities are cancelled, never deleted. <strong className="text-brand-text-soft">Quick status
-                buttons</strong> record today’s date and refuse to apply if someone else changed the activity
-                first. The full editor does not have that check — two people saving the same activity overwrite
-                each other, so agree who is updating the programme.
+                Activities are cancelled, never deleted. <strong className="text-brand-text-soft">Every save is
+                checked</strong>: quick status buttons record today’s date, and the editor, the quick actions and
+                cancellation all refuse to apply if someone else changed the activity first — your edits are kept
+                and <em>Reload latest</em> shows the current record.
               </li>
               {!canWrite && (
                 <li>
@@ -527,7 +651,33 @@ export default function ProjectTimeline() {
           now={now}
           dependencyStates={depStates}
           successors={successorsOf(viewing.id, succIndex)}
+          baselineVariance={baselineView.shown ? varianceFor(comparison, viewing.id) : null}
+          baselineLabel={baselineView.label}
           onClose={() => setViewing(null)}
+        />
+      )}
+
+      {capturing && (
+        <BaselineCaptureModal
+          activities={ordered}
+          approvedCount={approvedCount}
+          onCapture={captureBaseline}
+          onClose={closeCapture}
+        />
+      )}
+
+      {reviewing && reviewingHeader && reviewingHeader.status === 'draft' && (
+        <BaselineReviewModal
+          header={reviewingHeader}
+          versionLabel={`Draft · captured for approval${approvedCount > 0 ? ` · ${approvedCount} approved ${approvedCount === 1 ? 'version' : 'versions'} already exist` : ''}`}
+          snapshot={reviewSnapshot}
+          snapshotLoading={reviewSnapshotLoading}
+          snapshotError={reviewSnapshotError}
+          currentUid={user?.uid ?? null}
+          onCheckDrift={checkDrift}
+          onApprove={approveBaseline}
+          onWithdraw={withdrawBaseline}
+          onClose={closeReview}
         />
       )}
     </div>

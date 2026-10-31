@@ -120,7 +120,9 @@ describe('activation: the existing editor for an author, a read-only detail for 
     expect(detail).not.toMatch(/<form|type="submit"|Save|onSave|onQuickAction|updateActivity|createActivity|cancelActivity|setDoc|updateDoc|runTransaction/)
     expect(detail).toContain('<Btn variant="ghost" type="button" onClick={onClose}>Close</Btn>')
     expect(detail).toContain('Read-only. Company admins and project managers author the programme.')
-    expect(detail).toContain('Constrapp stores no baseline')
+    // Revised by ADR-66: an approved baseline may now exist; the recorded-dates
+    // comparison is still against the current plan and says so.
+    expect(detail).toContain('A comparison with the planned dates as they stand now — not with an approved baseline.')
     expect(detail).toContain('Entered by hand, unverified')
     expect(detail).toContain("import { planComparisonLabel } from '../../../lib/timelineGantt'")
     expect(detail).not.toMatch(/from 'firebase|from '\.\.\/\.\.\/\.\.\/hooks\//)
@@ -232,10 +234,16 @@ describe('existing links, labels and tokens', () => {
     expect(cards).not.toContain('brand-gantt')
   })
 
-  it('the ADR-64 wording survives: current plan, calendar days, no critical path', () => {
-    expect(chart).toContain('Comparisons are against the current plan, not a baseline.')
+  it('the ADR-64 wording survives (revised by ADR-66): current plan, calendar days, no critical path', () => {
+    // The recorded-dates line is still compared with the CURRENT plan; the
+    // legend now says what the dashed outline is, or that no approved
+    // baseline is shown — never slippage against an approved programme by
+    // implication.
+    expect(chart).toContain('is compared with the current plan.')
+    expect(chart).toContain('No approved baseline is shown, so nothing here is slippage against an approved programme.')
     expect(chart).toContain('a dependency is shown, never enforced by moving a date, and Constrapp has no\n        critical path')
-    expect(page).toContain('Current plan, not an approved baseline.')
+    expect(page).toContain('Current plan, compared with an approved baseline when one exists.')
+    expect(page).toContain('Without an approved baseline nothing here is\n                slippage against an approved programme.')
   })
 
   it('no new runtime dependency', () => {
@@ -338,3 +346,130 @@ describe('ADR-65: dependencies on the chart, in the editor and in the detail', (
     expect(page).toContain('async function handleSave(fields, base)')
   })
 })
+
+// ── Programme 1B — approved baselines (ADR-66) ───────────────────────────────
+
+describe('ADR-66: baselines on the chart, in the list, on the cards and in the detail', () => {
+  const baselineLib = stripComments(read('lib/ganttBaseline.js'))
+  const actions = stripComments(read('lib/programmeBaselineActions.js'))
+  const headersHook = stripComments(read('hooks/useProgrammeBaselines.jsx'))
+  const snapshotHook = stripComments(read('hooks/useProgrammeBaselineSnapshot.jsx'))
+  const panel = stripComments(read('pages/project/timeline/BaselinePanel.jsx'))
+  const capture = stripComments(read('pages/project/timeline/BaselineCaptureModal.jsx'))
+  const review = stripComments(read('pages/project/timeline/BaselineReviewModal.jsx'))
+
+  it('the ghost is a decorative dashed OUTLINE behind the bar, in an existing token — never a fill, never orange', () => {
+    expect(chart).toContain("const BASELINE_COLOUR = 'var(--color-brand-text-soft)'")
+    const rowSrc = chart.slice(chart.indexOf('function GanttBarRow'))
+    const ghost = rowSrc.slice(rowSrc.indexOf('{ghost && ('), rowSrc.indexOf('{bar.isMilestone ? ('))
+    expect(ghost).toContain('aria-hidden="true"')
+    expect(ghost).toContain('border border-dashed')
+    expect(ghost).toContain('rotate-45 border')
+    expect(ghost).not.toMatch(/backgroundColor|<button|onClick/)
+    // Drawn BEFORE the button in the DOM, so the bar paints over it.
+    expect(rowSrc.indexOf('{ghost && (')).toBeLessThan(rowSrc.indexOf('{bar.isMilestone ? ('))
+    expect(chart).not.toContain('brand-gantt')
+    expect(chart).not.toMatch(/animate|transition-all|motion-/)
+  })
+
+  it('the bar name carries the baseline dates, the planned variance and the recorded-finish variance; the legend names the outline', () => {
+    expect(chart).toContain('function baselineSentence(bar, variance)')
+    expect(chart).toContain('+ baselineSentence(bar, variance)')
+    expect(chart).toContain('Baseline ({baseline.label || \'approved plan\'})')
+    expect(chart).toContain('Baseline milestone')
+    expect(chart).toContain('buildGanttModel(activities, { now, scale, baselineById })')
+  })
+
+  it('the list has a "vs baseline" column, the cards a comparison line, the detail an "Against baseline" row — all text', () => {
+    expect(table).toContain('vs baseline')
+    expect(table).toContain('varianceShort(v)')
+    expect(cards).toContain('varianceLabel(v, { isMilestone: a.isMilestone })')
+    expect(detail).toContain('<Row label="Against baseline">')
+    expect(detail).toContain('planning evidence, not a contractual programme acceptance')
+    for (const src of [table, cards, detail, panel]) expect(src).not.toContain('brand-gantt')
+  })
+
+  it('the page derives the selection, the comparison and the summary once per snapshot; nothing is stored', () => {
+    expect(page).toContain('const [baselineChoice, setBaselineChoice] = useState(ACTIVE_CHOICE)')
+    expect(page).toContain('const [baselineShown, setBaselineShown]   = useState(true)')
+    expect(page).toContain('useProgrammeBaselineSnapshot(projectId, selectedBaselineId)')
+    expect(page).toContain('baselineComparison(ordered, snapshot)')
+    expect(page).toContain('baselineSummary(ordered, snapshot)')
+    expect(page).toContain('baseline={baselineView}')
+    expect(page).toContain('<BaselinePanel')
+    expect(page).toContain('<BaselineCaptureModal')
+    expect(page).toContain('<BaselineReviewModal')
+    expect(page).not.toMatch(/localStorage|sessionStorage|setDoc|updateDoc/)
+  })
+
+  it('the stale ADR-65 copy is gone: dependencies exist and every save is guarded', () => {
+    expect(page).not.toContain('No dependencies or critical path.')
+    expect(page).not.toContain('The full editor does not have that check')
+    expect(page).toContain('Dependencies are shown, never enforced; there is no critical path.')
+    expect(page).toContain('Every save is\n                checked')
+  })
+
+  it('the two hooks: one bounded headers listener, one single-document snapshot listener; writes only through the action layer', () => {
+    expect(headersHook.match(/onSnapshot\(/g)).toHaveLength(1)
+    expect(headersHook).toContain("const q = query(ref, orderBy('createdAt', 'asc'))")
+    expect(headersHook).toContain('getDocsFromServer')
+    expect(headersHook).not.toMatch(/\bupdateDoc\(|\bsetDoc\(|getDocs\(|getDocsFromCache/)
+    expect(headersHook).toContain('runBaselineCapture({')
+    expect(headersHook).toContain('runBaselineApprove({')
+    expect(headersHook).toContain('runBaselineWithdraw({')
+    expect(snapshotHook.match(/onSnapshot\(/g)).toHaveLength(1)
+    expect(snapshotHook).toContain("'programmeBaselineSnapshots', baselineId")
+    expect(snapshotHook).not.toMatch(/setDoc|updateDoc|runTransaction/)
+  })
+
+  it('the action layer: a server read first, the pair in ONE transaction, drift compared by key, no Firebase import, no graph read', () => {
+    expect(actions).not.toMatch(/from 'firebase/)
+    expect(actions).toContain('await readProgrammeFromServer({ activitiesQuery, getDocsFromServer })')
+    expect(actions).toContain('tx.set(headerRef, {')
+    expect(actions).toContain('tx.set(snapshotRef, {')
+    expect(actions).toContain("if (drift.key !== (acknowledgedDriftKey ?? ''))")
+    expect(actions).toContain('if (!sameActivityVersion(seen, current)) return { kind: BASELINE_ERROR.STALE }')
+    expect(actions).toContain("status: BASELINE_STATUS.APPROVED,")
+    // The snapshot is never updated by any path.
+    expect(actions).not.toMatch(/tx\.update\(snapshotRef/)
+    // No financial document, no currency ratchet.
+    expect(actions).not.toMatch(/stageProjectCurrencyLock|budgetLines|forecastLines|purchaseOrders|progressClaims/)
+  })
+
+  it('the domain is pure and never infers a finish from a status or a baseline from a first saved date', () => {
+    expect(baselineLib).not.toMatch(/from 'react|from 'firebase|onSnapshot|document\.|new Date\(/)
+    expect(baselineLib).toContain('isValidIsoDate(activity.actualFinish)')
+    expect(baselineLib).toContain("DRAFT:     'draft'")
+    expect(baselineLib).toContain('SNAPSHOT_MAX_BYTES = 900_000')
+    expect(baselineLib).toContain('entries: 2000')
+    expect(baselineLib).not.toMatch(/average|critical/i)
+  })
+
+  it('the dialogs render through the shared shell, the capture previews and refuses, the review requires an explicit drift acknowledgement', () => {
+    expect(capture).toContain('<ActivityDialog title="Capture programme baseline" titleId="baseline-capture-title"')
+    expect(capture).toContain('buildCapturePayload(activities)')
+    expect(capture).toContain('disabled={saving || !preview.ok}')
+    expect(capture).toContain('not a contractual programme acceptance')
+    expect(review).toContain('<ActivityDialog title="Review draft baseline" titleId="baseline-review-title"')
+    expect(review).toContain('const driftReviewed = drift ? (!drift.any || acknowledgedKey === drift.key) : false')
+    expect(review).toContain('You captured this draft. Approving it yourself is permitted')
+    expect(review).toContain('An approved baseline cannot be withdrawn or deleted.')
+    expect(panel).toContain('aria-pressed={shown}')
+    expect(panel).toContain('aria-label="Baseline version to compare with"')
+    expect(panel).toContain('not')
+    expect(panel).toContain('a forecast of project completion')
+    for (const src of [capture, review, panel]) expect(src).not.toMatch(/from 'firebase|fixed inset-0 z-50/)
+  })
+
+  it('no new runtime dependency and no Dashboard or PULSE change', () => {
+    const pkg = JSON.parse(readRoot('package.json'))
+    expect(Object.keys(pkg.dependencies).sort()).toEqual([
+      '@tailwindcss/vite', 'firebase', 'pdfjs-dist', 'react', 'react-dom', 'react-router-dom', 'recharts', 'tailwindcss',
+    ])
+    // Neither surface reads a baseline: no import of the baseline modules.
+    expect(panelDashboard()).not.toMatch(/programmeBaseline|ganttBaseline/)
+    expect(pulse).not.toMatch(/programmeBaseline|ganttBaseline/)
+  })
+})
+
+function panelDashboard() { return stripComments(read('pages/dashboard/ProgrammePanel.jsx')) }

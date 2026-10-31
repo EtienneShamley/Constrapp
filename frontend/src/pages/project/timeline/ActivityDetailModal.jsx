@@ -7,6 +7,7 @@ import {
 } from '../../../lib/projectTimeline'
 import { planComparisonLabel } from '../../../lib/timelineGantt'
 import { stateFor, dependencyFlag, DEPENDENCY_STATE } from '../../../lib/ganttDependencies'
+import { varianceLabel, completionLabel, baselineDatesLabel, VARIANCE_KIND } from '../../../lib/ganttBaseline'
 
 // ── Read-only activity detail (ADR-64, ADR-65) ───────────────────────────────
 //
@@ -31,10 +32,14 @@ function Row({ label, children }) {
   )
 }
 
-export default function ActivityDetailModal({ activity, now, onClose, dependencyStates, successors = [] }) {
+// ADR-66: `baselineVariance` is the activity's variance against the SELECTED
+// approved baseline (lib/ganttBaseline.js) and `baselineLabel` names that
+// version; both null when none is shown.
+export default function ActivityDetailModal({ activity, now, onClose, dependencyStates, successors = [], baselineVariance = null, baselineLabel = '' }) {
   const a = activity ?? {}
   const late = isOverdue(a, now)
   const comparison = planComparisonLabel(a)
+  const bv = baselineVariance && baselineVariance.kind !== VARIANCE_KIND.NO_BASELINE ? baselineVariance : null
   // ADR-65: the links as derived at read time — every one listed, whatever
   // the chart could draw. Text, never colour alone.
   const dep = stateFor(dependencyStates, a.id)
@@ -68,7 +73,18 @@ export default function ActivityDetailModal({ activity, now, onClose, dependency
           {comparison && (
             <Row label="Against current plan">
               {comparison}
-              <span className="block text-[10.5px] text-brand-muted">A comparison with the planned dates as they stand now — Constrapp stores no baseline.</span>
+              <span className="block text-[10.5px] text-brand-muted">A comparison with the planned dates as they stand now — not with an approved baseline.</span>
+            </Row>
+          )}
+          {bv && (
+            <Row label="Against baseline">
+              {varianceLabel(bv, { isMilestone: a.isMilestone })}
+              {completionLabel(bv, { isMilestone: a.isMilestone }) && (
+                <span className="block">{completionLabel(bv, { isMilestone: a.isMilestone })}</span>
+              )}
+              <span className="block text-[10.5px] text-brand-muted">
+                {baselineDatesLabel(bv.entry) ? `${baselineDatesLabel(bv.entry)} · ` : ''}{baselineLabel || 'the selected approved baseline'} — planning evidence, not a contractual programme acceptance.
+              </span>
             </Row>
           )}
           <Row label="Progress">

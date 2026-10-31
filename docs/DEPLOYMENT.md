@@ -970,7 +970,7 @@ management, custom domains, and cache-control headers.
 
 ### Constrapp GANTT™ — Programme 1A1 (ADR-64) — Hosting-only release
 
-**Status: IMPLEMENTED — NOT YET DEPLOYED.** The release is the plain Hosting
+**Status: LIVE in production (confirmed by the Product Owner).** The release is the plain Hosting
 procedure above and nothing else: **no Firestore Rules publish, no Storage
 Rules publish, no index, no migration** — `firestore.rules` is byte-identical
 (217,864 bytes) and the `activities` documents are untouched. Order: Azure CI
@@ -1002,7 +1002,7 @@ carries an unreleased rules-dependent change by accident.
 
 ### GANTT 1A2 release order — dependencies and the revision contract (ADR-65) — THREE STAGES, Firebase-CLI driven
 
-**Status: IMPLEMENTED — NOT YET DEPLOYED (Rules AND Hosting).** The 1A2
+**Status: LIVE in production — all three stages released (confirmed by the Product Owner).** The 1A2
 bundle writes two things the live ruleset refuses — the optional
 `predecessors` key (the live `hasOnly` rejects it) and `revision` + 1 on every
 activity update (the live `corePreserved` pins it) — while the FINAL 1A2
@@ -1061,6 +1061,69 @@ each a separate approved action; **none is run by an implementation task.**
 - *Data:* nothing is migrated and nothing needs undoing — a dependency is a
   list on the successor; removing it is an ordinary edit.
 - **Prefer a forward fix** for any incompatible state over a rollback.
+- ⚠️ `firebase hosting:rollback` does not exist in firebase-tools 13.35.1;
+  do not plan on it.
+
+### GANTT 1B release order — programme baselines (ADR-66) — RULES FIRST, then Hosting, Firebase-CLI driven
+
+**Status: IMPLEMENTED — NOT YET DEPLOYED (Rules AND Hosting; TWO steps, no
+transitional stage).** The 1B bundle writes two NEW collections
+(`programmeBaselines`, `programmeBaselineSnapshots`) that the live ruleset
+denies by default, and changes nothing the live bundle writes: the
+`activities` block is byte-for-byte unchanged, no existing key moves, no
+document is migrated and no index is added. So the order is the Quant™ 1B
+one — **rules first** (the new blocks are additive; the live bundle never
+reads or writes them), **Hosting second**. The transitional generator still
+carries its three ADR-63 / ADR-65 marked lines and regenerates
+`firestore.transitional.rules` (229,601 bytes) from the new FINAL file, but
+no transitional publish is needed for 1B.
+
+*Preconditions.* Azure CI green on the merge (lint → unit → rules → build);
+`npm run rules:transitional:check` clean; `wc -c frontend/firestore.rules`
+reads **228,967** (budget 245,000). Every command runs from `frontend/`, each
+a separate approved action; **none is run by an implementation task.**
+
+1. **STEP 1 — publish the FINAL ruleset** (the two new blocks; everything
+   else unchanged):
+   ```bash
+   npm run test:rules                       # both suites green, incl. programmeBaselines
+   firebase deploy --only firestore:rules --project constrapp-69b5d
+   ```
+   Verify in the Console that the published source contains
+   `programmeBaselineSnapshots` and reads 228,967 bytes. The live 1A2 bundle
+   keeps working unchanged (proven: `tests/rules/programmeBaselines.rules.test.js`
+   → *legacy programme operations are unaffected*).
+2. **STEP 2 — `firebase deploy --only hosting --project constrapp-69b5d`**
+   after `npm run build` with the production `VITE_FIREBASE_*` values.
+   Verify: the GANTT tab shows the *Programme baseline* panel reading *No
+   approved baseline*; *Capture baseline* (admin / PM) previews the programme
+   and creates a draft; *Review draft* lists no changes, Approve makes it the
+   active baseline; moving one planned finish shows the dashed outline and
+   `+n d` in the List; a QS sees the panel and the comparison with no
+   Capture button.
+
+**Index impact — verified, none required.** The snapshot's `activities`
+array is indexed automatically (one array-contains entry per element; up to
+2,000 per document, far inside Firestore's 40,000 entries-per-document and
+8 MiB entries-size limits), and no query ever targets the payload — the
+page reads the ONE selected snapshot by id and lists headers by `createdAt`
+(single-field, automatic). A `fieldOverrides` exemption on `activities` would
+only trim write cost; it would need a `firestore.indexes.json` and a
+`firebase.json` `indexes` entry, which this release deliberately does not add.
+Revisit if a real programme shows baseline writes to be slow.
+
+**Recovery — forward fixes, never a ruleset that hides approved history.**
+- *Hosting:* a pre-1B bundle may be redeployed at any time (check out the
+  1A2 commit, build, `firebase deploy --only hosting …`, or the Console's
+  release history): it never reads the baseline collections, so existing
+  baselines are simply invisible until 1B returns, and nothing is corrupted.
+- *Rules:* once ANY approved baseline exists, **do not republish the 1A2
+  ruleset** — it would deny every read of the baseline collections and the
+  tab would report them as unavailable (nothing is lost; the documents
+  remain). The 1B ruleset may be republished over itself at any time.
+- *Data:* nothing is migrated and nothing needs undoing. A draft can be
+  withdrawn; an approved baseline is immutable by design and is superseded by
+  approving a new one.
 - ⚠️ `firebase hosting:rollback` does not exist in firebase-tools 13.35.1;
   do not plan on it.
 

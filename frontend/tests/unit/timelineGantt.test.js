@@ -8,6 +8,8 @@ import {
   isGanttScale, dayWidthForScale, dayTicks, shortDayLabel,
   actualSpan, finishVarianceDays, planComparisonLabel, ACTUAL_KIND,
   todayScrollLeft, LABEL_WIDTH_PX, HEADER_HEIGHT_PX,
+  // ADR-66
+  baselineSpan,
 } from '../../src/lib/timelineGantt'
 import { ACTIVITY_STATUS } from '../../src/lib/projectTimeline'
 
@@ -613,5 +615,66 @@ describe('dependency arrows', () => {
     expect(r.total).toBe(big.reduce((s, a) => s + a.predecessors.length, 0))
     expect(r.truncated).toBe(true)
     expect(r.arrows).toEqual([])
+  })
+})
+
+// ── The selected baseline on the chart (ADR-66) ──────────────────────────────
+
+describe('baseline ghost geometry (ADR-66)', () => {
+  const entry = (overrides = {}) => ({
+    activityId: 'a1', name: 'Ground floor slab', isMilestone: false,
+    plannedStart: '2026-10-05', plannedFinish: '2026-10-09',
+    status: 'not_started', percentComplete: 0, revision: 1, sortOrder: 10, costCodeId: null,
+    ...overrides,
+  })
+  const win = { start: '2026-10-01', end: '2026-10-31' }
+
+  it('a span from the ENTRY dates — offset, inclusive width and a centred milestone x — never from the activity', () => {
+    const g = baselineSpan(entry(), win, 10)
+    expect(g).toMatchObject({ isMilestone: false, from: '2026-10-05', to: '2026-10-09', offsetDays: 4, days: 5, x: 40, width: 50, milestoneX: 45, clippedStart: false, clippedEnd: false })
+    const m = baselineSpan(entry({ isMilestone: true, plannedStart: '2026-10-09', plannedFinish: '2026-10-09' }), win, 10)
+    expect(m).toMatchObject({ isMilestone: true, offsetDays: 8, days: 1, milestoneX: 85 })
+  })
+
+  it('clamps to the window and reports the cut ends; nothing for an unusable entry', () => {
+    const g = baselineSpan(entry({ plannedStart: '2026-09-20', plannedFinish: '2026-11-05' }), win, 10)
+    expect(g).toMatchObject({ offsetDays: 0, days: 31, clippedStart: true, clippedEnd: true })
+    expect(baselineSpan(entry({ plannedStart: '2026-08-01', plannedFinish: '2026-08-05' }), win, 10)).toBeNull()
+    expect(baselineSpan(entry({ plannedStart: 'bad' }), win)).toBeNull()
+    expect(baselineSpan(entry({ plannedFinish: '2026-10-01' }), win)).toBeNull()
+    expect(baselineSpan(null, win)).toBeNull()
+    expect(baselineSpan(entry(), null)).toBeNull()
+  })
+
+  it('the model carries the ghost per bar only when a baseline map is given, and widens the window for it', () => {
+    const acts = [activity({ plannedStart: '2026-10-05', plannedFinish: '2026-10-09' })]
+    const byId = new Map([['a1', entry({ plannedStart: '2026-09-10', plannedFinish: '2026-09-14' })]])
+    const without = buildGanttModel(acts, { now: NOW, scale: GANTT_SCALE.DAY })
+    expect(without.bars[0].baseline).toBeNull()
+    expect(without.window.start).toBe('2026-10-01')
+    const withBase = buildGanttModel(acts, { now: NOW, scale: GANTT_SCALE.DAY, baselineById: byId })
+    expect(withBase.window.start).toBe('2026-09-01')
+    expect(withBase.bars[0].baseline).toMatchObject({ from: '2026-09-10', to: '2026-09-14', days: 5 })
+    // Geometry scales with the day width at every zoom, like the bars.
+    const week = buildGanttModel(acts, { now: NOW, scale: GANTT_SCALE.WEEK, baselineById: byId })
+    expect(week.bars[0].baseline.width).toBe(5 * SCALE_DAY_WIDTH_PX[GANTT_SCALE.WEEK])
+    expect(withBase.bars[0].baseline.width).toBe(5 * SCALE_DAY_WIDTH_PX[GANTT_SCALE.DAY])
+  })
+
+  it('an entry for an activity that is not drawn, or an id not in the map, draws nothing and moves no window', () => {
+    const acts = [activity({ id: 'a1' }), activity({ id: 'nope', plannedStart: 'bad' })]
+    const byId = new Map([['nope', entry({ activityId: 'nope', plannedStart: '2025-01-01', plannedFinish: '2025-01-02' })]])
+    const m = buildGanttModel(acts, { now: NOW, scale: GANTT_SCALE.DAY, baselineById: byId })
+    expect(m.window.start).toBe('2026-10-01')
+    expect(m.bars[0].baseline).toBeNull()
+    expect(m.excluded.map(a => a.id)).toEqual(['nope'])
+  })
+
+  it('zooming and grouping never touch the baseline map or the activities', () => {
+    const acts = [activity()]
+    const byId = new Map([['a1', entry()]])
+    const before = JSON.stringify([acts, [...byId.entries()]])
+    for (const scale of GANTT_SCALE_ORDER) buildGanttModel(acts, { now: NOW, scale, baselineById: byId })
+    expect(JSON.stringify([acts, [...byId.entries()]])).toBe(before)
   })
 })

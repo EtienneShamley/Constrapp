@@ -10,6 +10,7 @@ import {
   GANTT_GROUP, GANTT_GROUP_ORDER, GANTT_GROUP_LABELS, groupGanttActivities,
 } from '../../../lib/ganttGrouping'
 import { stateFor, dependencyLabel, dependencyFlag, DEPENDENCY_STATE } from '../../../lib/ganttDependencies'
+import { varianceFor, varianceLabel, completionLabel, baselineDatesLabel, VARIANCE_KIND } from '../../../lib/ganttBaseline'
 
 // ── Constrapp GANTT™ — the programme chart (ADR-29 → ADR-64 → ADR-65) ────────
 //
@@ -57,6 +58,15 @@ const STATUS_COLOUR = {
 
 const ACTUAL_COLOUR = 'var(--color-brand-text-soft)'
 
+// The selected approved baseline (ADR-66): a DASHED OUTLINE behind the
+// current bar (a hollow diamond for a baseline milestone), in the existing
+// soft-text token — never a fill, so it can never be mistaken for a status
+// bar, and never the module orange. It sits behind the bar, so it shows
+// exactly where the plan has moved; the variance is always text as well.
+const BASELINE_COLOUR = 'var(--color-brand-text-soft)'
+const BASELINE_TOP = 3
+const BASELINE_H = 18
+
 // Dependency arrows: a well-formed link is muted; a conflict is red and
 // dashed; a link needing review (cycle, cancelled, missing, malformed) is
 // amber and dashed. Text always carries the meaning as well.
@@ -99,7 +109,18 @@ function actualSentence(bar) {
   return ` Actual finish ${formatIsoDate(a.to)}, no start recorded.`
 }
 
-function barName(bar, depState, opensEditor) {
+// The baseline sentence for the accessible name (ADR-66): the baseline
+// dates, the planned variance and — only from a RECORDED finish — the
+// completion variance. Empty when no baseline is shown.
+function baselineSentence(bar, variance) {
+  if (!variance || variance.kind === VARIANCE_KIND.NO_BASELINE) return ''
+  const dates = baselineDatesLabel(variance.entry)
+  const planned = varianceLabel(variance, { isMilestone: bar.isMilestone })
+  const completion = completionLabel(variance, { isMilestone: bar.isMilestone })
+  return `${dates ? ` ${dates}.` : ''}${planned ? ` ${planned}.` : ''}${completion ? ` ${completion}.` : ''}`
+}
+
+function barName(bar, depState, opensEditor, variance = null) {
   const planned = bar.isMilestone
     ? `Milestone ${formatIsoDate(bar.plannedStart)}`
     : `Planned ${formatIsoDate(bar.plannedStart)} to ${formatIsoDate(bar.plannedFinish)} (${durationLabel(bar)})`
@@ -107,6 +128,7 @@ function barName(bar, depState, opensEditor) {
   return `${bar.name} — ${bar.statusLabel}, ${bar.percentComplete}% complete. ${planned}.`
     + actualSentence(bar)
     + (bar.planComparison ? ` ${bar.planComparison}.` : '')
+    + baselineSentence(bar, variance)
     + (bar.isOverdue ? ' Overdue.' : '')
     + (deps ? ` ${deps}` : '')
     + (opensEditor ? ' Opens the editor.' : ' Opens the details.')
@@ -119,12 +141,17 @@ export default function TimelineGantt({
   collapsed, onToggleGroup, onCollapseAll, onExpandAll,
   onActivate, canWrite = false,
   dependencyStates,
+  // ADR-66: { shown, label, byId, comparison } for the selected approved
+  // baseline, or null. Presentation only — the page derives it.
+  baseline = null,
 }) {
   const scrollerRef = useRef(null)
 
+  const baselineShown = Boolean(baseline?.shown && baseline.byId)
+  const baselineById = baselineShown ? baseline.byId : null
   const model = useMemo(
-    () => buildGanttModel(activities, { now, scale }),
-    [activities, now, scale],
+    () => buildGanttModel(activities, { now, scale, baselineById }),
+    [activities, now, scale, baselineById],
   )
   const groups = useMemo(
     () => groupGanttActivities(activities, groupBy, { costCodes, now }),
@@ -316,6 +343,7 @@ export default function TimelineGantt({
                     key={row.key}
                     bar={row.bar}
                     depState={stateFor(dependencyStates, row.bar.id)}
+                    variance={baselineShown ? varianceFor(baseline.comparison, row.bar.id) : null}
                     canvasWidth={model.canvasWidth}
                     opensEditor={canWrite && !row.bar.isCancelled}
                     onActivate={onActivate}
@@ -344,6 +372,17 @@ export default function TimelineGantt({
         <span className="inline-flex items-center gap-1.5 text-[11px] text-brand-muted">
           <span aria-hidden="true" className="inline-block w-0 h-3 border-l-2 border-brand-accent" /> Today
         </span>
+        {baselineShown && (
+          <>
+            <span className="inline-flex items-center gap-1.5 text-[11px] text-brand-muted">
+              <span aria-hidden="true" className="inline-block w-4 h-2.5 rounded-sm border border-dashed" style={{ borderColor: BASELINE_COLOUR }} />
+              Baseline ({baseline.label || 'approved plan'})
+            </span>
+            <span className="inline-flex items-center gap-1.5 text-[11px] text-brand-muted">
+              <span aria-hidden="true" className="inline-block w-2 h-2 rotate-45 border" style={{ borderColor: BASELINE_COLOUR }} /> Baseline milestone
+            </span>
+          </>
+        )}
         <span className="inline-flex items-center gap-1.5 text-[11px] text-brand-muted">
           <span aria-hidden="true" className="inline-block w-4 h-0 border-t border-brand-muted" /> Finish-to-start dependency
         </span>
@@ -355,7 +394,10 @@ export default function TimelineGantt({
         </span>
         <span className="text-[11px] text-brand-muted">
           Bars show <strong className="text-brand-text-soft">planned</strong> dates; the filled portion is the entered progress %;
-          the thin line beneath is what was recorded. Comparisons are against the current plan, not a baseline.
+          the thin line beneath is what was recorded and is compared with the current plan.
+          {baselineShown
+            ? ' The dashed outline is the selected approved baseline; the variance against it is shown in each bar’s description and in the list.'
+            : ' No approved baseline is shown, so nothing here is slippage against an approved programme.'}
         </span>
       </div>
 
@@ -386,11 +428,12 @@ export default function TimelineGantt({
 // One activity row: the sticky label cell and the canvas cell holding the
 // planned bar (a real <button>) and, beneath it, the recorded dates (a
 // decorative span — its facts are in the button's accessible name).
-function GanttBarRow({ bar, depState, canvasWidth, opensEditor, onActivate }) {
+function GanttBarRow({ bar, depState, variance = null, canvasWidth, opensEditor, onActivate }) {
   const colour = STATUS_COLOUR[bar.status] ?? STATUS_COLOUR[ACTIVITY_STATUS.NOT_STARTED]
-  const name = barName(bar, depState, opensEditor)
+  const name = barName(bar, depState, opensEditor, variance)
   const actual = bar.actual
   const flag = dependencyFlag(depState)
+  const ghost = bar.baseline
 
   return (
     <div className="flex" style={{ height: ROW_HEIGHT_PX }}>
@@ -413,6 +456,34 @@ function GanttBarRow({ bar, depState, canvasWidth, opensEditor, onActivate }) {
       </div>
 
       <div className="relative shrink-0 border-b border-brand-border/60" style={{ width: canvasWidth }}>
+        {/* The selected baseline's ghost — BEHIND the bar (earlier in the
+            DOM), decorative: its dates and the variance are in the button's
+            accessible name. A dashed outline, never a fill. */}
+        {ghost && (
+          ghost.isMilestone ? (
+            <span
+              aria-hidden="true"
+              className="absolute rotate-45 border"
+              style={{
+                left: ghost.milestoneX - 6, top: (ROW_HEIGHT_PX - 12) / 2, width: 12, height: 12,
+                borderColor: BASELINE_COLOUR,
+              }}
+            />
+          ) : (
+            <span
+              aria-hidden="true"
+              className="absolute rounded-md border border-dashed"
+              style={{
+                left: ghost.x, top: BASELINE_TOP, width: Math.max(ghost.width, MIN_BAR_PX), height: BASELINE_H,
+                borderColor: BASELINE_COLOUR,
+                borderTopLeftRadius: ghost.clippedStart ? 0 : undefined,
+                borderBottomLeftRadius: ghost.clippedStart ? 0 : undefined,
+                borderTopRightRadius: ghost.clippedEnd ? 0 : undefined,
+                borderBottomRightRadius: ghost.clippedEnd ? 0 : undefined,
+              }}
+            />
+          )
+        )}
         {bar.isMilestone ? (
           <button
             type="button"

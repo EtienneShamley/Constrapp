@@ -130,7 +130,7 @@ export function isDrawable(a) {
 // real month boundary. `today` widens the window ONLY when it already sits
 // within one month of the programme — a programme that finished last year must
 // not drag a year of empty columns across the canvas just to show a today line.
-export function ganttWindow(activities, now = new Date()) {
+export function ganttWindow(activities, now = new Date(), { baselineById = null } = {}) {
   const drawable = (activities ?? []).filter(isDrawable)
   if (drawable.length === 0) return null
 
@@ -140,6 +140,14 @@ export function ganttWindow(activities, now = new Date()) {
     for (const iso of activityDates(a)) {
       if (min === null || iso < min) min = iso
       if (max === null || iso > max) max = iso
+    }
+    // ADR-66: the selected baseline's dates for a DRAWN activity widen the
+    // window too, so a plan that moved a month is never drawn with its ghost
+    // off-canvas. A baseline entry whose activity is not drawn adds nothing.
+    const b = baselineById?.get(a.id)
+    if (b && isValidIsoDate(b.plannedStart) && isValidIsoDate(b.plannedFinish) && b.plannedFinish >= b.plannedStart) {
+      if (b.plannedStart < min) min = b.plannedStart
+      if (b.plannedFinish > max) max = b.plannedFinish
     }
   }
   if (min === null || max === null) return null
@@ -321,6 +329,35 @@ function clampSpan(startIso, finishIso, window) {
   return { from, to, clippedStart, clippedEnd }
 }
 
+// ── The selected baseline on the chart (ADR-66) ──────────────────────────────
+//
+// The GHOST: the approved baseline's planned span for an activity, drawn
+// BEHIND the current bar as a dashed outline (a hollow diamond for a
+// baseline milestone) so it shows exactly where the plan has moved. Pure
+// geometry from the snapshot ENTRY — nothing is inferred from the activity's
+// own dates, and an entry with an unusable span draws nothing.
+export function baselineSpan(entry, window, dayWidth = DAY_WIDTH_PX) {
+  if (!entry || !window) return null
+  if (!isValidIsoDate(entry.plannedStart) || !isValidIsoDate(entry.plannedFinish)) return null
+  if (entry.plannedFinish < entry.plannedStart) return null
+  const span = clampSpan(entry.plannedStart, entry.plannedFinish, window)
+  if (!span) return null
+  const offsetDays = daysBetween(window.start, span.from)
+  const days = daysBetween(span.from, span.to) + 1
+  return {
+    isMilestone: entry.isMilestone === true,
+    from: entry.plannedStart,
+    to: entry.plannedFinish,
+    offsetDays,
+    days,
+    x: offsetDays * dayWidth,
+    width: days * dayWidth,
+    milestoneX: offsetDays * dayWidth + dayWidth / 2,
+    clippedStart: span.clippedStart,
+    clippedEnd: span.clippedEnd,
+  }
+}
+
 // ── The model the component renders ──────────────────────────────────────────
 //
 // Everything the Gantt needs, computed once: window, canvas width, ticks, the
@@ -333,12 +370,15 @@ export function buildGanttModel(activities, {
   dayWidth = dayWidthForScale(scale),
   rowHeight = ROW_HEIGHT_PX,
   window: explicitWindow = null,
+  // ADR-66: activityId → snapshot entry of the SELECTED approved baseline,
+  // or null when none is shown. Only the ghost geometry and the window read it.
+  baselineById = null,
 } = {}) {
   const ordered  = sortActivities(activities ?? [])
   const drawable = ordered.filter(isDrawable)
   const excluded = ordered.filter(a => !isDrawable(a))
 
-  const window = explicitWindow ?? ganttWindow(ordered, now)
+  const window = explicitWindow ?? ganttWindow(ordered, now, { baselineById })
 
   const empty = {
     window: null,
@@ -419,6 +459,9 @@ export function buildGanttModel(activities, {
       actual: actualSpan(a, window, dayWidth),
       finishVarianceDays: finishVarianceDays(a),
       planComparison: planComparisonLabel(a),
+      // The selected baseline's ghost (ADR-66) — null when none is shown or
+      // the activity is not in the baseline.
+      baseline: baselineById ? baselineSpan(baselineById.get(a.id) ?? null, window, dayWidth) : null,
     })
   }
 

@@ -222,6 +222,33 @@ That script runs
     date (`2026-02-30`), a `responsibleContactId`/`costCodeId` naming nothing,
     a duplicate `sortOrder`, and a full-document overwrite that carries the
     correct next revision are all ACCEPTED by rules.
+  - `frontend/tests/rules/programmeBaselines.rules.test.js` — **85 tests**
+    over the two ADR-66 blocks: the read / capture / approve matrix for every
+    role (qs read-only; external roles, another company and anonymous
+    denied); tenant and project isolation through the first / last
+    `exists()` pin; the PAIR both ways (header alone, snapshot alone, a
+    snapshot against a seeded header, mismatched counts, another actor, a
+    client clock all refused; the correct pair stored with one server
+    instant on both); 19 header create pins; 27 snapshot shape and first /
+    last entry pins; every status, a one-day milestone and a cost-code key
+    accepted; the DC42 gaps PROVEN (a garbage middle entry, duplicates, an
+    entry whose dates differ from its source all ACCEPTED); a real
+    **2,000-entry worst-case write** accepted under the ceilings and 2,001
+    refused; the lifecycle (approve with caller stamp, server time and
+    revision 2; self-approval permitted; another actor, client clocks,
+    revision 1 / 3 and any content change riding along refused; withdraw
+    with a reason, blank / long / another actor refused; an APPROVED or
+    WITHDRAWN header admitting NO update; no delete in any state by anyone);
+    the snapshot immutable (no update, no identical rewrite, no delete);
+    and the app's own transactions against the emulator with the real
+    `getDocsFromServer` — capture writes the pair with cancelled history
+    kept, refuses a malformed stored activity by name, is refused for qs by
+    the RULES; approve with no drift, drift unacknowledged refused with the
+    drift attached, drift acknowledged by key approved, a programme that
+    moved AGAIN refused; **two concurrent approvals** (first wins, second
+    refused, nothing re-approved); a stale (withdrawn) copy and a missing
+    snapshot refused; withdraw; and the `activities` block unaffected (a
+    1A2 edit and cancel still pass beside an approved baseline).
   - `frontend/tests/rules/activitiesTransitional.rules.test.js` — **7 tests**
     against `firestore.transitional.rules` (ADR-65 Stage 1): the 1A1 bundle's
     edit and cancel (revision UNCHANGED) ACCEPTED; the 1A2 bundle's (+1)
@@ -1307,6 +1334,67 @@ npm run test:unit
   Blocked / Conflict / Review flags; conflict days); and the version helpers
   (`activityRevision` reads a legacy document as 1; `sameActivityVersion`
   needs revision AND stamps).
+
+- `frontend/tests/unit/ganttBaseline.test.js` — **37 tests** over
+  `lib/ganttBaseline.js` (ADR-66): the header lifecycle and the draft /
+  withdraw validators; the capture projection (exactly the ten entry keys,
+  no description / notes / actual dates / predecessors / name snapshots; a
+  legacy document read as revision 1; never repaired) and `validateBaselineEntry`
+  with a precise reason per fault; `buildCapturePayload` (every activity in
+  programme order with cancelled history and counts; REFUSED by name on a
+  malformed record or a duplicate id — nothing excluded silently; an empty
+  programme, > 2,000 entries and an oversized payload refused without
+  truncation; the 2,000 × 120-character worst case under the 900,000-byte
+  ceiling and 1 MiB); the Firestore storage-size formula; approved history
+  (ordering by `approvedAt`, id tie-break, drafts and withdrawn never
+  approved, a malformed approved header never active, ordinals,
+  designations, labels, selector options, `selectedBaseline`); the snapshot
+  index and usability; drift (changed / added / cancelled-since / missing,
+  the order-independent key, a legacy revision); variance (signs, start and
+  finish separately, completion ONLY from a recorded finish, month / year /
+  leap-day boundaries, milestones, every classification with null
+  variances); `baselineComparison` incl. orphaned entries and no snapshot;
+  every label (never "current plan"); and the summary (each class counted
+  once, the single largest finish movement with an id tie-break, the
+  latest-planned-finish envelope, no average and no completion claim,
+  unavailable without a snapshot).
+
+- `frontend/tests/unit/programmeBaselineActions.test.js` — **18 tests** over
+  `lib/programmeBaselineActions.js` with a fake transaction AND a fake
+  server read: capture reads the SERVER first then writes the header and
+  the snapshot in ONE transaction exactly once each (the exact documents);
+  cancelled history captured in order; an invalid name / reason refused
+  BEFORE any read; a malformed server activity refused by name with nothing
+  written; OVERSIZED refused without truncation; empty, offline (never a
+  cache fallback), no uid and transaction failures mapped; the drift check;
+  approve — server read, then header + snapshot reads, then ONE stamps-only
+  update at revision 2; drift unacknowledged → DRIFT with the drift attached
+  and nothing read in a transaction; the acknowledged key must match the
+  drift found NOW; MISSING, STALE by revision or by stamps, a non-draft, a
+  missing or mismatched snapshot refused with nothing written; pending copy
+  and no uid refused before any read; the snapshot never updated; withdraw
+  (stamps + reason + revision 2 after the read; blank reason, stale copy and
+  an approved baseline refused); every error message states nothing was
+  written or changed.
+
+  `timelineGantt.test.js` gained **5** ghost tests (`baselineSpan` from the
+  ENTRY dates with offset, inclusive width and milestone x; clamping and
+  the cut ends; nothing for an unusable entry; the model carrying the ghost
+  only when a baseline map is given and widening the window for it, scaled
+  at every zoom; an undrawn or unmapped activity drawing nothing and moving
+  no window; zoom and grouping never touching the map); `ganttSurface.test.js`
+  **10** ADR-66 pins (the decorative dashed outline in `brand-text-soft`
+  behind the bar, never a fill or orange, no animation; the baseline
+  sentence in the bar name and the two legend entries; the List column,
+  card line and detail row as text; the page deriving selection, comparison
+  and summary with nothing stored; the stale ADR-65 copy gone; the two hooks
+  — one bounded headers listener, one single-document snapshot listener,
+  `getDocsFromServer`, no direct write; the action layer — server read
+  first, the pair in one transaction, drift by key, no Firebase import, the
+  snapshot never updated, no financial module; the pure domain never
+  inferring a finish from a status; the dialogs on the shared shell with the
+  preview, the refusal and the explicit drift acknowledgement; no new
+  dependency and no Dashboard or PULSE import of the baseline modules).
 
 - `frontend/tests/unit/activityActions.test.js` — **13 tests** over
   `lib/activityActions.js` with a fake transaction: the full edit writes the
@@ -6895,7 +6983,7 @@ Manual (production, after Stage 2 — at most three):
    review*, the amount stays in Unapplied Supplier Variations (signed) and
    SHIELD check 4 lists it for review.
 
-## 40. Constrapp GANTT™ — Programme 1A1 (ADR-64) — implemented, NOT YET DEPLOYED
+## 40. Constrapp GANTT™ — Programme 1A1 (ADR-64) — LIVE in production (confirmed by the Product Owner)
 
 **Automated:** `tests/unit/timelineGantt.test.js` (33 → 54), new
 `tests/unit/ganttGrouping.test.js` (19) and `tests/unit/ganttSurface.test.js`
@@ -6957,7 +7045,7 @@ responsible contacts; an admin / PM login and a QS login.
    every figure is identical — the programme writes no financial document,
    and Firestore shows no new field on any activity.
 
-## 41. Constrapp GANTT™ — Programme 1A2, dependencies and scheduling integrity (ADR-65) — implemented, NOT YET DEPLOYED
+## 41. Constrapp GANTT™ — Programme 1A2, dependencies and scheduling integrity (ADR-65) — LIVE in production (confirmed by the Product Owner)
 
 **Automated:** unit **66 files / 3,775 tests** (new `ganttDependencies.test.js`,
 `activityActions.test.js`; `timelineGantt`, `ganttSurface`,
@@ -7013,3 +7101,68 @@ and the Stage-1 ruleset published in the test project for check 3.
    indicator 4 and the Budget / Forecast figures are unchanged before and after
    adding dependencies; a project with no dependencies shows no arrows, no
    flags and no disclosure line.
+
+## 42. Constrapp GANTT™ — Programme 1B, approved schedule baselines & progress variance (ADR-66) — implemented, NOT YET DEPLOYED
+
+**Automated:** unit **68 files / 3,861 tests** (new `ganttBaseline.test.js`
+and `programmeBaselineActions.test.js`; `timelineGantt` and `ganttSurface`
+extended — see §0b); rules **29 files / 1,935 tests** (new
+`programmeBaselines.rules.test.js`, 85 — see §0). FINAL `firestore.rules`
+219,930 → **228,967 bytes**; transitional **229,601**; `npm run
+rules:transitional:check` clean. The chart, the panel and the two dialogs are
+not unit-rendered (no jsdom); the three checks below cover them by hand.
+Preconditions: a project with a programme of at least six activities and one
+milestone (one cancelled), admin / PM and QS logins, two browser tabs.
+
+**Manual acceptance (maximum three):**
+
+1. **Capture, approve, compare.** As PM, *Capture baseline*: the preview
+   shows the activity count with the cancelled one as history, the milestone
+   count and an estimated size; enter a name and reason and capture — the
+   panel lists the draft as *not approved*. *Review draft*: the dialog reports
+   *No activity has changed since this baseline was captured*, the
+   self-approval note appears (you captured it), Approve — the panel now
+   reads *Baseline 1 — name · Active · Original*, approved by You, *captured
+   and approved by the same person*. Move one activity's planned finish 6
+   days later and a milestone 3 days earlier: the chart shows a dashed
+   outline where each bar used to be (a hollow diamond for the milestone),
+   the bar's description reads *Planned … finish +6 days against baseline*,
+   the List's *vs baseline* column shows `+6 d` (amber) and `−3 d`, the
+   summary counts *1 later · 1 earlier · the largest finish movement* and the
+   latest-planned-finish line, and the mobile cards (375 px) carry the same
+   sentence. Record an actual finish on a completed activity 2 days after its
+   baseline finish: *Finished 2 days after the baseline finish* appears in the
+   list and the detail. Add a new activity: *Added after the baseline was
+   approved*; cancel another: *Cancelled since the baseline was approved* and
+   the summary counts them. *Hide baseline* removes the outlines and the
+   column; Day / Week / Month and grouping keep every outline on its dates.
+   In Firestore the header is `approved` at revision 2 and the snapshot is
+   byte-identical to the capture.
+
+2. **Drift, concurrency and re-baselining.** Capture a second draft, then in
+   another tab edit one activity and add one. *Review draft* in the first tab
+   lists *Edited since capture · 1* (with the revision move) and *Added since
+   capture · 1*; Approve is disabled until the acknowledgement is ticked. Tick
+   it, then in the other tab cancel a third activity; Approve in the first
+   tab is refused with *The programme changed again after you reviewed it*,
+   the list now shows *Cancelled since capture · 1* and the box is un-ticked;
+   tick and approve — it succeeds as *Baseline 2 · Active*, *Baseline 1* is
+   now *Original* and selectable in *Compare with*, and selecting it shows
+   the earlier dates. Open the same remaining draft in two tabs and approve
+   in both: the second is refused (*Someone else changed this baseline*),
+   nothing is re-approved. Withdraw a draft with a blank reason: refused;
+   with a reason: it leaves the drafts list. In Firestore no approved
+   header or any snapshot has changed.
+
+3. **Roles, refusals and regression.** As QS: the panel, the selector, the
+   outlines, the column and the summary are visible; there is no *Capture
+   baseline* and no *Review draft*; a direct write is refused by the rules.
+   Make an activity invalid through the SDK (planned finish before start)
+   and *Capture baseline*: the preview names it and the capture button is
+   disabled — nothing is written. Go offline and try to capture a valid
+   programme: *You appear to be offline … nothing was written.* Regression:
+   the 1A1 chart (zoom, grouping, sticky layout, Today, actual overlay), the
+   1A2 arrows and flags, the Dashboard Programme panel, PULSE indicator 4 and
+   every Budget / Forecast figure are unchanged with and without a baseline;
+   a project with no baseline shows *No approved baseline*, no outlines, no
+   column and every activity remains editable.

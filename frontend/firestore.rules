@@ -2453,6 +2453,171 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Programme baseline HEADERS — Constrapp GANTT™ 1B (ADR-66). The lifecycle
+    // record of one approved-programme baseline; its payload is the sibling
+    // programmeBaselineSnapshots/{baselineId}, created in the SAME commit.
+    match /companies/{companyId}/projects/{projectId}/programmeBaselines/{baselineId} {
+      // Read audience — the programme's, includes qs.
+      function baselineReader() {
+        return sameCompany(companyId) && memberRole() in ['company_admin', 'project_manager', 'qs'];
+      }
+      // Capture AND approve audience — the programme writers; EXCLUDES qs.
+      function baselineWriter() {
+        return sameCompany(companyId) && memberRole() in ['company_admin', 'project_manager'];
+      }
+      function snapshotPath() {
+        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/programmeBaselineSnapshots/$(baselineId);
+      }
+      function text(v, n) {
+        return v is string && v.trim().size() > 0 && v.size() <= n;
+      }
+      function exactKeys() {
+        return request.resource.data.keys().hasOnly([
+                 'name', 'reason', 'status', 'activityCount',
+                 'approvedAt', 'approvedBy', 'withdrawnAt', 'withdrawnBy', 'withdrawReason',
+                 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+               ])
+            && request.resource.data.keys().hasAll([
+                 'name', 'reason', 'status', 'activityCount',
+                 'approvedAt', 'approvedBy', 'withdrawnAt', 'withdrawnBy', 'withdrawReason',
+                 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+               ]);
+      }
+      // The captured identity no update of any kind may rewrite.
+      function corePreserved() {
+        return request.resource.data.name == resource.data.name
+            && request.resource.data.reason == resource.data.reason
+            && request.resource.data.activityCount == resource.data.activityCount
+            && request.resource.data.createdAt == resource.data.createdAt
+            && request.resource.data.createdBy == resource.data.createdBy;
+      }
+
+      allow read: if baselineReader();
+
+      // CAPTURE — born draft, revision 1, caller + server stamps, with the
+      // snapshot written in the same commit by the same caller at the same
+      // server time and agreeing on activityCount (getAfter).
+      allow create: if baselineWriter()
+                  && exactKeys()
+                  && text(request.resource.data.name, 120)
+                  && text(request.resource.data.reason, 500)
+                  && request.resource.data.status == 'draft'
+                  && request.resource.data.activityCount is int
+                  && request.resource.data.activityCount >= 1
+                  && request.resource.data.activityCount <= 2000
+                  && request.resource.data.approvedAt == null
+                  && request.resource.data.approvedBy == null
+                  && request.resource.data.withdrawnAt == null
+                  && request.resource.data.withdrawnBy == null
+                  && request.resource.data.withdrawReason == ''
+                  && request.resource.data.revision == 1
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  && getAfter(snapshotPath()).data.activityCount == request.resource.data.activityCount
+                  && getAfter(snapshotPath()).data.capturedBy == request.auth.uid
+                  && getAfter(snapshotPath()).data.capturedAt == request.time;
+
+      // The ONLY updates: a DRAFT becomes approved or withdrawn, each a
+      // stamps-only transition with revision + 1. Approved and withdrawn are
+      // terminal — no branch admits an update from them, so an approved
+      // baseline is immutable history.
+      allow update: if baselineWriter() && corePreserved() && updateStamped() && revisionIncremented()
+                  && resource.data.status == 'draft'
+                  && (
+                    (
+                      request.resource.data.status == 'approved'
+                      && changedKeys().hasOnly(['status', 'approvedAt', 'approvedBy', 'revision', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.approvedBy == request.auth.uid
+                      && request.resource.data.approvedAt == request.time
+                    )
+                    ||
+                    (
+                      request.resource.data.status == 'withdrawn'
+                      && changedKeys().hasOnly(['status', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'revision', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.withdrawnBy == request.auth.uid
+                      && request.resource.data.withdrawnAt == request.time
+                      && text(request.resource.data.withdrawReason, 500)
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
+    // Programme baseline SNAPSHOTS — Constrapp GANTT™ 1B (ADR-66). ONE
+    // immutable document per baseline: a bounded list of minimal activity
+    // entries (dates, status, progress, revision, order, cost-code key — no
+    // financial field). Create-only, paired with its header; never updated,
+    // never deleted. Rules pin the list size and the FIRST and LAST entries
+    // only (DC42).
+    match /companies/{companyId}/projects/{projectId}/programmeBaselineSnapshots/{baselineId} {
+      function snapshotReader() {
+        return sameCompany(companyId) && memberRole() in ['company_admin', 'project_manager', 'qs'];
+      }
+      function snapshotWriter() {
+        return sameCompany(companyId) && memberRole() in ['company_admin', 'project_manager'];
+      }
+      function headerPath() {
+        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/programmeBaselines/$(baselineId);
+      }
+      // ONE entry: exact keys, a real activity in THIS project (one read),
+      // the ADR-29 date and milestone invariants, the status set, bounded
+      // progress, a positive integer revision and a numeric order.
+      function entryValid(e) {
+        return e is map
+            && e.keys().hasOnly(['activityId', 'name', 'isMilestone', 'plannedStart', 'plannedFinish', 'status', 'percentComplete', 'revision', 'sortOrder', 'costCodeId'])
+            && e.keys().hasAll(['activityId', 'name', 'isMilestone', 'plannedStart', 'plannedFinish', 'status', 'percentComplete', 'revision', 'sortOrder', 'costCodeId'])
+            && e.activityId is string
+            && e.activityId.size() > 0
+            && e.name is string
+            && e.name.trim().size() > 0
+            && e.name.size() <= 120
+            && e.isMilestone is bool
+            && isIsoDate(e.plannedStart)
+            && isIsoDate(e.plannedFinish)
+            && e.plannedFinish >= e.plannedStart
+            && (!e.isMilestone || e.plannedFinish == e.plannedStart)
+            && e.status in ['not_started', 'in_progress', 'on_hold', 'completed', 'cancelled']
+            && e.percentComplete is int
+            && e.percentComplete >= 0
+            && e.percentComplete <= 100
+            && e.revision is int
+            && e.revision >= 1
+            && e.sortOrder is number
+            && (e.costCodeId == null || (e.costCodeId is string && e.costCodeId.size() > 0))
+            && exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/activities/$(e.activityId));
+      }
+      function activitiesValid() {
+        let a = request.resource.data.activities;
+        return a is list
+            && a.size() >= 1
+            && a.size() <= 2000
+            && a.size() == request.resource.data.activityCount
+            && entryValid(a[0])
+            && entryValid(a[a.size() - 1]);
+      }
+
+      allow read: if snapshotReader();
+
+      // Created ONLY together with its draft header: same caller, same
+      // server time, same activityCount (getAfter).
+      allow create: if snapshotWriter()
+                  && request.resource.data.keys().hasOnly(['activityCount', 'capturedAt', 'capturedBy', 'activities'])
+                  && request.resource.data.keys().hasAll(['activityCount', 'capturedAt', 'capturedBy', 'activities'])
+                  && request.resource.data.activityCount is int
+                  && request.resource.data.capturedBy == request.auth.uid
+                  && request.resource.data.capturedAt == request.time
+                  && activitiesValid()
+                  && getAfter(headerPath()).data.status == 'draft'
+                  && getAfter(headerPath()).data.activityCount == request.resource.data.activityCount
+                  && getAfter(headerPath()).data.createdBy == request.auth.uid
+                  && getAfter(headerPath()).data.createdAt == request.time;
+
+      // IMMUTABLE. No update of any kind, no delete.
+      allow update: if false;
+      allow delete: if false;
+    }
+
     // Project Timeline activities — the project programme (ADR-29; ADR-65
     // predecessors + revision contract).
     match /companies/{companyId}/projects/{projectId}/activities/{activityId} {
