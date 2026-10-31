@@ -1,18 +1,15 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   collection, doc, onSnapshot, query, orderBy,
-  setDoc, updateDoc, serverTimestamp, runTransaction,
+  serverTimestamp, runTransaction,
 } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { useAuth } from './useAuth'
 import { useCompany } from './useCompany'
-import {
-  ACTIVITY_STATUS,
-  normaliseActivityDraft, validateActivityDraft, validateCancelReason,
-} from '../lib/projectTimeline'
 import { runActivityQuickAction } from '../lib/activityQuickActions'
+import { runActivityCreate, runActivityUpdate, runActivityCancel } from '../lib/activityActions'
 
-// ── Project Timeline activities (the programme) — ADR-29 ─────────────────────
+// ── Project Timeline activities (the programme) — ADR-29 / ADR-65 ────────────
 //
 // An activity is a PLANNING record, not a financial document.
 //
@@ -23,23 +20,21 @@ import { runActivityQuickAction } from '../lib/activityQuickActions'
 // `costCodeName` are a JOIN KEY for a future read-time "delay → forecast
 // impact" derivation — never an authored commercial value.
 //
-// ⚠️ NO TRANSACTION AND NO CURRENCY RATCHET. Every other recent create wraps
-// itself in `runTransaction` to stage `stageProjectCurrencyLock` (ADR-21),
-// because it writes monetary data. An activity holds no amount, no currency and
-// no counter, so there is nothing to make atomic and nothing to lock — engaging
-// the ratchet here would lock a project's currency on a scheduling write, which
+// ⚠️ NO CURRENCY RATCHET. Every recent FINANCIAL create stages
+// `stageProjectCurrencyLock` (ADR-21) because it writes monetary data. An
+// activity holds no amount, no currency and no counter, so engaging the
+// ratchet here would lock a project's currency on a scheduling write, which
 // would be wrong.
-// (The quick status actions DO use a transaction — not for atomicity across
-// documents, but to read-check-write one activity as a version guard. They
-// still stage no currency lock.)
 //
-// ⚠️ LAST-WRITE-WINS. There is no optimistic concurrency: two users editing one
-// activity will overwrite each other, including fields the second never looked
-// at. `updatedAt`/`updatedBy` record WHO last wrote, not WHAT changed. The UI
-// surfaces that metadata; compare-and-set is deferred (docs/SECURITY.md →
-// Deferred Control 23). The quick status actions below are the one GUARDED
-// path — they refuse to write over a newer version — but the full editor is
-// not, so the collection as a whole remains last-write-wins.
+// ⚠️ EVERY WRITE IS A GUARDED TRANSACTION (ADR-65). Create, full edit, cancel
+// and the quick status actions all run through lib/activityActions.js /
+// lib/activityQuickActions.js: read the server copy, refuse a STALE save when
+// the activity's `revision` or (updatedAt, updatedBy) differs from the copy
+// the user acted on, re-validate, verify any NEW predecessor on the server,
+// then write with `revision` = stored + 1. The collection is no longer
+// last-write-wins through the app; the limits of that guarantee (direct SDK
+// writes, the Stage-1 transitional ruleset, graph-wide races) are Deferred
+// Control 41.
 //
 // The keyed-snapshot pattern below (state tagged with the target it belongs to,
 // loading DERIVED from it) is the one used by useCashFlowLines /
@@ -88,93 +83,65 @@ export function useProjectActivities(projectId) {
     () => collection(db, 'companies', companyId, 'projects', projectId, 'activities'),
     [companyId, projectId],
   )
+  // A sibling activity in the SAME project — the only predecessor reference
+  // the app can build, so a cross-project id cannot be expressed here.
+  const predecessorRef = useCallback(
+    (activityId) => doc(collectionRef(), activityId),
+    [collectionRef],
+  )
 
-  // Creates an activity with a RANDOM document id — stable, never reused, and
-  // the only forward-compatibility this foundation needs for future links
-  // (drawings, photos, RFIs, dependencies) that attach from the other side.
+  // Creates an activity with a RANDOM document id — stable, never reused: the
+  // id predecessors (ADR-65) attach to from the successor side.
   const createActivity = useCallback(async (input) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
-
-    const validationError = validateActivityDraft(input, { creating: true })
-    if (validationError) throw new Error(validationError)
-
     const ref = doc(collectionRef())
-    await setDoc(ref, {
-      ...normaliseActivityDraft(input),
-
-      // Cancellation stamps. Rules require these empty/null at create, so a
-      // pre-cancelled activity cannot be forged.
-      cancelReason: '',
-      cancelledAt:  null,
-      cancelledBy:  null,
-
-      revision: 1,
-      createdAt: serverTimestamp(),
-      createdBy: user.uid,
-      updatedAt: serverTimestamp(),
-      updatedBy: user.uid,
+    return runActivityCreate({
+      db, ref, predecessorRef, input, uid: user.uid, runTransaction, serverTimestamp,
     })
-    return ref.id
-  }, [companyId, projectId, user, collectionRef])
+  }, [companyId, projectId, user, collectionRef, predecessorRef])
 
   // Edits everything except the cancellation branch and the immutable core
-  // (`revision`, `createdAt`, `createdBy` are never written here, and rules
-  // reject an update that changes any of them).
+  // (`createdAt`, `createdBy` are never written here, and rules reject an
+  // update that changes them; `revision` is written as stored + 1).
   //
   // Status may move BACKWARDS — completed → in_progress, in_progress →
   // not_started — because a programme is a plan that gets corrected, not an
   // audit record. Cancellation is deliberately NOT reachable from here.
+  // `activityDoc` is the copy the dialog was opened from — its version.
   const updateActivity = useCallback(async (activityDoc, input) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
-    if (activityDoc?.status === ACTIVITY_STATUS.CANCELLED) {
-      throw new Error('A cancelled activity cannot be edited')
-    }
-
-    const validationError = validateActivityDraft(input)
-    if (validationError) throw new Error(validationError)
-
-    const ref = doc(collectionRef(), activityDoc.id)
-    await updateDoc(ref, {
-      ...normaliseActivityDraft(input),
-      updatedAt: serverTimestamp(),
-      updatedBy: user.uid,
+    return runActivityUpdate({
+      db,
+      ref: doc(collectionRef(), activityDoc.id),
+      predecessorRef,
+      seen: activityDoc,
+      input,
+      uid: user.uid,
+      runTransaction,
+      serverTimestamp,
     })
-  }, [companyId, projectId, user, collectionRef])
+  }, [companyId, projectId, user, collectionRef, predecessorRef])
 
   // Cancellation is TERMINAL and requires a non-whitespace reason — enforced
-  // here AND by Firestore rules, which additionally restrict the write to the
-  // cancellation keys so no content edit can ride along.
-  //
-  // Activities are NEVER deleted (the ADR-12 posture): a cancelled activity is
-  // retained programme history that simply stops counting as outstanding work.
+  // in the action layer AND by Firestore rules, which additionally restrict
+  // the write to the cancellation keys (+ revision) so no content edit can
+  // ride along. Activities are NEVER deleted (the ADR-12 posture).
   const cancelActivity = useCallback(async (activityDoc, cancelReason) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
-    if (activityDoc?.status === ACTIVITY_STATUS.CANCELLED) {
-      throw new Error('This activity is already cancelled')
-    }
-
-    const reasonError = validateCancelReason(cancelReason)
-    if (reasonError) throw new Error(reasonError)
-
-    const ref = doc(collectionRef(), activityDoc.id)
-    await updateDoc(ref, {
-      status:       ACTIVITY_STATUS.CANCELLED,
-      cancelReason: String(cancelReason).trim(),
-      cancelledAt:  serverTimestamp(),
-      cancelledBy:  user.uid,
-      updatedAt:    serverTimestamp(),
-      updatedBy:    user.uid,
+    return runActivityCancel({
+      db,
+      ref: doc(collectionRef(), activityDoc.id),
+      seen: activityDoc,
+      reason: cancelReason,
+      uid: user.uid,
+      runTransaction,
+      serverTimestamp,
     })
   }, [companyId, projectId, user, collectionRef])
 
-  // QUICK STATUS ACTION (start / hold / complete) — a GUARDED write. Runs in a
-  // transaction that re-reads the activity, refuses if anyone has written it
-  // since `activityDoc` was rendered (updatedAt/updatedBy), re-plans the
-  // transition against the server copy, and writes only the planned keys plus
-  // the audit stamps. Throws a QuickActionError (`kind` + user message) on any
-  // refusal; nothing is written in that case. See lib/activityQuickActions.js
-  // for what this does and does NOT protect — the full editor above remains
-  // last-write-wins.
+  // QUICK STATUS ACTION (start / hold / complete) — the same guarded write,
+  // planning the transition against the server copy and writing only the
+  // planned keys + revision + stamps. See lib/activityQuickActions.js.
   const quickUpdateActivity = useCallback(async (activityDoc, action) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     return runActivityQuickAction({

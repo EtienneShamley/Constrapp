@@ -7,6 +7,7 @@ import {
   ACTIVITY_GROUP, ACTIVITY_GROUP_ORDER, ACTIVITY_GROUP_LABELS, ACTIVITY_GROUP_HINTS,
   groupActivities, formatIsoDate, durationLabel, dueLabel, isOverdue,
 } from '../../../lib/projectTimeline'
+import { stateFor, dependencyFlag, dependencyLabel } from '../../../lib/ganttDependencies'
 
 // ── Activity cards — the MOBILE programme ────────────────────────────────────
 //
@@ -21,7 +22,7 @@ import {
 //
 // Every tap target is at least 44px and nothing is hover-only.
 
-export default function ActivityCards({ activities, canWrite, onEdit, onCancel, onQuickAction, quickBusyId, now }) {
+export default function ActivityCards({ activities, canWrite, onEdit, onCancel, onQuickAction, quickBusyId, now, dependencyStates }) {
   const groups = groupActivities(activities, now)
 
   return (
@@ -41,6 +42,9 @@ export default function ActivityCards({ activities, canWrite, onEdit, onCancel, 
             <div className="space-y-2">
               {list.map((a) => {
                 const late = isOverdue(a, now)
+                // ADR-65: dependency state as text — Blocked / Conflict / Review.
+                const dep  = stateFor(dependencyStates, a.id)
+                const flag = dependencyFlag(dep)
                 return (
                   <div
                     key={a.id}
@@ -60,6 +64,13 @@ export default function ActivityCards({ activities, canWrite, onEdit, onCancel, 
 
                     {a.isMilestone && (
                       <p className="m-0 mt-0.5 text-[10px] font-bold text-brand-purple uppercase">Milestone</p>
+                    )}
+                    {dep.count > 0 && (
+                      <p className={`m-0 mt-0.5 text-[11px] ${flag === 'Review' ? 'text-brand-amber' : flag ? 'text-brand-red font-bold' : 'text-brand-muted'}`} title={dependencyLabel(dep)}>
+                        {flag ? `${flag} · ` : ''}← {dep.count} {dep.count === 1 ? 'predecessor' : 'predecessors'}
+                        {dep.hasConflict ? ' · starts before a predecessor allows' : ''}
+                        {dep.needsReview ? ' · dependency requires review' : ''}
+                      </p>
                     )}
 
                     <p className={`m-0 mt-1.5 text-[12px] font-semibold ${late ? 'text-brand-red' : 'text-brand-text-soft'}`}>

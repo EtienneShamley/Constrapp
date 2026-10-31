@@ -489,9 +489,31 @@ export const LIMITS = {
   responsibleName: 120,
   costCodeName: 120,
   cancelReason: 500,
+  // ADR-65: predecessors per activity, and the lag range in calendar days.
+  predecessors: 20,
+  lagDays: 365,
 }
 
 const isoOrNull = (v) => (isValidIsoDate(v) ? v : null)
+
+// ADR-65: the stored predecessor shape, EXACTLY — { activityId, type: 'FS',
+// lagDays }. A malformed entry is normalised to something the validator will
+// refuse (empty id / NaN lag), never silently dropped or repaired. Graph
+// checks (exists, cancelled, cycles) live in lib/ganttDependencies.js, which
+// imports this module; this one keeps the shape only.
+function normalisePredecessorsShape(list) {
+  if (!Array.isArray(list)) return []
+  return list.map((e) => {
+    const isMap = e !== null && typeof e === 'object' && !Array.isArray(e)
+    const lagRaw = isMap ? e.lagDays : NaN
+    const lag = isMap && lagRaw !== '' && lagRaw !== null && Number.isFinite(Number(lagRaw)) ? Number(lagRaw) : NaN
+    return {
+      activityId: isMap && typeof e.activityId === 'string' ? e.activityId.trim() : '',
+      type: isMap && e.type === 'FS' ? 'FS' : (isMap && e.type === undefined ? 'FS' : String(isMap ? e.type : '')),
+      lagDays: Number.isFinite(lag) ? lag : NaN,
+    }
+  })
+}
 
 export function normaliseActivityDraft(draft = {}) {
   const isMilestone = draft.isMilestone === true
@@ -500,6 +522,10 @@ export function normaliseActivityDraft(draft = {}) {
   const percentRaw  = Number(draft.percentComplete)
 
   return {
+    // ADR-65: always written (`[]` when none) by a 1A2 client; absent on
+    // every earlier document and read as [] everywhere.
+    predecessors: normalisePredecessorsShape(draft.predecessors),
+
     name:        trimTo(draft.name, LIMITS.name),
     description: trimTo(draft.description, LIMITS.description),
     isMilestone,
@@ -593,6 +619,23 @@ export function validateActivityDraft(draft, { creating = false } = {}) {
   if (!d.costCodeId && d.costCodeName) return 'Choose a cost code'
 
   if (!Number.isFinite(d.sortOrder)) return 'Programme order must be a number'
+
+  // ADR-65: the predecessor SHAPE (what the rules pin on the first and last
+  // entries, applied here to every entry). Existence, cancellation and cycles
+  // need the programme and live in lib/ganttDependencies.js.
+  if (d.predecessors.length > LIMITS.predecessors) {
+    return `An activity may have at most ${LIMITS.predecessors} predecessors`
+  }
+  const seenPredecessors = new Set()
+  for (const e of d.predecessors) {
+    if (!e.activityId) return 'A predecessor entry is malformed — remove it and add it again'
+    if (e.type !== 'FS') return 'Only finish-to-start dependencies are supported'
+    if (!Number.isInteger(e.lagDays) || e.lagDays < 0 || e.lagDays > LIMITS.lagDays) {
+      return `Lag must be a whole number of days from 0 to ${LIMITS.lagDays}`
+    }
+    if (seenPredecessors.has(e.activityId)) return 'The same activity is listed twice as a predecessor'
+    seenPredecessors.add(e.activityId)
+  }
 
   return null
 }
@@ -792,12 +835,14 @@ export function quickActionsFor(activity, now = new Date()) {
 
 // ── Version check for guarded writes ─────────────────────────────────────────
 //
-// The `activities` documents carry no incrementing version (`revision` is
-// rules-pinned to 1 — changing that is out of scope for this release), but
-// EVERY write path stamps `updatedAt` with the server time (rules-enforced:
-// updatedAt == request.time). So the (updatedAt, updatedBy) pair identifies the
-// last write the viewer saw. A quick action compares it with the server copy
-// read inside its transaction and refuses if anything has written since.
+// ADR-65: every activity write now carries `revision` = stored + 1 (rules
+// require it in the FINAL ruleset; the Stage-1 transitional ruleset still
+// accepts an unchanged revision from the 1A1 bundle). The version the viewer
+// saw is therefore BOTH the `revision` AND the (updatedAt, updatedBy) pair:
+// every write path stamps `updatedAt` with the server time (rules-enforced),
+// so a legacy-session write that left the revision at 1 still moves the stamp
+// and is still detected. Belt and braces — mitigation while Stage 1 is live,
+// not server-side protection against an old client (Deferred Control 41).
 //
 // `updatedAt` is null on a locally-pending write (the server time is not yet
 // known), so an activity mid-save can never be confirmed unchanged.
@@ -807,9 +852,13 @@ function sameTimestamp(a, b) {
   return a.seconds === b.seconds && a.nanoseconds === b.nanoseconds
 }
 
+// The stored revision, reading a pre-1A2 document (always 1) as 1.
+export const activityRevision = (a) => (Number.isInteger(a?.revision) ? a.revision : 1)
+
 export function sameActivityVersion(seen, current) {
   if (!seen || !current) return false
-  return sameTimestamp(seen.updatedAt, current.updatedAt)
+  return activityRevision(seen) === activityRevision(current)
+      && sameTimestamp(seen.updatedAt, current.updatedAt)
       && seen.updatedBy === current.updatedBy
 }
 

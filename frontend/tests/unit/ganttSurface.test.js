@@ -162,10 +162,10 @@ describe('the accessible dialog shell, shared by editor, cancel and detail', () 
     for (const src of [editor, cancel, detail]) expect(src).not.toContain('fixed inset-0 z-50')
   })
 
-  it('the editor\'s validation and save path are unchanged', () => {
+  it('the editor\'s validation and save path are unchanged (ADR-65: the save is guarded against `base`)', () => {
     expect(editor).toContain('const validationError = validateActivityDraft(fields, { creating })')
-    expect(editor).toContain('await onSave(fields)')
-    expect(editor).toContain("if (!actualStart) setActualStart(today)")
+    expect(editor).toContain('await onSave({ ...fields, predecessors: toStoredPredecessors(storedPredecessors) }, base)')
+    expect(editor).toContain("if (!prev.actualStart) next.actualStart = today")
     expect(cancel).toContain('const reasonError = validateCancelReason(reason)')
     expect(cancel).toContain('await onCancelActivity(activity, reason)')
   })
@@ -194,12 +194,17 @@ describe('chart and list are two views of ONE filtered set over ONE subscription
     expect(hook).not.toMatch(/scale|groupBy|collapsed|zoom/)
   })
 
-  it('the hook and the rules-facing field set are untouched', () => {
+  it('the hook keeps its one subscription; the domain carries no speculative field (predecessors is the ADR-65 field)', () => {
     expect(hook).toContain("const q = query(ref, orderBy('createdAt', 'asc'))")
     expect(hook.match(/onSnapshot\(/g)).toHaveLength(1)
+    // ADR-65: no unconditioned write remains in the hook.
+    expect(hook).not.toMatch(/\bupdateDoc\(|\bsetDoc\(/)
+    expect(hook).toContain('runActivityUpdate({')
+    expect(hook).toContain('runActivityCancel({')
+    expect(hook).toContain('runActivityCreate({')
     const domain = stripComments(read('lib/projectTimeline.js'))
     expect(domain).toContain('export function normaliseActivityDraft')
-    expect(domain).not.toMatch(/predecessors|baseline(Start|Finish)|dependencies|scale|groupBy/)
+    expect(domain).not.toMatch(/baseline(Start|Finish)|successors|scale|groupBy|critical/)
   })
 
   it('geometry and grouping are pure: no React, no Firebase, no clock of their own', () => {
@@ -229,7 +234,7 @@ describe('existing links, labels and tokens', () => {
 
   it('the ADR-64 wording survives: current plan, calendar days, no critical path', () => {
     expect(chart).toContain('Comparisons are against the current plan, not a baseline.')
-    expect(chart).toContain('Constrapp has no dependency links or critical path')
+    expect(chart).toContain('a dependency is shown, never enforced by moving a date, and Constrapp has no\n        critical path')
     expect(page).toContain('Current plan, not an approved baseline.')
   })
 
@@ -238,5 +243,98 @@ describe('existing links, labels and tokens', () => {
     expect(Object.keys(pkg.dependencies).sort()).toEqual([
       '@tailwindcss/vite', 'firebase', 'pdfjs-dist', 'react', 'react-dom', 'react-router-dom', 'recharts', 'tailwindcss',
     ])
+  })
+})
+
+// ── Programme 1A2 — dependencies and guarded writes (ADR-65) ─────────────────
+
+describe('ADR-65: dependencies on the chart, in the editor and in the detail', () => {
+  const actions = stripComments(read('lib/activityActions.js'))
+  const deps = stripComments(read('lib/ganttDependencies.js'))
+
+  it('ONE SVG overlay behind the rows, pointer-events none and aria-hidden; arrows styled by state, never colour alone', () => {
+    expect(chart.match(/<svg/g)).toHaveLength(1)
+    const svg = chart.slice(chart.indexOf('<svg'), chart.indexOf('</svg>'))
+    expect(svg).toContain('pointer-events-none')
+    expect(svg).toContain('aria-hidden="true"')
+    expect(svg).toContain('focusable="false"')
+    expect(svg).toContain('arrowPath(a)')
+    expect(chart).toContain("[DEPENDENCY_STATE.CONFLICT]:  { stroke: 'var(--color-brand-red)',    dash: '5 3' }")
+    expect(chart).toContain('Finish-to-start dependency')
+    expect(chart).toContain('Dependency conflict')
+    expect(chart).toContain('Dependency requires review')
+    expect(chart).not.toContain('brand-gantt')
+  })
+
+  it('hidden and truncated links are disclosed, with the detail named as the complete record', () => {
+    expect(chart).toContain('links.hidden > 0 || links.truncated')
+    expect(chart).toContain("still listed in each activity's details")
+    expect(chart).toContain('MAX_ARROWS_DRAWN')
+  })
+
+  it('the bar name carries the dependency sentence and the label the Blocked / Conflict / Review flag', () => {
+    expect(chart).toContain('const deps = dependencyLabel(depState)')
+    expect(chart).toContain("(deps ? ` ${deps}` : '')")
+    expect(chart).toContain("{flag ? `${flag} · ` : ''}")
+    expect(chart).toContain('← {depState.count}')
+    expect(table).toContain('dependencyFlag(dep)')
+    expect(cards).toContain('dependencyFlag(dep)')
+    expect(detail).toContain('<Row label="Predecessors">')
+    expect(detail).toContain('<Row label="Successors">')
+  })
+
+  it('the editor: a predecessor fieldset, a disabled-with-reason picker, lag 0..365, the conflict acknowledgement, no drag', () => {
+    expect(editor).toContain('<legend className={labelCls}>Predecessors (finish to start)</legend>')
+    expect(editor).toContain('disabled={Boolean(c.reason)}')
+    expect(editor).toContain('max={MAX_LAG_DAYS}')
+    expect(editor).toContain('min="0"')
+    expect(editor).toContain('conflictAcknowledgementKey(fields)')
+    expect(editor).toContain('if (conflicts.length > 0 && !acknowledged)')
+    expect(editor).toContain("setAckKey(e.target.checked ? currentAckKey : null)")
+    expect(editor).toContain('validatePredecessorsDraft(toStoredPredecessors(storedPredecessors), {')
+    expect(editor).toContain('previousIds,')
+    expect(editor).toContain('dependency requires review. Remove it or replace it.')
+    expect(editor).not.toMatch(/onDrag|draggable/)
+  })
+
+  it('stale handling: the draft stays, a conflict message shows, "Reload latest" re-seeds from the current record', () => {
+    expect(editor).toContain('if (err?.kind === ACTIVITY_WRITE_ERROR.STALE) setStale(true)')
+    expect(editor).toContain('function reloadLatest()')
+    expect(editor).toContain('setBase(latest)')
+    expect(editor).toContain('setF(seedFields(latest, activities))')
+    expect(editor).toContain('Reload latest')
+    expect(editor).toContain('onSave({ ...fields, predecessors: toStoredPredecessors(storedPredecessors) }, base)')
+  })
+
+  it('the action layer: reads before the write, compare-and-set on revision AND stamps, exactly one increment, new sources re-read', () => {
+    expect(actions).toContain('if (!sameActivityVersion(seen, current)) return { kind: QUICK_ACTION_ERROR.STALE }')
+    expect(actions).toContain('const revision = activityRevision(current) + 1')
+    expect(actions.match(/const revision = activityRevision\(current\) \+ 1/g)).toHaveLength(2) // update, cancel
+    expect(actions).toContain('await checkNewPredecessors(tx, predecessorRef, newPredecessorIds(fields.predecessors, previousIds), current.id)')
+    expect(actions).toContain("if (!snap.exists()) return 'A predecessor is not in this project\\'s programme.'")
+    expect(actions).not.toMatch(/from 'firebase/)
+    expect(actions).toContain('revision: 1,') // create
+    // The whole graph is never read in a transaction.
+    expect(actions).not.toMatch(/findCycleMembers|wouldCreateCycle/)
+  })
+
+  it('the domain is pure, iterative on cycles, and treats cancelled / missing / malformed / cyclic links as unresolved', () => {
+    expect(deps).not.toMatch(/from 'react|from 'firebase|onSnapshot|document\./)
+    expect(deps).toContain('export function findCycleMembers')
+    expect(deps).not.toMatch(/function\s+\w+\([^)]*\)\s*\{[^}]*\b\1\s*\(/) // no self-recursive helper
+    expect(deps).toContain("MALFORMED: 'malformed'")
+    expect(deps).toContain("CANCELLED: 'cancelled'")
+    expect(deps).toContain('const finished = Boolean(predecessor) && predecessor.status === ACTIVITY_STATUS.COMPLETED\n        && !isUnresolvedState(state)')
+    expect(deps).toContain('const startArrived = isValidIsoDate(a.plannedStart) && a.plannedStart <= today')
+    expect(deps).toContain("MAX_LAG_DAYS = 365")
+    expect(deps).toContain("MIN_LAG_DAYS = 0")
+  })
+
+  it('the page derives the states over the WHOLE programme with the one clock and hands them down', () => {
+    expect(page).toContain('const depStates = useMemo(() => dependencyStates(ordered, now), [ordered, now])')
+    expect(page).toContain('const succIndex = useMemo(() => successorIndex(ordered), [ordered])')
+    expect(page.match(/dependencyStates=\{depStates\}/g)).toHaveLength(5) // chart, table, cards, editor, detail
+    expect(page).toContain('successors={successorsOf(viewing.id, succIndex)}')
+    expect(page).toContain('async function handleSave(fields, base)')
   })
 })

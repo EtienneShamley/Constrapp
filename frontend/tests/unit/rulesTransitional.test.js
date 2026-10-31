@@ -27,8 +27,15 @@ describe('firestore.transitional.rules is exactly what the generator produces fr
     expect(transitionalSrc).toBe(buildTransitionalRules(finalSrc))
   })
 
-  it('exactly two marked line pairs, and the first is still exported as FINAL_LINE / TRANSITIONAL_LINE', () => {
-    expect(LINE_PAIRS).toHaveLength(2)
+  // ADR-65 added the third pair (the activities revision contract); the two
+  // ADR-63 pairs are preserved byte for byte.
+  it('exactly three marked line pairs, and the first is still exported as FINAL_LINE / TRANSITIONAL_LINE', () => {
+    expect(LINE_PAIRS).toHaveLength(3)
+    expect(LINE_PAIRS.map(p => p.name)).toEqual([
+      'variations approve — the scope pair',
+      'progressClaims exactKeys — variationLineCount',
+      'activities update — the revision contract',
+    ])
     expect(FINAL_LINE).toBe(LINE_PAIRS[0].final)
     expect(TRANSITIONAL_LINE).toBe(LINE_PAIRS[0].transitional)
   })
@@ -38,11 +45,13 @@ describe('firestore.transitional.rules is exactly what the generator produces fr
       expect(finalSrc.split(pair.final).length - 1, pair.name).toBe(1)
       expect(finalSrc).not.toContain(pair.transitional)
     }
-    expect(finalSrc).not.toContain('ADR-63 TRANSITIONAL')
+    expect(finalSrc).not.toContain('TRANSITIONAL (STAGE 1)')
     expect(finalSrc).not.toContain('ADR-62 TRANSITIONAL')
     expect(LINE_PAIRS[0].final).toContain('appliedStamped(request.resource.data) && scopeStamped(request.resource.data)))')
     expect(LINE_PAIRS[0].final).not.toContain('scopeAbsent')
     expect(LINE_PAIRS[1].final).toContain("'variationId', 'variationLineCount', 'lineItems'")
+    expect(LINE_PAIRS[2].final).toContain('&& revisionIncremented() // ADR-65 FINAL')
+    expect(LINE_PAIRS[2].final).not.toContain('resource.data.revision ||')
   })
 
   it('the TRANSITIONAL file carries each marker line exactly once, the strict lines never, and a header that names it temporary', () => {
@@ -51,15 +60,33 @@ describe('firestore.transitional.rules is exactly what the generator produces fr
       expect(transitionalSrc).not.toContain(pair.final)
     }
     expect(transitionalSrc).not.toContain('ADR-63 FINAL')
+    expect(transitionalSrc).not.toContain('ADR-65 FINAL')
     // The applied pair stays REQUIRED in Stage 1 — only the scope pair relaxes.
     expect(LINE_PAIRS[0].transitional).toContain('appliedStamped(request.resource.data) && (scopeAbsent(request.resource.data) || scopeStamped(request.resource.data))')
     expect(LINE_PAIRS[0].transitional).not.toContain('appliedAbsent')
     // Stage 1 leaves variationLineCount out of hasAll only — hasOnly still admits it.
     expect(LINE_PAIRS[1].transitional).not.toContain("'variationLineCount'")
     expect(transitionalSrc).toContain("hasOnly(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'variationLineCount'")
-    expect(transitionalSrc.startsWith("rules_version = '2';\n// ⚠️ ADR-63 STAGE-1 TRANSITIONAL RULESET")).toBe(true)
+    // ADR-65: Stage 1 accepts an UNCHANGED revision OR +1 — never +2, never backwards.
+    expect(LINE_PAIRS[2].transitional).toContain('(request.resource.data.revision == resource.data.revision || revisionIncremented())')
+    expect(transitionalSrc.startsWith("rules_version = '2';\n// ⚠️ ADR-63 / ADR-65 STAGE-1 TRANSITIONAL RULESET")).toBe(true)
     expect(transitionalSrc).toContain('Temporary compatibility only')
     expect(transitionalSrc).toContain('firebase.transitional.json')
+  })
+
+  it('the activities block is otherwise identical in both files: create at revision 1, the predecessor pins, the cancel keys', () => {
+    for (const src of [finalSrc, transitionalSrc]) {
+      const block = src.slice(src.indexOf('match /companies/{companyId}/projects/{projectId}/activities/{activityId}'), src.indexOf('match /companies/{companyId}/projects/{projectId}/retentionReleases/'))
+      expect(block).toContain('&& request.resource.data.revision == 1\n')
+      expect(block).toContain('function predecessorEntryValid(e)')
+      expect(block).toContain('&& p.size() <= 20')
+      expect(block).toContain('predecessorEntryValid(p[0]) && predecessorEntryValid(p[p.size() - 1])')
+      expect(block).toContain("&& e.activityId != activityId")
+      expect(block).toContain("&& e.type == 'FS'")
+      expect(block).toContain('&& e.lagDays >= 0\n            && e.lagDays <= 365')
+      expect(block).toContain("changedKeys().hasOnly(['status', 'cancelReason', 'cancelledAt', 'cancelledBy', 'revision', 'updatedAt', 'updatedBy'])")
+      expect(block).not.toContain('request.resource.data.revision  == resource.data.revision') // corePreserved no longer pins it
+    }
   })
 
   it('the two files differ in exactly the marked rule lines (plus the header comment lines)', () => {

@@ -2453,7 +2453,8 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Project Timeline activities — the project programme (ADR-29).
+    // Project Timeline activities — the project programme (ADR-29; ADR-65
+    // predecessors + revision contract).
     match /companies/{companyId}/projects/{projectId}/activities/{activityId} {
       // Read audience — includes qs.
       function programmeReader() {
@@ -2465,18 +2466,19 @@ service cloud.firestore {
       }
       function corePreserved() {
         return request.resource.data.createdAt == resource.data.createdAt
-            && request.resource.data.createdBy == resource.data.createdBy
-            && request.resource.data.revision  == resource.data.revision;
+            && request.resource.data.createdBy == resource.data.createdBy;
       }
       // EXACT shape — hasOnly + hasAll together mean no field may be added,
       // renamed, or omitted. Pre-seeding an arbitrary privilege-bearing field
-      // is the lesson of ADR-27.
+      // is the lesson of ADR-27. `predecessors` (ADR-65) is OPTIONAL: admitted
+      // by hasOnly, not required by hasAll, so every pre-1A2 document and the
+      // 1A1 bundle's create still pass.
       function exactKeys() {
         return request.resource.data.keys().hasOnly([
                  'name', 'description', 'isMilestone', 'status',
                  'plannedStart', 'plannedFinish', 'actualStart', 'actualFinish',
                  'percentComplete', 'responsibleContactId', 'responsibleName',
-                 'costCodeId', 'costCodeName', 'sortOrder', 'notes',
+                 'costCodeId', 'costCodeName', 'sortOrder', 'notes', 'predecessors',
                  'cancelReason', 'cancelledAt', 'cancelledBy',
                  'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
                ])
@@ -2489,10 +2491,38 @@ service cloud.firestore {
                  'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
                ]);
       }
+      // ONE predecessor entry (ADR-65): exact keys, a non-empty id that is not
+      // this activity, FS only, integer lag 0..365, and the source must EXIST
+      // in THIS project (one document read). Rules cannot iterate a list, so
+      // predecessorsValid applies this to the FIRST and LAST entries only —
+      // the honest ceiling (DC41); the app validates every entry.
+      function predecessorEntryValid(e) {
+        return e is map
+            && e.keys().hasOnly(['activityId', 'type', 'lagDays'])
+            && e.keys().hasAll(['activityId', 'type', 'lagDays'])
+            && e.activityId is string
+            && e.activityId.size() > 0
+            && e.activityId != activityId
+            && e.type == 'FS'
+            && e.lagDays is int
+            && e.lagDays >= 0
+            && e.lagDays <= 365
+            && exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/activities/$(e.activityId));
+      }
+      function predecessorsValid() {
+        let p = request.resource.data.get('predecessors', []);
+        return p is list
+            && p.size() <= 20
+            && (p.size() == 0
+                || (predecessorEntryValid(p[0]) && predecessorEntryValid(p[p.size() - 1])));
+      }
       // Shape required of every stored NON-CANCELLED state (create and edit).
+      // `revision` is checked by the create / update rules (1 at create, +1 on
+      // every update — ADR-65), not here.
       function shapeValid() {
         return exactKeys()
-            && request.resource.data.revision == 1
+            && request.resource.data.revision is int
+            && predecessorsValid()
             && request.resource.data.name is string
             && request.resource.data.name.trim().size() > 0
             && request.resource.data.name.size() <= 120
@@ -2563,6 +2593,7 @@ service cloud.firestore {
 
       allow create: if programmeWriter()
                   && shapeValid()
+                  && request.resource.data.revision == 1
                   && request.resource.data.createdBy == request.auth.uid
                   && request.resource.data.createdAt == request.time
                   && updateStamped()
@@ -2571,7 +2602,13 @@ service cloud.firestore {
                   && request.resource.data.cancelledAt == null
                   && request.resource.data.cancelledBy == null;
 
-      allow update: if programmeWriter() && corePreserved() && updateStamped() && (
+      // Every update carries EXACTLY the next revision (ADR-65): a blind write
+      // that does not know the stored revision is refused by the RULES. The
+      // Stage-1 transitional ruleset relaxes this ONE line while the 1A1
+      // bundle is still served (scripts/build-transitional-rules.mjs).
+      allow update: if programmeWriter() && corePreserved() && updateStamped()
+                  && revisionIncremented() // ADR-65 FINAL: revision +1 is REQUIRED on every activity update
+                  && (
                     // (a) ORDINARY EDIT — content and status are freely
                     //     editable, INCLUDING BACKWARDS, while the activity is
                     //     not cancelled. No cancellation stamp may be forged.
@@ -2590,7 +2627,7 @@ service cloud.firestore {
                     (
                       resource.data.status != 'cancelled'
                       && request.resource.data.status == 'cancelled'
-                      && changedKeys().hasOnly(['status', 'cancelReason', 'cancelledAt', 'cancelledBy', 'updatedAt', 'updatedBy'])
+                      && changedKeys().hasOnly(['status', 'cancelReason', 'cancelledAt', 'cancelledBy', 'revision', 'updatedAt', 'updatedBy'])
                       && request.resource.data.cancelledBy == request.auth.uid
                       && request.resource.data.cancelledAt == request.time
                       && request.resource.data.cancelReason is string

@@ -1,5 +1,5 @@
 import {
-  planQuickAction, sameActivityVersion,
+  planQuickAction, sameActivityVersion, activityRevision,
   QUICK_ACTION_ERROR, QUICK_ACTION_ERROR_MESSAGES, quickActionErrorKind,
 } from './projectTimeline'
 
@@ -24,13 +24,15 @@ import {
 // outcome, and the caller (the hook → the page) reacts to the result after the
 // transaction settles.
 //
-// ⚠️ SCOPE OF THE GUARANTEE. This protects the QUICK ACTION from overwriting a
-// newer write. It does NOT protect anyone from a quick action: the full editor
-// (useProjectActivities → updateActivity) is still an unconditioned updateDoc,
-// so an editor save after a quick action overwrites it — the collection
-// remains last-write-wins (docs/SECURITY.md → Deferred Control 23). Nor is the
-// check rules-enforced: a client bypassing the app can write anything the
-// `activities` block allows. Rules and the `revision` schema are unchanged.
+// ⚠️ SCOPE OF THE GUARANTEE (ADR-65). Every activity write — this quick action,
+// the full editor and the cancel dialog (lib/activityActions.js) — now runs
+// the same compare-and-set: refuse when the server copy's `revision` or
+// `(updatedAt, updatedBy)` differs from what the user saw, write `revision`
+// = stored + 1. The FINAL ruleset requires the increment, so a blind write
+// that does not know the current revision is refused by the RULES; during the
+// Stage-1 transitional ruleset an un-reloaded 1A1 browser may still write
+// without incrementing, which the stamp comparison detects afterwards but no
+// rule prevents (docs/SECURITY.md → Deferred Control 41).
 //
 // Firestore SDK functions are INJECTED (`runTransaction`, `serverTimestamp`)
 // so this module imports no Firebase code: the hook passes the app SDK, and
@@ -64,12 +66,15 @@ export async function runActivityQuickAction({
       if (!sameActivityVersion(seen, current)) return { kind: QUICK_ACTION_ERROR.STALE }
       const plan = planQuickAction(current, action, now)
       if (!plan.ok) return { kind: QUICK_ACTION_ERROR.INVALID, reason: plan.reason }
+      // ADR-65: exactly one increment, from the SERVER copy's revision.
+      const revision = activityRevision(current) + 1
       tx.update(ref, {
         ...plan.changes,
+        revision,
         updatedAt: serverTimestamp(),
         updatedBy: uid,
       })
-      return { kind: null, changes: plan.changes }
+      return { kind: null, changes: { ...plan.changes, revision } }
     })
   } catch (err) {
     throw new QuickActionError(quickActionErrorKind(err?.code), undefined, err)

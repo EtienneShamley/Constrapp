@@ -189,12 +189,25 @@ That script runs
     asserts the documented **client-only** gap: malformed `lineItems`
     **elements** (non-numeric amounts, out-of-scope codes, non-object lines)
     are ACCEPTED by rules — the read-time validity gate is the mitigation.
-  - `frontend/tests/rules/activities.rules.test.js` — **82 tests** covering
-    every case in §15p-x below (the project programme, ADR-29), plus **16**
-    that run the app's own **guarded quick-action transaction** (ADR-46)
-    against the **unchanged** rules: admin/PM Start, Complete, Put on hold and
-    milestone Mark reached each change **only** the intended keys plus the
-    audit stamps; QS, subcontractor, client, super_admin and other-company
+  - `frontend/tests/rules/activities.rules.test.js` — **97 tests** covering
+    every case in §15p-x below (the project programme, ADR-29), **15 for
+    ADR-65** (the revision contract: create at 1; an edit or cancel must carry
+    stored + 1 — unchanged, +2, backwards, non-integer and absent all refused;
+    a legacy document moves 1 → 2 with no key invented; and the optional
+    `predecessors` list: absent / empty / well-formed accepted, every
+    non-list, non-map, extra-key, missing-key, empty-id, non-FS shape refused,
+    lag 0 and 365 accepted and −1 / 366 / non-integer refused, self-reference
+    and a source that does not exist in THIS project refused (including the
+    same id in another company's project), 20 accepted and 21 refused, the
+    LAST entry pinned as well as the first, cancellation unable to change the
+    list, the write roles unchanged — and the DC41 gaps **proven ACCEPTED**: a
+    malformed / missing / self MIDDLE entry, a duplicate, a cancelled source
+    and a two-node cycle; the former "last-write-wins" overwrite test now
+    proves the increment is REQUIRED and that a caller who read the revision
+    can still overwrite), plus **16** that run the app's own **guarded
+    quick-action transaction** (ADR-46) against the rules: admin/PM Start,
+    Complete, Put on hold and milestone Mark reached each change **only** the
+    intended keys plus `revision` and the audit stamps; QS, subcontractor, client, super_admin and other-company
     users are **denied by the rules** (nothing written); a write by another user
     after the UI loaded the activity makes the action **stale** (nothing
     written), as does a second action from the same stale view; a deleted
@@ -207,8 +220,19 @@ That script runs
     in_progress` and `in_progress → not_started` both SUCCEED) and the four
     documented **client-only** gaps: an impossible-but-well-shaped calendar
     date (`2026-02-30`), a `responsibleContactId`/`costCodeId` naming nothing,
-    a duplicate `sortOrder`, and a full-document overwrite (last-write-wins)
-    are all ACCEPTED by rules.
+    a duplicate `sortOrder`, and a full-document overwrite that carries the
+    correct next revision are all ACCEPTED by rules.
+  - `frontend/tests/rules/activitiesTransitional.rules.test.js` — **7 tests**
+    against `firestore.transitional.rules` (ADR-65 Stage 1): the 1A1 bundle's
+    edit and cancel (revision UNCHANGED) ACCEPTED; the 1A2 bundle's (+1)
+    ACCEPTED with the stored revision advancing; +2, backwards and a string
+    revision REFUSED even in Stage 1; an old-client edit after a new-client
+    edit lands with the stamp moved (the documented Stage-1 gap, DC41); create
+    still at revision 1 with the optional `predecessors` key accepted; the
+    first/last pins, self-reference, missing source, lag range and size
+    ACTIVE from Stage 1 (an old-client edit cannot smuggle a malformed list
+    either); roles, tenancy, stamps and the cancellation key restriction
+    unchanged.
   - `frontend/tests/rules/takeoff.rules.test.js` — **71 tests** covering the
     two Quant™ 1A collections (ADR-51, §27), the Quant 1B link (ADR-52, §28) and the Quant 1D `deductions` key (ADR-54, §30 — #65 the key absent / empty / with holes on an area for each role and fifty as the ceiling; #66 refused on a length or count, as a non-list, above 50; #67 add / replace / clear with revision +1, a legacy document gaining the key, blind and skipped revisions refused; #68 non-list, > 50, the key on a length, and a deductions edit on a withdrawn sheet refused while void still passes; #69 void freezes the holes, a voided parent refuses further change, denied roles and another company can neither write nor read; #70 the real `runUpdateMeasurement` end to end — no key at create, first hole revision 2, a stale copy and an outside hole write nothing, a denied role is PERMISSION; #71 NOT ENFORCED — junk elements, an outside hole, overlapping holes and a hole equal to the parent all pass rules): the three-role read/write matrix
     with `subcontractor`/`client`/`super_admin`, cross-tenant, anonymous and
@@ -1258,6 +1282,64 @@ npm run test:unit
   tile beside one pause control on the programme page, the heading's local
   pause state, no timer / canvas, no misleading claim, and **orange never a
   status colour** on the chart, the table, the cards or the detail.
+
+- `frontend/tests/unit/ganttDependencies.test.js` — **25 tests** over
+  `lib/ganttDependencies.js` (ADR-65, GANTT 1A2): the vocabulary (FS only, 20
+  max, lag 0–365); a document without the key reading as none; every
+  malformed entry shape marked and never thrown on; the draft shape and
+  validator (lag, type, empty id, duplicate, 20 / 21); the successor index;
+  **finish-to-start arithmetic** on the inclusive calendar — the day after an
+  ordinary finish plus lag, the SAME day for a milestone, month and year ends,
+  a leap day, both DST changes, an unusable predecessor; **cycles** — direct,
+  indirect, self, a 2,000-node ring, malformed and missing references as
+  non-edges, `wouldCreateCycle` for self / direct / indirect closure and a
+  safe link; **derived states** — valid / conflict / missing / cancelled /
+  cycle / malformed with precedence, finished never true for an unresolved
+  link, **blocked only when the start has arrived** (a future start never
+  blocked; started / held / completed never blocked; a cancelled, missing or
+  cyclic link blocks when due), the Lead Architect correction (a cancelled
+  predecessor never satisfies the link and contributes no earliest start), the
+  midnight flip, input purity and junk tolerance; **editor validation** —
+  candidate errors (self, duplicate, missing, cancelled, cycle), the draft
+  list with RETAINED missing / cancelled links tolerated and new ones refused,
+  draft conflicts and the order-insensitive acknowledgement key; the
+  **accessible text** (every link named with lag, finished state and problem;
+  Blocked / Conflict / Review flags; conflict days); and the version helpers
+  (`activityRevision` reads a legacy document as 1; `sameActivityVersion`
+  needs revision AND stamps).
+
+- `frontend/tests/unit/activityActions.test.js` — **13 tests** over
+  `lib/activityActions.js` with a fake transaction: the full edit writes the
+  normalised fields + `revision` (stored + 1) + stamps exactly once AFTER the
+  read; a legacy document moves 1 → 2 and gains `predecessors: []`; STALE by
+  revision and STALE by stamps alone (a legacy-session write) refused with
+  nothing written and the "Nothing was saved" message; MISSING, a cancelled
+  server copy and a locally pending base refused; an invalid draft refused
+  before any read; every NEW predecessor read on the server BEFORE the write
+  and a retained one not re-read; a missing, cancelled or self source refused;
+  a contention re-run that sees a newer copy refused, never re-applied;
+  permission / offline / aborted mapped with the cause kept; create at
+  revision 1 with empty cancellation stamps after checking new sources; cancel
+  writing the cancellation keys + revision + stamps only, and refusing stale,
+  missing, already-cancelled and an empty reason.
+
+  `timelineGantt.test.js` gained **7** arrow tests (`dependencyArrows`,
+  `arrowPath`: one arrow per drawable link with its state and geometry, scaled
+  at every zoom, following grouping, omitted and COUNTED when an end is
+  collapsed or filtered out, the density limit with counts kept, forward and
+  doubled-back paths, the 2,000 × 20 worst case bounded); `ganttSurface.test.js`
+  **8** ADR-65 pins (one `aria-hidden` SVG overlay with pointer-events none;
+  state-styled arrows and the three legend entries; hidden / truncated
+  disclosure; the dependency sentence in the bar name and the flag in the
+  labels, table, cards and detail; the editor's fieldset, disabled-with-reason
+  picker, lag bounds, acknowledgement key and reset; stale handling with
+  *Reload latest*; the action layer's read-before-write, combined version
+  check, single increment and new-source reads, never the whole graph; the
+  pure, iterative domain; the page deriving states over the whole programme);
+  `timelineScheduling.test.js` **+1** (a stale revision alone is refused; the
+  quick action writes stored + 1) and its editor pin inverted (no
+  unconditioned write remains); `rulesTransitional.test.js` pins the THIRD
+  marked pair and the activities block's sameness in both files.
 
 - `frontend/tests/unit/timelineScheduling.test.js` — **74 tests** for the
   Timeline & Scheduling Enhancements (ADR-46): the **Due** filter (overdue
@@ -6874,3 +6956,60 @@ responsible contacts; an admin / PM login and a QS login.
    before and after editing an activity and grouping / zooming the chart:
    every figure is identical — the programme writes no financial document,
    and Firestore shows no new field on any activity.
+
+## 41. Constrapp GANTT™ — Programme 1A2, dependencies and scheduling integrity (ADR-65) — implemented, NOT YET DEPLOYED
+
+**Automated:** unit **66 files / 3,775 tests** (new `ganttDependencies.test.js`,
+`activityActions.test.js`; `timelineGantt`, `ganttSurface`,
+`timelineScheduling` and `rulesTransitional` extended — see §0b); rules **28
+files / 1,850 tests** (new `activitiesTransitional.rules.test.js`;
+`activities.rules.test.js` 82 → 97). FINAL `firestore.rules` 217,864 →
+**219,930 bytes**; transitional **220,564**; `npm run rules:transitional:check`
+clean. The chart component itself is still not unit-tested (no jsdom); the
+three checks below cover rendering, interaction and the rollout by hand.
+Preconditions: a project with a programme of at least six activities and one
+milestone, two browser tabs (or two users) with admin / PM logins, a QS login,
+and the Stage-1 ruleset published in the test project for check 3.
+
+**Manual acceptance (maximum three):**
+
+1. **Links, conflict, blocked, review — at every zoom.** Edit activity B, add
+   A as a predecessor with a lag of 2: the fieldset shows *Earliest permitted
+   start* = A's planned finish + 3 days; set B's planned start before it and
+   the amber conflict panel appears, Save is refused until the acknowledgement
+   is ticked, changing the start date un-ticks it, and after saving the chart
+   draws a red dashed arrow A → B with *Conflict* in B's row label, the List
+   and the cards. Move B's start after the earliest date: the arrow turns muted
+   and the flag clears. Add a milestone M as a predecessor of C with lag 0 and
+   set C to start ON the milestone day: no conflict. Switch Day / Week / Month
+   and group by cost code: every arrow still joins the end of its predecessor
+   bar to the start of its successor bar; collapse A's group and the A → B
+   arrow disappears while B keeps *← 1* and the chart reports one dependency
+   not drawn. Try to make A depend on B: the picker lists B as *would create a
+   dependency cycle* and it cannot be chosen. Cancel A: B now reads *Review*
+   with *Predecessor cancelled — requires review*, and once B's planned start
+   has passed (set it to yesterday) B reads *Blocked* and the bar carries the
+   red ring; remove the link in B's editor and the flags clear. As QS, Enter
+   on B opens the read-only detail listing the predecessors with their states
+   and B's successors, with no Save.
+
+2. **Two editors, one activity.** Open the same activity in two tabs. Tab 1
+   changes the name and saves (the record's `revision` goes from 1 to 2). Tab
+   2 changes the notes and saves: the save is refused with *Someone else
+   changed this activity after you opened it. Nothing was saved — your edits
+   are still here*, the typed notes remain, and **Reload latest** replaces the
+   form with Tab 1's name; save again and it succeeds (revision 3). Repeat
+   with a quick action (Start today) from a stale tab: refused, nothing
+   written. Cancel from a stale tab: refused. In Firestore the document shows
+   `revision` 3 and `predecessors` present; no other field was invented.
+
+3. **Stage-1 compatibility and regression.** With the TRANSITIONAL ruleset
+   published and a pre-1A2 (1A1) bundle open in one tab: that tab can still
+   edit and cancel an activity (revision stays 1) and the 1A2 tab then detects
+   the change as stale by the moved stamp before its own save. With the FINAL
+   ruleset published the 1A1 tab's edit is refused with a permission error
+   and a reload fixes it. Regression: the 1A1 chart (zoom, grouping, sticky
+   layout, Today, actual overlay), the Dashboard Programme panel, PULSE
+   indicator 4 and the Budget / Forecast figures are unchanged before and after
+   adding dependencies; a project with no dependencies shows no arrows, no
+   flags and no disclosure line.

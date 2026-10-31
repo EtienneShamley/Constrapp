@@ -19,6 +19,7 @@ import {
 } from '../../lib/projectTimeline'
 import { DEFAULT_GANTT_SCALE, isGanttScale } from '../../lib/timelineGantt'
 import { GANTT_GROUP, isGanttGroup, toggleGroupKey, collapseAllKeys } from '../../lib/ganttGrouping'
+import { dependencyStates, successorIndex, successorsOf } from '../../lib/ganttDependencies'
 import TimelineGantt from './timeline/TimelineGantt'
 import ActivityTable from './timeline/ActivityTable'
 import ActivityCards from './timeline/ActivityCards'
@@ -131,6 +132,10 @@ export default function ProjectTimeline() {
     [ordered, search, status, responsible, hideClosed, due, now],
   )
   const people = useMemo(() => responsibleOptions(ordered), [ordered])
+  // ADR-65: dependency states over the WHOLE programme (a filtered-out
+  // predecessor still blocks), derived once per snapshot and per local day.
+  const depStates = useMemo(() => dependencyStates(ordered, now), [ordered, now])
+  const succIndex = useMemo(() => successorIndex(ordered), [ordered])
 
   const filtersActive = Boolean(search || status || responsible || hideClosed || due)
 
@@ -173,9 +178,11 @@ export default function ProjectTimeline() {
     }
   }
 
-  async function handleSave(fields) {
+  // `base` is the copy the editor was opened from (or re-seeded to by
+  // *Reload latest*): the version the guarded save compares against.
+  async function handleSave(fields, base) {
     if (editing === 'new') await createActivity(fields)
-    else await updateActivity(editing, fields)
+    else await updateActivity(base ?? editing, fields)
   }
 
   if (!canRead) {
@@ -402,6 +409,7 @@ export default function ProjectTimeline() {
                     onExpandAll={expandAll}
                     onActivate={handleActivate}
                     canWrite={canWrite}
+                    dependencyStates={depStates}
                   />
                 </Card>
               )}
@@ -422,6 +430,7 @@ export default function ProjectTimeline() {
                     onQuickAction={handleQuickAction}
                     quickBusyId={quickBusyId}
                     now={now}
+                    dependencyStates={depStates}
                   />
                 </Card>
               )}
@@ -436,6 +445,7 @@ export default function ProjectTimeline() {
                   onQuickAction={handleQuickAction}
                   quickBusyId={quickBusyId}
                   now={now}
+                  dependencyStates={depStates}
                 />
               </div>
             </>
@@ -497,6 +507,7 @@ export default function ProjectTimeline() {
           contacts={contacts}
           costCodes={costCodes}
           projectId={projectId}
+          dependencyStates={depStates}
           onSave={handleSave}
           onClose={() => setEditing(null)}
         />
@@ -514,6 +525,8 @@ export default function ProjectTimeline() {
         <ActivityDetailModal
           activity={viewing}
           now={now}
+          dependencyStates={depStates}
+          successors={successorsOf(viewing.id, succIndex)}
           onClose={() => setViewing(null)}
         />
       )}

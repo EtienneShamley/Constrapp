@@ -514,3 +514,104 @@ describe('the model as the chart reads it', () => {
     expect(m.days).toHaveLength(31)
   })
 })
+
+// ── Dependency arrows (Constrapp GANTT™ 1A2, ADR-65) ─────────────────────────
+
+import { dependencyArrows, arrowPath, MAX_ARROWS_DRAWN, layoutGanttRows } from '../../src/lib/timelineGantt'
+import { dependencyStates } from '../../src/lib/ganttDependencies'
+import { groupGanttActivities, GANTT_GROUP } from '../../src/lib/ganttGrouping'
+
+describe('dependency arrows', () => {
+  const fs = (activityId, lagDays = 0) => ({ activityId, type: 'FS', lagDays })
+  const PROG = [
+    activity({ id: 'a', plannedStart: '2026-10-05', plannedFinish: '2026-10-09', sortOrder: 10, costCodeId: 'cc1' }),
+    activity({ id: 'b', plannedStart: '2026-10-12', plannedFinish: '2026-10-16', sortOrder: 20, costCodeId: 'cc2', predecessors: [fs('a', 2)] }),
+    activity({ id: 'c', plannedStart: '2026-10-07', plannedFinish: '2026-10-20', sortOrder: 30, costCodeId: 'cc2', predecessors: [fs('a')] }), // conflict
+    activity({ id: 'm', isMilestone: true, plannedStart: '2026-10-21', plannedFinish: '2026-10-21', sortOrder: 40, predecessors: [fs('c'), fs('ghost')] }),
+  ]
+  const states = dependencyStates(PROG, NOW)
+  const rowsFor = (scale, groupBy = GANTT_GROUP.NONE, collapsed = new Set()) => {
+    const model = buildGanttModel(PROG, { now: NOW, scale })
+    const groups = groupGanttActivities(PROG, groupBy, { now: NOW })
+    return { model, ...layoutGanttRows(model, groups, collapsed, { ungrouped: groupBy === GANTT_GROUP.NONE }) }
+  }
+
+  it('one arrow per drawable link, from the predecessor end to the successor start, with its state; hidden links counted', () => {
+    const { rows } = rowsFor('day')
+    const r = dependencyArrows(rows, states)
+    expect(r.total).toBe(4)
+    expect(r.hidden).toBe(1)           // ghost has no row
+    expect(r.truncated).toBe(false)
+    expect(r.arrows.map(a => a.key)).toEqual(['a->b', 'a->c', 'c->m'])
+    const ab = r.arrows[0]
+    expect(ab.state).toBe('valid')
+    expect(ab.fromX).toBe(4 * 22 + 5 * 22)       // a ends after 9 Oct (offset 4, 5 days)
+    expect(ab.toX).toBe(11 * 22)                 // b starts 12 Oct
+    expect(ab.fromY).toBe(ROW_HEIGHT_PX / 2)
+    expect(ab.toY).toBe(ROW_HEIGHT_PX + ROW_HEIGHT_PX / 2)
+    expect(r.arrows[1].state).toBe('conflict')
+    expect(r.arrows[2].toX).toBe(20 * 22 + 22 / 2 - 6) // into the milestone diamond's left corner
+  })
+
+  it('geometry scales with the day width at every zoom', () => {
+    for (const [scale, dayWidth] of [['day', 22], ['week', 8], ['month', 3]]) {
+      const { rows } = rowsFor(scale)
+      const ab = dependencyArrows(rows, states).arrows[0]
+      expect(ab.fromX).toBe(9 * dayWidth)
+      expect(ab.toX).toBe(11 * dayWidth)
+    }
+  })
+
+  it('follows grouping (rows move) and omits an arrow whose end is collapsed, counting it as hidden', () => {
+    const grouped = rowsFor('week', GANTT_GROUP.COST_CODE)
+    const r = dependencyArrows(grouped.rows, states)
+    expect(r.arrows.map(a => a.key)).toEqual(['a->b', 'a->c', 'c->m'])
+    const bRow = grouped.rows.find(x => x.type === 'bar' && x.bar.id === 'b')
+    expect(r.arrows[0].toY).toBe(bRow.y + ROW_HEIGHT_PX / 2)
+    const collapsedCc1 = rowsFor('week', GANTT_GROUP.COST_CODE, new Set(['cc1']))
+    const c = dependencyArrows(collapsedCc1.rows, states)
+    expect(c.arrows.map(a => a.key)).toEqual(['c->m'])
+    expect(c.hidden).toBe(3)  // a->b, a->c (a hidden) and ghost->m
+    expect(c.total).toBe(4)
+  })
+
+  it('a filtered-out predecessor hides its arrow but the link stays counted', () => {
+    const filtered = PROG.filter(a => a.id !== 'a')
+    const model = buildGanttModel(filtered, { now: NOW, scale: 'week' })
+    const { rows } = layoutGanttRows(model, groupGanttActivities(filtered, GANTT_GROUP.NONE, { now: NOW }), new Set(), { ungrouped: true })
+    const r = dependencyArrows(rows, states)
+    expect(r.arrows.map(a => a.key)).toEqual(['c->m'])
+    expect(r.hidden).toBe(3)
+  })
+
+  it('draws nothing beyond the density limit and says so, keeping the counts', () => {
+    const { rows } = rowsFor('week')
+    const r = dependencyArrows(rows, states, { limit: 2 })
+    expect(r.truncated).toBe(true)
+    expect(r.arrows).toEqual([])
+    expect(r.drawable).toBe(3)
+    expect(MAX_ARROWS_DRAWN).toBe(1500)
+    expect(dependencyArrows([], states)).toMatchObject({ arrows: [], total: 0, hidden: 0, truncated: false })
+    expect(dependencyArrows(rows, undefined).arrows).toEqual([])
+  })
+
+  it('arrow paths: a forward elbow, and a doubled-back route when the successor starts at or before the predecessor ends', () => {
+    expect(arrowPath({ fromX: 100, fromY: 17, toX: 200, toY: 51 })).toBe('M100 17 H108 V51 H200')
+    expect(arrowPath({ fromX: 100, fromY: 17, toX: 90, toY: 51 })).toBe('M100 17 H108 V34 H82 V51 H90')
+    expect(arrowPath({ fromX: 100, fromY: 51, toX: 90, toY: 17 })).toBe('M100 51 H108 V34 H82 V17 H90')
+  })
+
+  it('models the worst case: 2,000 activities × 20 links stays bounded and reports truncation', () => {
+    const big = Array.from({ length: 2000 }, (_, i) => activity({
+      id: `n${i}`, sortOrder: i, plannedStart: '2026-10-05', plannedFinish: '2026-10-09',
+      predecessors: Array.from({ length: Math.min(20, i) }, (_, k) => fs(`n${i - 1 - k}`)),
+    }))
+    const model = buildGanttModel(big, { now: NOW, scale: 'month' })
+    const { rows } = layoutGanttRows(model, groupGanttActivities(big, GANTT_GROUP.NONE, { now: NOW }), new Set(), { ungrouped: true })
+    const st = dependencyStates(big, NOW)
+    const r = dependencyArrows(rows, st)
+    expect(r.total).toBe(big.reduce((s, a) => s + a.predecessors.length, 0))
+    expect(r.truncated).toBe(true)
+    expect(r.arrows).toEqual([])
+  })
+})

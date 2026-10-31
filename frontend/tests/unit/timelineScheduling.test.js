@@ -483,7 +483,8 @@ describe('guarded quick action transaction', () => {
     const fs = fakeFirestore({ reads: [seen] })
     await run(fs, seen, QUICK_ACTION.START)
     expect(fs.writes).toHaveLength(1)
-    expect(fs.writes[0].data).toEqual({ status: 'in_progress', actualStart: TODAY, updatedAt: 'SERVER_TS', updatedBy: 'u_pm' })
+    // ADR-65: plus `revision` = stored + 1 (a legacy document reads as 1).
+    expect(fs.writes[0].data).toEqual({ status: 'in_progress', actualStart: TODAY, revision: 2, updatedAt: 'SERVER_TS', updatedBy: 'u_pm' })
   })
 
   it('refuses a STALE action: the server copy changed since the UI loaded it', async () => {
@@ -584,10 +585,23 @@ describe('guarded quick action transaction', () => {
       .toBeLessThan(handler.indexOf("setQuickNotice({ tone: 'ok'"))
   })
 
-  it('the full editor path is unchanged (still an unconditioned update) — documented, not claimed fixed', () => {
+  it('ADR-65: the full editor and cancel paths are now guarded transactions too — no unconditioned update remains', () => {
     const hook = stripComments(read('hooks/useProjectActivities.jsx'))
-    expect(hook).toContain('await updateDoc(ref, {')
+    expect(hook).not.toMatch(/\bupdateDoc\(|\bsetDoc\(/)
     expect(hook).toContain('runActivityQuickAction({')
+    expect(hook).toContain('runActivityUpdate({')
+    expect(hook).toContain('runActivityCancel({')
+    expect(hook).toContain('runActivityCreate({')
+  })
+
+  it('ADR-65: a stale REVISION alone (same stamps) is refused, and the revision written is stored + 1', async () => {
+    const seen = act({ revision: 2 })
+    const fs = fakeFirestore({ reads: [act({ revision: 3 })] })
+    await expect(run(fs, seen, QUICK_ACTION.START)).rejects.toMatchObject({ kind: QUICK_ACTION_ERROR.STALE })
+    expect(fs.writes).toHaveLength(0)
+    const ok = fakeFirestore({ reads: [act({ revision: 2 })] })
+    await run(ok, seen, QUICK_ACTION.START)
+    expect(ok.writes[0].data.revision).toBe(3)
   })
 })
 

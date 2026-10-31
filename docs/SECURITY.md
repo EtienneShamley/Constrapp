@@ -1867,7 +1867,15 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     This protects the *quick action* from overwriting a newer write; it does
     **not** protect anything *from* the full editor, which remains an
     unconditioned update, and it is **not rules-enforced** — a direct SDK write
-    bypasses it. The `revision` compare-and-set remains deferred.
+    bypasses it. ~~The `revision` compare-and-set remains deferred.~~
+    **Closed through the app by ADR-65 (GANTT 1A2):** every activity write —
+    create, full edit, cancel, quick action — is now a transaction that
+    refuses a stale copy (by `revision` AND by the `(updatedAt, updatedBy)`
+    pair) and writes `revision` = stored + 1, which the FINAL ruleset
+    REQUIRES. What remains client-only is in Deferred Control 41: a direct-SDK
+    caller who read the revision can still overwrite, and during the Stage-1
+    transitional ruleset an un-reloaded 1A1 browser can write without
+    incrementing.
     **Blast radius is deliberately bounded:** the programme writes no financial
     document and feeds no financial figure, so a fabricated programme misleads
     reporting but cannot move money — which is precisely why ADR-29 refuses to
@@ -2668,6 +2676,68 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     `frontend/tests/unit/newScopeClaims.test.js` or
     `frontend/tests/unit/sourceLine.test.js`.
 
+41. **Activity dependencies and the revision contract — what the first/last
+    pins and the compare-and-set cannot prove (ADR-65, GANTT 1A2).** Rules
+    enforce, on every activity write: the list type and size (≤ 20) of the
+    optional `predecessors`; the FIRST and LAST entries' exact keys, a
+    non-empty string id that is not the activity itself, `type == 'FS'`, an
+    integer lag 0–365 and the source's existence in THIS project (`exists()`);
+    `revision == 1` at create and, in the FINAL ruleset, `revision` = stored + 1
+    on every update and cancel. What they **cannot** enforce, and what must
+    never be described as enforced:
+
+    - **EVERY ENTRY BETWEEN THE TWO PINNED ENDS.** With three or more
+      predecessors a MIDDLE entry can be malformed, name nothing, or name the
+      activity itself and is ACCEPTED (proven). The app validates every entry
+      (`validateActivityDraft`, `validatePredecessorsDraft`) and the chart
+      labels such a link *malformed* / *missing* — never as a satisfied
+      dependency.
+    - **DUPLICATES** (the same predecessor twice) are ACCEPTED by rules
+      (proven); refused by the validator; listed once per entry at read time.
+    - **A CANCELLED SOURCE** is ACCEPTED by rules (proven) — `exists()` is all
+      a rule can ask. The guarded save refuses a NEW link to a cancelled
+      activity (server-read inside the transaction); a RETAINED link whose
+      source was cancelled later is kept for review and **never satisfies the
+      dependency**: the successor shows *Predecessor cancelled — requires
+      review* and reads as blocked once its start has arrived, until a person
+      removes or replaces the link.
+    - **CYCLES of any length** are ACCEPTED by rules (proven; rules have no
+      graph traversal). `wouldCreateCycle` stops the editor from closing one
+      against the loaded snapshot; `findCycleMembers` reports every member of
+      a cycle written through the SDK or by two concurrent edits, flagged
+      *Dependency cycle — requires review*; no false readiness is derived from
+      a cyclic link.
+    - **THE SCHEDULE CONFLICT AND THE BLOCKED STATE** are read-time
+      derivations; the conflict acknowledgement is a UI confirmation, not a
+      stored fact, and rules accept conflicting dates exactly as before.
+    - **GRAPH-WIDE CONSISTENCY.** The save transaction reads the target and
+      the NEW sources only, never the whole graph: two concurrent saves that
+      each look acyclic can close a cycle; a source cancelled after the check
+      races the same way. Both are detected on the next listener update and
+      shown for review, never auto-repaired.
+    - **THE COMPARE-AND-SET IS RULES-ASSISTED, NOT RULES-PROVEN.** A
+      direct-SDK caller who READ the stored revision can still overwrite the
+      document with revision + 1 (proven by the overwrite test): the rules
+      prove the writer knew the version, not that it merged anything.
+    - **DURING STAGE 1 ONLY** (the transitional ruleset, while the 1A1 bundle
+      is still served) an un-reloaded 1A1 browser's edit or cancel lands with
+      the revision UNCHANGED (proven in
+      `tests/rules/activitiesTransitional.rules.test.js`). A 1A2 client
+      detects such a write by the moved `(updatedAt, updatedBy)` pair before
+      its own next save, but no rule prevents it until the FINAL ruleset is
+      published. Keep Stage 1 short.
+
+    **Residual direct-SDK risk, stated plainly:** a programme writer using the
+    SDK directly can store a dependency list whose middle entries are
+    nonsense, a duplicate, a link to a cancelled activity, or a cycle; the
+    programme writes no financial document, so the worst outcome is a
+    misleading chart that the read-time states label for review. Every item
+    above is **proven** by a passing test in
+    `frontend/tests/rules/activities.rules.test.js`,
+    `frontend/tests/rules/activitiesTransitional.rules.test.js`,
+    `frontend/tests/unit/ganttDependencies.test.js` or
+    `frontend/tests/unit/activityActions.test.js`.
+
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
 is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.
@@ -2848,6 +2918,24 @@ are what refuse a `qs` write, exactly as before; (2) the *Finished n days
 after / before the current plan* comparison is a client-side derivation from
 unverified `actualFinish` / `plannedFinish` values (Deferred Control 23) and is
 never slippage against an approved baseline, because none exists.
+
+**Constrapp GANTT™ 1A2 (ADR-65) changed the `activities` block — the first
+rules change to the programme since ADR-29, and the audience is unchanged.**
+Read `company_admin` / `project_manager` / `qs`; write `company_admin` /
+`project_manager` only; `subcontractor`, `client` and `super_admin` denied;
+no delete. What changed: an OPTIONAL `predecessors` list (admitted by
+`hasOnly`, not required by `hasAll` — every pre-1A2 document and the 1A1
+bundle's create still pass), pinned on its FIRST and LAST entries (shape, FS,
+lag 0–365, not this activity, source `exists()` in this project, two reads at
+most); `revision == 1` at create (as before) and — in the FINAL ruleset —
+`revision` = stored + 1 on every edit and cancel, so a blind write that does
+not know the stored revision is refused by the RULES; the cancel branch's key
+list gains `revision`; `corePreserved` no longer pins it. The Stage-1
+transitional ruleset accepts an UNCHANGED revision as well (the 1A1 bundle's
+write shape) and nothing else differs. Proven by
+`tests/rules/activities.rules.test.js` (97 cases) and
+`tests/rules/activitiesTransitional.rules.test.js` (7). The limits are Deferred
+Control 41. FINAL `firestore.rules` 219,930 bytes; transitional 220,564.
 
 ## PULSE™ acknowledgements — a management record, `qs` read-only, revision-guarded
 

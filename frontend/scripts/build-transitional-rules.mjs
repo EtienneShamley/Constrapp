@@ -58,6 +58,18 @@ export const LINE_PAIRS = [
     transitional:
       "            && request.resource.data.keys().hasAll(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']); // ADR-63 TRANSITIONAL (STAGE 1): variationLineCount is OPTIONAL at create while the M3-B1 bundle is served",
   },
+  // ADR-65 (Constrapp GANTT™ 1A2): the FINAL file requires `revision` + 1 on
+  // every activity update; the 1A1 bundle writes an unchanged revision, so
+  // Stage 1 accepts EITHER (the optional `predecessors` key needs no marker —
+  // it is admitted by hasOnly in both files). Everything else in the block
+  // (roles, shape, stamps, cancellation) is identical and ACTIVE from Stage 1.
+  {
+    name: 'activities update — the revision contract',
+    final:
+      "                  && revisionIncremented() // ADR-65 FINAL: revision +1 is REQUIRED on every activity update",
+    transitional:
+      "                  && (request.resource.data.revision == resource.data.revision || revisionIncremented()) // ADR-65 TRANSITIONAL (STAGE 1): an UNCHANGED revision is still accepted while the 1A1 bundle is served",
+  },
 ]
 
 // Kept for callers that pin the first pair by name.
@@ -66,10 +78,10 @@ export const TRANSITIONAL_LINE = LINE_PAIRS[0].transitional
 
 const HEADER_FINAL = "rules_version = '2';"
 export const HEADER_TRANSITIONAL_LINES = [
-  '// ⚠️ ADR-63 STAGE-1 TRANSITIONAL RULESET — derived from firestore.rules by',
+  '// ⚠️ ADR-63 / ADR-65 STAGE-1 TRANSITIONAL RULESET — derived from firestore.rules by',
   '// scripts/build-transitional-rules.mjs; never edit by hand. Differs from the',
-  `// FINAL ruleset in exactly ${LINE_PAIRS.length} rule lines (search "ADR-63 TRANSITIONAL"). Deploy`,
-  '// FIRST (firebase.transitional.json), before the M3-B2 Hosting bundle; replace',
+  `// FINAL ruleset in exactly ${LINE_PAIRS.length} rule lines (search "TRANSITIONAL (STAGE 1)"). Deploy`,
+  '// FIRST (firebase.transitional.json), before the M3-B2 / GANTT 1A2 Hosting bundle; replace',
   '// with firestore.rules (FINAL) once the new bundle is live. Temporary compatibility only.',
 ]
 const HEADER_TRANSITIONAL = HEADER_FINAL + '\n' + HEADER_TRANSITIONAL_LINES.join('\n')
