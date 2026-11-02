@@ -15,6 +15,7 @@ import {
   claimReconciliationError, retentionFloorError,
   isEditableInvoice, isClaimSourced, buildInvoiceLine, invoiceLineInputCountError,
   validateInvoiceDraft, claimSourcedDriftError, invoiceVariationLineCount,
+  allocateClaimSourcedLineGst, rebuildClaimSourcedLines,
 } from '../lib/supplierInvoices'
 import { sourceLineIdentityError } from '../lib/sourceLine'
 
@@ -119,7 +120,17 @@ export function useSupplierInvoices(projectId) {
       throw new Error('A direct purchase-order invoice cannot carry variation lines — invoice new-scope work from the approved progress claim.')
     }
 
-    const totals = invoiceTotals(lineItems, retention)
+    // A claim-sourced invoice carries the certified claim GST APPORTIONED across
+    // its taxable lines (lib/supplierInvoices.js → allocateClaimSourcedLineGst,
+    // GST boundary hotfix): the editor builds its lines the same way, so this
+    // re-application is idempotent and is what the hook writes regardless of
+    // what a caller handed in. The apportionment never moves an amount, a tax
+    // code or an identity, and refuses (lines unchanged) rather than fabricate
+    // a match — the reconciliation guard below still decides.
+    const storedLines = source === SI_SOURCE.PROGRESS_CLAIM
+      ? allocateClaimSourcedLineGst(lineItems, { certifiedGst: claimApprovedGst, retention })
+      : lineItems
+    const totals = invoiceTotals(storedLines, retention)
     // A claim-sourced invoice must pay exactly the approved claim's certified
     // GST and total — block creation if it does not reconcile.
     if (source === SI_SOURCE.PROGRESS_CLAIM) {
@@ -173,8 +184,9 @@ export function useSupplierInvoices(projectId) {
         // Money — ex-GST canonical, per-line GST. Gross describes the full
         // taxable supply; payable is what is due after retention (see
         // invoiceTotals). retentionGst keeps a claim-sourced invoice reconciled
-        // to the approved claim's net-based GST.
-        lineItems,
+        // to the approved claim's net-based GST; a claim-sourced invoice's line
+        // GST is that certified GST apportioned (storedLines, above).
+        lineItems:      storedLines,
         retention:      totals.retention,
         retentionGst:   totals.retentionGst,
         retentionTotal: totals.retentionTotal,
@@ -313,11 +325,14 @@ export function useSupplierInvoices(projectId) {
     //
     // The rebuild below writes nothing. It exists only to prove the stored
     // document still reconciles with itself before a header correction is
-    // allowed; a draft whose stored gstAmount disagrees with its own amount and
-    // tax code (legacy or forged) is REFUSED with a clear message rather than
-    // being mutated into agreement. No progress claim is read or modified.
+    // allowed; a draft whose stored header totals disagree with the certified
+    // GST its own amounts, tax codes and retention imply (legacy or forged) is
+    // REFUSED with a clear message rather than being mutated into agreement.
+    // The rebuild apportions the certified GST exactly as CREATE did
+    // (lib/supplierInvoices.js → rebuildClaimSourcedLines, GST boundary
+    // hotfix). No progress claim is read or modified.
     if (isClaimSourced(invoice)) {
-      const lineItems = storedLines.map(li => buildInvoiceLine(li, { amount: li.amount, taxCode: li.taxCode }))
+      const lineItems = rebuildClaimSourcedLines(storedLines, invoice.retention)
       const draftError = validateInvoiceDraft({
         lineItems,
         supplierInvoiceNumber,

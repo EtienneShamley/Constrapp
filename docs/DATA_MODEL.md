@@ -553,8 +553,12 @@ Everything else is immutable from creation and is never written by an edit:
 `revision`, all lifecycle stamps, `paidAt`, `adjustsInvoiceId`, `attachments`,
 `externalRefs`, `createdAt`/`createdBy`. Per line, `poLineIndex`, `costCodeId`,
 `costCodeName` and `description` are identity, read from the **stored** line on
-every rebuild and structurally unwritable; `gstAmount` is always re-derived from
-`amount` + `taxCode`, never accepted from a caller. **The stored line set is
+every rebuild and structurally unwritable; `gstAmount` is always re-derived,
+never accepted from a caller — per line from `amount` + `taxCode` on a
+`direct_po` invoice, and on a `progress_claim` invoice as the **certified claim
+GST apportioned across the taxable lines in whole cents** (GST boundary hotfix;
+FINANCIAL_WORKFLOWS.md → *Claim reconciliation guard*), so Σ `gstAmount` equals
+the claim's certified GST plus this invoice's `retentionGst` by construction. **The stored line set is
 fixed** — no add, remove, reorder or reseed, in either mode: create filters out
 zero-amount lines, so a PO line never priced at create was never stored and cannot
 be added by editing (cancel and raise a new invoice); a line that *is* stored may

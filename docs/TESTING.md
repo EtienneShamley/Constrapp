@@ -7242,3 +7242,81 @@ logins, two browser tabs.
    acknowledgements as before; the Dashboard, the GANTT tab, every Budget /
    Forecast / Commercial figure and the SHIELD tab are unchanged; the beat
    dot and its Pause control behave as in §24.
+
+
+## 44. GST boundary hotfix — `fix/gst-boundary-pins` (findings F2 / F3 of the SHIELD inspection of 3 November 2026) — implemented, NOT YET DEPLOYED
+
+**Root causes.** *F2:* `roundMoney(x × 0.1)` computes in binary floating point
+and on some half-cent boundaries rounds DOWN (40.15 → 4.01 where half-up gives
+4.02; 1,632 such retention values per $10,000, e.g. 5% of $803.00); the
+`supplierInvoices.retentionGst` pin and the `retentionReleases` cumulative-GST
+pin were EXACT half-up, so the app's own direct-PO invoice, any claim-sourced
+invoice whose claim carried such a retention, and a first release of such an
+amount were refused with permission-denied (ADR-57 had recorded it for POs and
+claims only; the existing boundary cases — 100.05, 1234.55, 9999.95 — all
+happen to round UP). *F3:* a claim certifies GST once on its net total
+(`claimTotals`) while the claim-sourced invoice derived GST per line; three
+certified lines of 10.05 gave 1.01 × 3 = 3.03 against a certified 3.02, so
+`claimReconciliationError` refused the invoice and the claim stayed *awaiting
+invoice*. Both are recorded in PROJECT_DECISIONS.md → *ADR-40 / ADR-57
+Correction: GST Boundary Hotfix*.
+
+**Automated:** unit **70 files / 4,051 tests** (new
+`claimSourcedGstAllocation.test.js`, **28** — the integer apportionment:
+3 × 10.05 → 1.01 + 1.01 + 1.00, largest remainder with index tie-break,
+residual spread never concentrated, two-cent refusal ceiling, non-taxable and
+zero lines excluded, malformed input refused, 200-line claim, a 3,000-case
+deterministic sweep with and without cent-level retention proving exact
+totals and per-line bounds; the line builder: reconciliation of two-, multi-
+and single-line claims with and without retention, identity / amount / tax
+code / cost code untouched, claim never mutated, idempotent, refuses a GST-free
+line rather than fake a match; the EDIT rebuild matches CREATE and still
+refuses a forged header; and the financial regression — the 30.15 counted
+once in Actual, Remaining Committed 489.95 per line before and after posting,
+FFC unchanged, AP = the certified payable total); every pre-existing unit test
+passes unchanged. Rules **29 files / 1,960 tests** (+24):
+`supplierInvoices.rules.test.js` +12 — six boundary retentions accepted as the
+app writes them (each proven one cent below half-up), both alternatives for
+40.15 (4.01 and the historical 4.02), one cent ABOVE on a boundary and two
+below refused, ±1 off a boundary refused, the pre-hotfix 100.05 case kept with
+its direction reversed (10.02 refused), an arbitrary self-consistent
+`retentionGst` refused, and the claim-sourced invoice the app now builds
+(3 × 10.05 apportioned, and a boundary-retention claim) created, approved and
+posted through the rules; `retentionReleases.rules.test.js` +12 — six
+boundary first releases accepted, both alternatives for 40.15, +1 / −2 on a
+boundary refused, ±1 off a boundary refused, a later release after a boundary
+cumulative (prev 40.15) with the client's +1 delta accepted and ±1 beyond it
+refused, the telescoping 40.15 + 40.15 + 19.70 sequence, and arbitrary or
+non-number GST refused; the old "one cent off" cases in both suites now assert
+the ABOVE direction (the below direction is the admitted boundary variant).
+FINAL `firestore.rules` 229,126 → **230,340 bytes** (+1,214: `gstPinned()`
+hoisted to the shared helpers, the two pins, the release block's type/balance
+split); transitional **230,974**; `npm run rules:transitional:check` clean;
+lint 0 / 0; build clean; `git diff --check` clean.
+
+**Manual acceptance (maximum three):**
+
+1. **Boundary retention (F2).** Raise a direct-PO supplier invoice with one
+   line of $803.00 and retention $40.15 (5%): the create succeeds (previously
+   *permission-denied*), the stored retention GST reads $4.01, approve and post
+   it; then post a Retention Release of $40.15 against it — succeeds, GST
+   $4.01 — and a second release of $10.01 — succeeds. Remaining Payable,
+   Retention Held / Released and Cash Flow move exactly as for a non-boundary
+   retention.
+2. **Cent-level claim (F3).** Approve a progress claim with three lines
+   certified at $10.05 each (claim GST $3.02). *Raise invoice from claim*:
+   the modal previews line GST $1.01 / $1.01 / $1.00, GST total $3.02,
+   payable total $33.17 — no reconciliation warning — and saving succeeds
+   (previously *does not reconcile … 3.03 vs 3.02*). Edit the draft's header
+   (reference, dates, notes) and save — accepted; the lines are unchanged.
+   Post it: Actual shows $30.15 once across the three cost codes, the claim
+   leaves *awaiting invoice*, Remaining Committed is unchanged from before
+   posting, AP shows $33.17.
+3. **Regression.** A whole-dollar claim (e.g. 300 + 200) still invoices with
+   the same per-line GST as before; a direct-PO invoice with retention 0 and
+   with retention $100.00 is unchanged; a claim-sourced create with one line
+   switched to *GST-free* is still refused by the reconciliation guard (it is
+   never silently matched); a subcontractor or client login still cannot read
+   or write supplier invoices or releases; a posted invoice still cannot be
+   edited or cancelled; Budget, Forecast, Commercial, Cash Flow, Dashboard and
+   SHIELD figures are unchanged for every existing document.

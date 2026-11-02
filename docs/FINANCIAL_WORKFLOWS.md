@@ -424,6 +424,31 @@ the approved claim's `approvedGst` **and** its `payableTotal` equals the claim's
 again in the hook). This guarantees a claim-sourced invoice never drifts from the
 certified amount it bills.
 
+**Claim-sourced line GST is an apportionment of the certified GST, not an
+independent per-line calculation (GST boundary hotfix — PROJECT_DECISIONS.md →
+*ADR-40 / ADR-57 Correction: GST Boundary Hotfix*).** A claim
+certifies GST **once**, on its net total (`claimTotals`: 10% of
+`approvedSubtotal − retention`, one rounding); the invoice stores GST per line,
+and a sum of per-line 10% roundings cannot reproduce one rounding of the total
+(three certified lines of 10.05 round to 1.01 each = 3.03 against a certified
+3.02), so the guard above refused the invoice and the claim stayed *awaiting
+invoice* with no app path. `lib/supplierInvoices.js → allocateClaimSourcedLineGst`
+now places `certified claim GST + this invoice's retentionGst` across the
+taxable (`gst`) lines in **whole cents, integer arithmetic**: each line takes
+the floor of its own `amount × 10%`, and the residual cents go one at a time to
+the lines with the largest fractional remainder (ties to the lower line index),
+cycling the ranking if needed, so the residual is spread and never concentrated
+on the last line. Every amount, tax code, identity and cost code is untouched;
+GST-free and zero lines take nothing; the certified claim is never written. A
+target more than two cents from 10% of the taxable lines cannot be the product
+of the two roundings that separate them, so the apportionment **refuses**
+(lines unchanged) and the reconciliation guard reports the mismatch — it never
+fabricates a match. The hook re-applies the same apportionment before writing
+(idempotent), and a claim-sourced draft's EDIT rebuild (`rebuildClaimSourcedLines`)
+derives the certified GST from the stored amounts and retention through the
+same claim formula, so the drift check matches CREATE. Direct-PO invoices are
+unchanged: their GST stays `gstForLine` per line.
+
 ### Over-invoicing & duplicates
 
 - Invoicing beyond a PO line (or PO total) is **warned (amber ⚠) but never

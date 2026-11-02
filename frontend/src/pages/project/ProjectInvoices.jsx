@@ -23,6 +23,7 @@ import {
   claimReconciliationError,
   isEditableInvoice, isClaimSourced, invoiceLineToForm, buildInvoiceLine,
   validateInvoiceDraft, claimSourcedDriftError,
+  allocateClaimSourcedLineGst, rebuildClaimSourcedLines,
 } from '../../lib/supplierInvoices'
 import {
   RECONCILIATION_LABELS, RECONCILIATION_BADGE_VARIANTS, paymentMethodLabel, daysPastDue,
@@ -225,7 +226,15 @@ function SupplierInvoiceEditorModal({
   const sourceLines = isEdit
     ? (invoice.lineItems ?? [])
     : (claim ? (claim.lineItems ?? []) : (po ? (po.lineItems ?? []) : []))
-  const builtLines = isEdit
+  //
+  // A CLAIM-SOURCED invoice's line GST is the certified claim GST APPORTIONED
+  // across its taxable lines (lib/supplierInvoices.js →
+  // allocateClaimSourcedLineGst, GST boundary hotfix): the claim certifies GST
+  // once on its net total, and per-line 10% roundings cannot reproduce it. The
+  // hook applies the same apportionment before writing, so what is previewed
+  // here is what is stored. EDIT rebuilds a stored claim-sourced draft the same
+  // way (rebuildClaimSourcedLines) so the drift check below matches the hook's.
+  const perLine = isEdit
     ? sourceLines.map((li, idx) => (claimSourced
         // Certified claim values, preserved verbatim — nothing here is authored.
         ? buildInvoiceLine(li, { amount: li.amount, taxCode: li.taxCode })
@@ -239,6 +248,11 @@ function SupplierInvoiceEditorModal({
         // storing the rounded amount. Preserved exactly — see buildInvoiceLine.
         gstFromUnroundedAmount: true,
       }))
+  const builtLines = claimSourced
+    ? rebuildClaimSourcedLines(invoice.lineItems ?? [], invoice.retention ?? 0)
+    : (claim
+        ? allocateClaimSourcedLineGst(perLine, { certifiedGst: claim.approvedGst, retention: claim.retention || 0 })
+        : perLine)
   // CREATE stores only the priced lines; EDIT never re-filters, so a stored line
   // taken to zero keeps its identity and can be brought back.
   const savedLines = builtLines.filter(l => l.amount > 0)
