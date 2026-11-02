@@ -38,6 +38,14 @@ import { formatCurrency } from '../../src/lib/formatters'
 //      settled / credited / retained / unallocated payables, closed activities,
 //      draft vs submitted exposure with no double counting;
 //   6. page wiring and roles, as SOURCE STRUCTURE (no DOM runner — ADR-26).
+//
+// PULSE 1C (ADR-67) added three schedule indicators — blocked activities,
+// dependency review, baseline slippage — and two sources (the baseline
+// headers and the active snapshot). The pins that counted six indicators,
+// eleven sources and eleven subscriptions are revised EXPLICITLY below; the
+// fixture gained predecessors and an approved baseline so every new source
+// moves an indicator. The three new indicators' own behaviour is pinned in
+// tests/unit/pulseSchedule.test.js.
 
 const read = (rel) =>
   readFileSync(fileURLToPath(new URL(`../../src/${rel}`, import.meta.url)), 'utf8')
@@ -149,12 +157,34 @@ const SOURCES = {
   ],
   activities: [
     { id: 'a1', name: 'Excavate',   status: 'in_progress', isMilestone: false, plannedStart: '2026-02-01', plannedFinish: '2026-03-01', responsibleName: 'J. Smith', costCodeName: '02-100 — Earthworks' },
-    { id: 'a2', name: 'Slab pour',  status: 'not_started', isMilestone: false, plannedStart: '2026-03-01', plannedFinish: '2026-03-14' },
-    { id: 'a3', name: 'Frame',      status: 'not_started', isMilestone: false, plannedStart: '2026-03-10', plannedFinish: '2026-03-15' }, // due today: not overdue
+    // ADR-67: a2 depends on the unfinished a1 (its start has arrived → BLOCKED;
+    // and it starts before a1's finish allows → a CONFLICT link to review).
+    { id: 'a2', name: 'Slab pour',  status: 'not_started', isMilestone: false, plannedStart: '2026-03-01', plannedFinish: '2026-03-14', predecessors: [{ activityId: 'a1', type: 'FS', lagDays: 0 }] },
+    // a3 depends on the CANCELLED a5 → blocked (never satisfied) and a review link.
+    { id: 'a3', name: 'Frame',      status: 'not_started', isMilestone: false, plannedStart: '2026-03-10', plannedFinish: '2026-03-15', predecessors: [{ activityId: 'a5', type: 'FS', lagDays: 0 }] }, // due today: not overdue
     { id: 'a4', name: 'Lock-up',    status: 'completed',   isMilestone: true,  plannedStart: '2026-01-01', plannedFinish: '2026-01-01', actualFinish: '2026-01-02' },
     { id: 'a5', name: 'Old scope',  status: 'cancelled',   isMilestone: false, plannedStart: '2026-01-01', plannedFinish: '2026-01-10' },
     { id: 'a6', name: 'Handover',   status: 'not_started', isMilestone: true,  plannedStart: '2026-06-30', plannedFinish: '2026-06-30' },
   ],
+  // ADR-67: ONE approved baseline whose captured finishes are earlier than the
+  // current plan for a2 (+4 days) and the milestone a6 (+10 days); a1 moved
+  // earlier, a3 is unchanged, a4 finished a day late, a5 was already cancelled.
+  programmeBaselines: [
+    { id: 'bl1', name: 'Original programme', reason: 'Contract award', status: 'approved', activityCount: 6,
+      approvedAt: { seconds: 1_770_000_000, nanoseconds: 0 }, approvedBy: 'u_pm',
+      createdAt: { seconds: 1_769_000_000, nanoseconds: 0 }, revision: 2 },
+  ],
+  programmeBaselineSnapshot: {
+    id: 'bl1', activityCount: 6, capturedBy: 'u_pm',
+    activities: [
+      { activityId: 'a1', name: 'Excavate',  isMilestone: false, plannedStart: '2026-02-01', plannedFinish: '2026-03-05', status: 'in_progress', percentComplete: 50, revision: 1, sortOrder: 10, costCodeId: null },
+      { activityId: 'a2', name: 'Slab pour', isMilestone: false, plannedStart: '2026-03-01', plannedFinish: '2026-03-10', status: 'not_started', percentComplete: 0, revision: 1, sortOrder: 20, costCodeId: null },
+      { activityId: 'a3', name: 'Frame',     isMilestone: false, plannedStart: '2026-03-10', plannedFinish: '2026-03-15', status: 'not_started', percentComplete: 0, revision: 1, sortOrder: 30, costCodeId: null },
+      { activityId: 'a4', name: 'Lock-up',   isMilestone: true,  plannedStart: '2026-01-01', plannedFinish: '2026-01-01', status: 'not_started', percentComplete: 0, revision: 1, sortOrder: 40, costCodeId: null },
+      { activityId: 'a5', name: 'Old scope', isMilestone: false, plannedStart: '2026-01-01', plannedFinish: '2026-01-10', status: 'cancelled', percentComplete: 0, revision: 1, sortOrder: 50, costCodeId: null },
+      { activityId: 'a6', name: 'Handover',  isMilestone: true,  plannedStart: '2026-06-20', plannedFinish: '2026-06-20', status: 'not_started', percentComplete: 0, revision: 1, sortOrder: 60, costCodeId: null },
+    ],
+  },
 }
 
 const settled = (loading = false, error = false) => ({ loading, error })
@@ -166,14 +196,27 @@ const run = (sources = SOURCES, sourceStates = allSettled(), now = NOW) =>
 const byId = (result) => Object.fromEntries(result.indicators.map(i => [i.id, i]))
 const get = (id, sources, sourceStates, now) => byId(run(sources, sourceStates, now))[id]
 
-const emptied = (source) => ({ ...SOURCES, [source]: source === 'baseline' ? null : [] })
+// The two single-document sources (the commercial baseline and the programme
+// baseline snapshot) empty to null; every list source empties to [].
+const DOCUMENT_SOURCES = ['baseline', 'programmeBaselineSnapshot']
+const emptied = (source) => ({ ...SOURCES, [source]: DOCUMENT_SOURCES.includes(source) ? null : [] })
 
 // ── 0 · Shape ────────────────────────────────────────────────────────────────
 
 describe('evaluatePulse — shape', () => {
   const result = run()
 
-  it('returns the six indicators in the fixed order, each with the contract fields', () => {
+  // ADR-67 revised this pin EXPLICITLY: nine indicators — the six of ADR-47
+  // in their original relative order, with the three schedule indicators
+  // inserted together after the overdue one.
+  it('returns the nine indicators in the fixed order, each with the contract fields', () => {
+    expect(INDICATOR_ORDER).toEqual([
+      'forecastOverBudget', 'forecastIncomplete', 'negativeGrossProfit', 'overdueActivities',
+      'blockedActivities', 'dependencyReview', 'baselineSlippage',
+      'pastDueSupplierInvoices', 'pendingVariationExposure',
+    ])
+    const original = ['forecastOverBudget', 'forecastIncomplete', 'negativeGrossProfit', 'overdueActivities', 'pastDueSupplierInvoices', 'pendingVariationExposure']
+    expect(INDICATOR_ORDER.filter(id => original.includes(id))).toEqual(original)
     expect(result.indicators.map(i => i.id)).toEqual(INDICATOR_ORDER)
     for (const ind of result.indicators) {
       for (const k of ['id', 'title', 'link', 'state', 'failedSources', 'reason', 'headline', 'explanation', 'values', 'evidence', 'evidenceColumns', 'caveats']) {
@@ -196,14 +239,18 @@ describe('evaluatePulse — shape', () => {
     expect(states[INDICATOR.FORECAST_INCOMPLETE].state).toBe(PULSE_STATE.FINDING)
     expect(states[INDICATOR.NEGATIVE_GROSS_PROFIT].state).toBe(PULSE_STATE.NEEDS_DATA)
     expect(states[INDICATOR.OVERDUE_ACTIVITIES].state).toBe(PULSE_STATE.FINDING)
+    expect(states[INDICATOR.BLOCKED_ACTIVITIES].state).toBe(PULSE_STATE.FINDING)
+    expect(states[INDICATOR.DEPENDENCY_REVIEW].state).toBe(PULSE_STATE.FINDING)
+    expect(states[INDICATOR.BASELINE_SLIPPAGE].state).toBe(PULSE_STATE.FINDING)
     expect(states[INDICATOR.PAST_DUE_SUPPLIER_INVOICES].state).toBe(PULSE_STATE.FINDING)
     expect(states[INDICATOR.PENDING_VARIATION_EXPOSURE].state).toBe(PULSE_STATE.FINDING)
   })
 
-  it('summary is counts by state that sum to six — and nothing else', () => {
+  // ADR-67 revised this pin EXPLICITLY: six → nine.
+  it('summary is counts by state that sum to nine — and nothing else', () => {
     expect(Object.keys(result.summary.counts).sort()).toEqual([...PULSE_STATE_ORDER].sort())
-    expect(Object.values(result.summary.counts).reduce((a, b) => a + b, 0)).toBe(6)
-    expect(result.summary.total).toBe(6)
+    expect(Object.values(result.summary.counts).reduce((a, b) => a + b, 0)).toBe(9)
+    expect(result.summary.total).toBe(9)
     expect(Object.keys(result.summary)).toEqual(['counts', 'total'])
     expect(summarisePulse(null).total).toBe(0)
   })
@@ -229,8 +276,10 @@ describe('evaluatePulse — shape', () => {
     }
   })
 
-  it('PULSE sources are the snapshot sources plus activities, all labelled', () => {
-    expect(PULSE_SOURCES).toEqual([...SNAPSHOT_SOURCES, 'activities'])
+  // ADR-67 revised this pin EXPLICITLY: the snapshot sources plus activities,
+  // plus the baseline headers and the ONE active snapshot.
+  it('PULSE sources are the snapshot sources plus activities and the two baseline sources, all labelled', () => {
+    expect(PULSE_SOURCES).toEqual([...SNAPSHOT_SOURCES, 'activities', 'programmeBaselines', 'programmeBaselineSnapshot'])
     for (const s of PULSE_SOURCES) expect(PULSE_SOURCE_LABELS[s], s).toEqual(expect.any(String))
   })
 })
@@ -959,18 +1008,27 @@ describe('ProjectPulse page — role gate, subscriptions, isolation', () => {
     expect(FINANCIAL_ROLES).not.toContain('client')
   })
 
-  // ADR-49 revised this pin EXPLICITLY: the eleven PULSE sources plus ONE
-  // acknowledgement subscription (usePulseAcknowledgements), which is NOT a
-  // source — see "acknowledgements are not a PULSE source" below.
-  it('the workspace mounts exactly the eleven PULSE sources plus the acknowledgement subscription, each for the given project, and no other subscription', () => {
+  // ADR-49 revised this pin EXPLICITLY (eleven sources plus ONE acknowledgement
+  // subscription, which is NOT a source). ADR-67 revised it again EXPLICITLY:
+  // thirteen sources — the baseline headers (keyed by project) and the ONE
+  // snapshot of the ACTIVE approved baseline (keyed by project AND the active
+  // id, so it is idle when no approved baseline exists and never streams a
+  // historical payload) — plus the acknowledgement subscription.
+  it('the workspace mounts exactly the thirteen PULSE sources plus the acknowledgement subscription, each for the given project, and no other subscription', () => {
     const hooks = [...workspace.matchAll(/\buse([A-Z]\w+)\(([^)]*)\)/g)].map(m => [m[1], m[2]])
     const subs = hooks.filter(([n]) => !['Memo', 'LocalToday'].includes(n))
     expect(subs.map(([n]) => n).sort()).toEqual([
-      'BudgetLines', 'ForecastLines', 'ProgressClaims', 'ProjectActivities', 'ProjectCommercial', 'PulseAcknowledgements',
+      'BudgetLines', 'ForecastLines', 'ProgrammeBaselineSnapshot', 'ProgrammeBaselines', 'ProgressClaims',
+      'ProjectActivities', 'ProjectCommercial', 'PulseAcknowledgements',
       'PurchaseOrders', 'RetentionReleases', 'SupplierCreditNotes', 'SupplierInvoices', 'SupplierPayments', 'Variations',
     ])
-    for (const [, arg] of subs) expect(arg).toBe('projectId')
+    for (const [name, arg] of subs) {
+      expect(arg).toBe(name === 'ProgrammeBaselineSnapshot' ? 'projectId, activeBaselineId' : 'projectId')
+    }
+    expect(workspace).toContain('const activeBaselineId = activeBaselineIdFor(programmeBaselines)')
     expect(workspace).not.toMatch(/useCostCodes|useContacts|useProjects\(|useAuth\(|useProfile\(/)
+    // The page selects WHICH snapshot to read and computes nothing from it.
+    expect(code).not.toMatch(/from '\.\.\/\.\.\/lib\/(ganttBaseline|ganttDependencies|pulseSchedule)'/)
   })
 
   it('acknowledgements are not a PULSE source: never passed to evaluatePulse, never in sourceStates or the dependency map', () => {

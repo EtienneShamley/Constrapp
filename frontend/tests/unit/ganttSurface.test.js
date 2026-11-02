@@ -461,14 +461,19 @@ describe('ADR-66: baselines on the chart, in the list, on the cards and in the d
     for (const src of [capture, review, panel]) expect(src).not.toMatch(/from 'firebase|fixed inset-0 z-50/)
   })
 
-  it('no new runtime dependency and no Dashboard or PULSE change', () => {
+  // ADR-67 revised this pin EXPLICITLY. ADR-66 pinned that neither the
+  // Dashboard panel nor lib/pulse.js read a baseline; PULSE 1C composes the
+  // baseline SELECTORS read-only (baselineComparison / baselineSummary through
+  // lib/pulseSchedule.js). The Dashboard still reads none, and PULSE never
+  // touches the write path or the hooks.
+  it('no new runtime dependency and no Dashboard change; PULSE composes the baseline selectors read-only', () => {
     const pkg = JSON.parse(readRoot('package.json'))
     expect(Object.keys(pkg.dependencies).sort()).toEqual([
       '@tailwindcss/vite', 'firebase', 'pdfjs-dist', 'react', 'react-dom', 'react-router-dom', 'recharts', 'tailwindcss',
     ])
-    // Neither surface reads a baseline: no import of the baseline modules.
     expect(panelDashboard()).not.toMatch(/programmeBaseline|ganttBaseline/)
-    expect(pulse).not.toMatch(/programmeBaseline|ganttBaseline/)
+    expect(pulse).toContain("import { baselineComparison, baselineSummary } from './ganttBaseline'")
+    expect(pulse).not.toMatch(/programmeBaselineActions|useProgrammeBaseline|runBaseline|getDocsFromServer/)
   })
 })
 

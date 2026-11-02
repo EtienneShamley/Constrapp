@@ -19,8 +19,9 @@ export default function Pulse() {
         <h3 className="font-bold text-lg mb-2 m-0 text-brand-pulse">{MODULE_NAMES.pulse}</h3>
         <p className="text-brand-muted text-sm mb-4 max-w-md mx-auto">
           PULSE checks each project&apos;s own records for explainable conditions — forecast over budget, incomplete
-          forecasts, negative forecast margin, overdue programme activities, past-due supplier invoices and pending
-          variation exposure. Open a project and choose its PULSE tab.
+          forecasts, negative forecast margin, overdue, blocked and dependency-review programme activities, work
+          planned later than the approved baseline, past-due supplier invoices and pending variation exposure. Open a
+          project and choose its PULSE tab.
         </p>
         <Link
           to="/projects"

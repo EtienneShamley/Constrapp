@@ -320,7 +320,11 @@ That script runs
     no measurement or page can be re-pointed to a live sheet; and the real
     guarded transactions get *permission* for an edit on a withdrawn sheet
     while the void commits.
-  - `frontend/tests/rules/pulseAcknowledgements.rules.test.js` — **37 tests**
+  - `frontend/tests/rules/pulseAcknowledgements.rules.test.js` — **38 tests**
+    (37 + one PULSE™ 1C case, ADR-67: the three schedule ids create,
+    re-acknowledge and withdraw with the app's composite keys, QS read-only,
+    no delete; the six-id pin revised explicitly to nine; near-miss ids
+    such as `blockedactivities` / `scheduleRisk` still refused — see §43)
     covering every case in §25-x below (PULSE™ 1B acknowledgements, ADR-49),
     including **6** that run the app's own **revision-guarded transactions**
     (`lib/pulseAcknowledgementActions.js`) against the real rules: a first
@@ -767,7 +771,12 @@ npm run test:unit
 
 - `frontend/tests/unit/shield.test.js` — **202 tests** over `lib/shield.js`
   and the SHIELD page wiring (SHIELD™ foundation, ADR-50): see §26.
-- `frontend/tests/unit/pulseAttention.test.js` — **65 tests** over
+- `frontend/tests/unit/pulseSchedule.test.js` — **47 tests** over
+  `lib/pulseSchedule.js` and the three PULSE™ 1C schedule indicators in
+  `lib/pulse.js` (ADR-67): see §43.
+- `frontend/tests/unit/pulseAttention.test.js` — **68 tests** (65 + three
+  ADR-67 identity cases: link and versioned keys; a re-baseline and a new
+  link reopen attention; the same link on another day does not) over
   `lib/pulseAttention.js` and `lib/pulseAcknowledgementActions.js` (PULSE™ 1B,
   ADR-49): see §25.
 - `frontend/tests/unit/variationCommitment.test.js` — **32 tests** over the
@@ -7166,3 +7175,70 @@ milestone (one cancelled), admin / PM and QS logins, two browser tabs.
    every Budget / Forecast figure are unchanged with and without a baseline;
    a project with no baseline shows *No approved baseline*, no outlines, no
    column and every activity remains editable.
+
+
+## 43. Constrapp PULSE™ 1C — Schedule Intelligence (ADR-67) — implemented, NOT YET DEPLOYED
+
+**Automated:** unit **69 files / 4,023 tests** (new `pulseSchedule.test.js`,
+47 — see §0b; `pulse.test.js` 394 and `pulseAttention.test.js` 68 after the
+explicit pin revisions; `ganttSurface.test.js` one ADR-66 pin revised
+explicitly); rules **29 files / 1,936 tests** (`pulseAcknowledgements.rules.test.js`
+38 — the nine-id allowlist, the composite keys, near-miss ids refused).
+FINAL `firestore.rules` 228,967 → **229,126 bytes** (the three ids in
+`indicatorValid()` and nothing else); transitional **229,760**;
+`npm run rules:transitional:check` clean. The page is not unit-rendered (no
+jsdom); the three checks below cover it by hand. Preconditions: a project
+with a programme of at least six activities including a milestone, with the
+GANTT 1B rules **already live in production** (verify in the Console that the
+published ruleset contains `programmeBaselineSnapshots`), admin / PM and QS
+logins, two browser tabs.
+
+**Manual acceptance (maximum three):**
+
+1. **Blocked and dependencies.** On GANTT, make activity B depend on an
+   in-progress activity A and set B's planned start to yesterday; make C
+   depend on a cancelled activity D with C's start today. Open PULSE: *Nine
+   conditions* in the header; **Programme activities blocked by
+   predecessors** is a Finding — *2 activities should have started but are
+   blocked by a predecessor*, B's row names A under *Waiting on*, C's row
+   names D under *Needs review* (*Predecessor cancelled — requires review*),
+   *Days waiting* 1 and 0, *Of which overdue* as applicable; **Programme
+   dependencies need review** lists C → D (cancelled) and, if B starts before
+   A's finish allows, B → A (*Starts before its predecessor allows*, with the
+   earliest start), headline *n dependency links on m open activities need
+   review*. Acknowledge the blocked finding with a note and a review-by date
+   → *Acknowledged*; on GANTT complete A → B's row disappears and the card
+   reads *Needs attention* only if C remains, else *No longer present*; add
+   a new blocked activity E → *Needs attention — 1 new source record*.
+   **Programme activities overdue** is unchanged throughout (same rows, same
+   wording, no baseline dependency).
+
+2. **Baseline.** With no approved baseline, **Programme later than approved
+   baseline** reads *Needs data — No approved baseline to compare against*
+   (never a Finding; with a draft, *1 draft baseline is awaiting review*).
+   On GANTT capture and approve a baseline, then move a milestone's date 5
+   days later and an activity's finish 3 days later. PULSE: a Finding — *1
+   milestone and 1 activity are planned later than Baseline 1 — name*, the
+   milestone first, *Later by* 5 days and 3 days, *Baseline finish* and
+   *Planned finish* shown, *Compared with Baseline 1 — name · Approved on
+   dd/mm/yyyy*, *Latest planned finish moved (envelope)* as `+n days`, and
+   the caveat *planning evidence … not a project delay*. Acknowledge it;
+   capture and approve a second baseline on GANTT → PULSE reads *Needs
+   attention — new source records* against *Baseline 2*, the acknowledgement
+   shown beneath. Set the moved finish back → *No open activity is planned
+   later than Baseline 2 … (n compared)* and *No longer present*.
+
+3. **Roles, failure and regression.** As QS: every schedule card is visible
+   with its evidence; no Acknowledge button; a direct SDK write to
+   `pulseAcknowledgements/blockedActivities` is refused. As subcontractor or
+   client: the tab shows *PULSE indicators are restricted*. With DevTools
+   blocking the `programmeBaselineSnapshots` read: the baseline card reads
+   *Unavailable — Could not load: Programme Baseline Snapshot*, and the
+   other eight cards are unchanged; blocking `activities` makes the four
+   programme cards Unavailable and the five financial ones unchanged. A
+   programme with no dependencies recorded: both dependency cards read *No
+   issue found* with the explicit wording *No dependencies are recorded*.
+   Regression: the six ADR-47 cards show the same states, figures, rows and
+   acknowledgements as before; the Dashboard, the GANTT tab, every Budget /
+   Forecast / Commercial figure and the SHIELD tab are unchanged; the beat
+   dot and its Pause control behave as in §24.

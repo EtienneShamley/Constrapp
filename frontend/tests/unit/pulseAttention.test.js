@@ -77,9 +77,24 @@ const SOURCES = {
   retentionReleases: [],
   activities: [
     { id: 'a1', name: 'Excavate', status: 'in_progress', isMilestone: false, plannedStart: '2026-09-01', plannedFinish: '2026-10-01' },
-    { id: 'a2', name: 'Slab',     status: 'not_started', isMilestone: false, plannedStart: '2026-10-01', plannedFinish: '2026-10-10' },
+    // ADR-67: a2 waits on the unfinished a1 (blocked) and starts before a1's
+    // finish allows (a conflict link to review).
+    { id: 'a2', name: 'Slab',     status: 'not_started', isMilestone: false, plannedStart: '2026-10-01', plannedFinish: '2026-10-10', predecessors: [{ activityId: 'a1', type: 'FS', lagDays: 0 }] },
     { id: 'a3', name: 'Frame',    status: 'not_started', isMilestone: false, plannedStart: '2026-10-19', plannedFinish: '2026-10-19' }, // due today: not overdue
   ],
+  // ADR-67: one approved baseline; a2's captured finish is five days earlier.
+  programmeBaselines: [
+    { id: 'bl1', name: 'Award programme', reason: 'Award', status: 'approved', activityCount: 3,
+      approvedAt: { seconds: 1_759_000_000, nanoseconds: 0 }, approvedBy: 'u_pm', createdAt: { seconds: 1_758_000_000, nanoseconds: 0 }, revision: 2 },
+  ],
+  programmeBaselineSnapshot: {
+    id: 'bl1', activityCount: 3, capturedBy: 'u_pm',
+    activities: [
+      { activityId: 'a1', name: 'Excavate', isMilestone: false, plannedStart: '2026-09-01', plannedFinish: '2026-10-01', status: 'not_started', percentComplete: 0, revision: 1, sortOrder: 10, costCodeId: null },
+      { activityId: 'a2', name: 'Slab',     isMilestone: false, plannedStart: '2026-10-01', plannedFinish: '2026-10-05', status: 'not_started', percentComplete: 0, revision: 1, sortOrder: 20, costCodeId: null },
+      { activityId: 'a3', name: 'Frame',    isMilestone: false, plannedStart: '2026-10-19', plannedFinish: '2026-10-19', status: 'not_started', percentComplete: 0, revision: 1, sortOrder: 30, costCodeId: null },
+    ],
+  },
 }
 
 const allSettled = () => Object.fromEntries(PULSE_SOURCES.map(s => [s, { loading: false, error: false }]))
@@ -118,6 +133,53 @@ describe('evidence keys — stable record ids, sorted and de-duplicated', () => 
     expect(evidenceKeysFor(IND[INDICATOR.OVERDUE_ACTIVITIES])).toEqual(['a1', 'a2'])
     expect(evidenceKeysFor(IND[INDICATOR.PAST_DUE_SUPPLIER_INVOICES])).toEqual(['inv1', 'inv2'])
     expect(evidenceKeysFor(IND[INDICATOR.PENDING_VARIATION_EXPOSURE])).toEqual(['v2', 'v4'])
+  })
+
+  // ADR-67: the three schedule indicators' identities — the activity id, the
+  // LINK (successor/predecessor) and the VERSIONED activity (baseline/activity).
+  it('blocked keys on the activity; dependency review on the link; baseline slippage on the baseline version and the activity', () => {
+    expect(evidenceKeysFor(IND[INDICATOR.BLOCKED_ACTIVITIES])).toEqual(['a2'])
+    expect(evidenceKeysFor(IND[INDICATOR.DEPENDENCY_REVIEW])).toEqual(['a2/a1'])
+    expect(evidenceKeysFor(IND[INDICATOR.BASELINE_SLIPPAGE])).toEqual(['bl1/a2'])
+  })
+
+  it('a newly approved baseline version makes every slippage key new — attention reopens without a marker row', () => {
+    const covered = attn(IND[INDICATOR.BASELINE_SLIPPAGE], ack({ id: INDICATOR.BASELINE_SLIPPAGE, indicatorId: INDICATOR.BASELINE_SLIPPAGE, evidenceKeys: ['bl1/a2'] }))
+    expect(covered.state).toBe(ATTENTION.ACKNOWLEDGED)
+    const rebaselined = {
+      ...SOURCES,
+      programmeBaselines: [
+        ...SOURCES.programmeBaselines,
+        { ...SOURCES.programmeBaselines[0], id: 'bl2', name: 'Revised', approvedAt: { seconds: 1_760_000_000, nanoseconds: 0 } },
+      ],
+      programmeBaselineSnapshot: { ...SOURCES.programmeBaselineSnapshot, id: 'bl2' },
+    }
+    const ind = byId(run(rebaselined))[INDICATOR.BASELINE_SLIPPAGE]
+    expect(ind.state).toBe(PULSE_STATE.FINDING)
+    expect(evidenceKeysFor(ind)).toEqual(['bl2/a2'])
+    expect(ind.evidence.map(r => r.id)).toEqual(['a2']) // no marker row — the version lives in the key only
+    const reopened = attn(ind, ack({ id: INDICATOR.BASELINE_SLIPPAGE, indicatorId: INDICATOR.BASELINE_SLIPPAGE, evidenceKeys: ['bl1/a2'] }))
+    expect(reopened.state).toBe(ATTENTION.NEEDS_ATTENTION)
+    expect(reopened.reason).toBe(ATTENTION_REASON.NEW_EVIDENCE)
+    expect(reopened.newKeys).toEqual(['bl2/a2'])
+  })
+
+  it('a different invalid link on an already-listed activity is new evidence; the same link on another day is not', () => {
+    const ind = IND[INDICATOR.DEPENDENCY_REVIEW]
+    const covered = attn(ind, ack({ id: INDICATOR.DEPENDENCY_REVIEW, indicatorId: INDICATOR.DEPENDENCY_REVIEW, evidenceKeys: ['a2/a1'] }))
+    expect(covered.state).toBe(ATTENTION.ACKNOWLEDGED)
+    // The viewer's day advances: the same link, the same key.
+    const later = byId(run(SOURCES, allSettled(), new Date(2026, 9, 25)))[INDICATOR.DEPENDENCY_REVIEW]
+    expect(evidenceKeysFor(later)).toEqual(['a2/a1'])
+    // A second predecessor that does not exist: a NEW link on the same activity.
+    const withMissing = { ...SOURCES, activities: SOURCES.activities.map(a => (a.id === 'a2'
+      ? { ...a, predecessors: [...a.predecessors, { activityId: 'ghost', type: 'FS', lagDays: 0 }] }
+      : a)) }
+    const grown = byId(run(withMissing))[INDICATOR.DEPENDENCY_REVIEW]
+    expect(evidenceKeysFor(grown)).toEqual(['a2/a1', 'a2/ghost'])
+    const reopened = attn(grown, ack({ id: INDICATOR.DEPENDENCY_REVIEW, indicatorId: INDICATOR.DEPENDENCY_REVIEW, evidenceKeys: ['a2/a1'] }))
+    expect(reopened.state).toBe(ATTENTION.NEEDS_ATTENTION)
+    expect(reopened.newKeys).toEqual(['a2/ghost'])
   })
 
   it('over budget includes the unbudgeted cost codes listed beside the over-budget rows', () => {
@@ -333,19 +395,23 @@ describe('splitFindings — findings only, fixed order kept within each group', 
       [INDICATOR.FORECAST_INCOMPLETE]:        { state: ATTENTION.NEEDS_ATTENTION },
       [INDICATOR.NEGATIVE_GROSS_PROFIT]:      { state: ATTENTION.NEEDS_ATTENTION },
       [INDICATOR.OVERDUE_ACTIVITIES]:         { state: ATTENTION.UNKNOWN },
+      // ADR-67: the three schedule indicators split exactly like the rest.
+      [INDICATOR.BLOCKED_ACTIVITIES]:         { state: ATTENTION.NEEDS_ATTENTION },
+      [INDICATOR.DEPENDENCY_REVIEW]:          { state: ATTENTION.ACKNOWLEDGED },
+      [INDICATOR.BASELINE_SLIPPAGE]:          { state: ATTENTION.UNKNOWN },
       [INDICATOR.PAST_DUE_SUPPLIER_INVOICES]: { state: ATTENTION.ACKNOWLEDGED },
       [INDICATOR.PENDING_VARIATION_EXPOSURE]: { state: ATTENTION.LOADING },
     }
     const s = splitFindings(run().indicators, attention)
-    expect(s.needsAttention.map(i => i.id)).toEqual([INDICATOR.FORECAST_INCOMPLETE, INDICATOR.NEGATIVE_GROSS_PROFIT])
-    expect(s.acknowledged.map(i => i.id)).toEqual([INDICATOR.FORECAST_OVER_BUDGET, INDICATOR.PAST_DUE_SUPPLIER_INVOICES])
-    expect(s.unknown.map(i => i.id)).toEqual([INDICATOR.OVERDUE_ACTIVITIES, INDICATOR.PENDING_VARIATION_EXPOSURE])
+    expect(s.needsAttention.map(i => i.id)).toEqual([INDICATOR.FORECAST_INCOMPLETE, INDICATOR.NEGATIVE_GROSS_PROFIT, INDICATOR.BLOCKED_ACTIVITIES])
+    expect(s.acknowledged.map(i => i.id)).toEqual([INDICATOR.FORECAST_OVER_BUDGET, INDICATOR.DEPENDENCY_REVIEW, INDICATOR.PAST_DUE_SUPPLIER_INVOICES])
+    expect(s.unknown.map(i => i.id)).toEqual([INDICATOR.OVERDUE_ACTIVITIES, INDICATOR.BASELINE_SLIPPAGE, INDICATOR.PENDING_VARIATION_EXPOSURE])
   })
 
   it('non-findings never appear in any group', () => {
     const s = splitFindings(run({ ...SOURCES, variations: [] }).indicators, {})
     expect([...s.needsAttention, ...s.acknowledged, ...s.unknown].map(i => i.id)).not.toContain(INDICATOR.PENDING_VARIATION_EXPOSURE)
-    expect(s.unknown).toHaveLength(5) // no attention supplied → unknown bucket
+    expect(s.unknown).toHaveLength(8) // no attention supplied → unknown bucket (ADR-67: nine findings less the cleared one)
   })
 })
 
@@ -658,12 +724,14 @@ describe('lib/pulseAttention.js and lib/pulseAcknowledgementActions.js — pure,
     expect(hook.match(/if \(!companyId \|\| !projectId \|\| !user\) throw new Error\('Not authenticated'\)/g)).toHaveLength(2)
   })
 
-  it('the rules block exists for the collection with the six-indicator allowlist and no delete', () => {
+  // ADR-67 revised this pin EXPLICITLY: six → nine ids in the allowlist.
+  it('the rules block exists for the collection with the nine-indicator allowlist and no delete', () => {
     const rules = readFileSync(fileURLToPath(new URL('../../firestore.rules', import.meta.url)), 'utf8')
     const start = rules.indexOf('match /companies/{companyId}/projects/{projectId}/pulseAcknowledgements/{indicatorId}')
     expect(start).toBeGreaterThan(-1)
     const block = rules.slice(start, rules.indexOf('allow delete: if false;', start))
     for (const id of Object.values(INDICATOR)) expect(block).toContain(`'${id}'`)
+    expect(Object.values(INDICATOR)).toHaveLength(9)
     expect(block).toContain("in ['company_admin', 'project_manager']")
     expect(block).toContain('evidenceKeys.size() <= 200')
     expect(block).toContain('note.size() <= 500')

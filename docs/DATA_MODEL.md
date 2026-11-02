@@ -1381,7 +1381,7 @@ app validates every entry, refuses duplicates, and shows the drift at approval.
 finding has been seen, what is being done about it, and when it must be looked
 at again. **Non-financial:** no amount, no currency, no counter, no currency
 ratchet, and it writes nothing onto any other document. The document id is the
-**indicator id** (`lib/pulse.js → INDICATOR`), so a project holds **at most six**
+**indicator id** (`lib/pulse.js → INDICATOR`), so a project holds **at most nine**
 of these. Access matrix (`qs` read-only, like `activities`): [SECURITY.md](SECURITY.md).
 
 ⚠️ **An acknowledgement is NOT a resolution, a financial approval or an audit
@@ -1392,9 +1392,9 @@ disappears from the records; **no `resolvedAt` exists or is invented.**
 
 | Field | Type | Notes |
 |---|---|---|
-| `indicatorId` | string | **Must equal the document id** and be one of `forecastOverBudget` \| `forecastIncomplete` \| `negativeGrossProfit` \| `overdueActivities` \| `pastDueSupplierInvoices` \| `pendingVariationExposure` (rules allowlist) |
+| `indicatorId` | string | **Must equal the document id** and be one of `forecastOverBudget` \| `forecastIncomplete` \| `negativeGrossProfit` \| `overdueActivities` \| `blockedActivities` \| `dependencyReview` \| `baselineSlippage` (the last three PULSE™ 1C, ADR-67) \| `pastDueSupplierInvoices` \| `pendingVariationExposure` (rules allowlist) |
 | `status` | string | `active` \| `withdrawn` — create as `active`; `active → withdrawn` (withdraw) and `active`/`withdrawn → active` (re-acknowledge) are the only transitions; `withdrawn → withdrawn` rejected (all rules-enforced) |
-| `evidenceKeys` | string[] | The **sorted, de-duplicated stable record ids** the finding rested on when acknowledged: cost-code ids (over budget — incl. the unbudgeted rows listed beside it — and incomplete forecast), activity / supplier-invoice / variation document ids; **empty for negative gross profit** (project-level). **`size() <= 200` rules-enforced**; a finding with more records cannot be acknowledged (never truncated). ⚠️ Element type and truthfulness are **not** rules-checkable (DC31) |
+| `evidenceKeys` | string[] | The **sorted, de-duplicated stable record ids** the finding rested on when acknowledged: cost-code ids (over budget — incl. the unbudgeted rows listed beside it — and incomplete forecast), activity / supplier-invoice / variation document ids; **empty for negative gross profit** (project-level). **`size() <= 200` rules-enforced**; a finding with more records cannot be acknowledged (never truncated). ⚠️ Element type and truthfulness are **not** rules-checkable (DC31) **PULSE™ 1C (ADR-67):** blocked activities key on the activity id; a dependency needing review on the LINK `successorId/predecessorId` (collision-safe — a document id can never contain `/`); baseline slippage on the VERSIONED activity `baselineId/activityId`, so a newly approved baseline reopens attention with no marker row and no change to this shape. No key carries a date, a name, a variance or a position. |
 | `note` | string | **Required non-whitespace, ≤ 500** (rules-enforced) |
 | `reviewBy` | string | `'YYYY-MM-DD'` **required** (shape rules-enforced). The app requires it to be **after today**; that, and calendar validity, are client-only (DC31). The finding returns to *Needs attention* when this day arrives |
 | `acknowledgedAt` / `acknowledgedBy` | timestamp / uid | Refreshed on every (re-)acknowledgement; rules require `acknowledgedBy == request.auth.uid` and `acknowledgedAt == request.time` |

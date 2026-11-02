@@ -15,35 +15,44 @@ import { useProjectCommercial } from '../../hooks/useProjectCommercial'
 import { useSupplierPayments } from '../../hooks/useSupplierPayments'
 import { useRetentionReleases } from '../../hooks/useRetentionReleases'
 import { useProjectActivities } from '../../hooks/useProjectActivities'
+import { useProgrammeBaselines } from '../../hooks/useProgrammeBaselines'
+import { useProgrammeBaselineSnapshot } from '../../hooks/useProgrammeBaselineSnapshot'
 import { usePulseAcknowledgements } from '../../hooks/usePulseAcknowledgements'
 import { isFinancialRole } from '../../lib/margin'
 import { canReadProgramme } from '../../lib/projectTimeline'
 import {
-  evaluatePulse, groupIndicators, PULSE_STATE, PULSE_STATE_ORDER, PULSE_STATE_LABELS,
+  evaluatePulse, groupIndicators, activeBaselineIdFor,
+  PULSE_STATE, PULSE_STATE_ORDER, PULSE_STATE_LABELS,
 } from '../../lib/pulse'
 import { attentionFor, splitFindings, canManageAcknowledgements } from '../../lib/pulseAttention'
 import IndicatorCard from './pulse/IndicatorCard'
 import { ModuleTile, BeatToggle } from '../../components/ModuleMark'
 import { MODULE_NAMES } from '../../lib/moduleBranding'
 
-// ── Constrapp PULSE™ · project health indicators (ADR-47, ADR-49) ────────────
+// ── Constrapp PULSE™ · project health indicators (ADR-47, ADR-49, ADR-67) ────
 //
 // ⚠️ THE ROLE GATE IS THIS WRAPPER. PULSE reads every financial-role-only
 // collection the Dashboard snapshot reads (supplier invoices, credit notes,
 // variations, forecast lines, the commercial baseline, supplier payments,
-// retention releases) plus the project programme. The workspace — which alone
-// MOUNTS those subscriptions — renders only once the profile has settled AND
-// the role is financial AND may read the programme, so subcontractor and
-// client users never open them (not opened-and-hidden). Firestore Security
-// Rules remain the enforced boundary; this is the UX mirror.
+// retention releases) plus the project programme and — since PULSE 1C
+// (ADR-67) — the programme baseline headers and the ONE snapshot of the
+// active approved baseline (the GANTT tab's own read audience: admin, PM,
+// qs). The workspace — which alone MOUNTS those subscriptions — renders only
+// once the profile has settled AND the role is financial AND may read the
+// programme, so subcontractor and client users never open them (not
+// opened-and-hidden). Firestore Security Rules remain the enforced boundary;
+// this is the UX mirror.
 //
 // Both role lists are identical today (company_admin / project_manager / qs);
 // a test pins that, because this page assumes one gate covers every read.
 //
 // Every indicator is lib/pulse.js → evaluatePulse, which only composes
 // existing selectors. Nothing on this page adds, compares or re-derives a
-// figure. The page is remounted per project by ProjectDetailLayout's keyed
-// outlet (ADR-44).
+// figure: the one thing it selects is WHICH baseline snapshot to subscribe
+// (the active approved version's id, from lib/pulse.js → activeBaselineIdFor),
+// so the snapshot hook stays idle when no approved baseline exists and no
+// historical payload is ever streamed. The page is remounted per project by
+// ProjectDetailLayout's keyed outlet (ADR-44).
 //
 // Since ADR-49 the workspace ALSO mounts usePulseAcknowledgements — the one
 // write path PULSE has. It is NOT a PULSE source: it is not passed to
@@ -154,6 +163,18 @@ function PulseWorkspace({ projectId, currencyCode, role, currentUid }) {
   const { supplierPayments, supplierPaymentsLoading, supplierPaymentsError }          = useSupplierPayments(projectId)
   const { retentionReleases, retentionReleasesLoading, retentionReleasesError }       = useRetentionReleases(projectId)
   const { activities, activitiesLoading, activitiesError }                            = useProjectActivities(projectId)
+  // ADR-67: the programme baseline HEADERS (one bounded listener) and the ONE
+  // snapshot of the ACTIVE approved version — idle (settled, null) while no
+  // approved baseline exists; re-keyed, so loading again, when a new version
+  // is approved. Never a historical payload.
+  const {
+    baselines: programmeBaselines, baselinesLoading: programmeBaselinesLoading, baselinesError: programmeBaselinesError,
+  } = useProgrammeBaselines(projectId)
+  const activeBaselineId = activeBaselineIdFor(programmeBaselines)
+  const {
+    snapshot: programmeBaselineSnapshot, snapshotLoading: programmeBaselineSnapshotLoading,
+    snapshotError: programmeBaselineSnapshotError,
+  } = useProgrammeBaselineSnapshot(projectId, activeBaselineId)
   // NOT a PULSE source — see the file comment. Deliberately absent from
   // `sources` and `sourceStates` below.
   const {
@@ -165,6 +186,7 @@ function PulseWorkspace({ projectId, currencyCode, role, currentUid }) {
     sources: {
       budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
       variations, forecastLines, baseline, supplierPayments, retentionReleases, activities,
+      programmeBaselines, programmeBaselineSnapshot,
     },
     // The loading / error flags of every source, in the Dashboard snapshot's
     // shape (ADR-42), so availability is decided by the same figureState.
@@ -180,18 +202,24 @@ function PulseWorkspace({ projectId, currencyCode, role, currentUid }) {
       supplierPayments:    { loading: supplierPaymentsLoading,    error: supplierPaymentsError },
       retentionReleases:   { loading: retentionReleasesLoading,   error: retentionReleasesError },
       activities:          { loading: activitiesLoading,          error: activitiesError },
+      programmeBaselines:  { loading: programmeBaselinesLoading,  error: programmeBaselinesError },
+      programmeBaselineSnapshot: { loading: programmeBaselineSnapshotLoading, error: programmeBaselineSnapshotError },
     },
     now,
     currencyCode,
   }), [
     budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
     variations, forecastLines, baseline, supplierPayments, retentionReleases, activities,
+    programmeBaselines, programmeBaselineSnapshot,
     budgetLinesLoading, budgetLinesError, purchaseOrdersLoading, purchaseOrdersError,
     progressClaimsLoading, progressClaimsError, supplierInvoicesLoading, supplierInvoicesError,
     supplierCreditNotesLoading, supplierCreditNotesError, variationsLoading, variationsError,
     forecastLinesLoading, forecastLinesError, baselineLoading, baselineError,
     supplierPaymentsLoading, supplierPaymentsError, retentionReleasesLoading, retentionReleasesError,
-    activitiesLoading, activitiesError, now, currencyCode,
+    activitiesLoading, activitiesError,
+    programmeBaselinesLoading, programmeBaselinesError,
+    programmeBaselineSnapshotLoading, programmeBaselineSnapshotError,
+    now, currencyCode,
   ])
 
   // The MANAGEMENT status of each indicator, derived beside the evaluation
@@ -225,11 +253,11 @@ function PulseWorkspace({ projectId, currencyCode, role, currentUid }) {
       <Card className="mb-3.5">
         <PulseHeading currencyCode={currencyCode} />
         <p className="m-0 mt-1.5 text-[12px] text-brand-text-soft">
-          Six conditions checked against this project&apos;s current records — the same Forecast, Commercial, Supplier
-          Payments, Variations and Timeline figures, read at this moment. No score, no prediction, no trend: an
-          indicator is a finding only when the records support it, and incomplete or unavailable records are
-          reported as exactly that. A finding can be acknowledged with a note and a review-by date; that records
-          who has seen it, not that it is resolved.
+          Nine conditions checked against this project&apos;s current records — the same Forecast, Commercial, Supplier
+          Payments, Variations and GANTT figures (the programme, its dependencies and its approved baseline), read
+          at this moment. No score, no prediction, no trend: an indicator is a finding only when the records support
+          it, and incomplete or unavailable records are reported as exactly that. A finding can be acknowledged with
+          a note and a review-by date; that records who has seen it, not that it is resolved.
         </p>
         {/* Counts of indicators by state — never combined into a score, and
             unchanged by acknowledgement. */}
