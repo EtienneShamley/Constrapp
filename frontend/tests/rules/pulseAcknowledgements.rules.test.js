@@ -24,7 +24,11 @@ import { INDICATOR } from '../../src/lib/pulse'
 //   · QS IS READ-ONLY (as on the programme).
 //   · `revision` INCREMENTS — every update must carry exactly +1, so a blind
 //     overwrite that does not know the current revision is rejected.
-//   · the document id IS the indicator id, from a six-value allowlist.
+//   · the document id IS the indicator id, from a NINE-value allowlist — the
+//     six PULSE 1A ids (ADR-47) plus the three PULSE 1C schedule ids
+//     (ADR-67: blockedActivities, dependencyReview, baselineSlippage). The
+//     allowlist is the ONLY rules change 1C made; the schema, actors,
+//     stamps, revision guard, roles and delete block are byte-identical.
 //
 // ⚠️ What these tests deliberately PROVE IS NOT ENFORCED (the documented
 // client-only gaps — docs/SECURITY.md → Deferred Control 31): that a PULSE
@@ -192,7 +196,9 @@ describe('read and write matrix', () => {
     await assertFails(getDoc(ackRef(anon())))
   })
 
-  it('admin and project_manager can CREATE a first acknowledgement for every one of the six indicators', async () => {
+  // ADR-67 revised this pin EXPLICITLY: six → nine indicators.
+  it('admin and project_manager can CREATE a first acknowledgement for every one of the nine indicators', async () => {
+    expect(INDICATORS).toHaveLength(9)
     for (const user of WRITERS) {
       await testEnv.clearFirestore()
       await testEnv.withSecurityRulesDisabled(async (c) => {
@@ -202,6 +208,25 @@ describe('read and write matrix', () => {
       for (const id of INDICATORS) {
         await assertSucceeds(setDoc(ackRef(ctx(user), id), payload(user, { indicatorId: id })))
       }
+    }
+  })
+
+  it('ADR-67: the three schedule indicators accept the app\'s composite evidence keys and reopen through the same re-acknowledge path', async () => {
+    const SCHEDULE = [INDICATOR.BLOCKED_ACTIVITIES, INDICATOR.DEPENDENCY_REVIEW, INDICATOR.BASELINE_SLIPPAGE]
+    expect(SCHEDULE).toEqual(['blockedActivities', 'dependencyReview', 'baselineSlippage'])
+    const keysFor = {
+      [INDICATOR.BLOCKED_ACTIVITIES]: ['a2', 'a3'],
+      [INDICATOR.DEPENDENCY_REVIEW]:  ['a2/a1', 'a3/a5'],
+      [INDICATOR.BASELINE_SLIPPAGE]:  ['bl1/a2', 'bl1/a6'],
+    }
+    for (const id of SCHEDULE) {
+      await assertSucceeds(setDoc(ackRef(ctx(USERS.pm), id), payload(USERS.pm, { indicatorId: id, evidenceKeys: keysFor[id] })))
+      await assertSucceeds(updateDoc(ackRef(ctx(USERS.admin), id), reack(USERS.admin, 2, { evidenceKeys: [...keysFor[id], 'bl2/a9'] })))
+      await assertSucceeds(updateDoc(ackRef(ctx(USERS.pm), id), withdraw(USERS.pm, 3)))
+      // QS stays read-only on the new ids exactly as on the old.
+      await assertSucceeds(getDoc(ackRef(ctx(USERS.qs), id)))
+      await assertFails(updateDoc(ackRef(ctx(USERS.qs), id), reack(USERS.qs, 4)))
+      await assertFails(deleteDoc(ackRef(ctx(USERS.admin), id)))
     }
   })
 
@@ -247,7 +272,8 @@ describe('read and write matrix', () => {
 
 describe('create — identity and allowlist', () => {
   it('an unknown indicator id (as document id) is rejected, even when the field agrees', async () => {
-    for (const id of ['healthScore', 'forecastoverbudget', 'FORECAST_OVER_BUDGET', 'x']) {
+    // ADR-67: near-misses of the three new ids are as unknown as any other.
+    for (const id of ['healthScore', 'forecastoverbudget', 'FORECAST_OVER_BUDGET', 'x', 'blockedactivities', 'dependencyreview', 'baselineSlip', 'scheduleRisk', 'criticalPath']) {
       await assertFails(setDoc(ackRef(ctx(USERS.pm), id), payload(USERS.pm, { indicatorId: id })))
     }
   })

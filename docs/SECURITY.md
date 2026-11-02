@@ -169,7 +169,7 @@ Control 20).
 | `…/projects/{id}/activities/{id}` | **`company_admin`, `project_manager`, `qs`** | **`company_admin`, `project_manager` ONLY — `qs` is READ-ONLY**; shape, closed status set, date/milestone/percentage invariants, cancellation branch and cancelled-terminality rules-enforced | blocked — cancel via status |
 | `…/projects/{id}/programmeBaselines/{id}` | **`company_admin`, `project_manager`, `qs`** | **`company_admin`, `project_manager` ONLY — `qs` is READ-ONLY** (capture AND approve); exact keys, born draft at revision 1 with creator / audit stamps at server time, created ONLY with its snapshot in the same commit (`getAfter()`: same caller, time and `activityCount`); `draft → approved` and `draft → withdrawn` (reasoned) stamps-only with actor == caller, time == `request.time`, `revision` exactly +1; `name` / `reason` / `activityCount` / `createdAt/By` immutable; **approved and withdrawn admit NO update** — all rules-enforced (ADR-66). Middle entries, duplicates, entry-to-source equality and drift at approval are client-only (DC42) | blocked — an approved baseline is never deleted; a draft is withdrawn via status |
 | `…/projects/{id}/programmeBaselineSnapshots/{id}` | **`company_admin`, `project_manager`, `qs`** | **`company_admin`, `project_manager` ONLY**, **create-only** with a `draft` header in the same commit (`getAfter()`); exact keys, `capturedBy == caller`, `capturedAt == request.time`, `activities` a list of 1–2000 with `size() == activityCount`, the FIRST and LAST entries pinned (exact entry keys, source `exists()` in this project, date / milestone / status / progress / revision shape); **`update: false`** for everyone | **blocked for everyone** |
-| `…/projects/{id}/pulseAcknowledgements/{indicatorId}` | **`company_admin`, `project_manager`, `qs`** | **`company_admin`, `project_manager` ONLY — `qs` is READ-ONLY**; six-indicator id allowlist (id == stored `indicatorId`), exact keys, create active/revision 1, re-acknowledge and withdraw transitions, actor == caller, server stamps, non-blank `note` ≤ 500, `reviewBy` shape, `evidenceKeys` list ≤ 200, immutable `createdAt/By`, **`revision` must be exactly +1 on every update** — all rules-enforced (ADR-49) | blocked — withdraw via status |
+| `…/projects/{id}/pulseAcknowledgements/{indicatorId}` | **`company_admin`, `project_manager`, `qs`** | **`company_admin`, `project_manager` ONLY — `qs` is READ-ONLY**; nine-indicator id allowlist (id == stored `indicatorId`; the three PULSE™ 1C schedule ids `blockedActivities` / `dependencyReview` / `baselineSlippage` added by ADR-67 — the only 1C rules change), exact keys, create active/revision 1, re-acknowledge and withdraw transitions, actor == caller, server stamps, non-blank `note` ≤ 500, `reviewBy` shape, `evidenceKeys` list ≤ 200, immutable `createdAt/By`, **`revision` must be exactly +1 on every update** — all rules-enforced (ADR-49) | blocked — withdraw via status |
 | `…/projects/{id}/drawings/{id}` | **any company member** — including `subcontractor` and `client` | **`company_admin`, `project_manager` only — QS excluded**; born-empty create, four `hasOnly` update shapes, +1 revision count, non-whitespace withdraw reason | blocked — withdraw via status |
 | `…/projects/{id}/drawings/{id}/revisions/{id}` | **any company member** | same drawing writers; **file and authored identity immutable**, exact `storagePath` required, legal transitions only | blocked — a revision is never deleted |
 | `…/projects/{id}/documents/{id}` | `internal` → financial roles; `project` → **any company member** | financial roles; **file identity immutable**, three `hasOnly` update shapes, non-whitespace withdraw reason | blocked — withdraw via status |
@@ -2208,7 +2208,8 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
 
 31. **PULSE™ acknowledgements — what a management record cannot prove (ADR-49).**
     The `pulseAcknowledgements` block enforces tenant, role (`qs` read-only),
-    the six-indicator allowlist, exact keys, transitions, actors, server stamps,
+    the nine-indicator allowlist (six of ADR-49 plus the three PULSE™ 1C
+    schedule ids of ADR-67), exact keys, transitions, actors, server stamps,
     note/date/list shape, immutable creation stamps, `revision + 1` and no
     delete. It **cannot** enforce, and the app checks only client-side:
     - that a PULSE **finding actually existed** for the indicator when it was
@@ -2225,7 +2226,15 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       1` itself passes; the app's transaction refuses a stale write, the
       rules merely assist it;
     - project scoping of the writer roles (item 20) — any company PM can
-      acknowledge any project's findings.
+      acknowledge any project's findings;
+    - **(PULSE™ 1C, ADR-67)** that a composite evidence key names a real
+      dependency link (`successorId/predecessorId`) or a real approved
+      baseline version (`baselineId/activityId`) — rules see a string; and
+      that the schedule finding itself was true: blocked, conflict, cancelled
+      / missing / malformed / cyclic links and baseline variance are
+      read-time derivations over client-authored links (item 41) and a
+      client-captured snapshot (item 42). A slip that grows under the same
+      record ids stays acknowledged until its review-by date (the bound above).
 
     **Consequence, bounded:** a forged or careless acknowledgement can change
     only the derived *Management* label beneath a finding. It can never hide a
@@ -3089,6 +3098,20 @@ stored).
 19 October 2026 with the rest of `frontend/firestore.rules`, after the full
 rules suite passed; live behaviour was verified by the product owner.
 
+**PULSE™ 1C — Schedule Intelligence (ADR-67) — IMPLEMENTED, NOT YET
+DEPLOYED.** The ONE rules change: three ids join `indicatorValid()` —
+`blockedActivities`, `dependencyReview`, `baselineSlippage` (228,967 →
+229,126 bytes). Schema, actors, stamps, `revision + 1`, roles (`qs`
+read-only), tenancy and the delete block are byte-identical, and the
+emulator suite proves every one of the nine ids creates, re-acknowledges
+and withdraws while near-misses (`blockedactivities`, `scheduleRisk`,
+`criticalPath`) are refused. The three indicators READ the GANTT 1B
+baseline collections, whose audience (admin / PM / qs) is already the
+PULSE audience — no read is broadened, no external role gains anything,
+and no financial rule is touched. Release RULES FIRST then Hosting, after
+the GANTT 1B rules are confirmed live (DEPLOYMENT.md). What the new ids
+cannot prove is recorded in Deferred Control 31.
+
 ## SHIELD™ — no new collection, no new rule; detection is not enforcement
 
 The SHIELD™ foundation (ADR-50) adds **no collection, no field and no rules
@@ -3228,7 +3251,7 @@ the security-specific gate is:
       and still reject `void → *`.
 - [ ] The `pulseAcknowledgements` rules still restrict writes to
       `company_admin`/`project_manager` (`qs` read-only), still accept only
-      the six PULSE indicator ids with `indicatorId == documentId`, still
+      the nine PULSE indicator ids (ADR-49 + ADR-67) with `indicatorId == documentId`, still
       require exact keys, create as `active`/`revision 1`/null withdraw
       stamps, `acknowledgedBy`/`withdrawnBy`/`updatedBy == request.auth.uid`
       with stamps `== request.time`, a **non-whitespace** `note` ≤ 500, a

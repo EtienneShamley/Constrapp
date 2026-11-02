@@ -8,7 +8,15 @@ import {
 import { payablesSummary, paymentSummary, apAgeing, isPastDuePayable } from './supplierPayments'
 import { releasedByInvoiceId } from './retention'
 import { daysPastDue } from './payments'
-import { isOverdue, daysLate, timelineSummary, compareActivities } from './projectTimeline'
+import { isOverdue, daysLate, timelineSummary, compareActivities, formatIsoDate } from './projectTimeline'
+import { dependencyStates } from './ganttDependencies'
+import { baselineComparison, baselineSummary } from './ganttBaseline'
+import {
+  blockedActivityRows, hasRecordedDependencies,
+  dependencyReviewRows, dependencyReviewCounts,
+  resolveActiveBaseline, BASELINE_PROBLEM_TEXT, activeBaselineLabel, approvedOnIso,
+  baselineSlippageRows, baselineSlippageCounts, envelopeText,
+} from './pulseSchedule'
 import {
   figureState, FIGURE_STATE, FIGURE_DEPENDENCIES, FORECAST_ROW_SOURCES,
   SNAPSHOT_SOURCES, SNAPSHOT_SOURCE_LABELS,
@@ -30,6 +38,12 @@ import {
 //                            isPastDuePayable / paymentSummary, with
 //                            lib/retention.js releasedByInvoiceId
 //   Overdue activities     → lib/projectTimeline.js  isOverdue / daysLate
+//   Blocked activities,
+//   dependencies to review → lib/ganttDependencies.js  dependencyStates (ADR-65),
+//                            rows through lib/pulseSchedule.js (PULSE 1C, ADR-67)
+//   Later than baseline    → lib/ganttBaseline.js  baselineComparison /
+//                            baselineSummary (ADR-66), rows through
+//                            lib/pulseSchedule.js
 //   Pending variations     → lib/variations.js  pending exposure totals
 //
 // This module adds NO money arithmetic and NO threshold: it compares existing
@@ -38,6 +52,15 @@ import {
 // ranking, no history and no prediction — and there must never be. Every
 // indicator is ONE project in ONE currency (the caller's resolved project
 // currency); nothing is summed across projects.
+//
+// Since PULSE 1C (ADR-67) three SCHEDULE indicators sit beside the overdue
+// one. They are three different measures and are never merged: overdue is
+// the CURRENT PLAN (planned finish passed), blocked and dependency review
+// are the current plan's DEPENDENCIES (ADR-65 read-time states), and
+// baseline slippage is the ACTIVE APPROVED BASELINE (ADR-66 variance). One
+// activity may be all four at once; each indicator counts its own condition
+// and no cross-indicator total exists. The expensive shared derivations —
+// dependencyStates and baselineComparison — run ONCE per evaluation.
 //
 // Each indicator resolves to exactly one state:
 //
@@ -81,29 +104,42 @@ export const INDICATOR = {
   FORECAST_INCOMPLETE:        'forecastIncomplete',
   NEGATIVE_GROSS_PROFIT:      'negativeGrossProfit',
   OVERDUE_ACTIVITIES:         'overdueActivities',
+  // PULSE 1C (ADR-67) — the three schedule indicators.
+  BLOCKED_ACTIVITIES:         'blockedActivities',
+  DEPENDENCY_REVIEW:          'dependencyReview',
+  BASELINE_SLIPPAGE:          'baselineSlippage',
   PAST_DUE_SUPPLIER_INVOICES: 'pastDueSupplierInvoices',
   PENDING_VARIATION_EXPOSURE: 'pendingVariationExposure',
 }
 
 // A FIXED presentation order — not a ranking. Nothing here is "worse" than
 // anything else; the page groups by state and keeps this order within a group.
+// The six ADR-47 indicators keep their relative order; the three ADR-67
+// schedule indicators sit together after the overdue one.
 export const INDICATOR_ORDER = [
   INDICATOR.FORECAST_OVER_BUDGET,
   INDICATOR.FORECAST_INCOMPLETE,
   INDICATOR.NEGATIVE_GROSS_PROFIT,
   INDICATOR.OVERDUE_ACTIVITIES,
+  INDICATOR.BLOCKED_ACTIVITIES,
+  INDICATOR.DEPENDENCY_REVIEW,
+  INDICATOR.BASELINE_SLIPPAGE,
   INDICATOR.PAST_DUE_SUPPLIER_INVOICES,
   INDICATOR.PENDING_VARIATION_EXPOSURE,
 ]
 
-// Every subscription PULSE reads: the Dashboard snapshot's ten plus the project
-// programme. Cost codes are NOT a source — in buildForecastRows they supply
-// display names only and change no row or amount (ADR-42 Decision 3).
-export const PULSE_SOURCES = [...SNAPSHOT_SOURCES, 'activities']
+// Every subscription PULSE reads: the Dashboard snapshot's ten, the project
+// programme, and (ADR-67) the baseline HEADERS plus the ONE snapshot of the
+// active approved baseline. Cost codes are NOT a source — in buildForecastRows
+// they supply display names only and change no row or amount (ADR-42
+// Decision 3).
+export const PULSE_SOURCES = [...SNAPSHOT_SOURCES, 'activities', 'programmeBaselines', 'programmeBaselineSnapshot']
 
 export const PULSE_SOURCE_LABELS = {
   ...SNAPSHOT_SOURCE_LABELS,
   activities: 'Programme Activities',
+  programmeBaselines: 'Programme Baselines',
+  programmeBaselineSnapshot: 'Programme Baseline Snapshot',
 }
 
 // The sources each indicator's selectors read — INCLUDING the sources behind
@@ -116,6 +152,10 @@ export const PULSE_SOURCE_LABELS = {
 //   · gross profit     — computeMargin (baseline, variations, FFC sources) plus
 //                        the same incomplete-forecast caveat (row union)
 //   · overdue          — activities only
+//   · blocked          — activities only (dependencyStates reads nothing else)
+//   · dependency review — activities only
+//   · baseline slippage — activities, the baseline headers (which version is
+//                        active) and that version's snapshot
 //   · past due         — the Remaining Payable composition (ADR-42)
 //   · pending exposure — variations only
 export const INDICATOR_DEPENDENCIES = {
@@ -123,18 +163,25 @@ export const INDICATOR_DEPENDENCIES = {
   [INDICATOR.FORECAST_INCOMPLETE]:        FORECAST_ROW_SOURCES,
   [INDICATOR.NEGATIVE_GROSS_PROFIT]:      ['baseline', ...FORECAST_ROW_SOURCES],
   [INDICATOR.OVERDUE_ACTIVITIES]:         ['activities'],
+  [INDICATOR.BLOCKED_ACTIVITIES]:         ['activities'],
+  [INDICATOR.DEPENDENCY_REVIEW]:          ['activities'],
+  [INDICATOR.BASELINE_SLIPPAGE]:          ['activities', 'programmeBaselines', 'programmeBaselineSnapshot'],
   [INDICATOR.PAST_DUE_SUPPLIER_INVOICES]: FIGURE_DEPENDENCIES.remainingPayable,
   [INDICATOR.PENDING_VARIATION_EXPOSURE]: ['variations'],
 }
 
 // Where each indicator sends the user to investigate — an existing project
-// tab, relative to /projects/:projectId. No page accepts a URL filter today, so
-// these are tab-level links, never invented query strings.
+// tab, relative to /projects/:projectId. These are tab-level links: the GANTT
+// tab accepts no URL filter (record-level deep links stay deferred, ADR-49 /
+// ADR-67), so no query string is invented here.
 export const INDICATOR_LINKS = {
   [INDICATOR.FORECAST_OVER_BUDGET]:       { to: 'forecasting',                 label: 'Open Forecast' },
   [INDICATOR.FORECAST_INCOMPLETE]:        { to: 'forecasting',                 label: 'Open Forecast' },
   [INDICATOR.NEGATIVE_GROSS_PROFIT]:      { to: 'commercial',                  label: 'Open Commercial' },
   [INDICATOR.OVERDUE_ACTIVITIES]:         { to: 'timeline',                    label: 'Open GANTT' },
+  [INDICATOR.BLOCKED_ACTIVITIES]:         { to: 'timeline',                    label: 'Open GANTT' },
+  [INDICATOR.DEPENDENCY_REVIEW]:          { to: 'timeline',                    label: 'Open GANTT' },
+  [INDICATOR.BASELINE_SLIPPAGE]:          { to: 'timeline',                    label: 'Open GANTT' },
   [INDICATOR.PAST_DUE_SUPPLIER_INVOICES]: { to: 'commercial/supplier-payments', label: 'Open Supplier Payments' },
   [INDICATOR.PENDING_VARIATION_EXPOSURE]: { to: 'variations',                  label: 'Open Variations' },
 }
@@ -144,18 +191,25 @@ export const INDICATOR_TITLES = {
   [INDICATOR.FORECAST_INCOMPLETE]:        'Cost codes not yet forecast',
   [INDICATOR.NEGATIVE_GROSS_PROFIT]:      'Forecast Gross Profit is negative',
   [INDICATOR.OVERDUE_ACTIVITIES]:         'Programme activities overdue',
+  [INDICATOR.BLOCKED_ACTIVITIES]:         'Programme activities blocked by predecessors',
+  [INDICATOR.DEPENDENCY_REVIEW]:          'Programme dependencies need review',
+  [INDICATOR.BASELINE_SLIPPAGE]:          'Programme later than approved baseline',
   [INDICATOR.PAST_DUE_SUPPLIER_INVOICES]: 'Supplier invoices past due',
   [INDICATOR.PENDING_VARIATION_EXPOSURE]: 'Pending variation exposure',
 }
 
 // Needs-data reasons, so the page can send the user to the right place.
 export const NEEDS_DATA_REASON = {
-  NO_BUDGET:           'no_budget',
-  NO_COST_CODES:       'no_cost_codes',
-  FORECAST_INCOMPLETE: 'forecast_incomplete',
-  CONTRACT_NOT_SET:    'contract_not_set',
-  NO_PROGRAMME:        'no_programme',
-  DUE_DATES_MISSING:   'due_dates_missing',
+  NO_BUDGET:            'no_budget',
+  NO_COST_CODES:        'no_cost_codes',
+  FORECAST_INCOMPLETE:  'forecast_incomplete',
+  CONTRACT_NOT_SET:     'contract_not_set',
+  NO_PROGRAMME:         'no_programme',
+  DUE_DATES_MISSING:    'due_dates_missing',
+  // ADR-67: no approved baseline (none, or drafts only) / an approved
+  // baseline whose snapshot cannot be compared (an integrity reason).
+  NO_APPROVED_BASELINE: 'no_approved_baseline',
+  BASELINE_UNUSABLE:    'baseline_unusable',
 }
 
 // Evidence column kinds the page knows how to format. Money is formatted by
@@ -176,6 +230,9 @@ const isNegativeMoney = (n) => isOverBudget(n)
 const isPositiveMoney = (n) => roundMoney(safeNumber(n)) > 0
 
 const sortByMoneyAsc = (key) => (a, b) => safeNumber(a[key]) - safeNumber(b[key])
+
+// '3 activities' / '1 activity' — a count with its noun (text, not a figure).
+const counted = (n, one, many) => String(n) + ' ' + (n === 1 ? one : many)
 
 // The evaluated-indicator shape. `values` are selector outputs; `evidence`
 // rows are records (or selector rows) filtered, never re-derived.
@@ -465,6 +522,289 @@ function evaluateOverdueActivities(activities, now, sourceStates) {
   })
 }
 
+// ── 4b · Programme activities blocked by predecessors (ADR-67) ───────────────
+//
+// The GANTT 1A2 selector decides "blocked" (lib/ganttDependencies.js): a
+// NOT-STARTED activity whose planned start has arrived (viewer's local day)
+// while at least one predecessor is unfinished or can never satisfy the link
+// (cancelled, missing, malformed, cyclic). A future start is never blocked
+// merely because its predecessors are open. One row per activity, however
+// many links block it. This is the CURRENT PLAN's dependencies — not overdue
+// (the finish), not the baseline.
+
+const OVERLAP_CAVEAT =
+  'One activity can be overdue, blocked, in a dependency needing review and later than the approved baseline at ' +
+  'the same time. Each indicator counts its own condition; the counts are never added together.'
+
+const BLOCKED_CAVEAT =
+  'Blocked is derived from the current plan and the recorded statuses: an activity reads as blocked only once its ' +
+  'own planned start has arrived while it is still not started and a predecessor is unfinished or needs review. ' +
+  'Work begun on site but not yet marked in progress still reads as blocked. This is not a critical path.'
+
+const DEPENDENCY_CAVEAT =
+  'Dependency states are derived at read time from the links as stored. Firestore rules pin only the first and ' +
+  'last predecessor entries of an activity, so a cancelled, missing, malformed or cyclic link can exist and is ' +
+  'reported for review — it never satisfies a dependency, and nothing is repaired or removed automatically.'
+
+const NO_DEPENDENCIES_EXPLANATION =
+  'No dependencies are recorded. Nothing here validates work sequencing: without recorded predecessors on this ' +
+  'programme, PULSE cannot tell whether an activity is waiting on another.'
+
+const BLOCKED_COLUMNS = [
+  { key: 'name',            label: 'Activity',       kind: COLUMN.TEXT },
+  { key: 'plannedStart',    label: 'Planned start',  kind: COLUMN.DATE },
+  { key: 'daysWaiting',     label: 'Days waiting',   kind: COLUMN.DAYS },
+  { key: 'blockedBy',       label: 'Waiting on',     kind: COLUMN.TEXT },
+  { key: 'unresolved',      label: 'Needs review',   kind: COLUMN.TEXT },
+  { key: 'responsibleName', label: 'Responsible',    kind: COLUMN.TEXT },
+]
+
+function evaluateBlockedActivities(activities, depStates, now, sourceStates) {
+  const id = INDICATOR.BLOCKED_ACTIVITIES
+  const gated = gate(id, sourceStates)
+  if (gated) return gated
+
+  const list = activities ?? []
+  const summary = timelineSummary(list, now)
+  const base = { open: summary.open, total: summary.total }
+
+  if (list.length === 0) {
+    return indicator(id, PULSE_STATE.NEEDS_DATA, {
+      reason: NEEDS_DATA_REASON.NO_PROGRAMME,
+      headline: 'No programme activities yet',
+      explanation: 'Blocked work can only be identified once the project has activities with predecessors on the GANTT tab.',
+      values: base,
+    })
+  }
+
+  const rows = blockedActivityRows(list, depStates, now)
+  const values = { ...base, blocked: rows.length, alsoOverdue: rows.filter(r => r.overdue).length }
+
+  if (rows.length > 0) {
+    return indicator(id, PULSE_STATE.FINDING, {
+      headline: `${counted(rows.length, 'activity', 'activities')} should have started but ${rows.length === 1 ? 'is' : 'are'} blocked by a predecessor`,
+      explanation:
+        'An activity is blocked when it is not started, its planned start is today or earlier in your local calendar ' +
+        'day, and a predecessor is unfinished or needs review (cancelled, missing, malformed or in a cycle). ' +
+        'Days waiting are calendar days since the planned start.',
+      values,
+      evidence: rows,
+      evidenceColumns: BLOCKED_COLUMNS,
+      caveats: [BLOCKED_CAVEAT, OVERLAP_CAVEAT, PROGRAMME_CAVEAT],
+    })
+  }
+
+  if (!hasRecordedDependencies(list)) {
+    return indicator(id, PULSE_STATE.NO_ISSUE, {
+      headline: 'No dependencies are recorded, so no activity is blocked by a predecessor',
+      explanation: NO_DEPENDENCIES_EXPLANATION,
+      values,
+      caveats: [PROGRAMME_CAVEAT],
+    })
+  }
+
+  return indicator(id, PULSE_STATE.NO_ISSUE, {
+    headline: `No activity that should have started is blocked by a predecessor (${summary.open} open)`,
+    explanation:
+      'Every not-started activity whose planned start has arrived has all its predecessors finished and resolved, ' +
+      'or has no predecessor at all.',
+    values,
+    caveats: [BLOCKED_CAVEAT, PROGRAMME_CAVEAT],
+  })
+}
+
+// ── 4c · Programme dependencies need review (ADR-67) ─────────────────────────
+//
+// One row per LINK on an OPEN successor whose ADR-65 state is a schedule
+// conflict (starts before the predecessor allows) or one of the four states
+// that never satisfy a dependency. A valid unfinished predecessor is not a
+// review item. Links (issues) and unique activities (records) are reported
+// apart and never merged.
+
+const DEPENDENCY_REVIEW_COLUMNS = [
+  { key: 'name',            label: 'Activity',        kind: COLUMN.TEXT },
+  { key: 'predecessorName', label: 'Depends on',      kind: COLUMN.TEXT },
+  { key: 'condition',       label: 'Condition',       kind: COLUMN.TEXT },
+  { key: 'plannedStart',    label: 'Planned start',   kind: COLUMN.DATE },
+  { key: 'earliestStart',   label: 'Earliest start',  kind: COLUMN.DATE },
+  { key: 'action',          label: 'Review action',   kind: COLUMN.TEXT },
+]
+
+function evaluateDependencyReview(activities, depStates, sourceStates) {
+  const id = INDICATOR.DEPENDENCY_REVIEW
+  const gated = gate(id, sourceStates)
+  if (gated) return gated
+
+  const list = activities ?? []
+  if (list.length === 0) {
+    return indicator(id, PULSE_STATE.NEEDS_DATA, {
+      reason: NEEDS_DATA_REASON.NO_PROGRAMME,
+      headline: 'No programme activities yet',
+      explanation: 'Dependencies can only be reviewed once the project has activities with predecessors on the GANTT tab.',
+      values: {},
+    })
+  }
+
+  const rows = dependencyReviewRows(list, depStates)
+  const values = dependencyReviewCounts(rows, list, depStates)
+
+  if (rows.length > 0) {
+    return indicator(id, PULSE_STATE.FINDING, {
+      headline: `${values.links} dependency ${values.links === 1 ? 'link' : 'links'} on ${values.activities} open ${values.activities === 1 ? 'activity needs' : 'activities need'} review`,
+      explanation:
+        'A link needs review when the activity is planned to start before its predecessor allows (a conflict), or ' +
+        'when the predecessor is cancelled, missing from this programme, malformed, or part of a dependency cycle — ' +
+        'none of which can ever satisfy the dependency. Only open activities are listed; a link is one row, so an ' +
+        'activity with several such links appears once per link.',
+      values,
+      evidence: rows,
+      evidenceColumns: DEPENDENCY_REVIEW_COLUMNS,
+      caveats: [DEPENDENCY_CAVEAT, OVERLAP_CAVEAT, PROGRAMME_CAVEAT],
+    })
+  }
+
+  if (!hasRecordedDependencies(list)) {
+    return indicator(id, PULSE_STATE.NO_ISSUE, {
+      headline: 'No dependencies are recorded.',
+      explanation: NO_DEPENDENCIES_EXPLANATION,
+      values,
+      caveats: [PROGRAMME_CAVEAT],
+    })
+  }
+
+  return indicator(id, PULSE_STATE.NO_ISSUE, {
+    headline: `No dependency link on an open activity needs review (${counted(values.checked, 'link', 'links')} checked)`,
+    explanation:
+      'Every predecessor link on an open activity resolves to a live activity in this programme, is not in a cycle, ' +
+      'and allows the planned start. Links on completed and cancelled activities are history and are not assessed.',
+    values,
+    caveats: [DEPENDENCY_CAVEAT, PROGRAMME_CAVEAT],
+  })
+}
+
+// ── 4d · Programme later than approved baseline (ADR-67) ─────────────────────
+//
+// Against the ACTIVE approved baseline only (the latest approval — the GANTT
+// tab offers the original and every historical version). A finding is an
+// OPEN activity, present in that baseline, whose current planned finish is
+// later than the captured finish — positive calendar-day variance from
+// lib/ganttBaseline.js. Everything else the comparison knows (earlier,
+// unchanged, added after, cancelled since, finished late, the envelope) is
+// context, never a trigger. A draft is never a baseline.
+
+const BASELINE_EVIDENCE_CAVEAT =
+  'An approved programme baseline is planning evidence captured by an authorised user — not independently ' +
+  'certified contractual data, an extension-of-time entitlement or a delay determination. Firestore rules pin ' +
+  'only the first and last captured entries; the rest are as the capturing client wrote them.'
+
+const BASELINE_MEASURE_CAVEAT =
+  'Calendar days against the active (latest approved) baseline; these are counts of activities, not a critical ' +
+  'path, not an average delay and not a forecast of project completion. The envelope is the movement of the ' +
+  'latest planned finish on each side — not a project delay.'
+
+const BASELINE_SLIPPAGE_COLUMNS = [
+  { key: 'name',           label: 'Activity',        kind: COLUMN.TEXT },
+  { key: 'baselineFinish', label: 'Baseline finish', kind: COLUMN.DATE },
+  { key: 'plannedFinish',  label: 'Planned finish',  kind: COLUMN.DATE },
+  { key: 'laterBy',        label: 'Later by',        kind: COLUMN.DAYS },
+  { key: 'statusLabel',    label: 'Status',          kind: COLUMN.TEXT },
+]
+
+function evaluateBaselineSlippage(activities, baselines, snapshot, comparison, summary, sourceStates) {
+  const id = INDICATOR.BASELINE_SLIPPAGE
+  const gated = gate(id, sourceStates)
+  if (gated) return gated
+
+  const list = activities ?? []
+  const active = resolveActiveBaseline(baselines, snapshot)
+  const context = { approvedVersions: active.approvedCount, drafts: active.draftCount }
+
+  if (list.length === 0) {
+    return indicator(id, PULSE_STATE.NEEDS_DATA, {
+      reason: NEEDS_DATA_REASON.NO_PROGRAMME,
+      headline: 'No programme activities yet',
+      explanation: 'A baseline comparison needs activities on the GANTT tab and an approved baseline of them.',
+      values: context,
+    })
+  }
+
+  if (!active.header) {
+    return indicator(id, PULSE_STATE.NEEDS_DATA, {
+      reason: NEEDS_DATA_REASON.NO_APPROVED_BASELINE,
+      headline: active.draftCount > 0
+        ? `No approved baseline — ${active.draftCount} draft ${active.draftCount === 1 ? 'baseline is' : 'baselines are'} awaiting review`
+        : 'No approved baseline to compare against',
+      explanation:
+        'Capture and approve a programme baseline on the GANTT tab. A draft is not a baseline until it is approved; ' +
+        'until then nothing here is slippage against an approved programme, and this is not an overdue finding.',
+      values: context,
+      caveats: [BASELINE_EVIDENCE_CAVEAT],
+    })
+  }
+
+  const label = activeBaselineLabel(baselines, active.header)
+  const approvedOn = approvedOnIso(active.header)
+  const header = { ...context, baselineLabel: label, approvedOn }
+
+  if (!active.usable) {
+    return indicator(id, PULSE_STATE.NEEDS_DATA, {
+      reason: NEEDS_DATA_REASON.BASELINE_UNUSABLE,
+      headline: `The active baseline cannot be compared: ${BASELINE_PROBLEM_TEXT[active.problem] ?? 'its snapshot is unusable'}`,
+      explanation:
+        `${label} is approved but ${BASELINE_PROBLEM_TEXT[active.problem] ?? 'its snapshot is unusable'}. No comparison is ` +
+        'made and no slippage is claimed — this is an integrity condition to review on the GANTT tab, not a healthy result.',
+      values: header,
+      caveats: [BASELINE_EVIDENCE_CAVEAT],
+    })
+  }
+
+  const rows = baselineSlippageRows(list, comparison, active.header)
+  const counts = baselineSlippageCounts(rows)
+  const values = {
+    ...header,
+    ...counts,
+    compared: summary.compared,
+    earlier: summary.earlier,
+    unchanged: summary.unchanged,
+    addedAfter: summary.addedAfter,
+    cancelledSince: summary.cancelledSince,
+    completedCompared: summary.completedCompared,
+    completedLate: summary.completedLate,
+    envelope: envelopeText(summary),
+    envelopeBaselineFinish: summary.envelope?.baselineFinish ?? null,
+    envelopeCurrentFinish: summary.envelope?.currentFinish ?? null,
+  }
+  const versions = `${active.approvedCount} approved ${active.approvedCount === 1 ? 'version' : 'versions'}`
+  const basis = `Compared with ${label}, approved ${formatIsoDate(approvedOn)} (${versions}).`
+
+  if (rows.length > 0) {
+    const parts = []
+    if (counts.milestonesLater > 0) parts.push(counted(counts.milestonesLater, 'milestone', 'milestones'))
+    if (counts.activitiesLater > 0) parts.push(counted(counts.activitiesLater, 'activity', 'activities'))
+    const subject = parts.join(' and ') + ' ' + (counts.later === 1 ? 'is' : 'are')
+    return indicator(id, PULSE_STATE.FINDING, {
+      headline: `${subject} planned later than ${label}`,
+      explanation:
+        `${basis} An open activity is later when its current planned finish is after the finish captured in that ` +
+        'baseline, in calendar days. Completed work is compared by its recorded finish and shown as context only; ' +
+        'activities added after the capture have no baseline date and are counted, not compared.',
+      values,
+      evidence: rows,
+      evidenceColumns: BASELINE_SLIPPAGE_COLUMNS,
+      caveats: [BASELINE_MEASURE_CAVEAT, BASELINE_EVIDENCE_CAVEAT, OVERLAP_CAVEAT],
+    })
+  }
+
+  return indicator(id, PULSE_STATE.NO_ISSUE, {
+    headline: `No open activity is planned later than ${label} (${summary.compared} compared)`,
+    explanation:
+      `${basis} Every open activity in the baseline has a current planned finish on or before its captured finish; ` +
+      'activities added after the capture are counted, not compared.',
+    values,
+    caveats: [BASELINE_MEASURE_CAVEAT, BASELINE_EVIDENCE_CAVEAT],
+  })
+}
+
 // ── 5 · Supplier invoices past due ───────────────────────────────────────────
 
 const PAST_DUE_COLUMNS = [
@@ -649,16 +989,17 @@ function evaluatePendingVariationExposure(variations, sourceStates) {
 
 // ── The evaluation ───────────────────────────────────────────────────────────
 //
-// `sources` holds the live arrays (and the baseline document, or null) from the
-// project-scoped hooks; `sourceStates` their loading/error flags in the
-// Dashboard snapshot's shape; `now` the viewer's local day (useLocalToday);
-// `currencyCode` the project's RESOLVED currency, carried through so the page
-// formats every amount in it.
+// `sources` holds the live arrays (and the commercial baseline document, or
+// null; and since ADR-67 the programme baseline HEADERS and the active
+// version's snapshot document, or null) from the project-scoped hooks;
+// `sourceStates` their loading/error flags in the Dashboard snapshot's shape;
+// `now` the viewer's local day (useLocalToday); `currencyCode` the project's
+// RESOLVED currency, carried through so the page formats every amount in it.
 export function evaluatePulse({ sources = {}, sourceStates = {}, now = new Date(), currencyCode } = {}) {
   const {
     budgetLines = [], purchaseOrders = [], progressClaims = [], supplierInvoices = [],
     supplierCreditNotes = [], variations = [], forecastLines = [], baseline = null,
-    activities = [],
+    activities = [], programmeBaselines = [], programmeBaselineSnapshot = null,
   } = sources
 
   const forecastSources = {
@@ -668,11 +1009,24 @@ export function evaluatePulse({ sources = {}, sourceStates = {}, now = new Date(
   const totals = projectForecastTotals(forecastSources)
   const margin = computeMargin({ baseline, variations, forecastFinalCost: totals.forecastFinalCost, purchaseOrders })
 
+  // The shared schedule derivations, ONCE per evaluation (ADR-67): the
+  // dependency states feed two indicators; the baseline comparison and its
+  // summary feed one. Both tolerate malformed records without throwing.
+  const depStates = dependencyStates(activities, now)
+  const activeBaselineState = resolveActiveBaseline(programmeBaselines, programmeBaselineSnapshot)
+  const comparisonSnapshot = activeBaselineState.usable ? programmeBaselineSnapshot : null
+  const comparison = baselineComparison(activities, comparisonSnapshot)
+  const slippageSummary = baselineSummary(activities, comparisonSnapshot)
+
   const byId = {
     [INDICATOR.FORECAST_OVER_BUDGET]:       evaluateForecastOverBudget(rows, totals, sourceStates),
     [INDICATOR.FORECAST_INCOMPLETE]:        evaluateForecastIncomplete(rows, totals, sourceStates),
     [INDICATOR.NEGATIVE_GROSS_PROFIT]:      evaluateNegativeGrossProfit(totals, margin, baseline, sourceStates),
     [INDICATOR.OVERDUE_ACTIVITIES]:         evaluateOverdueActivities(activities, now, sourceStates),
+    [INDICATOR.BLOCKED_ACTIVITIES]:         evaluateBlockedActivities(activities, depStates, now, sourceStates),
+    [INDICATOR.DEPENDENCY_REVIEW]:          evaluateDependencyReview(activities, depStates, sourceStates),
+    [INDICATOR.BASELINE_SLIPPAGE]:          evaluateBaselineSlippage(
+      activities, programmeBaselines, programmeBaselineSnapshot, comparison, slippageSummary, sourceStates),
     [INDICATOR.PAST_DUE_SUPPLIER_INVOICES]: evaluatePastDueSupplierInvoices(sources, now, sourceStates),
     [INDICATOR.PENDING_VARIATION_EXPOSURE]: evaluatePendingVariationExposure(variations, sourceStates),
   }
@@ -680,6 +1034,12 @@ export function evaluatePulse({ sources = {}, sourceStates = {}, now = new Date(
 
   return { currencyCode, indicators, summary: summarisePulse(indicators) }
 }
+
+// The id of the ACTIVE approved baseline among the headers, or null — what
+// the page hands useProgrammeBaselineSnapshot so that ONE snapshot document
+// is subscribed and the hook stays idle when no approved baseline exists.
+// A selection, not a figure: the page computes nothing from it.
+export const activeBaselineIdFor = (headers) => resolveActiveBaseline(headers, null).header?.id ?? null
 
 // Counts of indicators in each state. COUNTS ONLY — never combined into a
 // score, never weighted, never compared with a threshold.

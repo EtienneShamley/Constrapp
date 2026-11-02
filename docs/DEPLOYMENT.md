@@ -1127,6 +1127,72 @@ Revisit if a real programme shows baseline writes to be slow.
 - ⚠️ `firebase hosting:rollback` does not exist in firebase-tools 13.35.1;
   do not plan on it.
 
+### PULSE 1C release order — schedule intelligence (ADR-67) — RULES FIRST, then Hosting, after GANTT 1B is live
+
+**Status: IMPLEMENTED — NOT YET DEPLOYED (Rules AND Hosting; TWO steps, no
+transitional stage; ONE prerequisite).** The 1C bundle writes acknowledgement
+documents for three NEW indicator ids (`blockedActivities`,
+`dependencyReview`, `baselineSlippage`) that the live `pulseAcknowledgements`
+allowlist refuses, and reads the two GANTT 1B collections
+(`programmeBaselines`, `programmeBaselineSnapshots`). Nothing the live
+bundle writes changes: the six existing ids, the acknowledgement schema, the
+stamps and the revision guard are byte-identical, no document is migrated
+and no index is added. So the order is the GANTT 1B one — **rules first**
+(the allowlist is a superset; the live bundle keeps writing its six ids),
+**Hosting second**. The transitional generator still carries its three
+ADR-63 / ADR-65 marked lines and regenerates `firestore.transitional.rules`
+(229,760 bytes) from the new FINAL file; no transitional publish is needed.
+
+**⚠️ Prerequisite — GANTT 1B rules live.** The baseline indicator reads the
+two 1B collections, which the pre-1B ruleset denies. If the 1B ruleset
+(`programmeBaselineSnapshots` present, 228,967 bytes) has NOT been published,
+the 1C bundle's *Programme later than approved baseline* card reads
+**Unavailable** on every project (honest, never healthy) until it is. The
+repository does not record a 1B production deployment; **confirm it in the
+Console before STEP 1 and do not infer it from the merge of 1B into `main`.**
+
+*Preconditions.* Azure CI green on the merge (lint → unit → rules → build);
+`npm run rules:transitional:check` clean; `wc -c frontend/firestore.rules`
+reads **229,126** (budget 245,000). Every command runs from `frontend/`, each
+a separate approved action; **none is run by an implementation task.**
+
+1. **STEP 1 — publish the FINAL ruleset** (three ids in one allowlist;
+   everything else unchanged):
+   ```bash
+   npm run test:rules                       # both suites green, incl. pulseAcknowledgements (nine ids)
+   firebase deploy --only firestore:rules --project constrapp-69b5d
+   ```
+   Verify in the Console that the published source contains
+   `'blockedActivities', 'dependencyReview', 'baselineSlippage'` and reads
+   229,126 bytes. The live PULSE 1B bundle keeps working unchanged (it writes
+   only the six ids, all still allowed).
+2. **STEP 2 — `firebase deploy --only hosting --project constrapp-69b5d`**
+   after `npm run build` with the production `VITE_FIREBASE_*` values.
+   Verify: a project's PULSE tab reads *Nine conditions*; the three schedule
+   cards appear after *Programme activities overdue*; a project with no
+   approved baseline shows *Needs data — No approved baseline to compare
+   against*; acknowledging a schedule finding as PM succeeds; a QS sees it
+   read-only.
+
+**Old-client compatibility.** A pre-1C bundle under the 1C rules writes the
+six ids only — accepted. A 1C bundle under the pre-1C rules has its three new
+acknowledgements refused as permission-denied: the card reports *You do not
+have permission…* and nothing is written; the indicators themselves evaluate
+regardless. Existing acknowledgement documents need no migration.
+
+**Recovery — forward fixes.**
+- *Hosting:* a pre-1C bundle (the GANTT 1B commit) may be redeployed at any
+  time; existing acknowledgements for the three new ids are simply not read
+  until 1C returns, and nothing is corrupted.
+- *Rules:* the 1C ruleset may be republished over itself at any time. The
+  pre-1C ruleset may be republished only while no acknowledgement for a new
+  id exists (a re-acknowledgement or withdrawal of one would then be refused;
+  nothing is lost). **Never republish the pre-1B ruleset while approved
+  baseline records exist** (DEPLOYMENT → GANTT 1B release order).
+- *Data:* nothing is migrated and nothing needs undoing; PULSE writes only
+  acknowledgement documents and never an activity, a baseline or a financial
+  record.
+
 ## Publishing Firestore Rules — Manual Process
 
 The rules source of truth is `frontend/firestore.rules`, but **there is no CLI

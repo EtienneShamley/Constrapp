@@ -5671,3 +5671,200 @@ Every ✅ update carries `revision == stored + 1`, `updatedBy == request.auth.ui
 **Consequences.** New: `lib/ganttBaseline.js`, `lib/programmeBaselineActions.js`, `hooks/useProgrammeBaselines.jsx`, `hooks/useProgrammeBaselineSnapshot.jsx`, `pages/project/timeline/BaselinePanel.jsx`, `BaselineCaptureModal.jsx`, `BaselineReviewModal.jsx`, `tests/unit/ganttBaseline.test.js`, `tests/unit/programmeBaselineActions.test.js`, `tests/rules/programmeBaselines.rules.test.js`. Modified: `firestore.rules` (two blocks before `activities`: 219,930 → **228,967 bytes**, 16,033 under the 245,000 budget), `firestore.transitional.rules` (regenerated, **229,601**; the three marked lines unchanged), `lib/timelineGantt.js` (`baselineSpan`, the `baselineById` option, the window), `TimelineGantt.jsx`, `ActivityTable.jsx`, `ActivityCards.jsx`, `ActivityDetailModal.jsx`, `ProjectTimeline.jsx`, `tests/unit/timelineGantt.test.js`, `tests/unit/ganttSurface.test.js` (two ADR-64 pins revised explicitly, ten ADR-66 pins added), and the documentation set (AGENT, PRODUCT, ROADMAP, ARCHITECTURE, DATA_MODEL, SECURITY incl. DC42, TESTING §42, DEPLOYMENT, DESIGN_SYSTEM). Unit **66 / 3,775 → 68 files / 3,861**; rules **28 / 1,850 → 29 files / 1,935**. No dependency, `package.json`, `firebase.json`, index or Storage rules change; no Dashboard or PULSE change.
 
 **Deferred / not built.** A dependency-topology snapshot and its comparison; PULSE schedule indicators (each a rules change to the acknowledgement id list) and SHIELD checks; slippage markers and side-by-side original / active overlays; voiding an approved baseline; creator ≠ approver segregation and server-side certification of entry content (trusted backend); critical path, automatic rescheduling, calendars, extension-of-time or contractual determinations, any financial effect of a baseline.
+
+
+## ADR-67: Constrapp PULSE™ 1C — Schedule Intelligence (three schedule indicators beside the six of ADR-47 — blocked by predecessors, dependencies needing review, later than the active approved baseline; composition of the GANTT 1A2 / 1B selectors through one pure row module; the same five states, evidence keys and acknowledgement document; three ids added to one rules allowlist; rules first, then Hosting)
+
+**Context.** After GANTT 1A2 (ADR-65) and 1B (ADR-66) the programme carries
+finish-to-start dependencies with read-time blocked / conflict / review
+states, and an approved, immutable baseline with calendar-day variance — but
+PULSE still reported one schedule condition, *overdue against the current
+plan* (indicator 4). The Lead Software Architect's read-only inspection
+(3 November 2026, on `main` at `052f582`) assessed ten candidate signals and
+approved **option B — supplement, never extend**: three new indicators that
+each report ONE distinct measure, composed from the existing selectors, with
+indicator 4 byte-for-byte unchanged. Rejected: extending indicator 4 (its
+evidence keys, dependencies and acknowledgement history ARE the current-plan
+overdue condition; adding baseline reads would make overdue *unavailable*
+when a snapshot read fails), a separate schedule-insights section (a second
+dashboard, not acknowledgeable), and every invented figure — a schedule
+risk percentage, a project delay in days, a critical-path status, a
+completion likelihood, a financial exposure.
+
+**Decision 1 — three measures, three indicators, never merged.** `lib/pulse.js`
+gains `blockedActivities` (*Programme activities blocked by predecessors*),
+`dependencyReview` (*Programme dependencies need review*) and
+`baselineSlippage` (*Programme later than approved baseline*), inserted
+together after `overdueActivities` in `INDICATOR_ORDER`; the six ADR-47 ids
+and their relative order are preserved. Overdue is the CURRENT PLAN (planned
+finish passed), blocked and review are the current plan's DEPENDENCIES
+(ADR-65 read-time states), slippage is the ACTIVE APPROVED BASELINE (ADR-66
+variance). One activity may be all four at once; each indicator counts its
+own condition, every schedule card carries the overlap caveat, `blocked`
+reports *of which also overdue*, and no cross-indicator total exists anywhere.
+Candidates that are NOT indicators: due within 14 days (a look-ahead, not a
+risk — GANTT and the Dashboard keep it); completed later than baseline
+(history with no next step — a context count); the programme envelope (the
+latest planned finish on each side — a labelled context value, never a
+project delay); approval and revision context (values and caveats).
+
+**Decision 2 — one pure row module, no second engine.** `lib/pulseSchedule.js`
+builds the evidence rows and counts from the GANTT selectors and nothing
+else: `dependencyStates` (ADR-65) decides blocked and every link state,
+`baselineComparison` / `baselineSummary` (ADR-66) decide every variance,
+`daysBetween` / `todayIso` / `compareActivities` (ADR-29) every day count and
+order. A structural pin forbids the module its own date arithmetic
+(`Date.UTC`, `86400000`, `getTime() -`), its own graph walk
+(`findCycleMembers`, `wouldCreateCycle`, `earliestStartAfter`) and every
+money token. `lib/pulse.js` stays composition and readiness: it computes
+`dependencyStates` ONCE per evaluation (shared by the two dependency
+indicators) and `baselineComparison` + `baselineSummary` ONCE, and keeps its
+ADR-47 structural pins (no `reduce`, no multiplication or division, every
+`+` concatenation or a count, every binary minus in a comparator, no score /
+severity / threshold / trend / predict vocabulary).
+
+**Decision 3 — blocked.** A row per OPEN `not_started` activity whose planned
+start has arrived (viewer's local day, `useLocalToday` — the state flips at
+local midnight exactly as overdue does) while at least one predecessor is
+unfinished or can never satisfy the link (cancelled, missing, malformed,
+cyclic): exactly the selector's `isBlocked`. A future start is never blocked;
+a started, completed or cancelled activity is never blocked; several blocking
+links are ONE row. Columns: activity, planned start, days waiting (calendar
+days since the planned start, 0 = due to start today), *waiting on* (the
+unfinished predecessors by name), *needs review* (the unresolvable links with
+their reason), responsible. Evidence key: the activity id. Needs data when
+the programme is empty; **no issue with the explicit wording "No dependencies
+are recorded"** when nothing carries a predecessor (nothing is invented, and
+the card says sequencing is not validated); otherwise no issue names the open
+count.
+
+**Decision 4 — dependency review.** A row per LINK on an OPEN successor whose
+ADR-65 state is `conflict` (starts before the predecessor allows) or one of
+the four unresolved states; a valid unfinished predecessor is not a review
+item, and links on completed or cancelled successors are history and are not
+listed. Columns: activity, depends on, condition (the ADR-65 labels), planned
+start, earliest start, review action (what resolving it looks like in the
+existing editor — nothing is repaired or removed for the user). The headline
+reports LINKS (issues) and UNIQUE ACTIVITIES (records) apart — *6 dependency
+links on 6 open activities need review* — and the values count each
+condition and the links checked. Evidence key: `successorId/predecessorId`,
+two stable record ids joined by `/`, a character no Firestore document id can
+contain, so the first `/` always separates the two and no pair can collide
+with another; a different invalid link on an already-listed activity is
+therefore new evidence. A malformed entry keeps whatever id it carried.
+
+**Decision 5 — baseline slippage, against the ACTIVE version only.** The
+latest approved baseline (`activeBaseline`, ADR-66 — the GANTT tab keeps the
+original and every historical version selectable; PULSE is the current
+health view). A row per OPEN activity present in that baseline whose current
+planned finish is later than the captured finish — `finishVariance > 0`
+calendar days. Milestones first, then the largest variance, then programme
+order; milestones and other activities are counted apart and a milestone is
+never in both; the headline leads with milestones (*2 milestones and 1
+activity are planned later than Baseline 2 — Revised*) and the explanation
+names the version, its approval day and how many versions are approved.
+Columns: activity, baseline finish, planned finish, later by, status.
+Context values from `baselineSummary`, never triggers: compared, earlier,
+unchanged, added after capture, cancelled since capture, finished after the
+baseline (history), the envelope as `+n days` labelled *latest planned finish
+moved (envelope)*. Evidence key: `baselineId/activityId` — the version AND
+the activity — so a newly approved version makes every key new and reopens
+attention, with **no marker row** and no change to the stored acknowledgement
+shape.
+
+**Decision 6 — readiness, stated per state.** Through `figureState` over
+`['activities', 'programmeBaselines', 'programmeBaselineSnapshot']`:
+headers loading → *loading*; headers failed → *unavailable* naming Programme
+Baselines; no approved header, or drafts only → *needs data*
+(`no_approved_baseline`, the drafts counted, "a draft is not a baseline until
+it is approved … this is not an overdue finding"); snapshot loading →
+*loading*; snapshot failed → *unavailable* naming the snapshot; snapshot
+missing, not the active version's, malformed, or disagreeing with the
+header's `activityCount` → *needs data* (`baseline_unusable`) with the
+integrity reason in the headline and "not a healthy result" in the
+explanation; activities failed → *unavailable*; usable with no positive
+variance → *no issue* (compared count shown); a positive variance → *finding*.
+A loading, failed, missing or unusable read is never zero risk, and a failed
+baseline source blocks NO other indicator (perturbation-pinned for every
+indicator × every source × three failure modes).
+
+**Decision 7 — subscriptions.** `ProjectPulse` mounts `useProgrammeBaselines`
+(the bounded headers listener) and `useProgrammeBaselineSnapshot(projectId,
+activeBaselineId)` where `activeBaselineId` is `lib/pulse.js →
+activeBaselineIdFor(headers)` — a selection, not a figure. The snapshot hook
+is idle (settled, null) while no approved baseline exists, re-keys (loading
+again) when a new version is approved, and never streams a historical
+payload. Thirteen sources plus the acknowledgement subscription; the ADR-49
+pin is revised explicitly. No new listener elsewhere, no backend, no index.
+
+**Decision 8 — acknowledgement unchanged in shape and semantics.**
+`lib/pulseAttention.js` maps the three ids to their evidence field (`id`,
+`linkKey`, `evidenceKey`); the stored document, the roles, the stamps, the
+revision guard, the 200-key refusal and the review-by date are the ADR-49
+ones. New blocked activities, new links and a new baseline version reopen
+attention as new evidence; resolved findings clear normally; no key carries a
+date, a name, a variance or a position, so identity never changes merely
+because the viewer's day advances. **Limitation, stated:** a slip that grows,
+or a wait that lengthens, under the same record ids stays acknowledged until
+its review-by date — the DC31 contract, extended to the three ids.
+
+**Decision 9 — rules.** ONE change: the three ids join `indicatorValid()` in
+the `pulseAcknowledgements` block (`firestore.rules` 228,967 → **229,126
+bytes**; transitional regenerated, 229,601 → 229,760, the three ADR-63 /
+ADR-65 marked lines unchanged, no new marker). Schema, actors, server stamps,
+`revision + 1`, roles (`qs` read-only), tenancy and the delete block are
+byte-identical; the baseline collections' read audience (admin / PM / qs) is
+already the PULSE audience, so no read is broadened and no external role
+gains anything. The emulator suite creates, re-acknowledges and withdraws
+every one of the nine ids with the app's composite keys and still refuses
+near-misses.
+
+**Decision 10 — presentation.** The existing page, cards, evidence tables
+("Show all"), caveat lists, Management panel, `ModuleTile`, beat and
+`BeatToggle`, tokens and 44 px controls; three `VALUE_ROWS` entries; the
+header copy *Six conditions* → *Nine conditions*; the hidden `/pulse` pointer
+names the nine. Every schedule card links to the GANTT tab (`timeline`, *Open
+GANTT*); record-level deep links stay deferred (ADR-49).
+
+**Invariant classification.** *A — rules-proven:* tenant, role, the
+nine-id allowlist and id/field agreement, exact keys, transitions, actor and
+server-time stamps, `revision + 1`, no delete — exactly ADR-49. *B —
+client-side (DC31, DC41, DC42):* that a finding existed when acknowledged,
+that a composite key names a real link or baseline version, every dependency
+state and every variance (read-time derivations over client-authored links
+and a client-captured snapshot whose middle entries rules cannot verify).
+*C — unchanged limitations:* local-day comparison without timezone
+normalisation, no critical path, no rescheduling, unverified progress and
+actual dates (DC23).
+
+**Consequences.** New: `lib/pulseSchedule.js`, `tests/unit/pulseSchedule.test.js`
+(47). Modified: `lib/pulse.js`, `lib/pulseAttention.js`,
+`pages/project/ProjectPulse.jsx`, `pages/project/pulse/IndicatorCard.jsx`,
+`pages/Pulse.jsx`, `firestore.rules`, `firestore.transitional.rules`,
+`tests/unit/pulse.test.js` (the six / eleven pins revised explicitly; the
+fixture gained predecessors and a baseline — 394 cases, the readiness and
+isolation loops now span nine indicators and thirteen sources),
+`tests/unit/pulseAttention.test.js` (68 — three ADR-67 identity cases),
+`tests/unit/ganttSurface.test.js` (the ADR-66 "PULSE reads no baseline" pin
+revised explicitly: PULSE composes the baseline selectors read-only and never
+the write path), `tests/rules/pulseAcknowledgements.rules.test.js` (38), and
+the documentation set (AGENT, PRODUCT, ROADMAP, ARCHITECTURE, DATA_MODEL,
+SECURITY incl. DC31, TESTING §43, DEPLOYMENT). Unit **68 / 3,861 → 69 files /
+4,023**; rules **29 / 1,935 → 29 files / 1,936**. No dependency,
+`package.json`, `firebase.json`, index, Storage rules, Dashboard or GANTT
+change; no financial selector or figure touched (pinned: the six ADR-47
+indicators are byte-identical with and without the schedule sources).
+**Release: RULES FIRST, then Hosting; no transitional stage; and the GANTT
+1B rules must already be live** — until they are, the baseline indicator
+reads *unavailable* (never healthy) because the two collections are denied.
+**Status: IMPLEMENTED — NOT YET DEPLOYED.**
+
+**Deferred / not built (recorded, not promised).** Record-level deep links
+into GANTT (a `?due=` preset or an activity highlight); a due-within-14-days
+indicator; completed-late or envelope as a trigger; comparison with the
+original or a historical baseline in PULSE; acknowledgement keys that carry
+a variance magnitude (would reopen attention on every day's drift — the
+review-by date is the chosen bound); any critical path, automatic
+rescheduling, financial exposure, extension-of-time or completion forecast;
+a Dashboard or portfolio schedule surface; Cloud Functions or server-side
+certification of links or snapshots (the DC41 / DC42 remediation).

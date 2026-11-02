@@ -42,10 +42,17 @@ Today the delivery-and-cost-control middle of this lifecycle is implemented (bud
 
 The Dashboard is deliberately sparse: its fabricated KPIs and charts were
 removed rather than rederived, so every figure on it now comes from Firestore.
-Constrapp PULSE™ is a live project tab — 1A (ADR-47): six deterministic,
-read-only health indicators; 1B (ADR-49, in production since 19 October 2026):
-acknowledgement with a required review-by date — with its static mark in the
-tab (ADR-48); the top-level `/pulse` route is a hidden pointer to it. Constrapp
+Constrapp PULSE™ is a live project tab of nine deterministic, read-only health
+indicators — 1A (ADR-47): the six commercial ones (forecast over budget, cost
+codes not forecast, negative forecast gross profit, programme activities
+overdue, supplier invoices past due, pending variation exposure); 1B (ADR-49,
+in production since 19 October 2026): acknowledgement with a required review-by
+date; 1C (ADR-67, **implemented, NOT YET DEPLOYED** — rules first, then
+Hosting): the three Schedule Intelligence indicators composed from the GANTT
+selectors (programme activities blocked by predecessors, programme
+dependencies needing review, programme later than the approved baseline) —
+with its static mark in the tab (ADR-48); the top-level `/pulse` route is a
+hidden pointer to it. Constrapp
 SHIELD™ (ADR-50, **live in production since 19 October 2026**) is a second
 project tab of five read-only commercial assurance checks over existing records;
 `/shield` is its hidden pointer. Constrapp Quant™ 1A (ADR-51, **live in

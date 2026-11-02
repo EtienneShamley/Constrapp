@@ -79,11 +79,25 @@ export const ackWording = (indicatorId) =>
 // Which field on an evidence row is the stable record id. The two forecast
 // indicators rest on cost codes (the commercial spine — immutable, ADR-39);
 // the gross-profit condition is project-level and has no rows.
+//
+// PULSE 1C (ADR-67): a blocked activity rests on the activity id (one key
+// however many links block it). A dependency needing review rests on the
+// LINK — `successorId/predecessorId`, two record ids joined by a character
+// no Firestore document id can contain — so a different invalid link on the
+// same activity is new evidence. A slipped activity rests on the active
+// baseline version AND the activity — `baselineId/activityId` — so a newly
+// approved baseline makes every key new and reopens attention, with no
+// marker row and no change to the stored acknowledgement shape. None of
+// these keys carries a date, a name, a variance or a position, so a key is
+// the same on every evaluation until the record set itself changes.
 const EVIDENCE_ID_FIELD = {
   [INDICATOR.FORECAST_OVER_BUDGET]:       'costCodeId',
   [INDICATOR.FORECAST_INCOMPLETE]:        'costCodeId',
   [INDICATOR.NEGATIVE_GROSS_PROFIT]:      null,
   [INDICATOR.OVERDUE_ACTIVITIES]:         'id',
+  [INDICATOR.BLOCKED_ACTIVITIES]:         'id',
+  [INDICATOR.DEPENDENCY_REVIEW]:          'linkKey',
+  [INDICATOR.BASELINE_SLIPPAGE]:          'evidenceKey',
   [INDICATOR.PAST_DUE_SUPPLIER_INVOICES]: 'id',
   [INDICATOR.PENDING_VARIATION_EXPOSURE]: 'id',
 }

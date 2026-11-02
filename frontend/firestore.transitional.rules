@@ -3524,12 +3524,14 @@ service cloud.firestore {
                  'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
                ]);
       }
-      // The six PULSE 1A indicator ids (lib/pulse.js → INDICATOR) — the
+      // The nine PULSE indicator ids (lib/pulse.js → INDICATOR): the six of
+      // 1A (ADR-47) plus the three schedule indicators of 1C (ADR-67) — the
       // document id AND the stored field, which must agree.
       function indicatorValid() {
         return indicatorId in [
                  'forecastOverBudget', 'forecastIncomplete', 'negativeGrossProfit',
-                 'overdueActivities', 'pastDueSupplierInvoices', 'pendingVariationExposure'
+                 'overdueActivities', 'blockedActivities', 'dependencyReview', 'baselineSlippage',
+                 'pastDueSupplierInvoices', 'pendingVariationExposure'
                ]
             && request.resource.data.indicatorId == indicatorId;
       }
