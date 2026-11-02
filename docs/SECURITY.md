@@ -93,6 +93,18 @@ Controls now in place:
   `firestore.transitional.rules` **229,601** (the same three marked lines; no
   new one — 1B needs no transitional publish). Document reads on the capture
   pair: five of twenty.
+- **GST boundary hotfix (`fix/gst-boundary-pins`, 3 November 2026,
+  IMPLEMENTED — NOT YET DEPLOYED; PROJECT_DECISIONS.md → *ADR-40 / ADR-57
+  Correction: GST Boundary Hotfix*)** hoists the progressClaims `gstPinned()`
+  to the shared helpers (body unchanged) and applies it to the two exact 10%
+  pins that refused the app's own half-cent-down `roundMoney` output —
+  `supplierInvoices.retentionGst` and the `retentionReleases` cumulative GST
+  delta (admitted as exact, one below when the cumulative total is on a
+  half-cent boundary, one above when the previous cumulative is). Widening
+  only; every other rule is byte-identical. FINAL `firestore.rules` **229,126
+  → 230,340 bytes** (+1,214; 14,660 under the budget), derived STAGE-1
+  `firestore.transitional.rules` **230,974** (the same three marked lines; no
+  new one — no transitional publish). Document reads unchanged.
 - **Size compliance is not deployment proof.** The emulator suite proves the
   repo file; the size test proves it can be published; only the console shows
   what is live — see [DEPLOYMENT.md](DEPLOYMENT.md) → *Verifying which rules
@@ -258,6 +270,10 @@ invoice is frozen but not yet financial.
   grossTotal`; `retention + retentionGst == retentionTotal`; `subtotal −
   retention == net`; `gstTotal − retentionGst == payableGst`; `grossTotal −
   retentionTotal == payableTotal`; `retentionGst == round(retention × 10%)`
+  through the shared `gstPinned()` — exact half-up, **or one cent below on a
+  half-cent boundary only** (the figure `roundMoney` itself produces for
+  e.g. 40.15; GST boundary hotfix, previously an exact pin that refused the
+  app's own write)
   (using the `math.floor((c + 5) / 10)` formula proven in `retentionReleases`);
   `subtotal > 0`; `grossTotal > 0`; `gstTotal`, `retention`, `retentionGst`,
   `retentionTotal` and `net` all `>= 0`; and `retention <= subtotal`. The
@@ -1897,8 +1913,11 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     `get()` the target invoice and verify it **exists** and is **`posted`**, that
     `amount > 0`, that the **per-document cap** holds
     (`previouslyReleasedAmount + amount <= invoice.retention`, in whole cents),
-    that `gstAmount` **exactly** equals the cumulative rounding delta
-    `round((prev + amount) × 10%) − round(prev × 10%)`, that
+    that `gstAmount` equals the cumulative rounding delta
+    `round((prev + amount) × 10%) − round(prev × 10%)` (exact half-up, or —
+    since the GST boundary hotfix — one cent below when `prev + amount` is on
+    a half-cent boundary or one above when `prev` is, the only deviations the
+    client's two `roundMoney` terms can produce), that
     `releaseTotal == amount + gstAmount`, plus the full lifecycle, role, and
     audit-stamp rules (posted content immutable, void terminal with a
     non-whitespace reason, delete blocked).
@@ -2153,7 +2172,12 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       and tax code are all writable. The identity discipline that makes these
       correct lives in `lib/supplierInvoices.js → buildInvoiceLine`, which reads
       every identity field from the **stored** line and always re-derives
-      `gstAmount` — client-side, and bypassable by a direct SDK call.
+      `gstAmount` (per line on a `direct_po` invoice; on a `progress_claim`
+      invoice the certified claim GST apportioned across the taxable lines —
+      `allocateClaimSourcedLineGst`, GST boundary hotfix) — client-side, and
+      bypassable by a direct SDK call. Rules pin `gstTotal` only to the other
+      header totals, never to the lines, so the apportionment is likewise
+      client-only.
     - **`subtotal`/`gstTotal` matching the sum of `lineItems[]`.** Same
       limitation. A document whose headers and lines disagree is **writeable**;
       only the scalar header invariant is enforced. What rules *do* pin is the

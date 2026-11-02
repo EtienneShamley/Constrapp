@@ -11,6 +11,7 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, Timestamp,
 } from 'firebase/firestore'
 import { releaseTotals, cumulativeRetentionGst } from '../../src/lib/retention'
+import { roundMoney } from '../../src/lib/purchaseOrders'
 
 // ── Retention Release Security Rules — emulator tests ────────────────────────
 //
@@ -424,12 +425,95 @@ describe('Firestore Rules math.round matches JavaScript on half-cent boundaries'
     }
   })
 
-  it('still rejects a one-cent deviation on the half-cent invoice', async () => {
+  it('still rejects a one-cent deviation ABOVE half-up on the half-cent invoice', async () => {
     await assertFails(setDoc(relRef(ctx(USERS.admin), 'half-bad'),
       releasePayload(USERS.admin, {
         supplierInvoiceId: SI_DRIFT, invoiceNumber: 'SI-0002',
-        previouslyReleasedAmount: 0, amount: 100.05, gstAmount: 10.00, releaseTotal: 110.05,
+        previouslyReleasedAmount: 0, amount: 100.05, gstAmount: 10.02, releaseTotal: 110.07,
       })))
+  })
+})
+
+// ── GST boundary hotfix (finding F2) — the client's half-cent-DOWN delta ──────
+//
+// lib/retention.js → releaseGstAmount is roundMoney(next × 0.1) − roundMoney(
+// prev × 0.1). Each roundMoney computes in binary floating point and on SOME
+// half-cent boundaries lands a hair below .5 and rounds DOWN (40.15 × 0.1 =
+// 4.015 → 4.01 where half-up gives 4.02; 100.05 happens to round UP, which is
+// why the cases above never caught it). The rule pinned the delta to EXACT
+// half-up, so a first release of 40.15 was refused with permission-denied. It
+// now admits the delta as exact, ONE cent below when `next` is on a boundary,
+// or ONE cent above when `prev` is — the app's own output and nothing else.
+
+describe('GST boundary hotfix — the delta the client actually computes is accepted, nothing else', () => {
+  const BOUNDARY_FIRST_RELEASES = [40.15, 41.05, 42.65, 80.85, 81.55, 83.35]
+
+  BOUNDARY_FIRST_RELEASES.forEach((amount, i) => {
+    it(`accepts the app's own first release of ${amount.toFixed(2)}, which rounds the half-cent DOWN`, async () => {
+      const money = releaseTotals(0, amount)
+      const halfUp = Math.floor((Math.round(amount * 100) + 5) / 10)
+      expect(Math.round(money.gstAmount * 100)).toBe(halfUp - 1)
+      await assertSucceeds(setDoc(relRef(ctx(USERS.admin), `boundary-first-${i}`),
+        releasePayload(USERS.admin, { previouslyReleasedAmount: 0, amount })))
+    })
+  })
+
+  it('accepts BOTH alternatives for a first release of 40.15 — 4.01 (the client) and 4.02 (exact half-up)', async () => {
+    expect(releaseTotals(0, 40.15).gstAmount).toBe(4.01)
+    await assertSucceeds(setDoc(relRef(ctx(USERS.admin), 'b-client'),
+      releasePayload(USERS.admin, { previouslyReleasedAmount: 0, amount: 40.15 })))
+    await assertSucceeds(setDoc(relRef(ctx(USERS.admin), 'b-exact'),
+      releasePayload(USERS.admin, { previouslyReleasedAmount: 0, amount: 40.15, gstAmount: 4.02, releaseTotal: 44.17 })))
+  })
+
+  it('rejects a first release of 40.15 one cent ABOVE half-up (4.03) or two cents below (4.00)', async () => {
+    await assertFails(setDoc(relRef(ctx(USERS.admin), 'b-up'),
+      releasePayload(USERS.admin, { previouslyReleasedAmount: 0, amount: 40.15, gstAmount: 4.03, releaseTotal: 44.18 })))
+    await assertFails(setDoc(relRef(ctx(USERS.admin), 'b-down2'),
+      releasePayload(USERS.admin, { previouslyReleasedAmount: 0, amount: 40.15, gstAmount: 4.00, releaseTotal: 44.15 })))
+  })
+
+  it('rejects a one-cent deviation OFF a boundary in either direction (first release of 40.14)', async () => {
+    expect(releaseTotals(0, 40.14).gstAmount).toBe(4.01)
+    await assertFails(setDoc(relRef(ctx(USERS.admin), 'off-up'),
+      releasePayload(USERS.admin, { previouslyReleasedAmount: 0, amount: 40.14, gstAmount: 4.02, releaseTotal: 44.16 })))
+    await assertFails(setDoc(relRef(ctx(USERS.admin), 'off-down'),
+      releasePayload(USERS.admin, { previouslyReleasedAmount: 0, amount: 40.14, gstAmount: 4.00, releaseTotal: 44.14 })))
+  })
+
+  it('a later release after a boundary cumulative (prev 40.15, amount 10.01): the client delta is accepted and ±1 beyond it is not', async () => {
+    // exact: gstCents(5016) − gstCents(4015) = 502 − 402 = 100 cents. The
+    // client subtracts roundMoney(4.015) = 4.01 instead of 4.02, so its delta
+    // may be 1.01 — one ABOVE exact, admitted only because `prev` is on a
+    // boundary. 0.99 (next is NOT on a boundary) and 1.02 are refused.
+    const money = releaseTotals(40.15, 10.01)
+    expect([1.00, 1.01]).toContain(money.gstAmount)
+    await assertSucceeds(setDoc(relRef(ctx(USERS.admin), 'later-client'),
+      releasePayload(USERS.admin, { previouslyReleasedAmount: 40.15, amount: 10.01 })))
+    await assertSucceeds(setDoc(relRef(ctx(USERS.admin), 'later-plus-one'),
+      releasePayload(USERS.admin, { previouslyReleasedAmount: 40.15, amount: 10.01, gstAmount: 1.01, releaseTotal: 11.02 })))
+    await assertFails(setDoc(relRef(ctx(USERS.admin), 'later-minus-one'),
+      releasePayload(USERS.admin, { previouslyReleasedAmount: 40.15, amount: 10.01, gstAmount: 0.99, releaseTotal: 11.00 })))
+    await assertFails(setDoc(relRef(ctx(USERS.admin), 'later-plus-two'),
+      releasePayload(USERS.admin, { previouslyReleasedAmount: 40.15, amount: 10.01, gstAmount: 1.02, releaseTotal: 11.03 })))
+  })
+
+  it('the telescoping sequence 40.15 + 40.15 + 19.70 = 100.00 posts every step as the client computes it', async () => {
+    const steps = [releaseTotals(0, 40.15), releaseTotals(40.15, 40.15), releaseTotals(80.30, 19.70)]
+    expect(roundMoney(steps.reduce((s, r) => s + r.gstAmount, 0))).toBe(cumulativeRetentionGst(100))
+    for (const [i, r] of steps.entries()) {
+      await assertSucceeds(setDoc(relRef(ctx(USERS.admin), `telescope-${i}`),
+        releasePayload(USERS.admin, { previouslyReleasedAmount: r.previouslyReleasedAmount, amount: r.amount })))
+    }
+  })
+
+  it('still rejects an arbitrary gstAmount even when releaseTotal adds up, and a non-number amount', async () => {
+    await assertFails(setDoc(relRef(ctx(USERS.admin), 'arb-1'),
+      releasePayload(USERS.admin, { previouslyReleasedAmount: 0, amount: 40.15, gstAmount: 0, releaseTotal: 40.15 })))
+    await assertFails(setDoc(relRef(ctx(USERS.admin), 'arb-2'),
+      releasePayload(USERS.admin, { previouslyReleasedAmount: '0', amount: 40.15 })))
+    await assertFails(setDoc(relRef(ctx(USERS.admin), 'arb-3'),
+      releasePayload(USERS.admin, { previouslyReleasedAmount: 0, amount: '40.15' })))
   })
 })
 

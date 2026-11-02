@@ -10,7 +10,10 @@ import {
 import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, Timestamp,
 } from 'firebase/firestore'
-import { invoiceTotals, gstForLine } from '../../src/lib/supplierInvoices'
+import {
+  invoiceTotals, gstForLine, allocateClaimSourcedLineGst, claimReconciliationError,
+} from '../../src/lib/supplierInvoices'
+import { claimTotals } from '../../src/lib/progressClaims'
 import { releaseTotals } from '../../src/lib/retention'
 import { roundMoney } from '../../src/lib/purchaseOrders'
 
@@ -734,15 +737,139 @@ describe('retention GST rounding — math.floor((c+5)/10) matches JavaScript rou
     })
   })
 
-  it('rejects a retention GST one cent off the derived value', async () => {
+  // ── GST boundary hotfix (finding F2) ──────────────────────────────────────
+  // roundMoney(x × 0.1) computes in binary floating point and on SOME half-cent
+  // boundaries lands a hair below .5 and rounds DOWN (40.15 × 0.1 = 4.015 →
+  // 4.01 where half-up gives 4.02). The retentionGst pin was EXACT half-up, so
+  // the app's own direct-PO invoice with a 5% retention on $803.00 — and any
+  // claim-sourced invoice whose claim carried such a retention — was refused
+  // with permission-denied. The pin is now the shared gstPinned(): exact, or
+  // one cent below ON A BOUNDARY ONLY. Nothing else is admitted.
+  const BOUNDARY_RETENTIONS = [40.15, 41.05, 42.65, 80.85, 81.55, 83.35]
+
+  BOUNDARY_RETENTIONS.forEach((retention, i) => {
+    it(`accepts the app's own retention ${retention.toFixed(2)} payload, which rounds the half-cent DOWN`, async () => {
+      const payload = invoicePayload(USERS.qs, { retention })
+      // the client figure IS one cent below half-up for these values
+      const halfUp = Math.floor((Math.round(retention * 100) + 5) / 10) / 100
+      expect(payload.retentionGst).toBe(roundMoney(retention * 0.1))
+      expect(Math.round(payload.retentionGst * 100)).toBe(Math.round(halfUp * 100) - 1)
+      await assertSucceeds(setDoc(invRef(ctx(USERS.qs), `gb${i}`), payload))
+    })
+  })
+
+  it('accepts BOTH boundary alternatives for 40.15 — 4.01 (the client) and 4.02 (exact half-up, historical)', async () => {
+    const base = invoicePayload(USERS.qs, { retention: 40.15 })
+    expect(base.retentionGst).toBe(4.01)
+    await assertSucceeds(setDoc(invRef(ctx(USERS.qs), 'gb-client'), base))
+    const totals = invoiceTotals(DEFAULT_LINES, 0)
+    await assertSucceeds(setDoc(invRef(ctx(USERS.qs), 'gb-exact'), {
+      ...base,
+      retentionGst:   4.02,
+      retentionTotal: 44.17,
+      payableGst:     roundMoney(totals.gstTotal - 4.02),
+      payableTotal:   roundMoney(totals.grossTotal - 44.17),
+    }))
+  })
+
+  it('rejects one cent ABOVE half-up on a boundary (40.15 → 4.03) and two cents below (4.00)', async () => {
+    const base = invoicePayload(USERS.qs, { retention: 40.15 })
+    const totals = invoiceTotals(DEFAULT_LINES, 0)
+    for (const [rgst, id] of [[4.03, 'gb-up'], [4.00, 'gb-down2']]) {
+      const rtot = roundMoney(40.15 + rgst)
+      await assertFails(setDoc(invRef(ctx(USERS.qs), id), {
+        ...base,
+        retentionGst:   rgst,
+        retentionTotal: rtot,
+        payableGst:     roundMoney(totals.gstTotal - rgst),
+        payableTotal:   roundMoney(totals.grossTotal - rtot),
+      }))
+    }
+  })
+
+  it('rejects a one-cent deviation OFF a boundary in either direction (100.04 → 10.01 / 9.99)', async () => {
+    const base = invoicePayload(USERS.qs, { retention: 100.04 })
+    expect(base.retentionGst).toBe(10.00)
+    const totals = invoiceTotals(DEFAULT_LINES, 0)
+    for (const [rgst, id] of [[10.01, 'g-off-up'], [9.99, 'g-off-down']]) {
+      const rtot = roundMoney(100.04 + rgst)
+      await assertFails(setDoc(invRef(ctx(USERS.qs), id), {
+        ...base,
+        retentionGst:   rgst,
+        retentionTotal: rtot,
+        payableGst:     roundMoney(totals.gstTotal - rgst),
+        payableTotal:   roundMoney(totals.grossTotal - rtot),
+      }))
+    }
+  })
+
+  it('rejects a retention GST one cent ABOVE the derived value on the 100.05 boundary (the pre-hotfix case, direction preserved)', async () => {
     const payload = invoicePayload(USERS.qs, { retention: 100.05 })
+    expect(payload.retentionGst).toBe(10.01)
     await assertFails(setDoc(invRef(ctx(USERS.qs), 'g-bad'), {
       ...payload,
-      retentionGst:   10.00,
-      retentionTotal: 110.05,
-      payableGst:     990.00,
-      payableTotal:   10889.95,
+      retentionGst:   10.02,
+      retentionTotal: 110.07,
+      payableGst:     989.98,
+      payableTotal:   10889.93,
     }))
+  })
+
+  it('still rejects an arbitrary self-consistent retentionGst (10% of nothing)', async () => {
+    const payload = invoicePayload(USERS.qs, { retention: 40.15 })
+    const totals = invoiceTotals(DEFAULT_LINES, 0)
+    await assertFails(setDoc(invRef(ctx(USERS.qs), 'g-arbitrary'), {
+      ...payload,
+      retentionGst:   0,
+      retentionTotal: 40.15,
+      payableGst:     totals.gstTotal,
+      payableTotal:   roundMoney(totals.grossTotal - 40.15),
+    }))
+  })
+})
+
+describe('the claim-sourced invoice the app now builds passes the rules (GST boundary hotfix, finding F3)', () => {
+  // Three certified claim lines of 10.05: the claim certifies GST on its net
+  // total (3.02); per-line 10% roundings gave 3.03 and the client guard refused
+  // the invoice. The lines now carry the certified GST APPORTIONED
+  // (allocateClaimSourcedLineGst) — this is the exact document the hook writes,
+  // built through the real lib, so a rules/client divergence shows up here.
+  const CLAIM_AMOUNTS = [10.05, 10.05, 10.05]
+  const claimLines = CLAIM_AMOUNTS.map((amount, idx) => line(amount, 'gst', { poLineIndex: idx, costCodeId: `cc${idx}` }))
+
+  it('creates, approves and posts a claim-sourced invoice whose lines carry the apportioned certified GST', async () => {
+    const certified = claimTotals(CLAIM_AMOUNTS, 0)
+    expect(certified.gst).toBe(3.02)
+    const lines = allocateClaimSourcedLineGst(claimLines, { certifiedGst: certified.gst, retention: 0 })
+    expect(lines.map(l => l.gstAmount)).toEqual([1.01, 1.01, 1.00])
+    const totals = invoiceTotals(lines, 0)
+    expect(claimReconciliationError(totals, { approvedGst: certified.gst, approvedTotal: certified.total })).toBeNull()
+
+    const ref = invRef(ctx(USERS.qs), 'claim-apportioned')
+    await assertSucceeds(setDoc(ref, invoicePayload(USERS.qs, { source: 'progress_claim', lines })))
+    await assertSucceeds(updateDoc(ref, {
+      status: 'approved', approvedAt: serverTimestamp(), approvedBy: USERS.qs.uid, ...stamps(USERS.qs),
+    }))
+    await assertSucceeds(updateDoc(ref, {
+      status: 'posted', postedAt: serverTimestamp(), postedBy: USERS.qs.uid, ...stamps(USERS.qs),
+    }))
+    const snap = await getDoc(ref)
+    expect(snap.data().gstTotal).toBe(3.02)
+    expect(snap.data().payableGst).toBe(certified.gst)
+    expect(snap.data().payableTotal).toBe(certified.total)
+  })
+
+  it('the same claim with a boundary retention (803.00 at 5% = 40.15) creates through the rules', async () => {
+    const certified = claimTotals([803], 40.15)
+    const srcLines = [line(803, 'gst', { poLineIndex: 0 })]
+    const lines = allocateClaimSourcedLineGst(srcLines, { certifiedGst: certified.gst, retention: 40.15 })
+    const totals = invoiceTotals(lines, 40.15)
+    expect(totals.retentionGst).toBe(4.01)   // the client's half-cent-down figure
+    expect(claimReconciliationError(totals, { approvedGst: certified.gst, approvedTotal: certified.total })).toBeNull()
+    await assertSucceeds(setDoc(
+      invRef(ctx(USERS.qs), 'claim-boundary-retention'),
+      invoicePayload(USERS.qs, { source: 'progress_claim', lines, retention: 40.15 }),
+    ))
   })
 })
 

@@ -1193,6 +1193,84 @@ regardless. Existing acknowledgement documents need no migration.
   acknowledgement documents and never an activity, a baseline or a financial
   record.
 
+### GST boundary hotfix release order — `fix/gst-boundary-pins` — RULES FIRST, then Hosting; no transitional stage
+
+**Status: IMPLEMENTED — NOT YET DEPLOYED (Rules AND Hosting; TWO steps).**
+Two findings from the SHIELD commercial-integrity inspection of 3 November
+2026 (PROJECT_DECISIONS.md → *ADR-40 / ADR-57 Correction: GST Boundary
+Hotfix*):
+
+- **F2 — Rules.** Two exact 10% pins refused the app's own writes:
+  `supplierInvoices.retentionGst == gstCents(retention)` and the
+  `retentionReleases` cumulative-delta pin. `roundMoney(x × 0.1)` rounds some
+  half-cents DOWN (40.15 → 4.01 where half-up gives 4.02 — e.g. 5% retention on
+  $803.00), so a direct-PO invoice with such a retention, a claim-sourced
+  invoice whose claim carried one, and a first release of such an amount all
+  failed with permission-denied. Both pins now use the shared `gstPinned()`
+  (exact, or one cent below on a boundary; the release delta additionally one
+  above when the previous cumulative is on a boundary). **Widening only**: every
+  document the live ruleset accepts is still accepted, so the live bundle keeps
+  working under the new rules and the new bundle's writes are accepted by the
+  new rules — **rules first**.
+- **F3 — Hosting.** A claim-sourced invoice's line GST is now the certified
+  claim GST apportioned across its taxable lines in whole cents
+  (`lib/supplierInvoices.js → allocateClaimSourcedLineGst`), so a multi-line
+  claim with cent-level lines can be invoiced (3 × 10.05 → 3.02, previously
+  refused by the reconciliation guard). The stored header identities rules
+  check are unchanged; the new bundle's claim-sourced invoice also passes the
+  OLD ruleset except where it carries a boundary retention — which is exactly
+  the F2 case, hence rules first.
+
+*Preconditions.* Azure CI green on the merge (lint → unit → rules → build);
+`npm run rules:transitional:check` clean; `wc -c frontend/firestore.rules`
+reads **230,340** (budget 245,000). The repository records GANTT 1B and
+PULSE 1C as NOT YET DEPLOYED: this ruleset contains both, so **confirm in the
+Console which ruleset is live before STEP 1** (publishing this file also
+publishes 1B / 1C rules if they are not yet live — rules-first is the correct
+order for those too, but the release records must be straightened first).
+Every command runs from `frontend/`, each a separate approved action; **none
+is run by an implementation task.**
+
+1. **STEP 1 — publish the FINAL ruleset:**
+   ```bash
+   npm run test:rules                       # all suites green, incl. the boundary cases
+   firebase deploy --only firestore:rules --project constrapp-69b5d
+   ```
+   Verify in the Console that the published source contains
+   `function gstPinned(netC, gstC)` at the shared-helper scope and reads
+   230,340 bytes. The live bundle keeps working unchanged.
+2. **STEP 2 — `firebase deploy --only hosting --project constrapp-69b5d`**
+   after `npm run build` with the production `VITE_FIREBASE_*` values.
+   Verify with the three manual checks in TESTING.md §44.
+
+*Recovery.* No document is migrated and no stored value changes shape, but
+the two steps are **not** equally reversible once production has used the
+hotfix:
+
+- **Hosting rollback is safe only while the hotfix rules stay published.**
+  The previous bundle's writes are all accepted by the new (wider) ruleset,
+  so redeploying the previous Hosting build is a clean rollback for F3 — and
+  it **must preserve the compatible GST rules**: do not pair a Hosting
+  rollback with a rules rollback.
+- **Reverting the Firestore Rules to the pre-hotfix FINAL ruleset (229,126
+  bytes) is NOT a clean rollback.** The old exact pins reject the GST values
+  the hotfix accepts: a direct-PO or claim-sourced invoice with a boundary
+  retention (e.g. 40.15 → 4.01) could no longer be created or draft-edited,
+  and a retention release against an invoice whose cumulative released
+  amount is already on a boundary — or whose `previouslyReleasedAmount`
+  snapshot is — could be refused, because the release delta the client
+  computes from that stored history is one the old rule does not admit.
+  Existing documents are untouched (rules are evaluated on writes only), but
+  **subsequent legitimate writes that depend on them can fail with
+  permission-denied** until the compatible rules are republished.
+- **Prefer a compatible forward fix.** Where production records already rely
+  on the accepted rounding boundaries (any boundary-retention invoice or
+  release posted under the hotfix), do not revert the rules; correct forward
+  with a ruleset that keeps `gstPinned()` on both pins. The pre-hotfix
+  ruleset is a last resort for a defect in the rules themselves, accepted
+  with the write failures above, and only together with the previous Hosting
+  build so the F3 apportionment is not paired with the old pins.
+
 ## Publishing Firestore Rules — Manual Process
 
 The rules source of truth is `frontend/firestore.rules`, but **there is no CLI

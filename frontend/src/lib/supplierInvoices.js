@@ -1,4 +1,5 @@
 import { PO_STATUS, GST_RATE, roundMoney } from './purchaseOrders'
+import { claimTotals } from './progressClaims'
 import { isVariationOriginLine, indexOrNull, variationLineCountOf } from './sourceLine'
 
 // ── Supplier Invoices (accounts payable) ─────────────────────────────────────
@@ -201,6 +202,124 @@ export function claimReconciliationError(totals, { approvedGst, approvedTotal } 
     return `Invoice payable total (${roundMoney(totals.payableTotal)}) does not reconcile to the approved claim total (${roundMoney(approvedTotal)}).`
   }
   return null
+}
+
+// ── Claim-sourced GST apportionment (GST boundary hotfix, finding F3) ────────
+//
+// A progress claim certifies GST ONCE, on its net total (lib/progressClaims.js
+// → claimTotals: 10% of approvedSubtotal − retention, one rounding). A
+// supplier invoice stores GST PER LINE, and a sum of per-line 10% roundings
+// does not reproduce one 10%-of-the-total rounding: three certified lines of
+// 10.05 round to 1.01 each (3.03) where the claim certified 3.02, so the
+// create-time guard (claimReconciliationError) refused the invoice and the
+// approved claim stayed "awaiting invoice" with no app path.
+//
+// The certified claim GST is AUTHORITATIVE and never moves. A claim-sourced
+// invoice's line GST is therefore an APPORTIONMENT of the document GST across
+// its taxable lines — not an independent per-line calculation:
+//
+//   target   = certified claim GST + this invoice's retention GST, in cents
+//              (so gstTotal − retentionGst == payableGst == approvedGst holds
+//              by construction — the identities rules pin are unchanged)
+//   exact_i  = amount_i × 10%, carried in TENTHS of a cent, which for a
+//              whole-cent amount is simply its cent count — integer arithmetic
+//              throughout, no floating point
+//   floor_i  = exact_i in whole cents; remainder_i = exact_i mod 10
+//   residual = target − Σ floor_i, whole cents, given out ONE CENT AT A TIME in
+//              largest-remainder order (ties → lower line index), cycling the
+//              ranking if the residual exceeds the line count, so no line ever
+//              carries more than its share plus one cent per cycle; a negative
+//              residual is taken back in smallest-remainder order the same way
+//
+// Lines that attract no GST (tax code other than `gst`) and zero-amount lines
+// receive nothing and take part in nothing. A target more than TWO cents away
+// from 10% of the taxable lines cannot be the product of the two roundings
+// (net GST, retention GST) that separate it from that figure, so the
+// apportionment REFUSES (null) rather than fabricate a match — the caller then
+// keeps per-line GST and claimReconciliationError reports the mismatch
+// honestly. The same holds when the residual cannot be placed (no taxable
+// line, or a take-back that would drive a line below zero).
+//
+// Deterministic: the result depends only on the ordered amounts, tax codes and
+// target — the same inputs always apportion the same cents to the same lines.
+
+// `amountCents`: per line, an integer cent count for a TAXABLE line or `null`
+// for a line that attracts no GST. Returns per-line GST cents, or null.
+export function allocateGstCents(amountCents, targetCents) {
+  if (!Array.isArray(amountCents) || !Number.isInteger(targetCents) || targetCents < 0) return null
+  const n = amountCents.length
+  const out = new Array(n).fill(0)
+  const taxable = []
+  let exactTenths = 0
+  for (let i = 0; i < n; i++) {
+    const c = amountCents[i]
+    if (c === null || c === undefined) continue
+    if (!Number.isInteger(c) || c < 0) return null
+    if (c === 0) continue
+    exactTenths += c
+    out[i] = Math.trunc(c / 10)
+    taxable.push({ i, r: c % 10 })
+  }
+  if (taxable.length === 0) return targetCents === 0 ? out : null
+  if (Math.abs(targetCents * 10 - exactTenths) > 20) return null
+
+  let residual = targetCents - out.reduce((s, v) => s + v, 0)
+  const give = [...taxable].sort((a, b) => (b.r - a.r) || (a.i - b.i))
+  const take = [...taxable].sort((a, b) => (a.r - b.r) || (a.i - b.i))
+  while (residual > 0) {
+    for (const { i } of give) {
+      if (residual === 0) break
+      out[i] += 1
+      residual -= 1
+    }
+  }
+  while (residual < 0) {
+    let moved = false
+    for (const { i } of take) {
+      if (residual === 0) break
+      if (out[i] > 0) { out[i] -= 1; residual += 1; moved = true }
+    }
+    if (!moved) return null
+  }
+  return out
+}
+
+// The certified GST a claim-sourced invoice's stored lines imply, derived
+// through the ONE claim formula (claimTotals) from the stored amounts and the
+// stored retention: approved claim amounts are frozen forever, so the stored
+// figures ARE the certified figures. Used where no live claim is read (EDIT).
+export const claimSourcedCertifiedGst = (lineItems, retention = 0) =>
+  claimTotals((lineItems ?? []).map(li => Number(li?.amount) || 0), retention).gst
+
+// Apportions the certified GST across the taxable lines (see above). Returns
+// new line objects with `gstAmount` replaced; identity, amount, tax code and
+// cost code are untouched. Returns the lines UNCHANGED when the apportionment
+// refuses, so the reconciliation guard — never this function — decides.
+export function allocateClaimSourcedLineGst(lineItems, { certifiedGst, retention = 0 } = {}) {
+  const lines = Array.isArray(lineItems) ? lineItems : []
+  const certified = Number(certifiedGst)
+  if (lines.length === 0 || !Number.isFinite(certified)) return lines
+  const retentionGst = invoiceTotals(lines, retention).retentionGst
+  const target = Math.round(roundMoney(certified + retentionGst) * 100)
+  const cents = lines.map(li => {
+    const amt = Number(li?.amount)
+    if (li?.taxCode !== TAX_CODE.GST || !Number.isFinite(amt) || amt <= 0) return null
+    const c = Math.round(amt * 100)
+    return roundMoney(amt) === amt ? c : NaN   // a sub-cent amount is malformed
+  })
+  if (cents.some(c => Number.isNaN(c))) return lines
+  const allocated = allocateGstCents(cents, target)
+  if (!allocated) return lines
+  return lines.map((li, i) => ({ ...li, gstAmount: allocated[i] / 100 }))
+}
+
+// EDIT-path rebuild of a claim-sourced draft's lines: identity and money from
+// the STORED line (buildInvoiceLine), then the same apportionment CREATE used,
+// targeted at the certified GST the stored amounts and retention imply. One
+// function so the editor's drift check and the hook's cannot diverge.
+export function rebuildClaimSourcedLines(storedLines, retention = 0) {
+  const base = (storedLines ?? []).map(li => buildInvoiceLine(li, { amount: li?.amount, taxCode: li?.taxCode }))
+  return allocateClaimSourcedLineGst(base, { certifiedGst: claimSourcedCertifiedGst(base, retention), retention })
 }
 
 // ── Duplicate detection (warning-only, client-enforced) ──────────────────────

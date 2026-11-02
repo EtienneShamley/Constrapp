@@ -5868,3 +5868,115 @@ review-by date is the chosen bound); any critical path, automatic
 rescheduling, financial exposure, extension-of-time or completion forecast;
 a Dashboard or portfolio schedule surface; Cloud Functions or server-side
 certification of links or snapshots (the DC41 / DC42 remediation).
+
+---
+
+## ADR-40 / ADR-57 Correction: GST Boundary Hotfix (`fix/gst-boundary-pins`, 3 November 2026)
+
+**Status: IMPLEMENTED — NOT YET DEPLOYED (Rules first, then Hosting; no
+transitional stage).** Recorded as a correction to ADR-40 (the
+`supplierInvoices` retention-GST pin) and ADR-57 (which found the half-cent
+rounding for POs and claims and left the other two pins "flagged, not changed")
+rather than under a new number: the next number, ADR-68, is reserved by the
+Lead Architect for SHIELD 2A (claim-to-invoice source pairing, finding F1 of
+the same inspection). Numbering is the architect's decision.
+
+**Context.** The SHIELD commercial-integrity inspection of 3 November 2026
+confirmed two live blockers in the claim → invoice → retention path:
+
+- **F2 — exact GST pins refuse the app's own half-cent-down rounding.**
+  `lib/purchaseOrders.js → roundMoney` is `Math.round((n + ε) × 100) / 100` in
+  binary floating point; for some half-cent products it lands a hair below .5
+  and rounds DOWN (40.15 × 0.1 = 4.015 → 4.01 where half-up gives 4.02; always
+  −1, never +1, only when the cents end in 5; 1,632 retention values per
+  $10,000). ADR-57 admitted that deviation for the PO header and ADR-58 for the
+  claim header (`gstPinned`), but the `supplierInvoices` rule still pinned
+  `retentionGst == gstCents(retention)` EXACTLY, and the `retentionReleases`
+  rule pinned the cumulative delta EXACTLY. A direct-PO invoice with 5%
+  retention on $803.00, a claim-sourced invoice whose approved claim carried
+  such a retention (the claim side admitted it), and a first release of such an
+  amount were all refused with permission-denied, and the claim stayed
+  *awaiting invoice* with no app path. The existing emulator cases (100.05,
+  1234.55, 9999.95) all happen to round UP, which is why neither suite caught
+  it.
+- **F3 — claim GST and claim-sourced invoice GST are composed at different
+  stages.** `claimTotals` certifies GST once, on the net total; the invoice
+  editor derived `gstForLine` per line. Three certified lines of 10.05 give
+  1.01 × 3 = 3.03 against a certified 3.02, so `claimReconciliationError`
+  refused creation. About a quarter of two-line cent-level combinations
+  diverge; whole-dollar lines never do.
+
+**Decision.**
+
+1. **Rules (F2) — one shared pin, widening only.** `gstPinned(netC, gstC)` is
+   hoisted verbatim from the `progressClaims` block to the shared helpers
+   (ADR-60 pattern; the claims block calls the shared copy; the PO block's
+   byte-identical inline expression is left untouched — no unrelated change).
+   `supplierInvoices.moneyBalanced` pins `gstPinned(ret, rgst)`: exact
+   half-up, or one cent below on a half-cent boundary only. `retentionReleases`
+   is split into `moneyTypesValid()` / `moneyBalanced()` (the invoices idiom,
+   so no `math.round` is handed a non-number) and the delta is admitted as
+   `gstPinned(prev + amount, g + gstCents(prev)) || (prev % 10 == 5 &&
+   gstPinned(prev + amount, g + gstCents(prev) − 1))` — because the client's
+   `releaseGstAmount` is `roundMoney(next × 0.1) − roundMoney(prev × 0.1)`
+   and each term is exact or one cent low on a boundary, the delta is exact,
+   one below when `next` is on a boundary, or one above when `prev` is. That
+   is the app's own output and nothing else: no blanket ±1, no tolerance off a
+   boundary, no tolerance for an arbitrary self-consistent figure (all proven
+   refused in the emulator). Every document the previous ruleset accepted is
+   still accepted (historical exact values included), so the change is
+   **widening only** and needs no transitional stage.
+2. **Client (F3) — the certified GST is apportioned, never recomputed.**
+   `lib/supplierInvoices.js → allocateGstCents` apportions a whole-cent target
+   across taxable lines in **integer arithmetic** (tenths of a cent): each line
+   takes the floor of its own `amount × 10%`; the residual cents go one at a
+   time to the lines with the largest fractional remainder (ties to the lower
+   line index), cycling the ranking if the residual exceeds the line count, so
+   the residual is spread and never concentrated on the last line (the
+   largest-remainder method, chosen over "last line takes the difference"
+   because it bounds every line to its own share plus one cent per cycle and
+   is independent of the claim's size); a negative residual is taken back in
+   smallest-remainder order. A target more than **two cents** from 10% of the
+   taxable lines cannot be the product of the two roundings that separate
+   them (net GST, retention GST), so the apportionment **refuses** (returns
+   null; the lines keep per-line GST) and `claimReconciliationError` reports
+   the mismatch — it never fabricates a match. GST-free and zero lines take
+   nothing. `allocateClaimSourcedLineGst(lines, { certifiedGst, retention })`
+   targets `certified claim GST + this invoice's retentionGst`, so
+   `gstTotal − retentionGst == payableGst == approvedGst` holds by
+   construction; the editor previews it, and the hook re-applies it before
+   writing (idempotent) so the stored document is the apportioned one whatever
+   a caller hands in. The EDIT rebuild (`rebuildClaimSourcedLines`) derives the
+   certified GST from the stored amounts and retention through the one claim
+   formula (`claimTotals`) and apportions the same way, so a header edit
+   passes the ADR-38 drift check and a forged header is still refused. Nothing
+   writes the claim; no amount, tax code, identity, cost code, status, total or
+   selector changes; direct-PO invoices are untouched.
+
+**Consequences.** FINAL `firestore.rules` 229,126 → **230,340 bytes**
+(+1,214; 14,660 under the budget); transitional **230,974** (the same three
+ADR-63 / ADR-65 marked lines, regenerated; no new marker). Document reads
+unchanged. Unit 69 / 4,023 → **70 files / 4,051** (new
+`claimSourcedGstAllocation.test.js`, 28); rules 29 / 1,936 → **29 files /
+1,960** (+12 in each of `supplierInvoices.rules.test.js` and
+`retentionReleases.rules.test.js`, incl. the claim-sourced invoice the app now
+builds created / approved / posted through the rules, and a boundary-retention
+claim-sourced create). Release: **rules first** (widening; the live bundle
+keeps working), **Hosting second**; recovery is redeploying the previous
+build **under the hotfix rules** — reverting the rules themselves would
+reject subsequent legitimate boundary-GST writes, so a compatible forward fix
+is preferred once production records rely on the accepted boundaries
+(DEPLOYMENT.md → *Recovery*); no migration, no stored shape change. The repository
+records GANTT 1B and PULSE 1C as NOT YET DEPLOYED and this ruleset contains
+both; the Console must confirm what is live before STEP 1 (DEPLOYMENT.md).
+
+**Limitations (unchanged, recorded).** The apportionment and the
+reconciliation guard are client-side (DC29): rules pin `gstTotal` only to the
+other header totals, never to the lines or to the claim. `roundMoney` itself
+is unchanged — every module keeps its half-cent-down output and every rule now
+admits it; replacing it with exact decimal rounding would change stored
+figures across every module and is a separate decision. A claim certified
+with a line of a non-`gst` tax code cannot be invoiced from the claim (the
+claim certifies flat 10% on everything); that was so before. Pre-hotfix
+claim-sourced drafts (whole-dollar lines, which never diverged) rebuild
+identically.

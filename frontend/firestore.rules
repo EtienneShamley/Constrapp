@@ -62,6 +62,20 @@ service cloud.firestore {
     function gstCents(c) {
       return math.floor((c + 5) / 10);
     }
+    // THE ONE GST PIN for a client-rounded 10% figure (ADR-57 / ADR-58; hoisted
+    // from progressClaims by the GST boundary hotfix and now shared by the
+    // supplierInvoices `retentionGst` pin and the retentionReleases delta):
+    // roundMoney(x × 0.1) computes in binary floating point, which on some
+    // half-cent boundaries lands a hair below .5 and rounds DOWN (40.15 → 4.01
+    // where half-up gives 4.02). Swept exhaustively: the deviation is always −1,
+    // never +1, and never off a boundary — so this admits EXACTLY half-up, or ONE
+    // cent below it on a boundary only, and nothing else. `-5` admits the same
+    // deviation on the negative net a LEGACY negative claim retention can still
+    // produce at approval (new writes require retention >= 0).
+    function gstPinned(netC, gstC) {
+      return gstC == gstCents(netC)
+          || ((netC % 10 == 5 || netC % 10 == -5) && gstC == gstCents(netC) - 1);
+    }
     // `revision` EXACTLY +1 on every update, a missing key reading as 0 (the
     // progressClaims / variations idiom, ADR-58 / ADR-59: rules-ASSISTED
     // concurrency for the client's revision-guarded transactions, not
@@ -639,17 +653,9 @@ service cloud.firestore {
     // revision +1; delete blocked. What rules cannot verify (lineItems, one open
     // claim per PO, cumulative claiming) is docs/SECURITY.md → Deferred Control 36.
     match /companies/{companyId}/projects/{projectId}/progressClaims/{claimId} {
-      // lib/progressClaims.js → claimTotals computes roundMoney(net × 0.1) in
-      // binary floating point, which on some half-cent boundaries lands a hair
-      // below .5 and rounds DOWN (the ADR-57 finding, same helper, swept again
-      // for claimTotals in tests/unit/progressClaims.test.js): the GST must be
-      // EXACTLY half-up, or ONE cent below it on a boundary only. `-5` admits
-      // the same deviation on the negative net a LEGACY negative retention can
-      // still produce at approval (new writes require retention >= 0).
-      function gstPinned(netC, gstC) {
-        return gstC == gstCents(netC)
-            || ((netC % 10 == 5 || netC % 10 == -5) && gstC == gstCents(netC) - 1);
-      }
+      // lib/progressClaims.js → claimTotals computes roundMoney(net × 0.1); the
+      // shared gstPinned() (declared with the helpers above) admits exactly its
+      // output (swept again for claimTotals in tests/unit/progressClaims.test.js).
       // Exact key set of a document the app creates (hooks/useProgressClaims.jsx).
       // M3-B2 (ADR-63): `variationLineCount` — the number of variation-origin
       // lines after the PO lines — is REQUIRED by this FINAL file (the STAGE-1
@@ -1057,8 +1063,11 @@ service cloud.firestore {
       // can CLAIM, not what its lines say.
       //
       // The five identities mirror lib/supplierInvoices.js → invoiceTotals term
-      // for term, and the sixth pins `retentionGst` to the exact rounding of
-      // `retention × 10%` rather than accepting any self-consistent pair.
+      // for term, and the sixth pins `retentionGst` to the rounding of
+      // `retention × 10%` through the shared gstPinned() (exact half-up, or one
+      // cent below on a half-cent boundary only — the app's own roundMoney
+      // output, e.g. retention 40.15 → 4.01; GST boundary hotfix) rather than
+      // accepting any self-consistent pair.
       //
       // `retention <= subtotal` mirrors invoiceTotals' UPPER clamp; `retention >=
       // 0` is the floor invoiceTotals deliberately does NOT apply, closing the
@@ -1112,7 +1121,7 @@ service cloud.firestore {
             && sub - ret == cents(d.net)
             && gst - rgst == cents(d.payableGst)
             && gross - rtot == cents(d.payableTotal)
-            && rgst == gstCents(ret);
+            && gstPinned(ret, rgst);
       }
       function moneyValid() {
         return moneyTypesValid() && moneyBalanced();
@@ -2836,21 +2845,36 @@ service cloud.firestore {
       }
       // The arithmetic guarantee rules CAN give per document: the GST is pinned
       // to the cumulative rounding delta, so `gstAmount` cannot be arbitrary
-      // merely because releaseTotal happens to add up.
+      // merely because releaseTotal happens to add up. lib/retention.js →
+      // releaseGstAmount is roundMoney(next × 0.1) − roundMoney(prev × 0.1);
+      // each term is exact half-up or ONE cent low on a half-cent boundary (the
+      // shared gstPinned() deviation), so the delta is admitted as exact, one
+      // below when `next` is on a boundary, or one above when `prev` is — the
+      // app's own output and nothing else (GST boundary hotfix).
+      function moneyTypesValid() {
+        let d = request.resource.data;
+        return d.amount is number
+            && d.amount > 0
+            && d.previouslyReleasedAmount is number
+            && d.previouslyReleasedAmount >= 0
+            && d.gstAmount is number
+            && d.gstAmount >= 0
+            && d.releaseTotal is number
+            && d.releaseTotal > 0;
+      }
+      // Split from the type guards (the supplierInvoices idiom) so no
+      // math.round() is ever handed a non-number; each figure is converted ONCE.
+      function moneyBalanced() {
+        let d = request.resource.data;
+        let prev = cents(d.previouslyReleasedAmount);
+        let g = cents(d.gstAmount);
+        let pg = gstCents(prev);
+        return (gstPinned(prev + cents(d.amount), g + pg)
+                || (prev % 10 == 5 && gstPinned(prev + cents(d.amount), g + pg - 1)))
+            && cents(d.releaseTotal) == cents(d.amount) + g;
+      }
       function moneyValid() {
-        return request.resource.data.amount is number
-            && request.resource.data.amount > 0
-            && request.resource.data.previouslyReleasedAmount is number
-            && request.resource.data.previouslyReleasedAmount >= 0
-            && request.resource.data.gstAmount is number
-            && request.resource.data.gstAmount >= 0
-            && request.resource.data.releaseTotal is number
-            && request.resource.data.releaseTotal > 0
-            && cents(request.resource.data.gstAmount)
-               == gstCents(cents(request.resource.data.previouslyReleasedAmount) + cents(request.resource.data.amount))
-                  - gstCents(cents(request.resource.data.previouslyReleasedAmount))
-            && cents(request.resource.data.releaseTotal)
-               == cents(request.resource.data.amount) + cents(request.resource.data.gstAmount);
+        return moneyTypesValid() && moneyBalanced();
       }
       // Shape required of every stored DRAFT state (create and draft edit alike).
       function shapeValid() {
