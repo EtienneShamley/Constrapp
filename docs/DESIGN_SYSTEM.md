@@ -358,6 +358,30 @@ snapshot) relabels its budget figure *Approved Budget · version N* or
 *Working Budget* / *not approved* from `budgetSource` — no new tokens, no new
 colours, no Dashboard redesign.
 
+**Approved Budget adjustments (ADR-71, SHIELD 2B2)** — the
+`BudgetApprovalPanel` summary becomes SIX figures in a responsive grid (2
+columns on phones, 3 on tablets, 6 from `lg`): *Original Approved* (version
+1), *Version N base*, *Net adjustments* (signed, with the count), *Current
+Approved Budget*, *Working budget* (with its signed difference) and *Pending
+drafts* (counted, never added). Unavailable reads *Unavailable* in
+`brand-amber`, never $0. Below it a `BudgetAdjustmentsPanel` card lists the
+active version's drafts and approved adjustments (label *vN · Adjustment k*,
+the existing `Badge` variants, the type, the movement in words, reason,
+reference, who and when), flags STALE drafts *withdraw only* and keeps
+superseded / withdrawn records behind a 44 px disclosure. The prepare dialog
+uses a three-way segmented radio group (44 px targets, `sr-only` inputs) for
+Increase / Decrease / Transfer, native selects for the cost codes and a
+*Resulting approved budget* table (before · change · after; a result below
+zero in `brand-red` text with the words *below zero*). The review dialog is a
+definition list plus the same table. The budget table shows one *Approved
+adjustments · net* row per adjusted cost code on a `brand-accent/5` tint, so
+the "Approved vN" column stays the base version and the adjustment is
+visible beside it. The re-approval review dialog gains a supersession block
+(current adjusted · proposed · difference, the superseded adjustments, the
+stale drafts) with a 44 px acknowledgement checkbox bound to those figures.
+Captions elsewhere read *Approved version N + K adjustments*. No new tokens,
+colours or components.
+
 ## Recorded Violations — Technical Debt
 
 The rules are "no inline style objects" and "no hard-coded colours", but the

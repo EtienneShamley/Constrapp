@@ -104,6 +104,9 @@ service cloud.firestore {
     function budgetApprovalPath(companyId, projectId, id) {
       return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/budgetApprovals/$(id);
     }
+    function budgetAdjustmentPath(companyId, projectId, id) {
+      return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/budgetAdjustments/$(id);
+    }
     // The approve audience of a budget version: company_admin / project_manager (qs prepares only).
     function budgetApprover(companyId) {
       return sameCompany(companyId) && memberRole() in ['company_admin', 'project_manager'];
@@ -310,9 +313,12 @@ service cloud.firestore {
     // with the header through getAfter() in both directions. `versionCount`
     // is EXACTLY +1 per approval — the common concurrency boundary. Reads:
     // financial roles. Delete blocked. What rules cannot prove is DC44.
+    // 2B2 (ADR-71): OPTIONAL adjustment ledger of the ACTIVE version
+    // (absent reads 0) — +1 per paired adjustment approval, reset to 0 by
+    // every version approval. DC45.
     match /companies/{companyId}/projects/{projectId}/approvedBudget/current {
       function pointerKeys() {
-        return request.resource.data.keys().hasOnly(['activeApprovalId', 'originalApprovalId', 'versionCount', 'approvedAt', 'approvedBy', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+        return request.resource.data.keys().hasOnly(['activeApprovalId', 'originalApprovalId', 'versionCount', 'approvedAt', 'approvedBy', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'adjustmentCount', 'adjustmentNet', 'lastAdjustmentId'])
             && request.resource.data.keys().hasAll(['activeApprovalId', 'originalApprovalId', 'versionCount', 'approvedAt', 'approvedBy', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']);
       }
       // The header this write names must be APPROVED in this same commit, by
@@ -328,7 +334,26 @@ service cloud.firestore {
             && h.status == 'approved'
             && h.version == request.resource.data.versionCount
             && h.approvedBy == request.auth.uid
-            && h.approvedAt == request.time;
+            && h.approvedAt == request.time
+            && request.resource.data.get('adjustmentCount', 0) == 0
+            && request.resource.data.get('adjustmentNet', 0) == 0
+            && request.resource.data.get('lastAdjustmentId', null) == null;
+      }
+      // ONE adjustment approved in this commit, against THIS active version,
+      // as the NEXT sequence; the net moves by exactly its signed amount.
+      function pairedWithAdjustment() {
+        let d = request.resource.data;
+        let a = getAfter(budgetAdjustmentPath(companyId, projectId, d.lastAdjustmentId)).data;
+        return updateStamped()
+            && d.adjustmentCount == resource.data.get('adjustmentCount', 0) + 1
+            && d.adjustmentNet is number
+            && cents(d.adjustmentNet) == cents(resource.data.get('adjustmentNet', 0))
+               + (a.type == 'increase' ? cents(a.amount) : (a.type == 'decrease' ? 0 - cents(a.amount) : 0))
+            && a.status == 'approved'
+            && a.sequence == d.adjustmentCount
+            && a.baseApprovalId == resource.data.activeApprovalId
+            && a.approvedBy == request.auth.uid
+            && a.approvedAt == request.time;
       }
 
       allow read: if financialMember(companyId);
@@ -342,14 +367,20 @@ service cloud.firestore {
                   && request.resource.data.createdBy == request.auth.uid
                   && request.resource.data.createdAt == request.time;
 
-      // A later approval: the count moves by EXACTLY one, the active id
-      // changes, the original and the provenance never move.
+      // (a) A later approval: the count moves by EXACTLY one, the active id
+      // changes, the ledger resets, the original and provenance never move.
+      // (b) An ADJUSTMENT approval: only the ledger and stamps move.
       allow update: if budgetApprover(companyId)
                   && pointerKeys()
-                  && pairedWithApproval()
-                  && changedKeys().hasOnly(['activeApprovalId', 'versionCount', 'approvedAt', 'approvedBy', 'updatedAt', 'updatedBy'])
-                  && request.resource.data.versionCount == resource.data.versionCount + 1
-                  && request.resource.data.activeApprovalId != resource.data.activeApprovalId;
+                  && (
+                    (pairedWithApproval()
+                      && changedKeys().hasOnly(['activeApprovalId', 'versionCount', 'approvedAt', 'approvedBy', 'updatedAt', 'updatedBy', 'adjustmentCount', 'adjustmentNet', 'lastAdjustmentId'])
+                      && request.resource.data.versionCount == resource.data.versionCount + 1
+                      && request.resource.data.activeApprovalId != resource.data.activeApprovalId)
+                    ||
+                    (pairedWithAdjustment()
+                      && changedKeys().hasOnly(['adjustmentCount', 'adjustmentNet', 'lastAdjustmentId', 'updatedAt', 'updatedBy']))
+                  );
 
       allow delete: if false;
     }
@@ -511,6 +542,92 @@ service cloud.firestore {
 
       // IMMUTABLE. No update of any kind, no delete.
       allow update: if false;
+      allow delete: if false;
+    }
+
+    // Budget ADJUSTMENTS — SHIELD 2B2 (ADR-71). ONE movement against the ACTIVE
+    // approved version: increase | decrease (costCodeId) or transfer
+    // (fromCostCodeId → costCodeId), amount > 0, whole cents, net derived.
+    // draft → approved | withdrawn, both TERMINAL; never deleted. Bound at
+    // create to the pointer's active version (no pointer: denied); approved
+    // only with the pointer ledger (getAfter, both ways). DC45.
+    match /companies/{companyId}/projects/{projectId}/budgetAdjustments/{adjId} {
+      function adjKeys() {
+        let k = ['type', 'costCodeId', 'costCodeName', 'fromCostCodeId', 'fromCostCodeName', 'amount', 'currency', 'reason', 'reference', 'baseApprovalId', 'baseVersion', 'sequence', 'status', 'approvedAt', 'approvedBy', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'];
+        return request.resource.data.keys().hasOnly(k) && request.resource.data.keys().hasAll(k);
+      }
+      function codeOk(id) {
+        return id is string && id.size() > 0
+            && exists(/databases/$(database)/documents/companies/$(companyId)/costCodes/$(id));
+      }
+      function movementOk(d) {
+        return d.type in ['increase', 'decrease', 'transfer']
+            && codeOk(d.costCodeId)
+            && d.costCodeName is string && d.costCodeName.size() <= 170
+            && d.fromCostCodeName is string && d.fromCostCodeName.size() <= 170
+            && (d.type == 'transfer'
+                  ? (codeOk(d.fromCostCodeId) && d.fromCostCodeId != d.costCodeId)
+                  : (d.fromCostCodeId == null && d.fromCostCodeName == ''))
+            && d.amount is number && d.amount > 0 && d.amount < 1000000000000
+            && cents(d.amount) / 100.0 == d.amount;
+      }
+
+      allow read: if financialMember(companyId);
+
+      allow create: if financialMember(companyId)
+                  && adjKeys()
+                  && movementOk(request.resource.data)
+                  && request.resource.data.reason is string
+                  && request.resource.data.reason.trim().size() > 0
+                  && request.resource.data.reason.size() <= 500
+                  && request.resource.data.reference is string
+                  && request.resource.data.reference.size() <= 200
+                  && request.resource.data.currency == resolvedCurrency(companyId, projectId)
+                  && request.resource.data.baseApprovalId == get(approvedBudgetPath(companyId, projectId)).data.activeApprovalId
+                  && request.resource.data.baseVersion == get(approvedBudgetPath(companyId, projectId)).data.versionCount
+                  && request.resource.data.status == 'draft'
+                  && request.resource.data.sequence == null
+                  && request.resource.data.approvedAt == null
+                  && request.resource.data.approvedBy == null
+                  && request.resource.data.withdrawnAt == null
+                  && request.resource.data.withdrawnBy == null
+                  && request.resource.data.withdrawReason == ''
+                  && request.resource.data.revision == 1
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped();
+
+      // From DRAFT only; nothing captured moves (changedKeys):
+      //   (a) APPROVE — paired with the pointer naming THIS record as the
+      //       next sequence of the SAME active version.
+      //   (b) WITHDRAW — an approver or the preparer, with a reason.
+      allow update: if sameCompany(companyId) && updateStamped() && revisionIncremented()
+                  && resource.data.status == 'draft'
+                  && (
+                    (
+                      budgetApprover(companyId)
+                      && request.resource.data.status == 'approved'
+                      && changedKeys().hasOnly(['status', 'sequence', 'approvedAt', 'approvedBy', 'revision', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.approvedBy == request.auth.uid
+                      && request.resource.data.approvedAt == request.time
+                      && request.resource.data.sequence is int
+                      && getAfter(approvedBudgetPath(companyId, projectId)).data.lastAdjustmentId == adjId
+                      && getAfter(approvedBudgetPath(companyId, projectId)).data.adjustmentCount == request.resource.data.sequence
+                      && getAfter(approvedBudgetPath(companyId, projectId)).data.activeApprovalId == resource.data.baseApprovalId
+                    )
+                    ||
+                    (
+                      (budgetApprover(companyId) || (financialMember(companyId) && resource.data.createdBy == request.auth.uid))
+                      && request.resource.data.status == 'withdrawn'
+                      && changedKeys().hasOnly(['status', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'revision', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.withdrawnBy == request.auth.uid
+                      && request.resource.data.withdrawnAt == request.time
+                      && request.resource.data.withdrawReason is string
+                      && request.resource.data.withdrawReason.trim().size() > 0
+                      && request.resource.data.withdrawReason.size() <= 500
+                    )
+                  );
+
       allow delete: if false;
     }
 

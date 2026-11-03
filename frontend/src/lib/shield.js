@@ -26,7 +26,7 @@ import { mixedModePoLineConflicts } from './poLineRecognition'
 import { claimLinkReconciliation, CLAIM_LINK_ISSUE_LABELS } from './supplierInvoiceActions'
 import { figureState, FIGURE_STATE, SNAPSHOT_SOURCE_LABELS } from './projectSnapshot'
 import {
-  resolveBudgetSource, BUDGET_SOURCE, BUDGET_INTEGRITY_PROBLEM_TEXT, approvedTotalOf,
+  resolveBudgetSource, BUDGET_SOURCE, BUDGET_INTEGRITY_PROBLEM, BUDGET_INTEGRITY_PROBLEM_TEXT, approvedTotalOf,
 } from './budgetApproval'
 
 // ── Constrapp SHIELD™ foundation — commercial assurance checks (ADR-50) ──────
@@ -1386,13 +1386,42 @@ function evaluateApprovedBudgetIntegrity(approvedBudget, currencyCode, sourceSta
     })
   }
 
+  // A read still settling inside the composite object (the gate above covers
+  // the raw states; this is the defensive mirror) is loading, never a verdict.
+  if (resolved.kind === BUDGET_SOURCE.LOADING) return check(id, SHIELD_STATE.LOADING, {})
+
+  // ADR-71: an adjustments READ that failed (or was never supplied) is an
+  // unavailable source, not a disagreement between records.
+  if (resolved.kind === BUDGET_SOURCE.UNAVAILABLE
+    && resolved.problems.length > 0
+    && resolved.problems.every(p => p === BUDGET_INTEGRITY_PROBLEM.ADJUSTMENTS_UNAVAILABLE)) {
+    return check(id, SHIELD_STATE.UNAVAILABLE, { failedSources: ['approvedBudget'] })
+  }
+
   const pointer = resolved.pointer ?? {}
+  const approved = resolved.kind === BUDGET_SOURCE.APPROVED
   const values = {
     activeVersion:    Number.isInteger(pointer.versionCount) ? pointer.versionCount : null,
-    approvedTotal:    resolved.kind === BUDGET_SOURCE.APPROVED ? resolved.total : null,
+    approvedTotal:    approved ? resolved.total : null,
+    baseTotal:        approved ? resolved.baseTotal : null,
+    adjustmentCount:  approved ? resolved.adjustmentCount : (Number.isInteger(pointer.adjustmentCount) ? pointer.adjustmentCount : 0),
+    adjustmentNet:    approved ? resolved.adjustmentNet : null,
     entryCount:       Number.isInteger(resolved.snapshot?.entryCount) ? resolved.snapshot.entryCount : null,
     recordedTotal:    typeof resolved.header?.total === 'number' ? resolved.header.total : null,
   }
+  const ledgerDetail = () => {
+    const list = Array.isArray(approvedBudget?.adjustments) ? approvedBudget.adjustments : []
+    const approvedList = list.filter(a => a?.status === 'approved' && a.baseApprovalId === pointer.activeApprovalId)
+    const seqs = approvedList.map(a => a.sequence).sort((x, y) => x - y).join(', ') || 'none'
+    return `Pointer records ${pointer.adjustmentCount ?? 0} adjustment(s), net ${pointer.adjustmentNet ?? 0}, last ${pointer.lastAdjustmentId ?? 'none'}; ` +
+      `${approvedList.length} approved record(s) found for this version, sequences ${seqs}`
+  }
+  const ADJUSTMENT_PROBLEMS = new Set([
+    BUDGET_INTEGRITY_PROBLEM.ADJUSTMENT_COUNT, BUDGET_INTEGRITY_PROBLEM.ADJUSTMENT_SEQUENCE,
+    BUDGET_INTEGRITY_PROBLEM.ADJUSTMENT_NET, BUDGET_INTEGRITY_PROBLEM.ADJUSTMENT_FOREIGN_BASE,
+    BUDGET_INTEGRITY_PROBLEM.ADJUSTMENT_MALFORMED, BUDGET_INTEGRITY_PROBLEM.ADJUSTMENT_CURRENCY,
+    BUDGET_INTEGRITY_PROBLEM.ADJUSTED_NEGATIVE, BUDGET_INTEGRITY_PROBLEM.ADJUSTMENT_POINTER,
+  ])
 
   if (resolved.kind === BUDGET_SOURCE.UNAVAILABLE || resolved.problems.length > 0) {
     const evidence = resolved.problems.map(p => ({
@@ -1406,14 +1435,17 @@ function evaluateApprovedBudgetIntegrity(approvedBudget, currencyCode, sourceSta
           ? `Header version ${resolved.header?.version ?? '—'} vs pointer version count ${pointer.versionCount ?? '—'}`
           : p === 'header_identity'
             ? `Pointer names ${pointer.activeApprovalId ?? '—'}; header read is ${resolved.header?.id ?? '—'}`
-            : '',
+            : ADJUSTMENT_PROBLEMS.has(p)
+              ? ledgerDetail()
+              : '',
     }))
     return check(id, SHIELD_STATE.FINDING, {
       headline: 'The approved-budget records do not agree',
       explanation:
-        'The pointer, the active approval header and its immutable snapshot must describe the same approved ' +
-        'version with the same count, total and currency. While they disagree, every budget figure in the app ' +
-        'reads Unavailable — never the working budget, never zero. Review the records; nothing is repaired here.',
+        'The pointer, the active approval header, its immutable snapshot and the approved adjustments of that ' +
+        'version must describe the same approved budget — the same count, total, currency, adjustment sequence ' +
+        'and net, with no cost code below zero. While they disagree, every budget figure in the app reads ' +
+        'Unavailable — never the working budget, never zero. Review the records; nothing is repaired here.',
       values: { ...values, problemCount: resolved.problems.length },
       evidence,
       evidenceColumns: BUDGET_INTEGRITY_COLUMNS,
@@ -1422,14 +1454,20 @@ function evaluateApprovedBudgetIntegrity(approvedBudget, currencyCode, sourceSta
   }
 
   return check(id, SHIELD_STATE.NO_ISSUE, {
-    headline: `Approved budget version ${resolved.version} is consistent`,
+    headline: resolved.adjustmentCount > 0
+      ? `Approved budget version ${resolved.version} and its ${resolved.adjustmentCount} approved adjustment${resolved.adjustmentCount === 1 ? '' : 's'} are consistent`
+      : `Approved budget version ${resolved.version} is consistent`,
     explanation:
       'The pointer names an approved header at its version, the snapshot carries the header\'s count, total ' +
-      'and currency, every entry is well formed and unique, and the entries sum to the recorded total.',
+      'and currency, every entry is well formed and unique, and the entries sum to the recorded total. ' +
+      'The approved adjustments of this version run 1…n without a gap, sum to the pointer\'s recorded net, ' +
+      'share its currency and leave no cost code below zero.',
     values: { ...values, problemCount: 0 },
     caveats: [
       'Rules pin the first and last snapshot entries to their source budget lines; the entries between them are ' +
       'checked here at read time, not by the server (Deferred Control 44).',
+      'Rules pair each approved adjustment with the pointer\'s ledger; that no cost code\'s accumulated adjusted ' +
+      'figure falls below zero is checked here and by the app, not by the server (Deferred Control 45).',
     ],
   })
 }

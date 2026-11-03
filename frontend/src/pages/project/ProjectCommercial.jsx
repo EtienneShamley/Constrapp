@@ -10,7 +10,7 @@ import { useProjectCommercial } from '../../hooks/useProjectCommercial'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
 import { useApprovedBudget } from '../../hooks/useApprovedBudget'
 import {
-  resolveBudgetSource, budgetSourceState, budgetLinesFor, originalApprovedBudgetFor, BUDGET_SOURCE,
+  resolveBudgetSource, budgetSourceState, budgetLinesFor, originalApprovedBudgetFor, approvedVersionCaption, BUDGET_SOURCE,
 } from '../../lib/budgetApproval'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
@@ -541,7 +541,7 @@ function CommercialWorkspace({ projectId, currencyCode }) {
         budgetUnavailable={budgetState.state === FIGURE_STATE.UNAVAILABLE}
         budgetApproved={budgetApproved}
         originalApproved={budgetApproved ? budgetSource.originalTotal : null}
-        budgetVersion={budgetSource.version}
+        budgetVersion={approvedVersionCaption(budgetSource)}
         currentUserId={user?.uid}
         currentUserName={profile?.name}
         baselineError={baselineError}

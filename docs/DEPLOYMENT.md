@@ -1361,7 +1361,7 @@ stages are **not equally reversible** once production has paired an invoice:
 
 ### Rules capacity recovery 2 release order — ADR-69 — RULES ONLY, one FINAL publish, no Hosting, no transitional stage
 
-**Status: IMPLEMENTED — NOT YET DEPLOYED (Rules only; ONE step).** A
+**Status: LIVE — published before SHIELD 2B1, which required it (Rules only; ONE step).** A
 comment-only trim of `frontend/firestore.rules` to clear headroom for SHIELD
 2B1: **238,325 → 218,840 bytes** (−19,485), the regenerated transitional file
 **239,005 → 219,520**. Every executable line is byte-identical to the
@@ -1405,7 +1405,8 @@ build, no index, no data.
 
 ### SHIELD 2B1 release order — Approved Budget Versions (ADR-70) — RULES FIRST, then Hosting; no transitional stage; ADR-69 must be live first
 
-**Status: IMPLEMENTED — NOT YET DEPLOYED (Rules AND Hosting; TWO steps).**
+**Status: LIVE — both steps completed (deployment confirmed by the Product
+Owner, 3 November 2026).** Kept as the record of the order used.
 2B1 adds three NEW collections (`budgetApprovals`, `budgetApprovalSnapshots`,
 `approvedBudget/current`) and hardens the `commercial/baseline` block. The new
 blocks are purely additive — the live bundle never reads or writes them — and
@@ -1464,6 +1465,77 @@ implementation task.**
   revert with a Hosting rollback, or prefer a compatible forward fix.
 - **Approved versions are never deleted** by any ruleset; a defective version
   is superseded by approving a corrected one.
+
+### SHIELD 2B2 release order — Controlled Budget Adjustments (ADR-71) — RULES FIRST, then Hosting; no transitional stage; 2B1 must be live first
+
+**Status: IMPLEMENTED — NOT YET DEPLOYED (Rules AND Hosting; TWO steps).**
+2B2 adds ONE new collection (`budgetAdjustments`) and extends the
+`approvedBudget/current` block with an OPTIONAL ledger (`adjustmentCount`,
+`adjustmentNet`, `lastAdjustmentId` — absent reads 0). **Rules first:** the
+live 2B1 bundle never writes an adjustment, and its re-approval payload is
+accepted unchanged on every pointer with an empty ledger (absent keys read 0
+— proven by the *legacy pointer* emulator case); the new bundle's adjustment
+writes are refused until the rules are live. No transitional ruleset, no
+index (the active-version read is an equality query on the automatic
+single-field index; the panel listener is single-field `orderBy('createdAt')`),
+no migration, no backend.
+
+**What the new rules change for the OLD (2B1) bundle.** Exactly one write
+can newly fail, and only once adjustments exist: an old tab RE-APPROVING a
+budget version on a project whose active version already has APPROVED
+adjustments — the 2B1 bundle does not reset the ledger, and the rules refuse
+a version approval that does not (fail closed: nothing is written, no
+adjustment is carried into the new version or counted twice). Adjustments
+can only be approved through the NEW bundle, so this cannot happen before
+STEP 2. The old bundle shows its generic permission message; **the release
+notice must tell users to reload open Budget tabs after STEP 2** (the new
+bundle's permission message also says so).
+
+*Preconditions.* Azure CI green on the merge (lint → unit → rules → build);
+`npm run rules:transitional:check` clean; `wc -c frontend/firestore.rules`
+reads **241,924** (budget 245,000 — 3,076 bytes of headroom remain; the next
+rules milestone must start with a capacity recovery). **The 2B1 ruleset
+(234,479) must be the live ruleset**; confirm in the Console before STEP 1.
+Every command runs from `frontend/`, each a separate approved action; **none
+is run by an implementation task.**
+
+1. **STEP 1 — publish the FINAL ruleset:**
+   ```bash
+   npm run test:rules                       # all suites green, incl. budgetAdjustments + budgetApprovals
+   firebase deploy --only firestore:rules --project constrapp-69b5d
+   ```
+   Verify in the Console that the published source reads **241,924 bytes**,
+   contains `match /companies/{companyId}/projects/{projectId}/budgetAdjustments/{adjId}`
+   and `function pairedWithAdjustment()`, and carries NO `TRANSITIONAL
+   (STAGE 1)` marker. The live bundle keeps working unchanged.
+2. **STEP 2 — `firebase deploy --only hosting --project constrapp-69b5d`**
+   after `npm run build` with the production `VITE_FIREBASE_*` values. The
+   Budget tab gains the six-figure summary and the *Budget adjustments*
+   panel; every budget figure reads the CURRENT ADJUSTED approved budget
+   (identical to the version total until an adjustment is approved). Verify
+   with the three manual checks in TESTING.md §48.
+
+*Recovery.* No document is migrated and no stored value changes shape:
+
+- **Hosting rollback (to the 2B1 bundle) BEFORE any adjustment is approved**
+  is clean.
+- **Hosting rollback AFTER adjustments are approved is NOT figure-neutral:**
+  the 2B1 bundle does not read adjustments, so it shows the BASE version's
+  total as the Approved Budget (the adjusted figure is understated or
+  overstated by the approved net) and its re-approval of such a project is
+  refused by the rules (fail closed). Prefer a forward fix; if a rollback is
+  unavoidable, tell users the budget figures exclude approved adjustments
+  until Hosting is restored. No record is lost — redeploying the 2B2 bundle
+  restores the adjusted figure exactly.
+- **Reverting the Firestore Rules to the 2B1 ruleset (234,479) after
+  adjustments are approved is NOT a clean rollback:** the 2B1 pointer rules
+  reject the ledger keys (`pointerKeys().hasOnly`), so EVERY later version
+  approval on those projects is refused, and the new bundle's adjustment
+  reads are denied by default (every budget figure reads **Unavailable**).
+  Treat a rules revert as a forward fix only.
+- **Approved adjustments are never deleted** by any ruleset; a defective
+  adjustment is corrected by a separately approved compensating adjustment,
+  or superseded by a re-approval.
 
 ## Publishing Firestore Rules — Manual Process
 

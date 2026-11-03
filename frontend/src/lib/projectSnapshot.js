@@ -281,6 +281,7 @@ export function projectSnapshot({ sources = {}, sourceStates = {}, currencyCode 
       kind: budgetSource.kind,
       approved: budgetSource.kind === BUDGET_SOURCE.APPROVED,
       version: budgetSource.version,
+      adjustmentCount: budgetSource.adjustmentCount,   // ADR-71: approved adjustments on that version
       approvedAt: budgetSource.approvedAt,
       approvedBy: budgetSource.approvedBy,
       problems: budgetSource.problems,

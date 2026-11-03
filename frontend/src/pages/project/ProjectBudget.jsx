@@ -9,6 +9,7 @@ import { useBudgetLines } from '../../hooks/useBudgetLines'
 import { useApprovedBudget } from '../../hooks/useApprovedBudget'
 import { useBudgetApprovals } from '../../hooks/useBudgetApprovals'
 import { useBudgetApprovalSnapshot } from '../../hooks/useBudgetApprovalSnapshot'
+import { useBudgetAdjustments } from '../../hooks/useBudgetAdjustments'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
@@ -27,13 +28,20 @@ import { useProfile } from '../../hooks/useProfile'
 import { activeCostCodes, costCodeDisplayName, resolveCostCodeName } from '../../lib/costCodes'
 import { budgetLineToForm } from '../../lib/budgetLines'
 import {
-  resolveBudgetSource, budgetSourceState, budgetLinesFor, workingVsApproved, approvedByCostCode,
+  resolveBudgetSource, budgetSourceState, budgetLinesFor, workingVsApproved,
+  adjustedByCostCode, baseApprovedByLine, adjustmentNetByCostCode,
   BUDGET_SOURCE, canPrepareBudgetApproval, canApproveBudget, canWithdrawBudgetDraft,
   budgetVersionLabel, approvedBudgetVersions,
 } from '../../lib/budgetApproval'
+import {
+  canPrepareBudgetAdjustment, canApproveBudgetAdjustment, canWithdrawBudgetAdjustment, pendingAdjustmentSummary,
+} from '../../lib/budgetAdjustment'
 import BudgetApprovalPanel from './budget/BudgetApprovalPanel'
 import BudgetApprovalCaptureModal from './budget/BudgetApprovalCaptureModal'
 import BudgetApprovalReviewModal from './budget/BudgetApprovalReviewModal'
+import BudgetAdjustmentsPanel from './budget/BudgetAdjustmentsPanel'
+import BudgetAdjustmentPrepareModal from './budget/BudgetAdjustmentPrepareModal'
+import BudgetAdjustmentReviewModal from './budget/BudgetAdjustmentReviewModal'
 
 const EMPTY_FORM = { costCodeId: '', budgeted: '', notes: '' }
 
@@ -200,6 +208,11 @@ export default function ProjectBudget() {
     budgetApprovals, budgetApprovalsLoading, budgetApprovalsError,
     captureBudgetApproval, checkDrift, approveBudgetApproval, withdrawBudgetApproval,
   } = useBudgetApprovals(projectId)
+  // ADR-71: every adjustment of the project (panel + history) and the actions.
+  const {
+    budgetAdjustments, budgetAdjustmentsLoading, budgetAdjustmentsError,
+    newAdjustmentId, prepareBudgetAdjustment, approveBudgetAdjustment, withdrawBudgetAdjustment,
+  } = useBudgetAdjustments(projectId)
   const { user } = useAuth()
   const { costCodes, costCodesLoading, costCodesError } = useCostCodes()
   const { profile } = useProfile()
@@ -212,6 +225,8 @@ export default function ProjectBudget() {
   const [editing, setEditing] = useState(null)
   // null = closed · 'prepare' = the capture dialog · a draft header = review it.
   const [approvalDialog, setApprovalDialog] = useState(null)
+  // null = closed · 'prepare' = a new adjustment · an adjustment = review / view it.
+  const [adjustmentDialog, setAdjustmentDialog] = useState(null)
 
   const canWrite = canWriteBudget(profile?.role)
   const canPrepare = canPrepareBudgetApproval(profile?.role)
@@ -227,14 +242,18 @@ export default function ProjectBudget() {
   const { loading: approvedBudgetLoading, error: approvedBudgetError } = budgetSourceState(budget)
   const budgetApproved = budget.kind === BUDGET_SOURCE.APPROVED
   const authoritativeLines = budgetLinesFor(budget)
-  const approvedPerLine = useMemo(() => {
-    const map = {}
-    if (!budgetApproved) return map
-    for (const e of budget.snapshot?.entries ?? []) if (e?.lineId) map[e.lineId] = Number(e.budgeted) || 0
-    return map
-  }, [budgetApproved, budget.snapshot])
-  const approvedPerCode = useMemo(() => (budgetApproved ? approvedByCostCode(budget.snapshot) : {}), [budgetApproved, budget.snapshot])
+  // ADR-71: THE shared selectors — the active version's amount per LINE (the
+  // "Approved vN" column), the CURRENT ADJUSTED approved amount per COST
+  // CODE (Remaining), and the approved adjustments' net per cost code. No
+  // snapshot or adjustment arithmetic on this page.
+  const approvedPerLine = useMemo(() => baseApprovedByLine(budget), [budget])
+  const approvedPerCode = useMemo(() => adjustedByCostCode(budget), [budget])
+  const adjustmentPerCode = useMemo(() => adjustmentNetByCostCode(budget), [budget])
   const pending = useMemo(() => workingVsApproved(budgetLines, budget), [budgetLines, budget])
+  const pendingAdjustments = pendingAdjustmentSummary(budgetAdjustments, budget.pointer?.activeApprovalId ?? null)
+  const reviewAdjustment = adjustmentDialog && adjustmentDialog !== 'prepare'
+    ? (budgetAdjustments.find(a => a.id === adjustmentDialog.id) ?? null)
+    : null
   const approvedVersions = approvedBudgetVersions(budgetApprovals)
   // The draft under review: re-resolved by id on every render (ADR-41).
   const reviewHeader = approvalDialog && approvalDialog !== 'prepare'
@@ -321,7 +340,9 @@ export default function ProjectBudget() {
 
   // POs/invoices can hit cost codes that have no budget line yet — surface those
   // as warning rows rather than hiding the commitment or cost.
-  const budgetedCostCodeIds = new Set(budgetLines.map(l => l.costCodeId))
+  // A code with an APPROVED budget only through an adjustment is budgeted —
+  // it is shown on its adjustment row below, never as "no budget line".
+  const budgetedCostCodeIds = new Set([...budgetLines.map(l => l.costCodeId), ...(budgetApproved ? Object.keys(approvedPerCode) : [])])
   const unbudgetedRows = [...new Set([
     ...Object.keys(committedMap),
     ...Object.keys(invoicedMap),
@@ -393,9 +414,20 @@ export default function ProjectBudget() {
     : budget.kind === BUDGET_SOURCE.UNAVAILABLE ? 'The approved budget records could not be resolved, so a new version cannot be prepared until they agree.'
     : ''
   const onCapture = (input) => captureBudgetApproval(input, currencyCode)
-  const onApprove = (header, snapshot, acknowledgedDriftKey, seenVersionCount) =>
-    approveBudgetApproval(header, snapshot, acknowledgedDriftKey, seenVersionCount)
+  const onApprove = (header, snapshot, acknowledgedDriftKey, view) =>
+    approveBudgetApproval(header, snapshot, acknowledgedDriftKey, view)
   const onWithdraw = (header, reason) => withdrawBudgetApproval(header, reason)
+  const onPrepareAdjustment = (id, input) => prepareBudgetAdjustment(id, input, currencyCode, budget.pointer?.activeApprovalId ?? null)
+  const onApproveAdjustment = (adj) => approveBudgetAdjustment(adj, currencyCode)
+  const onWithdrawAdjustment = (adj, reason) => withdrawBudgetAdjustment(adj, reason)
+  const adjustmentPrepareBlocked = !budgetApproved || costCodesLoading || costCodesError
+  // The approved-adjustment rows of the table: one per cost code whose net
+  // movement is not zero, from the shared selector.
+  const workingCodeIds = new Set(budgetLines.map(l => l.costCodeId))
+  const adjustmentRows = Object.keys(adjustmentPerCode)
+    .filter(id => Math.round(adjustmentPerCode[id] * 100) !== 0)
+    .map(id => ({ costCodeId: id, net: adjustmentPerCode[id], hasWorkingLine: workingCodeIds.has(id), costCodeName: resolveCostCodeName(id, costCodes, budget.costCodeNames?.[id] ?? null) }))
+    .sort((a, b) => String(a.costCodeName).localeCompare(String(b.costCodeName)))
   const ready = (key) => availableFigure(key, 0, sourceStates).state === FIGURE_STATE.READY
   const pageSources = figureState(Object.keys(sourceStates), sourceStates)
   const failedLabel = (list) => (list ?? []).map(k => SNAPSHOT_SOURCE_LABELS[k] ?? k).join(', ')
@@ -439,6 +471,7 @@ export default function ProjectBudget() {
         approvals={budgetApprovals}
         approvalsLoading={budgetApprovalsLoading}
         approvalsError={budgetApprovalsError}
+        pendingAdjustments={pendingAdjustments}
         currencyCode={currencyCode}
         currentUid={user?.uid}
         canPrepare={canPrepare}
@@ -447,6 +480,21 @@ export default function ProjectBudget() {
         prepareDisabledReason={prepareBlockedReason}
         onPrepare={() => setApprovalDialog('prepare')}
         onReview={(header) => setApprovalDialog(header)}
+      />
+      {/* ADR-71: approved budget adjustments — prepare / review / history. */}
+      <BudgetAdjustmentsPanel
+        budget={budget}
+        adjustments={budgetAdjustments}
+        adjustmentsLoading={budgetAdjustmentsLoading}
+        adjustmentsError={budgetAdjustmentsError}
+        currencyCode={currencyCode}
+        currentUid={user?.uid}
+        canPrepare={canPrepareBudgetAdjustment(profile?.role)}
+        canApprove={canApproveBudgetAdjustment(profile?.role)}
+        prepareDisabled={adjustmentPrepareBlocked}
+        prepareDisabledReason={costCodesError ? 'Cost codes could not be read, so an adjustment cannot be prepared.' : ''}
+        onPrepare={() => setAdjustmentDialog('prepare')}
+        onOpen={(adj) => setAdjustmentDialog(adj)}
       />
 
       <Card className="mb-3.5">
@@ -457,7 +505,9 @@ export default function ProjectBudget() {
             </p>
             <p className="text-lg font-bold text-brand-text">{cell('approvedBudget', totals.budgeted)}</p>
             <p className="m-0 text-[11px] text-brand-muted">
-              {budgetApproved ? `Version ${budget.version} · approved` : 'Working budget (not approved)'}
+              {budgetApproved
+                ? `Version ${budget.version}${budget.adjustmentCount > 0 ? ` + ${budget.adjustmentCount} adjustment${budget.adjustmentCount === 1 ? '' : 's'}` : ''} · approved`
+                : 'Working budget (not approved)'}
             </p>
           </div>
           <div>
@@ -615,14 +665,35 @@ export default function ProjectBudget() {
                     <td className="px-3.5 py-3 text-[13px] text-brand-text">{rowCell('actual', actualMap[line.costCodeId] || 0)}</td>
                     <td className="px-3.5 py-3 text-[13px] text-brand-text">{rowCell('invoiced', invoicedMap[line.costCodeId] || 0)}</td>
                     <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">
-                      {/* Remaining against the AUTHORITATIVE amount: the approved
-                          allocation of this cost code when a version is approved,
-                          the working line until then (ADR-70). */}
+                      {/* Remaining against the AUTHORITATIVE amount: the CURRENT
+                          ADJUSTED approved allocation of this cost code when a
+                          version is approved (ADR-70 / ADR-71), the working
+                          line until then. */}
                       {rowCell('remainingBudget', (budgetApproved ? (approvedPerCode[line.costCodeId] || 0) : (line.budgeted || 0)) - (actualMap[line.costCodeId] || 0))}
                     </td>
                     <td className="px-3.5 py-3">
                       {canWrite && <Btn variant="ghost" sm onClick={() => setEditing(line)}>Edit</Btn>}
                     </td>
+                  </tr>
+                ))}
+                {budgetApproved && adjustmentRows.map(row => (
+                  <tr key={`adjustment-${row.costCodeId}`} className="border-b border-brand-border bg-brand-accent/5">
+                    <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">
+                      {row.costCodeName}
+                      <span className="block text-[11px] font-normal text-brand-muted">Approved adjustments · net on version {budget.version}</span>
+                    </td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-muted">—</td>
+                    <td className="px-3.5 py-3 text-[13px] tabular-nums text-brand-text">{row.net > 0 ? '+' : '−'}{money(Math.abs(row.net))}</td>
+                    {/* A code budgeted ONLY through adjustments shows its own figures
+                        here; otherwise they are on its working-line row(s). */}
+                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{row.hasWorkingLine ? '—' : rowCell('remainingCommitted', committedMap[row.costCodeId] || 0, { blankZero: true })}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{row.hasWorkingLine ? '—' : rowCell('supplierVariationExposure', supplierVarMap[row.costCodeId] || 0, { blankZero: true })}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{row.hasWorkingLine ? '—' : rowCell('actual', actualMap[row.costCodeId] || 0, { blankZero: true })}</td>
+                    <td className="px-3.5 py-3 text-[13px] text-brand-text">{row.hasWorkingLine ? '—' : rowCell('invoiced', invoicedMap[row.costCodeId] || 0, { blankZero: true })}</td>
+                    <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">
+                      {row.hasWorkingLine ? '—' : rowCell('remainingBudget', (approvedPerCode[row.costCodeId] || 0) - (actualMap[row.costCodeId] || 0))}
+                    </td>
+                    <td className="px-3.5 py-3" />
                   </tr>
                 ))}
                 {unbudgetedRows.map(row => (
@@ -671,9 +742,8 @@ export default function ProjectBudget() {
           snapshot={reviewSnapshot}
           snapshotLoading={reviewSnapshotLoading}
           snapshotError={reviewSnapshotError}
-          currentSnapshot={budgetApproved ? budget.snapshot : null}
-          currentVersion={budgetApproved ? budget.version : null}
-          seenVersionCount={budget.versionCount}
+          budget={budget}
+          adjustments={budgetAdjustments}
           currencyCode={currencyCode}
           currentUid={user?.uid}
           canApprove={canApprove}
@@ -682,6 +752,31 @@ export default function ProjectBudget() {
           onApprove={onApprove}
           onWithdraw={onWithdraw}
           onClose={() => setApprovalDialog(null)}
+        />
+      )}
+
+      {adjustmentDialog === 'prepare' && (
+        <BudgetAdjustmentPrepareModal
+          budget={budget}
+          costCodes={costCodes}
+          currencyCode={currencyCode}
+          newId={newAdjustmentId}
+          onPrepare={onPrepareAdjustment}
+          onClose={(result) => { setAdjustmentDialog(null); if (result?.id) { const a = budgetAdjustments.find(x => x.id === result.id); if (a) setAdjustmentDialog(a) } }}
+        />
+      )}
+      {reviewAdjustment && (
+        <BudgetAdjustmentReviewModal
+          key={reviewAdjustment.id}
+          adjustment={reviewAdjustment}
+          budget={budget}
+          currencyCode={currencyCode}
+          currentUid={user?.uid}
+          canApprove={canApproveBudgetAdjustment(profile?.role)}
+          canWithdraw={canWithdrawBudgetAdjustment(profile?.role, reviewAdjustment, user?.uid)}
+          onApprove={onApproveAdjustment}
+          onWithdraw={onWithdrawAdjustment}
+          onClose={() => setAdjustmentDialog(null)}
         />
       )}
 

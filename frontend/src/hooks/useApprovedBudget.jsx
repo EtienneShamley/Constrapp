@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { useApprovedBudgetPointer } from './useApprovedBudgetPointer'
 import { useBudgetApprovalHeader } from './useBudgetApprovalHeader'
 import { useBudgetApprovalSnapshot } from './useBudgetApprovalSnapshot'
+import { useActiveVersionAdjustments } from './useBudgetAdjustments'
 
 // ── The ACTIVE approved budget — Constrapp SHIELD™ 2B1 (ADR-70) ──────────────
 //
@@ -12,6 +13,11 @@ import { useBudgetApprovalSnapshot } from './useBudgetApprovalSnapshot'
 // the ORIGINAL (version 1) snapshot. Each inner hook is idle until its id is
 // known, so a project with no approved budget opens exactly ONE listener (the
 // pointer) and a page that does not need the original never reads it.
+//
+// SHIELD 2B2 (ADR-71): the APPROVED ADJUSTMENTS of the active version are a
+// fourth subscription, opened ONLY when the pointer's ledger records any
+// (adjustmentCount > 0) — every project without adjustments reads exactly as
+// before. resolveBudgetSource reconciles them with the ledger.
 //
 // This hook opens no listener of its own and performs no arithmetic: it hands
 // the raw documents and their read states to lib/budgetApproval.js →
@@ -37,19 +43,25 @@ export function useApprovedBudget(projectId, { original = false } = {}) {
     snapshot: originalSnapshot, snapshotLoading: originalLoading, snapshotError: originalError,
   } = useBudgetApprovalSnapshot(projectId, originalReadId)
 
+  const ledgerCount = Number.isInteger(pointer?.adjustmentCount) ? pointer.adjustmentCount : 0
+  const { adjustments, adjustmentsLoading, adjustmentsError } =
+    useActiveVersionAdjustments(projectId, activeId, ledgerCount > 0)
+
   const approvedBudget = useMemo(() => ({
     pointer, pointerLoading, pointerError,
     header, headerLoading, headerError,
     snapshot, snapshotLoading, snapshotError,
     originalSnapshot, originalLoading, originalError,
     originalRequested: original,
+    adjustments, adjustmentsLoading, adjustmentsError,
   }), [
     pointer, pointerLoading, pointerError, header, headerLoading, headerError,
     snapshot, snapshotLoading, snapshotError, originalSnapshot, originalLoading, originalError, original,
+    adjustments, adjustmentsLoading, adjustmentsError,
   ])
 
-  const approvedBudgetLoading = pointerLoading || headerLoading || snapshotLoading || originalLoading
-  const approvedBudgetError = pointerError || headerError || snapshotError || originalError
+  const approvedBudgetLoading = pointerLoading || headerLoading || snapshotLoading || originalLoading || adjustmentsLoading
+  const approvedBudgetError = pointerError || headerError || snapshotError || originalError || adjustmentsError
 
   return { approvedBudget, approvedBudgetLoading, approvedBudgetError }
 }

@@ -8,7 +8,7 @@ import { useAuth } from '../../hooks/useAuth'
 import { useProfile } from '../../hooks/useProfile'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
 import { useApprovedBudget } from '../../hooks/useApprovedBudget'
-import { resolveBudgetSource, budgetSourceState, budgetLinesFor, BUDGET_SOURCE } from '../../lib/budgetApproval'
+import { resolveBudgetSource, budgetSourceState, budgetLinesFor, approvedVersionCaption, BUDGET_SOURCE } from '../../lib/budgetApproval'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
@@ -349,7 +349,7 @@ function ForecastWorkspace({ projectId, currencyCode }) {
           </p>
         </Card>
       )}
-      <SummaryCards figures={figures} currencyCode={currencyCode} budgetApproved={budgetApproved} budgetVersion={budgetSource.version} />
+      <SummaryCards figures={figures} currencyCode={currencyCode} budgetApproved={budgetApproved} budgetVersion={approvedVersionCaption(budgetSource)} />
 
       {/* Toolbar: unforecasted count + save-all */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3.5">

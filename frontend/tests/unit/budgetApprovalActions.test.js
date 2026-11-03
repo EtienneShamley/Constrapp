@@ -178,7 +178,7 @@ describe('runBudgetApprove', () => {
     const [header, ptr] = fs.writes
     expect(header.data.version).toBe(2)
     expect(ptr).toMatchObject({ kind: 'update', id: 'current' })
-    expect(ptr.data).toEqual({ activeApprovalId: 'ba1', versionCount: 2, approvedAt: 'SERVER_TS', approvedBy: 'u_pm', updatedAt: 'SERVER_TS', updatedBy: 'u_pm' })
+    expect(ptr.data).toEqual({ activeApprovalId: 'ba1', versionCount: 2, approvedAt: 'SERVER_TS', approvedBy: 'u_pm', adjustmentCount: 0, adjustmentNet: 0, lastAdjustmentId: null, updatedAt: 'SERVER_TS', updatedBy: 'u_pm' })
     expect(ptr.data).not.toHaveProperty('originalApprovalId')
   })
 
@@ -200,7 +200,7 @@ describe('runBudgetApprove', () => {
     const fs = fake({ server: { lines: LINES }, docs: { ba1: draftHeader(), s1: snapshotOf(LINES), current: { activeApprovalId: 'ba0', originalApprovalId: 'ba0', versionCount: 1 } } })
     const err = await runBudgetApprove(approveArgs(fs, { seenVersionCount: 0 })).catch(e => e)
     expect(err.kind).toBe(BUDGET_APPROVAL_ERROR.SUPERSEDED)
-    expect(err.message).toMatch(/Another budget version was approved/)
+    expect(err.message).toMatch(/Another budget version or adjustment was approved/)
     expect(fs.writes).toEqual([])
     // The reverse: the reviewer saw version 1 but the pointer is gone / reset.
     const fs2 = fake({ server: { lines: LINES }, docs: { ba1: draftHeader(), s1: snapshotOf(LINES) } })

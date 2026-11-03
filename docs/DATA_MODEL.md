@@ -1278,11 +1278,15 @@ refuses when it is not the count the reviewer saw — SUPERSEDED).
 | `versionCount` | number | Integer; `1` at creation, **EXACTLY +1** per approval (rules-enforced) |
 | `approvedAt` / `approvedBy` | timestamp / uid | The latest approval — caller and server time (rules-enforced) |
 | `createdAt` / `createdBy` | timestamp / uid | The first approval; immutable |
-| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on every approval |
+| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on every approval and every adjustment approval |
+| `adjustmentCount` | number \| **absent** | **ADR-71, OPTIONAL — absent reads 0** (every 2B1 pointer). The number of APPROVED adjustments of the ACTIVE version: **EXACTLY +1** per adjustment approval, paired through `getAfter()`; **reset to 0 by every version approval** (rules-enforced) |
+| `adjustmentNet` | number \| **absent** | **ADR-71, OPTIONAL — absent reads 0.** The signed Σ of those adjustments' derived movements (ex-GST): moved by exactly `+amount` / `−amount` / `0` per approval in whole cents; reset to 0 with the count. A **cross-check** the adapter reconciles against the records — never the figure |
+| `lastAdjustmentId` | string \| null \| **absent** | **ADR-71, OPTIONAL.** The adjustment approved in the latest ledger advance (the pairing key); **reset to `null` by every version approval** (rules-enforced: a version approval must write it null or leave it absent). The adapter requires it to name the LATEST approved adjustment of the active version while the ledger is not empty, and to be null / absent otherwise — a stale reference is an integrity problem |
 
-**Deliberately NOT stored:** any amount (the figure is derived from the active
-snapshot — the pointer carries no copy of the budget), the version history
-(the headers), a `supersededAt` on earlier versions.
+**Deliberately NOT stored:** any budget amount (the figure is derived from the
+active snapshot plus the active version's approved adjustments — the
+pointer's `adjustmentNet` is a cross-check, never shown), the version
+history (the headers), a `supersededAt` on earlier versions or adjustments.
 
 **The Approved Budget source of truth (`lib/budgetApproval.js →
 resolveBudgetSource`):** with no pointer the project is in the LEGACY state —
@@ -1295,7 +1299,55 @@ unique and summing to the total, and the currency must be the project's —
 **any failure makes every budget figure UNAVAILABLE** (never the working
 lines, never zero). Version 1's snapshot (read only when a consumer needs it)
 is the Original Approved Budget behind Original Planned Profit and Margin
-Movement.
+Movement. **Since ADR-71 the figure is the CURRENT ADJUSTED APPROVED BUDGET**
+— the active snapshot PLUS the approved adjustments bound to the active
+version (below), reconciled against the pointer ledger.
+
+**Budget ADJUSTMENTS (Constrapp SHIELD™ 2B2, ADR-71)** —
+`…/projects/{projectId}/budgetAdjustments/{adjustmentId}`. ONE controlled
+movement of the APPROVED budget between full re-approvals, bound at creation
+to the ACTIVE approved version. Random document ids, minted ONCE per
+submission (a double-click or a retry finds its own draft). Lifecycle
+`draft → approved | withdrawn`, both TERMINAL; never edited, never deleted —
+a correction is a separate, approved compensating adjustment.
+
+| Field | Type | Notes |
+|---|---|---|
+| `type` | `'increase'` \| `'decrease'` \| `'transfer'` | Rules-enforced enum. A contingency reallocation is a `transfer` from the contingency cost code — cost codes carry no contingency flag and none is invented |
+| `costCodeId` | string | The cost code that RECEIVES (increase, transfer) or GIVES UP (decrease) budget; must `exists()` in the company library (rules) |
+| `costCodeName` | string | Frozen "code — name" at preparation, ≤ 170 |
+| `fromCostCodeId` | string \| null | A transfer's SOURCE cost code — must exist and differ from `costCodeId` (rules); `null` for increase / decrease (rules) |
+| `fromCostCodeName` | string | Frozen source name; `''` unless a transfer (rules) |
+| `amount` | number | **Positive, whole cents, below 10¹², ex-GST** (rules: `> 0`, `cents(a) / 100.0 == a`). The DIRECTION comes from `type` |
+| `currency` | string | `== resolvedCurrency()` at preparation (rules) |
+| `reason` | string | Non-blank, ≤ 500 |
+| `reference` | string | Supporting evidence as text (e.g. `CV-0004`, `SI-12`), ≤ 200; nothing is linked or posted automatically |
+| `baseApprovalId` / `baseVersion` | string / number | **The active version at preparation** (rules: equal to the pointer's `activeApprovalId` / `versionCount` — no pointer, no adjustment). Never changes |
+| `sequence` | number \| null | `null` while a draft; on approval **== the pointer's new `adjustmentCount`** — 1…n within its version (rules) |
+| `status` | `'draft'` \| `'approved'` \| `'withdrawn'` | Both outcomes terminal (rules) |
+| `approvedAt` / `approvedBy` | timestamp / uid \| null | Approver (`company_admin` / `project_manager`) and server time (rules) |
+| `withdrawnAt` / `withdrawnBy` / `withdrawReason` | timestamp / uid \| null, string | An approver or the preparer, reasoned (rules) |
+| `revision` | number | 1 at preparation, +1 per transition (rules) |
+| `createdAt` / `createdBy` / `updatedAt` / `updatedBy` | timestamp / uid | Caller and server time (rules) |
+
+**Deliberately NOT stored:** a signed net (derived: increase `+amount`,
+decrease `−amount`, transfer `0`), multi-line movement arrays (rules cannot
+validate a list — several movements are several records), any effect on a
+budget line, header or snapshot.
+
+**What counts.** Only `approved` records whose `baseApprovalId` is the
+pointer's `activeApprovalId`. A draft never counts. An adjustment of a
+REPLACED version is **superseded** — kept, identifiable by its base, never
+counted again (the version approval reset the ledger). A draft of a replaced
+version is **stale** — withdraw-only. The adapter
+(`resolveBudgetSource`) requires the approved records of the active version
+to number exactly `adjustmentCount`, to run 1…n without a gap or duplicate,
+to sum to `adjustmentNet` in whole cents, to share the snapshot's currency,
+and to leave no cost code's adjusted figure below zero — **any failure makes
+every budget figure UNAVAILABLE**. The adjustments of the active version are
+read (`where baseApprovalId == activeApprovalId`, an equality query on the
+automatic single-field index — no composite index) ONLY when the ledger
+records any.
 
 ## …/projects/{projectId}/cashFlowLines/{lineId}
 

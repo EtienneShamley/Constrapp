@@ -103,8 +103,10 @@ frontend/
                     M3-A award → draft PO review-and-confirm dialog, ADR-61);
                     pages/project/budget/ holds the ADR-70 BudgetApprovalPanel,
                     BudgetApprovalCaptureModal and BudgetApprovalReviewModal
-                    (presentation over lib/budgetApproval.js, on the shared
-                    ActivityDialog shell)
+                    and the ADR-71 BudgetAdjustmentsPanel,
+                    BudgetAdjustmentPrepareModal and BudgetAdjustmentReviewModal
+                    (presentation over lib/budgetApproval.js and
+                    lib/budgetAdjustment.js, on the shared ActivityDialog shell)
     hooks/          useAuth, useProfile, useCompany, useProjects, useProject,
                     useCostCodes, useContacts (both expose costCodesError /
                     contactsError since ADR-55 — a failed read is never an
@@ -130,7 +132,14 @@ frontend/
                     useBudgetApprovalSnapshot (ADR-70 — single-document,
                     read-only), useApprovedBudget (ADR-70 — the composite:
                     pointer + active header + snapshot, and version 1 on
-                    request; opens no listener of its own),
+                    request; since ADR-71 also the active version's approved
+                    adjustments, ONLY when the pointer's ledger records any;
+                    opens no listener of its own),
+                    useBudgetAdjustments (ADR-71 — the bounded adjustments
+                    listener for the Budget tab plus the prepare / approve /
+                    withdraw transactions through lib/budgetAdjustmentActions.js;
+                    useActiveVersionAdjustments — the active version's
+                    adjustments, idle unless adjustmentCount > 0),
                     usePulseAcknowledgements (PULSE™ 1B — one document per
                     indicator; revision-guarded acknowledge/withdraw
                     transactions; NOT a PULSE source, ADR-49),
@@ -213,7 +222,20 @@ frontend/
                     immutable snapshot — never trusts a stored total),
                     budgetApprovalActions.js (ADR-70 — the capture pair,
                     approve with the pointer compare-and-set, and withdraw
-                    transactions, SDK injected),
+                    transactions, SDK injected; ADR-71 — the re-approval
+                    resets the adjustment ledger and requires the
+                    supersession acknowledgement when adjustments exist),
+                    budgetAdjustment.js (ADR-71 — pure adjustment domain:
+                    increase / decrease / transfer, the derived net and
+                    per-cost-code movements, the two-decimal mirror of the
+                    rules pin, draft validation, the resulting-balance
+                    preview, staleness and history; the adapter folds the
+                    movements, nothing else does),
+                    budgetAdjustmentActions.js (ADR-71 — prepare with one id
+                    per submission, approve after a fresh authoritative read
+                    through resolveBudgetSource with the ledger
+                    compare-and-set and the below-zero refusal, withdraw; SDK
+                    injected),
                     files.js (file types, size ceilings, deterministic storage
                     paths), drawings.js, projectDocuments.js (pure domain logic),
                     rfis.js (RFI lifecycle, reference shape, overdue/response
@@ -591,7 +613,21 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
                                              header both ways); reads financial roles; delete blocked. THE APPROVED
                                              BUDGET = Σ the active snapshot's entries, derived at read time; working
                                              `budgetLines` remain the editable register (labelled "not approved" until a
-                                             version exists)
+                                             version exists). ADR-71: OPTIONAL ledger adjustmentCount / adjustmentNet /
+                                             lastAdjustmentId (absent = 0) — +1 / +movement per PAIRED adjustment approval,
+                                             RESET to 0 by every version approval (rules-enforced)
+  …/budgetAdjustments/{adjustmentId}         BUDGET ADJUSTMENT (ADR-71, SHIELD 2B2): type increase|decrease|transfer,
+                                             costCodeId/Name (+ fromCostCodeId/Name for a transfer, different, else
+                                             null/''), amount (> 0, whole cents, ex-GST — the signed net is DERIVED, never
+                                             stored), currency (pinned), reason, reference, baseApprovalId/baseVersion (the
+                                             ACTIVE version at preparation — rules get(); no pointer, no adjustment),
+                                             sequence (null; on approval == the pointer's new adjustmentCount), status
+                                             draft|approved|withdrawn (BOTH TERMINAL), approvedAt/By, withdrawnAt/By +
+                                             withdrawReason, revision, createdAt/By, updatedAt/By — EXACT KEYS; APPROVED
+                                             only with the pointer ledger in the same commit (getAfter both ways), by
+                                             company_admin/project_manager; reads/prepare financial roles; withdraw by an
+                                             approver or the preparer; delete blocked. Counts ONLY while approved AND bound
+                                             to the active version; a cost code staying ≥ 0 is CLIENT-only (DC45)
   …/pulseAcknowledgements/{indicatorId}      PULSE™ 1B MANAGEMENT RECORD (ADR-49): one doc per indicator, id ∈ the
                                              nine INDICATOR ids (rules allowlist — six of ADR-49 plus the three
                                              PULSE™ 1C schedule ids, ADR-67; stored indicatorId must match),
@@ -708,7 +744,7 @@ companies/{companyId}/projects/{projectId}   name, status, budget, startDate, lo
 - **One currency per project; a currency is a label, never a conversion.** There is **no FX conversion**, no exchange rates, and no mixed-currency transactions. Money is formatted **only** through `formatCurrency(amount, currencyCode)` in `lib/formatters.js` with the currency resolved by `lib/currency.js` (`project.currency` → `company.baseCurrency` → `AUD`) — never hard-code a currency code or a `$`. Project currency **locks** once the project holds any monetary value (non-zero `budget`, budget lines, POs incl. draft/cancelled, claims, invoices, receipts, **supplier payments (incl. draft/void)**, variations, non-null forecast inputs, established baseline); Cost Codes and Contacts never lock. The lock *condition* is client-enforced (rules cannot enumerate subcollections); the *ratchet* is rules-enforced once set (ADR-21)
 - **Currency is not tax.** `GST_RATE` remains a flat Australian 10% and every "GST 10%" label is Australian. Selecting another country changes the currency label only — never describe Constrapp as tax-compliant outside Australia
 - **The Project Timeline writes no financial value, in either direction.** Activities never write onto Budget Lines, Forecast Lines, Cash Flow Lines, the Commercial Baseline, Progress Claims, POs, Supplier/Client Invoices, or Variations, and never touch `projects/{projectId}.progress`. `percentComplete` is **manually authored and unverified** — it is never derived from dates, from child tasks, or from Progress Claims, and it feeds **no** budget, forecast, margin or cash figure. A claim is a supplier's cumulative dollar claim against a PO line; an activity percentage is physical progress on a programme line — deriving either from the other would create a second source of financial truth (ADR-23/ADR-24). The optional `costCodeId` is a **join key reserved for a future read-time derivation** (`delay → forecast impact`), never an authored commercial value (ADR-29). A dependency between activities (ADR-65 `predecessors`) is likewise a programme fact only: it never moves a date, never changes a status, and never touches a financial document — a conflict or a blocked successor is shown, not enforced
-- **The Approved Budget is an immutable approved VERSION, derived by summing its snapshot (ADR-70, SHIELD 2B1).** Once a project has an approved version (`approvedBudget/current` → the active `budgetApprovals` header → its `budgetApprovalSnapshots` payload), every budget figure — Budgeted, Variance to Budget, Remaining, the BOQ and tender comparisons, PULSE indicator 1, the Dashboard — comes from `lib/budgetApproval.js → resolveBudgetSource` / `budgetLinesFor`, never from the working `budgetLines` directly; the header and pointer totals are cross-checks and any disagreement (or a failed read) makes every budget figure **UNAVAILABLE** — never a silent fallback to the working lines, never zero. Version 1 is the Original Approved Budget (Original Planned Profit and Margin Movement read it through `computeMargin`'s override); the latest version is the current one; a re-approval creates a new version and alters no earlier one. A project with no approved version shows its editable lines labelled **"Working budget (not approved)"** — never relabelled as approved, never migrated. **Approving a budget moves no Actual, Remaining Committed, Uncommitted CTC, Forecast Final Cost, Gross Profit, Margin %, commitment, posted invoice, approved claim, payable or cash figure** (pinned by `tests/unit/budgetApproval.test.js`). Budget adjustment records are SHIELD 2B2, not built.
+- **The Approved Budget is an immutable approved VERSION, derived by summing its snapshot (ADR-70, SHIELD 2B1).** Once a project has an approved version (`approvedBudget/current` → the active `budgetApprovals` header → its `budgetApprovalSnapshots` payload), every budget figure — Budgeted, Variance to Budget, Remaining, the BOQ and tender comparisons, PULSE indicator 1, the Dashboard — comes from `lib/budgetApproval.js → resolveBudgetSource` / `budgetLinesFor`, never from the working `budgetLines` directly; the header and pointer totals are cross-checks and any disagreement (or a failed read) makes every budget figure **UNAVAILABLE** — never a silent fallback to the working lines, never zero. Version 1 is the Original Approved Budget (Original Planned Profit and Margin Movement read it through `computeMargin`'s override); the latest version is the current one; a re-approval creates a new version and alters no earlier one. A project with no approved version shows its editable lines labelled **"Working budget (not approved)"** — never relabelled as approved, never migrated. **Approving a budget moves no Actual, Remaining Committed, Uncommitted CTC, Forecast Final Cost, Gross Profit, Margin %, commitment, posted invoice, approved claim, payable or cash figure** (pinned by `tests/unit/budgetApproval.test.js`). **Since SHIELD 2B2 (ADR-71) the figure is the CURRENT ADJUSTED APPROVED BUDGET = the active snapshot + the APPROVED adjustments bound to that same active version** (increase / decrease / transfer; contingency is a transfer; the net derived, never stored), folded ONLY inside `resolveBudgetSource` and reconciled against the pointer ledger — a mismatch, or a cost code below zero, is UNAVAILABLE. A full re-approval resets the ledger: earlier adjustments are superseded and never counted twice; the reduction or increase against the adjusted figure must be acknowledged in the review. **Adjustments never write a budget line** and move no Actual, commitment, FFC, payable, cash, GST or margin figure (pinned by `tests/unit/budgetAdjustment.test.js`).
 - Exact definitions and formulas: [docs/FINANCIAL_WORKFLOWS.md](docs/FINANCIAL_WORKFLOWS.md); rationale: [docs/PROJECT_DECISIONS.md](docs/PROJECT_DECISIONS.md)
 
 ## Naming
