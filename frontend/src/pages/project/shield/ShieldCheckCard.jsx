@@ -58,6 +58,13 @@ const VALUE_ROWS = {
     { key: 'postedPaymentCount',  label: 'Posted payments',          kind: COLUMN.INT },
     { key: 'overReconciledTotal', label: 'Over-reconciled (gross)',  kind: COLUMN.MONEY },
   ],
+  // SHIELD 2B1 (ADR-70): the approved-budget records' agreement.
+  [CHECK.APPROVED_BUDGET_INTEGRITY]: [
+    { key: 'activeVersion', label: 'Active version',          kind: COLUMN.INT },
+    { key: 'approvedTotal', label: 'Approved Budget (ex-GST)', kind: COLUMN.MONEY },
+    { key: 'entryCount',    label: 'Snapshot entries',        kind: COLUMN.INT },
+    { key: 'problemCount',  label: 'Conditions',              kind: COLUMN.INT },
+  ],
 }
 
 const EVIDENCE_PREVIEW = 5

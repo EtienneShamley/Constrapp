@@ -48,16 +48,54 @@ drift out of sync, and no client is trusted to maintain them. (Budget line
 documents do carry vestigial `committed: 0` / `actual: 0` fields written once at
 creation — the UI ignores them.)
 
-## Budget Lines
+## Budget Lines and the Approved Budget
 
 - A budget line allocates `budgeted` dollars of a project's budget to one
-  company cost code, with optional notes.
-- Create-only today (no edit/delete UI; deletes blocked by rules).
-- The Budget tab shows per-line and project-total **Budgeted, Committed,
-  Claimed, Actual, Invoiced, Remaining**, plus a usage bar
+  company cost code, with optional notes. `budgeted` and `notes` are
+  correctable (ADR-39); the cost code is immutable; deletes are blocked.
+- **Since SHIELD 2B1 (ADR-70) the lines are the WORKING register and the
+  Approved Budget is an immutable approved VERSION.** Any financial role
+  prepares a draft: a fresh server read of every line and cost code, every
+  line validated (a malformed line, a duplicate id or a missing cost code
+  refuses the capture by name), the whole set written as ONE snapshot with
+  its header in one transaction. A Company Admin or Project Manager reviews
+  the captured allocation, the delta against the current version and the
+  drift of the working register since capture (acknowledged by key), then
+  approves — the header becomes `approved` with its version and the pointer
+  `approvedBudget/current` is created or advanced in the same commit. Version
+  1 is the **Original Approved Budget**; the latest version is the **Current
+  Approved Budget**; a re-approval creates a new version and alters no
+  earlier one.
+- **The figure is derived:** `Approved Budget = Σ entries.budgeted` of the
+  active version's snapshot (`lib/budgetApproval.js → resolveBudgetSource`,
+  `budgetLinesFor`), grouped by `costCodeId` for every per-cost-code
+  comparison. The header and pointer totals are cross-checks; any
+  disagreement, a failed read, a header that is not approved at the pointer's
+  version, or a currency that is not the project's makes **every budget
+  figure UNAVAILABLE** — never the working lines, never zero.
+- **Legacy:** a project with no approved version shows Σ working lines
+  labelled **"Working budget (not approved)"** on every surface, PULSE names
+  the comparison as such, and SHIELD check 6 reads *needs data*. It becomes
+  approved only by a deliberate version 1 — no migration, no invented dates.
+- **What approval does NOT move:** Actual, Remaining Committed, Uncommitted
+  Cost to Complete, Cost to Complete, Forecast Final Cost, Forecast Gross
+  Profit, Margin %, Current Contract Sum, commitments, posted invoices,
+  approved claims, supplier variations, Accounts Payable, Cash Flow and GST —
+  none reads an approved snapshot (pinned by `tests/unit/budgetApproval.test.js`).
+  What it moves: Budgeted, Variance to Budget, Remaining, Remaining Budget
+  Reference, the BOQ and tender comparisons, and — from version 1 — Original
+  Planned Profit and Margin Movement.
+- The Budget tab shows per-line **Working** and **Approved v N** amounts plus
+  project-total **Approved Budget, Committed, Claimed, Actual, Invoiced,
+  Remaining** (Remaining = approved allocation − Actual), the pending
+  difference between the working register and the approved version, the
+  prepare / review actions and the version history; usage bar
   (Actual ÷ Budgeted, red at ≥100%).
 - A PO can commit against a cost code with no budget line; the Budget tab
-  surfaces this as an amber "Committed via PO — no budget line" warning row.
+  surfaces this as an amber "Cost against a code with no budget line" row.
+- Budget ADJUSTMENT records (increase / decrease / transfer / contingency) are
+  SHIELD 2B2 — a separate future document type, never a variation and never
+  an automatic consequence of an approved supplier variation.
 
 ## Purchase Order Lifecycle
 
@@ -1396,7 +1434,7 @@ All derived figures group PO/claim **line items by `costCodeId`** and are ex-GST
 
 | Figure | Definition | Source |
 |---|---|---|
-| **Budgeted** | Σ `budgeted` across the project's budget lines | Stored on budget lines |
+| **Budgeted** | Σ `budgeted` of the ACTIVE approved budget version's snapshot entries (ADR-70); with no approved version, Σ `budgeted` across the working budget lines, labelled *Working budget (not approved)* | Derived from `budgetApprovalSnapshots` (or the working lines) through `lib/budgetApproval.js` |
 | **Committed** | Remaining **open** commitment: per PO line (POs in `sent`/`closed`), `lineTotal − posted/paid invoiced-to-date against that line − approved claim value on that line not yet superseded by a posted claim-sourced invoice`, floored at 0, grouped by cost code (ADR-55) | Derived from POs + claims + invoices |
 | **Claimed** | Σ `claimedThisPeriod` of claim lines, claims in `submitted`/`under_review` — uncertified exposure only | Derived from claims |
 | **Actual** | Σ `approvedThisPeriod` of claim lines (claims in `approved`/`invoiced`) **not superseded by a posted/paid invoice** + Σ ex-GST line `amount` of posted/paid supplier invoices **− Σ ex-GST line `amount` of posted valid-target supplier credit notes** (signed, never clamped) | Derived from claims + invoices − credit notes |
@@ -1458,7 +1496,7 @@ above and on the Forecast / Commercial / Supplier Payments tabs, via
 
 | Card | Exact source |
 |---|---|
-| Approved Budget | `projectForecastTotals().budgeted` |
+| Approved Budget | `projectForecastTotals().budgeted` over `budgetLinesFor(resolveBudgetSource(…))` — the active approved snapshot, or the working lines labelled "Working Budget" (ADR-70; `snapshot.budgetSource` names which) |
 | Actual | `projectForecastTotals().actual` |
 | Remaining Committed | `projectForecastTotals().remainingCommitted` |
 | Forecast Final Cost | `projectForecastTotals().forecastFinalCost` (SAVED uncommitted CTC only) |

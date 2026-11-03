@@ -8,6 +8,7 @@ import {
 import { projectForecastTotals, computeMargin, resolveBaselineClient } from '../../src/lib/margin'
 import { buildForecastRows, composeForecastRow } from '../../src/lib/forecast'
 import { CURRENCY_LOCK_EVIDENCE_SOURCES, monetaryLockReasons } from '../../src/lib/currency'
+import { resolveBudgetSource, budgetLinesFor, originalApprovedBudgetFor } from '../../src/lib/budgetApproval'
 import { CREDIT_READ_ERROR_NOTICE, CREDIT_READ_UNAVAILABLE_NOTICE } from '../../src/lib/supplierCreditNotes'
 import { formatCurrency } from '../../src/lib/formatters'
 
@@ -108,18 +109,41 @@ const SOURCES = {
     { id: 'cc8', costCodeId: 'cc8', uncommittedCostToComplete: 40 },
   ],
   baseline: { originalContractValue: 10000, originalApprovedBudget: 1500 },
+  // ADR-70: an APPROVED budget version (version 1, so also the ORIGINAL) whose
+  // amounts differ from the working lines (cc1 1100 vs 1000; total 1900 vs
+  // 1800, and 1900 vs the baseline's legacy 1500 original) — so
+  // `approvedBudget` is a DECLARED source of every budget figure, of the
+  // contract baseline (Original Approved Budget) and of Margin Movement, and
+  // the working `budgetLines` are NOT (the perturbation below proves both).
+  approvedBudget: {
+    pointer: { activeApprovalId: 'ba1', originalApprovalId: 'ba1', versionCount: 1 },
+    header: { id: 'ba1', status: 'approved', version: 1, entryCount: 3, total: 1900, currency: 'AUD', reason: 'Initial' },
+    snapshot: { id: 'ba1', entryCount: 3, total: 1900, currency: 'AUD', entries: [
+      { lineId: 'bl1', costCodeId: 'cc1', costCodeName: '03-100 — Concrete', budgeted: 1100 },
+      { lineId: 'bl2', costCodeId: 'cc2', costCodeName: '03-200 — Formwork', budgeted: 500 },
+      { lineId: 'bl5', costCodeId: 'cc5', costCodeName: '05-100 — Steel', budgeted: 300 },
+    ] },
+    originalRequested: true,
+  },
 }
 const PAGE_SOURCES = Object.keys(SOURCES)
 
-const emptied = (source) => ({ ...SOURCES, [source]: source === 'baseline' ? null : [] })
+const emptied = (source) => ({ ...SOURCES, [source]: source === 'baseline' || source === 'approvedBudget' ? null : [] })
 
 // Every figure key the three tabs display, evaluated through the REAL
-// selectors (projectForecastTotals / buildForecastRows / computeMargin).
+// selectors (projectForecastTotals / buildForecastRows / computeMargin), with
+// the budget side taken from THE budget source adapter (ADR-70) exactly as
+// the pages do.
 function evaluate(sources) {
-  const { baseline, ...rest } = sources
-  const totals = projectForecastTotals(rest)
-  const m = computeMargin({ baseline, variations: sources.variations, forecastFinalCost: totals.forecastFinalCost, purchaseOrders: sources.purchaseOrders })
-  const rows = buildForecastRows(rest).map(r => composeForecastRow(r, r.storedUncommittedCostToComplete))
+  const { baseline, approvedBudget, ...rest } = sources
+  const budget = resolveBudgetSource({ approvedBudget, budgetLines: rest.budgetLines, currencyCode: 'AUD' })
+  const forecastSources = { ...rest, budgetLines: budgetLinesFor(budget) }
+  const totals = projectForecastTotals(forecastSources)
+  const m = computeMargin({
+    baseline, variations: sources.variations, forecastFinalCost: totals.forecastFinalCost, purchaseOrders: sources.purchaseOrders,
+    originalApprovedBudget: originalApprovedBudgetFor(budget),
+  })
+  const rows = buildForecastRows(forecastSources).map(r => composeForecastRow(r, r.storedUncommittedCostToComplete))
   return {
     approvedBudget:            totals.budgeted,
     actual:                    totals.actual,
@@ -262,7 +286,13 @@ describe('credit-note failure: dependent figures are Unavailable (D1), the rest 
 describe('Dashboard: ADR-42 snapshot figures and dependencies are unchanged', () => {
   it('the eight original dependency lists are byte-identical (remainingCommitted gained progressClaims in ADR-55 and variations in ADR-62)', () => {
     const FFC = ['purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes', 'variations', 'forecastLines']
-    expect(FIGURE_DEPENDENCIES.approvedBudget).toEqual(['budgetLines'])
+    // ADR-70 — deliberate change, not drift: the budget side of every figure
+    // is the AUTHORITATIVE budget source (`approvedBudget` — the approved
+    // snapshot, or the working lines with their read state folded in while
+    // no version is approved), so the raw `budgetLines` entry is no longer
+    // a dependency of a budget figure. The perturbation suite above proves
+    // the approved source moves them and the working lines do not.
+    expect(FIGURE_DEPENDENCIES.approvedBudget).toEqual(['approvedBudget'])
     expect(FIGURE_DEPENDENCIES.actual).toEqual(['progressClaims', 'supplierInvoices', 'supplierCreditNotes'])
     // ADR-55 — deliberate change, not drift: Remaining Committed now nets the
     // approved claim value Actual recognises on each PO line, so a loading or
@@ -277,17 +307,19 @@ describe('Dashboard: ADR-42 snapshot figures and dependencies are unchanged', ()
     expect(FIGURE_DEPENDENCIES.supplierVariationExposure).toEqual(['variations', 'purchaseOrders'])
     expect(FIGURE_DEPENDENCIES.appliedSupplierVariations).toEqual(['variations', 'purchaseOrders'])
     expect(FIGURE_DEPENDENCIES.forecastFinalCost).toEqual(FFC)
-    expect(FIGURE_DEPENDENCIES.varianceToBudget).toEqual(['budgetLines', ...FFC])
+    expect(FIGURE_DEPENDENCIES.varianceToBudget).toEqual(['approvedBudget', ...FFC])
     expect(FIGURE_DEPENDENCIES.margin).toEqual(['baseline', 'variations', ...FFC])
     expect(FIGURE_DEPENDENCIES.remainingPayable).toEqual(['supplierInvoices', 'supplierPayments', 'supplierCreditNotes', 'retentionReleases'])
-    expect(FIGURE_DEPENDENCIES.costComposition).toEqual(['budgetLines', ...FFC])
+    expect(FIGURE_DEPENDENCIES.costComposition).toEqual(['approvedBudget', ...FFC])
   })
 
   it('the snapshot returns the same figures, carrying the same selector values', () => {
     const states = Object.fromEntries(SNAPSHOT_SOURCES.map(s => [s, { loading: false, error: false }]))
     const s = projectSnapshot({ sources: { ...SOURCES, supplierPayments: [], retentionReleases: [] }, sourceStates: states, currencyCode: 'AUD' })
+    // ADR-70 adds `budgetSource` — WHICH budget the figures came from (a
+    // selection, never a figure).
     expect(Object.keys(s).sort()).toEqual([
-      'actual', 'approvedBudget', 'costComposition', 'currencyCode', 'currentContractSum',
+      'actual', 'approvedBudget', 'budgetSource', 'costComposition', 'currencyCode', 'currentContractSum',
       'forecastFinalCost', 'margin', 'marginMovement', 'remainingCommitted', 'remainingPayable',
       'uncommittedCostToComplete', 'varianceToBudget',
     ])
@@ -507,7 +539,9 @@ describe('Commercial: role gate, per-figure availability, safe baseline form', (
   })
 
   it('"Use current approved budget" waits for budget lines to settle cleanly', () => {
-    expect(workspace).toContain("const budgetState = figureState(['budgetLines'], sourceStates)")
+    // ADR-70: the gate is THE budget source's folded state (approved records,
+    // or the working lines while no version is approved).
+    expect(workspace).toContain("const budgetState = figureState(['approvedBudget'], sourceStates)")
     expect(workspace).toContain('budgetReady={budgetState.state === FIGURE_STATE.READY}')
     expect(form).toMatch(/onClick=\{useCurrentBudget\}\s*disabled=\{!budgetReady\}/)
     expect(form).toMatch(/const useCurrentBudget = \(\) => \{\s*if \(!budgetReady\) return/)

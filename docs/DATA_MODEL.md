@@ -333,7 +333,7 @@ One allocation of project budget against a company cost code.
 |---|---|---|
 | `costCodeId` | string | → company cost code. **IMMUTABLE (rules-enforced)** — a line is never re-pointed |
 | `costCodeName` | string | Denormalised display string, frozen at write time. **IMMUTABLE (rules-enforced)** — never re-snapshotted on edit; the current name is resolved at read time |
-| `budgeted` | number | **Stored** — the allocation (ex-GST). Editable; must be a **number ≥ 0** (rules-enforced). Zero is valid |
+| `budgeted` | number | **Stored** — the allocation (ex-GST). Editable; must be a **number ≥ 0** (rules-enforced). Zero is valid. **Since ADR-70 this is the WORKING figure:** once a budget version is approved, the Approved Budget shown everywhere is the active `budgetApprovalSnapshots` entry set (below), and this line's amount is the editable working value compared against it ("pending difference"); with no approved version it is shown as *Working budget (not approved)* |
 | `invoiced` | number | Written once as `0` at creation and **never updated — ignored by the UI.** Invoiced is derived at read time from supplier invoices (see below), matching Committed/Actual — nothing writes this field |
 | `committed` | number | Written once as `0` at creation and **never updated — ignored by the UI** |
 | `actual` | number | Written once as `0` at creation and **never updated — ignored by the UI** |
@@ -1148,7 +1148,7 @@ to financial roles (see [SECURITY.md](SECURITY.md)). Semantics and margin formul
 | Field | Type | Notes |
 |---|---|---|
 | `originalContractValue` | number | **Ex-GST.** The original head-contract sum. Required to establish the baseline and to calculate margin |
-| `originalApprovedBudget` | number \| **null** | **Ex-GST.** The original planned cost budget. `null` = *not established* — Original Planned Profit/Margin and Margin Movement then display "—". Never silently populated; an explicit "Use current approved budget" action copies the live Σ budget lines, and the value stays editable (server-enforced immutability is deferred) |
+| `originalApprovedBudget` | number \| **null** | **Ex-GST. A LEGACY scalar since ADR-70.** `null` = *not established* — Original Planned Profit/Margin and Margin Movement then display "—". Never silently populated; on a project with no approved budget version an explicit "Use working budget" action copies Σ budget lines and the value stays editable. **Once a budget version is approved, version 1's immutable snapshot IS the Original Approved Budget** (`computeMargin` reads it through `originalApprovedBudgetFor`), the Commercial form shows that figure read-only, and **the rules freeze this scalar** (it may only stay what it was; a baseline created afterwards must carry `null`) — the value is frozen, not verified against the snapshot, which the app never reads from here |
 | `contractStartDate` | Timestamp \| null | Contract commencement (optional) |
 | `contractCompletionDate` | Timestamp \| null | Contract completion (optional) |
 | `clientId` | string \| null | → company contact (type `client`); optional |
@@ -1170,6 +1170,132 @@ totals and `lib/forecast.js` for Forecast Final Cost) — never written here or 
 any other document. **No migration** — a project with no baseline document loads
 normally and shows an empty "baseline not set" state; margin figures appear once an
 Original Contract Value is saved.
+
+## …/projects/{projectId}/budgetApprovals/{approvalId}
+
+**A budget approval HEADER (Constrapp SHIELD™ 2B1, ADR-70)** — the lifecycle
+record of one formally approved budget version. Its payload is the sibling
+`budgetApprovalSnapshots/{approvalId}` (same random id), created in the SAME
+commit — rules pair the two with `getAfter()` in both directions. Access:
+reads and capture by the three financial roles; **approval by `company_admin`
+/ `project_manager` only** (`qs` prepares, never approves — rules-enforced);
+withdrawal by an approver or the capturer. Self-approval is permitted and
+shown. [SECURITY.md](SECURITY.md).
+
+⚠️ **Approving a budget moves no cost, commitment, forecast, margin, payable
+or cash figure.** It makes the captured snapshot the project's Approved Budget
+— the reference Variance to Budget, Remaining and the BOQ / tender comparisons
+are measured against.
+
+| Field | Type | Notes |
+|---|---|---|
+| `reason` | string | **Required non-whitespace**, ≤ 500 (rules-enforced); why this budget is being approved (the re-approval reason on later versions); frozen after capture |
+| `status` | string | `draft` \| `approved` \| `withdrawn` — **closed set, rules-enforced**. Born `draft`; `draft → approved`, `draft → withdrawn`; **approved and withdrawn are TERMINAL** (no update branch admits them, so an approved version is immutable history) |
+| `currency` | string | **Pinned to the project's resolved currency at capture** (rules: `resolvedCurrency()`); frozen. The read-time validation refuses a version whose currency is not the project's |
+| `entryCount` | number | **Integer 1–2000**, must equal the snapshot's `entryCount` and the snapshot list's size (rules-enforced via `getAfter()`); frozen |
+| `total` | number | **A CROSS-CHECK, never the figure.** Rules pin it ≥ 0 and equal to the snapshot's `total`; they cannot sum the entries. The app derives the Approved Budget by summing the snapshot and treats a disagreement as an integrity problem (figure Unavailable) |
+| `version` | number \| null | `null` until approved; then the pointer's `versionCount` at approval (**1, 2, 3 …** — rules pin it equal to the pointer written in the same commit); frozen |
+| `approvedAt` / `approvedBy` | timestamp / uid | `null` until approved; then `approvedBy == request.auth.uid` and `approvedAt == request.time` (rules-enforced) |
+| `withdrawnAt` / `withdrawnBy` | timestamp / uid | `null` unless withdrawn; actor and server time rules-enforced |
+| `withdrawReason` | string | `''` unless withdrawn; then **required non-whitespace** ≤ 500 |
+| `revision` | number | `1` at capture; **EXACTLY +1** on the one transition (rules-enforced) — the client's compare-and-set reads revision AND `(updatedAt, updatedBy)` |
+| `createdAt` / `createdBy` | timestamp / uid | The CAPTURE — set once at server time by the caller; rules reject any later change |
+| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on every write |
+
+**Derived, never stored:** which version is ACTIVE and which is ORIGINAL (the
+pointer below names them), the history order, labels, the drift against the
+working register and the delta against the previous version
+(`lib/budgetApproval.js`). No `superseded` status is written when a new
+version is approved — earlier versions stay exactly as approved.
+
+**Deliberately NOT stored:** the per-cost-code allocation (the snapshot's
+entries), a stored "active" flag on the header (the pointer), the approver's
+drift review (shown at approval, not persisted), any Actual / commitment /
+forecast figure.
+
+## …/projects/{projectId}/budgetApprovalSnapshots/{approvalId}
+
+**ONE immutable snapshot per approval (ADR-70)** — every working budget LINE
+as captured, **create-only**: no update of any kind and no delete, for
+anyone, in any state. Created ONLY together with a `draft` header in the same
+commit (`getAfter()`: same caller, same server time, same `entryCount`,
+`total` and `currency`).
+
+| Field | Type | Notes |
+|---|---|---|
+| `entryCount` | number | Integer; `== entries.size()` and `== the header's` (rules-enforced) |
+| `total` | number | ≥ 0 and `== the header's` (rules-enforced); a cross-check — **the figure is Σ `entries[].budgeted`**, recomputed at read time |
+| `currency` | string | `== the header's` (rules-enforced), i.e. the project's at capture |
+| `capturedAt` / `capturedBy` | timestamp / uid | `== request.time` / `== request.auth.uid` — the same instant and actor as the header's `createdAt/By` |
+| `entries` | list | **1–2000 entries** in capture order (cost-code name, then line id), EVERY budget line of the project at capture — including lines on inactive cost codes |
+
+**One entry (exact keys, rules-pinned on the FIRST and LAST entries only):**
+`{ lineId, costCodeId, costCodeName, budgeted }` — `lineId` a non-empty
+string naming a budget line of THIS project whose stored `costCodeId` and
+`budgeted` equal the entry's (two `get()` reads — so the two ends are provably
+the source's values at commit); `costCodeId` a non-empty string that
+`exists()` in the company's `costCodes`; `costCodeName` ≤ 170 (the line's
+frozen snapshot, so a later rename never rewrites approved history);
+`budgeted` a number ≥ 0 (the established dollar precision — `roundMoney`,
+compared in whole cents).
+
+**Why per LINE, not per cost code:** lines are the stored source documents
+(several legitimate lines may share one cost code), so the end entries can
+be pinned to real records and the per-cost-code figure is a trivial fold
+(`approvedByCostCode`). A line added after approval appears on the Budget tab
+as *not in v N*; a line removed from the register cannot happen (lines are
+never deleted) but a snapshot entry is still shown as the approved allocation.
+
+**Size:** estimated client-side by the documented Firestore formula
+(`estimateBudgetSnapshotBytes`) and refused above **900,000 bytes** before any
+write; the worst case the rules admit (2,000 entries × 170-character names)
+is ≈ 500 KB, under the 1 MiB document limit (proven by a real write in
+`tests/rules/budgetApprovals.rules.test.js`). Nothing is ever truncated.
+
+**What rules cannot prove (Deferred Control 44):** every entry between the two
+pinned ends, duplicate line ids, that the capture is COMPLETE against the
+live register, and that nothing changed between the client's server query and
+the commit. The app validates every entry and refuses duplicates; the
+read-time validation reports a malformed or duplicate entry and a total that
+does not sum as an integrity problem (figure Unavailable); the approver sees
+the drift and acknowledges it by key.
+
+## …/projects/{projectId}/approvedBudget/current
+
+**The approved-budget POINTER (ADR-70)** — ONE document per project with the
+deterministic id `current` (no other `approvedBudget/*` id has a rule),
+naming the ACTIVE approved version and the ORIGINAL one. Created by the FIRST
+approval and advanced ONLY by an approval — rules pair it with the header
+written in the same commit through `getAfter()` in both directions, and
+`versionCount` moves by **EXACTLY +1**: this is the concurrency boundary two
+simultaneous approvals contend on (the approve transaction reads it and
+refuses when it is not the count the reviewer saw — SUPERSEDED).
+
+| Field | Type | Notes |
+|---|---|---|
+| `activeApprovalId` | string | The header approved in this commit (rules: `getAfter(header).status == 'approved'`, `.version == versionCount`, same actor and server time); changes on every approval |
+| `originalApprovalId` | string | **Version 1** — set equal to `activeApprovalId` at creation and **never changed** (rules: outside the update allow-list) |
+| `versionCount` | number | Integer; `1` at creation, **EXACTLY +1** per approval (rules-enforced) |
+| `approvedAt` / `approvedBy` | timestamp / uid | The latest approval — caller and server time (rules-enforced) |
+| `createdAt` / `createdBy` | timestamp / uid | The first approval; immutable |
+| `updatedAt` / `updatedBy` | timestamp / uid | Refreshed on every approval |
+
+**Deliberately NOT stored:** any amount (the figure is derived from the active
+snapshot — the pointer carries no copy of the budget), the version history
+(the headers), a `supersededAt` on earlier versions.
+
+**The Approved Budget source of truth (`lib/budgetApproval.js →
+resolveBudgetSource`):** with no pointer the project is in the LEGACY state —
+the working `budgetLines` are the figure, labelled *Working budget (not
+approved)*, with their own read state. With a pointer, the active header and
+snapshot are read; the figure is Σ snapshot entries; the header must be
+`approved` at the pointer's version with the pointer's id, the snapshot must
+carry the header's count / total / currency with every entry well formed and
+unique and summing to the total, and the currency must be the project's —
+**any failure makes every budget figure UNAVAILABLE** (never the working
+lines, never zero). Version 1's snapshot (read only when a consumer needs it)
+is the Original Approved Budget behind Original Planned Profit and Margin
+Movement.
 
 ## …/projects/{projectId}/cashFlowLines/{lineId}
 

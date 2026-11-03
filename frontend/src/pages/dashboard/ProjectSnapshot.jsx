@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom'
 import Badge from '../../components/Badge'
 import { formatCurrency, percent } from '../../lib/formatters'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
+import { useApprovedBudget } from '../../hooks/useApprovedBudget'
+import { resolveBudgetSource, budgetSourceState } from '../../lib/budgetApproval'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
@@ -115,6 +117,15 @@ export default function ProjectSnapshot({ project, currencyCode, aside = null })
   const projectId = project.id
 
   const { budgetLines, budgetLinesLoading, budgetLinesError }                         = useBudgetLines(projectId)
+  // ADR-70: the AUTHORITATIVE budget source (pointer + active header +
+  // snapshot, and version 1 for Margin Movement's original). Its folded
+  // state is the one entry every budget figure gates on.
+  const { approvedBudget }                                                            = useApprovedBudget(projectId, { original: true })
+  const budgetSource = useMemo(
+    () => resolveBudgetSource({ approvedBudget, budgetLines, budgetLinesLoading, budgetLinesError, currencyCode }),
+    [approvedBudget, budgetLines, budgetLinesLoading, budgetLinesError, currencyCode],
+  )
+  const { loading: approvedBudgetLoading, error: approvedBudgetError } = budgetSourceState(budgetSource)
   const { purchaseOrders, purchaseOrdersLoading, purchaseOrdersError }                = usePurchaseOrders(projectId)
   const { progressClaims, progressClaimsLoading, progressClaimsError }                = useProgressClaims(projectId)
   const { supplierInvoices, supplierInvoicesLoading, supplierInvoicesError }          = useSupplierInvoices(projectId)
@@ -128,11 +139,12 @@ export default function ProjectSnapshot({ project, currencyCode, aside = null })
   const snapshot = useMemo(() => projectSnapshot({
     currencyCode,
     sources: {
-      budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
+      budgetLines, approvedBudget, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
       variations, forecastLines, baseline, supplierPayments, retentionReleases,
     },
     sourceStates: {
       budgetLines:         { loading: budgetLinesLoading,         error: budgetLinesError },
+      approvedBudget:      { loading: approvedBudgetLoading,      error: approvedBudgetError },
       purchaseOrders:      { loading: purchaseOrdersLoading,      error: purchaseOrdersError },
       progressClaims:      { loading: progressClaimsLoading,      error: progressClaimsError },
       supplierInvoices:    { loading: supplierInvoicesLoading,    error: supplierInvoicesError },
@@ -145,9 +157,9 @@ export default function ProjectSnapshot({ project, currencyCode, aside = null })
     },
   }), [
     currencyCode,
-    budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
+    budgetLines, approvedBudget, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
     variations, forecastLines, baseline, supplierPayments, retentionReleases,
-    budgetLinesLoading, budgetLinesError, purchaseOrdersLoading, purchaseOrdersError,
+    budgetLinesLoading, budgetLinesError, approvedBudgetLoading, approvedBudgetError, purchaseOrdersLoading, purchaseOrdersError,
     progressClaimsLoading, progressClaimsError, supplierInvoicesLoading, supplierInvoicesError,
     supplierCreditNotesLoading, supplierCreditNotesError, variationsLoading, variationsError,
     forecastLinesLoading, forecastLinesError, baselineLoading, baselineError,
@@ -192,10 +204,14 @@ export default function ProjectSnapshot({ project, currencyCode, aside = null })
         </div>
 
         <div className="relative grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <KpiCard label="Approved Budget" value={displayFigure(snapshot.approvedBudget, money)} tone={toneOf(snapshot.approvedBudget)}>
+          {/* ADR-70: the label names the SOURCE — the approved version, or the
+              legacy working register, which is never presented as approved. */}
+          <KpiCard label={snapshot.budgetSource.approved ? 'Approved Budget' : 'Working Budget'} value={displayFigure(snapshot.approvedBudget, money)} tone={toneOf(snapshot.approvedBudget)}>
             {snapshot.approvedBudget.state === FIGURE_STATE.UNAVAILABLE
               ? unavailableLine(snapshot.approvedBudget)
-              : <KpiLine>Σ budget lines · ex-GST</KpiLine>}
+              : snapshot.budgetSource.approved
+                ? <KpiLine>Approved version {snapshot.budgetSource.version} · ex-GST</KpiLine>
+                : <KpiLine tone="warning">Not approved · Σ budget lines · ex-GST</KpiLine>}
           </KpiCard>
 
           <KpiCard label="Forecast Final Cost" value={displayFigure(snapshot.forecastFinalCost, money)} tone={toneOf(snapshot.forecastFinalCost)}>

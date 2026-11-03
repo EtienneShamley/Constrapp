@@ -208,6 +208,16 @@ const SOURCES = {
       commitmentAppliedAt: { seconds: 1, nanoseconds: 0 }, commitmentAppliedBy: 'u_qs',
       lineItems: [{ costCodeId: 'cc9', costCodeName: '99-100 — Other', poLineIndex: 0, approvedAmount: 40 }] },
   ],
+  // ADR-70 (check 6): the approved-budget trio as the composite hook hands it
+  // over — here INCONSISTENT (the snapshot's entries sum to 900 against a
+  // recorded 1,000), so the fixture lands check 6 on a finding like the rest.
+  approvedBudget: {
+    pointer: { activeApprovalId: 'ba1', originalApprovalId: 'ba1', versionCount: 1 },
+    header: { id: 'ba1', status: 'approved', version: 1, entryCount: 1, total: 1000, currency: 'AUD', reason: 'Initial' },
+    snapshot: { id: 'ba1', entryCount: 1, total: 1000, currency: 'AUD', entries: [
+      { lineId: 'bl1', costCodeId: 'cc1', costCodeName: '03-100 — Concrete', budgeted: 900 },
+    ] },
+  },
 }
 
 const settled = (loading = false, error = false) => ({ loading, error })
@@ -232,9 +242,12 @@ const CONTRACT_KEYS = [
 describe('evaluateShield — shape', () => {
   const result = run()
 
-  it('returns the five checks in the fixed order, each with the contract fields', () => {
+  // ADR-70 revised this pin EXPLICITLY: six checks — the five of ADR-50 in
+  // their original order, then the approved-budget integrity check.
+  it('returns the six checks in the fixed order, each with the contract fields', () => {
     expect(result.checks.map(c => c.id)).toEqual(CHECK_ORDER)
-    expect(CHECK_ORDER).toHaveLength(5)
+    expect(CHECK_ORDER).toHaveLength(6)
+    expect(CHECK_ORDER[5]).toBe(CHECK.APPROVED_BUDGET_INTEGRITY)
     expect(new Set(Object.values(CHECK))).toEqual(new Set(CHECK_ORDER))
     for (const c of result.checks) {
       expect(Object.keys(c).sort()).toEqual([...CONTRACT_KEYS].sort())
@@ -256,17 +269,18 @@ describe('evaluateShield — shape', () => {
     for (const c of result.checks) expect(c.state, c.id).toBe(SHIELD_STATE.FINDING)
     for (const c of run(EMPTY).checks) {
       expect(c.state, c.id).toBe(SHIELD_STATE.NEEDS_DATA)
-      expect(c.reason, c.id).toBe(NEEDS_DATA_REASON.NO_RECORDS)
+      // Check 6 (ADR-70) names its own reason: no approved budget version.
+      expect(c.reason, c.id).toBe(c.id === CHECK.APPROVED_BUDGET_INTEGRITY ? NEEDS_DATA_REASON.NO_APPROVED_BUDGET : NEEDS_DATA_REASON.NO_RECORDS)
       expect(c.evidence, c.id).toEqual([])
     }
   })
 
-  it('summary is counts by state that sum to five — and nothing else', () => {
+  it('summary is counts by state that sum to six — and nothing else', () => {
     const s = summariseShield(result.checks)
     expect(Object.keys(s)).toEqual(['counts', 'total'])
     expect(Object.keys(s.counts)).toEqual(SHIELD_STATE_ORDER)
-    expect(Object.values(s.counts).reduce((a, b) => a + b, 0)).toBe(5)
-    expect(s.total).toBe(5)
+    expect(Object.values(s.counts).reduce((a, b) => a + b, 0)).toBe(6)
+    expect(s.total).toBe(6)
     expect(result.summary).toEqual(s)
   })
 
@@ -411,6 +425,7 @@ describe('dependency isolation — each check waits on exactly the sources that 
       [CHECK.PO_OVER_INVOICING]:            ['purchaseOrders', 'supplierInvoices', 'variations'],
       [CHECK.COMMITMENT_STATE_CONFLICTS]:   ['purchaseOrders', 'progressClaims', 'supplierInvoices', 'variations'],
       [CHECK.FINANCIAL_EXCEPTIONS]:         ['supplierInvoices', 'supplierPayments', 'supplierCreditNotes', 'retentionReleases'],
+      [CHECK.APPROVED_BUDGET_INTEGRITY]:    ['approvedBudget'],
     })
   })
 })

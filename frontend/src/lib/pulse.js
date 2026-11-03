@@ -21,6 +21,7 @@ import {
   figureState, FIGURE_STATE, FIGURE_DEPENDENCIES, FORECAST_ROW_SOURCES,
   SNAPSHOT_SOURCES, SNAPSHOT_SOURCE_LABELS,
 } from './projectSnapshot'
+import { resolveBudgetSource, budgetLinesFor, originalApprovedBudgetFor, BUDGET_SOURCE, BUDGET_SOURCE_LABELS } from './budgetApproval'
 
 // ── Constrapp PULSE™ 1A — objective project health indicators (ADR-47) ────────
 //
@@ -271,6 +272,12 @@ const forecastIncompleteCaveat = (count) =>
   `${count} cost ${count === 1 ? 'code has' : 'codes have'} no saved forecast, so Forecast Final Cost ` +
   'carries no Uncommitted Cost to Complete for them. Completing those forecasts will change this figure.'
 
+// ADR-70: the comparison used the editable working register — no budget
+// version has been approved yet, so the figure is not an Approved Budget.
+const WORKING_BUDGET_CAVEAT =
+  'No budget version has been approved for this project, so the comparison uses the editable working budget ' +
+  '(not approved). Approve a budget version on the Budget tab to compare against an Approved Budget.'
+
 const PROGRAMME_CAVEAT =
   'The programme is a manually maintained current plan — not an approved baseline, and never a ' +
   'completion percentage or schedule performance measure.'
@@ -292,24 +299,33 @@ const OVER_BUDGET_COLUMNS = [
   { key: 'varianceToBudget',  label: 'Variance',            kind: COLUMN.MONEY },
 ]
 
-function evaluateForecastOverBudget(rows, totals, sourceStates) {
+// ADR-70: `budgetSource` names WHICH budget the comparison used — the
+// approved snapshot (with its version) or the legacy WORKING register, which
+// is never presented as approved. The condition itself is unchanged.
+function evaluateForecastOverBudget(rows, totals, budgetSource, sourceStates) {
   const id = INDICATOR.FORECAST_OVER_BUDGET
   const gated = gate(id, sourceStates)
   if (gated) return gated
 
+  const approved = budgetSource?.kind === BUDGET_SOURCE.APPROVED
+  const budgetLabel = approved
+    ? `Approved Budget · version ${budgetSource.version}`
+    : BUDGET_SOURCE_LABELS[BUDGET_SOURCE.WORKING]
   const values = {
+    budgetSource:      budgetLabel,
     approvedBudget:    totals.budgeted,
     forecastFinalCost: totals.forecastFinalCost,
     varianceToBudget:  totals.varianceToBudget,
     unforecastedCount: totals.unforecastedCount,
     overBudgetCount:   totals.overBudgetCount,
   }
+  const sourceCaveat = approved ? [] : [WORKING_BUDGET_CAVEAT]
 
   if (!rows.some(r => r.hasBudgetLine)) {
     return indicator(id, PULSE_STATE.NEEDS_DATA, {
       reason: NEEDS_DATA_REASON.NO_BUDGET,
-      headline: 'No Approved Budget to compare against',
-      explanation: 'This project has no budget lines, so Forecast Final Cost cannot be compared with an Approved Budget.',
+      headline: 'No budget to compare against',
+      explanation: 'This project has no approved budget version and no budget lines, so Forecast Final Cost cannot be compared with a budget.',
       values,
       link: { to: 'budget', label: 'Open Budget' },
     })
@@ -321,13 +337,16 @@ function evaluateForecastOverBudget(rows, totals, sourceStates) {
   const unbudgetedRows = rows
     .filter(r => !r.hasBudgetLine && isPositiveMoney(r.forecastFinalCost))
     .sort(sortByMoneyAsc('forecastFinalCost')).reverse()
-  const caveats = totals.unforecastedCount > 0 ? [forecastIncompleteCaveat(totals.unforecastedCount)] : []
+  const caveats = [
+    ...sourceCaveat,
+    ...(totals.unforecastedCount > 0 ? [forecastIncompleteCaveat(totals.unforecastedCount)] : []),
+  ]
 
   if (isOverBudget(totals.varianceToBudget)) {
     return indicator(id, PULSE_STATE.FINDING, {
-      headline: 'Forecast Final Cost is over the Approved Budget',
+      headline: approved ? 'Forecast Final Cost is over the Approved Budget' : 'Forecast Final Cost is over the working budget (not approved)',
       explanation:
-        'Variance to Budget (Approved Budget − Forecast Final Cost) is negative. Forecast Final Cost = ' +
+        `Variance to Budget (${budgetLabel} − Forecast Final Cost) is negative. Forecast Final Cost = ` +
         'Actual + Remaining Committed + Uncommitted Cost to Complete, ex-GST, derived at read time.',
       values: { ...values, unbudgetedRows },
       evidence: overBudgetRows,
@@ -341,7 +360,7 @@ function evaluateForecastOverBudget(rows, totals, sourceStates) {
       reason: NEEDS_DATA_REASON.FORECAST_INCOMPLETE,
       headline: 'Within budget so far — but the forecast is incomplete',
       explanation:
-        'Forecast Final Cost does not exceed the Approved Budget on the records saved so far, but cost codes ' +
+        `Forecast Final Cost does not exceed the ${budgetLabel} on the records saved so far, but cost codes ` +
         'without a saved forecast contribute no Uncommitted Cost to Complete, so this cannot be confirmed yet.',
       values: { ...values, unbudgetedRows },
       evidence: overBudgetRows,
@@ -351,11 +370,12 @@ function evaluateForecastOverBudget(rows, totals, sourceStates) {
   }
 
   return indicator(id, PULSE_STATE.NO_ISSUE, {
-    headline: 'Forecast Final Cost is within the Approved Budget',
-    explanation: 'Every cost code carries a saved forecast and Variance to Budget is zero or positive.',
+    headline: approved ? 'Forecast Final Cost is within the Approved Budget' : 'Forecast Final Cost is within the working budget (not approved)',
+    explanation: `Every cost code carries a saved forecast and Variance to Budget (${budgetLabel} − Forecast Final Cost) is zero or positive.`,
     values: { ...values, unbudgetedRows },
     evidence: overBudgetRows,
     evidenceColumns: OVER_BUDGET_COLUMNS,
+    caveats: sourceCaveat,
   })
 }
 
@@ -1000,14 +1020,28 @@ export function evaluatePulse({ sources = {}, sourceStates = {}, now = new Date(
     budgetLines = [], purchaseOrders = [], progressClaims = [], supplierInvoices = [],
     supplierCreditNotes = [], variations = [], forecastLines = [], baseline = null,
     activities = [], programmeBaselines = [], programmeBaselineSnapshot = null,
+    approvedBudget = null,
   } = sources
 
+  // THE budget source (ADR-70): the approved snapshot's lines when a version
+  // is approved, the working lines until then — the same adapter the Dashboard
+  // snapshot and every project tab use. `sourceStates.approvedBudget` gates
+  // the budget indicators (it folds the working register's state in).
+  const budgetSource = resolveBudgetSource({
+    approvedBudget, budgetLines,
+    budgetLinesLoading: sourceStates?.budgetLines?.loading === true,
+    budgetLinesError: sourceStates?.budgetLines?.error === true,
+    currencyCode,
+  })
   const forecastSources = {
-    budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines,
+    budgetLines: budgetLinesFor(budgetSource), purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines,
   }
   const rows = projectForecastRows(forecastSources)
   const totals = projectForecastTotals(forecastSources)
-  const margin = computeMargin({ baseline, variations, forecastFinalCost: totals.forecastFinalCost, purchaseOrders })
+  const margin = computeMargin({
+    baseline, variations, forecastFinalCost: totals.forecastFinalCost, purchaseOrders,
+    originalApprovedBudget: originalApprovedBudgetFor(budgetSource),
+  })
 
   // The shared schedule derivations, ONCE per evaluation (ADR-67): the
   // dependency states feed two indicators; the baseline comparison and its
@@ -1019,7 +1053,7 @@ export function evaluatePulse({ sources = {}, sourceStates = {}, now = new Date(
   const slippageSummary = baselineSummary(activities, comparisonSnapshot)
 
   const byId = {
-    [INDICATOR.FORECAST_OVER_BUDGET]:       evaluateForecastOverBudget(rows, totals, sourceStates),
+    [INDICATOR.FORECAST_OVER_BUDGET]:       evaluateForecastOverBudget(rows, totals, budgetSource, sourceStates),
     [INDICATOR.FORECAST_INCOMPLETE]:        evaluateForecastIncomplete(rows, totals, sourceStates),
     [INDICATOR.NEGATIVE_GROSS_PROFIT]:      evaluateNegativeGrossProfit(totals, margin, baseline, sourceStates),
     [INDICATOR.OVERDUE_ACTIVITIES]:         evaluateOverdueActivities(activities, now, sourceStates),

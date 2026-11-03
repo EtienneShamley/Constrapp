@@ -123,6 +123,21 @@ Controls now in place:
   `(c) APPROVE`, `(d) REJECT`) and every transitional marker are untouched.
   Recovered source bytes say nothing about compiled complexity: the
   1000-expression ceiling is unchanged and SHIELD 2B1 must validate it anew.
+- **SHIELD™ 2B1 (ADR-70, 3 November 2026, IMPLEMENTED — NOT YET DEPLOYED)**
+  adds three blocks before `boqItems` — `approvedBudget/current` (the
+  pointer), `budgetApprovals` (the header) and `budgetApprovalSnapshots` (the
+  ONE immutable payload) — two shared path helpers and `budgetApprover()` at
+  the documents scope, and hardens the `commercial/baseline` block (exact
+  keys, typed money / dates / client, stamps, provenance, the legacy
+  `originalApprovedBudget` frozen while a pointer exists): FINAL
+  `firestore.rules` **218,840 → 234,479 bytes** (+15,639; 10,521 under the
+  budget), derived STAGE-1 `firestore.transitional.rules` **235,159** (the
+  same four marked lines; no new one — no transitional publish). Access calls:
+  the capture pair spends 9 of 20 (membership, `resolvedCurrency` 2, two
+  `getAfter()`, two source-line `get()`, two cost-code `exists()`), the approve
+  pair 3; every new evaluation ran clean of the 1000-expression ceiling in
+  the emulator (`tests/rules/budgetApprovals.rules.test.js`, incl. the
+  2,000-entry write).
 - **Size compliance is not deployment proof.** The emulator suite proves the
   repo file; the size test proves it can be published; only the console shows
   what is live — see [DEPLOYMENT.md](DEPLOYMENT.md) → *Verifying which rules
@@ -181,7 +196,10 @@ Control 20).
 | `…/projects/{id}` | company member | `company_admin`, `project_manager`; **`qs`: `currencyLocked` false→true only** | blocked |
 | `…/costCodes/{id}` | **financial roles only** (ADR-56; was company member) | financial roles | blocked — deactivate via `isActive` |
 | `…/contacts/{id}` | **financial roles only** | financial roles | blocked — archive via `isActive` |
-| `…/projects/{id}/budgetLines/{id}` | **financial roles only** (ADR-56; was company member) | financial roles | blocked |
+| `…/projects/{id}/budgetLines/{id}` | **financial roles only** (ADR-56; was company member) | financial roles — the editable WORKING register (ADR-70) | blocked |
+| `…/projects/{id}/approvedBudget/current` | **financial roles only** | **`company_admin`, `project_manager` ONLY**, and ONLY in the same commit as a header's approval (`getAfter()`: approved, same version, same caller and server time); exact keys; created at `versionCount == 1` with `originalApprovalId == activeApprovalId`; advanced by EXACTLY +1 to a DIFFERENT header with the original and provenance frozen (ADR-70) | blocked |
+| `…/projects/{id}/budgetApprovals/{id}` | **financial roles only** | capture: financial roles, exact keys, born `draft` at revision 1 with creator / audit stamps at server time, currency pinned to the project's, ONLY with its snapshot in the same commit (`getAfter()`: same caller, time, count, total, currency); `draft → approved` (approvers only, stamps-only, `version` == the pointer written in the same commit) and `draft → withdrawn` (an approver or the capturer, reasoned) with `revision` +1; approved and withdrawn TERMINAL (ADR-70) | blocked |
+| `…/projects/{id}/budgetApprovalSnapshots/{id}` | **financial roles only** | financial roles, **create-only** with a `draft` header in the same commit (`getAfter()`); exact keys, `capturedBy == caller`, `capturedAt == request.time`, `entries` a list of 1–2000 with `size() == entryCount`, the FIRST and LAST entries pinned (exact entry keys, source budget line `get()` — same cost code and whole-cent amount, cost code `exists()`); **`update` and `delete` blocked for everyone** (ADR-70) | blocked |
 | `…/projects/{id}/boqItems/{id}` | **financial roles only** | financial roles, **create active-only; transitions, post-void immutability and the `amount == quantity × rate` invariant rules-enforced; the optional `quantApplied` map (ADR-52) absent at create and, on an edit, preserved verbatim or fresh — exact keys, `by == caller`, `at == request.time`, `quantity == the written quantity`** — the version guard on edits and the Quant apply is CLIENT-only (DC33) | blocked — void via status |
 | `…/projects/{id}/purchaseOrders/{id}` | **financial roles only** (ADR-56; was company member) | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time and the project's resolved currency; draft-only content edits (`hasOnly`); `draft\|pending_approval → sent`, `sent → closed`, `draft\|pending_approval → cancelled`, `sent → cancelled` each stamps-only with actor == caller and time == `request.time`; identity, money and earlier stamps frozen after send; `subtotal + gst == total` in cents and `gst` exactly 10% half-up (one cent below also accepted on a half-cent boundary only); nothing enters `pending_approval`; closed / cancelled terminal — ALL RULES-ENFORCED (ADR-57, M2-B1, live since 27 October 2026)**. **Since ADR-61 (M3-A, not yet deployed): the OPTIONAL source triple `sourceTenderPackageId / sourceTenderBidId / sourceTenderNumber` is admitted at create only all-present and `get()`-verified against an AWARDED same-project package and its RECEIVED winning bid (supplier id + name match), with the package pointing back at this PO after the commit (`getAfter()`); frozen for life.** `lineItems` contents, Σ lineTotal, the linked claim / invoice / supplier-variation cancel policy (DC35) and that a raised PO's lines equal the bid's (DC38) are client-only | blocked — cancel via status |
 | `…/projects/{id}/progressClaims/{id}` | **financial roles only** (ADR-56; was company member) | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time, the project's resolved currency and a `get()` on the source PO (same project, exists, `sent`; number, supplier identity and line count pinned); draft-only content edits (`hasOnly`, line count fixed); `draft → submitted`, `submitted\|under_review → approved`, `draft\|submitted\|under_review → rejected` each with actor == caller and time == `request.time` (approval also carrying the certified lines, the approved header and the notes); claimed header frozen after submit, approved values frozen forever; whole-cent headers on both sides (retention ≥ 0 and ≤ subtotal, GST exactly 10% of the net half-up or one cent below on a boundary, totals exact, approved subtotal ≤ claimed subtotal); `revision` exactly +1 on every update; `under_review` / `invoiced` unauthorable; approved / rejected / invoiced terminal — ALL RULES-ENFORCED (ADR-58, M2-B2, live since 27 October 2026)**. `lineItems` contents, Σ lines, one open claim per PO, cumulative ceilings, the mixed-mode overlap and creator ≠ approver are client-only (DC36) | blocked — reject via status |
@@ -195,7 +213,7 @@ Control 20).
 | `…/projects/{id}/tenderBids/{id}` | **financial roles only** | financial roles, **create received-only against an issued same-project package with a real supplier/subcontractor contact; edits/voids only while the package stays issued; bids freeze on award/cancel** | blocked — void via status |
 | `…/projects/{id}/forecastLines/{id}` | **financial roles only** | financial roles | blocked — clear via `null`, never deleted |
 | `…/projects/{id}/cashFlowLines/{id}` | **financial roles only** | financial roles, **create active-only; transitions and post-void immutability rules-enforced** | blocked — void via status |
-| `…/projects/{id}/commercial/baseline` | **financial roles only** | financial roles | blocked — the single baseline doc is never deleted |
+| `…/projects/{id}/commercial/baseline` | **financial roles only** | financial roles — since ADR-70: exact keys, `originalContractValue` number ≥ 0, `originalApprovedBudget` null or number ≥ 0, dates null or timestamp, client null or bounded strings, notes ≤ 2000, caller + server stamps, `createdAt/By` immutable, and `originalApprovedBudget` FROZEN (unchanged; null on a new baseline) while `approvedBudget/current` exists | blocked — the single baseline doc is never deleted |
 | `…/projects/{id}/activities/{id}` | **`company_admin`, `project_manager`, `qs`** | **`company_admin`, `project_manager` ONLY — `qs` is READ-ONLY**; shape, closed status set, date/milestone/percentage invariants, cancellation branch and cancelled-terminality rules-enforced | blocked — cancel via status |
 | `…/projects/{id}/programmeBaselines/{id}` | **`company_admin`, `project_manager`, `qs`** | **`company_admin`, `project_manager` ONLY — `qs` is READ-ONLY** (capture AND approve); exact keys, born draft at revision 1 with creator / audit stamps at server time, created ONLY with its snapshot in the same commit (`getAfter()`: same caller, time and `activityCount`); `draft → approved` and `draft → withdrawn` (reasoned) stamps-only with actor == caller, time == `request.time`, `revision` exactly +1; `name` / `reason` / `activityCount` / `createdAt/By` immutable; **approved and withdrawn admit NO update** — all rules-enforced (ADR-66). Middle entries, duplicates, entry-to-source equality and drift at approval are client-only (DC42) | blocked — an approved baseline is never deleted; a draft is withdrawn via status |
 | `…/projects/{id}/programmeBaselineSnapshots/{id}` | **`company_admin`, `project_manager`, `qs`** | **`company_admin`, `project_manager` ONLY**, **create-only** with a `draft` header in the same commit (`getAfter()`); exact keys, `capturedBy == caller`, `capturedAt == request.time`, `activities` a list of 1–2000 with `size() == activityCount`, the FIRST and LAST entries pinned (exact entry keys, source `exists()` in this project, date / milestone / status / progress / revision shape); **`update: false`** for everyone | **blocked for everyone** |
@@ -2977,6 +2995,77 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     the risk is exactly the pre-2A one until it is reconciled or backfilled —
     SHIELD condition I makes every such claim visible until then.
 
+44. **Approved budget versions — what the pairs, the pins and the pointer
+    cannot prove (ADR-70, SHIELD 2B1).** Rules enforce the atomic header +
+    snapshot pair, the atomic header + pointer pair, the header lifecycle
+    and its terminal states, the approver roles, the exact shapes, the
+    count / total / currency agreement, the project currency, the FIRST and
+    LAST entries' shape and their equality with their source budget lines
+    (`get()`), the cost-code existence, the pointer's +1 and its frozen
+    original, and that a snapshot is never updated or deleted. What they
+    **cannot** enforce, and what must never be described as enforced:
+
+    - **EVERY ENTRY BETWEEN THE TWO PINNED ENDS.** A middle entry of any
+      shape — garbage, a line id naming nothing, an amount that is not the
+      line's — is ACCEPTED (proven). The app projects and validates every
+      entry (`validateBudgetEntry`) and refuses the capture by name; the
+      read-time validation (`validateBudgetSnapshot`) reports a malformed
+      entry as an integrity problem and makes every budget figure
+      UNAVAILABLE rather than summing it.
+    - **DUPLICATE LINE IDS** are ACCEPTED (proven); refused by the app;
+      reported at read time (figure Unavailable).
+    - **COMPLETENESS.** Rules cannot query the register, so a snapshot that
+      omits a line, or that carries a line the register never held, is
+      accepted provided its ends are real. The app captures from a fresh
+      server read of the whole register; the Budget tab shows the pending
+      difference and *not in v N* lines; SHIELD check 6 reports the
+      pointer / header / snapshot agreement — not completeness.
+    - **THE TOTAL.** Rules pin the header's and the snapshot's `total` to each
+      other, never to the sum of the entries (no list arithmetic). The app
+      derives the figure from the entries and treats a total that does not
+      sum as an integrity problem.
+    - **THE RESIDUAL RACE.** The capture is a server query followed by a
+      transaction; a line edited between the two is captured as the query
+      saw it. The end pins make the two ends provably the source's values at
+      commit; the middle is as the query saw it. The stored `lineId` makes
+      every difference DETECTABLE — the review dialog lists it as drift and
+      the approve transaction refuses a drift the approver did not
+      acknowledge by key — but no rule proves the snapshot equals the
+      register at commit time.
+    - **DRIFT AT APPROVAL** is a client read and a client acknowledgement.
+      Approval accepts the identified captured snapshot; it does not certify
+      that the working register cannot change afterwards (it can, and is
+      shown as a pending difference until a new version is approved).
+    - **SELF-APPROVAL** (the capturer approving their own draft) is permitted
+      by decision and displayed; creator ≠ approver segregation stays on the
+      trusted-backend list (ADR-14).
+    - **THE REVIEWER'S VIEW OF THE POINTER.** `seenVersionCount` is the
+      client's; the rules enforce the +1, which is what makes a stale
+      approval fail rather than stack — the SUPERSEDED message is the app's
+      reading of that refusal.
+    - **THE DOCUMENT SIZE CEILING** is a client estimate (900,000 bytes) over
+      Firestore's own 1 MiB refusal; a direct-SDK writer can store up to the
+      hard limit.
+    - **THE LEGACY `originalApprovedBudget` SCALAR** is frozen while a
+      version exists, not verified against version 1's snapshot (the app
+      never reads it as the original once a version exists).
+
+    **Residual direct-SDK risk, stated plainly:** a financial-role user using
+    the SDK directly can capture a snapshot whose middle entries are invented
+    (first and last real), and an approver can approve it — the rules admit
+    the pair. The read-time validation then reports any malformed entry,
+    duplicate or non-summing total and reads the budget as UNAVAILABLE, and
+    SHIELD check 6 lists the conditions; a snapshot whose middle entries are
+    well formed, unique and summing but simply not the register's is NOT
+    detectable by rules or by the read-time validation — it is a visible,
+    attributed approved version (actor, time, reason) that the version
+    history and the pending-difference figures expose for review. It moves
+    no Actual, commitment, payable or cash figure. Every item above is
+    **proven** by a passing test in
+    `frontend/tests/rules/budgetApprovals.rules.test.js`,
+    `frontend/tests/unit/budgetApproval.test.js` or
+    `frontend/tests/unit/budgetApprovalActions.test.js`.
+
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
 is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.
@@ -3228,6 +3317,86 @@ transaction: the membership document (cached), two `getAfter()` and two
 transitional **229,601** (no new marked line). Proven by
 `tests/rules/programmeBaselines.rules.test.js` (85 cases, including the
 2,000-entry worst-case write and the app's own transactions).
+
+## Approved budget versions — three blocks, two atomic pairs, immutable approved history (ADR-70, SHIELD 2B1)
+
+Constrapp SHIELD™ 2B1 adds `budgetApprovals/{approvalId}` (the header),
+`budgetApprovalSnapshots/{approvalId}` (ONE immutable payload per approval)
+and `approvedBudget/current` (ONE pointer per project), all project-scoped,
+all **read by the three financial roles**; `subcontractor`, `client` and
+`super_admin` denied; **delete blocked on all three**. The `budgetLines`
+block is byte-for-byte unchanged: the working register stays editable by the
+same roles, and nothing writes a financial value onto it.
+
+**Rules-enforced:**
+
+- **The capture pair.** A header is created ONLY when the same commit creates
+  its snapshot (`getAfter(snapshotPath())`: same `entryCount`, `total`,
+  `currency`, `capturedBy == request.auth.uid`, `capturedAt == request.time`),
+  and a snapshot ONLY when the same commit creates a `draft` header by the
+  same caller at the same server time agreeing on all three (`getAfter
+  (headerPath())`). A header alone, a snapshot alone, a snapshot against a
+  pre-existing header, any disagreement, another actor or a client clock are
+  refused (proven both ways). Capture is open to every financial role (the QS
+  who maintains the register prepares its approval).
+- **Header shape and capture pins:** exact keys; non-blank `reason` ≤ 500;
+  born `draft`; `currency == resolvedCurrency()` (the project's, else the
+  company's, else AUD — a draft in any other currency is refused); integer
+  `entryCount` 1–2000; `total` ≥ 0; `version` null; approval and withdrawal
+  fields null / empty; `revision == 1`; creator and audit stamps at server
+  time.
+- **The approval pair.** `draft → approved` is admitted ONLY to
+  `company_admin` / `project_manager` (`qs` prepares but never approves),
+  stamps-only (`status`, `version`, `approvedAt/By`, `revision` + 1,
+  `updatedAt/By`), with `approvedBy == caller`, `approvedAt == request.time`,
+  and the POINTER written in the same commit naming THIS header at THIS
+  version at this server time (`getAfter(approvedBudgetPath())`); the pointer
+  in turn requires the header it names to be approved at its `versionCount`
+  by the same caller at the same time. The first approval creates the pointer
+  at `versionCount == 1` with `originalApprovalId == activeApprovalId`; every
+  later approval advances it by **EXACTLY +1** to a **different** header with
+  `originalApprovalId`, `createdAt` and `createdBy` frozen. A header cannot
+  become approved without the pointer; the pointer cannot be created or
+  advanced without an approval; a bare pointer write, a +2, a re-pointing to
+  the same header or a changed original are refused (proven).
+- **Withdrawal:** `draft → withdrawn` by an approver OR the header's own
+  capturer, stamps-only with a non-blank reason ≤ 500, `revision` + 1.
+- **Terminal states:** no update branch admits `approved` or `withdrawn` — an
+  approved version cannot be renamed, re-approved, withdrawn, returned to
+  draft or deleted, by anyone.
+- **Snapshot:** exact keys; `capturedBy == caller`, `capturedAt ==
+  request.time`; `entries` a list of 1–2000 with `size() == entryCount`; the
+  **FIRST and LAST entries** each a map with exactly the four entry keys, a
+  non-empty `lineId` whose budget line in THIS project `get()`s with the SAME
+  `costCodeId` and the same whole-cent `budgeted`, a `costCodeName` ≤ 170 and
+  a `costCodeId` that `exists()` in the company library (four document reads);
+  **`allow update: if false; allow delete: if false`.**
+- **Tenancy:** every block through `financialMember(companyId)` /
+  `sameCompany(companyId)` with `memberRole()`; an entry naming a budget line
+  of another project or company fails the `get()` pin.
+- **Commercial baseline hardening** (same ADR; the block was role-and-tenant
+  only since ADR-20): exact keys, `originalContractValue` a number ≥ 0,
+  `originalApprovedBudget` null or a number ≥ 0, dates null or timestamps,
+  client null or bounded strings, bounded notes, caller + server stamps on
+  every write, `createdAt/By` immutable, and `originalApprovedBudget` FROZEN
+  (unchanged on update; null on a create) while `approvedBudget/current`
+  exists — one extra `exists()` per baseline write. The live hook's own
+  document passes unchanged (`tests/rules/commercialBaseline.rules.test.js`).
+
+**Client-only (Deferred Control 44):** every entry between the two pinned
+ends; duplicate line ids; that the capture is COMPLETE against the live
+register; that the client's server query and the commit saw the same lines
+(drift); the approver's review of that drift; the summed total equalling the
+header's (a cross-check the read-time validation performs — the header total
+is never the figure); self-approval (permitted by decision). Access budget on
+the capture transaction: the membership document (cached), `resolvedCurrency`
+(two reads), two `getAfter()`, two source-line `get()` and two cost-code
+`exists()` — nine of twenty; on the approval pair three. FINAL
+`firestore.rules` **234,479 bytes**; transitional **235,159** (no new marked
+line). Proven by `tests/rules/budgetApprovals.rules.test.js` (51 cases,
+including the 2,000-entry worst-case write, the app's own transactions and
+two CONCURRENT approvals) and `tests/rules/commercialBaseline.rules.test.js`
+(36).
 
 ## PULSE™ acknowledgements — a management record, `qs` read-only, revision-guarded
 

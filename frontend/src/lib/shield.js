@@ -25,6 +25,9 @@ import {
 import { mixedModePoLineConflicts } from './poLineRecognition'
 import { claimLinkReconciliation, CLAIM_LINK_ISSUE_LABELS } from './supplierInvoiceActions'
 import { figureState, FIGURE_STATE, SNAPSHOT_SOURCE_LABELS } from './projectSnapshot'
+import {
+  resolveBudgetSource, BUDGET_SOURCE, BUDGET_INTEGRITY_PROBLEM_TEXT, approvedTotalOf,
+} from './budgetApproval'
 
 // ── Constrapp SHIELD™ foundation — commercial assurance checks (ADR-50) ──────
 //
@@ -114,6 +117,8 @@ export const CHECK = {
   PO_OVER_INVOICING:            'purchaseOrderOverInvoicing',
   COMMITMENT_STATE_CONFLICTS:   'commitmentStateConflicts',
   FINANCIAL_EXCEPTIONS:         'existingFinancialExceptions',
+  // SHIELD 2B1 (ADR-70): the approved-budget records agree with one another.
+  APPROVED_BUDGET_INTEGRITY:    'approvedBudgetIntegrity',
 }
 
 // A FIXED presentation order — not a ranking. Nothing here is "worse" than
@@ -124,13 +129,17 @@ export const CHECK_ORDER = [
   CHECK.PO_OVER_INVOICING,
   CHECK.COMMITMENT_STATE_CONFLICTS,
   CHECK.FINANCIAL_EXCEPTIONS,
+  CHECK.APPROVED_BUDGET_INTEGRITY,
 ]
 
 // Every subscription SHIELD reads — a strict subset of the Dashboard snapshot's
-// sources. No budget, forecast, baseline or programme source is read.
+// sources. No working-budget-line, forecast, commercial-baseline or programme
+// source is read. `approvedBudget` (ADR-70) is the approved-budget pointer,
+// the active header and its snapshot — read for their mutual consistency
+// only; SHIELD never derives a budget figure from them and never edits them.
 export const SHIELD_SOURCES = [
   'purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes',
-  'supplierPayments', 'retentionReleases', 'variations',
+  'supplierPayments', 'retentionReleases', 'variations', 'approvedBudget',
 ]
 
 export const SHIELD_SOURCE_LABELS = Object.fromEntries(
@@ -153,6 +162,8 @@ export const CHECK_DEPENDENCIES = {
   [CHECK.PO_OVER_INVOICING]:            ['purchaseOrders', 'supplierInvoices', 'variations'],
   [CHECK.COMMITMENT_STATE_CONFLICTS]:   ['purchaseOrders', 'progressClaims', 'supplierInvoices', 'variations'],
   [CHECK.FINANCIAL_EXCEPTIONS]:         ['supplierInvoices', 'supplierPayments', 'supplierCreditNotes', 'retentionReleases'],
+  //   · approved budget — the pointer / header / snapshot trio only (ADR-70)
+  [CHECK.APPROVED_BUDGET_INTEGRITY]:    ['approvedBudget'],
 }
 
 // Where each check sends the user to investigate — an existing project tab,
@@ -164,6 +175,7 @@ const LINK = {
   claims:    { to: 'progress-claims',             label: 'Open Progress Claims' },
   payments:  { to: 'commercial/supplier-payments', label: 'Open Supplier Payments' },
   retention: { to: 'commercial/retention',         label: 'Open Retention' },
+  budget:    { to: 'budget',                       label: 'Open Budget' },
 }
 
 export const CHECK_LINKS = {
@@ -172,6 +184,7 @@ export const CHECK_LINKS = {
   [CHECK.PO_OVER_INVOICING]:            [LINK.pos, LINK.invoices],
   [CHECK.COMMITMENT_STATE_CONFLICTS]:   [LINK.pos, LINK.claims, LINK.invoices],
   [CHECK.FINANCIAL_EXCEPTIONS]:         [LINK.payments, LINK.invoices, LINK.retention],
+  [CHECK.APPROVED_BUDGET_INTEGRITY]:    [LINK.budget],
 }
 
 export const CHECK_TITLES = {
@@ -180,6 +193,7 @@ export const CHECK_TITLES = {
   [CHECK.PO_OVER_INVOICING]:            'Purchase order over-invoicing exposure',
   [CHECK.COMMITMENT_STATE_CONFLICTS]:   'Commitment records requiring reconciliation',
   [CHECK.FINANCIAL_EXCEPTIONS]:         'Existing financial exceptions',
+  [CHECK.APPROVED_BUDGET_INTEGRITY]:    'Approved budget integrity',
 }
 
 // Needs-data reasons, so the page can say exactly what is missing.
@@ -187,6 +201,8 @@ export const NEEDS_DATA_REASON = {
   NO_RECORDS:         'no_records',
   REFERENCES_MISSING: 'references_missing',
   MALFORMED_RECORDS:  'malformed_records',
+  // ADR-70: no approved budget version exists (the legacy, working state).
+  NO_APPROVED_BUDGET: 'no_approved_budget',
 }
 
 // Evidence column kinds the page knows how to format. Money is formatted by
@@ -1333,6 +1349,91 @@ function evaluateFinancialExceptions(sources, sourceStates) {
 // accepted for contract symmetry with evaluatePulse (no check reads the clock
 // in this foundation); `currencyCode` is the project's RESOLVED currency,
 // carried through so the page formats every amount in it.
+// ── 6 · Approved budget integrity (SHIELD 2B1, ADR-70) ───────────────────────
+//
+// Do the approved-budget records agree with one another? The pointer must
+// name an APPROVED header at the pointer's version; the snapshot must carry
+// the header's count, total and currency; every entry must be well formed
+// and unique; the entries must sum to the recorded total; the currency must
+// be the project's. This is the read-time completeness the rules cannot
+// provide for the middle entries (DC44) — DETECTED here, never repaired.
+// A project with no approved version is NEEDS DATA (its working budget is
+// not an approved budget); a loading / failed read is exactly that.
+
+const BUDGET_INTEGRITY_COLUMNS = [
+  { key: 'problem', label: 'Condition', kind: COLUMN.TEXT },
+  { key: 'detail',  label: 'Detail',    kind: COLUMN.TEXT },
+]
+
+function evaluateApprovedBudgetIntegrity(approvedBudget, currencyCode, sourceStates) {
+  const id = CHECK.APPROVED_BUDGET_INTEGRITY
+  const gated = gate(id, sourceStates)
+  if (gated) return gated
+
+  // Resolved WITHOUT working lines: SHIELD never reads the register, so a
+  // missing pointer is "no approved version", never a working figure.
+  const resolved = resolveBudgetSource({ approvedBudget, budgetLines: [], currencyCode })
+
+  if (resolved.kind === BUDGET_SOURCE.WORKING) {
+    return check(id, SHIELD_STATE.NEEDS_DATA, {
+      reason: NEEDS_DATA_REASON.NO_APPROVED_BUDGET,
+      headline: 'No approved budget version',
+      explanation:
+        'This project has never approved a budget version, so there are no approved-budget records to check. ' +
+        'Every budget figure in the app is the editable working budget, labelled as not approved.',
+      values: { approvedVersions: 0 },
+      caveats: [NOT_WRONGDOING_CAVEAT],
+    })
+  }
+
+  const pointer = resolved.pointer ?? {}
+  const values = {
+    activeVersion:    Number.isInteger(pointer.versionCount) ? pointer.versionCount : null,
+    approvedTotal:    resolved.kind === BUDGET_SOURCE.APPROVED ? resolved.total : null,
+    entryCount:       Number.isInteger(resolved.snapshot?.entryCount) ? resolved.snapshot.entryCount : null,
+    recordedTotal:    typeof resolved.header?.total === 'number' ? resolved.header.total : null,
+  }
+
+  if (resolved.kind === BUDGET_SOURCE.UNAVAILABLE || resolved.problems.length > 0) {
+    const evidence = resolved.problems.map(p => ({
+      id: p,
+      // The record the condition rests on: the active version named by the pointer.
+      recordNumber: `Approved budget version ${pointer.versionCount ?? '—'} (${pointer.activeApprovalId ?? 'approvedBudget/current'})`,
+      problem: BUDGET_INTEGRITY_PROBLEM_TEXT[p] ?? p,
+      detail: p === 'total_mismatch' && resolved.snapshot
+        ? `Entries sum to ${approvedTotalOf(resolved.snapshot)}; recorded ${resolved.header?.total ?? '—'} (header) / ${resolved.snapshot?.total ?? '—'} (snapshot)`
+        : p === 'header_version'
+          ? `Header version ${resolved.header?.version ?? '—'} vs pointer version count ${pointer.versionCount ?? '—'}`
+          : p === 'header_identity'
+            ? `Pointer names ${pointer.activeApprovalId ?? '—'}; header read is ${resolved.header?.id ?? '—'}`
+            : '',
+    }))
+    return check(id, SHIELD_STATE.FINDING, {
+      headline: 'The approved-budget records do not agree',
+      explanation:
+        'The pointer, the active approval header and its immutable snapshot must describe the same approved ' +
+        'version with the same count, total and currency. While they disagree, every budget figure in the app ' +
+        'reads Unavailable — never the working budget, never zero. Review the records; nothing is repaired here.',
+      values: { ...values, problemCount: resolved.problems.length },
+      evidence,
+      evidenceColumns: BUDGET_INTEGRITY_COLUMNS,
+      caveats: [NOT_WRONGDOING_CAVEAT],
+    })
+  }
+
+  return check(id, SHIELD_STATE.NO_ISSUE, {
+    headline: `Approved budget version ${resolved.version} is consistent`,
+    explanation:
+      'The pointer names an approved header at its version, the snapshot carries the header\'s count, total ' +
+      'and currency, every entry is well formed and unique, and the entries sum to the recorded total.',
+    values: { ...values, problemCount: 0 },
+    caveats: [
+      'Rules pin the first and last snapshot entries to their source budget lines; the entries between them are ' +
+      'checked here at read time, not by the server (Deferred Control 44).',
+    ],
+  })
+}
+
 export function evaluateShield({ sources = {}, sourceStates = {}, currencyCode } = {}) {
   // A subscription delivers documents, never holes — but the existing
   // selectors are not defensive against a null entry, so a malformed list is
@@ -1353,6 +1454,12 @@ export function evaluateShield({ sources = {}, sourceStates = {}, currencyCode }
     [CHECK.COMMITMENT_STATE_CONFLICTS]:   evaluateCommitmentStateConflicts(purchaseOrders, progressClaims, supplierInvoices, variations, sourceStates),
     [CHECK.FINANCIAL_EXCEPTIONS]:         evaluateFinancialExceptions(
       { supplierInvoices, supplierPayments, supplierCreditNotes, retentionReleases }, sourceStates,
+    ),
+    // The approved-budget object is NOT a list: the composite hook's raw
+    // documents and read states (or null / anything else → no pointer).
+    [CHECK.APPROVED_BUDGET_INTEGRITY]:    evaluateApprovedBudgetIntegrity(
+      sources.approvedBudget && typeof sources.approvedBudget === 'object' && !Array.isArray(sources.approvedBudget) ? sources.approvedBudget : null,
+      currencyCode, sourceStates,
     ),
   }
   const checks = CHECK_ORDER.map(id => byId[id])

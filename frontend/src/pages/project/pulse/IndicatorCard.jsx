@@ -31,7 +31,10 @@ const STATE_BADGE = {
 // named by the engine; the list only decides which to print and how.
 const VALUE_ROWS = {
   [INDICATOR.FORECAST_OVER_BUDGET]: [
-    { key: 'approvedBudget',    label: 'Approved Budget',     kind: COLUMN.MONEY },
+    // ADR-70: which budget the comparison used — the approved version, or
+    // the working register (never presented as approved).
+    { key: 'budgetSource',      label: 'Compared with',       kind: COLUMN.TEXT },
+    { key: 'approvedBudget',    label: 'Budget',              kind: COLUMN.MONEY },
     { key: 'forecastFinalCost', label: 'Forecast Final Cost', kind: COLUMN.MONEY },
     { key: 'varianceToBudget',  label: 'Variance to Budget',  kind: COLUMN.MONEY, dangerWhenNegative: true },
     { key: 'overBudgetCount',   label: 'Cost codes over their budget', kind: COLUMN.INT },

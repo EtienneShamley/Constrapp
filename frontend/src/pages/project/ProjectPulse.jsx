@@ -5,6 +5,8 @@ import { useAuth } from '../../hooks/useAuth'
 import { useProfile } from '../../hooks/useProfile'
 import { useLocalToday } from '../../hooks/useLocalToday'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
+import { useApprovedBudget } from '../../hooks/useApprovedBudget'
+import { resolveBudgetSource, budgetSourceState } from '../../lib/budgetApproval'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
@@ -153,6 +155,15 @@ function PulseHeading({ currencyCode }) {
 function PulseWorkspace({ projectId, currencyCode, role, currentUid }) {
   const now = useLocalToday()
   const { budgetLines, budgetLinesLoading, budgetLinesError }                         = useBudgetLines(projectId)
+  // ADR-70: the AUTHORITATIVE budget source — the approved pointer, active
+  // header and snapshot — resolved against the working register; its folded
+  // state is the ONE entry every budget indicator gates on.
+  const { approvedBudget }                                                            = useApprovedBudget(projectId)
+  const budgetSource = useMemo(
+    () => resolveBudgetSource({ approvedBudget, budgetLines, budgetLinesLoading, budgetLinesError, currencyCode }),
+    [approvedBudget, budgetLines, budgetLinesLoading, budgetLinesError, currencyCode],
+  )
+  const { loading: approvedBudgetLoading, error: approvedBudgetError } = budgetSourceState(budgetSource)
   const { purchaseOrders, purchaseOrdersLoading, purchaseOrdersError }                = usePurchaseOrders(projectId)
   const { progressClaims, progressClaimsLoading, progressClaimsError }                = useProgressClaims(projectId)
   const { supplierInvoices, supplierInvoicesLoading, supplierInvoicesError }          = useSupplierInvoices(projectId)
@@ -184,7 +195,7 @@ function PulseWorkspace({ projectId, currencyCode, role, currentUid }) {
 
   const pulse = useMemo(() => evaluatePulse({
     sources: {
-      budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
+      budgetLines, approvedBudget, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
       variations, forecastLines, baseline, supplierPayments, retentionReleases, activities,
       programmeBaselines, programmeBaselineSnapshot,
     },
@@ -192,6 +203,7 @@ function PulseWorkspace({ projectId, currencyCode, role, currentUid }) {
     // shape (ADR-42), so availability is decided by the same figureState.
     sourceStates: {
       budgetLines:         { loading: budgetLinesLoading,         error: budgetLinesError },
+      approvedBudget:      { loading: approvedBudgetLoading,      error: approvedBudgetError },
       purchaseOrders:      { loading: purchaseOrdersLoading,      error: purchaseOrdersError },
       progressClaims:      { loading: progressClaimsLoading,      error: progressClaimsError },
       supplierInvoices:    { loading: supplierInvoicesLoading,    error: supplierInvoicesError },
@@ -208,10 +220,10 @@ function PulseWorkspace({ projectId, currencyCode, role, currentUid }) {
     now,
     currencyCode,
   }), [
-    budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
+    budgetLines, approvedBudget, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
     variations, forecastLines, baseline, supplierPayments, retentionReleases, activities,
     programmeBaselines, programmeBaselineSnapshot,
-    budgetLinesLoading, budgetLinesError, purchaseOrdersLoading, purchaseOrdersError,
+    budgetLinesLoading, budgetLinesError, approvedBudgetLoading, approvedBudgetError, purchaseOrdersLoading, purchaseOrdersError,
     progressClaimsLoading, progressClaimsError, supplierInvoicesLoading, supplierInvoicesError,
     supplierCreditNotesLoading, supplierCreditNotesError, variationsLoading, variationsError,
     forecastLinesLoading, forecastLinesError, baselineLoading, baselineError,

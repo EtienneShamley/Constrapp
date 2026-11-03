@@ -7452,3 +7452,75 @@ at that line. A two-path form (`node scripts/verify-rules-comment-only.mjs
    supplier invoices.
 3. `diff <(pbpaste) frontend/firestore.rules` (macOS, with the Console source on
    the clipboard) is empty — the published ruleset is the repo file.
+
+## 47. Constrapp SHIELD™ 2B1 — Approved Budget Versions (ADR-70) — implemented, NOT YET DEPLOYED
+
+**What is enforced.** A budget approval is a header (`budgetApprovals/{id}`) and
+ONE immutable snapshot (`budgetApprovalSnapshots/{id}`) of every working budget
+line, born together in one commit (rules pair them with `getAfter()` both
+ways, pin count / total / currency, and pin the FIRST and LAST entries to
+their source lines with `get()`); approval flips the header to `approved`
+with its version AND creates / advances the pointer (`approvedBudget/current`,
+`versionCount` exactly +1) in the same commit — by `company_admin` /
+`project_manager` only; approved and withdrawn are terminal; the snapshot is
+never updated or deleted. The Approved Budget shown anywhere is the SUM of the
+active snapshot's entries; a disagreement between pointer, header and snapshot
+makes every budget figure Unavailable. What rules cannot prove is Deferred
+Control 44.
+
+**Automated:** unit **73 files / 4,236 tests** (new `budgetApproval.test.js`,
+**34** — lifecycle, roles, capture validation incl. duplicates / missing codes /
+inactive codes / sub-cent / 2,000-line and byte ceilings, snapshot reading,
+every integrity problem, the source adapter in every state incl. fail-closed
+and the original, drift and its key, versions, the pending difference, the
+version delta, the financial invariants — Budgeted / Variance / Remaining
+Reference move by the approved delta while Actual, Remaining Committed, CTC,
+FFC, Gross Profit, Margin %, Current Contract Sum, payables and cash are
+byte-identical, BOQ / tender parity, the Dashboard snapshot's source and
+gating; `budgetApprovalActions.test.js`, **17** — read order, the capture
+pair, every refusal before a write, drift acknowledged by key, SUPERSEDED on a
+moved pointer, the retry-after-timeout guard, withdraw, error messages, hook
+structure; `pulse.test.js`, `shield.test.js`, `financialReliability.test.js`,
+`projectSnapshot.test.js`, `dashboardV2.test.js` and `loadingNotZero.test.js`
+re-pinned to the approved source with the perturbation suites proving the
+approved source moves every budget figure and the working lines no longer
+do). Rules **33 files / 2,093 tests** (new `budgetApprovals.rules.test.js`,
+**51** — read matrix, the capture pair by role / tenant / agreement / clock /
+currency / end-entry pins incl. another project's line and a missing cost
+code, the DC44 proofs (garbage and duplicate middle entries ACCEPTED), the
+2,000-entry worst-case write, the app's capture, the approval pair by role,
+without the pointer, mismatched version / actor / clock / identity, stamps-only
++1, the later version's +1 / different id / frozen original, approved
+immutability, snapshot immutability, pointer forgery, the app's approve incl.
+drift by key, SUPERSEDED, TWO CONCURRENT approvals landing exactly one
+version 1, the retry guard, and withdraw by capturer / approver only,
+terminal; `commercialBaseline.rules.test.js`, **36** — read / create / update
+matrices, money, dates, client, notes, exact keys, stamps, provenance, legacy
+documents, delete blocked, and the legacy original scalar frozen once a
+version exists while the live bundle's unchanged re-send passes). Lint 0 / 0;
+build clean; `rules:transitional:check` clean; `git diff --check` clean.
+FINAL `firestore.rules` 218,840 → **234,479 bytes** (+15,639; 10,521 under
+budget); transitional **235,159** (the same four marked lines).
+
+**Manual (three checks, after both steps of the DEPLOYMENT.md release order):**
+
+1. On a project with budget lines and no approved version, every surface
+   (Budget, Forecast, Commercial, Overview, BOQ, Tenders, PULSE indicator 1,
+   Dashboard snapshot) labels the figure *Working budget (not approved)*; as a
+   QS, *Prepare approval* captures a draft (the preview names the lines, the
+   total and the size); the *Approve* button is absent for the QS and present
+   for a Project Manager, who approves it as version 1. Every surface now reads
+   *Approved Budget · version 1* with the captured total; the Budget tab shows
+   an *Approved v1* column beside *Working*; the Commercial tab's Original
+   Approved Budget reads version 1's total and is no longer editable.
+2. Edit a working budget line after approval: the Approved Budget, Variance to
+   Budget, PULSE and the Dashboard do not move; the Budget tab shows the
+   pending difference and *⚠ differs from approved* on the line; Actual,
+   Remaining Committed, Forecast Final Cost, Gross Profit, Remaining Payable
+   and Cash Flow are unchanged. Prepare and approve version 2: it becomes
+   current, version 1 stays in the history unchanged, and the Original Approved
+   Budget still reads version 1.
+3. Open the same draft in two browser tabs and approve in both: the second
+   reports *Another budget version was approved…* and the history shows one
+   version. On the SHIELD tab, check 6 reads *No issue found* naming the
+   version; a `subcontractor` sign-in cannot read any approval document.

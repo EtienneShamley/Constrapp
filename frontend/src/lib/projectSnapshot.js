@@ -1,6 +1,7 @@
 import { projectForecastTotals, computeMargin, isBaselineEstablished } from './margin'
 import { payablesSummary } from './supplierPayments'
 import { releasedByInvoiceId } from './retention'
+import { resolveBudgetSource, budgetLinesFor, originalApprovedBudgetFor, BUDGET_SOURCE } from './budgetApproval'
 
 // ── Dashboard Project Snapshot (read-time; COMPOSITION ONLY) ─────────────────
 //
@@ -76,14 +77,24 @@ export function displayFigure(figure, format) {
 // Every subscription the snapshot reads. Cost codes are deliberately absent:
 // in buildForecastRows they supply display NAMES only and change no amount, so
 // the snapshot does not subscribe to them.
+//
+// `approvedBudget` (SHIELD 2B1, ADR-70) is the AUTHORITATIVE budget source: the
+// approved-budget pointer, the active version's header and its immutable
+// snapshot (hooks/useApprovedBudget.jsx), resolved through
+// lib/budgetApproval.js → resolveBudgetSource. Its source STATE folds in the
+// working budget lines while no version is approved (the legacy state), so
+// every budget figure gates on this ONE entry whichever source is live.
+// `budgetLines` stays a source for the working register itself (the Budget
+// tab's pending-difference figures and the currency-lock evidence).
 export const SNAPSHOT_SOURCES = [
-  'budgetLines', 'purchaseOrders', 'progressClaims', 'supplierInvoices',
+  'budgetLines', 'approvedBudget', 'purchaseOrders', 'progressClaims', 'supplierInvoices',
   'supplierCreditNotes', 'variations', 'forecastLines', 'baseline',
   'supplierPayments', 'retentionReleases',
 ]
 
 export const SNAPSHOT_SOURCE_LABELS = {
   budgetLines:         'Budget Lines',
+  approvedBudget:      'Approved Budget',
   purchaseOrders:      'Purchase Orders',
   progressClaims:      'Progress Claims',
   supplierInvoices:    'Supplier Invoices',
@@ -118,20 +129,25 @@ const FFC_SOURCES = [
 // row union) — so the Forecast table, its per-row figures and the
 // unforecasted / line counts depend on all of them. Cost codes are absent for
 // the same reason as above: they supply names, never a row or an amount.
+//
+// ADR-70: the budget side of the union is the AUTHORITATIVE budget source
+// (`approvedBudget` — the approved snapshot's lines, or the working lines
+// while no version is approved, with the working read state folded in), so
+// `budgetLines` is no longer a row source in its own right.
 export const FORECAST_ROW_SOURCES = [
-  'budgetLines', 'purchaseOrders', 'progressClaims', 'supplierInvoices',
+  'approvedBudget', 'purchaseOrders', 'progressClaims', 'supplierInvoices',
   'supplierCreditNotes', 'variations', 'forecastLines',
 ]
 
 export const FIGURE_DEPENDENCIES = {
-  approvedBudget:     ['budgetLines'],
+  approvedBudget:     ['approvedBudget'],
   actual:             ['progressClaims', 'supplierInvoices', 'supplierCreditNotes'],
   remainingCommitted: ['purchaseOrders', 'progressClaims', 'supplierInvoices', 'variations'],
   forecastFinalCost:  FFC_SOURCES,
-  varianceToBudget:   ['budgetLines', ...FFC_SOURCES],
+  varianceToBudget:   ['approvedBudget', ...FFC_SOURCES],
   margin:             ['baseline', 'variations', ...FFC_SOURCES],
   remainingPayable:   ['supplierInvoices', 'supplierPayments', 'supplierCreditNotes', 'retentionReleases'],
-  costComposition:    ['budgetLines', ...FFC_SOURCES],
+  costComposition:    ['approvedBudget', ...FFC_SOURCES],
   // ── Project tabs (Forecast, Commercial, Overview — ADR-44) ──
   // Traced through forecastRollups / computeMargin exactly as above:
   //   · supplier variation exposure — gross approved / unapplied / pending
@@ -153,10 +169,13 @@ export const FIGURE_DEPENDENCIES = {
   //     Committed; the same two sources decide the split
   committedNewScopeVariations: ['variations', 'purchaseOrders'],
   forecastRows:              FORECAST_ROW_SOURCES,
-  contractBaseline:          ['baseline'],
+  //   · contract baseline / margin movement (ADR-70) — the Original Approved
+  //     Budget is version 1's snapshot once a budget is approved, so the
+  //     approved source gates them beside the commercial baseline
+  contractBaseline:          ['baseline', 'approvedBudget'],
   clientVariations:          ['variations'],
   currentContractSum:        ['baseline', 'variations'],
-  marginMovement:            ['baseline', 'variations', ...FFC_SOURCES],
+  marginMovement:            ['baseline', 'approvedBudget', 'variations', ...FFC_SOURCES],
   // ── Dashboard v2 (ADR-45) ──
   //   · Uncommitted Cost to Complete — the saved forecast inputs only (every
   //     forecast line is a row in the union, so no other source moves it)
@@ -171,7 +190,10 @@ export const FIGURE_DEPENDENCIES = {
   //     (revised by applied variations, so `variations` gates it too)
   claimedExposure:    ['progressClaims'],
   invoiced:           ['supplierInvoices', 'supplierCreditNotes'],
-  remainingBudget:    ['budgetLines', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes'],
+  remainingBudget:    ['approvedBudget', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes'],
+  //   · working budget (ADR-70) — the editable register's own total and its
+  //     pending difference from the approved figure (Budget tab only)
+  workingBudget:      ['budgetLines', 'approvedBudget'],
   commitmentExposure: ['purchaseOrders', 'progressClaims', 'supplierInvoices', 'variations'],
   closedResidual:     ['purchaseOrders', 'progressClaims', 'supplierInvoices', 'variations'],
 }
@@ -201,14 +223,28 @@ export function projectSnapshot({ sources = {}, sourceStates = {}, currencyCode 
   const {
     budgetLines = [], purchaseOrders = [], progressClaims = [], supplierInvoices = [],
     supplierCreditNotes = [], variations = [], forecastLines = [], baseline = null,
-    supplierPayments = [], retentionReleases = [],
+    supplierPayments = [], retentionReleases = [], approvedBudget = null,
   } = sources
 
+  // THE budget source (ADR-70): the approved snapshot's lines when a version
+  // is approved, the working lines until then. The read state the caller
+  // passes as `sourceStates.approvedBudget` already folds the working
+  // register in; here the working flags are not re-derived (the caller's
+  // state entry is the gate), only the lines are chosen.
+  const budgetSource = resolveBudgetSource({
+    approvedBudget, budgetLines,
+    budgetLinesLoading: sourceStates?.budgetLines?.loading === true,
+    budgetLinesError: sourceStates?.budgetLines?.error === true,
+    currencyCode,
+  })
   const totals = projectForecastTotals({
-    budgetLines, purchaseOrders, progressClaims, supplierInvoices,
+    budgetLines: budgetLinesFor(budgetSource), purchaseOrders, progressClaims, supplierInvoices,
     supplierCreditNotes, variations, forecastLines,
   })
-  const m = computeMargin({ baseline, variations, forecastFinalCost: totals.forecastFinalCost, purchaseOrders })
+  const m = computeMargin({
+    baseline, variations, forecastFinalCost: totals.forecastFinalCost, purchaseOrders,
+    originalApprovedBudget: originalApprovedBudgetFor(budgetSource),
+  })
   const payables = payablesSummary(
     supplierInvoices, supplierPayments, supplierCreditNotes, releasedByInvoiceId(retentionReleases),
   )
@@ -238,6 +274,17 @@ export function projectSnapshot({ sources = {}, sourceStates = {}, currencyCode 
 
   return {
     currencyCode,
+    // Which source the budget figures came from (ADR-70): 'approved' with its
+    // version, or 'working' — the LEGACY, unapproved register, which every
+    // surface labels as such. A selection, never a figure.
+    budgetSource: {
+      kind: budgetSource.kind,
+      approved: budgetSource.kind === BUDGET_SOURCE.APPROVED,
+      version: budgetSource.version,
+      approvedAt: budgetSource.approvedAt,
+      approvedBy: budgetSource.approvedBy,
+      problems: budgetSource.problems,
+    },
     approvedBudget:     figure('approvedBudget', totals.budgeted, sourceStates),
     actual:             figure('actual', totals.actual, sourceStates),
     remainingCommitted: figure('remainingCommitted', totals.remainingCommitted, sourceStates),

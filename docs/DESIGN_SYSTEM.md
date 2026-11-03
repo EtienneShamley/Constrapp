@@ -340,6 +340,24 @@ never a planned one, a price, a demo, or an unsupported claim (pinned by
 `tests/unit/authSurface.test.js`). Vertical rhythm uses an arbitrary
 `[@media(min-height:900px)]:` variant so a 1280×800 laptop does not scroll.
 
+**Approved Budget (ADR-70, SHIELD 2B1)** — the Budget tab opens with a
+`BudgetApprovalPanel` card (`pages/project/budget/`): the Approved Budget
+figure with its version, approver and date (or *Working budget (not approved)*
+in `brand-amber` text — the words carry the meaning, never the colour alone),
+the Original Approved Budget, the working total, the pending difference, the
+*Prepare approval* / *Review draft* actions and a collapsible version history
+using the existing `Badge` variants (draft→`soon`, approved→`active`,
+withdrawn→`danger`). The capture and review dialogs render through the shared
+`ActivityDialog` shell (the ADR-64 contract: `autoFocus` on the reason, Escape
+and backdrop ignored while saving, focus returned to the opener); the review
+dialog shows the captured allocation table, the delta against the current
+version, the drift list with a 44 px acknowledgement checkbox bound to THAT
+drift, and offers *Approve as version N* only to approver roles. Every other
+surface (Forecast, Commercial, Overview, BOQ, Tenders, PULSE, the Dashboard
+snapshot) relabels its budget figure *Approved Budget · version N* or
+*Working Budget* / *not approved* from `budgetSource` — no new tokens, no new
+colours, no Dashboard redesign.
+
 ## Recorded Violations — Technical Debt
 
 The rules are "no inline style objects" and "no hard-coded colours", but the

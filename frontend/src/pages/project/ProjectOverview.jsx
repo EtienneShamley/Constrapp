@@ -11,6 +11,8 @@ import { useProjects } from '../../hooks/useProjects'
 import { useProfile } from '../../hooks/useProfile'
 import { useProjectCommercial } from '../../hooks/useProjectCommercial'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
+import { useApprovedBudget } from '../../hooks/useApprovedBudget'
+import { resolveBudgetSource, budgetSourceState, budgetLinesFor, originalApprovedBudgetFor } from '../../lib/budgetApproval'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
@@ -56,16 +58,21 @@ const failedLabel = (failedSources) =>
 // → FIGURE_DEPENDENCIES — ADR-44): loading "—", failed "Unavailable", else the
 // value. A failed baseline read shows the card as unavailable rather than
 // hiding it; a cleanly settled baseline with no contract value still hides it.
-function MarginCards({ currencyCode, costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, supplierCreditNotesError, variations, forecastLines, baseline, baselineLoading, baselineError, sourceStates }) {
+function MarginCards({ currencyCode, costCodes, budgetSource, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, supplierCreditNotesError, variations, forecastLines, baseline, baselineLoading, baselineError, sourceStates }) {
   const money = (n) => formatCurrency(n, currencyCode)
 
+  // ADR-70: the budget side of the forecast union is THE budget source, and
+  // the Original Approved Budget is version 1's total once a budget is approved.
   const forecastTotals = useMemo(
-    () => projectForecastTotals({ costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines }),
-    [costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines],
+    () => projectForecastTotals({ costCodes, budgetLines: budgetLinesFor(budgetSource), purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines }),
+    [costCodes, budgetSource, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines],
   )
   const m = useMemo(
-    () => computeMargin({ baseline, variations, forecastFinalCost: forecastTotals.forecastFinalCost, purchaseOrders }),
-    [baseline, variations, forecastTotals.forecastFinalCost, purchaseOrders],
+    () => computeMargin({
+      baseline, variations, forecastFinalCost: forecastTotals.forecastFinalCost, purchaseOrders,
+      originalApprovedBudget: originalApprovedBudgetFor(budgetSource),
+    }),
+    [baseline, variations, forecastTotals.forecastFinalCost, purchaseOrders, budgetSource],
   )
 
   if (baselineLoading) return null
@@ -257,6 +264,15 @@ const canEditProjectCurrency = (role) => role === 'company_admin' || role === 'p
 // Firestore rules remain the boundary.
 function ProjectFinancialCards({ project, projectId, currencyCode, canEditCurrency }) {
   const { budgetLines, budgetLinesLoading, budgetLinesError }                         = useBudgetLines(projectId)
+  // ADR-70: THE budget source (with version 1 for the original) — the
+  // approved snapshot when a version is approved, the working register
+  // (labelled unapproved) until then. Its folded state gates the figures.
+  const { approvedBudget }                                                            = useApprovedBudget(projectId, { original: true })
+  const budgetSource = useMemo(
+    () => resolveBudgetSource({ approvedBudget, budgetLines, budgetLinesLoading, budgetLinesError, currencyCode }),
+    [approvedBudget, budgetLines, budgetLinesLoading, budgetLinesError, currencyCode],
+  )
+  const { loading: approvedBudgetLoading, error: approvedBudgetError } = budgetSourceState(budgetSource)
   const { costCodes }                                                                 = useCostCodes()
   const { purchaseOrders, purchaseOrdersLoading, purchaseOrdersError }                = usePurchaseOrders(projectId)
   const { progressClaims, progressClaimsLoading, progressClaimsError }                = useProgressClaims(projectId)
@@ -275,6 +291,7 @@ function ProjectFinancialCards({ project, projectId, currencyCode, canEditCurren
   // the margin cards and the currency card.
   const sourceStates = {
     budgetLines:         { loading: budgetLinesLoading,         error: budgetLinesError },
+    approvedBudget:      { loading: approvedBudgetLoading,      error: approvedBudgetError },
     purchaseOrders:      { loading: purchaseOrdersLoading,      error: purchaseOrdersError },
     progressClaims:      { loading: progressClaimsLoading,      error: progressClaimsError },
     supplierInvoices:    { loading: supplierInvoicesLoading,    error: supplierInvoicesError },
@@ -320,7 +337,7 @@ function ProjectFinancialCards({ project, projectId, currencyCode, canEditCurren
       <MarginCards
         currencyCode={currencyCode}
         costCodes={costCodes}
-        budgetLines={budgetLines}
+        budgetSource={budgetSource}
         purchaseOrders={purchaseOrders}
         progressClaims={progressClaims}
         supplierInvoices={supplierInvoices}
