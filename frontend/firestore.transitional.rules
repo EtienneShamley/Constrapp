@@ -6,16 +6,11 @@ rules_version = '2';
 // with firestore.rules (FINAL) once the new bundle is live. Temporary compatibility only.
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Comments here are deliberately brief: Firestore refuses a ruleset over 256 KB
-    // of source (ADR-51, ADR-60). The rationale, enforced controls and client-only
-    // gaps for every collection live in docs/SECURITY.md and the ADRs in
-    // docs/PROJECT_DECISIONS.md.
-    // ── Shared helpers (ADR-60) ──────────────────────────────────────────────
-    // Declared once here and visible to every match below (functions declared
-    // in an outer match are in scope in nested matches). Path wildcards are NOT
-    // in scope at this level, so tenant helpers take companyId / projectId from
-    // the calling match. Bodies are byte-for-byte the per-block helpers they
-    // replace; no helper reads a document its callers did not already read.
+    // Comments are deliberately brief: Firestore refuses a ruleset over 256 KB of
+    // source (ADR-51, ADR-60, ADR-69). Rationale, enforced controls and client-only
+    // gaps for every collection live in docs/SECURITY.md and docs/PROJECT_DECISIONS.md.
+    // ── Shared helpers (ADR-60) — declared once, in scope in every nested match. Path
+    // wildcards are not in scope here, so tenant helpers take companyId / projectId.
 
     // The caller's role, from their membership document.
     function memberRole() {
@@ -43,48 +38,33 @@ service cloud.firestore {
       return request.resource.data.updatedBy == request.auth.uid
           && request.resource.data.updatedAt == request.time;
     }
-    // MONEY IS DECIMAL; IEEE-754 IS NOT. Rules numbers are doubles, so an exact
-    // `subtotal + gstTotal == grossTotal` REJECTS legitimate cent values (0.10 +
-    // 0.20 is 0.30000000000000004). Both sides are therefore compared as WHOLE
-    // CENTS via math.round() — a REPRESENTATION FIX, NOT A WEAKENED INVARIANT:
-    // exactly a half-cent tolerance, so any discrepancy of one cent or more still
-    // fails. lib/purchaseOrders.js → roundMoney() and lib/payments.js → toCents()
-    // mirror this, so a write the client considers valid is never rejected here.
+    // MONEY IS DECIMAL; IEEE-754 IS NOT: an exact `a + b == c` on doubles rejects
+    // legitimate cent values, so both sides compare as WHOLE CENTS via math.round() —
+    // a representation fix (half-cent tolerance), never a weakened invariant.
+    // Mirrors roundMoney() / toCents() so a client-valid write is never rejected.
     function cents(v) {
       return math.round(v * 100);
     }
-    // GST (flat 10%) on a non-negative whole-cent amount, round-half-up. Mirrors
+    // GST (flat 10%) on a non-negative whole-cent amount, round-half-up; mirrors
     // roundMoney(x * GST_RATE) / lib/retention.js → cumulativeRetentionGst.
-    //
-    // ⚠️ DO NOT "SIMPLIFY" THIS TO math.round(c / 10). Firestore Rules and
-    // JavaScript DISAGREE there, and it was proven in the emulator: Rules `/` on
-    // two integers TRUNCATES, so 10005/10 yields 1000 while JS Math.round(1000.5)
-    // yields 1001 — a one-cent divergence that would reject legitimate client
-    // writes in production while every unit test passed. `math.floor((c + 5) / 10)`
-    // is round-half-up for non-negative c and is correct under EITHER division
-    // semantics. Every caller validates its operands >= 0 before reaching this
-    // (pinned by tests/rules/retentionReleases.rules.test.js).
+    // ⚠️ DO NOT "SIMPLIFY" TO math.round(c / 10): Rules integer `/` TRUNCATES
+    // (10005/10 → 1000) where JS Math.round(1000.5) → 1001 — proven in the emulator.
+    // floor((c + 5) / 10) is half-up under either semantics. Callers validate
+    // operands >= 0 first (tests/rules/retentionReleases.rules.test.js).
     function gstCents(c) {
       return math.floor((c + 5) / 10);
     }
-    // THE ONE GST PIN for a client-rounded 10% figure (ADR-57 / ADR-58; hoisted
-    // from progressClaims by the GST boundary hotfix and now shared by the
-    // supplierInvoices `retentionGst` pin and the retentionReleases delta):
-    // roundMoney(x × 0.1) computes in binary floating point, which on some
-    // half-cent boundaries lands a hair below .5 and rounds DOWN (40.15 → 4.01
-    // where half-up gives 4.02). Swept exhaustively: the deviation is always −1,
-    // never +1, and never off a boundary — so this admits EXACTLY half-up, or ONE
-    // cent below it on a boundary only, and nothing else. `-5` admits the same
-    // deviation on the negative net a LEGACY negative claim retention can still
-    // produce at approval (new writes require retention >= 0).
+    // THE ONE GST PIN for a client-rounded 10% figure (ADR-57 / ADR-58; shared by
+    // progressClaims, the supplierInvoices retentionGst pin and the retentionReleases
+    // delta — GST boundary hotfix): roundMoney(x × 0.1) can land ONE cent below
+    // half-up on a half-cent boundary (40.15 → 4.01), never above, never off a
+    // boundary (swept exhaustively). `-5` covers a legacy negative net at approval.
     function gstPinned(netC, gstC) {
       return gstC == gstCents(netC)
           || ((netC % 10 == 5 || netC % 10 == -5) && gstC == gstCents(netC) - 1);
     }
-    // `revision` EXACTLY +1 on every update, a missing key reading as 0 (the
-    // progressClaims / variations idiom, ADR-58 / ADR-59: rules-ASSISTED
-    // concurrency for the client's revision-guarded transactions, not
-    // rules-proven — DC36 / DC37).
+    // `revision` EXACTLY +1 on every update, a missing key reading as 0 (ADR-58 /
+    // ADR-59): rules-ASSISTED concurrency, not rules-proven — DC36 / DC37.
     function revisionIncremented() {
       return request.resource.data.revision is number
           && request.resource.data.revision == resource.data.get('revision', 0) + 1;
@@ -114,9 +94,8 @@ service cloud.firestore {
     function poPath(companyId, projectId) {
       return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/purchaseOrders/$(request.resource.data.poId);
     }
-    // lib/currency.js → resolveProjectCurrency, mirrored: the project's
-    // well-formed `currency`, else the company's well-formed `baseCurrency`, else
-    // AUD. Checked at CREATE only (the field is frozen afterwards).
+    // lib/currency.js → resolveProjectCurrency, mirrored: project `currency`, else
+    // company `baseCurrency`, else AUD. Checked at CREATE only (frozen afterwards).
     function resolvedCurrency(companyId, projectId) {
       let pc = get(projectPath(companyId, projectId)).data.get('currency', '');
       let cc = get(/databases/$(database)/documents/companies/$(companyId)).data.get('baseCurrency', '');
@@ -218,21 +197,16 @@ service cloud.firestore {
                          // Never unlock.
                          && (resource.data.get('currencyLocked', false) == false
                              || request.resource.data.get('currencyLocked', false) == true)
-                         // Currency frozen while locked — with exactly ONE
-                         // carve-out: a locked project that stores NO
-                         // well-formed currency may receive its FIRST explicit
-                         // code (see LEGACY INITIALISATION above). The stored
-                         // code is shape-tested with the same '^[A-Z]{3}$'
-                         // pattern the request is validated against, so the
-                         // carve-out and the freeze partition every possible
-                         // stored value between them with no gap.
+                         // Currency frozen while locked, with ONE carve-out: a locked project storing
+                         // NO well-formed currency may receive its FIRST explicit code (see LEGACY
+                         // INITIALISATION above). The same '^[A-Z]{3}$' test partitions every stored
+                         // value between the carve-out and the freeze with no gap.
                          && (resource.data.get('currencyLocked', false) == false
                              || !(resource.data.get('currency', '') is string
                                   && resource.data.get('currency', '').matches('^[A-Z]{3}$'))
                              || request.resource.data.get('currency', '') == resource.data.get('currency', ''))
-                         // ADR-39 metadata correction: headline budget and
-                         // provenance frozen, editable fields shape-validated
-                         // on change. See the METADATA CORRECTION note above.
+                         // ADR-39 metadata correction: headline budget and provenance frozen,
+                         // editable fields shape-validated on change (METADATA CORRECTION above).
                          && projectCorePreserved()
                          && statusOk()
                          && nameOk()
@@ -371,12 +345,9 @@ service cloud.firestore {
             && request.resource.data.currency is string
             && request.resource.data.currency.matches('^[A-Z]{3}$');
       }
-      // Quant 1B provenance (ADR-52): the LATEST explicit application of a
-      // measured total. Optional. Either preserved exactly as stored (a manual
-      // edit carries it along) or freshly written by the caller, now, with the
-      // quantity being written. It records one confirmed action, nothing more.
-      // `evidence` is the client's deterministic fingerprint of the reviewed
-      // measurements (shape-checked only — rules cannot recompute it).
+      // Quant 1B provenance (ADR-52): the LATEST explicit application of a measured
+      // total — preserved exactly as stored, or freshly caller-stamped with THIS write.
+      // `evidence` is the client fingerprint, shape-checked only.
       function quantAppliedShape(q) {
         return q is map
             && q.keys().hasOnly(['at', 'by', 'quantity', 'measurementCount', 'evidence'])
@@ -427,9 +398,8 @@ service cloud.firestore {
                       && (quantAppliedPreserved() || quantAppliedFresh())
                     )
                     ||
-                    // (b) ACTIVE -> VOID (terminal). Voiding is the only exit:
-                    //     it may touch nothing but the void audit fields, so a
-                    //     voided item is immutable retained history.
+                    // (b) ACTIVE -> VOID (terminal) — void audit fields only; a voided item is
+                    //     immutable retained history.
                     (
                       resource.data.status == 'active'
                       && request.resource.data.status == 'void'
@@ -457,13 +427,9 @@ service cloud.firestore {
         return request.resource.data.keys().hasOnly(['poNumber', 'status', 'supplierName', 'supplierId', 'description', 'lineItems', 'subtotal', 'gst', 'total', 'currency', 'revision', 'notes', 'sentAt', 'sentBy', 'closedAt', 'closedBy', 'cancelledAt', 'cancelledBy', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'sourceTenderPackageId', 'sourceTenderBidId', 'sourceTenderNumber'])
             && request.resource.data.keys().hasAll(['poNumber', 'status', 'supplierName', 'supplierId', 'description', 'lineItems', 'subtotal', 'gst', 'total', 'currency', 'revision', 'notes', 'sentAt', 'sentBy', 'closedAt', 'closedBy', 'cancelledAt', 'cancelledBy', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']);
       }
-      // M3-A (ADR-61): an award-raised PO cites its source. Either all three
-      // keys are absent (manual / legacy), or all three are present and
-      // get()-verified: the package is awarded, its winning bid is the cited
-      // bid, that bid is received and names this PO's supplier, and — through
-      // getAfter(), because the raise is ONE transaction — the package points
-      // back at this PO once the commit lands. No source can be spoofed onto
-      // a PO without the package's own branch (f)/(g) admitting the link.
+      // M3-A (ADR-61): an award-raised PO cites its source — all three keys absent
+      // (manual / legacy), or all present and get()/getAfter()-verified against the
+      // awarded package and its winning bid (docs/SECURITY.md → Deferred Control 38).
       function tenderPkgPath() {
         return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/tenderPackages/$(request.resource.data.sourceTenderPackageId);
       }
@@ -507,9 +473,8 @@ service cloud.firestore {
             && d.revision is number
             && d.externalRefs is map;
       }
-      // Authored content. Bounds stop unbounded strings, not business cases;
-      // the line COUNT is the honest ceiling on what rules can say about
-      // `lineItems` (no iteration — Deferred Control 35).
+      // Authored content; bounds stop unbounded strings. The line COUNT is the honest
+      // ceiling on `lineItems` (no iteration — Deferred Control 35).
       function contentShapeValid() {
         let d = request.resource.data;
         return d.description is string
@@ -529,14 +494,8 @@ service cloud.firestore {
             && d.gst >= 0
             && d.total >= 0;
       }
-      // subtotal + gst == total EXACTLY, in cents. gst is 10% of subtotal
-      // round-half-up EXACTLY — except on a half-cent boundary (subtotal cents
-      // ending in 5), where ONE cent below is also accepted: lib/purchaseOrders
-      // .js → poTotals computes roundMoney(subtotal × 0.1) in binary floating
-      // point, and there the product can land a hair below .5 and round DOWN
-      // (40.15 → 4.01 where half-up gives 4.02). Swept exhaustively to $1M and
-      // sampled to $90M: the deviation is always −1, never +1, and never off a
-      // boundary — so this admits exactly the app's own output and nothing else
+      // subtotal + gst == total EXACTLY in cents; gst is 10% of subtotal half-up, or
+      // ONE cent below on a half-cent boundary only — the app's own roundMoney output
       // (ADR-57). GST_RATE is a flat 10% regardless of currency.
       function moneyBalanced() {
         let d = request.resource.data;
@@ -563,10 +522,8 @@ service cloud.firestore {
             && d.cancelledBy == null;
       }
       // The identity no update may rewrite. Optional keys are read through
-      // get(key, null) on BOTH sides so a document written before ADR-57 (no
-      // `*By` stamps, possibly no `externalRefs`) compares equal and stays
-      // writable; `hasOnly` on changedKeys() in every branch below is what
-      // freezes the lifecycle stamps a transition does not own.
+      // get(key, null) on BOTH sides so a pre-ADR-57 document (no `*By` stamps,
+      // possibly no `externalRefs`) compares equal and stays writable.
       function corePreserved() {
         let d = request.resource.data;
         let p = resource.data;
@@ -600,10 +557,8 @@ service cloud.firestore {
       // this rule (see the supplierInvoices note on the 1000-expression ceiling).
       allow update: if resource != null
                   && financialMember(companyId) && corePreserved() && updateStamped() && (
-                    // (a) DRAFT EDIT — the authored content and the derived
-                    //     header only (hooks/usePurchaseOrders.jsx →
-                    //     updatePurchaseOrder). Status and every stamp are
-                    //     outside the list, so they cannot move here.
+                    // (a) DRAFT EDIT — the authored content and the derived header only
+                    //     (updatePurchaseOrder); status and every stamp are outside the list.
                     (
                       resource.data.status == 'draft'
                       && changedKeys().hasOnly(['description', 'notes', 'lineItems', 'subtotal', 'gst', 'total', 'updatedAt', 'updatedBy'])
@@ -611,10 +566,8 @@ service cloud.firestore {
                       && moneyValid()
                     )
                     ||
-                    // (b) SEND — THE FREEZE AND COMMITMENT POINT. From draft
-                    //     (or the reserved pending_approval, which nothing
-                    //     enters). The stored lines are what gets frozen, so a
-                    //     draft with no line cannot be sent. Stamps only.
+                    // (b) SEND — THE FREEZE AND COMMITMENT POINT, from draft (or the reserved
+                    //     pending_approval). Stamps only; a draft with no line cannot be sent.
                     (
                       resource.data.status in ['draft', 'pending_approval']
                       && request.resource.data.status == 'sent'
@@ -634,11 +587,8 @@ service cloud.firestore {
                       && request.resource.data.closedAt == request.time
                     )
                     ||
-                    // (d) CANCEL (terminal) — from any non-terminal status.
-                    //     Stamps only; no reason field exists on this model.
-                    //     Whether a claim or invoice still counts against the
-                    //     PO is NOT checked here (no sibling reads) — the
-                    //     strict policy is the client's (DC35).
+                    // (d) CANCEL (terminal) — from any non-terminal status; stamps only (no reason
+                    //     field exists). Open claims / invoices are NOT checked here (DC35).
                     (
                       resource.data.status in ['draft', 'pending_approval', 'sent']
                       && request.resource.data.status == 'cancelled'
@@ -658,26 +608,19 @@ service cloud.firestore {
     // revision +1; delete blocked. What rules cannot verify (lineItems, one open
     // claim per PO, cumulative claiming) is docs/SECURITY.md → Deferred Control 36.
     match /companies/{companyId}/projects/{projectId}/progressClaims/{claimId} {
-      // lib/progressClaims.js → claimTotals computes roundMoney(net × 0.1); the
-      // shared gstPinned() (declared with the helpers above) admits exactly its
-      // output (swept again for claimTotals in tests/unit/progressClaims.test.js).
-      // Exact key set of a document the app creates (hooks/useProgressClaims.jsx).
-      // M3-B2 (ADR-63): `variationLineCount` — the number of variation-origin
-      // lines after the PO lines — is REQUIRED by this FINAL file (the STAGE-1
-      // transitional ruleset makes it optional for the M3-B1 bundle; marked line).
-      // SHIELD 2A (ADR-68): the three supplier-invoice LINK keys are likewise
-      // REQUIRED (null) at create by this FINAL file and optional in Stage 1.
+      // claimTotals computes roundMoney(net × 0.1); the shared gstPinned() admits
+      // exactly its output. Exact key set of a document the app creates. The ADR-63
+      // `variationLineCount` and the ADR-68 link keys are REQUIRED by this FINAL file
+      // and optional in the STAGE-1 transitional ruleset (marked line).
       function exactKeys() {
         return request.resource.data.keys().hasOnly(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'variationLineCount', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'supplierInvoiceId', 'supplierInvoiceLinkedAt', 'supplierInvoiceLinkedBy', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
             && request.resource.data.keys().hasAll(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']); // ADR-63 / ADR-68 TRANSITIONAL (STAGE 1): variationLineCount and the invoice link keys are OPTIONAL at create while the previous bundle is served
       }
       // ── SHIELD 2A (ADR-68) — the ONE current linked supplier invoice ────────
-      // `supplierInvoiceId` is workflow state, never a recognition event: null
-      // while unlinked, the invoice id while a draft / approved / posted
-      // claim-sourced invoice reserves this claim. A claim written before 2A
-      // carries NO such key — LEGACY — and can never be invoiced through the
-      // pairing until branch (g) records its existing invoice. Rules cannot
-      // prove that no invoice exists, so no branch sets an absent key to null.
+      // `supplierInvoiceId` is workflow state, never recognition: null while unlinked,
+      // the invoice id while an active claim-sourced invoice reserves this claim. A
+      // pre-2A claim has NO key (LEGACY) and is invoiceable only once branch (g)
+      // records its existing invoice; rules cannot prove that no invoice exists.
       function linkUnlinked(d) {
         return 'supplierInvoiceId' in d
             && d.supplierInvoiceId == null
@@ -730,15 +673,11 @@ service cloud.firestore {
       function variationLineCount(d) {
         return d.get('variationLineCount', 0);
       }
-      // The honest rules-level shape of a line set with `n` variation-origin
-      // lines after the PO lines (ADR-63): rules cannot iterate `lineItems`,
-      // but they can INDEX it — the FIRST and LAST variation-origin lines must
-      // carry a null `poLineIndex` and a string `variationId`, and with n == 0
-      // the last line must carry no `variationId`. A pre-M3-B2 client's
-      // rebuild writes every line with a numeric index and no variation id, so
-      // its draft edit of a claim that holds variation lines is REFUSED here
-      // (nothing written) instead of silently moving those lines to PO line 0.
-      // Element contents beyond this stay client-only (DC40).
+      // Rules-level shape of `n` variation-origin lines after the PO lines (ADR-63):
+      // the FIRST and LAST variation lines carry a null `poLineIndex` and a string
+      // `variationId`; with n == 0 the last line carries no `variationId`. A
+      // pre-M3-B2 rebuild is REFUSED rather than moving those lines to PO line 0.
+      // Element contents beyond this are client-only (DC40).
       function variationLinesShaped(lines, n) {
         return n == 0
             ? lines[lines.size() - 1].get('variationId', null) == null
@@ -784,9 +723,8 @@ service cloud.firestore {
             && d.externalRefs is map
             && d.assessmentNotes == '';
       }
-      // Authored content. Bounds stop unbounded strings, not business cases;
-      // the line COUNT is the honest ceiling on what rules can say about
-      // `lineItems` (no iteration — Deferred Control 36).
+      // Authored content; bounds stop unbounded strings. The line COUNT is the honest
+      // ceiling on `lineItems` (no iteration — Deferred Control 36).
       function contentShapeValid() {
         let d = request.resource.data;
         return d.claimRef is string
@@ -799,11 +737,8 @@ service cloud.firestore {
             && d.lineItems.size() >= 1
             && d.lineItems.size() <= 200;
       }
-      // The CLAIMED header, as lib/progressClaims.js → claimTotals writes it:
-      // retention >= 0 (the ADR-40 floor — a negative retention would raise the
-      // payable above the claim) and <= subtotal (the clamp), subtotal > 0 (at
-      // least one line claims something — validateClaimDraft), gst pinned to
-      // 10% of (subtotal − retention), total == net + gst exactly.
+      // The CLAIMED header as claimTotals writes it: 0 <= retention <= subtotal,
+      // subtotal > 0, gst pinned to 10% of (subtotal − retention), total == net + gst.
       function claimedMoneyTypesValid() {
         let d = request.resource.data;
         return d.retention is number
@@ -825,13 +760,9 @@ service cloud.firestore {
       function claimedMoneyValid() {
         return claimedMoneyTypesValid() && claimedMoneyBalanced();
       }
-      // The APPROVED header, as claimTotals(approvedAmounts, claim.retention)
-      // writes it at approval: the STORED retention (never rewritten) is
-      // clamped to the approved subtotal; the approved subtotal can never
-      // exceed the STORED claimed subtotal (certify at most what was claimed —
-      // approvedLineError per line, here in aggregate). The stored retention
-      // is validated by identity only, so a legacy claim approves exactly as
-      // the app computes it.
+      // The APPROVED header as claimTotals(approvedAmounts, claim.retention) writes
+      // it: the STORED retention (never rewritten) clamped to the approved subtotal;
+      // the approved subtotal never exceeds the STORED claimed subtotal.
       function approvedMoneyTypesValid() {
         let d = request.resource.data;
         let p = resource.data;
@@ -877,18 +808,12 @@ service cloud.firestore {
             && d.get('supplierInvoiceLinkedAt', null) == null
             && d.get('supplierInvoiceLinkedBy', null) == null;
       }
-      // Tier-2 source validation — CREATE ONLY. The PO is a scalar reference,
-      // so it CAN be get()-ed: it must exist in THIS project and be `sent`
-      // (lib/progressClaims.js → CLAIMABLE_PO_STATUSES), and the claim's
-      // number, supplier snapshot and line COUNT must be the PO's lines plus
-      // the declared variation-origin lines (one per PO line, ADR-37; plus the
-      // new-scope lines, ADR-63, whose shape is pinned at the ends). The path
-      // is built inside the guarded branch, never before it. Repeated access to
-      // one document within one evaluation is a single billed read.
-      // The PO is bound ONCE (`let po`) — every repeated `get(poPath(…)).data`
-      // spent from the engine's 1000-expression ceiling, which the create
-      // evaluation reached in the emulator once the ADR-63 checks were added.
-      // A missing PO makes `.data` error, which denies exactly as `exists()` did.
+      // Tier-2 source validation — CREATE ONLY. The PO must exist in THIS project and
+      // be `sent`; the number, supplier snapshot and line COUNT must be the PO's lines
+      // plus the declared variation-origin lines (ADR-37 / ADR-63). The path is built
+      // inside the guarded branch. The PO is bound ONCE (`let po`): repeated get()
+      // spent the engine's 1000-expression ceiling (ADR-63); a missing PO makes
+      // `.data` error, which denies exactly as `exists()` did.
       function sourcePoValid() {
         let d = request.resource.data;
         let po = get(poPath(companyId, projectId)).data;
@@ -902,10 +827,8 @@ service cloud.firestore {
             && variationLinesShaped(d.lineItems, n);
       }
       // The identity no update may rewrite. Optional keys are read through
-      // get(key, null) on BOTH sides so a document written before ADR-58 (no
-      // `submittedBy` / `rejectedBy` / audit keys) compares equal and stays
-      // writable; `hasOnly` on changedKeys() in every branch below is what
-      // freezes the stamps and the money a transition does not own.
+      // get(key, null) on BOTH sides so a pre-ADR-58 document compares equal and
+      // stays writable; `hasOnly` on changedKeys() freezes the rest per branch.
       function corePreserved() {
         let d = request.resource.data;
         let p = resource.data;
@@ -943,13 +866,9 @@ service cloud.firestore {
       // this rule (see the supplierInvoices note on the 1000-expression ceiling).
       allow update: if resource != null
                   && financialMember(companyId) && corePreserved() && updateStamped() && revisionIncremented() && (
-                    // (a) DRAFT EDIT — the authored content and the derived
-                    //     claimed header only (hooks/useProgressClaims.jsx →
-                    //     updateProgressClaim). Status, every stamp, every
-                    //     approved value and the assessment notes are outside
-                    //     the list. The line COUNT is pinned: the set is fixed
-                    //     one-per-PO-line and a draft edit re-authors amounts,
-                    //     never lines.
+                    // (a) DRAFT EDIT — the authored content and the derived claimed header only
+                    //     (updateProgressClaim); status, stamps, approved values and assessment
+                    //     notes are outside the list; the line COUNT is pinned.
                     (
                       resource.data.status == 'draft'
                       && changedKeys().hasOnly(['claimRef', 'periodEnding', 'notes', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'revision', 'updatedAt', 'updatedBy'])
@@ -973,18 +892,12 @@ service cloud.firestore {
                       && request.resource.data.submittedAt == request.time
                     )
                     ||
-                    // (c) APPROVE — THE CERTIFICATION POINT (Actual starts
-                    //     recognising the certified value). From submitted, or
-                    //     the reserved under_review which nothing enters. It
-                    //     writes the certified lines (contents unverifiable —
-                    //     the count is pinned), the approved header, the
-                    //     assessment notes and its own stamps — the claimed
-                    //     header and the retention are untouched, and the
-                    //     approved subtotal cannot exceed the claimed one.
-                    //     ADR-68: approval also INITIALISES the invoice link
-                    //     (the three keys present and null — a claim created
-                    //     by the pre-2A bundle becomes new-format here); this
-                    //     FINAL file requires it, Stage 1 tolerates its absence.
+                    // (c) APPROVE — THE CERTIFICATION POINT (Actual starts recognising the
+                    //     certified value). From submitted (or the reserved under_review). Writes
+                    //     the certified lines (count pinned), the approved header, the assessment
+                    //     notes and its own stamps; the claimed header and retention are untouched.
+                    //     ADR-68: approval also INITIALISES the invoice link (three keys present
+                    //     and null) — REQUIRED by this FINAL file, tolerated absent in Stage 1.
                     (
                       resource.data.status in ['submitted', 'under_review']
                       && request.resource.data.status == 'approved'
@@ -999,9 +912,8 @@ service cloud.firestore {
                       && (!('supplierInvoiceId' in request.resource.data) || linkUnlinked(request.resource.data)) // ADR-68 TRANSITIONAL (STAGE 1): the invoice link keys are OPTIONAL on approve while the pre-2A bundle is served
                     )
                     ||
-                    // (d) REJECT (terminal) — from any open status; a draft
-                    //     rejection is a withdrawal. Stamps plus the optional
-                    //     assessment notes; nothing else moves.
+                    // (d) REJECT (terminal) — from any open status (a draft rejection is a
+                    //     withdrawal); stamps plus the optional assessment notes, nothing else.
                     (
                       resource.data.status in ['draft', 'submitted', 'under_review']
                       && request.resource.data.status == 'rejected'
@@ -1060,18 +972,13 @@ service cloud.firestore {
     // Supplier Invoices — project-scoped accounts-payable bills against a sent/
     // closed PO, optionally sourced from one approved progress claim.
     match /companies/{companyId}/projects/{projectId}/supplierInvoices/{invoiceId} {
-      // The document identity that no update of any kind may rewrite. Wider than
-      // the cash collections, because a supplier invoice's identity includes both
-      // counterparty snapshots and BOTH source references — repointing either
-      // would move cost between POs, claims, or suppliers with no audit trail,
-      // and would invalidate the create-time source checks that can never run
-      // again.
+      // The identity no update may rewrite — wider than the cash collections because
+      // it includes both counterparty snapshots and BOTH source references (repointing
+      // would move cost with no audit trail and bypass the create-time source checks).
       //
-      // `paidAt` and `adjustsInvoiceId` are frozen here at the null they are born
-      // with. Both are dead fields kept for shape stability — payment state is
-      // DERIVED from posted Supplier Payment allocations (ADR-24) and the credit
-      // link lives on the credit note (ADR-31) — so freezing them is how rules
-      // guarantee no second source of payment truth is ever authored.
+      // `paidAt` and `adjustsInvoiceId` are frozen at their null: dead fields kept for
+      // shape stability — payment state is DERIVED (ADR-24) and the credit link lives
+      // on the credit note (ADR-31) — so no second source of payment truth exists.
       function corePreserved() {
         let d = request.resource.data;
         let p = resource.data;
@@ -1093,11 +1000,9 @@ service cloud.firestore {
             && d.adjustsInvoiceId == p.adjustsInvoiceId
             && d.get('variationLineCount', null) == p.get('variationLineCount', null);
       }
-      // Lifecycle stamps a content edit may not forge. `cancelledBy` is read
-      // through get(key, null) on BOTH sides: it is an ADR-40 addition, so every
-      // invoice raised before this branch stores no such key and a direct
-      // `resource.data.cancelledBy` would error and deny a legitimate draft edit.
-      // Absent == null on both sides, so a legacy document compares equal.
+      // Lifecycle stamps a content edit may not forge. `cancelledBy` is read through
+      // get(key, null) on BOTH sides (an ADR-40 addition absent on earlier invoices),
+      // so a legacy document compares equal and its draft edit is not denied.
       function stampsFrozen() {
         let d = request.resource.data;
         let p = resource.data;
@@ -1108,9 +1013,8 @@ service cloud.firestore {
             && d.cancelledAt == p.cancelledAt
             && d.get('cancelledBy', null) == p.get('cancelledBy', null);
       }
-      // The AUTHORED header both sources may edit while draft. Bounds are
-      // deliberately generous — they exist to stop unbounded strings, not to
-      // impose a business rule the UI does not impose.
+      // The AUTHORED header both sources may edit while draft; bounds stop unbounded
+      // strings, not business cases.
       function headerShapeValid() {
         let d = request.resource.data;
         return d.supplierInvoiceNumber is string
@@ -1124,13 +1028,10 @@ service cloud.firestore {
             && d.notes is string
             && d.notes.size() <= 5000;
       }
-      // Identity and container shape. `supplierId` may legitimately be NULL on an
-      // invoice raised from a pre-Contacts PO and is never backfilled (ADR-15);
-      // `supplierName` is therefore required to be a string but NOT required
-      // non-empty, because a historical PO with a blank supplier name would
-      // otherwise become permanently unwritable. `poId`/`progressClaimId` are
-      // nullable HERE for the same legacy reason — a NEW document's references
-      // are pinned by sourceRefsValid() on create instead.
+      // Identity and container shape. `supplierId` may be NULL from a pre-Contacts PO
+      // (ADR-15); `supplierName` must be a string but may be blank (a historical blank
+      // name must stay writable); `poId` / `progressClaimId` are nullable HERE for the
+      // same legacy reason — a NEW document's references are pinned by sourceRefsValid().
       function identityShapeValid() {
         let d = request.resource.data;
         return d.invoiceNumber is string
@@ -1154,12 +1055,9 @@ service cloud.firestore {
             && d.externalRefs is map
             && variationLinesShaped(d);
       }
-      // M3-B2 (ADR-63): `variationLineCount` — the number of variation-origin
-      // lines (copied from the source claim; 0 on a direct PO invoice) — is a
-      // non-negative integer when present (absent reads 0: every pre-M3-B2
-      // document), and the LAST line matches it: a null `poLineIndex` and a
-      // string `variationId` when > 0, no `variationId` when 0. Rules cannot
-      // iterate the list; this is the honest ceiling (DC40).
+      // M3-B2 (ADR-63): `variationLineCount` (copied from the source claim; 0 on a
+      // direct PO invoice; absent reads 0) is a non-negative integer and the LAST
+      // line matches it. Rules cannot iterate the list — the honest ceiling (DC40).
       function variationLinesShaped(d) {
         let n = d.get('variationLineCount', 0);
         let last = d.lineItems[d.lineItems.size() - 1];
@@ -1169,26 +1067,14 @@ service cloud.firestore {
                 ? last.get('variationId', null) == null
                 : (last.get('poLineIndex', 0) == null && last.get('variationId', null) is string));
       }
-      // The SCALAR arithmetic guarantee rules CAN give: every stored total must
-      // agree with every other stored total, in whole cents. The lines themselves
-      // are unverifiable (see the block comment), so this bounds what a document
-      // can CLAIM, not what its lines say.
-      //
-      // The five identities mirror lib/supplierInvoices.js → invoiceTotals term
-      // for term, and the sixth pins `retentionGst` to the rounding of
-      // `retention × 10%` through the shared gstPinned() (exact half-up, or one
-      // cent below on a half-cent boundary only — the app's own roundMoney
-      // output, e.g. retention 40.15 → 4.01; GST boundary hotfix) rather than
-      // accepting any self-consistent pair.
-      //
-      // `retention <= subtotal` mirrors invoiceTotals' UPPER clamp; `retention >=
-      // 0` is the floor invoiceTotals deliberately does NOT apply, closing the
-      // create-path asymmetry in which a negative retention made the payable
-      // exceed the gross invoice value (ADR-38 D6 applied it to edits only).
-      //
-      // Deliberately ABSENT: payableGst >= 0, payableTotal >= 0, and any ceiling
-      // on gstTotal. See the block comment — all three would reject app-reachable
-      // documents under the current financial model.
+      // The SCALAR arithmetic guarantee rules CAN give: every stored total agrees with
+      // every other, in whole cents (the lines themselves are unverifiable). The five
+      // identities mirror invoiceTotals; the sixth pins `retentionGst` through the
+      // shared gstPinned() (GST boundary hotfix). `retention <= subtotal` mirrors the
+      // upper clamp; `retention >= 0` closes the create-path asymmetry (ADR-38 D6
+      // applied it to edits only). Deliberately ABSENT: payableGst >= 0, payableTotal
+      // >= 0 and any gstTotal ceiling — all three would reject app-reachable documents
+      // (docs/SECURITY.md → Deferred Control 30).
       function moneyTypesValid() {
         let d = request.resource.data;
         return d.subtotal is number
@@ -1209,16 +1095,11 @@ service cloud.firestore {
             && d.net >= 0;
       }
       // The five identities, plus the retention-GST pin and the upper clamp.
-      //
-      // ⚠️ SPLIT FROM moneyTypesValid() DELIBERATELY, AND THE ORDER MATTERS.
-      // Firestore Rules evaluate at most 1000 expressions per request, and every
-      // repeated `request.resource.data.X` and `cents(...)` spends from that
-      // budget — an earlier single-function version of this exceeded it and the
-      // emulator denied writes with "maximum of 1000 expressions to evaluate has
-      // been reached". Each figure is therefore converted to cents ONCE into a
-      // let binding. The split also guarantees the `is number` guards have
-      // already passed (`&&` short-circuits in moneyValid below), so no
-      // math.round() is ever handed a string or null.
+      // ⚠️ SPLIT FROM moneyTypesValid() DELIBERATELY, AND THE ORDER MATTERS: each
+      // figure is converted to cents ONCE into a let binding to stay inside the
+      // engine's 1000-expression ceiling (a single-function version exceeded it in
+      // the emulator), and the `is number` guards have already passed through the
+      // `&&` short-circuit, so math.round() never sees a string or null.
       function moneyBalanced() {
         let d     = request.resource.data;
         let sub   = cents(d.subtotal);
@@ -1244,12 +1125,9 @@ service cloud.firestore {
         return headerShapeValid() && identityShapeValid() && moneyValid();
       }
       // ── Tier-2 source-document validation — CREATE ONLY ────────────────────
-      // Both references are SCALARS, so unlike an allocations array they CAN be
-      // get()-ed. An invoice raised against nothing is the forgery these stop.
-      // The path is built inside the guarded branch, never before it: the `&&`
-      // short-circuit is what guarantees the id is a non-empty string before it
-      // is interpolated. Repeated access to the same document within one
-      // evaluation is a single billed read.
+      // Both references are SCALARS, so they CAN be get()-ed: an invoice raised
+      // against nothing is the forgery these stop. The path is built inside the
+      // guarded branch — the `&&` short-circuit guarantees a non-empty id first.
       function claimPath() {
         return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/progressClaims/$(request.resource.data.progressClaimId);
       }
@@ -1259,21 +1137,14 @@ service cloud.firestore {
             && exists(poPath(companyId, projectId))
             && get(poPath(companyId, projectId)).data.status in ['sent', 'closed'];
       }
-      // The claim is bound ONCE (`let claim`, read after the id is known to be
-      // a non-empty string by the caller's short-circuit) — the create
-      // evaluation sits near the engine's 1000-expression ceiling (see below).
-      // M3-B2 (ADR-63): a claim that carries variation-origin lines may be
-      // invoiced only by a client that DECLARES a variation-line count (at most
-      // the claim's — lines certified at zero are not stored). The pre-M3-B2
-      // bundle writes no such key and is refused, so it can never raise an
-      // invoice that attributes those lines to PO line 0. A claim without
-      // variation lines takes an absent key or 0.
-      // SHIELD 2A (ADR-68): the claim must be PAIRED with this invoice — it
-      // names THIS invoice's PO, supplier and number; it is new-format and
-      // UNLINKED before the commit (a legacy claim with no link key fails
-      // closed — reconcile it on the Progress Claims tab); and it names THIS
-      // invoice AFTER the commit (getAfter — the claims branch (e) write in
-      // the same transaction). An unpaired direct-SDK create matches nothing.
+      // The claim is bound ONCE (`let claim`) — the create evaluation sits near the
+      // 1000-expression ceiling. ADR-63: a claim carrying variation-origin lines may
+      // be invoiced only by a client that DECLARES a variation-line count (at most
+      // the claim's); the pre-M3-B2 bundle is refused. ADR-68: the claim must be
+      // PAIRED with this invoice — same PO, supplier and number; new-format and
+      // UNLINKED before the commit (a legacy key-absent claim fails closed — reconcile
+      // on the Progress Claims tab); naming THIS invoice AFTER the commit (getAfter,
+      // claims branch (e) in the same transaction). An unpaired create matches nothing.
       function sourceClaimValid() {
         let d = request.resource.data;
         let claim = get(claimPath()).data;
@@ -1299,11 +1170,9 @@ service cloud.firestore {
             || get(claimPath()).data.get('supplierInvoiceId', null) != invoiceId
             || getAfter(claimPath()).data.supplierInvoiceId == null;
       }
-      // A direct_po invoice must carry NO claim reference: a posted invoice's
-      // progressClaimId excludes that claim from the claim side of Actual
-      // (lib/supplierInvoices.js → invoicedClaimIds), so a forged one would
-      // silently erase an approved claim from the cost position — and no
-      // variation-origin line (ADR-63: new scope is invoiced from the claim).
+      // A direct_po invoice carries NO claim reference (a forged progressClaimId would
+      // erase an approved claim from Actual — lib/supplierInvoices.js →
+      // invoicedClaimIds) and no variation-origin line (ADR-63).
       function sourceRefsValid() {
         return sourcePoValid()
             && (request.resource.data.source == 'direct_po'
@@ -1341,36 +1210,21 @@ service cloud.firestore {
                   && shapeValid()
                   && sourceRefsValid();
 
-      // ⚠️ `resource != null` COMES FIRST, AND IT IS NOT DECORATION. Firestore
-      // evaluates the allow statements in a match block until one grants, so a
-      // DENIED create is also measured against this rule — with a null
-      // `resource`, which makes corePreserved() and every branch below
-      // meaningless work on a document that does not exist. This block is large
-      // enough that the combined evaluation exceeded the engine's
-      // 1000-EXPRESSION CEILING, and the emulator then reports "Unable to
-      // evaluate the expression as the maximum of 1000 expressions to evaluate
-      // has been reached" instead of a clean denial. The outcome was still deny,
-      // but the headroom was gone — a slightly larger rule would have started
-      // erroring on LEGITIMATE writes. Short-circuiting here restores it. A
-      // create can never satisfy this guard, so nothing is widened.
+      // ⚠️ `resource != null` COMES FIRST, AND IT IS NOT DECORATION: a DENIED create is
+      // also measured against this rule with a null `resource`, and without the
+      // short-circuit the combined evaluation exceeded the engine's 1000-EXPRESSION
+      // CEILING (the emulator reports the ceiling instead of a clean denial, and the
+      // headroom for legitimate writes was gone). A create can never satisfy this
+      // guard, so nothing is widened (ADR-40).
       allow update: if resource != null
                   && financialMember(companyId) && corePreserved() && updateStamped() && (
-                    // (a) DRAFT EDIT — progress_claim: HEADER ONLY.
-                    //     The line amounts, tax codes and retention ARE the
-                    //     approved claim's certified values, and the invoice must
-                    //     keep paying exactly that claim's certified GST and
-                    //     total. `hasOnly` is what makes that structural rather
-                    //     than merely validated: there is NO channel — client,
-                    //     editor, or direct SDK — through which certified money
-                    //     can move on this path. The list is exactly the payload
-                    //     hooks/useSupplierInvoices.jsx writes for a claim-sourced
-                    //     draft (ADR-38 D1).
-                    //
-                    //     moneyValid() is deliberately NOT applied here: nothing
-                    //     financial can change, and re-validating STORED totals
-                    //     would trap a legacy document with an internal
-                    //     inconsistency in the one state where the app can still
-                    //     surface it (claimSourcedDriftError).
+                    // (a) DRAFT EDIT — progress_claim: HEADER ONLY. The line amounts, tax codes
+                    //     and retention ARE the approved claim's certified values; `hasOnly` makes
+                    //     that structural — no channel (client, editor, SDK) can move certified
+                    //     money on this path (ADR-38 D1). moneyValid() is deliberately NOT applied:
+                    //     nothing financial changes, and re-validating STORED totals would trap a
+                    //     legacy inconsistency in the one state the app can surface it
+                    //     (claimSourcedDriftError).
                     (
                       resource.data.status == 'draft'
                       && request.resource.data.status == 'draft'
@@ -1379,14 +1233,10 @@ service cloud.firestore {
                       && headerShapeValid()
                     )
                     ||
-                    // (b) DRAFT EDIT — direct_po: header + per-line money.
-                    //     Line amounts, tax codes and retention are re-authored,
-                    //     so the full shape and every scalar identity are
-                    //     re-checked. The stored line COUNT is fixed — that is
-                    //     the honest rules ceiling on ADR-38's "the stored line
-                    //     set is fixed" (rules cannot iterate an array, so per-
-                    //     element identity stays client-enforced). The status may
-                    //     not move and no lifecycle stamp may be forged.
+                    // (b) DRAFT EDIT — direct_po: header + per-line money, so the full shape and
+                    //     every scalar identity are re-checked. The stored line COUNT is fixed
+                    //     (rules cannot iterate an array — per-element identity stays client-
+                    //     enforced, ADR-38); the status may not move and no stamp may be forged.
                     (
                       resource.data.status == 'draft'
                       && request.resource.data.status == 'draft'
@@ -1396,10 +1246,8 @@ service cloud.firestore {
                       && stampsFrozen()
                     )
                     ||
-                    // (c) DRAFT -> APPROVED. THE AUTHORING FREEZE POINT. A
-                    //     separate operation carrying no content change
-                    //     whatsoever — the lines and totals that were reviewed
-                    //     are the ones frozen.
+                    // (c) DRAFT -> APPROVED. THE AUTHORING FREEZE POINT — stamps only; the lines
+                    //     and totals that were reviewed are the ones frozen.
                     (
                       resource.data.status == 'draft'
                       && request.resource.data.status == 'approved'
@@ -1408,12 +1256,9 @@ service cloud.firestore {
                       && request.resource.data.approvedAt == request.time
                     )
                     ||
-                    // (d) APPROVED -> POSTED. THE FINANCIAL COMMIT POINT — the
-                    //     moment this document starts counting toward Invoiced,
-                    //     Actual, Committed maturation and Remaining Payable.
-                    //     Reachable ONLY from `approved`, so posting can never
-                    //     skip the approval step, and it may touch nothing but
-                    //     its own stamps.
+                    // (d) APPROVED -> POSTED. THE FINANCIAL COMMIT POINT (Invoiced, Actual,
+                    //     Committed maturation, Remaining Payable). Reachable ONLY from `approved`,
+                    //     so posting can never skip approval; stamps only.
                     (
                       resource.data.status == 'approved'
                       && request.resource.data.status == 'posted'
@@ -1422,22 +1267,12 @@ service cloud.firestore {
                       && request.resource.data.postedAt == request.time
                     )
                     ||
-                    // (e) DRAFT|APPROVED -> CANCELLED (terminal). Cancellation is
-                    //     the only exit before posting, and it may touch nothing
-                    //     but the cancel stamps — so cancelling can never smuggle
-                    //     in a content edit.
-                    //
-                    //     ⚠️ There is deliberately NO cancel REASON here, unlike
-                    //     every other terminal transition in this file. The field
-                    //     does not exist on this collection and adding it needs a
-                    //     UI change; permitting an unvalidated key in the allow-
-                    //     list instead would be a free-text hole. See ADR-40.
-                    //
-                    //     ⚠️ POSTED IS NOT CANCELLABLE. A posted invoice matches
-                    //     no branch at all — corrections are Supplier Credit
-                    //     Notes (ADR-31). This closes the documented ADR-24
-                    //     consequence in which a direct SDK call could cancel a
-                    //     posted invoice a Supplier Payment had already settled.
+                    // (e) DRAFT|APPROVED -> CANCELLED (terminal) — the only exit before posting;
+                    //     cancel stamps only, so no content edit can ride along.
+                    //     ⚠️ Deliberately NO cancel REASON: the field does not exist on this
+                    //     collection and an unvalidated key would be a free-text hole (ADR-40).
+                    //     ⚠️ POSTED IS NOT CANCELLABLE — a posted invoice matches no branch;
+                    //     corrections are Supplier Credit Notes (ADR-31).
                     (
                       (resource.data.status == 'draft' || resource.data.status == 'approved')
                       && request.resource.data.status == 'cancelled'
@@ -1495,10 +1330,8 @@ service cloud.firestore {
         return d.commitmentAppliedBy == request.auth.uid
             && d.commitmentAppliedAt == request.time;
       }
-      // M3-B2 (ADR-63): the second, independent pair — the new-scope commitment.
-      // Written with the applied pair on a PO-linked approve (branch c) or by
-      // the one-time legacy Commit (branch f); never on a client / manual-mode
-      // variation, never at create.
+      // M3-B2 (ADR-63): the second, independent pair — the new-scope commitment,
+      // written with the applied pair on a PO-linked approve (c) or the legacy (f).
       function scopeAbsent(d) {
         return !d.keys().hasAny(['scopeCommittedAt', 'scopeCommittedBy']);
       }
@@ -1510,14 +1343,11 @@ service cloud.firestore {
       function poCommitted() {
         return get(poPath(companyId, projectId)).data.status in ['sent', 'closed'];
       }
-      // (f) APPLY / COMMIT NEW SCOPE (M3-B1 ADR-62 · M3-B2 ADR-63) — the
-      // ONE-TIME legacy write of the stamp pair(s) an APPROVED, PO-linked
-      // supplier variation lacks: the missing pair(s) + revision + audit stamps
-      // and nothing else, while the PO is sent/closed. EACH written pair's
-      // stored value must be null/absent, so a repeat is refused by rules and a
-      // present pair is never rewritten; approved money, lines and the PO link
-      // stay frozen (outside the list). `changedKeys()` is bound ONCE — every
-      // diff spends from the 1000-expression ceiling.
+      // (f) APPLY / COMMIT NEW SCOPE (ADR-62 · ADR-63) — the ONE-TIME legacy write of
+      // the stamp pair(s) an APPROVED, PO-linked supplier variation lacks (plus
+      // revision + audit stamps), while the PO is sent/closed. Each written pair's
+      // stored value must be null/absent (never rewritten); money, lines and the PO
+      // link stay frozen. `changedKeys()` is bound ONCE (1000-expression ceiling).
       function legacyCommitValid() {
         let ck = changedKeys();
         let d = request.resource.data;
@@ -1563,16 +1393,11 @@ service cloud.firestore {
         return request.resource.data.keys().hasOnly(['variationNumber', 'variationType', 'status', 'title', 'description', 'reason', 'clientId', 'clientName', 'clientRef', 'supplierId', 'supplierName', 'supplierRef', 'poId', 'poNumber', 'originRfiId', 'originRfiNumber', 'originRfiTitle', 'lineItems', 'submittedSubtotal', 'submittedGst', 'submittedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'forecastAmount', 'identifiedDate', 'submittedDate', 'responseDueDate', 'approvedDate', 'effectiveDate', 'currency', 'revision', 'notes', 'assessmentNotes', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'withdrawnAt', 'withdrawnBy', 'attachments', 'externalRefs', 'supersededByVariationId', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'commitmentAppliedAt', 'commitmentAppliedBy', 'scopeCommittedAt', 'scopeCommittedBy'])
             && request.resource.data.keys().hasAll(['variationNumber', 'variationType', 'status', 'title', 'description', 'reason', 'clientId', 'clientName', 'clientRef', 'supplierId', 'supplierName', 'supplierRef', 'poId', 'poNumber', 'originRfiId', 'originRfiNumber', 'originRfiTitle', 'lineItems', 'submittedSubtotal', 'submittedGst', 'submittedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'forecastAmount', 'identifiedDate', 'submittedDate', 'responseDueDate', 'approvedDate', 'effectiveDate', 'currency', 'revision', 'notes', 'assessmentNotes', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'withdrawnAt', 'withdrawnBy', 'attachments', 'externalRefs', 'supersededByVariationId', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']);
       }
-      // Tier-2 source validation — CREATE ONLY, supplier variations that name a
-      // PO. The PO must exist in THIS project and be sent or closed
-      // (lib/variations.js → VARIATION_PO_STATUSES), and the variation's
-      // poNumber and supplier snapshot must be the PO's. Never re-checked: a
-      // variation survives its PO's later cancellation (the PO cancel guard is
-      // the client's, DC35).
-      // The PO is bound ONCE (`let po`): the variations create evaluation
-      // reached the engine's 1000-expression ceiling in the emulator once the
-      // ADR-63 keys were added. A missing PO makes `.data` error, which denies
-      // exactly as `exists()` did.
+      // Tier-2 source validation — CREATE ONLY, supplier variations naming a PO: it
+      // must exist in THIS project and be sent or closed, and poNumber / supplier
+      // snapshot must be the PO's. Never re-checked (a variation survives its PO's
+      // later cancellation — DC35). The PO is bound ONCE (`let po`, 1000-expression
+      // ceiling); a missing PO makes `.data` error, which denies as `exists()` did.
       function sourcePoValid() {
         let d = request.resource.data;
         let po = get(poPath(companyId, projectId)).data;
@@ -1661,16 +1486,12 @@ service cloud.firestore {
                   && request.resource.data.currency == resolvedCurrency(companyId, projectId)
                   && originRfiValid(request.resource.data);
 
-      // `resource != null` first — a denied create is also measured against
-      // this rule. Every branch's hasOnly on changedKeys() is what freezes the
-      // identity, the counterparty, the PO link, the reserved fields and every
-      // stamp or figure a branch does not own — a key outside the list cannot
-      // be added, removed or changed.
+      // `resource != null` first — a denied create is also measured here. Every
+      // branch's hasOnly on changedKeys() freezes everything the branch does not own.
       allow update: if resource != null
                   && variationMember() && updateStamped() && revisionIncremented() && (
-                    // (a) DRAFT EDIT — the authored content, the re-derived
-                    //     submitted header and the originating-RFI link (which
-                    //     must validate when it changes — ADR-34).
+                    // (a) DRAFT EDIT — authored content, the re-derived submitted header and the
+                    //     originating-RFI link (validated when it changes — ADR-34).
                     (
                       resource.data.status == 'draft'
                       && changedKeys().hasOnly(['title', 'description', 'reason', 'clientRef', 'supplierRef', 'identifiedDate', 'responseDueDate', 'effectiveDate', 'lineItems', 'submittedSubtotal', 'submittedGst', 'submittedTotal', 'notes', 'originRfiId', 'originRfiNumber', 'originRfiTitle', 'revision', 'updatedAt', 'updatedBy'])
@@ -1680,9 +1501,7 @@ service cloud.firestore {
                       && (!originChanged() || originRfiValid(request.resource.data))
                     )
                     ||
-                    // (b) SUBMIT — THE SUBMITTED-MONEY FREEZE POINT. Stamps
-                    //     and the submitted date only; the stored lines are
-                    //     what gets frozen.
+                    // (b) SUBMIT — THE SUBMITTED-MONEY FREEZE POINT; stamps and the submitted date only.
                     (
                       resource.data.status == 'draft'
                       && request.resource.data.status == 'submitted'
@@ -1694,24 +1513,17 @@ service cloud.firestore {
                       && request.resource.data.submittedAt == request.time
                     )
                     ||
-                    // (c) APPROVE — THE CERTIFICATION POINT (the only state
-                    //     that counts financially). Writes the certified lines
-                    //     (contents unverifiable — the count is pinned), the
-                    //     SIGNED approved header, the notes, the approved and
-                    //     effective dates and its own stamps. Approved amounts
-                    //     are unbounded against submitted by product decision.
-                    //     M3-B1 (ADR-62): a PO-linked SUPPLIER variation is
-                    //     approved AND applied in ONE write — its PO must exist
-                    //     in THIS project and be sent/closed (get()), and the
-                    //     commitment stamps must be present (actor == caller,
-                    //     time == server). A missing / cancelled / draft PO
-                    //     REFUSES the approval (withdraw or reject instead).
-                    //     Manual-mode and client variations (poId null) never
-                    //     carry the pair. M3-B2 (ADR-63): the same write also
-                    //     carries the new-scope pair (`scopeCommitted*`),
-                    //     REQUIRED by this FINAL file. The STAGE-1 transitional
-                    //     ruleset (scripts/build-transitional-rules.mjs)
-                    //     differs from this FINAL file only in the marked lines.
+                    // (c) APPROVE — THE CERTIFICATION POINT (the only state that counts
+                    //     financially): the certified lines (count pinned), the SIGNED approved
+                    //     header, notes, dates and own stamps; approved amounts are unbounded
+                    //     against submitted by product decision.
+                    //     ADR-62: a PO-linked SUPPLIER variation is approved AND applied in ONE
+                    //     write — its PO must exist in THIS project and be sent/closed (get()),
+                    //     with the commitment stamps actor == caller, time == server; a missing /
+                    //     cancelled / draft PO REFUSES the approval. Manual-mode and client
+                    //     variations (poId null) never carry the pair. ADR-63: the same write
+                    //     carries the new-scope pair (`scopeCommitted*`), REQUIRED by this FINAL
+                    //     file; the STAGE-1 transitional ruleset differs only in the marked line.
                     (
                       resource.data.status in ['submitted', 'under_review']
                       && request.resource.data.status == 'approved'
@@ -1818,9 +1630,7 @@ service cloud.firestore {
                   && request.resource.data.voidedBy == null;
 
       allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
-                    // (a) DRAFT EDIT — content is freely editable while draft,
-                    //     but the status may not move and no lifecycle stamp
-                    //     may be forged.
+                    // (a) DRAFT EDIT — content only; the status and lifecycle stamps cannot move.
                     (
                       resource.data.status == 'draft'
                       && request.resource.data.status == 'draft'
@@ -1840,9 +1650,8 @@ service cloud.firestore {
                       && request.resource.data.issuedAt == request.time
                     )
                     ||
-                    // (c) DRAFT|ISSUED -> VOID (terminal). This branch is what
-                    //     makes an ISSUED invoice immutable: voiding is the only
-                    //     permitted update, and it may touch nothing else.
+                    // (c) DRAFT|ISSUED -> VOID (terminal) — the only update an ISSUED invoice
+                    //     admits, and it touches nothing else.
                     (
                       (resource.data.status == 'draft' || resource.data.status == 'issued')
                       && request.resource.data.status == 'void'
@@ -1906,10 +1715,7 @@ service cloud.firestore {
                   && request.resource.data.voidedBy == null;
 
       allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
-                    // (a) DRAFT EDIT — content (amount, date, method,
-                    //     references, allocations) is freely editable while
-                    //     draft, but the status may not move and no lifecycle
-                    //     stamp may be forged.
+                    // (a) DRAFT EDIT — content only; the status and lifecycle stamps cannot move.
                     (
                       resource.data.status == 'draft'
                       && request.resource.data.status == 'draft'
@@ -1920,9 +1726,8 @@ service cloud.firestore {
                       && request.resource.data.voidedBy == resource.data.voidedBy
                     )
                     ||
-                    // (b) DRAFT -> POSTED. A separate operation carrying no
-                    //     content change whatsoever — the amount, date, and
-                    //     allocations that were reviewed are the ones committed.
+                    // (b) DRAFT -> POSTED — no content change; the reviewed amount, date and
+                    //     allocations are the ones committed.
                     (
                       resource.data.status == 'draft'
                       && request.resource.data.status == 'posted'
@@ -1931,11 +1736,9 @@ service cloud.firestore {
                       && request.resource.data.postedAt == request.time
                     )
                     ||
-                    // (c) DRAFT|POSTED -> VOID (terminal). This branch is what
-                    //     makes a POSTED receipt immutable: voiding is the only
-                    //     permitted update, and it may touch nothing else.
-                    //     Voiding needs no reversal document — every balance is
-                    //     derived at read time, so it restores immediately.
+                    // (c) DRAFT|POSTED -> VOID (terminal) — the only update a POSTED receipt
+                    //     admits, touching nothing else; balances are derived, so voiding needs
+                    //     no reversal document.
                     (
                       (resource.data.status == 'draft' || resource.data.status == 'posted')
                       && request.resource.data.status == 'void'
@@ -1966,10 +1769,8 @@ service cloud.firestore {
         return request.resource.data.docType == 'payment'
             && request.resource.data.paymentNumber is string
             && request.resource.data.revision is number
-            // A payment made to nobody is not a record — supplierId/supplierName
-            // are REQUIRED non-empty strings, never null. (Supplier INVOICES may
-            // legitimately carry supplierId: null from before the Contacts
-            // module; a NEW payment never may.)
+            // A payment made to nobody is not a record — supplierId / supplierName are
+            // REQUIRED non-empty (unlike supplier INVOICES, which may carry a legacy null).
             && request.resource.data.supplierId is string
             && request.resource.data.supplierId.size() > 0
             && request.resource.data.supplierName is string
@@ -2001,10 +1802,7 @@ service cloud.firestore {
                   && request.resource.data.voidedBy == null;
 
       allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
-                    // (a) DRAFT EDIT — content (supplier, amount, date, method,
-                    //     references, allocations) is freely editable while
-                    //     draft, but the status may not move and no lifecycle
-                    //     stamp may be forged.
+                    // (a) DRAFT EDIT — content only; the status and lifecycle stamps cannot move.
                     (
                       resource.data.status == 'draft'
                       && request.resource.data.status == 'draft'
@@ -2015,9 +1813,8 @@ service cloud.firestore {
                       && request.resource.data.voidedBy == resource.data.voidedBy
                     )
                     ||
-                    // (b) DRAFT -> POSTED. A separate operation carrying no
-                    //     content change whatsoever — the amount, date, and
-                    //     allocations that were reviewed are the ones committed.
+                    // (b) DRAFT -> POSTED — no content change; the reviewed amount, date and
+                    //     allocations are the ones committed.
                     (
                       resource.data.status == 'draft'
                       && request.resource.data.status == 'posted'
@@ -2026,12 +1823,9 @@ service cloud.firestore {
                       && request.resource.data.postedAt == request.time
                     )
                     ||
-                    // (c) DRAFT|POSTED -> VOID (terminal). This branch is what
-                    //     makes a POSTED payment immutable: voiding is the only
-                    //     permitted update, and it may touch nothing else.
-                    //     Voiding needs no reversal, refund, or bank-reversal
-                    //     document — every balance is derived at read time, so
-                    //     it restores immediately.
+                    // (c) DRAFT|POSTED -> VOID (terminal) — the only update a POSTED payment
+                    //     admits, touching nothing else; balances are derived, so voiding needs
+                    //     no reversal, refund or bank-reversal document.
                     (
                       (resource.data.status == 'draft' || resource.data.status == 'posted')
                       && request.resource.data.status == 'void'
@@ -2049,10 +1843,8 @@ service cloud.firestore {
     // Supplier Credit Notes — reductions against exactly one POSTED Supplier
     // Invoice; SCN-#### from the company counters.
     match /companies/{companyId}/projects/{projectId}/supplierCreditNotes/{creditNoteId} {
-      // The document identity that no update of any kind may rewrite. Wider
-      // than the cash collections: the TARGET REFERENCE and its supplier
-      // snapshots are frozen from creation, so the get()-validated link can
-      // never be silently repointed at a different invoice or supplier.
+      // The identity no update may rewrite — including the TARGET REFERENCE and its
+      // supplier snapshots, so the get()-validated link is never silently repointed.
       function corePreserved() {
         return request.resource.data.creditNumber          == resource.data.creditNumber
             && request.resource.data.currency              == resource.data.currency
@@ -2103,10 +1895,8 @@ service cloud.firestore {
             && request.resource.data.supplierInvoiceId.size() > 0
             && request.resource.data.invoiceNumber is string
             && request.resource.data.supplierInvoiceNumber is string
-            // supplierId is frozen FROM THE TARGET INVOICE, which may
-            // legitimately carry null from before the Contacts module — so
-            // null is allowed here (unlike supplierPayments), but the get()
-            // equality in targetValid() still holds: null must match null.
+            // supplierId is frozen FROM THE TARGET INVOICE, which may carry a legacy null,
+            // so null is allowed here; targetValid() still requires null to match null.
             && (request.resource.data.supplierId == null
                 || (request.resource.data.supplierId is string
                     && request.resource.data.supplierId.size() > 0))
@@ -2144,12 +1934,9 @@ service cloud.firestore {
                   && request.resource.data.voidedBy == null;
 
       allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
-                    // (a) DRAFT EDIT — content (date, reason, reference, lines,
-                    //     totals, notes) is freely editable while draft, but
-                    //     the frozen target must still validate (the amounts
-                    //     changed, so the payable cap is re-checked), the
-                    //     status may not move, and no lifecycle stamp may be
-                    //     forged.
+                    // (a) DRAFT EDIT — content freely editable while draft; the frozen target must
+                    //     still validate (amounts changed, so the payable cap is re-checked); the
+                    //     status may not move and no stamp may be forged.
                     (
                       resource.data.status == 'draft'
                       && request.resource.data.status == 'draft'
@@ -2161,21 +1948,12 @@ service cloud.firestore {
                       && request.resource.data.voidedBy == resource.data.voidedBy
                     )
                     ||
-                    // (b) DRAFT -> POSTED. A separate operation carrying no
-                    //     content change whatsoever — the target and totals
-                    //     that were validated are the ones committed.
-                    //
-                    //     ⚠️ THE TARGET IS RE-VALIDATED HERE. Posting is the
-                    //     FINANCIAL COMMIT POINT: it is the moment this document
-                    //     starts reducing Invoiced, Actual and the invoice's
-                    //     remaining payable. Validating the target only at
-                    //     create/draft-edit would leave a window in which the
-                    //     target is cancelled, has retention added, or has its
-                    //     payableTotal reduced by a direct SDK call (supplier-
-                    //     invoice lifecycle is still client-enforced — Deferred
-                    //     Controls 1 and 2) and the stale draft then posts into
-                    //     financial activity unchecked. Costs one extra document
-                    //     read per post.
+                    // (b) DRAFT -> POSTED — no content change; the validated target and totals are
+                    //     the ones committed.
+                    //     ⚠️ THE TARGET IS RE-VALIDATED HERE. Posting is the FINANCIAL COMMIT POINT;
+                    //     validating only at create / draft edit would let a stale draft post after
+                    //     the target was cancelled, gained retention or had its payableTotal reduced
+                    //     by a direct SDK call (Deferred Controls 1 and 2). One extra read per post.
                     (
                       resource.data.status == 'draft'
                       && request.resource.data.status == 'posted'
@@ -2185,11 +1963,9 @@ service cloud.firestore {
                       && targetValid()
                     )
                     ||
-                    // (c) DRAFT|POSTED -> VOID (terminal). This branch is what
-                    //     makes a POSTED credit note immutable: voiding is the
-                    //     only permitted update, and it may touch nothing else.
-                    //     Voiding needs no reversal document — every net figure
-                    //     is derived at read time, so it restores immediately.
+                    // (c) DRAFT|POSTED -> VOID (terminal) — the only update a POSTED credit note
+                    //     admits, touching nothing else; every net figure is derived, so voiding
+                    //     needs no reversal document.
                     (
                       (resource.data.status == 'draft' || resource.data.status == 'posted')
                       && request.resource.data.status == 'void'
@@ -2263,10 +2039,8 @@ service cloud.firestore {
                   && request.resource.data.voidedBy == null;
 
       allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
-                    // (a) ACTIVE EDIT — content (month, direction, source,
-                    //     amounts, cost code, description) is freely editable
-                    //     while active, but the status may not move and no
-                    //     void stamp may be forged.
+                    // (a) ACTIVE EDIT — content only; the status may not move and no void stamp
+                    //     may be forged.
                     (
                       resource.data.status == 'active'
                       && request.resource.data.status == 'active'
@@ -2275,9 +2049,8 @@ service cloud.firestore {
                       && request.resource.data.voidedBy == resource.data.voidedBy
                     )
                     ||
-                    // (b) ACTIVE -> VOID (terminal). Voiding is the only exit:
-                    //     it may touch nothing but the void audit fields, so a
-                    //     voided line is immutable retained history.
+                    // (b) ACTIVE -> VOID (terminal) — void audit fields only; a voided line is
+                    //     immutable retained history.
                     (
                       resource.data.status == 'active'
                       && request.resource.data.status == 'void'
@@ -2341,10 +2114,8 @@ service cloud.firestore {
             && d.get('raisedPoAt', null) == p.get('raisedPoAt', null)
             && d.get('raisedPoBy', null) == p.get('raisedPoBy', null);
       }
-      // The PO this raise links, as it stands AFTER the commit (getAfter —
-      // it is created in the same transaction, so get() cannot see it): a
-      // draft CREATED IN THIS COMMIT (createdAt == request.time), numbered as
-      // recorded, citing THIS package and the awarded bid.
+      // The PO this raise links, as it stands AFTER the commit (getAfter): a draft
+      // CREATED IN THIS COMMIT, numbered as recorded, citing THIS package and bid.
       function raisedPoValid() {
         let d = request.resource.data;
         let po = getAfter(raisedPoPath(d.raisedPoId)).data;
@@ -2388,10 +2159,8 @@ service cloud.firestore {
                   && request.resource.data.get('raisedPoBy', null) == null;
 
       allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
-                    // (a) DRAFT EDIT — commercial content (name, description,
-                    //     scope, costCodes, closingDate, notes) is freely
-                    //     editable while draft, but the status may not move and
-                    //     no stamp or award/cancel field may be forged.
+                    // (a) DRAFT EDIT — commercial content freely editable while draft; the status
+                    //     may not move and no stamp or award / cancel field may be forged.
                     (
                       resource.data.status == 'draft'
                       && request.resource.data.status == 'draft'
@@ -2409,10 +2178,7 @@ service cloud.firestore {
                       && backlinkPreserved()
                     )
                     ||
-                    // (b) DRAFT -> ISSUED. A separate stamp-only operation
-                    //     carrying no content change whatsoever — the scope that
-                    //     was reviewed is the scope that goes to market, and it
-                    //     freezes here.
+                    // (b) DRAFT -> ISSUED — stamps only; the reviewed scope freezes here.
                     (
                       resource.data.status == 'draft'
                       && request.resource.data.status == 'issued'
@@ -2421,10 +2187,9 @@ service cloud.firestore {
                       && request.resource.data.issuedAt == request.time
                     )
                     ||
-                    // (c) ISSUED EDIT — the closingDate/notes carve-out ONLY.
-                    //     Commercial scope (name, description, scope, costCodes)
-                    //     stays frozen; extending an informational closing date
-                    //     must not force cancel-and-recreate.
+                    // (c) ISSUED EDIT — the closingDate / notes carve-out ONLY; commercial scope
+                    //     stays frozen (extending an informational closing date must not force
+                    //     cancel-and-recreate).
                     (
                       resource.data.status == 'issued'
                       && request.resource.data.status == 'issued'
@@ -2433,12 +2198,9 @@ service cloud.firestore {
                       && request.resource.data.notes is string
                     )
                     ||
-                    // (d) ISSUED -> AWARDED (terminal). The decision record:
-                    //     which received bid on THIS package won. The bid get()
-                    //     is what stops awarding a nonexistent bid, another
-                    //     package's bid, a void bid, or a forged bidder-name
-                    //     snapshot; requiring the CURRENT status to be 'issued'
-                    //     is what stops a second award.
+                    // (d) ISSUED -> AWARDED (terminal) — the decision record. The bid get() stops
+                    //     awarding a nonexistent, other-package, void or forged-bidder bid;
+                    //     requiring the CURRENT status 'issued' stops a second award.
                     (
                       resource.data.status == 'issued'
                       && request.resource.data.status == 'awarded'
@@ -2465,9 +2227,8 @@ service cloud.firestore {
                       && request.resource.data.cancelReason.trim().size() > 0
                     )
                     ||
-                    // (f) RAISE PO (M3-A, ADR-61) — an AWARDED package records
-                    //     the ONE draft PO raised from it, once. Only in the
-                    //     transaction that creates that PO (getAfter).
+                    // (f) RAISE PO (M3-A, ADR-61) — an AWARDED package records the ONE draft PO
+                    //     raised from it, only in the transaction that creates it (getAfter).
                     (
                       resource.data.status == 'awarded'
                       && request.resource.data.status == 'awarded'
@@ -2476,9 +2237,8 @@ service cloud.firestore {
                       && raisedPoValid()
                     )
                     ||
-                    // (g) RE-RAISE — only once the previously linked PO is
-                    //     CANCELLED (get(), already committed), and never to
-                    //     the same PO. The cancelled PO keeps its source keys.
+                    // (g) RE-RAISE — only once the linked PO is CANCELLED (get()), never to the
+                    //     same PO; the cancelled PO keeps its source keys.
                     (
                       resource.data.status == 'awarded'
                       && request.resource.data.status == 'awarded'
@@ -2565,12 +2325,9 @@ service cloud.firestore {
                   && request.resource.data.bidderName == bidderContact().displayName;
 
       allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
-                    // (a) RECEIVED EDIT — transcription corrections (bidDate,
-                    //     bidderRef, lineItems, exclusions, notes) while the
-                    //     parent package is STILL ISSUED. The status may not
-                    //     move and no void stamp may be forged. Once the
-                    //     package is awarded or cancelled this branch (and the
-                    //     void branch) stop matching — bids freeze.
+                    // (a) RECEIVED EDIT — transcription corrections while the parent package is
+                    //     STILL ISSUED; the status may not move and no void stamp may be forged.
+                    //     Once the package is awarded or cancelled, bids freeze.
                     (
                       resource.data.status == 'received'
                       && request.resource.data.status == 'received'
@@ -2581,9 +2338,8 @@ service cloud.firestore {
                       && parentPackage(resource.data.tenderPackageId).status == 'issued'
                     )
                     ||
-                    // (b) RECEIVED -> VOID (terminal), only while the parent
-                    //     package is still issued. Touches only the void audit
-                    //     fields, with a real reason.
+                    // (b) RECEIVED -> VOID (terminal), only while the package is still issued;
+                    //     void audit fields only, with a real reason.
                     (
                       resource.data.status == 'received'
                       && request.resource.data.status == 'void'
@@ -2640,9 +2396,8 @@ service cloud.firestore {
 
       allow read: if baselineReader();
 
-      // CAPTURE — born draft, revision 1, caller + server stamps, with the
-      // snapshot written in the same commit by the same caller at the same
-      // server time and agreeing on activityCount (getAfter).
+      // CAPTURE — born draft, revision 1, caller + server stamps, with the snapshot
+      // written in the same commit (getAfter: same caller, time and activityCount).
       allow create: if baselineWriter()
                   && exactKeys()
                   && text(request.resource.data.name, 120)
@@ -2664,10 +2419,8 @@ service cloud.firestore {
                   && getAfter(snapshotPath()).data.capturedBy == request.auth.uid
                   && getAfter(snapshotPath()).data.capturedAt == request.time;
 
-      // The ONLY updates: a DRAFT becomes approved or withdrawn, each a
-      // stamps-only transition with revision + 1. Approved and withdrawn are
-      // terminal — no branch admits an update from them, so an approved
-      // baseline is immutable history.
+      // The ONLY updates: draft → approved | withdrawn, stamps-only with revision + 1.
+      // Both are terminal, so an approved baseline is immutable history.
       allow update: if baselineWriter() && corePreserved() && updateStamped() && revisionIncremented()
                   && resource.data.status == 'draft'
                   && (
@@ -2706,9 +2459,8 @@ service cloud.firestore {
       function headerPath() {
         return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/programmeBaselines/$(baselineId);
       }
-      // ONE entry: exact keys, a real activity in THIS project (one read),
-      // the ADR-29 date and milestone invariants, the status set, bounded
-      // progress, a positive integer revision and a numeric order.
+      // ONE entry: exact keys, a real activity in THIS project (one read), the ADR-29
+      // date / milestone invariants, the status set, bounded progress, revision, order.
       function entryValid(e) {
         return e is map
             && e.keys().hasOnly(['activityId', 'name', 'isMilestone', 'plannedStart', 'plannedFinish', 'status', 'percentComplete', 'revision', 'sortOrder', 'costCodeId'])
@@ -2779,11 +2531,8 @@ service cloud.firestore {
         return request.resource.data.createdAt == resource.data.createdAt
             && request.resource.data.createdBy == resource.data.createdBy;
       }
-      // EXACT shape — hasOnly + hasAll together mean no field may be added,
-      // renamed, or omitted. Pre-seeding an arbitrary privilege-bearing field
-      // is the lesson of ADR-27. `predecessors` (ADR-65) is OPTIONAL: admitted
-      // by hasOnly, not required by hasAll, so every pre-1A2 document and the
-      // 1A1 bundle's create still pass.
+      // EXACT shape — hasOnly + hasAll (the ADR-27 lesson). `predecessors` (ADR-65) is
+      // OPTIONAL: admitted by hasOnly, not required by hasAll (pre-1A2 documents pass).
       function exactKeys() {
         return request.resource.data.keys().hasOnly([
                  'name', 'description', 'isMilestone', 'status',
@@ -2802,11 +2551,9 @@ service cloud.firestore {
                  'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
                ]);
       }
-      // ONE predecessor entry (ADR-65): exact keys, a non-empty id that is not
-      // this activity, FS only, integer lag 0..365, and the source must EXIST
-      // in THIS project (one document read). Rules cannot iterate a list, so
-      // predecessorsValid applies this to the FIRST and LAST entries only —
-      // the honest ceiling (DC41); the app validates every entry.
+      // ONE predecessor entry (ADR-65): exact keys, a non-empty id that is not this
+      // activity, FS only, integer lag 0..365, source must EXIST in THIS project.
+      // Applied to the FIRST and LAST entries only — the honest ceiling (DC41).
       function predecessorEntryValid(e) {
         return e is map
             && e.keys().hasOnly(['activityId', 'type', 'lagDays'])
@@ -2827,9 +2574,8 @@ service cloud.firestore {
             && (p.size() == 0
                 || (predecessorEntryValid(p[0]) && predecessorEntryValid(p[p.size() - 1])));
       }
-      // Shape required of every stored NON-CANCELLED state (create and edit).
-      // `revision` is checked by the create / update rules (1 at create, +1 on
-      // every update — ADR-65), not here.
+      // Shape of every stored NON-CANCELLED state; `revision` is checked by the
+      // create / update rules (1 at create, +1 on update — ADR-65), not here.
       function shapeValid() {
         return exactKeys()
             && request.resource.data.revision is int
@@ -2878,10 +2624,8 @@ service cloud.firestore {
             && (request.resource.data.status != 'completed'
                 || (request.resource.data.percentComplete == 100
                     && request.resource.data.actualFinish != null))
-            // Responsible party: a Contacts link with a FROZEN name snapshot —
-            // both null/'' together, or both real together. Never a user
-            // account: users/{uid} is client-read-only (ADR-27), so no client
-            // can resolve another user.
+            // Responsible party: a Contacts link with a FROZEN name snapshot — both empty
+            // or both real. Never a user account (users/{uid} is client-read-only, ADR-27).
             && ((request.resource.data.responsibleContactId == null
                  && request.resource.data.responsibleName == '')
                 || (request.resource.data.responsibleContactId is string
@@ -2920,9 +2664,8 @@ service cloud.firestore {
       allow update: if programmeWriter() && corePreserved() && updateStamped()
                   && (request.resource.data.revision == resource.data.revision || revisionIncremented()) // ADR-65 TRANSITIONAL (STAGE 1): an UNCHANGED revision is still accepted while the 1A1 bundle is served
                   && (
-                    // (a) ORDINARY EDIT — content and status are freely
-                    //     editable, INCLUDING BACKWARDS, while the activity is
-                    //     not cancelled. No cancellation stamp may be forged.
+                    // (a) ORDINARY EDIT — content and status freely editable, INCLUDING BACKWARDS,
+                    //     while not cancelled; no cancellation stamp may be forged.
                     (
                       resource.data.status != 'cancelled'
                       && shapeValid()
@@ -2931,10 +2674,8 @@ service cloud.firestore {
                       && request.resource.data.cancelledBy == resource.data.cancelledBy
                     )
                     ||
-                    // (b) CANCELLATION (terminal). The only exit, and it may
-                    //     touch nothing but the cancellation audit fields — so
-                    //     a cancelled activity is immutable retained history
-                    //     and cancelling can never smuggle in a content edit.
+                    // (b) CANCELLATION (terminal) — the only exit; cancellation audit fields only,
+                    //     so a cancelled activity is immutable retained history.
                     (
                       resource.data.status != 'cancelled'
                       && request.resource.data.status == 'cancelled'
@@ -2953,9 +2694,8 @@ service cloud.firestore {
     // Retention Releases — authorisations making retention ALREADY WITHHELD on a
     // posted Supplier Invoice payable; RR-#### from the company counters.
     match /companies/{companyId}/projects/{projectId}/retentionReleases/{releaseId} {
-      // The document identity that no update of any kind may rewrite. The TARGET
-      // INVOICE is part of that identity: re-pointing a release at a different
-      // invoice would move money between suppliers without any audit trail.
+      // The identity no update may rewrite, including the TARGET INVOICE (re-pointing
+      // would move money between suppliers with no audit trail).
       function corePreserved() {
         return request.resource.data.releaseNumber     == resource.data.releaseNumber
             && request.resource.data.currency          == resource.data.currency
@@ -2968,9 +2708,8 @@ service cloud.firestore {
       function targetInvoice() {
         return get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/supplierInvoices/$(request.resource.data.supplierInvoiceId));
       }
-      // The target must exist, be POSTED (the financial commit point — retention
-      // on a draft/approved/cancelled invoice is not real), and hold enough
-      // retention for this document's cumulative claim.
+      // The target must exist, be POSTED (retention on a draft / approved / cancelled
+      // invoice is not real) and hold enough retention for this cumulative claim.
       function targetValid() {
         return request.resource.data.supplierInvoiceId is string
             && request.resource.data.supplierInvoiceId.size() > 0
@@ -2980,14 +2719,11 @@ service cloud.firestore {
             && cents(request.resource.data.previouslyReleasedAmount) + cents(request.resource.data.amount)
                <= cents(targetInvoice().data.retention);
       }
-      // The arithmetic guarantee rules CAN give per document: the GST is pinned
-      // to the cumulative rounding delta, so `gstAmount` cannot be arbitrary
-      // merely because releaseTotal happens to add up. lib/retention.js →
-      // releaseGstAmount is roundMoney(next × 0.1) − roundMoney(prev × 0.1);
-      // each term is exact half-up or ONE cent low on a half-cent boundary (the
-      // shared gstPinned() deviation), so the delta is admitted as exact, one
-      // below when `next` is on a boundary, or one above when `prev` is — the
-      // app's own output and nothing else (GST boundary hotfix).
+      // The arithmetic guarantee rules CAN give per document: `gstAmount` is pinned
+      // to the cumulative rounding delta releaseGstAmount = roundMoney(next × 0.1) −
+      // roundMoney(prev × 0.1): exact, one below when `next` is on a half-cent
+      // boundary, one above when `prev` is (the shared gstPinned() deviation; GST
+      // boundary hotfix) — the app's own output and nothing else.
       function moneyTypesValid() {
         let d = request.resource.data;
         return d.amount is number
@@ -3020,9 +2756,8 @@ service cloud.firestore {
             && request.resource.data.revision is number
             && request.resource.data.invoiceNumber is string
             && request.resource.data.supplierInvoiceNumber is string
-            // Supplier INVOICES may legitimately carry supplierId: null from
-            // before the Contacts module and are never backfilled (ADR-15), so a
-            // release inheriting that snapshot may too. The NAME is required.
+            // Supplier INVOICES may carry a legacy supplierId: null (ADR-15), so a release
+            // inheriting that snapshot may too. The NAME is required.
             && (request.resource.data.supplierId == null
                 || (request.resource.data.supplierId is string
                     && request.resource.data.supplierId.size() > 0))
@@ -3056,11 +2791,9 @@ service cloud.firestore {
                   && request.resource.data.voidedBy == null;
 
       allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
-                    // (a) DRAFT EDIT — the money, date, reason and notes are
-                    //     freely editable while draft (re-saving is also how a
-                    //     stale cumulative snapshot is refreshed), but the
-                    //     status may not move and no lifecycle stamp may be
-                    //     forged.
+                    // (a) DRAFT EDIT — money, date, reason and notes editable while draft (re-saving
+                    //     also refreshes a stale cumulative snapshot); the status may not move and
+                    //     no lifecycle stamp may be forged.
                     (
                       resource.data.status == 'draft'
                       && request.resource.data.status == 'draft'
@@ -3072,11 +2805,9 @@ service cloud.firestore {
                       && request.resource.data.voidedBy == resource.data.voidedBy
                     )
                     ||
-                    // (b) DRAFT -> POSTED. A separate operation carrying no
-                    //     content change whatsoever — the amount and GST that
-                    //     were reviewed are the ones committed. The target is
-                    //     re-verified because posting is the point at which the
-                    //     money becomes payable.
+                    // (b) DRAFT -> POSTED — no content change; the reviewed amount and GST are the
+                    //     ones committed. The target is re-verified because posting is the point at
+                    //     which the money becomes payable.
                     (
                       resource.data.status == 'draft'
                       && request.resource.data.status == 'posted'
@@ -3086,17 +2817,12 @@ service cloud.firestore {
                       && request.resource.data.postedAt == request.time
                     )
                     ||
-                    // (c) DRAFT|POSTED -> VOID (terminal). This branch is what
-                    //     makes a POSTED release immutable: voiding is the only
-                    //     permitted update, and it may touch nothing else.
-                    //     Voiding needs no reversal document — the released
-                    //     amount is derived, so every payable balance restores
-                    //     at the next render.
-                    //
-                    //     ⚠️ targetValid() is deliberately NOT required here. A
-                    //     release whose invoice was later cancelled is exactly
-                    //     the one that most needs withdrawing, and rules must
-                    //     never trap it in the posted state.
+                    // (c) DRAFT|POSTED -> VOID (terminal) — the only update a POSTED release
+                    //     admits, touching nothing else; the released amount is derived, so every
+                    //     payable balance restores at the next render.
+                    //     ⚠️ targetValid() is deliberately NOT required here: a release whose
+                    //     invoice was later cancelled is exactly the one that most needs
+                    //     withdrawing, and rules must never trap it in the posted state.
                     (
                       (resource.data.status == 'draft' || resource.data.status == 'posted')
                       && request.resource.data.status == 'void'
@@ -3163,9 +2889,8 @@ service cloud.firestore {
                       && identityShape()
                     )
                     ||
-                    // (b) PROMOTION — a newly issued revision becomes current.
-                    //     revisionCount moves by EXACTLY +1, which is what makes
-                    //     revisionSequence dense and monotonic.
+                    // (b) PROMOTION — a newly issued revision becomes current; revisionCount moves
+                    //     by EXACTLY +1 (revisionSequence stays dense and monotonic).
                     (
                       resource.data.status == 'active'
                       && changedKeys().hasOnly(['currentRevisionId', 'currentRevisionCode', 'currentRevisionIssuedDate', 'revisionCount', 'updatedAt', 'updatedBy'])
@@ -3178,16 +2903,11 @@ service cloud.firestore {
                       && request.resource.data.currentRevisionIssuedDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
                     )
                     ||
-                    // (c) REINSTATEMENT — the current revision is being
-                    //     withdrawn and the user EXPLICITLY nominated an earlier
-                    //     one. The pointer must actually move, and the count
-                    //     must not: reinstating is not issuing.
-                    //
-                    //     There must ALREADY be a current revision. Without this
-                    //     an empty master could have its pointer set with no
-                    //     matching count increment, which would break the
-                    //     "revisionCount is the sequence high-water mark"
-                    //     invariant that revisionSequence is derived from.
+                    // (c) REINSTATEMENT — the current revision is withdrawn and an earlier one
+                    //     EXPLICITLY nominated: the pointer must move and the count must not
+                    //     (reinstating is not issuing), and a current revision must ALREADY exist
+                    //     so `revisionCount` stays the sequence high-water mark that
+                    //     revisionSequence is derived from.
                     (
                       resource.data.status == 'active'
                       && resource.data.currentRevisionId != null
@@ -3201,10 +2921,8 @@ service cloud.firestore {
                       && request.resource.data.currentRevisionIssuedDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
                     )
                     ||
-                    // (d) WITHDRAWAL (terminal) — the master is recalled and
-                    //     left with NO current revision. Used both when the
-                    //     current revision is withdrawn with no replacement and
-                    //     when an empty master is retired.
+                    // (d) WITHDRAWAL (terminal) — the master is recalled with NO current revision
+                    //     (current withdrawn with no replacement, or an empty master retired).
                     (
                       resource.data.status == 'active'
                       && request.resource.data.status == 'withdrawn'
@@ -3221,14 +2939,11 @@ service cloud.firestore {
 
       allow delete: if false;
 
-      // ── Drawing revisions (immutable issues) ───────────────────────────────
-      //
-      // The helper functions above are in scope here: rules functions declared
-      // in an outer match are visible to nested matches.
+      // ── Drawing revisions (immutable issues) — the helper functions above are in
+      // scope here (functions declared in an outer match are visible to nested matches).
       match /revisions/{revisionId} {
-        // The one storage path this revision is allowed to claim. Built from
-        // the path segments, so it cannot name another tenant, another project,
-        // another drawing, or a filename the caller chose.
+        // The one storage path this revision may claim, built from the path segments
+        // (never another tenant, project, drawing or a caller-chosen filename).
         function expectedStoragePath() {
           return 'companies/' + companyId
                + '/projects/' + projectId
@@ -3300,10 +3015,8 @@ service cloud.firestore {
                         && request.resource.data.supersededByRevisionId != revisionId
                       )
                       ||
-                      // (b) SUPERSEDED -> CURRENT, the explicit reinstatement
-                      //     half of withdrawing a current revision. The
-                      //     supersession stamps are cleared, never rewritten to
-                      //     a different revision.
+                      // (b) SUPERSEDED -> CURRENT — the explicit reinstatement half of withdrawing a
+                      //     current revision; supersession stamps cleared, never rewritten.
                       (
                         resource.data.status == 'superseded'
                         && request.resource.data.status == 'current'
@@ -3443,15 +3156,11 @@ service cloud.firestore {
             && request.resource.data.createdBy == resource.data.createdBy
             && request.resource.data.revision  == resource.data.revision;
       }
-      // ⚠️ EXPRESSION BUDGET. Firestore evaluates at most 1000 expressions per
-      // request, and this block validates ~34 fields plus two existence
-      // lookups. Every shape helper therefore takes the candidate map `d`
-      // ONCE as an argument instead of re-resolving `request.resource.data`
-      // per field, and the exact-key check is `hasAll` + `size()` rather than
-      // a second full list. Do not "tidy" these back into the longer form.
-      //
-      // EXACT shape — hasAll + size together mean no field may be added,
-      // renamed, or omitted (the ADR-27 lesson).
+      // ⚠️ EXPRESSION BUDGET (1000 per request): this block validates ~34 fields plus
+      // two existence lookups, so every shape helper takes the candidate map `d` ONCE
+      // and the exact-key check is `hasAll` + `size()` (no field may be added,
+      // renamed or omitted — the ADR-27 lesson). Do not "tidy" these back into the
+      // longer form.
       function exactKeys(d) {
         return d.keys().hasAll([
                  'rfiNumber', 'status',
@@ -3535,9 +3244,8 @@ service cloud.firestore {
             && d.closeOutNote == '' && d.closedAt == null && d.closedBy == null
             && d.cancelReason == '' && d.cancelledAt == null && d.cancelledBy == null;
       }
-      // Raise gate — AND the standing invariant of every OPEN RFI: a real
-      // assignee and a real due date. Checked at raise and re-checked on
-      // every open management edit, so they can be changed but never cleared.
+      // Raise gate AND the standing invariant of every OPEN RFI: a real assignee and
+      // a real due date — changeable on an open management edit, never cleared.
       function raiseReady(d) {
         return d.assignedToContactId is string
             && d.assignedToContactId.size() > 0
@@ -3561,12 +3269,9 @@ service cloud.firestore {
                   && updateStamped();
 
       allow update: if rfiMember() && corePreserved() && updateStamped() && (
-                    // (a) DRAFT EDIT — the question block, the reference, the
-                    //     cost code, the assignee and the due date are all
-                    //     editable. The hasOnly allow-list is what keeps the
-                    //     status, the number and every lifecycle stamp fixed
-                    //     (they were validated null/empty at create), so no
-                    //     stamp can be forged and no key can be added.
+                    // (a) DRAFT EDIT — question block, reference, cost code, assignee and due date
+                    //     editable; the hasOnly allow-list keeps the status, the number and every
+                    //     lifecycle stamp fixed, so no stamp can be forged and no key added.
                     (
                       resource.data.status == 'draft'
                       && changedKeys().hasOnly([
@@ -3581,10 +3286,8 @@ service cloud.firestore {
                       && managementShape(request.resource.data)
                     )
                     ||
-                    // (b) RAISE — draft → open. Needs an assignee and a due
-                    //     date ALREADY on the stored draft. Touches only the
-                    //     status and the raise stamps, so the question block
-                    //     freezes by construction.
+                    // (b) RAISE — draft → open; needs an assignee and a due date ALREADY on the
+                    //     stored draft. Status and raise stamps only — the question block freezes.
                     (
                       resource.data.status == 'draft'
                       && request.resource.data.status == 'open'
@@ -3594,10 +3297,8 @@ service cloud.firestore {
                       && request.resource.data.raisedAt == request.time
                     )
                     ||
-                    // (c) OPEN MANAGEMENT EDIT — assignee and due date ONLY.
-                    //     Everything else is frozen by the hasOnly. Reassign
-                    //     and re-date are allowed; CLEARING either is not —
-                    //     raiseReady() keeps the open-state invariant.
+                    // (c) OPEN MANAGEMENT EDIT — assignee and due date ONLY; reassign and re-date
+                    //     are allowed, CLEARING either is not (raiseReady()).
                     (
                       resource.data.status == 'open'
                       && changedKeys().hasOnly(['assignedToContactId', 'assignedToName', 'dueDate', 'updatedAt', 'updatedBy'])
@@ -3720,17 +3421,14 @@ service cloud.firestore {
                   && updateStamped();
 
       allow update: if pulseWriter() && corePreserved() && updateStamped() && nextRevision() && (
-                    // (a) RE-ACKNOWLEDGE — from active OR withdrawn. A fresh
-                    //     statement with fresh stamps; the previous one is
-                    //     replaced (no history is kept — ADR-49).
+                    // (a) RE-ACKNOWLEDGE — from active OR withdrawn; a fresh statement with fresh
+                    //     stamps replaces the previous one (no history — ADR-49).
                     (
                       activeShape()
                     )
                     ||
-                    // (b) WITHDRAW — active → withdrawn. Stamps and status
-                    //     only, so the acknowledged content stays as the
-                    //     record of what was acknowledged and no edit can ride
-                    //     along. withdrawn → withdrawn is excluded.
+                    // (b) WITHDRAW — active → withdrawn; stamps and status only, so the acknowledged
+                    //     content stays as the record. withdrawn → withdrawn is excluded.
                     (
                       resource.data.status == 'active'
                       && request.resource.data.status == 'withdrawn'
@@ -3775,12 +3473,9 @@ service cloud.firestore {
             && d.page is int && d.page >= 1
             && takeoffPageId == d.drawingId + '_' + d.revisionId + '_' + string(d.page);
       }
-      // The referenced drawing and revision must exist and NEITHER may be
-      // withdrawn — nothing is ever measured, or re-calibrated, on a recalled
-      // sheet. Evaluated on the INCOMING document at create and on the STORED
-      // identity at update (identity is immutable, so they are the same sheet).
-      // Reads are deliberately NOT gated on this: a withdrawn sheet's takeoff
-      // stays inspectable as history.
+      // The referenced drawing and revision must exist and NEITHER may be withdrawn
+      // (checked on the INCOMING document at create, the STORED identity at update).
+      // Reads are deliberately NOT gated: a withdrawn sheet's takeoff stays history.
       function sourceLive(d) {
         return exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/drawings/$(d.drawingId))
             && get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/drawings/$(d.drawingId)).data.status != 'withdrawn'
@@ -3848,10 +3543,8 @@ service cloud.firestore {
                        )
                      );
 
-      // The ONLY update is a (re-)calibration: the calibration moves, its
-      // revision moves by exactly +1, and nothing else may ride along. A sheet
-      // whose revision or drawing has since been withdrawn can no longer be
-      // re-calibrated — its measurements are history, not a live takeoff.
+      // The ONLY update is a (re-)calibration: calibration + revision exactly +1 and
+      // nothing else; a sheet whose revision or drawing is withdrawn is history.
       allow update: if quantMember()
                   && exactKeys(request.resource.data)
                   && corePreserved()
@@ -3879,10 +3572,8 @@ service cloud.firestore {
         return request.resource.data.revision is int
             && request.resource.data.revision == resource.data.revision + 1;
       }
-      // `boqItemId` (ADR-52) is OPTIONAL: present on every Quant 1B write
-      // (null or an id), absent on Quant 1A documents, which stay valid.
-      // `deductions` (ADR-54) is OPTIONAL: an AREA's holes, written only once
-      // the first deduction exists; absent on every earlier document.
+      // `boqItemId` (ADR-52) and `deductions` (ADR-54) are OPTIONAL: present on later
+      // writes, absent on earlier documents, which stay valid.
       function exactKeys(d) {
         return d.keys().hasOnly([
                  'takeoffPageId', 'drawingId', 'revisionId', 'page', 'kind', 'points', 'label',
@@ -3897,9 +3588,8 @@ service cloud.firestore {
                  'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
                ]);
       }
-      // The BOQ link (ADR-52): absent or null, or an id naming an item IN THIS
-      // PROJECT that exists, is active and shares the measurement's cost code.
-      // Unit compatibility and the aggregate are client-only (DC33).
+      // The BOQ link (ADR-52): absent / null, or an active item IN THIS PROJECT sharing
+      // the measurement's cost code. Unit compatibility and the aggregate are DC33.
       function linkValid(d) {
         return !('boqItemId' in d)
             || d.boqItemId == null
@@ -3910,19 +3600,16 @@ service cloud.firestore {
                  && get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/boqItems/$(d.boqItemId)).data.costCodeId == d.costCodeId
                );
       }
-      // The drawing and revision exist and NEITHER is withdrawn. Checked on the
-      // incoming document at create and on the STORED identity for an active
-      // edit; never for a read or a void.
+      // The drawing and revision exist and NEITHER is withdrawn — checked at create
+      // and on the STORED identity for an active edit; never for a read or a void.
       function sourceLive(d) {
         return exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/drawings/$(d.drawingId))
             && get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/drawings/$(d.drawingId)).data.status != 'withdrawn'
             && exists(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/drawings/$(d.drawingId)/revisions/$(d.revisionId))
             && get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/drawings/$(d.drawingId)/revisions/$(d.revisionId)).data.status != 'withdrawn';
       }
-      // The sheet identity: consistent with the page id, every referenced
-      // document real and the sheet live. The page must ALREADY exist (exists()
-      // sees committed state), which is why the app creates a page in its own
-      // commit first.
+      // The sheet identity: consistent with the page id, every referenced document
+      // real and live. The page must ALREADY exist (exists() sees committed state).
       function sourceValid(d) {
         return d.drawingId is string && d.drawingId.size() > 0
             && d.revisionId is string && d.revisionId.size() > 0
@@ -3940,8 +3627,7 @@ service cloud.firestore {
             && c.realDistance is number && c.realDistance > 0
             && c.unit in ['mm', 'm'];
       }
-      // Deductions (ADR-54): absent, or a bounded LIST on an AREA. Element
-      // content (shape, simplicity, containment, overlap, net > 0) is
+      // Deductions (ADR-54): absent, or a bounded LIST on an AREA; element content is
       // client-only — rules cannot iterate a list (DC32).
       function deductionsValid(d) {
         return !('deductions' in d)
@@ -3999,13 +3685,10 @@ service cloud.firestore {
                   && updateStamped()
                   && nextRevision()
                   && (
-                    // (a) ACTIVE EDIT — geometry, label, cost code, the
-                    //     calibration snapshot and the BOQ link may change; the
-                    //     status may not, no void stamp may be forged, and the
-                    //     sheet must still be LIVE (revision and drawing not
-                    //     withdrawn). The link target is re-verified whenever
-                    //     the link OR the cost code moves — a label edit on a
-                    //     measurement whose item was voided later still passes.
+                    // (a) ACTIVE EDIT — geometry, label, cost code, the calibration snapshot and
+                    //     the BOQ link may change; the status may not, no void stamp may be forged,
+                    //     and the sheet must still be LIVE. The link target is re-verified whenever
+                    //     the link OR the cost code moves.
                     (
                       resource.data.status == 'active'
                       && request.resource.data.status == 'active'

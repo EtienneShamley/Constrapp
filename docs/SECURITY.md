@@ -105,6 +105,24 @@ Controls now in place:
   → 230,340 bytes** (+1,214; 14,660 under the budget), derived STAGE-1
   `firestore.transitional.rules` **230,974** (the same three marked lines; no
   new one — no transitional publish). Document reads unchanged.
+- **Rules capacity recovery 2 (ADR-69, 3 November 2026, IMPLEMENTED — NOT YET
+  DEPLOYED; Rules-only).** A comment-only trim made to clear headroom for
+  SHIELD 2B1 (Approved Budget Versions, estimated at about 9.4 KB of new
+  rules against 6,675 bytes of headroom). 113 whole-line comment runs were
+  shortened to the one-paragraph-per-control posture of ADR-51 with pointers
+  to this document and the ADRs; **no executable line changed** —
+  `scripts/verify-rules-comment-only.mjs` drops every whole-line comment from
+  the before and after files and proves the remaining 3,041 lines (statements,
+  blank lines, inline comments) byte-identical, for the FINAL file and for the
+  regenerated transitional file. FINAL `firestore.rules` **238,325 → 218,840
+  bytes** (−19,485; 26,160 under the budget), derived STAGE-1
+  `firestore.transitional.rules` **239,005 → 219,520** (the same four marked
+  lines). Every rationale shortened in the source is recorded here or in its
+  ADR; the structural comment anchors the unit suite reads (`// Project
+  counters — PER-PROJECT`, `// (a) ACTIVE EDIT`, `// (b) ACTIVE → VOID`,
+  `(c) APPROVE`, `(d) REJECT`) and every transitional marker are untouched.
+  Recovered source bytes say nothing about compiled complexity: the
+  1000-expression ceiling is unchanged and SHIELD 2B1 must validate it anew.
 - **Size compliance is not deployment proof.** The emulator suite proves the
   repo file; the size test proves it can be published; only the console shows
   what is live — see [DEPLOYMENT.md](DEPLOYMENT.md) → *Verifying which rules
@@ -260,7 +278,11 @@ invoice is frozen but not yet financial.
   `== request.time`. A transition can therefore carry **no** content change.
 - **`posted` and `cancelled` are terminal and immutable** — they match no update
   branch at all. A posted invoice cannot be cancelled, unposted, or rewritten;
-  corrections are Supplier Credit Notes.
+  corrections are Supplier Credit Notes. The cancel branch deliberately carries
+  **no cancel reason**, unlike every other terminal transition in the ruleset:
+  the field does not exist on this collection, adding it needs a UI change, and
+  admitting an unvalidated key in the allow-list would be a free-text hole
+  (ADR-40; recorded here by ADR-69 when the rules comment was shortened).
 - **The status enum is enforced by omission.** `received`, `under_review`,
   `disputed` and the deprecated `paid` are **unauthorable from any path**, which
   closes the ADR-24 hole in which a direct-SDK caller could forge `status:

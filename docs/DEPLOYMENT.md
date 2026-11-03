@@ -1359,6 +1359,50 @@ stages are **not equally reversible** once production has paired an invoice:
   three branches. The transitional ruleset is the widest compatible fallback
   (it still enforces the pairing).
 
+### Rules capacity recovery 2 release order — ADR-69 — RULES ONLY, one FINAL publish, no Hosting, no transitional stage
+
+**Status: IMPLEMENTED — NOT YET DEPLOYED (Rules only; ONE step).** A
+comment-only trim of `frontend/firestore.rules` to clear headroom for SHIELD
+2B1: **238,325 → 218,840 bytes** (−19,485), the regenerated transitional file
+**239,005 → 219,520**. Every executable line is byte-identical to the
+previously reviewed file (`frontend/scripts/verify-rules-comment-only.mjs`,
+TESTING.md §46), so the published controls are exactly those of the ruleset
+it replaces. **No Hosting deploy** — application behaviour is unchanged.
+**Do not publish the transitional ruleset for this milestone**; it is
+regenerated only so it stays derivable from the FINAL file for a future
+three-stage release.
+
+*Preconditions.* Azure CI green on the merge (lint → unit → rules → build);
+`npm run rules:transitional:check` clean; `wc -c frontend/firestore.rules`
+reads **218,840** (budget 245,000); `node scripts/verify-rules-comment-only.mjs
+--base 634e69c` (TESTING.md §46) prints `EQUIVALENT` for both files and exits 0. **The ruleset this file replaces must already be the
+live one** — SHIELD 2A FINAL (238,325 bytes), which carries the GST hotfix,
+GANTT 1B, PULSE 1C and the 2A pairing. Confirm in the Console before STEP 1:
+if an older ruleset is live, publishing this file ALSO publishes every control
+added since, and those releases' own orders (above) apply first. The command
+runs from `frontend/`, a separate approved action; **never run by an
+implementation task.**
+
+1. **STEP 1 — publish the FINAL ruleset:**
+   ```bash
+   npm run test:rules                       # all 31 suites green against the cleaned file
+   firebase deploy --only firestore:rules --project constrapp-69b5d
+   ```
+   Verify in the Console that the published source reads **218,840 bytes**,
+   still contains `function gstPinned(netC, gstC)` and
+   `function linkedInvoiceCreatedHere()`, and carries NO
+   `TRANSITIONAL (STAGE 1)` marker. Record the timestamp here. Then run the
+   three manual checks in TESTING.md §46.
+
+*Recovery.* Trivially reversible: republishing the previous FINAL ruleset
+(SHIELD 2A FINAL, 238,325 bytes) restores a byte-identical set of controls
+— the two files enforce exactly the same rules, so no write that one accepts
+is refused by the other and no document is affected. The only reason to
+revert would be a publish defect in the file itself (a compile error, which
+the Console reports and the emulator suite would already have caught).
+Nothing else in this milestone can be rolled forward or back: no Hosting
+build, no index, no data.
+
 ## Publishing Firestore Rules — Manual Process
 
 The rules source of truth is `frontend/firestore.rules`, but **there is no CLI
