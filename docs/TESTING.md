@@ -7407,3 +7407,48 @@ fails a legacy claim closed, reconciles, and pairs the cancel; the existing
    reconciliation*. With the invoice register failing to load (e.g. offline
    before the first snapshot), the column reads *Invoice register unavailable*
    and nothing is offered.
+
+## 46. Firestore Rules Capacity Recovery 2 (ADR-69) — implemented, NOT YET DEPLOYED
+
+**What changed.** Whole-line comments in `frontend/firestore.rules` only: 113
+comment runs shortened, **238,325 → 218,840 bytes** (−19,485). The transitional
+file was regenerated (`239,005 → 219,520`). No executable rules line, no
+permission, no data shape, no client code and no test changed.
+
+**Automated:** lint 0 / 0; unit **71 files / 4,087 tests** (unchanged — the
+size test now reports 26,160 bytes under budget; the transitional test still
+finds exactly four marked pairs); rules **31 files / 2,006 tests** (unchanged,
+run against the cleaned file); build clean; `npm run rules:transitional:check`
+clean; `git diff --check` clean.
+
+**The equivalence proof (run from `frontend/`; reproducible from the
+repository alone).** The script retrieves both original files from the base
+commit with `git show` and verifies the working copies against them:
+
+```bash
+node scripts/verify-rules-comment-only.mjs --base 634e69c
+```
+
+Both lines must print `EQUIVALENT — 3041 retained non-comment lines are
+byte-identical` (FINAL 238,325 → 218,840; transitional 239,005 → 219,520) and
+the exit code must be 0. The script drops every line whose trimmed content
+begins with `//` from both files and compares what remains byte-for-byte —
+blank lines, inline comments and executable statements alike; any other
+difference exits 1 and names the first differing line. Negative controls
+verified: `--base ea2eea8` (the pre-2A commit) fails at the claims `hasAll`
+line, and a copy with one `allow delete: if false;` flipped to `true` fails
+at that line. A two-path form (`node scripts/verify-rules-comment-only.mjs
+<original> <cleaned>`) compares any pair of files on disk.
+
+**Manual (three checks, after the FINAL publish):**
+
+1. Firebase Console → Firestore → Rules: the live source reads **218,840
+   bytes**, contains `function gstPinned(netC, gstC)` and
+   `function linkedInvoiceCreatedHere()`, and contains NO
+   `TRANSITIONAL (STAGE 1)` marker.
+2. In the app, raise and send a purchase order, create and approve a progress
+   claim, and raise its supplier invoice: every write succeeds exactly as before
+   (no permission-denied), and a `subcontractor` sign-in still cannot read
+   supplier invoices.
+3. `diff <(pbpaste) frontend/firestore.rules` (macOS, with the Console source on
+   the clipboard) is empty — the published ruleset is the repo file.
