@@ -7408,7 +7408,7 @@ fails a legacy claim closed, reconciles, and pairs the cancel; the existing
    before the first snapshot), the column reads *Invoice register unavailable*
    and nothing is offered.
 
-## 46. Firestore Rules Capacity Recovery 2 (ADR-69) — implemented, NOT YET DEPLOYED
+## 46. Firestore Rules Capacity Recovery 2 (ADR-69) — LIVE
 
 **What changed.** Whole-line comments in `frontend/firestore.rules` only: 113
 comment runs shortened, **238,325 → 218,840 bytes** (−19,485). The transitional
@@ -7453,7 +7453,7 @@ at that line. A two-path form (`node scripts/verify-rules-comment-only.mjs
 3. `diff <(pbpaste) frontend/firestore.rules` (macOS, with the Console source on
    the clipboard) is empty — the published ruleset is the repo file.
 
-## 47. Constrapp SHIELD™ 2B1 — Approved Budget Versions (ADR-70) — implemented, NOT YET DEPLOYED
+## 47. Constrapp SHIELD™ 2B1 — Approved Budget Versions (ADR-70) — LIVE
 
 **What is enforced.** A budget approval is a header (`budgetApprovals/{id}`) and
 ONE immutable snapshot (`budgetApprovalSnapshots/{id}`) of every working budget
@@ -7524,3 +7524,82 @@ budget); transitional **235,159** (the same four marked lines).
    reports *Another budget version was approved…* and the history shows one
    version. On the SHIELD tab, check 6 reads *No issue found* naming the
    version; a `subcontractor` sign-in cannot read any approval document.
+
+## 48. Constrapp SHIELD™ 2B2 — Controlled Budget Adjustments (ADR-71) — implemented, NOT YET DEPLOYED
+
+**What is enforced.** An adjustment (`budgetAdjustments/{id}`) is ONE movement
+— increase, decrease or transfer between two different cost codes — of a
+positive whole-cent amount, bound at preparation to the pointer's ACTIVE
+version (no pointer: refused). Approval writes the record and the pointer's
+ledger in one commit (rules pair them with `getAfter()` both ways: count
+exactly +1, `sequence` == the new count, net moved by exactly `+amount` /
+`−amount` / `0`, active version frozen) — by `company_admin` /
+`project_manager` only; approved and withdrawn are terminal. Every version
+approval resets the ledger to zero, so a superseded adjustment never counts
+twice. The Approved Budget shown anywhere is the active snapshot PLUS the
+active version's approved adjustments, reconciled against the ledger; any
+mismatch, or a cost code below zero, makes every budget figure Unavailable.
+What rules cannot prove is Deferred Control 45.
+
+**Automated.** Unit — `budgetAdjustment.test.js`, **56** (movement model and
+derived net; the exhaustive two-decimal sweep 0.01–10,000.00 and large
+values; draft validation and normalisation; the resulting-balance preview —
+below zero refused, exactly zero allowed, a new cost code receiving budget;
+staleness, history, labels; the adapter — 1,000,000 + 50,000 = 1,050,000,
+transfers net zero, new cost codes, drafts never counted, and UNAVAILABLE for
+a missing / extra record, a sequence gap or duplicate, a net mismatch, a
+foreign-version record, a malformed amount or type, a foreign currency, a
+negative cost code, a malformed ledger, a stale last-adjustment reference, a failed or absent read; LOADING
+while the read settles; the Original stays version 1; NO DOUBLE COUNTING
+across a re-approval (1,050,000 captured → 1,050,000, not 1,100,000; the
+unchanged register → 1,000,000); the supersession summary and its key;
+parity — Forecast rows, totals, BOQ, tenders, the Dashboard snapshot, PULSE
+and SHIELD check 6 read the same adjusted figure while Actual, Remaining
+Committed, FFC, Cost to Complete, payables, cash and margin do not move;
+structure — the Budget page and the review dialog use the shared selectors,
+no other module folds movements, the listener opens only when the ledger
+records adjustments); `budgetAdjustmentActions.test.js`, **24** (server read
+before the transaction, every read before any write, the exact writes, the
+idempotent same-id prepare, NO_BASE / STALE_BASE / SUPERSEDED / NEGATIVE /
+PERMISSION outcomes, the lost-race mapping, retry never applying twice, and
+the re-approval supersession guard and ledger reset). Rules —
+`budgetAdjustments.rules.test.js`, **67** (read matrix; prepare matrix and
+every refusal; the two-decimal pin accepting 26 and refusing 9 boundary
+values; the approval pair both ways — wrong sequence, +2, wrong net per type,
+foreign pairing, stale base, forged ledger writes, branch confinement;
+immutability and withdrawal including a stale draft; the ledger reset — an
+old-bundle re-approval fails closed, a legacy pointer re-approves unchanged,
+version + adjustment in one commit refused, a kept last-adjustment
+reference refused, a non-empty ledger or reference at creation refused; the app's transactions — prepare → approve, contingency as a
+transfer, double-click, NO_BASE, NEGATIVE, QS refused, retry, two CONCURRENT
+approvals, the re-approval race, no double counting, the acknowledgement
+refusals; DC45 — a forged below-zero approval is accepted by the rules and
+the adapter fails closed). Totals: unit **76 files / 4,331**; rules **34
+files / 2,160**. Lint 0 / 0; build clean; `rules:transitional:check` clean;
+`git diff --check` clean. FINAL `firestore.rules` 234,479 → **241,924 bytes**
+(3,076 under budget); transitional **242,604**.
+
+**Manual (three checks, after both steps of the DEPLOYMENT.md release order):**
+
+1. On a project with an approved version, as a QS prepare a **transfer** of
+   10,000 from one cost code to another and an **increase** of 5,000 (each
+   dialog shows the resulting per-code figures; a transfer larger than the
+   source's approved figure cannot be saved). As a Project Manager approve
+   both: the Budget tab's summary shows the version base unchanged, net
+   adjustments +5,000 and Current Approved Budget base + 5,000; the table
+   shows one *Approved adjustments · net* row per affected code; Forecast,
+   Commercial, BOQ, PULSE and the Dashboard read the same figure captioned
+   *version N + 2 adjustments*; Actual, Remaining Committed, Forecast Final
+   Cost, Gross Profit, Remaining Payable and Cash Flow are unchanged; SHIELD
+   check 6 reads *No issue found* naming the two adjustments.
+2. Without editing the working lines, prepare a new budget version and open
+   its review: it shows the current adjusted total, the proposed total, the
+   −5,000 difference, both adjustments as superseded and the per-code
+   changes, and *Approve* stays disabled until the acknowledgement is ticked.
+   Approve it: the Approved Budget equals the captured total (no adjustment
+   counted twice), the two adjustments remain in the history as superseded,
+   and a draft prepared before the re-approval shows *Stale · withdraw only*.
+3. Open the same draft adjustment in two tabs as two approvers and approve in
+   both: one succeeds and the other reports *Another budget adjustment was
+   approved…* (or that it is no longer a draft); the ledger shows ONE
+   approval. A `subcontractor` sign-in cannot read any adjustment.

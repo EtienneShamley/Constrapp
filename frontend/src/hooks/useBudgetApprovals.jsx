@@ -20,7 +20,8 @@ import {
 // versions never streams ten payloads to a page.
 //
 // ⚠️ THIS HOOK WRITES ONLY `budgetApprovals`, `budgetApprovalSnapshots` AND
-// `approvedBudget/current`. It never writes a budget line, and never touches
+// `approvedBudget/current` (a version approval also RESETS the pointer's
+// ADR-71 adjustment ledger to zero). It never writes a budget line, and never touches
 // Purchase Orders, Progress Claims, Supplier Invoices, Variations, Forecast
 // Lines, Cash Flow Lines or the Commercial Baseline. Approving a budget moves
 // no Actual, no commitment, no forecast and no cash figure (ADR-70).
@@ -124,9 +125,12 @@ export function useBudgetApprovals(projectId) {
   }, [companyId, projectId, user, budgetLinesQuery])
 
   // APPROVE — `header` is the copy the reviewer opened; `acknowledgedDriftKey`
-  // the drift they reviewed; `seenVersionCount` the pointer count they
-  // reviewed against (0 when no version existed).
-  const approveBudgetApproval = useCallback(async (header, snapshot, acknowledgedDriftKey, seenVersionCount) => {
+  // the drift they reviewed; `view` what they reviewed against: the pointer's
+  // versionCount (0 when no version existed) and — ADR-71 — the active
+  // version's adjustment ledger, base total and the supersession they
+  // acknowledged. (A bare number is the 2B1 form: the version count only.)
+  const approveBudgetApproval = useCallback(async (header, snapshot, acknowledgedDriftKey, view) => {
+    const v = typeof view === 'number' || view === undefined ? { seenVersionCount: view ?? 0 } : view
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     return runBudgetApprove({
       db,
@@ -138,7 +142,11 @@ export function useBudgetApprovals(projectId) {
       seen: header,
       snapshot,
       acknowledgedDriftKey,
-      seenVersionCount,
+      seenVersionCount: v.seenVersionCount ?? 0,
+      seenAdjustmentCount: v.seenAdjustmentCount ?? 0,
+      seenAdjustmentNet: v.seenAdjustmentNet ?? 0,
+      seenBaseTotal: v.seenBaseTotal ?? null,
+      acknowledgedSupersessionKey: v.acknowledgedSupersessionKey ?? '',
       uid: user.uid,
       runTransaction,
       serverTimestamp,

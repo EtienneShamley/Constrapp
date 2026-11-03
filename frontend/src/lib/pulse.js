@@ -21,7 +21,7 @@ import {
   figureState, FIGURE_STATE, FIGURE_DEPENDENCIES, FORECAST_ROW_SOURCES,
   SNAPSHOT_SOURCES, SNAPSHOT_SOURCE_LABELS,
 } from './projectSnapshot'
-import { resolveBudgetSource, budgetLinesFor, originalApprovedBudgetFor, BUDGET_SOURCE, BUDGET_SOURCE_LABELS } from './budgetApproval'
+import { resolveBudgetSource, budgetLinesFor, originalApprovedBudgetFor, approvedVersionCaption, BUDGET_SOURCE, BUDGET_SOURCE_LABELS } from './budgetApproval'
 
 // ── Constrapp PULSE™ 1A — objective project health indicators (ADR-47) ────────
 //
@@ -308,8 +308,9 @@ function evaluateForecastOverBudget(rows, totals, budgetSource, sourceStates) {
   if (gated) return gated
 
   const approved = budgetSource?.kind === BUDGET_SOURCE.APPROVED
+  // ADR-71: the current ADJUSTED approved budget names its adjustments.
   const budgetLabel = approved
-    ? `Approved Budget · version ${budgetSource.version}`
+    ? `Approved Budget · version ${approvedVersionCaption(budgetSource)}`
     : BUDGET_SOURCE_LABELS[BUDGET_SOURCE.WORKING]
   const values = {
     budgetSource:      budgetLabel,

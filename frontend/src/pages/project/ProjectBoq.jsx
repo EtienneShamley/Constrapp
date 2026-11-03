@@ -10,7 +10,7 @@ import { useBoqItems } from '../../hooks/useBoqItems'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
 import { useApprovedBudget } from '../../hooks/useApprovedBudget'
-import { resolveBudgetSource, budgetSourceState, budgetLinesFor, BUDGET_SOURCE } from '../../lib/budgetApproval'
+import { resolveBudgetSource, budgetSourceState, budgetLinesFor, approvedVersionCaption, BUDGET_SOURCE } from '../../lib/budgetApproval'
 import { useDrawings } from '../../hooks/useDrawings'
 import { useTakeoffPages, useTakeoffMeasurements } from '../../hooks/useTakeoff'
 import { isFinancialRole } from '../../lib/margin'
@@ -357,7 +357,7 @@ export default function ProjectBoq() {
           budgetTotal={budgetTotal}
           budgetLoading={approvedBudgetLoading}
           budgetApproved={budgetApproved}
-          budgetVersion={budgetSource.version}
+          budgetVersion={approvedVersionCaption(budgetSource)}
           budgetUnavailable={approvedBudgetError}
           variance={variance}
           currencyCode={currencyCode}

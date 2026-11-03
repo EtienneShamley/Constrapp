@@ -105,8 +105,8 @@ Controls now in place:
   → 230,340 bytes** (+1,214; 14,660 under the budget), derived STAGE-1
   `firestore.transitional.rules` **230,974** (the same three marked lines; no
   new one — no transitional publish). Document reads unchanged.
-- **Rules capacity recovery 2 (ADR-69, 3 November 2026, IMPLEMENTED — NOT YET
-  DEPLOYED; Rules-only).** A comment-only trim made to clear headroom for
+- **Rules capacity recovery 2 (ADR-69, 3 November 2026, LIVE — published
+  before SHIELD 2B1, which required it; Rules-only).** A comment-only trim made to clear headroom for
   SHIELD 2B1 (Approved Budget Versions, estimated at about 9.4 KB of new
   rules against 6,675 bytes of headroom). 113 whole-line comment runs were
   shortened to the one-paragraph-per-control posture of ADR-51 with pointers
@@ -123,7 +123,8 @@ Controls now in place:
   `(c) APPROVE`, `(d) REJECT`) and every transitional marker are untouched.
   Recovered source bytes say nothing about compiled complexity: the
   1000-expression ceiling is unchanged and SHIELD 2B1 must validate it anew.
-- **SHIELD™ 2B1 (ADR-70, 3 November 2026, IMPLEMENTED — NOT YET DEPLOYED)**
+- **SHIELD™ 2B1 (ADR-70, 3 November 2026, LIVE — deployment confirmed by the
+  Product Owner)**
   adds three blocks before `boqItems` — `approvedBudget/current` (the
   pointer), `budgetApprovals` (the header) and `budgetApprovalSnapshots` (the
   ONE immutable payload) — two shared path helpers and `budgetApprover()` at
@@ -138,6 +139,21 @@ Controls now in place:
   pair 3; every new evaluation ran clean of the 1000-expression ceiling in
   the emulator (`tests/rules/budgetApprovals.rules.test.js`, incl. the
   2,000-entry write).
+- **SHIELD™ 2B2 (ADR-71, 3 November 2026, IMPLEMENTED — NOT YET DEPLOYED)**
+  adds the `budgetAdjustments` block before `boqItems`, one shared path
+  helper, and extends the `approvedBudget/current` block with the OPTIONAL
+  adjustment ledger (three keys in `pointerKeys().hasOnly`, the ledger reset
+  inside `pairedWithApproval()`, the new `pairedWithAdjustment()` branch):
+  FINAL `firestore.rules` **234,479 → 241,924 bytes** (+7,445; **3,076 under
+  the budget** — the next rules milestone needs a capacity recovery first),
+  derived STAGE-1 `firestore.transitional.rules` **242,604** (the same four
+  marked lines; no new one — no transitional publish). Access calls: an
+  adjustment create spends at most 6 distinct documents (membership,
+  pointer, one or two cost codes, `resolvedCurrency` 2); the approval pair 4
+  (membership, the pointer and the adjustment through `getAfter()`, and the
+  active header the version branch probes); every evaluation ran clean of
+  the 1000-expression ceiling in the emulator
+  (`tests/rules/budgetAdjustments.rules.test.js`, 67 cases).
 - **Size compliance is not deployment proof.** The emulator suite proves the
   repo file; the size test proves it can be published; only the console shows
   what is live — see [DEPLOYMENT.md](DEPLOYMENT.md) → *Verifying which rules
@@ -197,7 +213,8 @@ Control 20).
 | `…/costCodes/{id}` | **financial roles only** (ADR-56; was company member) | financial roles | blocked — deactivate via `isActive` |
 | `…/contacts/{id}` | **financial roles only** | financial roles | blocked — archive via `isActive` |
 | `…/projects/{id}/budgetLines/{id}` | **financial roles only** (ADR-56; was company member) | financial roles — the editable WORKING register (ADR-70) | blocked |
-| `…/projects/{id}/approvedBudget/current` | **financial roles only** | **`company_admin`, `project_manager` ONLY**, and ONLY in the same commit as a header's approval (`getAfter()`: approved, same version, same caller and server time); exact keys; created at `versionCount == 1` with `originalApprovalId == activeApprovalId`; advanced by EXACTLY +1 to a DIFFERENT header with the original and provenance frozen (ADR-70) | blocked |
+| `…/projects/{id}/approvedBudget/current` | **financial roles only** | **`company_admin`, `project_manager` ONLY**, and ONLY in the same commit as a header's approval (`getAfter()`: approved, same version, same caller and server time); exact keys; created at `versionCount == 1` with `originalApprovalId == activeApprovalId`; advanced by EXACTLY +1 to a DIFFERENT header with the original and provenance frozen (ADR-70); every version approval RESETS the optional adjustment ledger to 0 / 0, and the ONLY other update is the ledger advance paired with ONE adjustment approval (count +1, net + the derived movement in whole cents, active version frozen — ADR-71) | blocked |
+| `…/projects/{id}/budgetAdjustments/{id}` | **financial roles only** | prepare: financial roles, exact keys, a valid movement (type enum; existing cost code(s); a transfer between two DIFFERENT codes; amount > 0, whole cents, below 10¹²), currency pinned to the project's, **bound to the pointer's ACTIVE version** (`get()` — no pointer, no adjustment), born `draft` at revision 1 with creator / audit stamps; `draft → approved` (approvers only, stamps + `sequence`, paired with the pointer ledger through `getAfter()` naming THIS record as the next sequence of the SAME active version) and `draft → withdrawn` (an approver or the preparer, reasoned), `revision` +1; approved and withdrawn TERMINAL (ADR-71) | blocked |
 | `…/projects/{id}/budgetApprovals/{id}` | **financial roles only** | capture: financial roles, exact keys, born `draft` at revision 1 with creator / audit stamps at server time, currency pinned to the project's, ONLY with its snapshot in the same commit (`getAfter()`: same caller, time, count, total, currency); `draft → approved` (approvers only, stamps-only, `version` == the pointer written in the same commit) and `draft → withdrawn` (an approver or the capturer, reasoned) with `revision` +1; approved and withdrawn TERMINAL (ADR-70) | blocked |
 | `…/projects/{id}/budgetApprovalSnapshots/{id}` | **financial roles only** | financial roles, **create-only** with a `draft` header in the same commit (`getAfter()`); exact keys, `capturedBy == caller`, `capturedAt == request.time`, `entries` a list of 1–2000 with `size() == entryCount`, the FIRST and LAST entries pinned (exact entry keys, source budget line `get()` — same cost code and whole-cent amount, cost code `exists()`); **`update` and `delete` blocked for everyone** (ADR-70) | blocked |
 | `…/projects/{id}/boqItems/{id}` | **financial roles only** | financial roles, **create active-only; transitions, post-void immutability and the `amount == quantity × rate` invariant rules-enforced; the optional `quantApplied` map (ADR-52) absent at create and, on an edit, preserved verbatim or fresh — exact keys, `by == caller`, `at == request.time`, `quantity == the written quantity`** — the version guard on edits and the Quant apply is CLIENT-only (DC33) | blocked — void via status |
@@ -3050,6 +3067,44 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       version exists, not verified against version 1's snapshot (the app
       never reads it as the original once a version exists).
 
+45. **Approved budget adjustments — what the ledger pairing cannot prove
+    (ADR-71, SHIELD 2B2).** Rules enforce the movement's shape (type, cost
+    codes that exist, a transfer between two different codes, a positive
+    whole-cent amount — the two-decimal pin `cents(a) / 100.0 == a` is
+    emulator-proven against 26 accepted and 9 refused boundary values), the
+    currency, the binding to the ACTIVE version at creation, the lifecycle
+    and its terminal states, the approver roles, the atomic adjustment ↔
+    ledger pair (count EXACTLY +1, `sequence` == the new count, net moved by
+    EXACTLY the derived movement, active version frozen), and the ledger
+    reset on every version approval. What they **cannot** enforce, and what
+    must never be described as enforced:
+
+    - **A COST CODE'S ACCUMULATED ADJUSTED FIGURE STAYING ≥ 0.** Rules cannot
+      sum the snapshot entries and sibling adjustments of a cost code, so a
+      direct-SDK approver can approve a well-formed decrease or transfer that
+      takes a code below zero — ACCEPTED (proven). The app refuses it in the
+      approve action against a fresh server read (an optimistic lock on the
+      ledger count); the shared adapter treats a negative adjusted code as an
+      integrity problem and makes EVERY budget figure Unavailable; SHIELD
+      check 6 reports it.
+    - **THE RE-APPROVAL REVIEW.** The supersession acknowledgement (the
+      current adjusted total, the proposed total, the difference, the
+      superseded adjustments, the stale drafts) is a CLIENT acknowledgement:
+      the approve transaction recomputes its key from the server pointer and
+      refuses a mismatch, but no rule proves the reviewer saw or understood
+      the figures. The rules guarantee only that the ledger resets — the
+      superseded adjustments can never count again.
+    - **MEANINGFUL REASONS AND REFERENCES.** Non-blank and bounded only.
+    - **SEMANTIC DUPLICATES.** Two drafts describing the same movement are
+      two records; the app shows both; only document-id duplicates are
+      refused (the id is minted once per submission).
+    - **SELF-APPROVAL** is permitted by decision (as ADR-70) and displayed.
+    - **COMPLETENESS OF THE ADJUSTMENT READ** is reconciled at read time
+      against the ledger (count, contiguous sequence, net, and the
+      last-adjustment reference naming the latest approved record — null
+      after a reset); a store that disagrees makes the figure Unavailable,
+      never partial.
+
     **Residual direct-SDK risk, stated plainly:** a financial-role user using
     the SDK directly can capture a snapshot whose middle entries are invented
     (first and last real), and an approver can approve it — the rules admit
@@ -3397,6 +3452,58 @@ line). Proven by `tests/rules/budgetApprovals.rules.test.js` (51 cases,
 including the 2,000-entry worst-case write, the app's own transactions and
 two CONCURRENT approvals) and `tests/rules/commercialBaseline.rules.test.js`
 (36).
+
+## Approved budget adjustments — one movement, a rules-paired ledger, reset on every version (ADR-71, SHIELD 2B2)
+
+Constrapp SHIELD™ 2B2 adds `budgetAdjustments/{adjustmentId}` — ONE flat
+movement record (increase / decrease of one cost code, or a transfer from
+one cost code to another; a positive amount; the signed net DERIVED, never
+stored) — and an OPTIONAL ledger on `approvedBudget/current`
+(`adjustmentCount`, `adjustmentNet`, `lastAdjustmentId`; absent reads 0, so
+every 2B1 pointer stays valid without migration). Read by the three
+financial roles; `subcontractor`, `client` and `super_admin` denied; delete
+blocked. No budget line, approval header or snapshot is ever written by an
+adjustment.
+
+**Rules-enforced:**
+
+- **Preparation.** Any financial role; exact keys (23); `type` one of
+  `increase | decrease | transfer`; `costCodeId` (and for a transfer
+  `fromCostCodeId`, different) `exists()` in the company library; an
+  increase / decrease carries no source; frozen names ≤ 170; `amount` a
+  number > 0, below 10¹², whole cents; `currency == resolvedCurrency()`;
+  **`baseApprovalId` and `baseVersion` equal to the pointer's active
+  version** (`get()` — with no pointer there is nothing to adjust and the
+  write is refused); born `draft`, `sequence` null, revision 1, creator and
+  audit stamps at server time.
+- **The approval pair.** `draft → approved` only by `company_admin` /
+  `project_manager`, stamps + `sequence` only, with the POINTER written in
+  the same commit naming THIS record as `lastAdjustmentId`, its
+  `adjustmentCount` equal to the record's `sequence`, and its active version
+  equal to the record's base (`getAfter()`); the pointer in turn admits a
+  ledger change ONLY when that adjustment is approved in the same commit by
+  the same caller at the same time, against the UNCHANGED active version, as
+  count **EXACTLY +1**, with `adjustmentNet` moved by **exactly** `+amount`
+  (increase), `−amount` (decrease) or `0` (transfer) in whole cents — and
+  nothing else on the pointer changes. A bare ledger write, a +2, a wrong
+  sequence, a wrong net, a pairing to another record, or an approval of a
+  draft whose version has been replaced are refused (proven).
+- **The ledger reset.** Every version approval (create or advance) requires
+  `adjustmentCount == 0`, `adjustmentNet == 0` and `lastAdjustmentId` null
+  or absent in the written pointer, so
+  a version approval and an adjustment approval can never share a commit and
+  no adjustment of a replaced version can ever count again. An old 2B1
+  bundle re-approving a pointer whose ledger is not empty fails closed.
+- **Withdrawal** by an approver or the preparer, reasoned, from `draft` only
+  — including a STALE draft. **Terminal states** as ADR-70.
+
+**Client-only (Deferred Control 45):** a cost code's accumulated adjusted
+figure staying ≥ 0 (refused by the app against a fresh read; reported at
+read time and by SHIELD); the re-approval supersession acknowledgement;
+meaningful reasons; semantic duplicates; self-approval (permitted). Proven by
+`tests/rules/budgetAdjustments.rules.test.js` (67 cases, including the
+two-decimal boundary sweep, the app's own transactions, two CONCURRENT
+adjustment approvals, and a re-approval racing an adjustment approval).
 
 ## PULSE™ acknowledgements — a management record, `qs` read-only, revision-guarded
 

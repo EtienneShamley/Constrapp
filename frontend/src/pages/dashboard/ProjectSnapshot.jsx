@@ -4,7 +4,7 @@ import Badge from '../../components/Badge'
 import { formatCurrency, percent } from '../../lib/formatters'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
 import { useApprovedBudget } from '../../hooks/useApprovedBudget'
-import { resolveBudgetSource, budgetSourceState } from '../../lib/budgetApproval'
+import { resolveBudgetSource, budgetSourceState, approvedVersionCaption } from '../../lib/budgetApproval'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
@@ -210,7 +210,7 @@ export default function ProjectSnapshot({ project, currencyCode, aside = null })
             {snapshot.approvedBudget.state === FIGURE_STATE.UNAVAILABLE
               ? unavailableLine(snapshot.approvedBudget)
               : snapshot.budgetSource.approved
-                ? <KpiLine>Approved version {snapshot.budgetSource.version} · ex-GST</KpiLine>
+                ? <KpiLine>Approved version {approvedVersionCaption(snapshot.budgetSource)} · ex-GST</KpiLine>
                 : <KpiLine tone="warning">Not approved · Σ budget lines · ex-GST</KpiLine>}
           </KpiCard>
 

@@ -34,7 +34,7 @@ function Figure({ label, value, hint, tone = 'text-brand-text' }) {
 }
 
 export default function BudgetApprovalPanel({
-  budget, pending, approvals, approvalsLoading, approvalsError, currencyCode, currentUid,
+  budget, pending, pendingAdjustments = { count: 0, net: 0 }, approvals, approvalsLoading, approvalsError, currencyCode, currentUid,
   canPrepare, canApprove, prepareDisabled, prepareDisabledReason, onPrepare, onReview,
 }) {
   const money = (n) => formatCurrency(n, currencyCode)
@@ -48,6 +48,7 @@ export default function BudgetApprovalPanel({
   const history = budgetApprovalHistory(approvals)
 
   const approvedValue = loading ? '—' : unavailable ? 'Unavailable' : approved ? money(budget.total) : 'Not approved'
+  // Never a zero for a figure the app does not have.
   const approvedTone = unavailable ? 'text-brand-amber' : approved ? 'text-brand-text' : 'text-brand-amber'
   const workingValue = loading ? '—' : unavailable && !approved ? 'Unavailable' : money(pending.workingTotal)
 
@@ -97,23 +98,30 @@ export default function BudgetApprovalPanel({
         </div>
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-3.5 sm:grid-cols-4">
-        <Figure label="Approved Budget" value={approvedValue} tone={approvedTone}
-          hint={approved ? `Version ${budget.version} · ex-GST · derived from the immutable snapshot` : 'No approved version'} />
-        <Figure label="Original Approved Budget" value={loading ? '—' : approved ? (typeof budget.originalTotal === 'number' ? money(budget.originalTotal) : '—') : 'Not approved'}
+      {/* ADR-71: the approved-budget summary — every figure a selector
+          output (resolveBudgetSource / workingVsApproved /
+          pendingAdjustmentSummary); none is summed here. */}
+      <div className="mt-3 grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-6">
+        <Figure label="Original Approved" value={loading ? '—' : approved ? (typeof budget.originalTotal === 'number' ? money(budget.originalTotal) : '—') : 'Not approved'}
           tone={approved ? 'text-brand-text' : 'text-brand-muted'} hint={approved ? 'Version 1 · never changes' : undefined} />
+        <Figure label={approved ? `Version ${budget.version} base` : 'Approved base'} value={loading ? '—' : unavailable ? 'Unavailable' : approved ? money(budget.baseTotal) : 'Not approved'}
+          tone={approved ? 'text-brand-text' : 'text-brand-muted'} hint={approved ? 'The active version\'s immutable snapshot' : undefined} />
+        <Figure label="Net adjustments" value={loading ? '—' : unavailable ? 'Unavailable' : approved ? `${budget.adjustmentNet > 0 ? '+' : budget.adjustmentNet < 0 ? '−' : ''}${money(Math.abs(budget.adjustmentNet))}` : '—'}
+          tone={approved ? 'text-brand-text' : 'text-brand-muted'}
+          hint={approved ? `${budget.adjustmentCount} approved on version ${budget.version}` : undefined} />
+        <Figure label="Current Approved Budget" value={approvedValue} tone={approvedTone}
+          hint={approved ? 'Base + approved adjustments · ex-GST' : 'No approved version'} />
         <Figure label="Working budget" value={workingValue}
-          hint={approved ? 'The editable register (Σ budget lines)' : 'Σ budget lines · not approved'} />
-        <Figure
-          label="Pending difference"
-          value={!approved || loading ? '—' : pending.difference === 0 && !pending.pending ? 'None' : `${pending.difference > 0 ? '+' : pending.difference < 0 ? '−' : ''}${money(Math.abs(pending.difference))}`}
-          tone={approved && pending.pending ? 'text-brand-amber' : 'text-brand-text'}
           hint={approved
             ? (pending.pending
-              ? `${pending.changedCount} line${pending.changedCount === 1 ? '' : 's'} changed, ${pending.addedCount} added since version ${budget.version} — not approved`
-              : 'Working register matches the approved version')
-            : undefined}
-        />
+              ? `${pending.difference > 0 ? '+' : pending.difference < 0 ? '−' : ''}${money(Math.abs(pending.difference))} vs approved — not approved`
+              : 'Matches the approved budget')
+            : 'Σ budget lines · not approved'} />
+        <Figure label="Pending drafts" value={loading || !approved ? '—' : String(pendingAdjustments.count + drafts.length)}
+          tone={approved && pendingAdjustments.count + drafts.length > 0 ? 'text-brand-amber' : 'text-brand-text'}
+          hint={approved
+            ? `${pendingAdjustments.count} adjustment${pendingAdjustments.count === 1 ? '' : 's'}${pendingAdjustments.count > 0 ? ` (${pendingAdjustments.net >= 0 ? '+' : '−'}${money(Math.abs(pendingAdjustments.net))} if approved)` : ''} · ${drafts.length} version draft${drafts.length === 1 ? '' : 's'} — not counted`
+            : undefined} />
       </div>
 
       {drafts.length > 0 && (

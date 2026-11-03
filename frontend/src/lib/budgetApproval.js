@@ -1,5 +1,8 @@
 import { roundMoney } from './purchaseOrders'
 import { firestoreValueBytes } from './ganttBaseline'
+import {
+  BUDGET_ADJUSTMENT_STATUS, adjustmentNet, applyMovements, movementsByCostCode, validateBudgetAdjustmentRecord,
+} from './budgetAdjustment'
 
 // ── Approved Budget Versions — Constrapp SHIELD™ 2B1 (ADR-70) ────────────────
 //
@@ -46,6 +49,18 @@ import { firestoreValueBytes } from './ganttBaseline'
 // What rules cannot prove (SECURITY.md → Deferred Control 44): every entry
 // between the two pinned ends, completeness of the capture against the live
 // register, the drift the approver reviewed, self-approval (permitted).
+//
+// SHIELD 2B2 (ADR-71) — ADJUSTMENTS. The figure every consumer reads is the
+// CURRENT ADJUSTED APPROVED BUDGET: the active snapshot PLUS the approved
+// adjustments bound to that SAME active version (lib/budgetAdjustment.js).
+// They enter through THIS adapter only — as per-cost-code synthetic rows in
+// `lines` — so no selector learns a second schema and no page re-derives
+// them. The pointer's optional ledger (adjustmentCount / adjustmentNet,
+// absent = 0) is reconciled against the records: a missing, extra,
+// out-of-sequence, foreign-version, malformed, wrong-currency or
+// net-mismatched movement — or a cost code driven below zero — makes the
+// approved budget UNAVAILABLE. Never a partial figure, never the working
+// lines. Adjustments of an OLDER version are superseded and never counted.
 
 export const BUDGET_APPROVAL_STATUS = {
   DRAFT:     'draft',
@@ -311,6 +326,16 @@ export const BUDGET_INTEGRITY_PROBLEM = {
   CURRENCY_MISMATCH:    'currency_mismatch',
   ORIGINAL_MISSING:     'original_missing',
   ORIGINAL_SHAPE:       'original_shape',
+  // SHIELD 2B2 (ADR-71)
+  ADJUSTMENTS_UNAVAILABLE: 'adjustments_unavailable',
+  ADJUSTMENT_MALFORMED:    'adjustment_malformed',
+  ADJUSTMENT_COUNT:        'adjustment_count',
+  ADJUSTMENT_SEQUENCE:     'adjustment_sequence',
+  ADJUSTMENT_FOREIGN_BASE: 'adjustment_foreign_base',
+  ADJUSTMENT_NET:          'adjustment_net',
+  ADJUSTMENT_CURRENCY:     'adjustment_currency',
+  ADJUSTED_NEGATIVE:       'adjusted_negative',
+  ADJUSTMENT_POINTER:      'adjustment_pointer',
 }
 
 export const BUDGET_INTEGRITY_PROBLEM_TEXT = {
@@ -328,6 +353,15 @@ export const BUDGET_INTEGRITY_PROBLEM_TEXT = {
   [BUDGET_INTEGRITY_PROBLEM.CURRENCY_MISMATCH]:   'The approved budget currency is not the project currency.',
   [BUDGET_INTEGRITY_PROBLEM.ORIGINAL_MISSING]:    'The original (version 1) snapshot is missing.',
   [BUDGET_INTEGRITY_PROBLEM.ORIGINAL_SHAPE]:      'The original (version 1) snapshot is malformed.',
+  [BUDGET_INTEGRITY_PROBLEM.ADJUSTMENTS_UNAVAILABLE]: 'The approved budget adjustments could not be read.',
+  [BUDGET_INTEGRITY_PROBLEM.ADJUSTMENT_MALFORMED]:    'An approved budget adjustment is malformed (type, cost code or amount).',
+  [BUDGET_INTEGRITY_PROBLEM.ADJUSTMENT_COUNT]:        'The number of approved adjustments does not match the pointer\'s adjustment count.',
+  [BUDGET_INTEGRITY_PROBLEM.ADJUSTMENT_SEQUENCE]:     'The approved adjustment sequence has a gap or a duplicate.',
+  [BUDGET_INTEGRITY_PROBLEM.ADJUSTMENT_FOREIGN_BASE]: 'An approved adjustment of another version was supplied for the active version.',
+  [BUDGET_INTEGRITY_PROBLEM.ADJUSTMENT_NET]:          'The approved adjustments do not sum to the pointer\'s recorded net.',
+  [BUDGET_INTEGRITY_PROBLEM.ADJUSTMENT_CURRENCY]:     'An approved adjustment is not in the approved budget\'s currency.',
+  [BUDGET_INTEGRITY_PROBLEM.ADJUSTED_NEGATIVE]:       'A cost code\'s adjusted approved budget is below zero.',
+  [BUDGET_INTEGRITY_PROBLEM.ADJUSTMENT_POINTER]:      'The pointer\'s last-adjustment reference does not name the latest approved adjustment of the active version.',
 }
 
 const toCents = (n) => Math.round((Number(n) || 0) * 100)
@@ -384,7 +418,10 @@ const flag = (v) => v === true
 //   { pointer, pointerLoading, pointerError,
 //     header, headerLoading, headerError,
 //     snapshot, snapshotLoading, snapshotError,
-//     originalSnapshot, originalLoading, originalError, originalRequested }
+//     originalSnapshot, originalLoading, originalError, originalRequested,
+//     adjustments, adjustmentsLoading, adjustmentsError }   ← 2B2, the APPROVED
+//     (and any other) adjustments of the ACTIVE version, read only when the
+//     pointer's adjustmentCount > 0
 // or undefined / null (no subscription — treated as "no pointer", i.e. the
 // working budget, so a caller that has not adopted 2B1 reads exactly as before).
 // `budgetLines` (with their loading / error flags) are the working register.
@@ -405,6 +442,8 @@ export function resolveBudgetSource({
     originalSnapshot: ab.originalSnapshot ?? null,
     version: null, versionCount: 0, approvedAt: null, approvedBy: null, reason: '',
     total: null, originalTotal: null, lines: [], problems: [],
+    baseTotal: null, adjustmentCount: 0, adjustmentNet: null, adjustments: [],
+    byCostCode: {}, baseByCostCode: {}, costCodeNames: {},
   }
 
   if (flag(ab.pointerLoading)) return { ...base, kind: BUDGET_SOURCE.LOADING }
@@ -416,7 +455,10 @@ export function resolveBudgetSource({
     if (budgetLinesLoading) return { ...base, kind: BUDGET_SOURCE.LOADING }
     if (budgetLinesError) return { ...base, kind: BUDGET_SOURCE.UNAVAILABLE }
     const lines = Array.isArray(budgetLines) ? budgetLines : []
-    return { ...base, kind: BUDGET_SOURCE.WORKING, lines, total: sumEntries(lines) }
+    return {
+      ...base, kind: BUDGET_SOURCE.WORKING, lines, total: sumEntries(lines),
+      byCostCode: foldByCostCode(lines), costCodeNames: namesOf(lines),
+    }
   }
 
   const problems = []
@@ -425,10 +467,20 @@ export function resolveBudgetSource({
     || typeof pointer.originalApprovalId !== 'string' || !pointer.originalApprovalId) {
     return { ...base, kind: BUDGET_SOURCE.UNAVAILABLE, problems: [BUDGET_INTEGRITY_PROBLEM.POINTER_MALFORMED] }
   }
+  // The 2B2 ledger: optional, absent = 0 (every 2B1 pointer).
+  const ledgerCount = pointer.adjustmentCount ?? 0
+  const ledgerNet = pointer.adjustmentNet ?? 0
+  if (!Number.isInteger(ledgerCount) || ledgerCount < 0 || !isMoney(ledgerNet)) {
+    return { ...base, kind: BUDGET_SOURCE.UNAVAILABLE, problems: [BUDGET_INTEGRITY_PROBLEM.POINTER_MALFORMED] }
+  }
 
   if (flag(ab.headerLoading) || flag(ab.snapshotLoading)) return { ...base, kind: BUDGET_SOURCE.LOADING }
+  if (ledgerCount > 0 && flag(ab.adjustmentsLoading)) return { ...base, kind: BUDGET_SOURCE.LOADING }
   if (flag(ab.headerError)) return { ...base, kind: BUDGET_SOURCE.UNAVAILABLE, problems: [BUDGET_INTEGRITY_PROBLEM.HEADER_MISSING] }
   if (flag(ab.snapshotError)) return { ...base, kind: BUDGET_SOURCE.UNAVAILABLE, problems: [BUDGET_INTEGRITY_PROBLEM.SNAPSHOT_MISSING] }
+  if (ledgerCount > 0 && (flag(ab.adjustmentsError) || !Array.isArray(ab.adjustments))) {
+    return { ...base, kind: BUDGET_SOURCE.UNAVAILABLE, problems: [BUDGET_INTEGRITY_PROBLEM.ADJUSTMENTS_UNAVAILABLE] }
+  }
 
   const header = ab.header ?? null
   const snapshot = ab.snapshot ?? null
@@ -439,6 +491,10 @@ export function resolveBudgetSource({
     if (header.version !== pointer.versionCount) problems.push(BUDGET_INTEGRITY_PROBLEM.HEADER_VERSION)
   }
   problems.push(...validateBudgetSnapshot(snapshot, header, { currencyCode }))
+
+  // The approved adjustments of THIS active version, reconciled with the ledger.
+  const adjustmentCheck = reconcileAdjustments(ab.adjustments, pointer, snapshot, ledgerCount, ledgerNet)
+  problems.push(...adjustmentCheck.problems)
 
   // The original (version 1) is read only when a consumer needs it (margin:
   // Original Planned Profit, Margin Movement). When the active version IS
@@ -461,6 +517,13 @@ export function resolveBudgetSource({
   const unique = [...new Set(problems)]
   if (unique.length > 0) return { ...base, kind: BUDGET_SOURCE.UNAVAILABLE, problems: unique }
 
+  const baseTotal = approvedTotalOf(snapshot)
+  const net = adjustmentCheck.net
+  const names = { ...namesOf(snapshotAsBudgetLines(snapshot)) }
+  for (const a of adjustmentCheck.approved) {
+    if (a.costCodeName) names[a.costCodeId] = names[a.costCodeId] ?? a.costCodeName
+    if (a.fromCostCodeId && a.fromCostCodeName) names[a.fromCostCodeId] = names[a.fromCostCodeId] ?? a.fromCostCodeName
+  }
   return {
     ...base,
     kind: BUDGET_SOURCE.APPROVED,
@@ -469,10 +532,85 @@ export function resolveBudgetSource({
     approvedAt: header.approvedAt ?? null,
     approvedBy: header.approvedBy ?? null,
     reason: header.reason ?? '',
-    total: approvedTotalOf(snapshot),
+    baseTotal,
+    adjustmentCount: adjustmentCheck.approved.length,
+    adjustmentNet: net,
+    adjustments: adjustmentCheck.approved,
+    total: roundMoney(baseTotal + net),
     originalTotal,
-    lines: snapshotAsBudgetLines(snapshot),
+    baseByCostCode: approvedByCostCode(snapshot),
+    byCostCode: adjustmentCheck.byCostCode,
+    costCodeNames: names,
+    lines: [...snapshotAsBudgetLines(snapshot), ...adjustmentRows(adjustmentCheck.approved, names)],
   }
+}
+
+const foldByCostCode = (lines) => {
+  const map = {}
+  for (const l of lines ?? []) {
+    if (!l?.costCodeId) continue
+    map[l.costCodeId] = roundMoney((map[l.costCodeId] || 0) + (Number(l.budgeted) || 0))
+  }
+  return map
+}
+const namesOf = (lines) => {
+  const names = {}
+  for (const l of lines ?? []) if (l?.costCodeId && l.costCodeName && !names[l.costCodeId]) names[l.costCodeId] = l.costCodeName
+  return names
+}
+
+// The approved adjustments' net movement as budget-line-shaped rows — ONE per
+// cost code with a non-zero net — so every selector that folds `budgeted` by
+// cost code (forecast, BOQ, tenders, PULSE, the Dashboard snapshot) includes
+// them with no change. A row may be NEGATIVE (a decrease or a transfer out);
+// the reconciliation guarantees each cost code's TOTAL (snapshot + row) is
+// never below zero. The id never collides with a budget line id.
+function adjustmentRows(approved, names) {
+  const moves = movementsByCostCode(approved)
+  return Object.keys(moves)
+    .filter(id => toCents(moves[id]) !== 0)
+    .sort()
+    .map(id => ({
+      id: `adjustment:${id}`, costCodeId: id, costCodeName: names[id] ?? '', budgeted: moves[id], fromApprovedAdjustment: true,
+    }))
+}
+
+// The approved adjustments of the active version against the pointer ledger
+// and the active snapshot. Every check is made; nothing is repaired.
+function reconcileAdjustments(list, pointer, snapshot, ledgerCount, ledgerNet) {
+  const P = BUDGET_INTEGRITY_PROBLEM
+  const problems = []
+  const items = Array.isArray(list) ? list : []
+  const activeId = pointer.activeApprovalId
+  const approvedAll = items.filter(a => a?.status === BUDGET_ADJUSTMENT_STATUS.APPROVED)
+  if (approvedAll.some(a => a.baseApprovalId !== activeId)) problems.push(P.ADJUSTMENT_FOREIGN_BASE)
+  const approved = approvedAll.filter(a => a.baseApprovalId === activeId)
+    .sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))
+
+  const malformed = approved.some(a => validateBudgetAdjustmentRecord(a) !== null)
+  if (malformed) problems.push(P.ADJUSTMENT_MALFORMED)
+  if (approved.some(a => typeof snapshot?.currency === 'string' && a.currency !== snapshot.currency)) problems.push(P.ADJUSTMENT_CURRENCY)
+  if (approved.length !== ledgerCount) problems.push(P.ADJUSTMENT_COUNT)
+  if (approved.some((a, i) => a.sequence !== i + 1)) problems.push(P.ADJUSTMENT_SEQUENCE)
+  // The pairing reference: the latest approved record while the ledger is
+  // not empty; null / absent after every version approval (the reset). A
+  // stale reference — a record of a replaced version, or one that is not the
+  // latest — is an integrity problem, never exposed as current.
+  const lastRef = pointer.lastAdjustmentId ?? null
+  const expectedRef = approved.length > 0 ? (approved[approved.length - 1].id ?? null) : null
+  if (lastRef !== expectedRef) problems.push(P.ADJUSTMENT_POINTER)
+
+  let net = 0
+  let byCostCode = {}
+  if (!malformed) {
+    net = roundMoney(approved.reduce((s, a) => s + adjustmentNet(a), 0))
+    if (toCents(net) !== toCents(ledgerNet)) problems.push(P.ADJUSTMENT_NET)
+    if (isBudgetSnapshotUsable(snapshot)) {
+      byCostCode = applyMovements(approvedByCostCode(snapshot), approved)
+      if (Object.values(byCostCode).some(v => toCents(v) < 0)) problems.push(P.ADJUSTED_NEGATIVE)
+    }
+  }
+  return { problems, approved, net, byCostCode }
 }
 
 // The { loading, error } entry for `sourceStates.approvedBudget` — the
@@ -492,6 +630,40 @@ export function budgetLinesFor(resolved) {
   if (!resolved) return []
   if (resolved.kind === BUDGET_SOURCE.APPROVED || resolved.kind === BUDGET_SOURCE.WORKING) return resolved.lines ?? []
   return []
+}
+
+// THE per-cost-code authoritative figure (ADR-71): the CURRENT ADJUSTED
+// APPROVED amount when approved (snapshot + same-version adjustments), the
+// working register's fold until then, nothing while loading / unavailable.
+// Every page uses this — never its own snapshot fold.
+export function adjustedByCostCode(resolved) {
+  if (resolved?.kind === BUDGET_SOURCE.APPROVED || resolved?.kind === BUDGET_SOURCE.WORKING) return resolved.byCostCode ?? {}
+  return {}
+}
+
+// The ACTIVE BASE VERSION's amount per budget LINE (the line-level "Approved
+// vN" column). Adjustments are per cost code, never per line, so they are
+// shown beside this, never inside it.
+export function baseApprovedByLine(resolved) {
+  const map = {}
+  if (resolved?.kind !== BUDGET_SOURCE.APPROVED) return map
+  for (const e of resolved.snapshot?.entries ?? []) if (e?.lineId) map[e.lineId] = Number(e.budgeted) || 0
+  return map
+}
+
+// The approved adjustments' net movement per cost code (approved only).
+export function adjustmentNetByCostCode(resolved) {
+  if (resolved?.kind !== BUDGET_SOURCE.APPROVED) return {}
+  return movementsByCostCode(resolved.adjustments)
+}
+
+// The caption every surface uses after "Approved version …" (ADR-71): the
+// version number, plus its approved adjustments when there are any — so an
+// adjusted figure is never labelled as the bare version.
+export function approvedVersionCaption(source) {
+  if (!source || !Number.isInteger(source.version)) return ''
+  const n = Number.isInteger(source.adjustmentCount) ? source.adjustmentCount : 0
+  return n > 0 ? `${source.version} + ${n} adjustment${n === 1 ? '' : 's'}` : String(source.version)
 }
 
 export const isApprovedSource = (resolved) => resolved?.kind === BUDGET_SOURCE.APPROVED
@@ -614,6 +786,7 @@ export function workingVsApproved(budgetLines, resolved) {
   const addedCount = approved ? rows.filter(r => r.approved === null).length : 0
   return {
     rows, workingTotal,
+    adjustmentNet: approved ? (resolved.adjustmentNet ?? 0) : null,
     approvedTotal: approved ? resolved.total : null,
     difference: approved ? roundMoney(workingTotal - resolved.total) : null,
     changedCount, addedCount,
@@ -621,13 +794,36 @@ export function workingVsApproved(budgetLines, resolved) {
   }
 }
 
-// The difference between two snapshots by cost code (the review dialog's
-// "against the previous approved version").
+// The difference between two snapshots by cost code.
 export function snapshotDelta(nextSnapshot, previousSnapshot) {
-  const next = approvedByCostCode(nextSnapshot)
-  const prev = approvedByCostCode(previousSnapshot)
   const names = {}
   for (const e of [...(previousSnapshot?.entries ?? []), ...(nextSnapshot?.entries ?? [])]) if (e?.costCodeId && e.costCodeName) names[e.costCodeId] = e.costCodeName
+  return perCodeDelta(
+    approvedByCostCode(nextSnapshot),
+    approvedByCostCode(previousSnapshot),
+    names,
+    previousSnapshot ? approvedTotalOf(previousSnapshot) : null,
+    approvedTotalOf(nextSnapshot),
+  )
+}
+
+// A captured draft against the CURRENT ADJUSTED APPROVED BUDGET (ADR-71) —
+// the review dialog's comparison: the figure the new version would REPLACE,
+// adjustments included, never the bare base snapshot.
+export function versionDeltaAgainst(nextSnapshot, resolved) {
+  const approved = resolved?.kind === BUDGET_SOURCE.APPROVED
+  const names = { ...(approved ? resolved.costCodeNames : {}) }
+  for (const e of nextSnapshot?.entries ?? []) if (e?.costCodeId && e.costCodeName) names[e.costCodeId] = e.costCodeName
+  return perCodeDelta(
+    approvedByCostCode(nextSnapshot),
+    approved ? resolved.byCostCode : {},
+    names,
+    approved ? resolved.total : null,
+    approvedTotalOf(nextSnapshot),
+  )
+}
+
+function perCodeDelta(next, prev, names, previousTotal, nextTotal) {
   const ids = new Set([...Object.keys(next), ...Object.keys(prev)])
   const rows = []
   for (const id of ids) {
@@ -638,8 +834,56 @@ export function snapshotDelta(nextSnapshot, previousSnapshot) {
   rows.sort((x, y) => String(x.costCodeName).localeCompare(String(y.costCodeName)))
   return {
     rows: rows.filter(r => r.difference !== 0 || r.previous === null || r.next === null),
-    previousTotal: previousSnapshot ? approvedTotalOf(previousSnapshot) : null,
-    nextTotal: approvedTotalOf(nextSnapshot),
-    difference: previousSnapshot ? roundMoney(approvedTotalOf(nextSnapshot) - approvedTotalOf(previousSnapshot)) : null,
+    previousTotal,
+    nextTotal,
+    difference: previousTotal === null ? null : roundMoney(nextTotal - previousTotal),
+  }
+}
+
+// ── Re-approval SUPERSESSION (ADR-71) ────────────────────────────────────────
+//
+// A full re-approval replaces the CURRENT ADJUSTED approved budget with the
+// captured snapshot and RESETS the adjustment ledger: every approved
+// adjustment of the active version is superseded (kept, never counted again)
+// and every pending draft of it becomes stale (withdraw-only). When approved
+// adjustments exist the reviewer must acknowledge THIS supersession — a key
+// bound to the pointer's version and ledger, the base total and the proposal
+// total. The approve transaction recomputes the key from the server's pointer
+// and refuses a mismatch. A CLIENT-SIDE acknowledgement: it records that the
+// figures were shown, not that rules proved they were understood (DC45).
+
+export function budgetSupersessionKey({ versionCount, adjustmentCount, adjustmentNet, baseTotal, proposedTotal } = {}) {
+  return `v${versionCount ?? 0}|n${adjustmentCount ?? 0}|net${toCents(adjustmentNet)}|base${toCents(baseTotal)}|next${toCents(proposedTotal)}`
+}
+
+// Everything the review dialog shows about supersession. `adjustments` is
+// the full adjustments list (for the pending-draft count).
+export function budgetSupersession(nextSnapshot, resolved, adjustments = []) {
+  const approved = resolved?.kind === BUDGET_SOURCE.APPROVED
+  const activeId = approved ? resolved.pointer?.activeApprovalId : null
+  const superseded = approved ? resolved.adjustments ?? [] : []
+  const staleDrafts = activeId
+    ? (adjustments ?? []).filter(a => a?.status === BUDGET_ADJUSTMENT_STATUS.DRAFT && a.baseApprovalId === activeId)
+    : []
+  const proposedTotal = isBudgetSnapshotUsable(nextSnapshot) ? approvedTotalOf(nextSnapshot) : null
+  const currentTotal = approved ? resolved.total : null
+  return {
+    required: approved && superseded.length > 0,
+    currentTotal,
+    baseTotal: approved ? resolved.baseTotal : null,
+    adjustmentNet: approved ? resolved.adjustmentNet : null,
+    proposedTotal,
+    difference: currentTotal === null || proposedTotal === null ? null : roundMoney(proposedTotal - currentTotal),
+    superseded,
+    staleDraftCount: staleDrafts.length,
+    key: approved
+      ? budgetSupersessionKey({
+        versionCount: resolved.versionCount,
+        adjustmentCount: resolved.adjustmentCount,
+        adjustmentNet: resolved.adjustmentNet,
+        baseTotal: resolved.baseTotal,
+        proposedTotal,
+      })
+      : '',
   }
 }

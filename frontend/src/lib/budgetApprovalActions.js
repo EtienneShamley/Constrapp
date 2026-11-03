@@ -1,6 +1,6 @@
 import {
   BUDGET_APPROVAL_STATUS, validateBudgetApprovalDraft, normaliseBudgetApprovalDraft, validateBudgetWithdrawReason,
-  buildBudgetCapturePayload, budgetDrift, isBudgetSnapshotUsable,
+  buildBudgetCapturePayload, budgetDrift, isBudgetSnapshotUsable, budgetSupersessionKey,
 } from './budgetApproval'
 import { sameActivityVersion, activityRevision, QUICK_ACTION_ERROR, QUICK_ACTION_ERROR_MESSAGES, quickActionErrorKind } from './projectTimeline'
 import { QuickActionError } from './activityQuickActions'
@@ -44,6 +44,16 @@ import { QuickActionError } from './activityQuickActions'
 // second version, because a retry re-reads the header (now approved → refused)
 // and the pointer (advanced → stale).
 //
+// SUPERSESSION (SHIELD 2B2, ADR-71). A re-approval RESETS the pointer's
+// adjustment ledger to zero: every approved adjustment of the replaced
+// version is superseded (kept, never counted again). The transaction also
+// requires the pointer's ledger (count and net) to be the one the reviewer
+// saw — SUPERSEDED otherwise — and, when approved adjustments exist, the
+// reviewer's acknowledgement key to equal the key recomputed from the
+// SERVER's pointer, the base total and the draft's total — SUPERSESSION
+// otherwise. That is a client-side acknowledgement that the figures were
+// shown, not a rules-proven assertion that they were understood (DC45).
+//
 // WITHDRAW — the same header guard, status → withdrawn with a reason.
 //
 // Every callback has NO side effects beyond the transaction; on any refusal
@@ -53,7 +63,8 @@ export const BUDGET_APPROVAL_ERROR = {
   ...QUICK_ACTION_ERROR,
   DRIFT:        'drift',         // the working budget changed since the approver reviewed it
   OVERSIZED:    'oversized',     // the capture would exceed the document ceiling
-  SUPERSEDED:   'superseded',    // another version was approved since the reviewer opened the draft
+  SUPERSEDED:   'superseded',    // another version (or adjustment) was approved since the reviewer opened the draft
+  SUPERSESSION: 'supersession',  // approved adjustments would be superseded and the reviewer has not acknowledged THIS supersession
 }
 
 export const BUDGET_APPROVAL_ERROR_MESSAGES = {
@@ -62,12 +73,13 @@ export const BUDGET_APPROVAL_ERROR_MESSAGES = {
   [BUDGET_APPROVAL_ERROR.MISSING]:    'This budget approval no longer exists. Nothing was changed.',
   [BUDGET_APPROVAL_ERROR.STALE]:      'Someone else changed this budget approval after it was loaded. Nothing was changed — review the latest version and try again.',
   [BUDGET_APPROVAL_ERROR.INVALID]:    'This budget approval cannot be written as it stands. Nothing was written.',
-  [BUDGET_APPROVAL_ERROR.PERMISSION]: 'You do not have permission to do this. Nothing was changed.',
+  [BUDGET_APPROVAL_ERROR.PERMISSION]: 'You do not have permission to do this. Nothing was changed. If this page was open before an update, reload it and try again.',
   [BUDGET_APPROVAL_ERROR.OFFLINE]:    'You appear to be offline. The budget must be read from the server — nothing was written. Reconnect and try again.',
   [BUDGET_APPROVAL_ERROR.UNKNOWN]:    'The budget approval could not be written. Nothing was changed.',
   [BUDGET_APPROVAL_ERROR.DRIFT]:      'The working budget changed again after you reviewed it. Nothing was approved — review the changes and try again.',
   [BUDGET_APPROVAL_ERROR.OVERSIZED]:  'This budget is too large for a single approval. Nothing was written and nothing was truncated.',
-  [BUDGET_APPROVAL_ERROR.SUPERSEDED]: 'Another budget version was approved while you were reviewing this draft. Nothing was approved — review the draft against the new current version and try again.',
+  [BUDGET_APPROVAL_ERROR.SUPERSEDED]: 'Another budget version or adjustment was approved while you were reviewing this draft. Nothing was approved — review the draft against the new current figures and try again.',
+  [BUDGET_APPROVAL_ERROR.SUPERSESSION]: 'This version would supersede approved budget adjustments. Nothing was approved — review and acknowledge the change against the current adjusted approved budget, then try again.',
 }
 
 export class BudgetApprovalWriteError extends QuickActionError {
@@ -202,11 +214,15 @@ async function readDraftHeader(tx, headerRef, seen) {
 // `seen` is the header the reviewer opened; `snapshot` its loaded payload;
 // `acknowledgedDriftKey` the drift the reviewer explicitly reviewed ('' when
 // they reviewed "no changes"); `seenVersionCount` the pointer's versionCount
-// the reviewer opened the draft against (0 when no version existed). Returns
-// { version }.
+// the reviewer opened the draft against (0 when no version existed);
+// `seenAdjustmentCount` / `seenAdjustmentNet` / `seenBaseTotal` the active
+// version's ledger and base total the reviewer compared against (ADR-71), and
+// `acknowledgedSupersessionKey` the supersession they acknowledged ('' when
+// no approved adjustment existed). Returns { version }.
 export async function runBudgetApprove({
   db, headerRef, snapshotRef, pointerRef, budgetLinesQuery, getDocsFromServer,
   seen, snapshot, acknowledgedDriftKey = '', seenVersionCount = 0,
+  seenAdjustmentCount = 0, seenAdjustmentNet = 0, seenBaseTotal = null, acknowledgedSupersessionKey = '',
   uid, runTransaction, serverTimestamp,
 }) {
   if (!uid) throw new BudgetApprovalWriteError(BUDGET_APPROVAL_ERROR.PERMISSION)
@@ -238,6 +254,24 @@ export async function runBudgetApprove({
       return { kind: BUDGET_APPROVAL_ERROR.INVALID, reason: 'The approved-budget pointer is malformed.' }
     }
     if (currentCount !== (seenVersionCount ?? 0)) return { kind: BUDGET_APPROVAL_ERROR.SUPERSEDED }
+    // ADR-71: the active version's adjustment ledger (absent = 0) must be the
+    // one the reviewer compared against; when it is not empty, the reviewer
+    // must have acknowledged THIS supersession.
+    const ledgerCount = pointer ? (pointer.adjustmentCount ?? 0) : 0
+    const ledgerNet = pointer ? (pointer.adjustmentNet ?? 0) : 0
+    if (!Number.isInteger(ledgerCount) || ledgerCount < 0 || typeof ledgerNet !== 'number' || !Number.isFinite(ledgerNet)) {
+      return { kind: BUDGET_APPROVAL_ERROR.INVALID, reason: 'The approved-budget pointer is malformed.' }
+    }
+    if (ledgerCount !== (seenAdjustmentCount ?? 0) || Math.round(ledgerNet * 100) !== Math.round((Number(seenAdjustmentNet) || 0) * 100)) {
+      return { kind: BUDGET_APPROVAL_ERROR.SUPERSEDED }
+    }
+    if (ledgerCount > 0) {
+      const expected = budgetSupersessionKey({
+        versionCount: currentCount, adjustmentCount: ledgerCount, adjustmentNet: ledgerNet,
+        baseTotal: seenBaseTotal, proposedTotal: header.current.total,
+      })
+      if (acknowledgedSupersessionKey !== expected) return { kind: BUDGET_APPROVAL_ERROR.SUPERSESSION }
+    }
 
     const version = currentCount + 1
     const revision = activityRevision(header.current) + 1
@@ -256,6 +290,11 @@ export async function runBudgetApprove({
         versionCount: version,
         approvedAt: serverTimestamp(),
         approvedBy: uid,
+        // ADR-71: the new version starts with an EMPTY adjustment ledger —
+        // the replaced version's adjustments are superseded (rules require it).
+        adjustmentCount: 0,
+        adjustmentNet: 0,
+        lastAdjustmentId: null,
         updatedAt: serverTimestamp(),
         updatedBy: uid,
       })

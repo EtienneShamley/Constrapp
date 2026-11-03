@@ -89,13 +89,70 @@ creation — the UI ignores them.)
   project-total **Approved Budget, Committed, Claimed, Actual, Invoiced,
   Remaining** (Remaining = approved allocation − Actual), the pending
   difference between the working register and the approved version, the
-  prepare / review actions and the version history; usage bar
+  prepare / review actions and the version history (since ADR-71: an
+  "Approved v N" column of the BASE version per line, one *Approved
+  adjustments · net* row per adjusted cost code, Remaining against the
+  CURRENT ADJUSTED approved figure, and the adjustments panel); usage bar
   (Actual ÷ Budgeted, red at ≥100%).
 - A PO can commit against a cost code with no budget line; the Budget tab
   surfaces this as an amber "Cost against a code with no budget line" row.
-- Budget ADJUSTMENT records (increase / decrease / transfer / contingency) are
-  SHIELD 2B2 — a separate future document type, never a variation and never
-  an automatic consequence of an approved supplier variation.
+- **Approved budget ADJUSTMENTS (SHIELD 2B2, ADR-71 — implemented, NOT YET
+  DEPLOYED).** Between full re-approvals the APPROVED budget moves only
+  through a controlled adjustment: an **increase** (+amount to one cost
+  code), a **decrease** (−amount from one cost code) or a **transfer**
+  (−amount from one cost code, +amount to another — the project total moves
+  by exactly zero). A **contingency reallocation is a transfer** from the
+  cost code the company uses for contingency (no contingency subsystem
+  exists or is invented); new contingency budget is an increase. The amount
+  is positive, whole cents, ex-GST; the direction comes from the type; the
+  signed net is derived, never stored. Any financial role prepares a draft,
+  bound to the ACTIVE approved version; a Company Admin or Project Manager
+  approves it (self-approval permitted and shown) after seeing each affected
+  cost code's resulting approved figure; a draft is withdrawn by an approver
+  or its preparer. Approved adjustments are immutable — a correction is a
+  separate, approved **compensating** adjustment. Never a variation, never
+  an automatic consequence of an approved supplier or client variation, and
+  **never written onto a budget line** — the working register is untouched.
+- **THE FORMULA (ADR-71):**
+
+  `Current Adjusted Approved Budget = Σ active snapshot entries + Σ derived
+  movement of the APPROVED adjustments whose baseApprovalId is the active
+  version`
+
+  per cost code: `snapshot fold + Σ signed movements on that code`. The
+  **Original Approved Budget** stays version 1's snapshot total (adjustments
+  never touch it); the **active base** is the active snapshot's total; **net
+  approved adjustments** is the Σ of derived movements; the working budget
+  stays Σ working lines. The adapter (`resolveBudgetSource`) reconciles the
+  approved records with the pointer ledger (`adjustmentCount`,
+  `adjustmentNet`): a missing, extra, out-of-sequence, foreign-version,
+  malformed, wrong-currency or net-mismatched movement, or **any cost code
+  whose adjusted figure would be below zero**, makes every budget figure
+  UNAVAILABLE. The movements enter every consumer as ONE synthetic
+  budget-line-shaped row per cost code (`adjustment:<costCodeId>`, possibly
+  negative; each code's TOTAL is never negative) — no selector or page
+  computes adjustments itself.
+- **No double counting across a re-approval.** A full re-approval captures
+  the WORKING lines as the new version and RESETS the ledger to zero; every
+  approved adjustment of the replaced version is SUPERSEDED (kept, never
+  counted again) and every draft of it becomes STALE (withdraw-only). If v1
+  = 1,000,000 with an approved +50,000 (1,050,000) and v2 captures 1,050,000,
+  the figure is 1,050,000 — not 1,100,000. If v2 captures 1,000,000 (the
+  working lines were never brought in line), the figure falls by 50,000:
+  the review dialog shows the current adjusted total, the proposed total,
+  the difference, every superseded adjustment, the stale drafts and the
+  per-cost-code changes, and approval requires an explicit acknowledgement
+  bound to the version, the ledger count and net, the base and the proposal
+  — recomputed from the server pointer at approval (a client-side
+  acknowledgement, DC45).
+- **What an adjustment moves:** Approved Budget, Variance to Budget,
+  Remaining, Remaining Budget Reference, the BOQ-to-budget and tender
+  budget comparisons, PULSE's forecast-over-budget comparison. **What it
+  never moves:** Actual, Remaining Committed, Cost to Complete, Forecast
+  Final Cost, Accounts Payable, Cash Flow, GST, supplier claims and
+  invoices, supplier variation commitments, Forecast Gross Profit, Forecast
+  Margin, Current Contract Sum, and Original Planned Profit / Margin
+  Movement (version 1) — pinned by `tests/unit/budgetAdjustment.test.js`.
 
 ## Purchase Order Lifecycle
 
@@ -1434,7 +1491,7 @@ All derived figures group PO/claim **line items by `costCodeId`** and are ex-GST
 
 | Figure | Definition | Source |
 |---|---|---|
-| **Budgeted** | Σ `budgeted` of the ACTIVE approved budget version's snapshot entries (ADR-70); with no approved version, Σ `budgeted` across the working budget lines, labelled *Working budget (not approved)* | Derived from `budgetApprovalSnapshots` (or the working lines) through `lib/budgetApproval.js` |
+| **Budgeted** | Σ `budgeted` of the ACTIVE approved budget version's snapshot entries (ADR-70) **plus the derived movements of the approved adjustments of that version (ADR-71)**; with no approved version, Σ `budgeted` across the working budget lines, labelled *Working budget (not approved)* | Derived from `budgetApprovalSnapshots` + `budgetAdjustments` (or the working lines) through `lib/budgetApproval.js` |
 | **Committed** | Remaining **open** commitment: per PO line (POs in `sent`/`closed`), `lineTotal − posted/paid invoiced-to-date against that line − approved claim value on that line not yet superseded by a posted claim-sourced invoice`, floored at 0, grouped by cost code (ADR-55) | Derived from POs + claims + invoices |
 | **Claimed** | Σ `claimedThisPeriod` of claim lines, claims in `submitted`/`under_review` — uncertified exposure only | Derived from claims |
 | **Actual** | Σ `approvedThisPeriod` of claim lines (claims in `approved`/`invoiced`) **not superseded by a posted/paid invoice** + Σ ex-GST line `amount` of posted/paid supplier invoices **− Σ ex-GST line `amount` of posted valid-target supplier credit notes** (signed, never clamped) | Derived from claims + invoices − credit notes |
@@ -1496,7 +1553,7 @@ above and on the Forecast / Commercial / Supplier Payments tabs, via
 
 | Card | Exact source |
 |---|---|
-| Approved Budget | `projectForecastTotals().budgeted` over `budgetLinesFor(resolveBudgetSource(…))` — the active approved snapshot, or the working lines labelled "Working Budget" (ADR-70; `snapshot.budgetSource` names which) |
+| Approved Budget | `projectForecastTotals().budgeted` over `budgetLinesFor(resolveBudgetSource(…))` — the active approved snapshot plus its approved adjustments (ADR-71), or the working lines labelled "Working Budget" (ADR-70; `snapshot.budgetSource` names which, with `adjustmentCount`) |
 | Actual | `projectForecastTotals().actual` |
 | Remaining Committed | `projectForecastTotals().remainingCommitted` |
 | Forecast Final Cost | `projectForecastTotals().forecastFinalCost` (SAVED uncommitted CTC only) |
