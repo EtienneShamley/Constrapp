@@ -799,6 +799,7 @@ describe('dependent collections are unaffected', () => {
     const claim = (poId) => ({
       claimNumber: 'PC-0001', status: 'draft', poId, poNumber: 'PO-0001', supplierName: 'BuildCo Pty Ltd', supplierId: 'contact1',
       claimRef: '', periodEnding: '', variationId: null, variationLineCount: 0,
+      supplierInvoiceId: null, supplierInvoiceLinkedAt: null, supplierInvoiceLinkedBy: null,   // ADR-68
       lineItems: [{ poLineIndex: 0, costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'Slab pour',
         poLineTotal: 2500, previouslyApproved: 0, claimedToDate: 1000, claimedThisPeriod: 1000, approvedThisPeriod: null }],
       retention: 0, claimedSubtotal: 1000, claimedGst: 100, claimedTotal: 1100,

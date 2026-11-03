@@ -1271,6 +1271,94 @@ hotfix:
   with the write failures above, and only together with the previous Hosting
   build so the F3 apportionment is not paired with the old pins.
 
+### SHIELD 2A release order — claim-to-invoice source pairing (ADR-68) — THREE STAGES, the pairing strict from Stage 1, Firebase-CLI driven
+
+**Status: IMPLEMENTED — NOT YET DEPLOYED (transitional Rules → Hosting →
+FINAL Rules; THREE steps).** The 2A bundle writes three NEW claim keys
+(`supplierInvoiceId`, `supplierInvoiceLinkedAt`, `supplierInvoiceLinkedBy`)
+at claim create and approve that the live `hasOnly` lists REJECT, and it
+writes the claim's link inside the invoice create and cancel transactions,
+which the live ruleset refuses (an approved claim matches no update branch
+today). So the rules must go first — but the FINAL file also REQUIRES the
+keys at create and approve, which the live bundle never writes. Hence the
+ADR-63 / ADR-65 pattern: a Stage-1 transitional ruleset that accepts BOTH
+bundles' claim writes, then Hosting, then FINAL.
+
+**What Stage 1 does NOT relax — read before publishing.** The invoice-side
+pairing is strict in both files: from the moment Stage 1 publishes, an
+UNPAIRED claim-sourced invoice create (the live bundle's write) is refused
+with *Missing or insufficient permissions*, a claim with no link key fails
+closed, and cancelling a linked invoice needs the unlink. In practice: a tab
+still running the old bundle cannot raise an invoice *from an approved claim*
+until it refreshes — that ONE action only; direct-PO invoices, claim create /
+submit / approve / reject, PO, variation, payment, credit-note and every other
+write are unchanged. This is deliberate (ADR-68 Decision 9): relaxing the
+pairing would admit a duplicate as a compatibility shortcut. Keep the window
+between Stage 1 and Stage 2 short and tell users to refresh.
+
+*Preconditions.* Azure CI green on the merge (lint → unit → rules → build);
+`npm run rules:transitional:check` clean; `wc -c frontend/firestore.rules`
+reads **238,325** and `frontend/firestore.transitional.rules` **239,005**
+(budget 245,000). **The GST boundary hotfix, GANTT 1B and PULSE 1C rules must
+be live** (this ruleset contains all three; the records for each must be
+straightened first — confirm in the Console which ruleset is live before
+STEP 1). Every command runs from `frontend/`, each a separate approved action;
+**none is run by an implementation task.**
+
+1. **STAGE 1 — publish the TRANSITIONAL ruleset:**
+   ```bash
+   npm run test:rules                                                        # all suites green, incl. the two pairing suites
+   firebase deploy --only firestore:rules --project constrapp-69b5d --config firebase.transitional.json
+   ```
+   Verify in the Console that the published source starts with the
+   `ADR-63 / ADR-65 / ADR-68 STAGE-1 TRANSITIONAL RULESET` header, contains
+   four `TRANSITIONAL (STAGE 1)` markers and reads 239,005 bytes. The live
+   bundle keeps working except for the one action above.
+2. **STAGE 2 — `firebase deploy --only hosting --project constrapp-69b5d`**
+   after `npm run build` with the production `VITE_FIREBASE_*` values. New
+   claims and approvals now carry the keys; claim-sourced invoices are paired.
+3. **STAGE 3 — publish the FINAL ruleset** once the new bundle is confirmed
+   live (a claim-sourced invoice created and cancelled through the app):
+   ```bash
+   firebase deploy --only firestore:rules --project constrapp-69b5d
+   ```
+   Verify the Console source has NO `TRANSITIONAL (STAGE 1)` marker, contains
+   `function linkedInvoiceCreatedHere()` and reads 238,325 bytes. Record the
+   three timestamps here. Then verify with the three manual checks in
+   TESTING.md §45.
+
+*After Stage 3 — the reconciliation backlog.* Every claim approved before
+Stage 2, and any claim an old tab approved during Stage 1, has no link key and
+cannot be invoiced until reconciled. Open each project's SHIELD tab → check 4
+→ *Claim-to-invoice link needs reconciliation*: a claim with ONE active
+invoice is linked on the Progress Claims tab (*Link SI-####*); a claim with
+NO active invoice stays listed until the Product Owner runs the trusted
+inventory / backfill procedure recorded in PROJECT_DECISIONS.md → ADR-68 —
+a separate authorisation, outside this repository, never performed by an
+implementation task. Record the inventory and the counts here when done.
+
+*Recovery.* No document is migrated and no stored value changes shape, but the
+stages are **not equally reversible** once production has paired an invoice:
+
+- **Hosting rollback (to the pre-2A bundle) is safe only under the
+  TRANSITIONAL rules**, and even then the old bundle cannot raise an invoice
+  from a claim (the pairing is strict) — acceptable for a short window. Under
+  FINAL rules the old bundle's claim create and approve are refused too, so
+  **a Hosting rollback after Stage 3 must be paired with republishing the
+  transitional ruleset** (not the pre-2A one).
+- **Reverting the Firestore Rules to the pre-2A FINAL ruleset (230,340
+  bytes) is NOT a clean rollback.** The pre-2A `hasOnly` lists reject the
+  link keys the 2A bundle writes at claim create and approve, and its
+  approved claims admit no update — so every claim create, every approval
+  and every claim-sourced invoice create and cancel from the 2A bundle fail
+  with permission-denied until a compatible ruleset is republished. Claims
+  already linked are untouched (rules evaluate writes only), and the link
+  itself is harmless under any ruleset's reads.
+- **Prefer a compatible forward fix.** Where production records already carry
+  links, do not revert the rules; correct forward with a ruleset that keeps the
+  three branches. The transitional ruleset is the widest compatible fallback
+  (it still enforces the pairing).
+
 ## Publishing Firestore Rules — Manual Process
 
 The rules source of truth is `frontend/firestore.rules`, but **there is no CLI

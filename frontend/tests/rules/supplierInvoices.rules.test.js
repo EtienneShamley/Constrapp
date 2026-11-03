@@ -8,7 +8,7 @@ import {
   assertFails,
 } from '@firebase/rules-unit-testing'
 import {
-  doc, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, Timestamp,
+  doc, getDoc, setDoc, updateDoc, deleteDoc, writeBatch, serverTimestamp, Timestamp,
 } from 'firebase/firestore'
 import {
   invoiceTotals, gstForLine, allocateClaimSourcedLineGst, claimReconciliationError,
@@ -36,10 +36,12 @@ import { roundMoney } from '../../src/lib/purchaseOrders'
 // rules can neither iterate nor index an array, so `lineItems` contents are
 // wholly unverified — a per-line negative amount, a bogus cost code, an invalid
 // tax code, and headers that contradict their own lines are all writable. Nor
-// can rules sum sibling documents, so duplicate supplier references, two
-// invoices against one approved claim, and cumulative over-invoicing against a
-// PO all remain possible. The final describe block proves each of those, so the
-// suite documents the security CEILING as explicitly as the floor.
+// can rules sum sibling documents, so duplicate supplier references and
+// cumulative over-invoicing against a PO remain possible. The final describe
+// block proves each of those, so the suite documents the security CEILING as
+// explicitly as the floor. Two invoices against one approved claim are NO
+// LONGER possible for a new-format claim (SHIELD 2A, ADR-68 — the claim's own
+// link is the sibling; tests/rules/claimInvoicePairing.rules.test.js).
 //
 // SAFETY: this suite refuses to run unless FIRESTORE_EMULATOR_HOST is set, so it
 // can never reach a production Firebase project. The npm script starts the
@@ -247,6 +249,30 @@ const cancelWrite = (user, extra = {}) => ({
   status: 'cancelled', cancelledAt: serverTimestamp(), cancelledBy: user.uid, ...stamps(user), ...extra,
 })
 
+// SHIELD 2A (ADR-68): a CLAIM-SOURCED create is PAIRED — the invoice and the
+// claim's `supplierInvoiceId` link land in ONE batch (the app's transaction,
+// lib/supplierInvoiceActions.js), and the rules refuse either half alone. Every
+// claim-sourced create in this suite goes through here; the seeded claims
+// carry revision 1, so the link carries 2 (CLAIM_VAR carries 2 → 3).
+function pairedCreate(user, id, payload, { claimId = payload.progressClaimId, revision = 2 } = {}) {
+  const db = ctx(user)
+  const batch = writeBatch(db)
+  batch.set(invRef(db, id), payload)
+  batch.update(doc(db, `companies/${COMPANY_A}/projects/${PROJECT_A}/progressClaims`, claimId), {
+    supplierInvoiceId: id, supplierInvoiceLinkedAt: serverTimestamp(), supplierInvoiceLinkedBy: user.uid,
+    revision, updatedAt: serverTimestamp(), updatedBy: user.uid,
+  })
+  return batch.commit()
+}
+// Frees a seeded claim for another paired create (a claim takes ONE active invoice).
+async function unlinkClaim(claimId = CLAIM_APPROVED) {
+  await testEnv.withSecurityRulesDisabled(async (c) => {
+    await updateDoc(doc(c.firestore(), `companies/${COMPANY_A}/projects/${PROJECT_A}/progressClaims`, claimId), {
+      supplierInvoiceId: null, supplierInvoiceLinkedAt: null, supplierInvoiceLinkedBy: null, revision: 1,
+    })
+  })
+}
+
 // Client-supplied clock values that must NEVER satisfy `== request.time`.
 // Deliberately skewed rather than `Timestamp.now()` — see the note in
 // supplierPayments.rules.test.js (docs/TESTING.md §0).
@@ -302,10 +328,22 @@ beforeEach(async () => {
     // MEMBERSHIP rule rather than incidentally on a missing source document.
     await po(COMPANY_B, PROJECT_A, PO_SENT, 'sent')
 
+    // ADR-68: NEW-FORMAT claims (link key present, null) carrying the PO,
+    // supplier and number the invoice payload cites — the pairing compares
+    // all three. A LEGACY (key-absent) claim is seeded by the pairing suite.
+    const claimNow = Timestamp.now()
     const claim = (companyId, projectId, id, status) =>
       setDoc(doc(db, `companies/${companyId}/projects/${projectId}/progressClaims`, id), {
-        claimNumber: 'PC-0001', status, poId: PO_SENT,
-        approvedGst: 900, approvedTotal: 9900, retention: 1000,
+        claimNumber: 'PC-0001', status, poId: PO_SENT, poNumber: 'PO-0001', supplierId: 'contact1', supplierName: 'BuildCo Pty Ltd',
+        claimRef: '', periodEnding: '', variationId: null, variationLineCount: 0,
+        lineItems: [{ poLineIndex: 0, costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'Slab', poLineTotal: 20000, previouslyApproved: 0, claimedToDate: 10000, claimedThisPeriod: 10000, approvedThisPeriod: status === 'approved' ? 10000 : null }],
+        retention: 1000, claimedSubtotal: 10000, claimedGst: 900, claimedTotal: 9900,
+        approvedSubtotal: status === 'approved' ? 10000 : null, approvedGst: status === 'approved' ? 900 : null, approvedTotal: status === 'approved' ? 9900 : null,
+        notes: '', assessmentNotes: '', currency: 'AUD', revision: 1,
+        submittedAt: status === 'draft' ? null : claimNow, submittedBy: status === 'draft' ? null : 'u_admin',
+        approvedAt: status === 'approved' ? claimNow : null, approvedBy: status === 'approved' ? 'u_admin' : null, rejectedAt: null, rejectedBy: null, invoicedAt: null,
+        supplierInvoiceId: null, supplierInvoiceLinkedAt: null, supplierInvoiceLinkedBy: null,
+        externalRefs: {}, createdAt: claimNow, createdBy: 'u_admin', updatedAt: claimNow, updatedBy: 'u_admin',
       })
     await claim(COMPANY_A, PROJECT_A, CLAIM_APPROVED, 'approved')
     await claim(COMPANY_A, PROJECT_A, CLAIM_SUBMITTED, 'submitted')
@@ -393,11 +431,8 @@ describe('valid create', () => {
     ))
   })
 
-  it('accepts a progress_claim draft against an APPROVED claim, with retention', async () => {
-    await assertSucceeds(setDoc(
-      invRef(ctx(USERS.qs), 'c3'),
-      invoicePayload(USERS.qs, { source: 'progress_claim', retention: 1000 }),
-    ))
+  it('accepts a progress_claim draft against an APPROVED claim, with retention — paired with the claim link (ADR-68)', async () => {
+    await assertSucceeds(pairedCreate(USERS.qs, 'c3', invoicePayload(USERS.qs, { source: 'progress_claim', retention: 1000 })))
   })
 
   it('accepts a legacy pre-Contacts supplier — supplierId null', async () => {
@@ -706,18 +741,12 @@ describe('scalar arithmetic identities — one cent breaks each', () => {
   ]
 
   it('accepts the untouched retention-bearing payload', async () => {
-    await assertSucceeds(setDoc(
-      invRef(ctx(USERS.qs), 'a0'),
-      invoicePayload(USERS.qs, { source: 'progress_claim', retention: 1000 }),
-    ))
+    await assertSucceeds(pairedCreate(USERS.qs, 'a0', invoicePayload(USERS.qs, { source: 'progress_claim', retention: 1000 })))
   })
 
   CASES.forEach(([label, over], idx) => {
     it(`rejects a document that breaks: ${label}`, async () => {
-      await assertFails(setDoc(
-        invRef(ctx(USERS.qs), `a${idx + 1}`),
-        invoicePayload(USERS.qs, { source: 'progress_claim', retention: 1000, ...over }),
-      ))
+      await assertFails(pairedCreate(USERS.qs, `a${idx + 1}`, invoicePayload(USERS.qs, { source: 'progress_claim', retention: 1000, ...over })))
     })
   })
 })
@@ -846,7 +875,7 @@ describe('the claim-sourced invoice the app now builds passes the rules (GST bou
     expect(claimReconciliationError(totals, { approvedGst: certified.gst, approvedTotal: certified.total })).toBeNull()
 
     const ref = invRef(ctx(USERS.qs), 'claim-apportioned')
-    await assertSucceeds(setDoc(ref, invoicePayload(USERS.qs, { source: 'progress_claim', lines })))
+    await assertSucceeds(pairedCreate(USERS.qs, 'claim-apportioned', invoicePayload(USERS.qs, { source: 'progress_claim', lines })))
     await assertSucceeds(updateDoc(ref, {
       status: 'approved', approvedAt: serverTimestamp(), approvedBy: USERS.qs.uid, ...stamps(USERS.qs),
     }))
@@ -866,10 +895,7 @@ describe('the claim-sourced invoice the app now builds passes the rules (GST bou
     const totals = invoiceTotals(lines, 40.15)
     expect(totals.retentionGst).toBe(4.01)   // the client's half-cent-down figure
     expect(claimReconciliationError(totals, { approvedGst: certified.gst, approvedTotal: certified.total })).toBeNull()
-    await assertSucceeds(setDoc(
-      invRef(ctx(USERS.qs), 'claim-boundary-retention'),
-      invoicePayload(USERS.qs, { source: 'progress_claim', lines, retention: 40.15 }),
-    ))
+    await assertSucceeds(pairedCreate(USERS.qs, 'claim-boundary-retention', invoicePayload(USERS.qs, { source: 'progress_claim', lines, retention: 40.15 })))
   })
 })
 
@@ -900,7 +926,7 @@ describe('Tier 2 source-document validation at create', () => {
 
   it('rejects a progress_claim invoice whose claim is not approved', async () => {
     for (const claimId of [CLAIM_SUBMITTED, CLAIM_DRAFT, 'claim_missing']) {
-      await assertFails(setDoc(invRef(ctx(USERS.qs), `t5-${claimId}`), invoicePayload(USERS.qs, {
+      await assertFails(pairedCreate(USERS.qs, `t5-${claimId}`, invoicePayload(USERS.qs, {
         source: 'progress_claim', progressClaimId: claimId, retention: 1000,
       })))
     }
@@ -1425,7 +1451,9 @@ describe('downstream collections still trust a hardened invoice', () => {
   // satisfy both target checks unchanged.
   async function createAndPost(id, opts = {}) {
     const db = ctx(USERS.qs)
-    await assertSucceeds(setDoc(invRef(db, id), invoicePayload(USERS.qs, opts)))
+    // A claim-sourced create is PAIRED with its claim's link (ADR-68).
+    if (opts.source === 'progress_claim') await assertSucceeds(pairedCreate(USERS.qs, id, invoicePayload(USERS.qs, opts)))
+    else await assertSucceeds(setDoc(invRef(db, id), invoicePayload(USERS.qs, opts)))
     await assertSucceeds(updateDoc(invRef(db, id), approveWrite(USERS.qs)))
     await assertSucceeds(updateDoc(invRef(db, id), postWrite(USERS.qs)))
   }
@@ -1484,11 +1512,13 @@ describe('DEFERRED CONTROLS — these gaps are real and must never be reported a
     await assertSucceeds(setDoc(invRef(db, 'dc2b'), invoicePayload(USERS.qs, { invoiceNumber: 'SI-0007' })))
   })
 
-  it('TWO invoices against ONE approved claim remain possible — no sibling aggregation (DC 3)', async () => {
-    const db = ctx(USERS.qs)
+  it('TWO invoices against ONE approved claim are NO LONGER possible — the claim link is the sibling (ADR-68 closes DC 3 for claim-sourced invoices)', async () => {
     const claimInv = { source: 'progress_claim', retention: 1000 }
-    await assertSucceeds(setDoc(invRef(db, 'dc3a'), invoicePayload(USERS.qs, claimInv)))
-    await assertSucceeds(setDoc(invRef(db, 'dc3b'), invoicePayload(USERS.qs, claimInv)))
+    await assertSucceeds(pairedCreate(USERS.qs, 'dc3a', invoicePayload(USERS.qs, claimInv)))
+    await assertFails(pairedCreate(USERS.qs, 'dc3b', invoicePayload(USERS.qs, claimInv)))
+    await assertFails(setDoc(invRef(ctx(USERS.qs), 'dc3c'), invoicePayload(USERS.qs, claimInv)))
+    // What rules still cannot see: a claim with NO link key at all (legacy) —
+    // fail-closed, never a second invoice (tests/rules/claimInvoicePairing.rules.test.js).
   })
 
   it('CUMULATIVE over-invoicing against a PO remains possible — rules cannot sum siblings', async () => {
@@ -1591,17 +1621,19 @@ async function seedVariationClaim() {
       retention: 0, claimedSubtotal: 2000, claimedGst: 200, claimedTotal: 2200, approvedSubtotal: 2000, approvedGst: 200, approvedTotal: 2200,
       notes: '', assessmentNotes: '', currency: 'AUD', revision: 2,
       submittedAt: now, submittedBy: 'u_admin', approvedAt: now, approvedBy: 'u_admin', rejectedAt: null, rejectedBy: null, invoicedAt: null,
+      supplierInvoiceId: null, supplierInvoiceLinkedAt: null, supplierInvoiceLinkedBy: null,   // ADR-68: new-format, unlinked
       externalRefs: {}, createdAt: now, createdBy: 'u_admin', updatedAt: now, updatedBy: 'u_admin',
     })
   })
 }
+const varPaired = (user, id, over = {}) => pairedCreate(user, id, fromVarClaim(user, over), { revision: 3 })
 const fromVarClaim = (user, over = {}) => invoicePayload(user, { source: 'progress_claim', progressClaimId: CLAIM_VAR, claimNumber: 'PC-0007', lines: [varInvLine(2000)], variationLineCount: 1, ...over })
 
 describe('ADR-63 — the claim-sourced variationLineCount guard', () => {
   it('the NEW bundle raises an invoice from a claim with a variation line: count 1 and the variation-origin line → accepted for every financial role; the identity is stored', async () => {
-    await seedVariationClaim()
     for (const user of [USERS.admin, USERS.pm, USERS.qs]) {
-      await assertSucceeds(setDoc(invRef(ctx(user), `nv_${user.uid}`), fromVarClaim(user)))
+      await seedVariationClaim()   // a claim takes ONE active invoice (ADR-68) — fresh per role
+      await assertSucceeds(varPaired(user, `nv_${user.uid}`))
     }
     let stored
     await testEnv.withSecurityRulesDisabled(async (c) => { stored = (await getDoc(invRef(c.firestore(), 'nv_u_qs'))).data() })
@@ -1613,33 +1645,33 @@ describe('ADR-63 — the claim-sourced variationLineCount guard', () => {
     await seedVariationClaim()
     const old = fromVarClaim(USERS.qs, { lines: [line(2000)] })
     delete old.variationLineCount
-    await assertFails(setDoc(invRef(ctx(USERS.qs), 'old'), old))
+    await assertFails(pairedCreate(USERS.qs, 'old', old, { revision: 3 }))
     // Even with the right line shape, the count must be declared.
     const noCount = fromVarClaim(USERS.qs)
     delete noCount.variationLineCount
-    await assertFails(setDoc(invRef(ctx(USERS.qs), 'old2'), noCount))
+    await assertFails(pairedCreate(USERS.qs, 'old2', noCount, { revision: 3 }))
   })
 
   it('the count is bounded by the claim’s and must match the last line’s shape: above the claim, negative, non-integer, or a mismatched last line is refused; 0 with no variation line stored is allowed', async () => {
     await seedVariationClaim()
-    const db = ctx(USERS.qs)
-    await assertFails(setDoc(invRef(db, 'b1'), fromVarClaim(USERS.qs, { variationLineCount: 2 })))
-    await assertFails(setDoc(invRef(db, 'b2'), fromVarClaim(USERS.qs, { variationLineCount: -1 })))
-    await assertFails(setDoc(invRef(db, 'b3'), fromVarClaim(USERS.qs, { variationLineCount: 1.5 })))
-    await assertFails(setDoc(invRef(db, 'b4'), fromVarClaim(USERS.qs, { variationLineCount: 1, lines: [line(2000)] })))
-    await assertFails(setDoc(invRef(db, 'b5'), fromVarClaim(USERS.qs, { variationLineCount: 1, lines: [line(2000, 'gst', { poLineIndex: 0, variationId: 'svScoped', variationLineIndex: 0 })] })))
-    await assertFails(setDoc(invRef(db, 'b6'), fromVarClaim(USERS.qs, { variationLineCount: 0, lines: [varInvLine(2000)] })))
+    await assertFails(varPaired(USERS.qs, 'b1', { variationLineCount: 2 }))
+    await assertFails(varPaired(USERS.qs, 'b2', { variationLineCount: -1 }))
+    await assertFails(varPaired(USERS.qs, 'b3', { variationLineCount: 1.5 }))
+    await assertFails(varPaired(USERS.qs, 'b4', { variationLineCount: 1, lines: [line(2000)] }))
+    await assertFails(varPaired(USERS.qs, 'b5', { variationLineCount: 1, lines: [line(2000, 'gst', { poLineIndex: 0, variationId: 'svScoped', variationLineIndex: 0 })] }))
+    await assertFails(varPaired(USERS.qs, 'b6', { variationLineCount: 0, lines: [varInvLine(2000)] }))
     // The variation line was certified at zero and is not stored: count 0, PO lines only → accepted.
-    await assertSucceeds(setDoc(invRef(db, 'b7'), fromVarClaim(USERS.qs, { variationLineCount: 0, lines: [line(10)] })))
+    await assertSucceeds(varPaired(USERS.qs, 'b7', { variationLineCount: 0, lines: [line(10)] }))
   })
 
   it('a claim WITHOUT variation lines takes an absent key (old bundle) or 0 (new bundle), never a positive count', async () => {
-    const db = ctx(USERS.qs)
     const absent = invoicePayload(USERS.qs, { source: 'progress_claim' })
     delete absent.variationLineCount
-    await assertSucceeds(setDoc(invRef(db, 'c1'), absent))
-    await assertSucceeds(setDoc(invRef(db, 'c2'), invoicePayload(USERS.qs, { source: 'progress_claim', variationLineCount: 0 })))
-    await assertFails(setDoc(invRef(db, 'c3'), invoicePayload(USERS.qs, { source: 'progress_claim', variationLineCount: 1, lines: [varInvLine(2000)] })))
+    await assertSucceeds(pairedCreate(USERS.qs, 'c1', absent))
+    await unlinkClaim()
+    await assertSucceeds(pairedCreate(USERS.qs, 'c2', invoicePayload(USERS.qs, { source: 'progress_claim', variationLineCount: 0 })))
+    await unlinkClaim()
+    await assertFails(pairedCreate(USERS.qs, 'c3', invoicePayload(USERS.qs, { source: 'progress_claim', variationLineCount: 1, lines: [varInvLine(2000)] })))
   })
 
   it('a direct PO invoice carries no variation line: count 0 or absent passes, count 1 (with or without a variation-shaped line) is refused', async () => {
@@ -1669,6 +1701,6 @@ describe('ADR-63 — the claim-sourced variationLineCount guard', () => {
 
   it('NOT enforced (DC40): rules cannot compare the invoice lines to the claim’s — a count of 1 with a variation line naming a DIFFERENT variation, or a different amount, is ACCEPTED (client reconciliation + SHIELD)', async () => {
     await seedVariationClaim()
-    await assertSucceeds(setDoc(invRef(ctx(USERS.qs), 'n1'), fromVarClaim(USERS.qs, { lines: [line(9000, 'gst', { poLineIndex: null, variationId: 'svElsewhere', variationLineIndex: 4 })] })))
+    await assertSucceeds(varPaired(USERS.qs, 'n1', { lines: [line(9000, 'gst', { poLineIndex: null, variationId: 'svElsewhere', variationLineIndex: 4 })] }))
   })
 })

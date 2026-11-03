@@ -183,6 +183,7 @@ const COLLECTIONS = {
       approvedSubtotal: null, approvedGst: null, approvedTotal: null,
       notes: '', assessmentNotes: '', currency: 'AUD', revision: 1,
       submittedAt: null, submittedBy: null, approvedAt: null, approvedBy: null, rejectedAt: null, rejectedBy: null, invoicedAt: null,
+      supplierInvoiceId: null, supplierInvoiceLinkedAt: null, supplierInvoiceLinkedBy: null,   // ADR-68
       externalRefs: {},
       createdAt: new Date('2026-03-01T00:00:00Z'), createdBy: 'u_qs',
       updatedAt: new Date('2026-03-01T00:00:00Z'), updatedBy: 'u_qs',
@@ -196,6 +197,7 @@ const COLLECTIONS = {
       approvedSubtotal: null, approvedGst: null, approvedTotal: null, notes: '', assessmentNotes: '',
       currency: 'AUD', revision: 1,
       submittedAt: null, submittedBy: null, approvedAt: null, approvedBy: null, rejectedAt: null, rejectedBy: null, invoicedAt: null,
+      supplierInvoiceId: null, supplierInvoiceLinkedAt: null, supplierInvoiceLinkedBy: null,   // ADR-68
       externalRefs: {}, createdAt: serverTimestamp(), createdBy: user.uid, updatedAt: serverTimestamp(), updatedBy: user.uid,
     }),
     update: (user) => ({ notes: 'Updated by a financial role', revision: 2, updatedAt: serverTimestamp(), updatedBy: user.uid }),

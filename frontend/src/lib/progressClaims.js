@@ -73,6 +73,46 @@ export const CLAIM_PENDING_STATUSES = [CLAIM_STATUS.SUBMITTED, CLAIM_STATUS.UNDE
 // are complete and take no further claims.
 export const CLAIMABLE_PO_STATUSES = [PO_STATUS.SENT]
 
+// ── Claim ↔ supplier-invoice link (SHIELD 2A, ADR-68) ────────────────────────
+//
+// `supplierInvoiceId` on an approved claim is the ONE current claim-sourced
+// invoice that reserves it (draft / approved / posted), null while unlinked.
+// Workflow state only — no selector reads it; Actual still hands over from
+// the claim to the invoice when the invoice POSTS (invoicedClaimIds).
+//
+//   LEGACY    — the key is ABSENT: the claim predates 2A (or was created or
+//               approved by a pre-2A tab). Never invoiceable until reconciled:
+//               rules cannot prove that no invoice exists, so the app offers
+//               only to link an EXISTING active invoice (fail closed).
+//   UNLINKED  — the key is present and null: invoiceable (rules branch (e)).
+//   LINKED    — a non-empty string: reserved by that invoice.
+//   MALFORMED — anything else: fail closed, listed by SHIELD.
+export const CLAIM_INVOICE_LINK = {
+  LEGACY:    'legacy',
+  UNLINKED:  'unlinked',
+  LINKED:    'linked',
+  MALFORMED: 'malformed',
+}
+
+export function claimInvoiceLink(claim) {
+  if (!claim || typeof claim !== 'object' || !Object.prototype.hasOwnProperty.call(claim, 'supplierInvoiceId')) {
+    return { state: CLAIM_INVOICE_LINK.LEGACY, invoiceId: null }
+  }
+  const id = claim.supplierInvoiceId
+  if (id === null) return { state: CLAIM_INVOICE_LINK.UNLINKED, invoiceId: null }
+  if (typeof id === 'string' && id.length > 0) return { state: CLAIM_INVOICE_LINK.LINKED, invoiceId: id }
+  return { state: CLAIM_INVOICE_LINK.MALFORMED, invoiceId: null }
+}
+
+// An approved claim the pairing can invoice: new-format and currently unlinked.
+export const isClaimInvoiceable = (claim) =>
+  claim?.status === CLAIM_STATUS.APPROVED && claimInvoiceLink(claim).state === CLAIM_INVOICE_LINK.UNLINKED
+
+// The link keys as the new bundle initialises them at create and approve.
+export const CLAIM_LINK_INITIAL = Object.freeze({
+  supplierInvoiceId: null, supplierInvoiceLinkedAt: null, supplierInvoiceLinkedBy: null,
+})
+
 export const formatClaimNumber = (n) => `PC-${String(n).padStart(4, '0')}`
 
 // Retention is withheld ex-GST and clamped to the subtotal; GST applies to the

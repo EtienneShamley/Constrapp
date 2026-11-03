@@ -8,7 +8,7 @@ import {
   assertFails,
 } from '@firebase/rules-unit-testing'
 import {
-  doc, getDoc, setDoc, updateDoc, deleteDoc, runTransaction, serverTimestamp, Timestamp,
+  doc, getDoc, setDoc, updateDoc, deleteDoc, runTransaction, writeBatch, serverTimestamp, Timestamp,
 } from 'firebase/firestore'
 import { poTotals, lineTotal, roundMoney, remainingCommittedByCostCode, committedByCostCode } from '../../src/lib/purchaseOrders'
 import {
@@ -143,12 +143,17 @@ function claimPayload(user, { lines = DEFAULT_LINES, retention = 0, ...overrides
     notes: '', assessmentNotes: '',
     currency: 'AUD', revision: 1,
     submittedAt: null, submittedBy: null, approvedAt: null, approvedBy: null, rejectedAt: null, rejectedBy: null, invoicedAt: null,
+    // SHIELD 2A (ADR-68): the claim ↔ supplier-invoice link, born unlinked
+    // (present and null). REQUIRED by this FINAL file; a claim with no such
+    // key is LEGACY (tests/rules/claimInvoicePairing.rules.test.js).
+    supplierInvoiceId: null, supplierInvoiceLinkedAt: null, supplierInvoiceLinkedBy: null,
     externalRefs: {},
     createdAt: serverTimestamp(), createdBy: user.uid,
     updatedAt: serverTimestamp(), updatedBy: user.uid,
     ...overrides,
   }
 }
+const LINK_KEYS = ['supplierInvoiceId', 'supplierInvoiceLinkedAt', 'supplierInvoiceLinkedBy']
 
 // Seeds a claim directly, bypassing rules. `status` selects the stamps a real
 // document would carry; `legacy: true` strips every ADR-58 key (the pre-M2-B2
@@ -173,7 +178,8 @@ async function seed(id, status = 'draft', user = USERS.admin, extra = {}, { lega
       { status: 'draft' }
     const docData = { ...base, createdAt: now, updatedAt: now, ...lifecycle, ...extra }
     if (legacy) {
-      for (const k of ['submittedBy', 'rejectedBy', 'updatedAt', 'updatedBy']) delete docData[k]
+      // …and (ADR-68) no invoice link key at all — the pre-2A shape.
+      for (const k of ['submittedBy', 'rejectedBy', 'updatedAt', 'updatedBy', ...LINK_KEYS]) delete docData[k]
     }
     await setDoc(doc(db, claimsPath(companyId, projectId), id), docData)
   })
@@ -208,6 +214,8 @@ function approveWrite(user, { amounts = [1000, 0], retention = 0, lines = DEFAUL
     status: 'approved', lineItems: approved,
     approvedSubtotal: t.subtotal, approvedGst: t.gst, approvedTotal: t.total,
     assessmentNotes, approvedAt: serverTimestamp(), approvedBy: user.uid,
+    // ADR-68: the new bundle initialises the invoice link on approve.
+    supplierInvoiceId: null, supplierInvoiceLinkedAt: null, supplierInvoiceLinkedBy: null,
     revision, ...stamps(user), ...extra,
   }
 }
@@ -1098,27 +1106,48 @@ describe('the claim-to-invoice lifecycle and the M1 figures are unchanged', () =
     }
   }
   const siStamp = (user, status, at, by) => ({ status, [at]: serverTimestamp(), [by]: user.uid, ...stamps(user) })
+  // SHIELD 2A (ADR-68): a claim-sourced invoice create is PAIRED with the
+  // claim's link write in one batch (the app's transaction) — the rules refuse
+  // an unpaired create. `claim` is the server copy, so the link carries its
+  // revision + 1.
+  function pairedInvoice(user, invoiceId, claimId, claim) {
+    const db = ctx(user)
+    const batch = writeBatch(db)
+    batch.set(invoiceRef(db, invoiceId), claimInvoicePayload(user, claimId, claim))
+    batch.update(claimRef(db, claimId), {
+      supplierInvoiceId: invoiceId, supplierInvoiceLinkedAt: serverTimestamp(), supplierInvoiceLinkedBy: user.uid,
+      revision: (Number(claim.revision) || 0) + 1, ...stamps(user),
+    })
+    return batch.commit()
+  }
 
   it('a claim raised, submitted and approved through the new rules is a valid progress_claim invoice source; a draft, submitted or rejected one is not', async () => {
     await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'd1'), claimPayload(USERS.qs)))
     let claim = await readClaim('d1')
-    await assertFails(setDoc(invoiceRef(ctx(USERS.qs), 'inv0'), claimInvoicePayload(USERS.qs, 'd1', { ...claim, lineItems: claim.lineItems.map(l => ({ ...l, approvedThisPeriod: l.claimedThisPeriod })) })))
+    const asApproved = (c) => ({ ...c, lineItems: c.lineItems.map(l => ({ ...l, approvedThisPeriod: l.claimedThisPeriod })) })
+    await assertFails(pairedInvoice(USERS.qs, 'inv0', 'd1', asApproved(claim)))
     await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 'd1'), submitWrite(USERS.qs)))
-    await assertFails(setDoc(invoiceRef(ctx(USERS.qs), 'inv0'), claimInvoicePayload(USERS.qs, 'd1', { ...claim, lineItems: claim.lineItems.map(l => ({ ...l, approvedThisPeriod: l.claimedThisPeriod })) })))
+    claim = await readClaim('d1')
+    await assertFails(pairedInvoice(USERS.qs, 'inv0', 'd1', asApproved(claim)))
     await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'd1'), approveWrite(USERS.pm, { revision: 3 })))
     claim = await readClaim('d1')
-    await assertSucceeds(setDoc(invoiceRef(ctx(USERS.qs), 'inv1'), claimInvoicePayload(USERS.qs, 'd1', claim)))
+    // ADR-68: the create is paired with the claim's link; an unpaired one is refused.
+    await assertFails(setDoc(invoiceRef(ctx(USERS.qs), 'inv_unpaired'), claimInvoicePayload(USERS.qs, 'd1', claim)))
+    await assertSucceeds(pairedInvoice(USERS.qs, 'inv1', 'd1', claim))
+    expect((await readClaim('d1')).supplierInvoiceId).toBe('inv1')
     await seed('d2', 'rejected')
-    await assertFails(setDoc(invoiceRef(ctx(USERS.qs), 'inv2'), claimInvoicePayload(USERS.qs, 'd2', { ...(await readClaim('d2')), lineItems: DEFAULT_LINES.map(l => ({ ...l, approvedThisPeriod: l.claimedThisPeriod })) })))
+    await assertFails(pairedInvoice(USERS.qs, 'inv2', 'd2', { ...(await readClaim('d2')), lineItems: DEFAULT_LINES.map(l => ({ ...l, approvedThisPeriod: l.claimedThisPeriod })) }))
   })
 
   it('posting the claim-sourced invoice needs NO write to the claim — the claim stays approved and a direct `invoiced` write is refused', async () => {
     await seed('d3', 'approved')
     const claim = await readClaim('d3')
-    await assertSucceeds(setDoc(invoiceRef(ctx(USERS.qs), 'inv3'), claimInvoicePayload(USERS.qs, 'd3', claim)))
+    await assertSucceeds(pairedInvoice(USERS.qs, 'inv3', 'd3', claim))
     await assertSucceeds(updateDoc(invoiceRef(ctx(USERS.qs), 'inv3'), siStamp(USERS.qs, 'approved', 'approvedAt', 'approvedBy')))
     await assertSucceeds(updateDoc(invoiceRef(ctx(USERS.qs), 'inv3'), siStamp(USERS.qs, 'posted', 'postedAt', 'postedBy')))
     expect(await readStatus('d3')).toBe('approved')
+    // The link (ADR-68) is the only claim write — approval, status and money stay as they were.
+    expect((await readClaim('d3')).supplierInvoiceId).toBe('inv3')
     await assertFails(updateDoc(claimRef(ctx(USERS.qs), 'd3'), { status: 'invoiced', invoicedAt: serverTimestamp(), revision: 2, ...stamps(USERS.qs) }))
     // Read-time hand-over: the posted invoice replaces the claim in Actual, the claim document untouched.
     let inv
@@ -1510,5 +1539,52 @@ describe('ADR-63 — NOT enforced by rules (Deferred Control 40)', () => {
 
   it('a duplicated variation line in one claim is ACCEPTED by rules (sourceLineIdentityError refuses it in the app)', async () => {
     await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'f3'), claimPayload(USERS.qs, { lines: [...claimLines([1000, 0]), varLine(2000), varLine(2000)], variationLineCount: 2 })))
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SHIELD 2A (ADR-68) — the invoice link keys at create and approve, FINAL file.
+// The pairing itself (LINK / UNLINK / RECONCILE and the invoice side) is in
+// tests/rules/claimInvoicePairing.rules.test.js; the Stage-1 tolerance in
+// tests/rules/claimInvoicePairingTransitional.rules.test.js.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe('ADR-68 — the invoice link keys are REQUIRED (null) at create and on approve by the FINAL rules', () => {
+  it('the pre-2A create payload (no link key) is REFUSED; one or two of the three keys is refused; a string or a stamp at create is refused', async () => {
+    const db = ctx(USERS.qs)
+    const old = claimPayload(USERS.qs)
+    for (const k of LINK_KEYS) delete old[k]
+    await assertFails(setDoc(claimRef(db, 'lk1'), old))
+    await assertFails(setDoc(claimRef(db, 'lk2'), { ...old, supplierInvoiceId: null }))
+    await assertFails(setDoc(claimRef(db, 'lk3'), claimPayload(USERS.qs, { supplierInvoiceId: 'si_forged' })))
+    await assertFails(setDoc(claimRef(db, 'lk4'), claimPayload(USERS.qs, { supplierInvoiceLinkedAt: serverTimestamp(), supplierInvoiceLinkedBy: USERS.qs.uid })))
+    await assertSucceeds(setDoc(claimRef(db, 'lk5'), claimPayload(USERS.qs)))
+  })
+
+  it('approve on a LEGACY claim (no link key) must initialise the keys — the pre-2A approve payload is REFUSED, the new one accepted; a string link on approve is refused', async () => {
+    await seed('la1', 'submitted', USERS.admin, {}, { legacy: true })
+    const oldApprove = approveWrite(USERS.pm)
+    for (const k of LINK_KEYS) delete oldApprove[k]
+    await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'la1'), oldApprove))
+    await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'la1'), approveWrite(USERS.pm, { supplierInvoiceId: 'si_forged' })))
+    await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'la1'), approveWrite(USERS.pm, { supplierInvoiceLinkedBy: USERS.pm.uid, supplierInvoiceLinkedAt: serverTimestamp() })))
+    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'la1'), approveWrite(USERS.pm)))
+    const after = await readClaim('la1')
+    expect('supplierInvoiceId' in after).toBe(true)
+    expect(after.supplierInvoiceId).toBeNull()
+  })
+
+  it('approve on a NEW-FORMAT claim passes with or without the keys in the payload (unchanged keys are not a change); draft edit, submit and reject may not touch them', async () => {
+    await seed('ln1', 'submitted')
+    const oldApprove = approveWrite(USERS.pm)
+    for (const k of LINK_KEYS) delete oldApprove[k]
+    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'ln1'), oldApprove))
+    await seed('ln2', 'draft')
+    const db = ctx(USERS.qs)
+    await assertFails(updateDoc(claimRef(db, 'ln2'), draftEdit(USERS.qs, { supplierInvoiceId: 'x' })))
+    await assertFails(updateDoc(claimRef(db, 'ln2'), submitWrite(USERS.qs, { supplierInvoiceId: 'x' })))
+    await assertFails(updateDoc(claimRef(db, 'ln2'), rejectWrite(USERS.qs, { supplierInvoiceId: 'x' })))
+    await assertFails(updateDoc(claimRef(db, 'ln2'), submitWrite(USERS.qs, { supplierInvoiceLinkedBy: USERS.qs.uid })))
+    await assertSucceeds(updateDoc(claimRef(db, 'ln2'), submitWrite(USERS.qs)))
   })
 })

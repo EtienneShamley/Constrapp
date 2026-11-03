@@ -10,10 +10,11 @@ import { useProject } from './useProject'
 import { stageProjectCurrencyLock } from './projectCurrencyLock'
 import { resolveProjectCurrency } from '../lib/currency'
 import {
-  CLAIM_STATUS, CLAIMABLE_PO_STATUSES, canTransition, claimTotals,
+  CLAIM_STATUS, CLAIMABLE_PO_STATUSES, CLAIM_LINK_INITIAL, canTransition, claimTotals,
   formatClaimNumber, hasOpenClaim, validateClaimDraft, claimVariationLineCount,
 } from '../lib/progressClaims'
 import { runUpdateClaimDraft, runTransitionClaim, variationSourceError } from '../lib/progressClaimActions'
+import { runLinkExistingInvoice } from '../lib/supplierInvoiceActions'
 import { isVariationOriginLine } from '../lib/sourceLine'
 
 export function useProgressClaims(projectId) {
@@ -178,6 +179,10 @@ export function useProgressClaims(projectId) {
         rejectedAt:       null,
         rejectedBy:       null,
         invoicedAt:       null,
+        // SHIELD 2A (ADR-68): the claim ↔ supplier-invoice link, born
+        // UNLINKED (present and null — a claim with no such key is LEGACY and
+        // cannot be invoiced until reconciled). Workflow state, never a figure.
+        ...CLAIM_LINK_INITIAL,
         externalRefs:     {},
         createdAt:        serverTimestamp(),
         createdBy:        user.uid,
@@ -242,5 +247,22 @@ export function useProgressClaims(projectId) {
     })
   }, [companyId, projectId, user])
 
-  return { progressClaims, progressClaimsLoading, progressClaimsError, createProgressClaim, updateProgressClaim, transitionStatus }
+  // SHIELD 2A (ADR-68) — RECONCILE a claim that has no current link (legacy
+  // key-absent, or new-format null) with an EXISTING active claim-sourced
+  // invoice of its own, through one guarded transaction
+  // (lib/supplierInvoiceActions.js → runLinkExistingInvoice; rules branch
+  // (g) verifies the one invoice named). Records a fact, never creates one;
+  // the page offers it only from a settled, error-free invoice register that
+  // shows exactly one active invoice for the claim. There is deliberately NO
+  // "confirm no invoice" action: rules cannot prove absence.
+  const linkExistingInvoice = useCallback(async (claim, invoice) => {
+    if (!companyId || !projectId || !user) throw new Error('Not authenticated')
+    const claimRef   = doc(db, 'companies', companyId, 'projects', projectId, 'progressClaims', claim.id)
+    const invoiceRef = doc(db, 'companies', companyId, 'projects', projectId, 'supplierInvoices', invoice.id)
+    await runLinkExistingInvoice({
+      db, claimRef, invoiceRef, seenClaim: claim, seenInvoice: invoice, uid: user.uid, runTransaction, serverTimestamp,
+    })
+  }, [companyId, projectId, user])
+
+  return { progressClaims, progressClaimsLoading, progressClaimsError, createProgressClaim, updateProgressClaim, transitionStatus, linkExistingInvoice }
 }

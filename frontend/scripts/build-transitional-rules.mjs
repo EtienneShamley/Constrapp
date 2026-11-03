@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ── ADR-62 / ADR-63 — the STAGE-1 transitional ruleset, derived, never hand-edited ──
+// ── ADR-62 / ADR-63 / ADR-65 / ADR-68 — the STAGE-1 transitional ruleset, derived, never hand-edited ──
 //
 // `firestore.rules` is the FINAL strict ruleset. Each release that requires a
 // key the previously served bundle does not write needs a STAGE-1 ruleset that
@@ -14,6 +14,16 @@
 //   · progressClaims exactKeys: the FINAL file requires `variationLineCount`
 //     at create; the M3-B1 bundle writes no such key, so Stage 1 leaves it
 //     optional (absent reads 0 everywhere else in the block — unchanged).
+//     SHIELD 2A (ADR-68) adds the three supplier-invoice LINK keys to the same
+//     line: REQUIRED (null) at create by the FINAL file, optional in Stage 1
+//     while the pre-2A bundle is served (an absent key is a LEGACY claim —
+//     never invoiceable through the pairing until reconciled).
+//   · progressClaims approve (c): the FINAL file requires the link keys to be
+//     present and null after approval (the new bundle initialises them); the
+//     pre-2A bundle writes none, so Stage 1 accepts an absent key as well.
+//     ⚠️ The invoice-side PAIRING (supplierInvoices create and cancel) is
+//     STRICT IN BOTH FILES — an unpaired claim-sourced invoice create is
+//     refused from Stage 1 on (an old tab must refresh for that one action).
 //
 // This script derives `firestore.transitional.rules` from `firestore.rules` by
 // replacing EXACTLY the marked lines below, each of which must occur exactly
@@ -54,9 +64,9 @@ export const LINE_PAIRS = [
   {
     name: 'progressClaims exactKeys — variationLineCount',
     final:
-      "            && request.resource.data.keys().hasAll(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'variationLineCount', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']); // ADR-63 FINAL: variationLineCount is REQUIRED at create",
+      "            && request.resource.data.keys().hasAll(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'variationLineCount', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'supplierInvoiceId', 'supplierInvoiceLinkedAt', 'supplierInvoiceLinkedBy', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']); // ADR-63 / ADR-68 FINAL: variationLineCount and the invoice link keys are REQUIRED at create",
     transitional:
-      "            && request.resource.data.keys().hasAll(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']); // ADR-63 TRANSITIONAL (STAGE 1): variationLineCount is OPTIONAL at create while the M3-B1 bundle is served",
+      "            && request.resource.data.keys().hasAll(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']); // ADR-63 / ADR-68 TRANSITIONAL (STAGE 1): variationLineCount and the invoice link keys are OPTIONAL at create while the previous bundle is served",
   },
   // ADR-65 (Constrapp GANTT™ 1A2): the FINAL file requires `revision` + 1 on
   // every activity update; the 1A1 bundle writes an unchanged revision, so
@@ -70,6 +80,15 @@ export const LINE_PAIRS = [
     transitional:
       "                  && (request.resource.data.revision == resource.data.revision || revisionIncremented()) // ADR-65 TRANSITIONAL (STAGE 1): an UNCHANGED revision is still accepted while the 1A1 bundle is served",
   },
+  // ADR-68 (SHIELD 2A): the FINAL file requires the invoice link keys to be
+  // present and null once a claim is approved; the pre-2A bundle writes none.
+  {
+    name: 'progressClaims approve — the invoice link keys',
+    final:
+      "                      && linkUnlinked(request.resource.data) // ADR-68 FINAL: the invoice link keys are REQUIRED (null) on approve",
+    transitional:
+      "                      && (!('supplierInvoiceId' in request.resource.data) || linkUnlinked(request.resource.data)) // ADR-68 TRANSITIONAL (STAGE 1): the invoice link keys are OPTIONAL on approve while the pre-2A bundle is served",
+  },
 ]
 
 // Kept for callers that pin the first pair by name.
@@ -78,10 +97,10 @@ export const TRANSITIONAL_LINE = LINE_PAIRS[0].transitional
 
 const HEADER_FINAL = "rules_version = '2';"
 export const HEADER_TRANSITIONAL_LINES = [
-  '// ⚠️ ADR-63 / ADR-65 STAGE-1 TRANSITIONAL RULESET — derived from firestore.rules by',
+  '// ⚠️ ADR-63 / ADR-65 / ADR-68 STAGE-1 TRANSITIONAL RULESET — derived from firestore.rules by',
   '// scripts/build-transitional-rules.mjs; never edit by hand. Differs from the',
   `// FINAL ruleset in exactly ${LINE_PAIRS.length} rule lines (search "TRANSITIONAL (STAGE 1)"). Deploy`,
-  '// FIRST (firebase.transitional.json), before the M3-B2 / GANTT 1A2 Hosting bundle; replace',
+  '// FIRST (firebase.transitional.json), before the M3-B2 / GANTT 1A2 / SHIELD 2A Hosting bundle; replace',
   '// with firestore.rules (FINAL) once the new bundle is live. Temporary compatibility only.',
 ]
 const HEADER_TRANSITIONAL = HEADER_FINAL + '\n' + HEADER_TRANSITIONAL_LINES.join('\n')

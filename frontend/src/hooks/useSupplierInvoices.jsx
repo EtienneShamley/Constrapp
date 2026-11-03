@@ -10,7 +10,7 @@ import { useProject } from './useProject'
 import { stageProjectCurrencyLock } from './projectCurrencyLock'
 import { resolveProjectCurrency } from '../lib/currency'
 import {
-  SI_STATUS, SI_DOC_TYPE, SI_SOURCE,
+  SI_STATUS, SI_SOURCE,
   canTransition, invoiceTotals, formatSupplierInvoiceNumber, claimHasActiveInvoice,
   claimReconciliationError, retentionFloorError,
   isEditableInvoice, isClaimSourced, buildInvoiceLine, invoiceLineInputCountError,
@@ -18,6 +18,10 @@ import {
   allocateClaimSourcedLineGst, rebuildClaimSourcedLines,
 } from '../lib/supplierInvoices'
 import { sourceLineIdentityError } from '../lib/sourceLine'
+import { isClaimInvoiceable } from '../lib/progressClaims'
+import {
+  runCreateSupplierInvoice, runCancelSupplierInvoice, SupplierInvoiceWriteError, SI_WRITE_ERROR,
+} from '../lib/supplierInvoiceActions'
 
 export function useSupplierInvoices(projectId) {
   const { user }    = useAuth()
@@ -81,12 +85,28 @@ export function useSupplierInvoices(projectId) {
   const supplierInvoicesLoading = targetKey !== null && !settled
   const supplierInvoicesError = settled ? snap.error : false
 
-  // Creates a draft supplier invoice. The company-wide counter is read and
-  // incremented in the same transaction as the invoice write, matching POs and
-  // claims. The caller supplies supplier/PO/claim snapshots and built line items
-  // (ex-GST amount + taxCode + gstAmount per line); totals are derived here.
+  // Creates a draft supplier invoice through ONE guarded transaction
+  // (lib/supplierInvoiceActions.js → runCreateSupplierInvoice): the
+  // company-wide counter is read and incremented in the same transaction as
+  // the invoice write, matching POs and claims. The caller supplies
+  // supplier/PO/claim snapshots and built line items (ex-GST amount + taxCode
+  // + gstAmount per line); totals are derived in the action.
+  //
+  // SHIELD 2A (ADR-68) — a CLAIM-SOURCED invoice is PAIRED with its claim: the
+  // transaction reads the SERVER copy of the approved claim, refuses unless it
+  // is still approved, at the revision the editor reviewed, new-format and
+  // UNLINKED (ALREADY_INVOICED names the linked invoice; a legacy key-absent
+  // claim is LEGACY_UNRECONCILED), names this invoice's PO, supplier and
+  // claim number, and still certifies the figures the editor reconciled
+  // against — then writes the invoice AND the claim's `supplierInvoiceId`
+  // link together. Firestore Rules pair the two halves through getAfter(), so
+  // the client-side `claimHasActiveInvoice` check below is a UX fast-path
+  // only: the claim document is the authoritative concurrency boundary, and
+  // the client's subscribed register is not. The caller passes the reviewed
+  // `claim`; the explicit claim fields remain for the editor's preview path.
   const createSupplierInvoice = useCallback(async ({
     source, supplierId, supplierName, poId, poNumber,
+    claim = null,
     progressClaimId, claimNumber, claimApprovedGst, claimApprovedTotal,
     supplierInvoiceNumber,
     invoiceDate, receivedDate, dueDate, paymentTerms,
@@ -96,6 +116,14 @@ export function useSupplierInvoices(projectId) {
     // One approved claim may carry only one non-cancelled supplier invoice.
     if (progressClaimId && claimHasActiveInvoice(supplierInvoices, progressClaimId)) {
       throw new Error('This progress claim already has an active supplier invoice')
+    }
+    if (source === SI_SOURCE.PROGRESS_CLAIM) {
+      if (!claim?.id || claim.id !== progressClaimId) {
+        throw new Error('Select the approved progress claim this invoice is raised from.')
+      }
+      if (!isClaimInvoiceable(claim)) {
+        throw new SupplierInvoiceWriteError(SI_WRITE_ERROR.LEGACY_UNRECONCILED)
+      }
     }
 
     // ADR-40 — THE RETENTION FLOOR AT CREATE. `invoiceTotals` clamps only the
@@ -140,113 +168,33 @@ export function useSupplierInvoices(projectId) {
 
     const counterRef  = doc(db, 'companies', companyId, 'counters', 'supplierInvoices')
     const invoiceRef  = doc(collection(db, 'companies', companyId, 'projects', projectId, 'supplierInvoices'))
+    const claimRef    = source === SI_SOURCE.PROGRESS_CLAIM
+      ? doc(db, 'companies', companyId, 'projects', projectId, 'progressClaims', progressClaimId)
+      : null
 
-    await runTransaction(db, async (tx) => {
-      const counterSnap = await tx.get(counterRef)
-      const next = counterSnap.exists() ? counterSnap.data().next : 1
-      // The currency ratchet is staged during the transaction's READ phase and
-      // committed below, so this invoice and the project lock succeed or fail
-      // together — the project can never hold amounts with a still-changeable
-      // currency. Firestore requires all transaction reads before any writes.
-      const commitLock = await stageProjectCurrencyLock(tx, companyId, projectId)
-
-      tx.set(counterRef, { next: next + 1 }, { merge: true })
-
-      tx.set(invoiceRef, {
-        invoiceNumber:         formatSupplierInvoiceNumber(next),
-        supplierInvoiceNumber: supplierInvoiceNumber?.trim() || '',
-        status:                SI_STATUS.DRAFT,
-        docType:               SI_DOC_TYPE.INVOICE,
-        source,
-
-        // Supplier identity — snapshot from the PO/claim, never re-read.
-        supplierId:   supplierId ?? null,
-        supplierName: (supplierName || '').trim(),
-
-        // Source references.
-        poId:            poId ?? null,
-        poNumber:        poNumber ?? null,
-        progressClaimId: progressClaimId ?? null,
-        claimNumber:     claimNumber ?? null,
-        // ADR-63: how many stored lines are variation-origin (0 on a direct PO
-        // invoice). Rules require it to be declared whenever the source claim
-        // carries variation lines and bound it by the claim's count, so a
-        // client that does not know variation lines can never raise an
-        // invoice from such a claim; frozen for the invoice's life.
-        variationLineCount,
-
-        // Dates and terms.
-        invoiceDate:  invoiceDate  || '',
-        receivedDate: receivedDate || '',
-        dueDate:      dueDate      || '',
-        paymentTerms: paymentTerms ?? null,
-
-        // Money — ex-GST canonical, per-line GST. Gross describes the full
-        // taxable supply; payable is what is due after retention (see
-        // invoiceTotals). retentionGst keeps a claim-sourced invoice reconciled
-        // to the approved claim's net-based GST; a claim-sourced invoice's line
-        // GST is that certified GST apportioned (storedLines, above).
-        lineItems:      storedLines,
-        retention:      totals.retention,
-        retentionGst:   totals.retentionGst,
-        retentionTotal: totals.retentionTotal,
-        subtotal:       totals.subtotal,
-        gstTotal:       totals.gstTotal,
-        grossTotal:     totals.grossTotal,
-        net:            totals.net,
-        payableGst:     totals.payableGst,
-        payableTotal:   totals.payableTotal,
-        // Audit snapshot of the currency this document was raised in (the frozen
-        // supplierName/costCodeName idiom). The PROJECT currency remains the
-        // display authority — this field is never read for rendering, so a
-        // project can never show mixed currencies. Historical documents keep
-        // their stored 'AUD' and are never rewritten.
-        currency:  projectCurrency,
-        revision:  1,
-
-        notes: notes?.trim() || '',
-
-        // Audit stamps. Every one is REQUIRED NULL at creation by Firestore
-        // Rules (ADR-40), so no caller can mint an invoice that is already
-        // approved, posted or cancelled.
-        approvedAt:  null,
-        approvedBy:  null,
-        postedAt:    null,
-        postedBy:    null,
-        cancelledAt: null,
-        // ADR-40 addition — cancellation previously recorded WHEN but not WHO.
-        // Invoices raised before ADR-40 store no such key; rules read it through
-        // get('cancelledBy', null) on both sides so those documents stay
-        // editable and acquire the field on their next valid write.
-        cancelledBy: null,
-
-        // ⚠️ paidAt is DEPRECATED IN PLACE (ADR-24), not reserved. It is written
-        // once as null at creation and is NEVER updated — Supplier Payments
-        // shipped without activating it, because payment state derives from
-        // posted Supplier Payment allocations (lib/supplierPayments.js) and
-        // setting a date here would create a second source of payment truth.
-        // The write is kept so new documents keep the same shape as historical
-        // ones; removing it would silently fork the schema for no benefit.
-        //
-        // adjustsInvoiceId / attachments / externalRefs remain genuinely
-        // reserved for Credit Notes, Storage, and accounting sync.
-        paidAt:          null,
-        adjustsInvoiceId: null,
-        attachments:      [],
-        externalRefs:     {},
-
-        createdAt: serverTimestamp(),
-        createdBy: user.uid,
-        // ADR-40 — the last-write audit stamps every hardened collection
-        // carries. Firestore Rules require BOTH on every write to this
-        // collection (`updatedBy == request.auth.uid`, `updatedAt ==
-        // request.time`), on create and on every transition alike.
-        updatedAt: serverTimestamp(),
-        updatedBy: user.uid,
-      })
-      commitLock()
+    // The document shape (lib/supplierInvoiceActions.js →
+    // buildSupplierInvoiceDocument) is the ADR-40 one: born draft, every
+    // lifecycle stamp null, the audit stamps required on every write, paidAt
+    // deprecated in place (ADR-24), the currency an audit snapshot. The
+    // currency ratchet is staged during the transaction's READ phase and
+    // committed with the writes, so the invoice and the project lock succeed
+    // or fail together.
+    const outcome = await runCreateSupplierInvoice({
+      db,
+      refs: { counterRef, invoiceRef, claimRef },
+      document: {
+        source, supplierId, supplierName, poId, poNumber,
+        progressClaimId: progressClaimId ?? null, claimNumber: claimNumber ?? null, variationLineCount,
+        supplierInvoiceNumber, invoiceDate, receivedDate, dueDate, paymentTerms,
+        lineItems: storedLines, retention: totals.retention, currency: projectCurrency, notes,
+      },
+      seenClaim: source === SI_SOURCE.PROGRESS_CLAIM ? claim : null,
+      uid: user.uid,
+      runTransaction, serverTimestamp,
+      stageLock: (tx) => stageProjectCurrencyLock(tx, companyId, projectId),
+      formatNumber: formatSupplierInvoiceNumber,
     })
-    return invoiceRef.id
+    return outcome.invoiceId
   }, [companyId, projectId, user, supplierInvoices, projectCurrency])
 
   // ── Draft-only edits (ADR-38) ──────────────────────────────────────────────
@@ -389,19 +337,29 @@ export function useSupplierInvoices(projectId) {
   // statuses (`received`, `under_review`, `disputed`) and the deprecated `paid`
   // are unauthorable from any path, which closes the ADR-24 hole in which a
   // direct-SDK caller could forge `status: 'paid'` on a real invoice.
+  //
+  // SHIELD 2A (ADR-68) — CANCELLATION IS A TRANSACTION
+  // (lib/supplierInvoiceActions.js → runCancelSupplierInvoice): a claim-sourced
+  // invoice whose claim links to it is cancelled AND its claim unlinked in the
+  // same commit (the rules refuse one without the other); an invoice its
+  // claim does not link — legacy, or a claim that no longer exists — cancels
+  // exactly as before, and no link is invented. Posted stays terminal.
   const transitionStatus = useCallback(async (invoice, nextStatus) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (!canTransition(invoice.status, nextStatus)) {
       throw new Error(`Cannot move a ${invoice.status} supplier invoice to ${nextStatus}`)
     }
     const ref = doc(db, 'companies', companyId, 'projects', projectId, 'supplierInvoices', invoice.id)
+    if (nextStatus === SI_STATUS.CANCELLED) {
+      const claimRef = isClaimSourced(invoice) && invoice.progressClaimId
+        ? doc(db, 'companies', companyId, 'projects', projectId, 'progressClaims', invoice.progressClaimId)
+        : null
+      await runCancelSupplierInvoice({ db, invoiceRef: ref, claimRef, seen: invoice, uid: user.uid, runTransaction, serverTimestamp })
+      return
+    }
     const extra =
       nextStatus === SI_STATUS.APPROVED  ? { approvedAt:  serverTimestamp(), approvedBy:  user.uid } :
       nextStatus === SI_STATUS.POSTED    ? { postedAt:    serverTimestamp(), postedBy:    user.uid } :
-      // ADR-40 — cancellation now records WHO as well as WHEN, matching every
-      // other terminal transition in the codebase and satisfying the rules
-      // branch's `cancelledBy == request.auth.uid`.
-      nextStatus === SI_STATUS.CANCELLED ? { cancelledAt: serverTimestamp(), cancelledBy: user.uid } :
       {}
     // ⚠️ EACH PAYLOAD IS A RULES CONTRACT (ADR-40). Firestore Rules restrict
     // every transition with `changedKeys().hasOnly([...])` to exactly `status`,

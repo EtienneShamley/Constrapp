@@ -7320,3 +7320,90 @@ lint 0 / 0; build clean; `git diff --check` clean.
    or write supplier invoices or releases; a posted invoice still cannot be
    edited or cancelled; Budget, Forecast, Commercial, Cash Flow, Dashboard and
    SHIELD figures are unchanged for every existing document.
+
+## 45. Constrapp SHIELD™ 2A — Claim-to-Invoice Source Pairing (ADR-68) — implemented, NOT YET DEPLOYED
+
+**What is enforced.** One approved progress claim reserves at most ONE active
+(draft / approved / posted) claim-sourced supplier invoice — by Firestore Rules,
+through the claim's `supplierInvoiceId` backlink written in the same transaction
+as the invoice and cleared in the same transaction as its cancellation
+(`lib/supplierInvoiceActions.js`; rules pair both halves with `getAfter()`). A
+claim with NO link key (approved before the pairing) fails closed until it
+records its existing active invoice; there is no "confirm no invoice" action.
+
+**Automated:** unit **71 files / 4,087 tests** (new `supplierInvoiceActions.test.js`,
+**30** — link-state classification by key PRESENCE, the document / link /
+unlink writes, the paired create's read-before-write order, SUCCESS /
+ALREADY_INVOICED (a retry re-reads the linked claim and never creates a second
+invoice) / LEGACY_UNRECONCILED / STALE / MISSING / INVALID / PERMISSION /
+OFFLINE / UNKNOWN, identity and certified-figure checks, the paired cancel incl.
+two concurrent cancellations, the reconcile action's eligibility on both
+copies, the absence of any attestation write, the reconciliation classifier,
+and the financial pins — Actual / Remaining Committed / the hand-over set
+identical for a legacy, an unlinked and a linked claim, no selector reads the
+link, no extra listener; `shield.test.js` +6 for condition I; the ADR-58 approve
+payload pin and the transitional pins extended). Rules **31 files / 2,006 tests** (new
+`claimInvoicePairing.rules.test.js`, **37** — the getAfter feasibility proof for
+every financial role, the unpaired create refused and HOW (a `getAfter()`
+evaluation error, never a grant; a create failing before the pairing term is a
+clean false), link-without-invoice / wrong-claim / wrong-id / forged stamps
+refused, rollback with the counter untouched, a LEGACY claim fail-closed, a
+submitted / draft / rejected / linked claim refused, PO / supplier id / supplier
+name / claim number agreement (a trimmed name and a pre-Contacts null agree),
+same project and tenant, every ADR-40 / ADR-63 create invariant still applied,
+the reservation held through approve and post, link replacement / wrong
+revision / extra key refused, absent key never set to null, paired cancel for
+draft and approved by every role, cancel-without-unlink and unlink-without-cancel
+refused, posted never cancelled or unlinked, re-invoicing after cancellation
+(cancel → invoice → cancel → invoice; the cancelled document never reused),
+legacy / stray / orphan / null-reference invoices cancelling ALONE, RECONCILE
+of a legacy and a new-format null claim to a draft / approved / posted invoice
+for every role, every refusal (cancelled, missing, other claim / PO / supplier,
+direct_po, other project, non-approved, already linked, forged, wrong revision),
+existing duplicates reconciled to ONE with the other left listed, a legacy claim
+with no active invoice fail-closed, roles / tenancy / cross-company, and the
+app's three transactions — the 4-document create (counter 5 → 6, SI-0005, the
+link at revision 3, the project locked, a QS included), retry = ALREADY_INVOICED
+with the counter untouched, TWO CONCURRENT creates → exactly one invoice,
+LEGACY_UNRECONCILED / STALE, PERMISSION for a subcontractor, cancel + unlink
+then a new create, a legacy invoice cancelling alone, posted INVALID, reconcile
+then ALREADY_INVOICED; `claimInvoicePairingTransitional.rules.test.js`, **5** —
+Stage 1 accepts the pre-2A claim create and approve, refuses a string link,
+REFUSES the unpaired create, accepts the paired one and refuses the duplicate,
+fails a legacy claim closed, reconciles, and pairs the cancel; the existing
+`supplierInvoices`, `progressClaims`, `variationsTransitional` and
+`purchaseOrders` suites with every claim-sourced create paired and the DC 3
+"two invoices remain possible" case flipped to refused). FINAL
+`firestore.rules` 230,340 → **238,325 bytes** (+7,985); transitional
+**239,005**; `npm run rules:transitional:check` clean; lint 0 / 0; build clean;
+`git diff --check` clean.
+
+**Manual acceptance (maximum three):**
+
+1. **Pairing.** Approve a progress claim (new bundle). Supplier Invoices →
+   *New* → *From approved claim*: the claim is offered; create the draft. On
+   the Progress Claims tab the claim's **Invoice** column shows the SI number
+   and *Draft*; in a second tab the claim has left the invoiceable list without
+   a refresh, and a second *New from approved claim* for it is impossible. In
+   the second tab (opened BEFORE the create) try to create from the same claim:
+   the editor reports *already has an active supplier invoice … the linked
+   invoice is shown* with a **Show SI-####** link — no second invoice, no
+   SI number consumed (the next invoice takes the next number).
+2. **Cancel and re-invoice.** Cancel that draft: the claim's Invoice column
+   returns to *Not yet invoiced* and the claim is offered again; the cancelled
+   invoice stays in the register with its claim number. Create again — a NEW
+   SI number — approve and post it: the Invoice column shows *Posted*, the
+   claim leaves *awaiting invoice*, Actual shows the certified amount once,
+   Remaining Committed is unchanged from before posting, and *Cancel* is no
+   longer offered on the posted invoice.
+3. **Legacy claim.** On a claim approved BEFORE this release: it is NOT offered
+   in the invoice editor (the editor says one approved claim was approved
+   before pairing and must be reconciled); on the Progress Claims tab its
+   Invoice column reads *Approved before pairing — …*. If it has exactly one
+   active invoice, **Link SI-####** appears — link it, the column shows the
+   invoice, and the claim stays uninvoiceable while that invoice is active. If
+   it has no invoice, NO action is offered (awaiting trusted reconciliation)
+   and SHIELD check 4 lists it under *Claim-to-invoice link needs
+   reconciliation*. With the invoice register failing to load (e.g. offline
+   before the first snapshot), the column reads *Invoice register unavailable*
+   and nothing is offered.

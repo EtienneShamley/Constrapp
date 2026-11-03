@@ -23,6 +23,7 @@ import {
   appliedSupplierVariationAdjustments, isCommitmentApplied, classifyCommitmentLines,
 } from './variations'
 import { mixedModePoLineConflicts } from './poLineRecognition'
+import { claimLinkReconciliation, CLAIM_LINK_ISSUE_LABELS } from './supplierInvoiceActions'
 import { figureState, FIGURE_STATE, SNAPSHOT_SOURCE_LABELS } from './projectSnapshot'
 
 // ── Constrapp SHIELD™ foundation — commercial assurance checks (ADR-50) ──────
@@ -804,6 +805,17 @@ export const STATE_CONFLICT = {
   //     amount stays in Actual where the claim put it and nets no commitment
   //     line; nothing is re-attributed.
   INVALID_CLAIM_SOURCE_LINE:  'invalid_claim_source_line',
+  // I · ADR-68 (SHIELD 2A) — an approved claim whose supplier-invoice LINK
+  //     and the invoice register disagree: a LEGACY claim (approved before
+  //     pairing, no link key) with no invoice, only cancelled invoices, or one
+  //     active invoice it does not yet link; a claim with no link but several
+  //     active invoices (condition D lists the invoices; this lists the
+  //     claim); a linked invoice that is missing, cancelled, or names another
+  //     claim / PO / supplier; a malformed link. Rules cannot prove that no
+  //     invoice exists, so these are listed for a person to reconcile — a
+  //     legacy claim is NEVER made invoiceable from this list, and a
+  //     duplicate is never repaired.
+  CLAIM_INVOICE_LINK:         'claim_invoice_link',
 }
 
 const STATE_CONFLICT_LABELS = {
@@ -815,6 +827,7 @@ const STATE_CONFLICT_LABELS = {
   [STATE_CONFLICT.VARIATION_NOT_INCORPORATED]: 'Applied supplier variation not incorporated in the PO commitment',
   [STATE_CONFLICT.CLAIM_ABOVE_REVISED_LINE]:   'Recognised claims exceed the revised line value',
   [STATE_CONFLICT.INVALID_CLAIM_SOURCE_LINE]:  'Claim line names an invalid or unresolved source line',
+  [STATE_CONFLICT.CLAIM_INVOICE_LINK]:         'Claim-to-invoice link needs reconciliation',
 }
 
 const STATE_CONFLICT_COLUMNS = [
@@ -1081,6 +1094,26 @@ function evaluateCommitmentStateConflicts(purchaseOrders, progressClaims, suppli
     })
   }
 
+  // I · the claim ↔ invoice link against the register (ADR-68). Approved
+  //     claims only (the link exists only from approval). Listed, never
+  //     repaired: linking happens on the Progress Claims tab through the
+  //     guarded reconcile transaction, and only for ONE active invoice.
+  for (const cl of claims) {
+    if (cl.status !== 'approved') continue
+    const rec = claimLinkReconciliation(cl, invoices)
+    if (!rec.issue) continue
+    const invoiceNumbers = rec.activeInvoices.map(inv => inv.invoiceNumber || inv.id)
+    const linkedNumber = rec.linkedInvoice ? (rec.linkedInvoice.invoiceNumber || rec.linkedInvoice.id) : (rec.invoiceId || null)
+    push(STATE_CONFLICT.CLAIM_INVOICE_LINK, {
+      id: `${STATE_CONFLICT.CLAIM_INVOICE_LINK}:${cl.id}`, ...poRef(cl.poId, cl.poNumber),
+      recordId: cl.id, recordKind: 'claim',
+      recordNumber: `${cl.claimNumber || cl.id}${linkedNumber ? ` → ${linkedNumber}` : ''}${invoiceNumbers.length > 0 ? ` · active ${invoiceNumbers.join(', ')}` : ''}`,
+      recordStatus: cl.status, recordStatusLabel: CLAIM_LINK_ISSUE_LABELS[rec.issue] ?? rec.issue,
+      amount: money(cl.approvedSubtotal),
+      issue: rec.issue, linkState: rec.state, linkedInvoiceId: rec.invoiceId, invoiceNumbers,
+    })
+  }
+
   const values = {
     poCount: pos.length,
     claimCount: claims.length,
@@ -1108,6 +1141,12 @@ function evaluateCommitmentStateConflicts(purchaseOrders, progressClaims, suppli
     'scope, or a differing cost code or ceiling — and a claim whose line identities are malformed or duplicated is ' +
     'listed whole. The certified amount stays in Actual exactly where the claim put it, nets no commitment line and is ' +
     'never re-attributed to a PO line; withdraw and re-raise the claim, or correct the variation.',
+    'An approved claim is listed when its supplier-invoice link and this register disagree (ADR-68): a claim approved ' +
+    'before claim-to-invoice pairing with no invoice, only cancelled invoices, or an active invoice it does not yet link; ' +
+    'a claim with no link but more than one active invoice; or a linked invoice that is missing, cancelled or names ' +
+    'another claim, PO or supplier. Link ONE existing active invoice on the Progress Claims tab; a claim with no active ' +
+    'invoice stays uninvoiceable until a trusted reconciliation — this register cannot prove that no invoice exists — and ' +
+    'a duplicate is listed under its own condition, never repaired or cancelled here.',
     NOT_WRONGDOING_CAVEAT,
   ]
 

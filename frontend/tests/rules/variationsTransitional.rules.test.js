@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { beforeAll, afterAll, beforeEach, describe, it, expect } from 'vitest'
 import { initializeTestEnvironment, assertSucceeds, assertFails } from '@firebase/rules-unit-testing'
-import { doc, getDoc, setDoc, updateDoc, serverTimestamp, Timestamp } from 'firebase/firestore'
+import { doc, getDoc, setDoc, updateDoc, writeBatch, serverTimestamp, Timestamp } from 'firebase/firestore'
 import { TAX_CODE, gstForLine, variationTotals, buildApprovedLineItems, isCommitmentApplied, isScopeCommitted } from '../../src/lib/variations'
 import { buildClaimLine, buildVariationClaimLine, claimTotals } from '../../src/lib/progressClaims'
 import { invoiceTotals } from '../../src/lib/supplierInvoices'
@@ -190,6 +190,8 @@ async function seedApprovedClaim(id, lines, variationLineCount) {
     await setDoc(doc(c.firestore(), claimsPath(), id), {
       ...base, status: 'approved', createdAt: now, updatedAt: now, submittedAt: now, submittedBy: 'u_admin', approvedAt: now, approvedBy: 'u_admin',
       approvedSubtotal: t.subtotal, approvedGst: t.gst, approvedTotal: t.total,
+      // ADR-68: new-format (unlinked) so the claim can be invoiced through the pairing.
+      supplierInvoiceId: null, supplierInvoiceLinkedAt: null, supplierInvoiceLinkedBy: null,
     })
   })
 }
@@ -334,17 +336,41 @@ describe('STAGE 1 — claims and invoices: the ADR-63 pins are active for both b
     await assertFails(setDoc(doc(db, claimsPath(), 'x4'), claimPayload(USERS.qs, { lines: [poClaimLine(), { ...varClaimLine(), poLineIndex: 0 }], variationLineCount: 1 })))
   })
 
+  // ADR-68: since SHIELD 2A a claim-sourced invoice create is PAIRED with its
+  // claim's link write in one batch, in BOTH rulesets (the pairing is strict
+  // from Stage 1) — so each create here is the batch the 2A bundle issues.
+  function pairedCreate(user, id, payload, claimId) {
+    const db = ctx(user)
+    const batch = writeBatch(db)
+    batch.set(doc(db, invPath(), id), payload)
+    batch.update(doc(db, claimsPath(), claimId), {
+      supplierInvoiceId: id, supplierInvoiceLinkedAt: serverTimestamp(), supplierInvoiceLinkedBy: user.uid,
+      revision: 2, updatedAt: serverTimestamp(), updatedBy: user.uid,
+    })
+    return batch.commit()
+  }
+
   it('the invoice-count guard is ACTIVE: a claim carrying a variation line can be invoiced only by a payload that declares the count', async () => {
     await seedApprovedClaim('cVar', [poClaimLine(0), varClaimLine(2000)], 1)
     await seedApprovedClaim('cPlain', [poClaimLine(1000)], undefined)
-    const db = ctx(USERS.qs)
     // The M3-B1 bundle's shape against the variation claim: no count, the line attributed to PO line 0 → REFUSED.
-    await assertFails(setDoc(doc(db, invPath(), 'oldVar'), invoicePayload(USERS.qs, { claimId: 'cVar', lines: [invLine(2000)] })))
+    await assertFails(pairedCreate(USERS.qs, 'oldVar', invoicePayload(USERS.qs, { claimId: 'cVar', lines: [invLine(2000)] }), 'cVar'))
     // The new bundle: count 1 and the variation-origin line → ACCEPTED.
-    await assertSucceeds(setDoc(doc(db, invPath(), 'newVar'), invoicePayload(USERS.qs, { claimId: 'cVar', lines: [varInvLine(2000)], variationLineCount: 1 })))
-    // A plain claim: the M3-B1 payload (no count) and the new payload (0) both pass.
-    await assertSucceeds(setDoc(doc(db, invPath(), 'oldPlain'), invoicePayload(USERS.qs, { claimId: 'cPlain', lines: [invLine(1000)] })))
-    await assertSucceeds(setDoc(doc(db, invPath(), 'newPlain'), invoicePayload(USERS.qs, { claimId: 'cPlain', lines: [invLine(1000)], variationLineCount: 0 })))
+    await assertSucceeds(pairedCreate(USERS.qs, 'newVar', invoicePayload(USERS.qs, { claimId: 'cVar', lines: [varInvLine(2000)], variationLineCount: 1 }), 'cVar'))
+    // A plain claim: the M3-B1 payload (no count) and the new payload (0) both pass (one claim each — a claim takes ONE active invoice).
+    await seedApprovedClaim('cPlain2', [poClaimLine(1000)], undefined)
+    await assertSucceeds(pairedCreate(USERS.qs, 'oldPlain', invoicePayload(USERS.qs, { claimId: 'cPlain', lines: [invLine(1000)] }), 'cPlain'))
+    await assertSucceeds(pairedCreate(USERS.qs, 'newPlain', invoicePayload(USERS.qs, { claimId: 'cPlain2', lines: [invLine(1000)], variationLineCount: 0 }), 'cPlain2'))
+  })
+
+  it('ADR-68 in Stage 1: an UNPAIRED claim-sourced create is REFUSED (an old tab must refresh for that one action); the pre-2A claim create and approve payloads are still ACCEPTED', async () => {
+    await seedApprovedClaim('cPlain', [poClaimLine(1000)], undefined)
+    const db = ctx(USERS.qs)
+    await assertFails(setDoc(doc(db, invPath(), 'unpaired'), invoicePayload(USERS.qs, { claimId: 'cPlain', lines: [invLine(1000)], variationLineCount: 0 })))
+    // The pre-2A bundle's claim create (no link key) passes Stage 1 …
+    await assertSucceeds(setDoc(doc(db, claimsPath(), 'oldClaim'), claimPayload(USERS.qs, { variationLineCount: 0 })))
+    // … and so does the 2A bundle's (keys present, null).
+    await assertSucceeds(setDoc(doc(db, claimsPath(), 'newClaim'), claimPayload(USERS.qs, { variationLineCount: 0, supplierInvoiceId: null, supplierInvoiceLinkedAt: null, supplierInvoiceLinkedBy: null })))
   })
 })
 
