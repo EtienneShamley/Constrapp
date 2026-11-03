@@ -10,6 +10,8 @@ import { useProfile } from '../../hooks/useProfile'
 import { useTenderPackages } from '../../hooks/useTenderPackages'
 import { useTenderBids } from '../../hooks/useTenderBids'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
+import { useApprovedBudget } from '../../hooks/useApprovedBudget'
+import { resolveBudgetSource, budgetLinesFor } from '../../lib/budgetApproval'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { useContacts } from '../../hooks/useContacts'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
@@ -664,9 +666,11 @@ function ComparisonSection({ pkg, bids, budgetLines, currencyCode }) {
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <p className="m-0 text-[13px] font-bold text-brand-text">Tender Comparison</p>
         <p className="m-0 text-[11px] text-brand-muted">
+          {/* ADR-70: the lines carry `fromApprovedSnapshot` when they come from
+              an approved version; otherwise they are the working register. */}
           {comparison.budget.hasBudget
-            ? <>Approved Budget for this package&apos;s cost codes: <span className="font-semibold text-brand-text">{money(comparison.budget.amount)}</span> ex-GST</>
-            : 'No Approved Budget lines exist for this package’s cost codes — budget variance unavailable.'}
+            ? <>{budgetLines.some(l => l?.fromApprovedSnapshot) ? 'Approved Budget' : 'Working budget (not approved)'} for this package&apos;s cost codes: <span className="font-semibold text-brand-text">{money(comparison.budget.amount)}</span> ex-GST</>
+            : 'No budget lines exist for this package’s cost codes (or the budget is still loading or unavailable) — budget variance unavailable.'}
         </p>
       </div>
 
@@ -972,7 +976,17 @@ export default function ProjectTenders() {
     tenderBids, tenderBidsLoading, tenderBidsError,
     createTenderBid, updateTenderBid, voidTenderBid,
   } = useTenderBids(mid)
-  const { budgetLines } = useBudgetLines(mid)
+  const { budgetLines, budgetLinesLoading, budgetLinesError } = useBudgetLines(mid)
+  // ADR-70: the tender comparison's "Approved Budget" is THE budget source —
+  // the approved snapshot when a version is approved, the working register
+  // (labelled unapproved) until then. Loading / unavailable yields no lines,
+  // so the comparison reports "no budget" rather than comparing with zero.
+  const { approvedBudget } = useApprovedBudget(mid)
+  const budgetSource = useMemo(
+    () => resolveBudgetSource({ approvedBudget, budgetLines, budgetLinesLoading, budgetLinesError, currencyCode }),
+    [approvedBudget, budgetLines, budgetLinesLoading, budgetLinesError, currencyCode],
+  )
+  const approvedLines = budgetLinesFor(budgetSource)
   const { costCodes, costCodesLoading, costCodesError } = useCostCodes()
   const { contacts, contactsLoading, contactsError } = useContacts()
   // M3-A (ADR-61): the PO register, for the award's linked PO and the raise.
@@ -1227,7 +1241,7 @@ export default function ProjectTenders() {
         <AwardModal
           pkg={awarding}
           bids={tenderBids}
-          budgetLines={budgetLines}
+          budgetLines={approvedLines}
           currencyCode={currencyCode}
           onClose={() => setAwarding(null)}
           onConfirm={awardTenderPackage}
@@ -1270,7 +1284,7 @@ export default function ProjectTenders() {
           pkg={detailPkg}
           bids={tenderBids}
           bidsUnavailable={tenderBidsError}
-          budgetLines={budgetLines}
+          budgetLines={approvedLines}
           currencyCode={currencyCode}
           purchaseOrders={purchaseOrders}
           raiseGate={detailGate}

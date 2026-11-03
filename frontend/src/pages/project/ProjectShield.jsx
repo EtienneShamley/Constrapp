@@ -9,6 +9,7 @@ import { useSupplierCreditNotes } from '../../hooks/useSupplierCreditNotes'
 import { useSupplierPayments } from '../../hooks/useSupplierPayments'
 import { useRetentionReleases } from '../../hooks/useRetentionReleases'
 import { useVariations } from '../../hooks/useVariations'
+import { useApprovedBudget } from '../../hooks/useApprovedBudget'
 import { isFinancialRole } from '../../lib/margin'
 import {
   evaluateShield, groupChecks, SHIELD_STATE, SHIELD_STATE_ORDER, SHIELD_STATE_LABELS,
@@ -121,11 +122,15 @@ function ShieldWorkspace({ projectId, currencyCode }) {
   const { supplierPayments, supplierPaymentsLoading, supplierPaymentsError }          = useSupplierPayments(projectId)
   const { retentionReleases, retentionReleasesLoading, retentionReleasesError }       = useRetentionReleases(projectId)
   const { variations, variationsLoading, variationsError }                            = useVariations(projectId)
+  // ADR-70: the approved-budget pointer, active header and snapshot — read
+  // for their mutual consistency only (check 6). The RAW read states gate
+  // the check; SHIELD reads no working budget line.
+  const { approvedBudget, approvedBudgetLoading, approvedBudgetError }                 = useApprovedBudget(projectId)
 
   const shield = useMemo(() => evaluateShield({
     sources: {
       purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
-      supplierPayments, retentionReleases, variations,
+      supplierPayments, retentionReleases, variations, approvedBudget,
     },
     // The loading / error flags of every source, in the Dashboard snapshot's
     // shape (ADR-42), so availability is decided by the same figureState.
@@ -137,15 +142,16 @@ function ShieldWorkspace({ projectId, currencyCode }) {
       supplierPayments:    { loading: supplierPaymentsLoading,    error: supplierPaymentsError },
       retentionReleases:   { loading: retentionReleasesLoading,   error: retentionReleasesError },
       variations:          { loading: variationsLoading,          error: variationsError },
+      approvedBudget:      { loading: approvedBudgetLoading,      error: approvedBudgetError },
     },
     currencyCode,
   }), [
     purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
-    supplierPayments, retentionReleases, variations,
+    supplierPayments, retentionReleases, variations, approvedBudget,
     purchaseOrdersLoading, purchaseOrdersError, progressClaimsLoading, progressClaimsError,
     supplierInvoicesLoading, supplierInvoicesError, supplierCreditNotesLoading, supplierCreditNotesError,
     supplierPaymentsLoading, supplierPaymentsError, retentionReleasesLoading, retentionReleasesError,
-    variationsLoading, variationsError, currencyCode,
+    variationsLoading, variationsError, approvedBudgetLoading, approvedBudgetError, currencyCode,
   ])
 
   const groups = groupChecks(shield.checks)
@@ -156,8 +162,8 @@ function ShieldWorkspace({ projectId, currencyCode }) {
       <Card className="mb-3.5">
         <ShieldHeading currencyCode={currencyCode} />
         <p className="m-0 mt-1.5 text-[12px] text-brand-text-soft">
-          Five assurance checks over this project&apos;s current purchase order, claim, supplier invoice, credit
-          note, payment and retention records, read at this moment. Each lists the source records behind it. A
+          Six assurance checks over this project&apos;s current purchase order, claim, supplier invoice, credit
+          note, payment, retention and approved-budget records, read at this moment. Each lists the source records behind it. A
           finding is an exception or a condition needing review — never proof of error — and incomplete or
           unavailable records are reported as exactly that. No score, no prediction, no trend.
         </p>

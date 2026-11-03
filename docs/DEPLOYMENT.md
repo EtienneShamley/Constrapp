@@ -1403,6 +1403,68 @@ the Console reports and the emulator suite would already have caught).
 Nothing else in this milestone can be rolled forward or back: no Hosting
 build, no index, no data.
 
+### SHIELD 2B1 release order — Approved Budget Versions (ADR-70) — RULES FIRST, then Hosting; no transitional stage; ADR-69 must be live first
+
+**Status: IMPLEMENTED — NOT YET DEPLOYED (Rules AND Hosting; TWO steps).**
+2B1 adds three NEW collections (`budgetApprovals`, `budgetApprovalSnapshots`,
+`approvedBudget/current`) and hardens the `commercial/baseline` block. The new
+blocks are purely additive — the live bundle never reads or writes them — and
+the baseline hardening accepts every document the live hook writes (the full
+field set with caller + server stamps), so **rules first**: the new bundle's
+approval writes are refused until the rules are live, and the old bundle keeps
+working under the new rules. No transitional ruleset, no index (the one query
+is single-field `orderBy('createdAt')`), no migration, no backend.
+
+**What the hardening changes for the OLD bundle.** Only one write can newly
+fail under the new rules before Hosting ships: an old tab editing the legacy
+*Original Approved Budget* field on the Commercial tab AFTER a budget version
+has been approved on this project (the scalar is frozen while a pointer
+exists). A version can only be approved through the NEW bundle, so this cannot
+happen before STEP 2 — and after it the field is read-only in the UI.
+
+*Preconditions.* Azure CI green on the merge (lint → unit → rules → build);
+`npm run rules:transitional:check` clean; `wc -c frontend/firestore.rules`
+reads **234,479** (budget 245,000); `node scripts/verify-rules-comment-only.mjs
+--base 62cea77` is NOT expected to pass (2B1 changes executable rules — it is
+not a comment-only release). **ADR-69 (218,840) must be the live ruleset**;
+confirm in the Console before STEP 1 (publishing this file also publishes any
+controls not yet live — their own orders above apply first). Every command
+runs from `frontend/`, each a separate approved action; **none is run by an
+implementation task.**
+
+1. **STEP 1 — publish the FINAL ruleset:**
+   ```bash
+   npm run test:rules                       # all suites green, incl. budgetApprovals + commercialBaseline
+   firebase deploy --only firestore:rules --project constrapp-69b5d
+   ```
+   Verify in the Console that the published source reads **234,479 bytes**,
+   contains `match /companies/{companyId}/projects/{projectId}/approvedBudget/current`
+   and `function legacyOriginalFrozen(previous)`, and carries NO
+   `TRANSITIONAL (STAGE 1)` marker. The live bundle keeps working unchanged
+   (every budget figure still reads the working lines — no pointer exists).
+2. **STEP 2 — `firebase deploy --only hosting --project constrapp-69b5d`**
+   after `npm run build` with the production `VITE_FIREBASE_*` values. Every
+   surface now labels the legacy figure *Working budget (not approved)* until a
+   version is approved. Verify with the three manual checks in TESTING.md §47.
+   Users with an old tab open see the old labels until they refresh; nothing
+   they write is refused.
+
+*Recovery.* No document is migrated and no stored value changes shape:
+
+- **Hosting rollback (to the ADR-69 bundle) is safe under the 2B1 rules.**
+  The old bundle reads the working lines and never touches the new
+  collections; an approved version already written stays in place, invisible
+  to the old bundle until Hosting is redeployed (it is never a figure the old
+  bundle shows as approved — it shows the working lines as before).
+- **Reverting the Firestore Rules to the ADR-69 ruleset (218,840 bytes) after
+  versions have been approved is NOT a clean rollback for the 2B1 bundle:**
+  the new bundle's reads of the three collections are denied by default, so
+  every budget figure reads **Unavailable** (fail closed — never the working
+  lines, never zero) until a compatible ruleset is republished. Pair a rules
+  revert with a Hosting rollback, or prefer a compatible forward fix.
+- **Approved versions are never deleted** by any ruleset; a defective version
+  is superseded by approving a corrected one.
+
 ## Publishing Firestore Rules — Manual Process
 
 The rules source of truth is `frontend/firestore.rules`, but **there is no CLI

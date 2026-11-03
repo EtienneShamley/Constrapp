@@ -97,6 +97,17 @@ service cloud.firestore {
       return (pc is string && pc.matches('^[A-Z]{3}$')) ? pc
            : ((cc is string && cc.matches('^[A-Z]{3}$')) ? cc : 'AUD');
     }
+    // SHIELD 2B1 (ADR-70): the approved-budget POINTER and a budget approval HEADER.
+    function approvedBudgetPath(companyId, projectId) {
+      return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/approvedBudget/current;
+    }
+    function budgetApprovalPath(companyId, projectId, id) {
+      return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/budgetApprovals/$(id);
+    }
+    // The approve audience of a budget version: company_admin / project_manager (qs prepares only).
+    function budgetApprover(companyId) {
+      return sameCompany(companyId) && memberRole() in ['company_admin', 'project_manager'];
+    }
 
 
     // Membership documents — a user may READ THEIR OWN PROFILE AND NOTHING ELSE.
@@ -290,6 +301,216 @@ service cloud.firestore {
                   && request.resource.data.updatedBy == request.auth.uid
                   && request.resource.data.updatedAt == request.time;
 
+      allow delete: if false;
+    }
+
+    // Approved-budget POINTER — SHIELD 2B1 (ADR-70). ONE document per project
+    // (`current`) naming the ACTIVE approved budget version and the ORIGINAL;
+    // created by the FIRST approval and advanced ONLY by an approval, paired
+    // with the header through getAfter() in both directions. `versionCount`
+    // is EXACTLY +1 per approval — the common concurrency boundary. Reads:
+    // financial roles. Delete blocked. What rules cannot prove is DC44.
+    match /companies/{companyId}/projects/{projectId}/approvedBudget/current {
+      function pointerKeys() {
+        return request.resource.data.keys().hasOnly(['activeApprovalId', 'originalApprovalId', 'versionCount', 'approvedAt', 'approvedBy', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+            && request.resource.data.keys().hasAll(['activeApprovalId', 'originalApprovalId', 'versionCount', 'approvedAt', 'approvedBy', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']);
+      }
+      // The header this write names must be APPROVED in this same commit, by
+      // this caller, at this server time, as THIS version.
+      function pairedWithApproval() {
+        let h = getAfter(budgetApprovalPath(companyId, projectId, request.resource.data.activeApprovalId)).data;
+        return request.resource.data.activeApprovalId is string
+            && request.resource.data.activeApprovalId.size() > 0
+            && request.resource.data.versionCount is int
+            && request.resource.data.approvedBy == request.auth.uid
+            && request.resource.data.approvedAt == request.time
+            && updateStamped()
+            && h.status == 'approved'
+            && h.version == request.resource.data.versionCount
+            && h.approvedBy == request.auth.uid
+            && h.approvedAt == request.time;
+      }
+
+      allow read: if financialMember(companyId);
+
+      // The FIRST approval: version 1, the original IS the active version.
+      allow create: if budgetApprover(companyId)
+                  && pointerKeys()
+                  && pairedWithApproval()
+                  && request.resource.data.versionCount == 1
+                  && request.resource.data.originalApprovalId == request.resource.data.activeApprovalId
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time;
+
+      // A later approval: the count moves by EXACTLY one, the active id
+      // changes, the original and the provenance never move.
+      allow update: if budgetApprover(companyId)
+                  && pointerKeys()
+                  && pairedWithApproval()
+                  && changedKeys().hasOnly(['activeApprovalId', 'versionCount', 'approvedAt', 'approvedBy', 'updatedAt', 'updatedBy'])
+                  && request.resource.data.versionCount == resource.data.versionCount + 1
+                  && request.resource.data.activeApprovalId != resource.data.activeApprovalId;
+
+      allow delete: if false;
+    }
+
+    // Budget approval HEADERS — SHIELD 2B1 (ADR-70). The lifecycle record of
+    // one approved budget version: draft → approved | withdrawn, both
+    // TERMINAL (an approved version is never edited, withdrawn or deleted).
+    // Captured by any financial role WITH its snapshot in the same commit;
+    // APPROVED by company_admin / project_manager only, in the same commit
+    // as the pointer; a draft is withdrawn by an approver or its creator.
+    // `total` is a cross-check (rules cannot sum the entries); the app derives
+    // the approved figure from the snapshot. DC44 lists the client-only gaps.
+    match /companies/{companyId}/projects/{projectId}/budgetApprovals/{approvalId} {
+      function snapshotPath() {
+        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/budgetApprovalSnapshots/$(approvalId);
+      }
+      function exactKeys() {
+        return request.resource.data.keys().hasOnly(['reason', 'status', 'currency', 'entryCount', 'total', 'version', 'approvedAt', 'approvedBy', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+            && request.resource.data.keys().hasAll(['reason', 'status', 'currency', 'entryCount', 'total', 'version', 'approvedAt', 'approvedBy', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']);
+      }
+      // The captured identity no update of any kind may rewrite.
+      function corePreserved() {
+        return request.resource.data.reason == resource.data.reason
+            && request.resource.data.currency == resource.data.currency
+            && request.resource.data.entryCount == resource.data.entryCount
+            && request.resource.data.total == resource.data.total
+            && request.resource.data.createdAt == resource.data.createdAt
+            && request.resource.data.createdBy == resource.data.createdBy;
+      }
+
+      allow read: if financialMember(companyId);
+
+      // CAPTURE — born draft, revision 1, caller + server stamps, the currency
+      // pinned to the project's, with the snapshot written in the same commit
+      // by the same caller at the same server time and agreeing on count,
+      // total and currency (getAfter).
+      allow create: if financialMember(companyId)
+                  && exactKeys()
+                  && request.resource.data.reason is string
+                  && request.resource.data.reason.trim().size() > 0
+                  && request.resource.data.reason.size() <= 500
+                  && request.resource.data.status == 'draft'
+                  && request.resource.data.currency == resolvedCurrency(companyId, projectId)
+                  && request.resource.data.entryCount is int
+                  && request.resource.data.entryCount >= 1
+                  && request.resource.data.entryCount <= 2000
+                  && request.resource.data.total is number
+                  && request.resource.data.total >= 0
+                  && request.resource.data.version == null
+                  && request.resource.data.approvedAt == null
+                  && request.resource.data.approvedBy == null
+                  && request.resource.data.withdrawnAt == null
+                  && request.resource.data.withdrawnBy == null
+                  && request.resource.data.withdrawReason == ''
+                  && request.resource.data.revision == 1
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && updateStamped()
+                  && getAfter(snapshotPath()).data.entryCount == request.resource.data.entryCount
+                  && getAfter(snapshotPath()).data.total == request.resource.data.total
+                  && getAfter(snapshotPath()).data.currency == request.resource.data.currency
+                  && getAfter(snapshotPath()).data.capturedBy == request.auth.uid
+                  && getAfter(snapshotPath()).data.capturedAt == request.time;
+
+      // The ONLY updates, each from DRAFT, stamps-only, revision + 1:
+      //   (a) APPROVE — an approver flips the draft to approved with its
+      //       version, paired with the pointer written in this commit (it
+      //       names THIS header, at THIS version, at this server time).
+      //   (b) WITHDRAW — an approver or the capturer, with a reason.
+      allow update: if sameCompany(companyId) && corePreserved() && updateStamped() && revisionIncremented()
+                  && resource.data.status == 'draft'
+                  && (
+                    (
+                      budgetApprover(companyId)
+                      && request.resource.data.status == 'approved'
+                      && changedKeys().hasOnly(['status', 'version', 'approvedAt', 'approvedBy', 'revision', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.approvedBy == request.auth.uid
+                      && request.resource.data.approvedAt == request.time
+                      && request.resource.data.version is int
+                      && request.resource.data.version >= 1
+                      && getAfter(approvedBudgetPath(companyId, projectId)).data.activeApprovalId == approvalId
+                      && getAfter(approvedBudgetPath(companyId, projectId)).data.versionCount == request.resource.data.version
+                      && getAfter(approvedBudgetPath(companyId, projectId)).data.approvedAt == request.time
+                    )
+                    ||
+                    (
+                      (budgetApprover(companyId) || (financialMember(companyId) && resource.data.createdBy == request.auth.uid))
+                      && request.resource.data.status == 'withdrawn'
+                      && changedKeys().hasOnly(['status', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'revision', 'updatedAt', 'updatedBy'])
+                      && request.resource.data.withdrawnBy == request.auth.uid
+                      && request.resource.data.withdrawnAt == request.time
+                      && request.resource.data.withdrawReason is string
+                      && request.resource.data.withdrawReason.trim().size() > 0
+                      && request.resource.data.withdrawReason.size() <= 500
+                    )
+                  );
+
+      allow delete: if false;
+    }
+
+    // Budget approval SNAPSHOTS — SHIELD 2B1 (ADR-70). ONE immutable document
+    // per approval: every working budget LINE as captured (lineId,
+    // costCodeId, costCodeName, budgeted). Create-only, paired with its
+    // draft header; never updated, never deleted. Rules pin the list size,
+    // the count, and the FIRST and LAST entries — shape, a real budget line
+    // of THIS project with the SAME cost code and amount (get), and a real
+    // company cost code (exists). Middle entries are client-validated (DC44).
+    match /companies/{companyId}/projects/{projectId}/budgetApprovalSnapshots/{approvalId} {
+      function headerPath() {
+        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/budgetApprovals/$(approvalId);
+      }
+      function entryValid(e) {
+        let line = get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/budgetLines/$(e.lineId)).data;
+        return e is map
+            && e.keys().hasOnly(['lineId', 'costCodeId', 'costCodeName', 'budgeted'])
+            && e.keys().hasAll(['lineId', 'costCodeId', 'costCodeName', 'budgeted'])
+            && e.lineId is string
+            && e.lineId.size() > 0
+            && e.costCodeId is string
+            && e.costCodeId.size() > 0
+            && e.costCodeName is string
+            && e.costCodeName.size() <= 170
+            && e.budgeted is number
+            && e.budgeted >= 0
+            && line.costCodeId == e.costCodeId
+            && cents(line.budgeted) == cents(e.budgeted)
+            && exists(/databases/$(database)/documents/companies/$(companyId)/costCodes/$(e.costCodeId));
+      }
+      function entriesValid() {
+        let a = request.resource.data.entries;
+        return a is list
+            && a.size() >= 1
+            && a.size() <= 2000
+            && a.size() == request.resource.data.entryCount
+            && entryValid(a[0])
+            && entryValid(a[a.size() - 1]);
+      }
+
+      allow read: if financialMember(companyId);
+
+      // Created ONLY together with its draft header: same caller, same
+      // server time, same count / total / currency (getAfter).
+      allow create: if financialMember(companyId)
+                  && request.resource.data.keys().hasOnly(['entryCount', 'total', 'currency', 'capturedAt', 'capturedBy', 'entries'])
+                  && request.resource.data.keys().hasAll(['entryCount', 'total', 'currency', 'capturedAt', 'capturedBy', 'entries'])
+                  && request.resource.data.entryCount is int
+                  && request.resource.data.total is number
+                  && request.resource.data.total >= 0
+                  && request.resource.data.currency is string
+                  && request.resource.data.capturedBy == request.auth.uid
+                  && request.resource.data.capturedAt == request.time
+                  && entriesValid()
+                  && getAfter(headerPath()).data.status == 'draft'
+                  && getAfter(headerPath()).data.entryCount == request.resource.data.entryCount
+                  && getAfter(headerPath()).data.total == request.resource.data.total
+                  && getAfter(headerPath()).data.currency == request.resource.data.currency
+                  && getAfter(headerPath()).data.createdBy == request.auth.uid
+                  && getAfter(headerPath()).data.createdAt == request.time;
+
+      // IMMUTABLE. No update of any kind, no delete.
+      allow update: if false;
       allow delete: if false;
     }
 
@@ -1582,15 +1803,51 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Project Commercial Baseline — the Margin foundation inputs in ONE document
-    // with the deterministic id `baseline` (no other commercial/* id has a rule).
-    // Financial roles only — tighter than the member-readable project document,
-    // which is why it is not stored there. Delete blocked. Non-negative amounts
-    // and Original-Approved-Budget immutability stay client-only (TODO).
+    // Project Commercial Baseline — the CONTRACT REVENUE baseline (ADR-20): the
+    // Margin foundation inputs in ONE document with the deterministic id
+    // `baseline` (no other commercial/* id has a rule). Financial roles only —
+    // tighter than the member-readable project document. Delete blocked.
+    // SHIELD 2B1 (ADR-70) hardened the shape: exact keys, non-negative money,
+    // typed dates / client, caller + server stamps, immutable provenance — and
+    // the legacy `originalApprovedBudget` scalar FREEZES once an approved
+    // budget version exists (version 1's snapshot is then the original).
     match /companies/{companyId}/projects/{projectId}/commercial/baseline {
-      allow read, create, update: if request.auth != null
-                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      function baselineShape() {
+        let d = request.resource.data;
+        return d.keys().hasOnly(['originalContractValue', 'originalApprovedBudget', 'contractStartDate', 'contractCompletionDate', 'clientId', 'clientName', 'notes', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+            && d.originalContractValue is number
+            && d.originalContractValue >= 0
+            && (d.get('originalApprovedBudget', null) == null
+                || (d.originalApprovedBudget is number && d.originalApprovedBudget >= 0))
+            && (d.get('contractStartDate', null) == null || d.contractStartDate is timestamp)
+            && (d.get('contractCompletionDate', null) == null || d.contractCompletionDate is timestamp)
+            && (d.get('clientId', null) == null || (d.clientId is string && d.clientId.size() <= 200))
+            && (d.get('clientName', null) == null || (d.clientName is string && d.clientName.size() <= 200))
+            && d.get('notes', '') is string
+            && d.get('notes', '').size() <= 2000
+            && updateStamped();
+      }
+      // Once a budget version is approved, the legacy scalar is history: it
+      // may only stay what it was (null on a baseline created afterwards).
+      function legacyOriginalFrozen(previous) {
+        return !exists(approvedBudgetPath(companyId, projectId))
+            || request.resource.data.get('originalApprovedBudget', null) == previous;
+      }
+
+      allow read: if financialMember(companyId);
+
+      allow create: if financialMember(companyId)
+                  && baselineShape()
+                  && request.resource.data.createdBy == request.auth.uid
+                  && request.resource.data.createdAt == request.time
+                  && legacyOriginalFrozen(null);
+
+      allow update: if financialMember(companyId)
+                  && baselineShape()
+                  && request.resource.data.get('createdAt', null) == resource.data.get('createdAt', null)
+                  && request.resource.data.get('createdBy', null) == resource.data.get('createdBy', null)
+                  && legacyOriginalFrozen(resource.data.get('originalApprovedBudget', null));
+
       allow delete: if false;
     }
 

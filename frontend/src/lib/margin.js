@@ -140,11 +140,19 @@ export function isBaselineEstablished(baseline) {
 // APPLIED to a live PO commitment; with no register every applied variation
 // reads as an exception and lands in `unappliedSupplierVariations` — the
 // conservative (exposure) reading, never a silent zero.
-export function computeMargin({ baseline, variations = [], forecastFinalCost = 0, purchaseOrders = [] }) {
+// `originalApprovedBudget` (ADR-70) OVERRIDES the baseline's legacy scalar when
+// a formally approved budget exists: the caller passes version 1's snapshot
+// total (lib/budgetApproval.js → originalApprovedBudgetFor). `undefined` — the
+// default, and every pre-2B1 caller — keeps the baseline's own value, so
+// Original Planned Profit and Margin Movement read exactly as before until a
+// budget is approved. No other formula changes.
+export function computeMargin({ baseline, variations = [], forecastFinalCost = 0, purchaseOrders = [], originalApprovedBudget: originalOverride } = {}) {
   const originalContractValue = isBaselineEstablished(baseline)
     ? baseline.originalContractValue
     : null
-  const originalApprovedBudget = baseline?.originalApprovedBudget ?? null
+  const originalApprovedBudget = originalOverride !== undefined
+    ? originalOverride
+    : (baseline?.originalApprovedBudget ?? null)
 
   const approvedClientVariations = approvedClientVariationsTotal(variations)
   const pendingClientVariationExposure = pendingClientVariationExposureTotal(variations)
@@ -160,7 +168,14 @@ export function computeMargin({ baseline, variations = [], forecastFinalCost = 0
   const revenue = ccs // Forecast Revenue = Current Contract Sum in this foundation
   const ffc = roundMoney(safeNumber(forecastFinalCost))
   const profit = forecastGrossProfit(revenue, ffc)
-  const plannedProfit = originalPlannedProfit(originalContractValue, originalApprovedBudget)
+  // Original Planned Profit needs BOTH inputs: with no established contract
+  // value there is no planned profit (null → "—"), whatever the original
+  // budget. Through the baseline alone this case was unreachable (the budget
+  // lives on the same document); with an approved-version override (ADR-70)
+  // it is, and it fails closed rather than planning against a $0 contract.
+  const plannedProfit = originalContractValue === null
+    ? null
+    : originalPlannedProfit(originalContractValue, originalApprovedBudget)
 
   return {
     originalContractValue,

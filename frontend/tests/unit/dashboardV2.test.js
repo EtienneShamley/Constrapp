@@ -493,8 +493,11 @@ describe('roles: each child mounts only behind its own gate', () => {
     for (const f of DASHBOARD_FILES) {
       for (const m of stripComments(read(f)).matchAll(/\b(use[A-Z]\w+)\(/g)) hooks.add(m[1])
     }
+    // ADR-70 adds useApprovedBudget to the snapshot: the approved-budget
+    // pointer, active header and snapshot (plus version 1 for Margin
+    // Movement's original) — idle until a version exists.
     expect([...hooks].sort()).toEqual([
-      'useAuth', 'useBudgetLines', 'useCompany', 'useForecastLines', 'useLocalToday', 'useMemo', 'useNavigate',
+      'useApprovedBudget', 'useAuth', 'useBudgetLines', 'useCompany', 'useForecastLines', 'useLocalToday', 'useMemo', 'useNavigate',
       'useProfile', 'useProgressClaims', 'useProjectActivities', 'useProjectCommercial', 'useProjects',
       'usePurchaseOrders', 'useRef', 'useRetentionReleases', 'useSearchParams', 'useSupplierCreditNotes',
       'useSupplierInvoices', 'useSupplierPayments', 'useVariations',

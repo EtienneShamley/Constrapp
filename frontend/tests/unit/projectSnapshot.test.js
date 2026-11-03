@@ -534,7 +534,10 @@ describe('structure: role gate, no arithmetic, no writes, no chart library', () 
   it('the composition module imports only the selectors it carries', () => {
     const imports = [...snapshotLib.matchAll(/^import \{([^}]*)\} from '([^']+)'/gm)]
       .map(([, names, from]) => `${from}:${names.replace(/\s+/g, '')}`)
+    // ADR-70 adds the ONE budget-source adapter (lib/budgetApproval.js) — a
+    // selector it carries, not a second implementation of any figure.
     expect(imports.sort()).toEqual([
+      './budgetApproval:resolveBudgetSource,budgetLinesFor,originalApprovedBudgetFor,BUDGET_SOURCE',
       './margin:projectForecastTotals,computeMargin,isBaselineEstablished',
       './retention:releasedByInvoiceId',
       './supplierPayments:payablesSummary',

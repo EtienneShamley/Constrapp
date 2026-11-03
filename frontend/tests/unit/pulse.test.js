@@ -105,6 +105,22 @@ const SOURCES = {
     { id: 'bl2', costCodeId: 'cc2', budgeted: 500 },
     { id: 'bl5', costCodeId: 'cc5', budgeted: 300 },
   ],
+  // ADR-70: an APPROVED budget version whose amounts differ from the working
+  // lines (cc1 1100 vs 1000), so `approvedBudget` is the DECLARED budget source
+  // of the forecast indicators and the working lines are NOT (perturbation).
+  approvedBudget: {
+    pointer: { activeApprovalId: 'ba1', originalApprovalId: 'ba1', versionCount: 1 },
+    // cc10 exists only in the approved version (no working line, no forecast
+    // line), so the approved source also moves the row union and the
+    // incomplete-forecast caveat of the gross-profit indicator.
+    header: { id: 'ba1', status: 'approved', version: 1, entryCount: 4, total: 2100, currency: 'AUD', reason: 'Initial' },
+    snapshot: { id: 'ba1', entryCount: 4, total: 2100, currency: 'AUD', entries: [
+      { lineId: 'bl1', costCodeId: 'cc1', costCodeName: '03-100 — Concrete', budgeted: 1100 },
+      { lineId: 'bl2', costCodeId: 'cc2', costCodeName: '03-200 — Formwork', budgeted: 500 },
+      { lineId: 'bl5', costCodeId: 'cc5', costCodeName: '05-100 — Steel', budgeted: 300 },
+      { lineId: 'bl10', costCodeId: 'cc10', costCodeName: '10-100 — Landscaping', budgeted: 200 },
+    ] },
+  },
   purchaseOrders: [
     { id: 'po1', status: 'sent', lineItems: [
       { costCodeId: 'cc1', lineTotal: 800 },
@@ -185,6 +201,13 @@ const SOURCES = {
       { activityId: 'a6', name: 'Handover',  isMilestone: true,  plannedStart: '2026-06-20', plannedFinish: '2026-06-20', status: 'not_started', percentComplete: 0, revision: 1, sortOrder: 60, costCodeId: null },
     ],
   },
+}
+
+// The forecast row union the engine evaluates for the fixture (ADR-70): the
+// budget side is the APPROVED snapshot's lines, not the working register.
+const ROW_SOURCES = {
+  ...SOURCES,
+  budgetLines: SOURCES.approvedBudget.snapshot.entries.map(e => ({ id: e.lineId, costCodeId: e.costCodeId, costCodeName: e.costCodeName, budgeted: e.budgeted })),
 }
 
 const settled = (loading = false, error = false) => ({ loading, error })
@@ -359,11 +382,16 @@ describe('dependency isolation — each indicator waits on exactly the sources t
   }
 
   it('the forecast indicators declare the Dashboard\'s FORECAST_ROW_SOURCES; past due declares remainingPayable\'s sources', () => {
+    // ADR-70 — deliberate change, not drift: the budget side of the row union
+    // is the AUTHORITATIVE budget source (`approvedBudget`, which folds the
+    // working register's read state in while no version is approved), so the
+    // raw `budgetLines` entry is no longer a row source. The perturbation
+    // suite above proves the approved source moves these and the lines do not.
     expect(INDICATOR_DEPENDENCIES[INDICATOR.FORECAST_OVER_BUDGET]).toEqual(
-      ['budgetLines', 'purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes', 'variations', 'forecastLines'],
+      ['approvedBudget', 'purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes', 'variations', 'forecastLines'],
     )
     expect(INDICATOR_DEPENDENCIES[INDICATOR.NEGATIVE_GROSS_PROFIT]).toEqual(
-      ['baseline', 'budgetLines', 'purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes', 'variations', 'forecastLines'],
+      ['baseline', 'approvedBudget', 'purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes', 'variations', 'forecastLines'],
     )
     expect(INDICATOR_DEPENDENCIES[INDICATOR.PAST_DUE_SUPPLIER_INVOICES]).toEqual(
       ['supplierInvoices', 'supplierPayments', 'supplierCreditNotes', 'retentionReleases'],
@@ -376,7 +404,13 @@ describe('dependency isolation — each indicator waits on exactly the sources t
 // ── 3 · Financial consistency: PULSE figures ARE the selectors' ──────────────
 
 describe('financial consistency — every PULSE amount is an existing selector output', () => {
-  const { baseline, activities, supplierPayments, retentionReleases, ...forecastSrc } = SOURCES
+  const { baseline, activities, supplierPayments, retentionReleases, approvedBudget, ...rest } = SOURCES
+  // ADR-70: the budget side of the selectors is the APPROVED snapshot's lines
+  // (the fixture carries an approved version), in the budget-line shape.
+  const forecastSrc = {
+    ...rest,
+    budgetLines: approvedBudget.snapshot.entries.map(e => ({ id: e.lineId, costCodeId: e.costCodeId, costCodeName: e.costCodeName, budgeted: e.budgeted })),
+  }
   const totals = projectForecastTotals(forecastSrc)
   const margin = computeMargin({ baseline, variations: SOURCES.variations, forecastFinalCost: totals.forecastFinalCost })
   const ind = byId(run())
@@ -525,6 +559,8 @@ describe('indicator 1 — Forecast Final Cost exceeds Approved Budget', () => {
   // A fully forecast, within-budget project.
   const healthy = {
     ...SOURCES,
+    // No approved version (ADR-70): the WORKING budget is compared, labelled.
+    approvedBudget: null,
     budgetLines: [{ id: 'b', costCodeId: 'cc1', budgeted: 5000 }],
     purchaseOrders: [{ id: 'po', status: 'sent', lineItems: [{ costCodeId: 'cc1', lineTotal: 1000 }] }],
     progressClaims: [], supplierInvoices: [], supplierCreditNotes: [], variations: [],
@@ -550,10 +586,29 @@ describe('indicator 1 — Forecast Final Cost exceeds Approved Budget', () => {
     for (const r of ind.evidence) expect(unb).not.toContain(r.costCodeId)
   })
 
+  // `healthy` has NO approved version: the comparison uses the WORKING budget
+  // (ADR-70), which the indicator names and caveats on every state — the
+  // condition logic itself is unchanged.
   it('no issue when fully forecast and within budget (a genuine negative)', () => {
     const ind = get(id, healthy)
     expect(ind.state).toBe(PULSE_STATE.NO_ISSUE)
     expect(ind.values).toMatchObject({ approvedBudget: 5000, forecastFinalCost: 1500, varianceToBudget: 3500, unforecastedCount: 0 })
+    expect(ind.values.budgetSource).toBe('Working budget (not approved)')
+    expect(ind.headline).toContain('not approved')
+    expect(ind.caveats).toHaveLength(1)
+    expect(ind.caveats[0]).toMatch(/No budget version has been approved/)
+  })
+
+  it('with an APPROVED version the comparison names it, carries no working caveat, and uses the approved amounts', () => {
+    const approved = {
+      pointer: { activeApprovalId: 'ba9', originalApprovalId: 'ba9', versionCount: 1 },
+      header: { id: 'ba9', status: 'approved', version: 1, entryCount: 1, total: 1400, currency: 'AUD', reason: 'Initial' },
+      snapshot: { id: 'ba9', entryCount: 1, total: 1400, currency: 'AUD', entries: [{ lineId: 'b', costCodeId: 'cc1', costCodeName: 'x', budgeted: 1400 }] },
+    }
+    const ind = get(id, { ...healthy, approvedBudget: approved })
+    expect(ind.state).toBe(PULSE_STATE.FINDING) // FFC 1500 > approved 1400, though the working line says 5000
+    expect(ind.values).toMatchObject({ approvedBudget: 1400, varianceToBudget: -100, budgetSource: 'Approved Budget · version 1' })
+    expect(ind.headline).toBe('Forecast Final Cost is over the Approved Budget')
     expect(ind.caveats).toEqual([])
   })
 
@@ -562,7 +617,7 @@ describe('indicator 1 — Forecast Final Cost exceeds Approved Budget', () => {
     expect(ind.state).toBe(PULSE_STATE.NEEDS_DATA)
     expect(ind.reason).toBe(NEEDS_DATA_REASON.FORECAST_INCOMPLETE)
     expect(ind.values.unforecastedCount).toBe(1)
-    expect(ind.caveats).toHaveLength(1)
+    expect(ind.caveats).toHaveLength(2) // the working-budget caveat + the incomplete-forecast caveat
   })
 
   it('a saved 0 IS a forecast: zero CTC everywhere → no issue, not needs data', () => {
@@ -575,7 +630,8 @@ describe('indicator 1 — Forecast Final Cost exceeds Approved Budget', () => {
     const ind = get(id, { ...healthy, budgetLines: [{ id: 'b', costCodeId: 'cc1', budgeted: 900 }], forecastLines: [] })
     expect(ind.state).toBe(PULSE_STATE.FINDING)
     expect(ind.values.varianceToBudget).toBe(-100)
-    expect(ind.caveats).toHaveLength(1)
+    expect(ind.caveats).toHaveLength(2) // the working-budget caveat + the incomplete-forecast caveat
+    expect(ind.caveats[1]).toMatch(/no saved forecast/)
   })
 
   it('needs data (no budget) when there are no budget lines', () => {
@@ -627,7 +683,7 @@ describe('indicator 2 — cost codes not yet forecast', () => {
   })
 
   it('no issue once every row has a saved input — a saved 0 counts', () => {
-    const rows = projectForecastRows(SOURCES)
+    const rows = projectForecastRows(ROW_SOURCES)
     const forecastLines = rows.map(r => ({ id: r.costCodeId, costCodeId: r.costCodeId, uncommittedCostToComplete: 0 }))
     const ind = get(id, { ...SOURCES, forecastLines })
     expect(ind.state).toBe(PULSE_STATE.NO_ISSUE)
@@ -636,7 +692,7 @@ describe('indicator 2 — cost codes not yet forecast', () => {
   })
 
   it('needs data when the project has no cost-code rows at all', () => {
-    const empty = { ...SOURCES, budgetLines: [], purchaseOrders: [], progressClaims: [], supplierInvoices: [], supplierCreditNotes: [], variations: [], forecastLines: [] }
+    const empty = { ...SOURCES, approvedBudget: null, budgetLines: [], purchaseOrders: [], progressClaims: [], supplierInvoices: [], supplierCreditNotes: [], variations: [], forecastLines: [] }
     const ind = get(id, empty)
     expect(ind.state).toBe(PULSE_STATE.NEEDS_DATA)
     expect(ind.reason).toBe(NEEDS_DATA_REASON.NO_COST_CODES)
@@ -649,7 +705,7 @@ describe('indicator 2 — cost codes not yet forecast', () => {
 describe('indicator 3 — Forecast Gross Profit is negative', () => {
   const id = INDICATOR.NEGATIVE_GROSS_PROFIT
   const fullyForecast = () => {
-    const rows = projectForecastRows(SOURCES)
+    const rows = projectForecastRows(ROW_SOURCES)
     return rows.map(r => ({ id: r.costCodeId, costCodeId: r.costCodeId, uncommittedCostToComplete: r.storedUncommittedCostToComplete ?? 0 }))
   }
 
@@ -1017,8 +1073,10 @@ describe('ProjectPulse page — role gate, subscriptions, isolation', () => {
   it('the workspace mounts exactly the thirteen PULSE sources plus the acknowledgement subscription, each for the given project, and no other subscription', () => {
     const hooks = [...workspace.matchAll(/\buse([A-Z]\w+)\(([^)]*)\)/g)].map(m => [m[1], m[2]])
     const subs = hooks.filter(([n]) => !['Memo', 'LocalToday'].includes(n))
+    // ADR-70 adds useApprovedBudget — the pointer / header / snapshot trio of
+    // the approved budget, idle until a version exists.
     expect(subs.map(([n]) => n).sort()).toEqual([
-      'BudgetLines', 'ForecastLines', 'ProgrammeBaselineSnapshot', 'ProgrammeBaselines', 'ProgressClaims',
+      'ApprovedBudget', 'BudgetLines', 'ForecastLines', 'ProgrammeBaselineSnapshot', 'ProgrammeBaselines', 'ProgressClaims',
       'ProjectActivities', 'ProjectCommercial', 'PulseAcknowledgements',
       'PurchaseOrders', 'RetentionReleases', 'SupplierCreditNotes', 'SupplierInvoices', 'SupplierPayments', 'Variations',
     ])

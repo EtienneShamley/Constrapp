@@ -130,7 +130,13 @@ describe('ProjectBoq: the Approved Budget never prints a loading zero', () => {
 
   it('passes the budget loading flag into SummaryCards', () => {
     expect(src).toContain('const { budgetLines, budgetLinesLoading, budgetLinesError } = useBudgetLines(mid)')
-    expect(src).toContain('budgetLoading={budgetLinesLoading}')
+    // ADR-70: the flag is the AUTHORITATIVE budget source's folded state
+    // (approved pointer / header / snapshot, or the working lines while no
+    // version is approved — lib/budgetApproval.js → budgetSourceState).
+    expect(src).toContain('const { loading: approvedBudgetLoading, error: approvedBudgetError } = budgetSourceState(budgetSource)')
+    expect(src).toContain('budgetLoading={approvedBudgetLoading}')
+    expect(src).toContain('budgetUnavailable={approvedBudgetError}')
+    expect(src).not.toContain('budgetLoading={budgetLinesLoading}')
     expect(src).toMatch(/function SummaryCards\(\{[^}]*budgetLoading[^}]*\}\)/)
   })
 

@@ -8,6 +8,10 @@ import { useAuth } from '../../hooks/useAuth'
 import { useProfile } from '../../hooks/useProfile'
 import { useProjectCommercial } from '../../hooks/useProjectCommercial'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
+import { useApprovedBudget } from '../../hooks/useApprovedBudget'
+import {
+  resolveBudgetSource, budgetSourceState, budgetLinesFor, originalApprovedBudgetFor, BUDGET_SOURCE,
+} from '../../lib/budgetApproval'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
@@ -79,7 +83,7 @@ function ReconRow({ label, cell, op, strong, danger, muted }) {
 // form would otherwise open blank and an upsert would overwrite the stored
 // baseline with those blanks — and while contacts are still loading. The live
 // Approved Budget is offered only once budget lines have settled cleanly.
-function BaselineForm({ baseline, saveBaseline, clientContacts, contactsLoading, contactsError = false, currentApprovedBudget, budgetReady, budgetUnavailable, currencyCode, currentUserId, currentUserName, baselineError }) {
+function BaselineForm({ baseline, saveBaseline, clientContacts, contactsLoading, contactsError = false, currentApprovedBudget, budgetReady, budgetUnavailable, budgetApproved = false, originalApproved = null, budgetVersion = null, currencyCode, currentUserId, currentUserName, baselineError }) {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const [form, setForm] = useState(() => ({
@@ -175,28 +179,53 @@ function BaselineForm({ baseline, saveBaseline, clientContacts, contactsLoading,
 
         <div>
           <label className={labelCls}>Original Approved Budget (ex-GST)</label>
-          <input
-            type="number" min="0" step="any"
-            className={inputCls}
-            placeholder="Not established"
-            value={form.oab}
-            onChange={setField('oab')}
-          />
-          <p className="m-0 mt-1 text-[11px] text-brand-muted">
-            Current Approved Budget (live):{' '}
-            <span className={`font-semibold ${budgetUnavailable ? 'text-brand-amber' : 'text-brand-text'}`}>
-              {budgetReady ? money(currentApprovedBudget) : budgetUnavailable ? 'Unavailable' : '—'}
-            </span>{' '}
-            <button
-              type="button"
-              onClick={useCurrentBudget}
-              disabled={!budgetReady}
-              className="text-brand-accent hover:underline cursor-pointer disabled:text-brand-muted disabled:no-underline disabled:cursor-not-allowed"
-            >
-              Use current approved budget
-            </button>
-            . Blank leaves the original budget baseline not established. Stays editable (server-enforced immutability is deferred).
-          </p>
+          {budgetApproved ? (
+            <>
+              {/* ADR-70: once a budget version is approved, the original IS
+                  version 1's immutable snapshot. The legacy scalar below is
+                  shown as history and is no longer offered for editing; the
+                  rules also freeze it while an approved version exists. */}
+              <p className="m-0 text-[13px] font-semibold text-brand-text">
+                {typeof originalApproved === 'number' ? money(originalApproved) : '—'}
+              </p>
+              <p className="m-0 mt-1 text-[11px] text-brand-muted">
+                From Approved Budget version 1 (immutable). Current approved version {budgetVersion}:{' '}
+                <span className="font-semibold text-brand-text">{budgetReady ? money(currentApprovedBudget) : '—'}</span>.
+                {form.oab.trim() !== '' && typeof originalApproved === 'number' && Number(form.oab) !== originalApproved && (
+                  <span className="block mt-0.5 text-brand-amber">
+                    A legacy original budget entry of {money(Number(form.oab))} was recorded before formal approval; it is kept as
+                    history and no longer used.
+                  </span>
+                )}
+              </p>
+            </>
+          ) : (
+            <>
+              <input
+                type="number" min="0" step="any"
+                className={inputCls}
+                placeholder="Not established"
+                value={form.oab}
+                onChange={setField('oab')}
+              />
+              <p className="m-0 mt-1 text-[11px] text-brand-muted">
+                Working budget (not approved):{' '}
+                <span className={`font-semibold ${budgetUnavailable ? 'text-brand-amber' : 'text-brand-text'}`}>
+                  {budgetReady ? money(currentApprovedBudget) : budgetUnavailable ? 'Unavailable' : '—'}
+                </span>{' '}
+                <button
+                  type="button"
+                  onClick={useCurrentBudget}
+                  disabled={!budgetReady}
+                  className="text-brand-accent hover:underline cursor-pointer disabled:text-brand-muted disabled:no-underline disabled:cursor-not-allowed"
+                >
+                  Use working budget
+                </button>
+                . A legacy entry: blank leaves the original budget not established, and it stays editable until a budget
+                version is approved on the Budget tab — approval makes version 1 the original and freezes this entry.
+              </p>
+            </>
+          )}
         </div>
 
         <div>
@@ -292,6 +321,16 @@ function CommercialWorkspace({ projectId, currencyCode }) {
 
   const { baseline, baselineLoading, baselineError, saveBaseline }                    = useProjectCommercial(projectId)
   const { budgetLines, budgetLinesLoading, budgetLinesError }                         = useBudgetLines(projectId)
+  // ADR-70: THE budget source (with version 1 for the Original Approved
+  // Budget) — the approved snapshot when a version is approved, the working
+  // register (labelled unapproved) until then.
+  const { approvedBudget }                                                            = useApprovedBudget(projectId, { original: true })
+  const budgetSource = useMemo(
+    () => resolveBudgetSource({ approvedBudget, budgetLines, budgetLinesLoading, budgetLinesError, currencyCode }),
+    [approvedBudget, budgetLines, budgetLinesLoading, budgetLinesError, currencyCode],
+  )
+  const { loading: approvedBudgetLoading, error: approvedBudgetError } = budgetSourceState(budgetSource)
+  const budgetApproved = budgetSource.kind === BUDGET_SOURCE.APPROVED
   const { costCodes }                                                                 = useCostCodes()
   const { purchaseOrders, purchaseOrdersLoading, purchaseOrdersError }                = usePurchaseOrders(projectId)
   const { progressClaims, progressClaimsLoading, progressClaimsError }                = useProgressClaims(projectId)
@@ -301,21 +340,28 @@ function CommercialWorkspace({ projectId, currencyCode }) {
   const { forecastLines, forecastLinesLoading, forecastLinesError }                   = useForecastLines(projectId)
   const { contacts, contactsLoading, contactsError }                                  = useContacts()
 
-  // Current (live) Approved Budget = Σ budget-line budgeted. Backs the explicit
-  // "Use current approved budget" action; never auto-applied to the baseline.
+  // Current budget = THE budget source's total: the approved version when one
+  // exists, else Σ working budget lines. Backs the explicit "Use current
+  // budget" action on a legacy project; never auto-applied to the baseline.
   const currentApprovedBudget = useMemo(
-    () => roundMoney(budgetLines.reduce((s, l) => s + (Number(l.budgeted) || 0), 0)),
-    [budgetLines],
+    () => roundMoney(budgetLinesFor(budgetSource).reduce((s, l) => s + (Number(l.budgeted) || 0), 0)),
+    [budgetSource],
   )
 
   const forecastTotals = useMemo(
-    () => projectForecastTotals({ costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines }),
-    [costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines],
+    () => projectForecastTotals({ costCodes, budgetLines: budgetLinesFor(budgetSource), purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines }),
+    [costCodes, budgetSource, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines],
   )
 
+  // Original Planned Profit / Margin Movement read version 1's immutable total
+  // once a budget is approved (originalApprovedBudgetFor); the legacy baseline
+  // scalar only until then.
   const m = useMemo(
-    () => computeMargin({ baseline, variations, forecastFinalCost: forecastTotals.forecastFinalCost, purchaseOrders }),
-    [baseline, variations, forecastTotals.forecastFinalCost, purchaseOrders],
+    () => computeMargin({
+      baseline, variations, forecastFinalCost: forecastTotals.forecastFinalCost, purchaseOrders,
+      originalApprovedBudget: originalApprovedBudgetFor(budgetSource),
+    }),
+    [baseline, variations, forecastTotals.forecastFinalCost, purchaseOrders, budgetSource],
   )
 
   const clientContacts = useMemo(
@@ -333,6 +379,7 @@ function CommercialWorkspace({ projectId, currencyCode }) {
   const sourceStates = {
     baseline:            { loading: baselineLoading,            error: baselineError },
     budgetLines:         { loading: budgetLinesLoading,         error: budgetLinesError },
+    approvedBudget:      { loading: approvedBudgetLoading,      error: approvedBudgetError },
     purchaseOrders:      { loading: purchaseOrdersLoading,      error: purchaseOrdersError },
     progressClaims:      { loading: progressClaimsLoading,      error: progressClaimsError },
     supplierInvoices:    { loading: supplierInvoicesLoading,    error: supplierInvoicesError },
@@ -374,7 +421,7 @@ function CommercialWorkspace({ projectId, currencyCode }) {
   const psvCell      = show('supplierVariationExposure', m.pendingSupplierVariationExposure)
 
   const pageSources = figureState(Object.keys(sourceStates), sourceStates)
-  const budgetState = figureState(['budgetLines'], sourceStates)
+  const budgetState = figureState(['approvedBudget'], sourceStates)
 
   // A key tied to the last-saved time remounts the form on a fresh save while
   // preserving unsaved edits between saves.
@@ -405,7 +452,7 @@ function CommercialWorkspace({ projectId, currencyCode }) {
           <Metric label="Forecast Margin %" cell={marginCell} danger={negative(marginCell, m.forecastMarginPct)} />
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5 mt-4 pt-4 border-t border-brand-border">
-          <Metric label="Original Approved Budget" cell={oabCell} help="Baseline (blank = not established)" />
+          <Metric label="Original Approved Budget" cell={oabCell} help={budgetApproved ? 'Approved Budget version 1 (immutable)' : 'Legacy entry — no approved budget version yet (blank = not established)'} />
           <Metric label="Original Planned Profit" cell={oppCell} danger={negative(oppCell, m.originalPlannedProfit)} />
           <Metric label="Original Planned Margin %" cell={opmCell} danger={negative(opmCell, m.originalPlannedMarginPct)} />
           <Metric label="Margin Movement" cell={movementCell} help="Forecast vs original planned profit" danger={negative(movementCell, m.marginMovement)} />
@@ -492,6 +539,9 @@ function CommercialWorkspace({ projectId, currencyCode }) {
         currentApprovedBudget={currentApprovedBudget}
         budgetReady={budgetState.state === FIGURE_STATE.READY}
         budgetUnavailable={budgetState.state === FIGURE_STATE.UNAVAILABLE}
+        budgetApproved={budgetApproved}
+        originalApproved={budgetApproved ? budgetSource.originalTotal : null}
+        budgetVersion={budgetSource.version}
         currentUserId={user?.uid}
         currentUserName={profile?.name}
         baselineError={baselineError}

@@ -7,6 +7,8 @@ import { formatCurrency, formatDate } from '../../lib/formatters'
 import { useAuth } from '../../hooks/useAuth'
 import { useProfile } from '../../hooks/useProfile'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
+import { useApprovedBudget } from '../../hooks/useApprovedBudget'
+import { resolveBudgetSource, budgetSourceState, budgetLinesFor, BUDGET_SOURCE } from '../../lib/budgetApproval'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
@@ -60,11 +62,14 @@ function Figure({ label, figure, money, help, dangerWhenNegative = false }) {
 // `figures` come from lib/projectSnapshot.js → availableFigure, each gated on
 // the sources its selector actually reads (FIGURE_DEPENDENCIES) — so one failed
 // source never hides an unrelated card.
-function SummaryCards({ figures, currencyCode }) {
+function SummaryCards({ figures, currencyCode, budgetApproved = false, budgetVersion = null }) {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const core = [
-    { label: 'Approved Budget',     figure: figures.budgeted },
+    // ADR-70: the label names the SOURCE — the approved version, or the
+    // legacy working register, never presented as approved.
+    { label: budgetApproved ? 'Approved Budget' : 'Working Budget', figure: figures.budgeted,
+      help: budgetApproved ? `Approved version ${budgetVersion}` : 'Not approved · Σ budget lines' },
     { label: 'Actual',              figure: figures.actual,             help: 'Cost to Date' },
     { label: 'Remaining Committed', figure: figures.remainingCommitted },
     { label: 'Forecast Final Cost', figure: figures.forecastFinalCost,  help: 'Estimate at Completion (EAC)' },
@@ -143,6 +148,15 @@ function ForecastWorkspace({ projectId, currencyCode }) {
   const { user }    = useAuth()
   const { profile } = useProfile()
   const { budgetLines, budgetLinesLoading, budgetLinesError }                         = useBudgetLines(projectId)
+  // ADR-70: THE budget source — the approved snapshot's lines when a version
+  // is approved, the working register (labelled unapproved) until then.
+  const { approvedBudget }                                                            = useApprovedBudget(projectId)
+  const budgetSource = useMemo(
+    () => resolveBudgetSource({ approvedBudget, budgetLines, budgetLinesLoading, budgetLinesError, currencyCode }),
+    [approvedBudget, budgetLines, budgetLinesLoading, budgetLinesError, currencyCode],
+  )
+  const { loading: approvedBudgetLoading, error: approvedBudgetError } = budgetSourceState(budgetSource)
+  const budgetApproved = budgetSource.kind === BUDGET_SOURCE.APPROVED
   const { costCodes, costCodesLoading, costCodesError }                               = useCostCodes()
   const { purchaseOrders, purchaseOrdersLoading, purchaseOrdersError }                = usePurchaseOrders(projectId)
   const { progressClaims, progressClaimsLoading, progressClaimsError }                = useProgressClaims(projectId)
@@ -155,6 +169,7 @@ function ForecastWorkspace({ projectId, currencyCode }) {
   // shape (ADR-42), so availability is decided by the same figureState.
   const sourceStates = {
     budgetLines:         { loading: budgetLinesLoading,         error: budgetLinesError },
+    approvedBudget:      { loading: approvedBudgetLoading,      error: approvedBudgetError },
     purchaseOrders:      { loading: purchaseOrdersLoading,      error: purchaseOrdersError },
     progressClaims:      { loading: progressClaimsLoading,      error: progressClaimsError },
     supplierInvoices:    { loading: supplierInvoicesLoading,    error: supplierInvoicesError },
@@ -177,9 +192,11 @@ function ForecastWorkspace({ projectId, currencyCode }) {
   const [search, setSearch]       = useState('')
   const [filter, setFilter]       = useState('all')
 
+  // The budget side of the row union is THE budget source (ADR-70), never
+  // the working lines directly.
   const baseRows = useMemo(
-    () => buildForecastRows({ costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines }),
-    [costCodes, budgetLines, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines],
+    () => buildForecastRows({ costCodes, budgetLines: budgetLinesFor(budgetSource), purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines }),
+    [costCodes, budgetSource, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes, variations, forecastLines],
   )
 
   // Overlay unsaved edits and compute the input-dependent outputs from the
@@ -332,7 +349,7 @@ function ForecastWorkspace({ projectId, currencyCode }) {
           </p>
         </Card>
       )}
-      <SummaryCards figures={figures} currencyCode={currencyCode} />
+      <SummaryCards figures={figures} currencyCode={currencyCode} budgetApproved={budgetApproved} budgetVersion={budgetSource.version} />
 
       {/* Toolbar: unforecasted count + save-all */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3.5">

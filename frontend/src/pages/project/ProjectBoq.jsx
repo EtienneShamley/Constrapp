@@ -9,6 +9,8 @@ import { useProfile } from '../../hooks/useProfile'
 import { useBoqItems } from '../../hooks/useBoqItems'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
+import { useApprovedBudget } from '../../hooks/useApprovedBudget'
+import { resolveBudgetSource, budgetSourceState, budgetLinesFor, BUDGET_SOURCE } from '../../lib/budgetApproval'
 import { useDrawings } from '../../hooks/useDrawings'
 import { useTakeoffPages, useTakeoffMeasurements } from '../../hooks/useTakeoff'
 import { isFinancialRole } from '../../lib/margin'
@@ -48,7 +50,7 @@ const tdCls = 'px-3 py-3 text-[13px] text-brand-text whitespace-nowrap'
 // arithmetically 0 while an unsettled subscription means "not known yet". Only
 // the FAILED read carries the red unavailable sub-line; a settled budget of
 // genuinely nil still renders a real 0.
-function SummaryCards({ totals, budgetTotal, budgetLoading, budgetUnavailable, variance, currencyCode }) {
+function SummaryCards({ totals, budgetTotal, budgetLoading, budgetUnavailable, budgetApproved = false, budgetVersion = null, variance, currencyCode }) {
   const money = (n) => formatCurrency(n, currencyCode)
 
   return (
@@ -60,9 +62,14 @@ function SummaryCards({ totals, budgetTotal, budgetLoading, budgetUnavailable, v
           <p className="m-0 mt-0.5 text-[10.5px] text-brand-muted">Ex-GST · {totals.pricedCount} of {totals.itemCount} items priced</p>
         </div>
         <div>
-          <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Approved Budget</p>
+          {/* ADR-70: the label names the SOURCE — the approved version, or the
+              legacy working register, never presented as approved. */}
+          <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">{budgetApproved ? 'Approved Budget' : 'Working Budget'}</p>
           <p className="text-lg font-bold text-brand-text">{budgetUnavailable || budgetLoading ? '—' : money(budgetTotal)}</p>
           {budgetUnavailable && <p className="m-0 mt-0.5 text-[10.5px] text-brand-red">Unavailable — budget failed to load</p>}
+          {!budgetUnavailable && !budgetLoading && (
+            <p className="m-0 mt-0.5 text-[10.5px] text-brand-muted">{budgetApproved ? `Approved version ${budgetVersion}` : 'Not approved · Σ budget lines'}</p>
+          )}
         </div>
         <div>
           <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1">Variance to Budget</p>
@@ -167,6 +174,17 @@ export default function ProjectBoq() {
   } = useBoqItems(mid)
   const { costCodes, costCodesLoading, costCodesError } = useCostCodes()
   const { budgetLines, budgetLinesLoading, budgetLinesError } = useBudgetLines(mid)
+  // ADR-70: THE budget source — the approved snapshot when a version is
+  // approved, the working register (labelled unapproved) until then; its
+  // folded state replaces the raw budget-lines flags below.
+  const { approvedBudget } = useApprovedBudget(mid)
+  const budgetSource = useMemo(
+    () => resolveBudgetSource({ approvedBudget, budgetLines, budgetLinesLoading, budgetLinesError, currencyCode }),
+    [approvedBudget, budgetLines, budgetLinesLoading, budgetLinesError, currencyCode],
+  )
+  const { loading: approvedBudgetLoading, error: approvedBudgetError } = budgetSourceState(budgetSource)
+  const budgetApproved = budgetSource.kind === BUDGET_SOURCE.APPROVED
+  const budgetSourceLines = budgetLinesFor(budgetSource)
   // Quant 1B sources (ADR-52) — read-only here; same three roles as the BOQ.
   const { takeoffMeasurements, takeoffMeasurementsLoading, takeoffMeasurementsError } = useTakeoffMeasurements(mid)
   const { takeoffPages, takeoffPagesLoading, takeoffPagesError } = useTakeoffPages(mid)
@@ -199,11 +217,11 @@ export default function ProjectBoq() {
   const voided = useMemo(() => sortBoqItems(voidBoqItems(boqItems)), [boqItems])
 
   const totals = useMemo(() => boqTotals(boqItems), [boqItems])
-  const budgetTotal = useMemo(() => budgetedTotal(budgetLines), [budgetLines])
+  const budgetTotal = useMemo(() => budgetedTotal(budgetSourceLines), [budgetSourceLines])
   const variance = boqVarianceToBudget(budgetTotal, totals)
   const comparisonRows = useMemo(
-    () => boqVsBudgetRows({ costCodes, boqItems, budgetLines }),
-    [costCodes, boqItems, budgetLines],
+    () => boqVsBudgetRows({ costCodes, boqItems, budgetLines: budgetSourceLines }),
+    [costCodes, boqItems, budgetSourceLines],
   )
 
   // A FAILED cost-code read is reported, never read as "no cost codes" (ADR-55).
@@ -337,8 +355,10 @@ export default function ProjectBoq() {
         <SummaryCards
           totals={totals}
           budgetTotal={budgetTotal}
-          budgetLoading={budgetLinesLoading}
-          budgetUnavailable={budgetLinesError}
+          budgetLoading={approvedBudgetLoading}
+          budgetApproved={budgetApproved}
+          budgetVersion={budgetSource.version}
+          budgetUnavailable={approvedBudgetError}
           variance={variance}
           currencyCode={currencyCode}
         />
@@ -394,7 +414,7 @@ export default function ProjectBoq() {
 
       {/* ── BOQ vs Budget ─────────────────────────────────────────────────── */}
       {!boqItemsError && (
-        <BudgetComparison rows={comparisonRows} budgetUnavailable={budgetLinesError} currencyCode={currencyCode} />
+        <BudgetComparison rows={comparisonRows} budgetUnavailable={approvedBudgetError} currencyCode={currencyCode} />
       )}
 
       {/* ── Modals ────────────────────────────────────────────────────────── */}
