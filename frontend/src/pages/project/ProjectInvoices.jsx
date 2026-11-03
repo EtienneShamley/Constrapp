@@ -12,7 +12,8 @@ import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { useContacts } from '../../hooks/useContacts'
 import { useRetentionReleases } from '../../hooks/useRetentionReleases'
 import { releasedByInvoiceId } from '../../lib/retention'
-import { CLAIM_STATUS } from '../../lib/progressClaims'
+import { CLAIM_STATUS, isClaimInvoiceable, claimInvoiceLink, CLAIM_INVOICE_LINK } from '../../lib/progressClaims'
+import { SupplierInvoiceWriteError, SI_WRITE_ERROR } from '../../lib/supplierInvoiceActions'
 import { isVariationOriginLine } from '../../lib/sourceLine'
 import { directInvoiceConflictError, mixedModePoLineConflicts, mixedModeOverlapTotal } from '../../lib/poLineRecognition'
 import {
@@ -125,7 +126,7 @@ function TaxSelect({ value, onChange }) {
 //
 // Line building and validation are the shared pure helpers in
 // lib/supplierInvoices.js so the two modes cannot drift.
-function SupplierInvoiceEditorModal({
+function SupplierInvoiceEditorModal({ onShowInvoice = () => {}, legacyClaimCount = 0,
   invoice = null, livePo = null,
   invoiceablePOs, invoiceableClaims, purchaseOrders, progressClaims = [], supplierInvoices, contacts,
   currencyCode, onClose, onSave,
@@ -153,6 +154,8 @@ function SupplierInvoiceEditorModal({
     (isEdit ? (invoice.lineItems ?? []).map(li => invoiceLineToForm(li).taxCode) : []))
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState(null)
+  // The invoice an ALREADY_INVOICED outcome names (ADR-68) — shown, never "created".
+  const [linkedInvoiceId, setLinkedInvoiceId] = useState(null)
 
   // Resolve the selected source document and its supplier snapshot. CREATE only:
   // in EDIT every value rendered is already snapshotted on the invoice.
@@ -370,6 +373,9 @@ function SupplierInvoiceEditorModal({
           supplierName,
           poId:     po ? po.id : (claim ? claim.poId : null),
           poNumber: po ? po.poNumber : (claim ? claim.poNumber : null),
+          // SHIELD 2A (ADR-68): the reviewed claim itself — the create
+          // transaction re-reads its server copy and pairs the invoice with it.
+          claim:           claim ?? null,
           progressClaimId: claim ? claim.id : null,
           claimNumber:     claim ? claim.claimNumber : null,
           claimApprovedGst:   claim ? (claim.approvedGst ?? null) : null,
@@ -386,10 +392,17 @@ function SupplierInvoiceEditorModal({
       }
       onClose()
     } catch (err) {
+      // SHIELD 2A (ADR-68): the create transaction names its outcome. An
+      // ALREADY_INVOICED claim shows the LINKED record — it is never reported
+      // as created by this request (it may be a colleague's).
+      if (err instanceof SupplierInvoiceWriteError && err.kind === SI_WRITE_ERROR.ALREADY_INVOICED) {
+        setLinkedInvoiceId(err.linkedInvoiceId ?? null)
+      }
       setError(err?.message || 'Failed to save. Check your connection and try again.')
       setSaving(false)
     }
   }
+  const linkedInvoice = linkedInvoiceId ? supplierInvoices.find(i => i.id === linkedInvoiceId) ?? null : null
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -481,6 +494,12 @@ function SupplierInvoiceEditorModal({
                     <option key={c.id} value={c.id}>{c.claimNumber} — {c.poNumber} — {c.supplierName}</option>
                   ))}
                 </select>
+                {legacyClaimCount > 0 && (
+                  <p className="m-0 mt-1.5 text-[12px] text-brand-amber">
+                    {legacyClaimCount === 1 ? 'One approved claim was' : `${legacyClaimCount} approved claims were`} approved before claim-to-invoice
+                    pairing and must be reconciled on the Progress Claims tab before it can be invoiced.
+                  </p>
+                )}
               </div>
             ))}
             <div>
@@ -627,7 +646,23 @@ function SupplierInvoiceEditorModal({
 
           {(isEdit || hasSource) && <TotalsFooter totals={totals} currencyCode={currencyCode} />}
 
-          {error && <p className="text-[12px] text-brand-red">{error}</p>}
+          {error && (
+            <p className="text-[12px] text-brand-red">
+              {error}
+              {linkedInvoice && (
+                <>
+                  {' '}
+                  <button
+                    type="button"
+                    className="underline cursor-pointer text-brand-text min-h-[44px]"
+                    onClick={() => { onClose(); onShowInvoice(linkedInvoice) }}
+                  >
+                    Show {linkedInvoice.invoiceNumber}
+                  </button>
+                </>
+              )}
+            </p>
+          )}
 
           <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
             <Btn variant="ghost" type="button" onClick={onClose} sm disabled={saving}>Cancel</Btn>
@@ -1293,9 +1328,18 @@ export default function ProjectInvoices() {
   }
 
   const invoiceablePOs = purchaseOrders.filter(po => INVOICEABLE_PO_STATUSES.includes(po.status))
+  // SHIELD 2A (ADR-68): an approved claim is offered only when it is
+  // NEW-FORMAT and UNLINKED (lib/progressClaims.js → isClaimInvoiceable) and
+  // the register shows no active invoice for it (the UX fast-path). The
+  // create transaction and the rules decide; a legacy claim (approved before
+  // pairing, no link key) is counted here so the editor can say why it is
+  // missing — it is reconciled on the Progress Claims tab, never here.
   const invoiceableClaims = progressClaims.filter(c =>
-    c.status === CLAIM_STATUS.APPROVED && !claimHasActiveInvoice(supplierInvoices, c.id)
+    isClaimInvoiceable(c) && !claimHasActiveInvoice(supplierInvoices, c.id)
   )
+  const legacyClaimCount = progressClaims.filter(c =>
+    c.status === CLAIM_STATUS.APPROVED && claimInvoiceLink(c).state === CLAIM_INVOICE_LINK.LEGACY
+  ).length
   const canCreate = invoiceablePOs.length > 0
 
   // EXISTING mixed-mode overlaps (ADR-55): PO lines Actual currently counts
@@ -1330,8 +1374,12 @@ export default function ProjectInvoices() {
     setActionError(null)
     try {
       await transitionStatus(invoice, nextStatus)
-    } catch {
-      setActionError('Failed to update status. Check your connection and try again.')
+    } catch (err) {
+      // The cancel transaction names its reason (stale copy, posted, permission,
+      // offline — ADR-68); anything else keeps the generic text.
+      setActionError(err instanceof SupplierInvoiceWriteError && err.message
+        ? err.message
+        : 'Failed to update status. Check your connection and try again.')
     }
   }
 
@@ -1752,10 +1800,12 @@ export default function ProjectInvoices() {
           currencyCode={currencyCode}
           invoiceablePOs={invoiceablePOs}
           invoiceableClaims={invoiceableClaims}
+          legacyClaimCount={legacyClaimCount}
           purchaseOrders={purchaseOrders}
           progressClaims={progressClaims}
           supplierInvoices={supplierInvoices}
           contacts={contacts}
+          onShowInvoice={setDetail}
           onClose={() => setEditing(null)}
           onSave={editing === 'new' ? createSupplierInvoice : (data) => handleUpdate(editing.id, data)}
         />

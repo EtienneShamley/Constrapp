@@ -295,7 +295,16 @@ Two sources:
   from the claim's certified `approvedThisPeriod` amounts, which are **fixed**
   (invoice exactly the approved claim — no more, no less; partial invoicing of a
   claim is deferred). PO and claim references and the claim's retention are
-  copied. One approved claim may have only **one non-cancelled** supplier invoice.
+  copied. One approved claim may have only **one non-cancelled** supplier invoice
+  — **rules-enforced since ADR-68 (SHIELD 2A — implemented, not yet deployed)**:
+  the claim's `supplierInvoiceId` backlink is written in the same transaction as
+  the invoice and cleared in the same transaction as its cancellation
+  (`lib/supplierInvoiceActions.js`); a posted invoice reserves the claim
+  permanently; a claim approved before the pairing (no link key) cannot be
+  invoiced until it records its existing active invoice on the Progress Claims
+  tab (a claim with no active invoice waits for a trusted reconciliation — the
+  register cannot prove absence). The link is workflow state: nothing below
+  reads it, and the Actual hand-over stays at POSTING.
 
 Statuses: `draft` → `approved` → `posted`, with `cancelled` reachable from
 `draft`/`approved`. Forward-only. `received`, `under_review`, and `disputed` are
@@ -458,6 +467,12 @@ unchanged: their GST stays `gstForLine` per line.
   normalised `supplierInvoiceNumber` for the same supplier (`supplierId` when
   present, else the `supplierName` snapshot for pre-Contacts POs). Never blocks;
   server-enforced uniqueness is deferred.
+- A second **claim-sourced** invoice for one approved claim is **refused by the
+  rules** (ADR-68) for every new-format claim: the create pairs the invoice
+  with the claim's link, so a concurrent creator, a retry or a direct write
+  gets *already invoiced* (the linked invoice is shown) and never a duplicate.
+  SHIELD check 4 still lists pre-existing duplicates (condition D) and every
+  claim whose link disagrees with the register (condition I).
 
 ### One recognition path per PO line (ADR-55)
 

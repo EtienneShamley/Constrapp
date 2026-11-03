@@ -112,8 +112,12 @@ describe('transitionUpdate — the exact transition writes', () => {
     const live = claim({ status: 'submitted' })
     const payload = transitionUpdate(live, CLAIM_STATUS.APPROVED, { approvedAmounts: ['2499.999', 0], assessmentNotes: ' Minor defects ' }, 'u_pm', NOW)
     expect(Object.keys(payload).sort()).toEqual(
-      ['status', 'lineItems', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'assessmentNotes', 'approvedAt', 'approvedBy', 'revision', 'updatedAt', 'updatedBy'].sort()
+      ['status', 'lineItems', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'assessmentNotes', 'approvedAt', 'approvedBy',
+        // SHIELD 2A (ADR-68): approval initialises the invoice link — present and null.
+        'supplierInvoiceId', 'supplierInvoiceLinkedAt', 'supplierInvoiceLinkedBy',
+        'revision', 'updatedAt', 'updatedBy'].sort()
     )
+    expect(payload).toMatchObject({ supplierInvoiceId: null, supplierInvoiceLinkedAt: null, supplierInvoiceLinkedBy: null })
     expect(payload.lineItems[0]).toEqual({ ...line(), approvedThisPeriod: 2500 })
     expect(payload.lineItems[1].approvedThisPeriod).toBe(0)
     // claimTotals([2500, 0], 300): retained 300, net 2200, gst 220, total 2420

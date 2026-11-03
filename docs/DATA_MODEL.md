@@ -482,7 +482,9 @@ cumulative claiming and the mixed-mode overlap stay client-only (SECURITY.md
 | `assessmentNotes`, `notes` | string | `assessmentNotes` empty at create, written by approve or reject only (≤ 5000) |
 | `currency` | string | **Audit snapshot** of the project currency at write time (never read for display; historical `AUD` values are never rewritten) — rules pin it to the project's resolved currency at create and freeze it |
 | `revision` | number | **1 at create; EXACTLY +1 on every update, rules-enforced** (ADR-58). The client transactions write the revision they reviewed + 1 after confirming the server copy's status and revision, so a stale edit or assessment is refused (rules-ASSISTED — a direct caller who reads first passes; DC36). Every claim written before ADR-58 holds 1; a missing key reads as 0. **No consumer reads it** |
-| `submittedAt`, `approvedAt`, `rejectedAt`, `invoicedAt` | timestamp \| null | Stamped on transition, `== request.time`; `invoicedAt` is reserved — no path writes it |
+| `submittedAt`, `approvedAt`, `rejectedAt`, `invoicedAt` | timestamp \| null | Stamped on transition, `== request.time`; `invoicedAt` is reserved — no path writes it (a draft invoice is a reservation, not an invoicing event — ADR-68) |
+| `supplierInvoiceId` | string \| null | **ADR-68 (SHIELD 2A — implemented, not yet deployed).** The ONE current claim-sourced supplier invoice (draft / approved / posted) that reserves this approved claim; null while unlinked. **The key's PRESENCE is the legacy discriminator**: a claim with NO such key predates the pairing and is never invoiceable until it records its existing active invoice (rules branch (g)) or is backfilled by the trusted procedure. Written null at create and approve by the new bundle (FINAL rules require it; Stage 1 tolerates its absence); set by the LINK write in the same commit as the invoice create (rules `getAfter()` pair them); cleared by the UNLINK write in the same commit as the invoice's cancellation; permanent once the invoice posts. **Workflow state — no selector reads it**; Actual still hands over from the claim to the invoice when the invoice POSTS |
+| `supplierInvoiceLinkedAt`, `supplierInvoiceLinkedBy` | timestamp \| null, uid \| null | The link's stamps: `== request.time` / `== request.auth.uid` when linked, null when unlinked (ADR-68) |
 | `submittedBy`, `approvedBy`, `rejectedBy` | uid \| null | **The verified actor** (`== request.auth.uid`, ADR-58). `submittedBy` / `rejectedBy` are absent on documents written before M2-B2 and acquired on the next valid write |
 | `externalRefs` | map | Reserved for accounting integrations |
 | `createdAt` / `createdBy` | timestamp / uid | `== request.time` / `== request.auth.uid` at create; immutable |
@@ -655,6 +657,19 @@ a rules gap — see [SECURITY.md](SECURITY.md) → Deferred Control 30.
 invoice must carry `progressClaimId: null`. They are never revalidated
 afterwards — both are core-preserved, so re-checking could only strand an invoice
 whose PO later closed or was cancelled (the ADR-34 rule).
+
+**A `progress_claim` invoice is PAIRED with its claim (ADR-68, SHIELD 2A —
+implemented, not yet deployed).** The invoice carries no new key; the pairing
+lives on the claim (`supplierInvoiceId`, above). At create the rules also
+require the claim to name this invoice's `poId`, `claimNumber`, `supplierId`
+and trimmed `supplierName`, to be NEW-FORMAT and UNLINKED before the commit, and
+to name THIS invoice after it (`getAfter`) — the claim's LINK write in the same
+transaction (`lib/supplierInvoiceActions.js → runCreateSupplierInvoice`).
+`draft | approved → cancelled` on an invoice its claim links requires the claim's
+UNLINK in the same commit; an invoice its claim does not link (legacy) cancels
+alone. One approved claim therefore carries at most ONE active claim-sourced
+invoice, by the rules; a legacy claim (no link key) cannot be invoiced until
+reconciled (SECURITY.md → Deferred Control 43).
 
 ## …/projects/{projectId}/clientInvoices/{invoiceId}
 

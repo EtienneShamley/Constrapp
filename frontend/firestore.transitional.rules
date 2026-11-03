@@ -1,8 +1,8 @@
 rules_version = '2';
-// ⚠️ ADR-63 / ADR-65 STAGE-1 TRANSITIONAL RULESET — derived from firestore.rules by
+// ⚠️ ADR-63 / ADR-65 / ADR-68 STAGE-1 TRANSITIONAL RULESET — derived from firestore.rules by
 // scripts/build-transitional-rules.mjs; never edit by hand. Differs from the
-// FINAL ruleset in exactly 3 rule lines (search "TRANSITIONAL (STAGE 1)"). Deploy
-// FIRST (firebase.transitional.json), before the M3-B2 / GANTT 1A2 Hosting bundle; replace
+// FINAL ruleset in exactly 4 rule lines (search "TRANSITIONAL (STAGE 1)"). Deploy
+// FIRST (firebase.transitional.json), before the M3-B2 / GANTT 1A2 / SHIELD 2A Hosting bundle; replace
 // with firestore.rules (FINAL) once the new bundle is live. Temporary compatibility only.
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -665,9 +665,65 @@ service cloud.firestore {
       // M3-B2 (ADR-63): `variationLineCount` — the number of variation-origin
       // lines after the PO lines — is REQUIRED by this FINAL file (the STAGE-1
       // transitional ruleset makes it optional for the M3-B1 bundle; marked line).
+      // SHIELD 2A (ADR-68): the three supplier-invoice LINK keys are likewise
+      // REQUIRED (null) at create by this FINAL file and optional in Stage 1.
       function exactKeys() {
-        return request.resource.data.keys().hasOnly(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'variationLineCount', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
-            && request.resource.data.keys().hasAll(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']); // ADR-63 TRANSITIONAL (STAGE 1): variationLineCount is OPTIONAL at create while the M3-B1 bundle is served
+        return request.resource.data.keys().hasOnly(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'variationLineCount', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'supplierInvoiceId', 'supplierInvoiceLinkedAt', 'supplierInvoiceLinkedBy', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+            && request.resource.data.keys().hasAll(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']); // ADR-63 / ADR-68 TRANSITIONAL (STAGE 1): variationLineCount and the invoice link keys are OPTIONAL at create while the previous bundle is served
+      }
+      // ── SHIELD 2A (ADR-68) — the ONE current linked supplier invoice ────────
+      // `supplierInvoiceId` is workflow state, never a recognition event: null
+      // while unlinked, the invoice id while a draft / approved / posted
+      // claim-sourced invoice reserves this claim. A claim written before 2A
+      // carries NO such key — LEGACY — and can never be invoiced through the
+      // pairing until branch (g) records its existing invoice. Rules cannot
+      // prove that no invoice exists, so no branch sets an absent key to null.
+      function linkUnlinked(d) {
+        return 'supplierInvoiceId' in d
+            && d.supplierInvoiceId == null
+            && d.get('supplierInvoiceLinkedAt', null) == null
+            && d.get('supplierInvoiceLinkedBy', null) == null;
+      }
+      function linkStamped(d) {
+        return d.supplierInvoiceId is string
+            && d.supplierInvoiceId.size() > 0
+            && d.supplierInvoiceLinkedBy == request.auth.uid
+            && d.supplierInvoiceLinkedAt == request.time;
+      }
+      function linkKeysOnly() {
+        return changedKeys().hasOnly(['supplierInvoiceId', 'supplierInvoiceLinkedAt', 'supplierInvoiceLinkedBy', 'revision', 'updatedAt', 'updatedBy']);
+      }
+      function invoicePath(id) {
+        return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/supplierInvoices/$(id);
+      }
+      // (e) the invoice this link names is CREATED IN THIS COMMIT (getAfter —
+      // get() cannot see it): a draft born now, claim-sourced, citing THIS claim
+      // and its PO.
+      function linkedInvoiceCreatedHere() {
+        let inv = getAfter(invoicePath(request.resource.data.supplierInvoiceId)).data;
+        return inv.status == 'draft'
+            && inv.createdAt == request.time
+            && inv.source == 'progress_claim'
+            && inv.progressClaimId == claimId
+            && inv.poId == resource.data.poId;
+      }
+      // (f) the invoice the stored link names is CANCELLED IN THIS COMMIT.
+      function linkedInvoiceCancelledHere() {
+        let inv = getAfter(invoicePath(resource.data.supplierInvoiceId)).data;
+        return inv.status == 'cancelled'
+            && inv.cancelledAt == request.time
+            && inv.progressClaimId == claimId;
+      }
+      // (g) an EXISTING active invoice (get — it must already exist) that
+      // cites this claim, its PO and its supplier. Records a fact; never
+      // creates one. A cancelled invoice is not linkable: it reserves nothing.
+      function existingInvoiceLinkable() {
+        let inv = get(invoicePath(request.resource.data.supplierInvoiceId)).data;
+        return inv.source == 'progress_claim'
+            && inv.progressClaimId == claimId
+            && inv.poId == resource.data.poId
+            && inv.get('supplierId', null) == resource.data.get('supplierId', null)
+            && inv.status in ['draft', 'approved', 'posted'];
       }
       // The number of variation-origin lines a claim declares (absent reads 0 —
       // every pre-M3-B2 document).
@@ -815,7 +871,11 @@ service cloud.firestore {
             && d.invoicedAt == null
             && d.approvedSubtotal == null
             && d.approvedGst == null
-            && d.approvedTotal == null;
+            && d.approvedTotal == null
+            // ADR-68: no invoice link can be forged at creation (absent or null).
+            && d.get('supplierInvoiceId', null) == null
+            && d.get('supplierInvoiceLinkedAt', null) == null
+            && d.get('supplierInvoiceLinkedBy', null) == null;
       }
       // Tier-2 source validation — CREATE ONLY. The PO is a scalar reference,
       // so it CAN be get()-ed: it must exist in THIS project and be `sent`
@@ -921,10 +981,14 @@ service cloud.firestore {
                     //     assessment notes and its own stamps — the claimed
                     //     header and the retention are untouched, and the
                     //     approved subtotal cannot exceed the claimed one.
+                    //     ADR-68: approval also INITIALISES the invoice link
+                    //     (the three keys present and null — a claim created
+                    //     by the pre-2A bundle becomes new-format here); this
+                    //     FINAL file requires it, Stage 1 tolerates its absence.
                     (
                       resource.data.status in ['submitted', 'under_review']
                       && request.resource.data.status == 'approved'
-                      && changedKeys().hasOnly(['status', 'lineItems', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'assessmentNotes', 'approvedAt', 'approvedBy', 'revision', 'updatedAt', 'updatedBy'])
+                      && changedKeys().hasOnly(['status', 'lineItems', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'assessmentNotes', 'approvedAt', 'approvedBy', 'supplierInvoiceId', 'supplierInvoiceLinkedAt', 'supplierInvoiceLinkedBy', 'revision', 'updatedAt', 'updatedBy'])
                       && request.resource.data.approvedBy == request.auth.uid
                       && request.resource.data.approvedAt == request.time
                       && request.resource.data.lineItems is list
@@ -932,6 +996,7 @@ service cloud.firestore {
                       && variationLinesPreserved()
                       && notesBounded()
                       && approvedMoneyValid()
+                      && (!('supplierInvoiceId' in request.resource.data) || linkUnlinked(request.resource.data)) // ADR-68 TRANSITIONAL (STAGE 1): the invoice link keys are OPTIONAL on approve while the pre-2A bundle is served
                     )
                     ||
                     // (d) REJECT (terminal) — from any open status; a draft
@@ -944,6 +1009,48 @@ service cloud.firestore {
                       && request.resource.data.rejectedBy == request.auth.uid
                       && request.resource.data.rejectedAt == request.time
                       && notesBounded()
+                    )
+                    ||
+                    // (e) LINK (ADR-68) — approved → approved, link keys only:
+                    //     a NEW-FORMAT, UNLINKED claim takes the id of the
+                    //     claim-sourced draft created in this same commit. A
+                    //     legacy (key-absent) claim never matches: it cannot
+                    //     be invoiced until (g) records its existing invoice.
+                    (
+                      resource.data.status == 'approved'
+                      && request.resource.data.status == 'approved'
+                      && linkKeysOnly()
+                      && linkUnlinked(resource.data)
+                      && linkStamped(request.resource.data)
+                      && linkedInvoiceCreatedHere()
+                    )
+                    ||
+                    // (f) UNLINK (ADR-68) — the linked invoice is cancelled in
+                    //     this same commit; the claim becomes unlinked (keys
+                    //     present, null) and may be invoiced once more. A
+                    //     posted invoice is never cancelled, so its link is
+                    //     permanent.
+                    (
+                      resource.data.status == 'approved'
+                      && request.resource.data.status == 'approved'
+                      && linkKeysOnly()
+                      && resource.data.get('supplierInvoiceId', null) is string
+                      && linkUnlinked(request.resource.data)
+                      && linkedInvoiceCancelledHere()
+                    )
+                    ||
+                    // (g) RECONCILE (ADR-68) — a claim with NO current link
+                    //     (legacy key-absent, or new-format null) records an
+                    //     EXISTING active claim-sourced invoice of its own.
+                    //     Rules verify that one invoice; they cannot see its
+                    //     siblings (SHIELD lists duplicates — never repaired).
+                    (
+                      resource.data.status == 'approved'
+                      && request.resource.data.status == 'approved'
+                      && linkKeysOnly()
+                      && resource.data.get('supplierInvoiceId', null) == null
+                      && linkStamped(request.resource.data)
+                      && existingInvoiceLinkable()
                     )
                   );
 
@@ -1161,12 +1268,36 @@ service cloud.firestore {
       // bundle writes no such key and is refused, so it can never raise an
       // invoice that attributes those lines to PO line 0. A claim without
       // variation lines takes an absent key or 0.
+      // SHIELD 2A (ADR-68): the claim must be PAIRED with this invoice — it
+      // names THIS invoice's PO, supplier and number; it is new-format and
+      // UNLINKED before the commit (a legacy claim with no link key fails
+      // closed — reconcile it on the Progress Claims tab); and it names THIS
+      // invoice AFTER the commit (getAfter — the claims branch (e) write in
+      // the same transaction). An unpaired direct-SDK create matches nothing.
       function sourceClaimValid() {
+        let d = request.resource.data;
         let claim = get(claimPath()).data;
         let cc = claim.get('variationLineCount', 0);
-        let ic = request.resource.data.get('variationLineCount', null);
+        let ic = d.get('variationLineCount', null);
         return claim.status == 'approved'
-            && (cc == 0 ? (ic == null || ic == 0) : (ic is int && ic >= 0 && ic <= cc));
+            && (cc == 0 ? (ic == null || ic == 0) : (ic is int && ic >= 0 && ic <= cc))
+            && claim.poId == d.poId
+            && claim.claimNumber == d.claimNumber
+            && claim.get('supplierId', null) == d.supplierId
+            && claim.supplierName.trim() == d.supplierName
+            && 'supplierInvoiceId' in claim
+            && claim.supplierInvoiceId == null
+            && getAfter(claimPath()).data.supplierInvoiceId == invoiceId;
+      }
+      // SHIELD 2A (ADR-68): cancelling a claim-sourced invoice whose claim
+      // links to IT must release that claim in the same commit (claims branch
+      // (f)); an invoice its claim does not link (legacy, or a claim that no
+      // longer exists) cancels exactly as before.
+      function claimReleased() {
+        return resource.data.progressClaimId == null
+            || !exists(claimPath())
+            || get(claimPath()).data.get('supplierInvoiceId', null) != invoiceId
+            || getAfter(claimPath()).data.supplierInvoiceId == null;
       }
       // A direct_po invoice must carry NO claim reference: a posted invoice's
       // progressClaimId excludes that claim from the claim side of Actual
@@ -1313,6 +1444,7 @@ service cloud.firestore {
                       && changedKeys().hasOnly(['status', 'cancelledAt', 'cancelledBy', 'updatedAt', 'updatedBy'])
                       && request.resource.data.cancelledBy == request.auth.uid
                       && request.resource.data.cancelledAt == request.time
+                      && (resource.data.source != 'progress_claim' || claimReleased())
                     )
                   );
 

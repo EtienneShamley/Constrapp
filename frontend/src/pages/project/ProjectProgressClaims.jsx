@@ -11,6 +11,8 @@ import { useVariations } from '../../hooks/useVariations'
 import { appliedSupplierVariationAdjustments, claimableNewScopeLines } from '../../lib/variations'
 import { claimLineConflictError } from '../../lib/poLineRecognition'
 import { ClaimWriteError } from '../../lib/progressClaimActions'
+import { SupplierInvoiceWriteError, claimLinkReconciliation, CLAIM_LINK_ISSUE, CLAIM_LINK_ISSUE_LABELS } from '../../lib/supplierInvoiceActions'
+import { SI_STATUS_LABELS } from '../../lib/supplierInvoices'
 import { PO_STATUS, PO_STATUS_LABELS, roundMoney } from '../../lib/purchaseOrders'
 import { isVariationOriginLine } from '../../lib/sourceLine'
 import {
@@ -473,11 +475,62 @@ function AssessProgressClaimModal({ claim, currencyCode, onClose, onTransition }
   )
 }
 
-function RowActions({ claim, onTransition, onAssess, onEdit }) {
+// SHIELD 2A (ADR-68) — what an APPROVED claim's supplier-invoice link says
+// beside the invoice register. The link is workflow state (the ONE active
+// claim-sourced invoice reserving the claim), never a figure. `registerSettled`
+// is false while the invoice register is loading or failed: then NOTHING is
+// offered and nothing is claimed — a missing register must never make a claim
+// invoiceable, and "no invoice" is only what the client could read.
+function ClaimInvoiceLinkCell({ claim, supplierInvoices, registerSettled }) {
+  if (claim.status !== CLAIM_STATUS.APPROVED) return <span className="text-brand-muted">—</span>
+  if (!registerSettled) return <span className="text-brand-muted">Invoice register unavailable</span>
+  const rec = claimLinkReconciliation(claim, supplierInvoices)
+  if (!rec.issue && rec.linkedInvoice) {
+    return (
+      <span>
+        {rec.linkedInvoice.invoiceNumber || rec.linkedInvoice.id}
+        <span className="text-brand-muted"> · {SI_STATUS_LABELS[rec.linkedInvoice.status] ?? rec.linkedInvoice.status}</span>
+      </span>
+    )
+  }
+  if (!rec.issue) return <span className="text-brand-muted">Not yet invoiced</span>
+  return <span className="text-brand-amber">{CLAIM_LINK_ISSUE_LABELS[rec.issue] ?? rec.issue}</span>
+}
+
+function RowActions({ claim, onTransition, onAssess, onEdit, onLinkInvoice, supplierInvoices = [], registerSettled = false }) {
   // Failures surface via the page-level error banner — swallow the rethrow
   // that exists for the assess modal's benefit.
   const confirmThen = (label, nextStatus) => () => {
     if (window.confirm(`${label} ${claim.claimNumber}?`)) onTransition(claim, nextStatus).catch(() => {})
+  }
+
+  // ADR-68 — RECONCILE: offered only when the settled register shows exactly
+  // ONE active claim-sourced invoice of this claim's own that the claim does
+  // not yet link (legacy, or a new-format claim an old tab invoiced). The
+  // guarded transaction and the rules verify that one invoice; there is NO
+  // "confirm no invoice" action — rules cannot prove absence, and a claim
+  // with no active invoice waits for a trusted reconciliation.
+  if (claim.status === CLAIM_STATUS.APPROVED) {
+    if (!registerSettled) return null
+    const rec = claimLinkReconciliation(claim, supplierInvoices)
+    if (rec.issue === CLAIM_LINK_ISSUE.UNLINKED_ACTIVE_INVOICE && rec.linkable) {
+      const number = rec.linkable.invoiceNumber || rec.linkable.id
+      return (
+        <div className="flex gap-1.5 justify-end">
+          <Btn
+            sm variant="ghost"
+            onClick={() => {
+              if (window.confirm(`Link ${number} to ${claim.claimNumber}? This records the existing invoice as the claim's one active invoice; nothing is created.`)) {
+                onLinkInvoice(claim, rec.linkable).catch(() => {})
+              }
+            }}
+          >
+            Link {number}
+          </Btn>
+        </div>
+      )
+    }
+    return null
   }
 
   if (claim.status === CLAIM_STATUS.DRAFT) {
@@ -504,12 +557,17 @@ export default function ProjectProgressClaims() {
   const { projectId, currencyCode } = useOutletContext()
   const money = (n) => formatCurrency(n, currencyCode)
 
-  const { progressClaims, progressClaimsLoading, createProgressClaim, updateProgressClaim, transitionStatus } = useProgressClaims(projectId)
+  const { progressClaims, progressClaimsLoading, createProgressClaim, updateProgressClaim, transitionStatus, linkExistingInvoice } = useProgressClaims(projectId)
   const { purchaseOrders, purchaseOrdersLoading } = usePurchaseOrders(projectId)
-  // Read for the per-line recognition guard only (ADR-55): a PO line already
+  // Read for the per-line recognition guard (ADR-55): a PO line already
   // invoiced directly cannot be claimed. A failed read leaves the list empty
-  // and the guard silent — the guard is client-only either way.
-  const { supplierInvoices } = useSupplierInvoices(projectId)
+  // and the guard silent — the guard is client-only either way. Since ADR-68
+  // the same subscription (no new listener) also shows each approved claim's
+  // linked invoice and offers the reconcile action — ONLY once the register
+  // has settled without error (`registerSettled`): loading or failed is
+  // "unavailable", never "no invoice".
+  const { supplierInvoices, supplierInvoicesLoading, supplierInvoicesError } = useSupplierInvoices(projectId)
+  const registerSettled = !supplierInvoicesLoading && !supplierInvoicesError
   // Read for the over-claim WARNING threshold (ADR-62: applied approved
   // supplier variations revise a PO line's contractual value) and for the
   // claimable new-scope variation lines the editor appends (ADR-63). A failed
@@ -527,6 +585,19 @@ export default function ProjectProgressClaims() {
   const noSentPOs = !purchaseOrdersLoading &&
     !purchaseOrders.some(po => CLAIMABLE_PO_STATUSES.includes(po.status))
   const goToPOs = () => navigate(`/projects/${projectId}/purchase-orders`)
+
+  // ADR-68 — link an EXISTING active invoice to a claim with no current link.
+  async function handleLinkInvoice(claim, invoice) {
+    setActionError(null)
+    try {
+      await linkExistingInvoice(claim, invoice)
+    } catch (err) {
+      setActionError(err instanceof SupplierInvoiceWriteError && err.message
+        ? err.message
+        : 'Failed to link the invoice. Check your connection and try again.')
+      throw err
+    }
+  }
 
   async function handleTransition(claim, nextStatus, extras) {
     setActionError(null)
@@ -610,7 +681,7 @@ export default function ProjectProgressClaims() {
             <table className="w-full border-collapse">
               <thead>
                 <tr className="bg-brand-card border-b border-brand-border">
-                  {['Claim #', 'PO', 'Supplier', 'Period', 'Claimed (inc. GST)', 'Approved (inc. GST)', 'Status', ''].map((h, i) => (
+                  {['Claim #', 'PO', 'Supplier', 'Period', 'Claimed (inc. GST)', 'Approved (inc. GST)', 'Status', 'Invoice', ''].map((h, i) => (
                     <th key={i} className={thCls}>{h}</th>
                   ))}
                 </tr>
@@ -629,8 +700,14 @@ export default function ProjectProgressClaims() {
                     <td className="px-3.5 py-3">
                       <Badge label={CLAIM_STATUS_LABELS[claim.status] ?? claim.status} variant={CLAIM_BADGE_VARIANTS[claim.status]} sm />
                     </td>
+                    <td className="px-3.5 py-3 text-[12px] text-brand-text whitespace-nowrap">
+                      <ClaimInvoiceLinkCell claim={claim} supplierInvoices={supplierInvoices} registerSettled={registerSettled} />
+                    </td>
                     <td className="px-3.5 py-3">
-                      <RowActions claim={claim} onTransition={handleTransition} onAssess={setAssessing} onEdit={setEditing} />
+                      <RowActions
+                        claim={claim} onTransition={handleTransition} onAssess={setAssessing} onEdit={setEditing}
+                        onLinkInvoice={handleLinkInvoice} supplierInvoices={supplierInvoices} registerSettled={registerSettled}
+                      />
                     </td>
                   </tr>
                 ))}

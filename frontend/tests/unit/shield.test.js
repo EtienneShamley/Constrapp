@@ -694,11 +694,14 @@ describe('check 4 — commitment state conflicts', () => {
       // H (ADR-63): no claim line names a variation source here — the dedicated
       // block in tests/unit/newScopeClaims.test.js builds the cases.
       [STATE_CONFLICT.INVALID_CLAIM_SOURCE_LINE]:   0,
+      // I (ADR-68): both approved claims predate pairing (no link key) — cl1
+      // with two active invoices and no link, cl2 with no invoice at all.
+      [STATE_CONFLICT.CLAIM_INVOICE_LINK]:          2,
     })
-    expect(c.values.conflictCount).toBe(8)
-    expect(c.evidence).toHaveLength(8)
-    expect(new Set(c.evidence.map(r => r.id)).size).toBe(8)
-    expect(Object.keys(STATE_CONFLICT)).toHaveLength(8)
+    expect(c.values.conflictCount).toBe(10)
+    expect(c.evidence).toHaveLength(10)
+    expect(new Set(c.evidence.map(r => r.id)).size).toBe(10)
+    expect(Object.keys(STATE_CONFLICT)).toHaveLength(9)
   })
 
   it('A · cancelled PO with a posted invoice and an approved claim', () => {
@@ -743,10 +746,12 @@ describe('check 4 — commitment state conflicts', () => {
   })
 
   it('rejected claims, cancelled invoices and committed POs raise nothing; the clean project is a genuine no issue', () => {
+    // cl1 is NEW-FORMAT and linked to inv7 (approved, claim-sourced, same PO
+    // and supplier) — the register agrees with the link, so condition I is quiet.
     const clean = {
       ...EMPTY,
       purchaseOrders: [SOURCES.purchaseOrders[0], SOURCES.purchaseOrders[4]],
-      progressClaims: [SOURCES.progressClaims[0], SOURCES.progressClaims[5]],
+      progressClaims: [{ ...SOURCES.progressClaims[0], supplierId: 'sup2', supplierInvoiceId: 'inv7' }, SOURCES.progressClaims[5]],
       supplierInvoices: [inv1, inv2, inv7, inv12],
     }
     const r = get(CHECK.COMMITMENT_STATE_CONFLICTS, clean)
@@ -778,8 +783,9 @@ describe('check 4 — condition E: a PO line recognised through BOTH paths (ADR-
   const po = { id: 'poE', poNumber: 'PO-0009', status: 'sent', subtotal: 800, lineItems: [
     { costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'Slab', lineTotal: 800 },
   ] }
+  // New-format (ADR-68: link key present, null) so condition I stays quiet here.
   const approvedClaim = { id: 'clE', claimNumber: 'PC-0009', status: 'approved', poId: 'poE', poNumber: 'PO-0009', approvedSubtotal: 300,
-    lineItems: [{ poLineIndex: 0, costCodeId: 'cc1', approvedThisPeriod: 300 }] }
+    supplierInvoiceId: null, lineItems: [{ poLineIndex: 0, costCodeId: 'cc1', approvedThisPeriod: 300 }] }
   const directInv = inv({
     id: 'invE', invoiceNumber: 'SI-0090', supplierInvoiceNumber: 'E-1', status: 'posted',
     supplierId: 'sup1', supplierName: 'Ace Concrete', poId: 'poE', poNumber: 'PO-0009', invoiceDate: '2026-03-01',
@@ -825,6 +831,80 @@ describe('check 4 — condition E: a PO line recognised through BOTH paths (ADR-
     const c = get(CHECK.COMMITMENT_STATE_CONFLICTS, { ...sources, purchaseOrders: [{ ...po, status: 'cancelled' }] })
     expect(c.values.byCondition[STATE_CONFLICT.UNCOMMITTED_PO_WITH_COST]).toBe(2)
     expect(c.values.byCondition[STATE_CONFLICT.MIXED_MODE_PO_LINE]).toBe(1)
+  })
+})
+
+describe('check 4 — condition I: the claim-to-invoice link needs reconciliation (ADR-68, SHIELD 2A)', () => {
+  const po = { id: 'poI', poNumber: 'PO-0010', status: 'sent', supplierId: 'sup1', supplierName: 'Ace Concrete', subtotal: 500, lineItems: [
+    { costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'Slab', lineTotal: 500 },
+  ] }
+  const claim = (over = {}) => ({ id: 'clI', claimNumber: 'PC-0010', status: 'approved', poId: 'poI', poNumber: 'PO-0010', supplierId: 'sup1',
+    approvedSubtotal: 300, lineItems: [{ poLineIndex: 0, costCodeId: 'cc1', approvedThisPeriod: 300 }], ...over })
+  const claimInv = (over = {}) => inv({
+    id: 'invI', invoiceNumber: 'SI-0100', supplierInvoiceNumber: 'I-1', status: 'draft', source: 'progress_claim',
+    supplierId: 'sup1', supplierName: 'Ace Concrete', poId: 'poI', poNumber: 'PO-0010', progressClaimId: 'clI', claimNumber: 'PC-0010', invoiceDate: '2026-03-01',
+    lineItems: [{ poLineIndex: 0, costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'Slab', amount: 300, taxCode: 'gst', gstAmount: 30 }],
+    ...totals(300, 30), ...over,
+  })
+  const run4 = (claims, invoices) => get(CHECK.COMMITMENT_STATE_CONFLICTS, { ...EMPTY, purchaseOrders: [po], progressClaims: claims, supplierInvoices: invoices })
+  const rowsI = (r) => r.evidence.filter(x => x.condition === STATE_CONFLICT.CLAIM_INVOICE_LINK)
+
+  it('a new-format unlinked claim with no invoice, and a linked claim whose invoice agrees, are no issue', () => {
+    expect(run4([claim({ supplierInvoiceId: null })], []).state).toBe(SHIELD_STATE.NO_ISSUE)
+    for (const status of ['draft', 'approved', 'posted']) {
+      expect(run4([claim({ supplierInvoiceId: 'invI' })], [claimInv({ status })]).state).toBe(SHIELD_STATE.NO_ISSUE)
+    }
+  })
+
+  it('a LEGACY claim (no link key) is listed by what the register shows — no invoice, cancelled only, one active (linkable), or several active', () => {
+    const none = rowsI(run4([claim()], []))
+    expect(none).toHaveLength(1)
+    expect(none[0]).toMatchObject({ recordKind: 'claim', recordId: 'clI', recordNumber: 'PC-0010', issue: 'legacy_no_invoice', linkState: 'legacy', amount: 300 })
+    expect(none[0].recordStatusLabel).toMatch(/awaiting trusted reconciliation/)
+
+    const cancelledOnly = rowsI(run4([claim()], [claimInv({ status: 'cancelled' })]))
+    expect(cancelledOnly[0].issue).toBe('legacy_cancelled_only')
+
+    const oneActive = rowsI(run4([claim()], [claimInv({ status: 'posted' })]))
+    expect(oneActive[0]).toMatchObject({ issue: 'unlinked_active_invoice', invoiceNumbers: ['SI-0100'] })
+    expect(oneActive[0].recordNumber).toBe('PC-0010 · active SI-0100')
+    expect(oneActive[0].recordStatusLabel).toMatch(/link it on the Progress Claims tab/)
+
+    const two = run4([claim()], [claimInv(), claimInv({ id: 'invI2', invoiceNumber: 'SI-0101' })])
+    expect(rowsI(two)[0]).toMatchObject({ issue: 'unlinked_duplicates', invoiceNumbers: ['SI-0100', 'SI-0101'] })
+    // Condition D still lists the two invoices themselves — never repaired.
+    expect(two.values.byCondition[STATE_CONFLICT.MULTIPLE_INVOICES_PER_CLAIM]).toBe(2)
+  })
+
+  it('a new-format claim left null while an active invoice cites it (an old tab’s Stage-1 invoice) is listed as linkable', () => {
+    const r = rowsI(run4([claim({ supplierInvoiceId: null })], [claimInv()]))
+    expect(r[0]).toMatchObject({ issue: 'unlinked_active_invoice', linkState: 'unlinked' })
+  })
+
+  it('a linked invoice that is missing, cancelled, or names another claim / PO / supplier, and a malformed link, are each listed', () => {
+    expect(rowsI(run4([claim({ supplierInvoiceId: 'nowhere' })], []))[0]).toMatchObject({ issue: 'linked_invoice_missing', linkedInvoiceId: 'nowhere' })
+    expect(rowsI(run4([claim({ supplierInvoiceId: 'invI' })], [claimInv({ status: 'cancelled' })]))[0].issue).toBe('linked_invoice_cancelled')
+    expect(rowsI(run4([claim({ supplierInvoiceId: 'invI' })], [claimInv({ progressClaimId: 'other' })]))[0].issue).toBe('linked_invoice_mismatch')
+    expect(rowsI(run4([claim({ supplierInvoiceId: 'invI' })], [claimInv({ poId: 'poX' })]))[0].issue).toBe('linked_invoice_mismatch')
+    expect(rowsI(run4([claim({ supplierInvoiceId: 'invI' })], [claimInv({ supplierId: 'sup9' })]))[0].issue).toBe('linked_invoice_mismatch')
+    expect(rowsI(run4([claim({ supplierInvoiceId: 'invI' })], [claimInv({ source: 'direct_po' })]))[0].issue).toBe('linked_invoice_mismatch')
+    expect(rowsI(run4([claim({ supplierInvoiceId: 42 })], []))[0].issue).toBe('malformed_link')
+    expect(rowsI(run4([claim({ supplierInvoiceId: 'invI' })], [claimInv({ status: 'cancelled' })]))[0].recordNumber).toBe('PC-0010 → SI-0100')
+  })
+
+  it('only APPROVED claims are examined; a legacy draft, submitted or rejected claim is never listed', () => {
+    for (const status of ['draft', 'submitted', 'under_review', 'rejected']) {
+      expect(rowsI(run4([claim({ status, approvedSubtotal: null })], []))).toHaveLength(0)
+    }
+  })
+
+  it('the caveat says the register cannot prove absence, that a legacy claim is never made invoiceable here, and that duplicates are never repaired', () => {
+    const c = run4([claim()], [])
+    const text = c.caveats.join(' ')
+    expect(text).toMatch(/cannot prove that no invoice exists/)
+    expect(text).toMatch(/trusted reconciliation/)
+    expect(text).toMatch(/never repaired or cancelled here/)
+    expect(c.headline).toContain('claim-to-invoice link needs reconciliation')
   })
 })
 

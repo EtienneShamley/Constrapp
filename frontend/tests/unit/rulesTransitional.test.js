@@ -27,14 +27,17 @@ describe('firestore.transitional.rules is exactly what the generator produces fr
     expect(transitionalSrc).toBe(buildTransitionalRules(finalSrc))
   })
 
-  // ADR-65 added the third pair (the activities revision contract); the two
-  // ADR-63 pairs are preserved byte for byte.
-  it('exactly three marked line pairs, and the first is still exported as FINAL_LINE / TRANSITIONAL_LINE', () => {
-    expect(LINE_PAIRS).toHaveLength(3)
+  // ADR-65 added the third pair (the activities revision contract); ADR-68
+  // (SHIELD 2A) added the fourth (the approve-time invoice link keys) and
+  // extended the second pair's FINAL side with the three link keys. The
+  // first and third pairs are preserved byte for byte.
+  it('exactly four marked line pairs, and the first is still exported as FINAL_LINE / TRANSITIONAL_LINE', () => {
+    expect(LINE_PAIRS).toHaveLength(4)
     expect(LINE_PAIRS.map(p => p.name)).toEqual([
       'variations approve — the scope pair',
       'progressClaims exactKeys — variationLineCount',
       'activities update — the revision contract',
+      'progressClaims approve — the invoice link keys',
     ])
     expect(FINAL_LINE).toBe(LINE_PAIRS[0].final)
     expect(TRANSITIONAL_LINE).toBe(LINE_PAIRS[0].transitional)
@@ -50,8 +53,14 @@ describe('firestore.transitional.rules is exactly what the generator produces fr
     expect(LINE_PAIRS[0].final).toContain('appliedStamped(request.resource.data) && scopeStamped(request.resource.data)))')
     expect(LINE_PAIRS[0].final).not.toContain('scopeAbsent')
     expect(LINE_PAIRS[1].final).toContain("'variationId', 'variationLineCount', 'lineItems'")
+    // ADR-68: the FINAL create requires the three link keys (null) …
+    expect(LINE_PAIRS[1].final).toContain("'invoicedAt', 'supplierInvoiceId', 'supplierInvoiceLinkedAt', 'supplierInvoiceLinkedBy', 'externalRefs'")
     expect(LINE_PAIRS[2].final).toContain('&& revisionIncremented() // ADR-65 FINAL')
     expect(LINE_PAIRS[2].final).not.toContain('resource.data.revision ||')
+    // … and the FINAL approve requires them present and null.
+    expect(LINE_PAIRS[3].final).toContain('&& linkUnlinked(request.resource.data) // ADR-68 FINAL')
+    expect(LINE_PAIRS[3].final).not.toContain("'supplierInvoiceId' in request.resource.data")
+    expect(finalSrc).not.toContain('ADR-68 TRANSITIONAL')
   })
 
   it('the TRANSITIONAL file carries each marker line exactly once, the strict lines never, and a header that names it temporary', () => {
@@ -60,16 +69,22 @@ describe('firestore.transitional.rules is exactly what the generator produces fr
       expect(transitionalSrc).not.toContain(pair.final)
     }
     expect(transitionalSrc).not.toContain('ADR-63 FINAL')
+    expect(transitionalSrc).not.toContain('ADR-63 / ADR-68 FINAL')
     expect(transitionalSrc).not.toContain('ADR-65 FINAL')
+    expect(transitionalSrc).not.toContain('ADR-68 FINAL')
     // The applied pair stays REQUIRED in Stage 1 — only the scope pair relaxes.
     expect(LINE_PAIRS[0].transitional).toContain('appliedStamped(request.resource.data) && (scopeAbsent(request.resource.data) || scopeStamped(request.resource.data))')
     expect(LINE_PAIRS[0].transitional).not.toContain('appliedAbsent')
-    // Stage 1 leaves variationLineCount out of hasAll only — hasOnly still admits it.
+    // Stage 1 leaves variationLineCount AND the ADR-68 link keys out of hasAll only — hasOnly still admits them.
     expect(LINE_PAIRS[1].transitional).not.toContain("'variationLineCount'")
+    expect(LINE_PAIRS[1].transitional).not.toContain("'supplierInvoiceId'")
     expect(transitionalSrc).toContain("hasOnly(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'variationLineCount'")
+    expect(transitionalSrc).toContain("'invoicedAt', 'supplierInvoiceId', 'supplierInvoiceLinkedAt', 'supplierInvoiceLinkedBy', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])\n")
+    // ADR-68: Stage 1 accepts an approve with the link keys ABSENT (the pre-2A bundle) or present and null — never a string.
+    expect(LINE_PAIRS[3].transitional).toContain("(!('supplierInvoiceId' in request.resource.data) || linkUnlinked(request.resource.data))")
     // ADR-65: Stage 1 accepts an UNCHANGED revision OR +1 — never +2, never backwards.
     expect(LINE_PAIRS[2].transitional).toContain('(request.resource.data.revision == resource.data.revision || revisionIncremented())')
-    expect(transitionalSrc.startsWith("rules_version = '2';\n// ⚠️ ADR-63 / ADR-65 STAGE-1 TRANSITIONAL RULESET")).toBe(true)
+    expect(transitionalSrc.startsWith("rules_version = '2';\n// ⚠️ ADR-63 / ADR-65 / ADR-68 STAGE-1 TRANSITIONAL RULESET")).toBe(true)
     expect(transitionalSrc).toContain('Temporary compatibility only')
     expect(transitionalSrc).toContain('firebase.transitional.json')
   })
@@ -109,12 +124,17 @@ describe('firestore.transitional.rules is exactly what the generator produces fr
     }
   })
 
-  it('the claim line-count pin, the variation-line shape pins and the invoice count guard are identical in both files', () => {
+  it('the claim line-count pin, the variation-line shape pins, the invoice count guard AND the ADR-68 invoice pairing are identical in both files — the pairing is strict from Stage 1', () => {
     for (const needle of [
       'po.lineItems.size() + n == d.lineItems.size()',
       'variationLinesShaped(d.lineItems, n)',
       '&& variationLinesPreserved()',
       "let cc = claim.get('variationLineCount', 0);",
+      "&& 'supplierInvoiceId' in claim\n            && claim.supplierInvoiceId == null\n            && getAfter(claimPath()).data.supplierInvoiceId == invoiceId;",
+      "&& (resource.data.source != 'progress_claim' || claimReleased())",
+      '&& linkedInvoiceCreatedHere()',
+      '&& linkedInvoiceCancelledHere()',
+      '&& existingInvoiceLinkable()',
     ]) {
       expect(finalSrc).toContain(needle)
       expect(transitionalSrc).toContain(needle)

@@ -1,7 +1,7 @@
 import {
   CLAIM_STATUS, CLAIM_STATUS_LABELS, CLAIM_TRANSITION_STAMPS, canTransition, claimTotals,
   validateApprovedAmounts, buildClaimLine, claimedToDateCountError, validateClaimDraft,
-  claimVariationLineIssue, CLAIM_VARIATION_LINE_ISSUE_LABELS,
+  claimVariationLineIssue, CLAIM_VARIATION_LINE_ISSUE_LABELS, CLAIM_LINK_INITIAL,
 } from './progressClaims'
 import { roundMoney } from './purchaseOrders'
 import { sourceLineIdentityError, isVariationOriginLine, sourceLineLabel } from './sourceLine'
@@ -226,6 +226,10 @@ export function transitionUpdate(live, nextStatus, { approvedAmounts, assessment
       approvedGst:      totals.gst,
       approvedTotal:    totals.total,
       assessmentNotes:  assessmentNotes?.trim() || '',
+      // SHIELD 2A (ADR-68): approval INITIALISES the invoice link (present and
+      // null) — a claim created by a pre-2A tab becomes new-format here, and
+      // the FINAL rules require it. Workflow state only; never a figure.
+      ...CLAIM_LINK_INITIAL,
     }
   }
   if (nextStatus === CLAIM_STATUS.REJECTED && assessmentNotes?.trim()) {

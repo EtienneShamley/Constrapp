@@ -294,6 +294,43 @@ Existing documents are unaffected: `cancelledBy` is compared through
 incoming document, so a pre-ADR-40 invoice stays editable and acquires the new
 fields on its next valid write.
 
+### Claim-to-invoice source pairing (ADR-68, SHIELD 2A — IMPLEMENTED, NOT YET DEPLOYED)
+
+**One approved claim reserves at most ONE active (draft / approved / posted)
+claim-sourced supplier invoice — rules-enforced for every new-format claim.**
+The reservation is the claim's `supplierInvoiceId` backlink (DATA_MODEL.md →
+progressClaims), and the rules pair the two halves through `getAfter()`:
+
+- **Create (`sourceClaimValid`)** — in addition to the ADR-40 checks, the
+  get()-ed claim must name the invoice's `poId`, `claimNumber`, `supplierId`
+  and trimmed `supplierName`; must carry the `supplierInvoiceId` KEY with a
+  null value (a claim with no such key is LEGACY and **fails closed**); and
+  `getAfter(claim).supplierInvoiceId` must equal this invoice's id — the
+  claims branch (e) write in the same transaction. **An unpaired direct-SDK
+  create matches nothing**, and so does a paired create against a claim that
+  is linked, not approved, of another PO / supplier / number, or in another
+  project or tenant. Proven by `tests/rules/claimInvoicePairing.rules.test.js`,
+  including two CONCURRENT creates through the app's own transaction.
+- **Cancel (branch e)** — a `progress_claim` invoice whose claim links to IT
+  may be cancelled only with the claim's unlink in the same commit
+  (`claimReleased()`: `progressClaimId == null || !exists(claim) ||
+  get(claim).supplierInvoiceId != invoiceId || getAfter(claim).supplierInvoiceId
+  == null`); an invoice its claim does not link — legacy, or a claim that no
+  longer exists — cancels exactly as before. **Posted is still terminal**, so a
+  posted invoice's reservation is permanent.
+- The counter, the project lock and every other write are unchanged. The
+  transaction totals ≤ 16 access calls (create) and 10 (cancel) of the 20
+  allowed; every valid path evaluates inside the 1000-expression ceiling
+  (ADR-68 → Consequences).
+
+*Client-enforced only:* the register-based `claimHasActiveInvoice` fast-path
+(a friendly message before the transaction) and the reconcile offer's
+"exactly one active invoice" count — see **Deferred Control 43**.
+
+⚠️ **Release:** three stages (DEPLOYMENT.md → *SHIELD 2A release order*). The
+pairing is STRICT from Stage 1: an old tab's unpaired claim-sourced create is
+refused with a permission error until it refreshes — for that one action only.
+
 ## Purchase Orders — rules-enforced lifecycle (ADR-57, M2-B1 — LIVE since 27 October 2026)
 
 **Until ADR-57 the `purchaseOrders` block enforced tenant and role and nothing
@@ -531,6 +568,45 @@ through `get(key, null)`, the stamps are required only of the incoming
 document, a missing `revision` reads as 0, and the exact key set applies to
 `create` only, so a pre-ADR-58 claim stays editable, submittable, approvable
 and rejectable and acquires the new fields on its next valid write.
+
+### The supplier-invoice link (ADR-68, SHIELD 2A — IMPLEMENTED, NOT YET DEPLOYED)
+
+Three OPTIONAL keys — `supplierInvoiceId`, `supplierInvoiceLinkedAt`,
+`supplierInvoiceLinkedBy` — carry the ONE current claim-sourced invoice that
+reserves an approved claim. **The key's PRESENCE is the legacy discriminator**:
+absent = LEGACY (approved before 2A, or created / approved by a pre-2A tab;
+never invoiceable through the pairing until reconciled); present and null =
+unlinked (invoiceable); a string = linked.
+
+*Rules-enforced (`tests/rules/claimInvoicePairing.rules.test.js`,
+`tests/rules/progressClaims.rules.test.js`):*
+
+- **Create**: the keys absent or null (FINAL `hasAll` REQUIRES them null; a
+  string or a stamp at create is refused). **Approve**: the branch's `hasOnly`
+  admits the three keys; FINAL requires them present and null after approval
+  (`linkUnlinked`) — the new bundle initialises them, so a pre-2A claim becomes
+  new-format when approved. Draft edit, submit and reject may not touch them.
+- **(e) LINK** — `approved → approved`, exactly the three keys + `revision`
+  (+1) + audit stamps; stored link present and null; incoming id a non-empty
+  string, `supplierInvoiceLinkedBy == request.auth.uid`,
+  `supplierInvoiceLinkedAt == request.time`; `getAfter(invoice)` is a DRAFT
+  created in THIS commit (`createdAt == request.time`), `source ==
+  'progress_claim'`, `progressClaimId == claimId`, `poId == claim.poId`.
+- **(f) UNLINK** — stored id a string, incoming keys all null;
+  `getAfter(invoice).status == 'cancelled'` with `cancelledAt == request.time`
+  and `progressClaimId == claimId`. A posted invoice is never cancelled, so
+  its link is permanent.
+- **(g) RECONCILE** — stored id absent or null; incoming stamped as (e);
+  `get(invoice)` (it must already exist — a missing document denies) is
+  `progress_claim`, cites THIS claim, its PO and its supplier, and is
+  `draft | approved | posted`. A cancelled invoice is NOT linkable (it reserves
+  nothing). Records a fact; never creates one.
+- **No branch sets an absent key to null.** Link replacement while active,
+  a forged actor or clock, a wrong revision, any extra key, and a link on a
+  draft / submitted / rejected claim are refused (proven).
+
+*What rules cannot prove:* that a legacy claim has NO invoice, and the
+siblings of the one invoice (g) verifies — **Deferred Control 43**.
 
 ## Variations — rules-enforced lifecycle (ADR-59, M2-B3 — LIVE since 27 October 2026)
 
@@ -1666,13 +1742,21 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
    `posted` is terminal — it matches no update branch at all. What is **not**
    frozen there is anything inside `lineItems`, which rules cannot inspect (item
    29).
-3. **One-open-claim / one-invoice-per-claim race protection** — these checks
-   read the local snapshot; two simultaneous creators can produce two open claims
-   on one PO, or two supplier invoices against one approved claim. **ADR-40 did
-   not change this**: rules have no list, query, or count, so no rule can sum or
-   even see sibling documents. Rules *can* now verify that the referenced claim
-   exists and is approved — they cannot verify it is not already invoiced. Proven
-   unenforced by `tests/rules/supplierInvoices.rules.test.js`.
+3. **One-open-claim / one-invoice-per-claim race protection** — **the
+   one-invoice-per-claim half is CLOSED for every new-format claim by ADR-68
+   (SHIELD 2A — implemented, not yet deployed)**: the claim's own
+   `supplierInvoiceId` backlink is the sibling the rules CAN see, written
+   atomically with the invoice and cleared atomically with its cancellation
+   through `getAfter()` pairing; two concurrent creates, a retry and a
+   direct-SDK unpaired create are all refused (proven by
+   `tests/rules/claimInvoicePairing.rules.test.js`; the old "two invoices
+   remain possible" case in `tests/rules/supplierInvoices.rules.test.js` now
+   asserts the refusal). What remains, stated plainly in **Deferred Control
+   43**: a LEGACY claim (no link key) is fail-closed, not proven uninvoiced,
+   and pre-existing duplicates are listed, never repaired. **The one-open-claim
+   half is unchanged**: `hasOpenClaim` reads the local snapshot; rules have no
+   list, query, or count, so two simultaneous creators can still produce two
+   open claims on one PO (DC36).
 4. **Creator vs approver segregation** — nothing prevents the claim (or
    variation) creator from approving their own document. Since ADR-58 the
    claim's `submittedBy` / `approvedBy`, and since ADR-59 the variation's
@@ -2831,6 +2915,46 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     `frontend/tests/unit/ganttBaseline.test.js` or
     `frontend/tests/unit/programmeBaselineActions.test.js`.
 
+43. **Claim-to-invoice source pairing — what the backlink cannot prove
+    (ADR-68, SHIELD 2A).** Rules enforce, for every NEW-FORMAT claim, one
+    active claim-sourced invoice through the atomic link / unlink pairing,
+    the source identity (PO, supplier, claim number), no link replacement
+    while active, the posted reservation, the actor and server stamps and
+    the +1 revision. What they **cannot** enforce, and what must never be
+    described as enforced:
+
+    - **THAT A LEGACY CLAIM HAS NO INVOICE.** A claim with no `supplierInvoiceId`
+      key predates the pairing (or was created / approved by a pre-2A tab).
+      Rules cannot query the invoice collection, a client's settled register is
+      only what that client could read, and an administrator's assertion is not
+      server-verifiable evidence — so **there is NO write, in the rules or the
+      app, that sets an absent key to null** (proven by
+      `tests/rules/claimInvoicePairing.rules.test.js` and pinned by
+      `tests/unit/supplierInvoiceActions.test.js`). Such a claim FAILS CLOSED
+      until it records one EXISTING active invoice through rules branch (g),
+      or until the Product-Owner-authorised trusted inventory / backfill
+      (PROJECT_DECISIONS.md → ADR-68) initialises it outside the app. SHIELD
+      check 4 condition I lists every such claim.
+    - **THE SIBLINGS OF A RECONCILED INVOICE.** Branch (g) verifies the ONE
+      invoice named; a legacy claim that already has two active invoices can
+      be reconciled to either, and the other stays a condition-D finding —
+      never repaired, cancelled or offset by SHIELD. The pairing stops NEW
+      duplicates; it does not undo old ones.
+    - **THE RECONCILE OFFER'S COUNT.** The *Link SI-####* action appears only
+      when the client's settled, error-free register shows exactly one active
+      invoice for the claim — a client count (the rules accept any one
+      matching invoice). A register that is loading or failed offers nothing.
+    - **THE REGISTER FAST-PATH.** `claimHasActiveInvoice` (editor and hook)
+      still reads the subscribed register; it produces a legible message
+      before the transaction and is not the control.
+    - **INVOICE LINE CONTENTS** stay unverifiable (item 29); the pairing
+      compares the header identity and the claim's certified GST / total.
+
+    **Residual direct-SDK risk, stated plainly:** none for a new-format claim
+    (the rules refuse the second invoice from any caller). For a legacy claim
+    the risk is exactly the pre-2A one until it is reconciled or backfilled —
+    SHIELD condition I makes every such claim visible until then.
+
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
 is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.
@@ -3154,8 +3278,10 @@ create: duplicate supplier references (Deferred Control 9), a stored header that
 disagrees with its lines or a counted line with no cost code (item 29),
 over-invoicing against a PO (item 29's aggregate gap), a PO closed or cancelled
 with claims or posted invoices against it (items 1 and 2), a second open claim
-or a second invoice per claim (item 3), and the payables exceptions (items 18,
-24 and 25). A clean SHIELD tab is a statement about the records it could read
+(item 3), a second invoice per LEGACY claim (item 43 — for a new-format claim
+the rules now refuse it, ADR-68; SHIELD condition I lists the claims whose link
+and register disagree and repairs none of them), and the payables exceptions
+(items 18, 24 and 25). A clean SHIELD tab is a statement about the records it could read
 at that moment, not a certification — a loading, failed or empty source renders
 *unavailable* or *needs data*, never *no issue*. Findings name source document
 ids and numbers; they never name a user (`users/{uid}` is client-read-only,
@@ -3330,8 +3456,10 @@ place before any non-hand-provisioned (external) users are onboarded — see
    tenant-owned table (company/project isolation), with an explicit deny-by-
    default posture.
 2. **Server-enforced authorisation** — lifecycle-transition legality, post-
-   submission/`posted`/`approved` immutability, one-open-claim and
-   one-invoice-per-claim race guards, creator ≠ approver segregation, counter
+   submission/`posted`/`approved` immutability, the one-open-claim race guard
+   (the one-invoice-per-claim guard is rules-enforced for new-format claims
+   since ADR-68; a trusted backfill for legacy claims remains a PO-authorised
+   operation), creator ≠ approver segregation, counter
    integrity (+1 only), (contacts / supplier-invoice / variation) uniqueness, and
    **project-currency lock activation derived server-side from actual financial
    records (plus known-code validation of country/currency)** — all moved
