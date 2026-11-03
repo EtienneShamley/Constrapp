@@ -12,10 +12,14 @@
     "test:credit-notes": "node scripts/credit-notes-dev.mjs",
     "test:quant": "node scripts/quant-dev.mjs",
     "test:tender": "node scripts/tender-dev.mjs",
+    "test:team": "node scripts/team-dev.mjs",
     "rules:transitional": "node scripts/build-transitional-rules.mjs",
     "rules:transitional:check": "node scripts/build-transitional-rules.mjs --check",
     "test:unit": "vitest run --config vitest.config.js",
-    "test:rules": "firebase emulators:exec --only firestore,storage --project constrapp-rules-test \"vitest run --config vitest.rules.config.js\""
+    "test:rules": "firebase emulators:exec --only firestore,storage --project constrapp-rules-test \"vitest run --config vitest.rules.config.js\"",
+    "test:functions": "firebase emulators:exec --only auth,firestore,functions --project constrapp-rules-test \"vitest run --config vitest.functions.config.js\"",
+    "functions:lint": "npm --prefix functions run lint",
+    "functions:test": "npm --prefix functions test"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.1",
@@ -36,7 +40,7 @@
     "eslint": "^10.3.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
-    "firebase-tools": "^13.35.1",
+    "firebase-tools": "^15.34.2",
     "globals": "^17.6.0",
     "vite": "^8.0.12",
     "vitest": "^4.1.10"

@@ -579,9 +579,9 @@ closes and cancels; only the raise action is refused until the rules return.
 M2-B3. No migration, backfill or data rewrite is involved in either
 direction, and no rollback removes an M2 control.
 
-**New-Scope Variation Claim & Invoice Integration — M3-B2 (ADR-63): IMPLEMENTED
-— NOT YET DEPLOYED. THREE STAGES, FIREBASE-CLI DRIVEN: TRANSITIONAL RULES →
-HOSTING → FINAL RULES.**
+**New-Scope Variation Claim & Invoice Integration — M3-B2 (ADR-63): LIVE IN
+PRODUCTION (confirmed by the Product Owner). Released in THREE STAGES,
+FIREBASE-CLI DRIVEN: TRANSITIONAL RULES → HOSTING → FINAL RULES.**
 
 *What the two rulesets are.* The FINAL ruleset (`frontend/firestore.rules`,
 **217,864 bytes**) requires, on every approve of a PO-linked supplier
@@ -871,7 +871,12 @@ while the 1B bundle is live would re-break measurement saves; do not.
   console installs a permissive starter ruleset that **must** be replaced with
   `frontend/storage.rules` in the same sitting.
 - Users provisioned manually: an Auth user plus a matching `users/{uid}`
-  document — see [SECURITY.md](SECURITY.md).
+  document — see [SECURITY.md](SECURITY.md). **Once ADR-72 (L1) is deployed**,
+  companies are bootstrapped by the operator script and every further member
+  joins by invitation (see *L1 — Trusted Backend & Team Management* below).
+- **Emulator suites need Java 21+** (firebase-tools 15). Node.js 24.19.0 for
+  the frontend (`engines`); the Functions run on **Node.js 22** in production
+  (`firebase.json` → `runtime: nodejs22`).
 
 ## Environment Variables
 
@@ -886,6 +891,8 @@ web app config (Console → Project settings → Your apps → SDK setup):
 | `VITE_FIREBASE_STORAGE_BUCKET` | `storageBucket` |
 | `VITE_FIREBASE_MESSAGING_SENDER_ID` | `messagingSenderId` |
 | `VITE_FIREBASE_APP_ID` | `appId` |
+| `VITE_FIREBASE_APPCHECK_SITE_KEY` | **ADR-72.** reCAPTCHA Enterprise site key registered for App Check (public). Without it the team-management callables refuse every request |
+| `VITE_FIREBASE_APPCHECK_DEBUG_TOKEN` | **ADR-72, dev builds only.** An App Check debug token registered in the console, for `npm run dev` against the real project. Never set for a production build |
 
 These are read by `frontend/src/lib/firebase.js`. `.env.local` is git-ignored —
 never commit it. (A root-level `.env.example` also exists with a few extra placeholders the
@@ -1066,7 +1073,7 @@ each a separate approved action; **none is run by an implementation task.**
 
 ### GANTT 1B release order — programme baselines (ADR-66) — RULES FIRST, then Hosting, Firebase-CLI driven
 
-**Status: IMPLEMENTED — NOT YET DEPLOYED (Rules AND Hosting; TWO steps, no
+**Status: LIVE IN PRODUCTION (confirmed by the Product Owner) (Rules AND Hosting; TWO steps, no
 transitional stage).** The 1B bundle writes two NEW collections
 (`programmeBaselines`, `programmeBaselineSnapshots`) that the live ruleset
 denies by default, and changes nothing the live bundle writes: the
@@ -1129,7 +1136,7 @@ Revisit if a real programme shows baseline writes to be slow.
 
 ### PULSE 1C release order — schedule intelligence (ADR-67) — RULES FIRST, then Hosting, after GANTT 1B is live
 
-**Status: IMPLEMENTED — NOT YET DEPLOYED (Rules AND Hosting; TWO steps, no
+**Status: LIVE IN PRODUCTION (confirmed by the Product Owner) (Rules AND Hosting; TWO steps, no
 transitional stage; ONE prerequisite).** The 1C bundle writes acknowledgement
 documents for three NEW indicator ids (`blockedActivities`,
 `dependencyReview`, `baselineSlippage`) that the live `pulseAcknowledgements`
@@ -1273,7 +1280,7 @@ hotfix:
 
 ### SHIELD 2A release order — claim-to-invoice source pairing (ADR-68) — THREE STAGES, the pairing strict from Stage 1, Firebase-CLI driven
 
-**Status: IMPLEMENTED — NOT YET DEPLOYED (transitional Rules → Hosting →
+**Status: LIVE IN PRODUCTION (confirmed by the Product Owner) (transitional Rules → Hosting →
 FINAL Rules; THREE steps).** The 2A bundle writes three NEW claim keys
 (`supplierInvoiceId`, `supplierInvoiceLinkedAt`, `supplierInvoiceLinkedBy`)
 at claim create and approve that the live `hasOnly` lists REJECT, and it
@@ -1468,7 +1475,7 @@ implementation task.**
 
 ### SHIELD 2B2 release order — Controlled Budget Adjustments (ADR-71) — RULES FIRST, then Hosting; no transitional stage; 2B1 must be live first
 
-**Status: IMPLEMENTED — NOT YET DEPLOYED (Rules AND Hosting; TWO steps).**
+**Status: LIVE IN PRODUCTION (confirmed by the Product Owner) (Rules AND Hosting; TWO steps).**
 2B2 adds ONE new collection (`budgetAdjustments`) and extends the
 `approvedBudget/current` block with an OPTIONAL ledger (`adjustmentCount`,
 `adjustmentNet`, `lastAdjustmentId` — absent reads 0). **Rules first:** the
@@ -1536,6 +1543,107 @@ is run by an implementation task.**
 - **Approved adjustments are never deleted** by any ruleset; a defective
   adjustment is corrected by a separately approved compensating adjustment,
   or superseded by a re-approval.
+
+## L1 — Trusted Backend & Team Management (ADR-72) — IMPLEMENTED, NOT YET DEPLOYED
+
+**What ships:** eight Callable Cloud Functions (`frontend/functions/`, codebase
+`team`, Node.js 22, region `australia-southeast1`) and a Hosting bundle with
+Company Settings → Team, `/accept-invite` and the membership gate.
+**No Firestore or Storage rules change** — `firestore.rules` stays 241,924
+bytes; nothing is published to Rules for this release.
+
+### Product Owner setup (once, before the first Functions deploy)
+
+1. **Blaze plan** on `constrapp-69b5d` (required to deploy Functions and use
+   Secret Manager). Add a **GCP budget alert** (Billing → Budgets & alerts),
+   e.g. A$20/month at 50 / 90 / 100 %.
+2. **Confirm the Firestore location.** `gcloud firestore databases describe
+   --project=constrapp-69b5d --database='(default)'` → `locationId`. The
+   functions are pinned to `australia-southeast1` (`functions/src/lib/params.js`
+   → `REGION` and `src/lib/firebase.js` → `FUNCTIONS_REGION`). If Firestore is
+   elsewhere, change BOTH constants to the matching Functions region before
+   deploying.
+3. **Resend.** Create an account, **verify the sending domain** (Resend shows
+   the SPF / DKIM records to add at your DNS host; add a DMARC record if you
+   have none), create an API key with *Sending access* only, then:
+   `cd frontend && npx firebase functions:secrets:set EMAIL_API_KEY --project constrapp-69b5d`
+   (paste the key; it goes to Google Secret Manager, never the repository).
+4. **Parameters.** Edit `frontend/functions/.env.constrapp-69b5d` (committed,
+   non-secret): `APP_BASE_URL=https://<your production origin>` and
+   `EMAIL_FROM=Constrapp <invitations@<verified-domain>>`. Both are empty on
+   purpose: until set, invitations are refused (`app-url-not-configured`)
+   rather than sent with a broken link.
+5. **App Check.** Console → App Check → register the web app with
+   **reCAPTCHA Enterprise** (add the production domain to the key). Put the
+   site key in the build environment as `VITE_FIREBASE_APPCHECK_SITE_KEY`.
+   Leave the *Cloud Functions* enforcement toggle as is: the functions enforce
+   App Check in code (`enforceAppCheck: true`). **Do not release the Hosting
+   bundle until a production preview has shown an App Check token being
+   issued** — without one, every team call is refused (fail closed).
+6. **Auth settings.** Console → Authentication → Settings: turn on **Email
+   enumeration protection**; confirm the production domain is in *Authorized
+   domains*. Email/Password sign-in stays enabled (invitees register with it).
+7. **Operator credentials** for the scripts: `gcloud auth
+   application-default login` as a project Owner/Editor. Never download a
+   service-account key file.
+
+### Release order — Functions FIRST, verify, then Hosting
+
+1. **Functions:** `cd frontend && npx firebase deploy --only functions --project constrapp-69b5d`.
+   The predeploy hook runs the Functions lint and pure tests. The eight
+   callables are inert until the new Hosting bundle calls them; the live
+   bundle never does.
+2. **Verify Functions security** (no UI needed): a POST to
+   `https://australia-southeast1-constrapp-69b5d.cloudfunctions.net/listTeam`
+   with body `{"data":{}}` and **no** App Check header must answer **401**.
+   Logs: `npx firebase functions:log --project constrapp-69b5d`.
+3. **Bootstrap a verification company** (or the first real customer):
+   `cd frontend/functions && node scripts/bootstrap-company.mjs --project constrapp-69b5d --company-id <slug> --company-name "<Name>" --admin-email <email> --app-url https://<origin> --dry-run`,
+   then the same without `--dry-run`. It prints the acceptance link ONCE; hand
+   it over a trusted channel.
+4. **Hosting:** build with the production `VITE_FIREBASE_*` values **plus
+   `VITE_FIREBASE_APPCHECK_SITE_KEY`**, then
+   `npx firebase deploy --only hosting --project constrapp-69b5d`.
+5. **Verify onboarding end-to-end** — TESTING.md §49 (the three manual checks).
+
+**Existing users** keep working with no action: their console-provisioned
+`users/{uid}` documents carry no `status` and are treated as active; they
+appear in Team on first load.
+
+### Recovery
+
+- **Kill switch:** set `TEAM_MANAGEMENT_ENABLED=false` in
+  `functions/.env.constrapp-69b5d` and redeploy Functions — every callable
+  answers `team-management-disabled`; no data changes. Existing members are
+  unaffected (rules do not depend on the functions).
+- **Functions rollback:** check out the previous commit and `firebase deploy
+  --only functions` (there is no one-click Functions rollback). Deleting the
+  functions (`firebase functions:delete <name> --region australia-southeast1`)
+  is also safe: membership documents stay valid.
+- **Hosting rollback:** Console → Hosting → release history → *Rollback*
+  (there is no `firebase hosting:rollback` command). The previous bundle has no
+  Team page and no gate; members keep working.
+- **Accidental role change:** change it back in Team. **Accidental
+  deactivation:** re-invite the person (same uid and history; their account is
+  re-enabled when they open the link). **No admin left** (should be
+  impossible — the last-admin guard is transactional): run the bootstrap script
+  for the same company and email to issue a fresh `company_admin` invitation.
+- **Auth sync left pending / drift:** `node scripts/reconcile-membership.mjs
+  --project constrapp-69b5d` reports; `--fix` completes pending Auth disables
+  only. Everything else is reported for a human decision.
+- **Secret rotation:** `firebase functions:secrets:set EMAIL_API_KEY`, then
+  redeploy Functions (a new secret value is only picked up on deploy), then
+  revoke the old key in Resend.
+
+### Monitoring (minimum)
+
+Cloud Logging for the `team` functions: `severity>=ERROR` is an unexpected
+failure (expected refusals log at INFO as `team call refused` with their
+code). Create a log-based alert on `resource.type="cloud_run_revision" AND
+severity>=ERROR AND labels."goog-managed-by"="cloudfunctions"` (Console →
+Logging → Create alert). Invitation delivery failures show in Team as "Not
+delivered" and in the logs as `invitation email failed`. Membership history is
+in `companies/{c}/auditEvents` (console read only).
 
 ## Publishing Firestore Rules — Manual Process
 

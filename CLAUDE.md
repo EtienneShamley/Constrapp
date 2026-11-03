@@ -25,13 +25,13 @@ Before working in this repository, read in order:
 ## Rules of Engagement
 
 - **Inspect before editing.** Read the actual files (pages, hooks, `frontend/firestore.rules`) before changing them; never assume structure or behaviour.
-- **Preserve existing architecture.** Hooks-only Firestore access, client-SDK-only backend, read-time financial derivation. Do not introduce new patterns without approval.
+- **Preserve existing architecture.** Hooks-only Firestore access, client-SDK access for all project and financial data (the ONLY trusted backend is the ADR-72 team-management Functions in `frontend/functions/` — no financial logic there), read-time financial derivation. Do not introduce new patterns without approval.
 - **Design tasks stop for approval.** After proposing UI/UX or architectural designs, wait for explicit approval before implementing.
 - **Never commit automatically.** Only commit or push when explicitly asked.
 - **No unrelated changes.** Keep diffs scoped to the task; flag anything else instead of fixing it silently.
 - **Financial invariant:** Purchase Orders and Progress Claims never write financial values onto Budget Lines (see AGENT.md → Financial Invariants).
 - **Run the checklists.** Before writing code, complete the pre-implementation checklist in [docs/ENGINEERING_STANDARDS.md](docs/ENGINEERING_STANDARDS.md); before finishing, complete its validation and security-review checklists.
-- **Report security limitations honestly.** Firestore Security Rules are the only trust boundary; client-side role/lifecycle checks are UX only. Never claim a feature is secure or a control is enforced when it is client-side only — follow the reporting protocol in ENGINEERING_STANDARDS.md §7.
+- **Report security limitations honestly.** Firestore (and Storage) Security Rules are the only trust boundary for client-SDK data; the ADR-72 team-management Functions bypass rules and must authorise every call themselves; client-side role/lifecycle checks are UX only. Never claim a feature is secure or a control is enforced when it is client-side only — follow the reporting protocol in ENGINEERING_STANDARDS.md §7.
 
 ## Canonical Documentation
 

@@ -1,7 +1,9 @@
 import { initializeApp } from 'firebase/app'
-import { getAuth } from 'firebase/auth'
+import { getAuth, connectAuthEmulator } from 'firebase/auth'
 import { getFirestore, connectFirestoreEmulator } from 'firebase/firestore'
 import { getStorage, connectStorageEmulator } from 'firebase/storage'
+import { getFunctions, connectFunctionsEmulator } from 'firebase/functions'
+import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'firebase/app-check'
 
 const firebaseConfig = {
   apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
@@ -14,9 +16,39 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig)
 
+// ── Firebase App Check (ADR-72) ──────────────────────────────────────────────
+//
+// Every team-management callable is deployed with `enforceAppCheck: true`, so
+// a request without a valid App Check token is refused before the handler
+// runs. The web app proves itself with reCAPTCHA Enterprise; the site key is
+// PUBLIC (like the rest of the Firebase web config) and lives in
+// VITE_FIREBASE_APPCHECK_SITE_KEY. Without it App Check is simply not
+// initialised — the callables then refuse every request, which is the
+// intended fail-closed posture until the key is configured (DEPLOYMENT.md).
+//
+// Local development against the real project uses a DEBUG token registered
+// in the console (VITE_FIREBASE_APPCHECK_DEBUG_TOKEN, dev builds only); the
+// emulator suite skips App Check verification itself.
+const appCheckSiteKey = import.meta.env.VITE_FIREBASE_APPCHECK_SITE_KEY
+if (import.meta.env.DEV && import.meta.env.VITE_FIREBASE_APPCHECK_DEBUG_TOKEN) {
+  self.FIREBASE_APPCHECK_DEBUG_TOKEN = import.meta.env.VITE_FIREBASE_APPCHECK_DEBUG_TOKEN
+}
+export const appCheckConfigured = typeof appCheckSiteKey === 'string' && appCheckSiteKey.length > 0
+if (appCheckConfigured) {
+  initializeAppCheck(app, {
+    provider: new ReCaptchaEnterpriseProvider(appCheckSiteKey),
+    isTokenAutoRefreshEnabled: true,
+  })
+}
+
 export const auth    = getAuth(app)
 export const db      = getFirestore(app)
 export const storage = getStorage(app)
+
+// The trusted backend's ONE region (functions/src/lib/params.js → REGION).
+// Callables are addressed by region; a mismatch is a 404, not a fallback.
+export const FUNCTIONS_REGION = 'australia-southeast1'
+export const functions = getFunctions(app, FUNCTIONS_REGION)
 
 // ── Local manual-acceptance emulator (FIRESTORE ONLY) — LAUNCHER-ONLY ─────────
 //
@@ -94,6 +126,33 @@ if (useStorageEmulator) {
   connectStorageEmulator(storage, host, port)
   console.warn(
     `%c[Constrapp] STORAGE → LOCAL EMULATOR ${host}:${port} (bucket "${firebaseConfig.storageBucket}") — files are disposable and NOT production.`,
+    'background:#F5A623;color:#000;font-weight:bold;padding:2px 6px;border-radius:3px',
+  )
+}
+
+// ── Local Functions + Auth emulators — LAUNCHER-ONLY, and only WITH Firestore ─
+//
+// The team-management launcher (`npm run test:team`, scripts/team-dev.mjs)
+// points the callables at the Functions emulator and — because invitation
+// acceptance creates Auth accounts — Auth at the Auth emulator too. Both
+// require every Firestore condition above PLUS their own explicit opt-in, so
+// no older launcher changes behaviour. Functions is never emulated against
+// production Auth or Firestore: the backend's Admin SDK would then write real
+// membership documents from a throwaway function, the one split this file
+// exists to prevent.
+const useFunctionsEmulator =
+  useFirestoreEmulator &&
+  import.meta.env.VITE_USE_FUNCTIONS_EMULATOR === 'true' &&
+  import.meta.env.VITE_USE_AUTH_EMULATOR === 'true'
+
+if (useFunctionsEmulator) {
+  const host = import.meta.env.VITE_FIRESTORE_EMULATOR_HOST || '127.0.0.1'
+  const fnPort = Number(import.meta.env.VITE_FUNCTIONS_EMULATOR_PORT || 5001)
+  const authPort = Number(import.meta.env.VITE_AUTH_EMULATOR_PORT || 9099)
+  connectAuthEmulator(auth, `http://${host}:${authPort}`, { disableWarnings: true })
+  connectFunctionsEmulator(functions, host, fnPort)
+  console.warn(
+    `%c[Constrapp] AUTH → ${host}:${authPort}, FUNCTIONS → ${host}:${fnPort} (LOCAL EMULATORS) — accounts and invitations are disposable and NOT production.`,
     'background:#F5A623;color:#000;font-weight:bold;padding:2px 6px;border-radius:3px',
   )
 }

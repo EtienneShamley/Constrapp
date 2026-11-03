@@ -1,0 +1,6 @@
+node_modules/
+# Local secret values for the emulator ONLY (never committed; production
+# secrets live in Google Secret Manager via `firebase functions:secrets:set`).
+.secret.local
+.env.local
+*.log

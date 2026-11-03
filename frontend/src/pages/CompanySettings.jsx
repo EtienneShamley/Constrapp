@@ -3,6 +3,7 @@ import PageHeader from '../components/PageHeader'
 import Card from '../components/Card'
 import Btn from '../components/Btn'
 import Badge from '../components/Badge'
+import SettingsNav from '../components/SettingsNav'
 import { formatDate } from '../lib/formatters'
 import { useCompany } from '../hooks/useCompany'
 import { useProfile } from '../hooks/useProfile'
@@ -273,6 +274,8 @@ export default function CompanySettings() {
         title="Company Settings"
         sub={company?.name ? `${company.name} · country & reporting currency` : 'Country & reporting currency'}
       />
+
+      <SettingsNav />
 
       {/* ── Current configuration ───────────────────────────────────────── */}
       <Card className="mb-3.5">

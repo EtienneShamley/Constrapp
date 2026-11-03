@@ -23,12 +23,18 @@ These are facts about the system, restated as rules. Do not "improve" around the
 without an approved architecture change (record it in
 [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) first).
 
-- **Client-SDK-only backend.** There is no server, no Cloud Functions, no
-  `firebase.json`. Firestore Security Rules are the **single trust boundary**. Do not
-  assume, claim, or write server-side code until a trusted backend is actually
-  introduced (see §9, §12). The `backend/` directory is a **reserved, intentionally
-  empty placeholder** — it holds no code and must not be treated as an existing
-  backend.
+- **Client-SDK backend for all financial data; ONE narrow trusted backend for
+  team management (ADR-72).** Every financial and project collection is read and
+  written by the client SDK, and Firestore + Storage Security Rules are the
+  **trust boundary for them**. Since ADR-72, `frontend/functions/` holds eight
+  Callable Cloud Functions (Admin SDK) that issue, change and remove
+  **membership** only — invitations, roles, deactivation. They bypass rules, so
+  they authorise every call themselves from `users/{uid}`. Do not add a financial
+  write, a general API, Express, triggers or another database to that package
+  without a new ADR. `frontend/firebase.json` exists (Hosting, Firestore/Storage
+  rules, the Functions codebase and the emulators); Cloud Storage has been in use
+  since ADR-28. There is no root `backend/` directory (earlier documents described an
+  empty placeholder; it does not exist in the repository).
 - **Hooks-only Firestore access.** Every read/write goes through a hook in
   `frontend/src/hooks/`. Pages and components **never** import `firebase/*`
   (the sole legacy exception is `Login.jsx` calling `signInWithEmailAndPassword`).
@@ -141,21 +147,21 @@ provisioned (external) users are onboarded.
 |---|---|---|
 | **Firestore Security Rules** | ✅ **Sole boundary** — required for every collection/field | Keep as defense-in-depth |
 | **PostgreSQL / Supabase RLS** | N/A — Firestore uses **Security Rules, not SQL RLS** | ✅ **Mandatory and tested on every tenant-owned table** |
-| **Authentication** | ✅ Firebase email/password; role+`companyId` on `users/{uid}`; **no custom claims** | Custom claims, invites, self-serve signup/reset, user management |
+| **Authentication** | ✅ Firebase email/password; role+`companyId` on `users/{uid}`; **no custom claims**. ✅ **ADR-72 (not yet deployed):** invitations, acceptance, role changes and deactivation via the Callable Functions; company creation operator-only | Custom claims, self-serve company signup, MFA |
 | **Authorisation** | ⚠️ Rules-level tenant+role only; **client role checks are UX** | Move lifecycle legality, immutability, segregation server-side |
 | **Company/project tenant isolation** | ✅ Enforced via `companyId` `get()` in rules | Re-enforce in RLS / backend queries |
-| **Rate limiting** | ❌ Not possible from the client | ✅ Required at API/gateway |
+| **Rate limiting** | ❌ Not possible for client-SDK writes. ✅ **ADR-72:** fixed-window limits + App Check + instance caps on the team-management callables | ✅ Required at API/gateway for any further endpoint |
 | **Input validation** | ⚠️ Client hooks/`lib` only (bypassable by direct SDK calls) | ✅ Server-side authoritative validation |
 | **API schemas** | N/A — no API surface | ✅ Explicit, validated request/response contracts |
 | **Environment variables** | ✅ `VITE_*` only, all **public** by definition | Server-side env for anything secret |
-| **Secrets** | ✅ Rule: **none in the frontend, ever** (Firebase web config is public by design) | ✅ Server-side secret store / vault |
+| **Secrets** | ✅ Rule: **none in the frontend, ever** (Firebase web config and the App Check site key are public by design). ✅ **ADR-72:** `EMAIL_API_KEY` in Secret Manager, bound per function | ✅ Server-side secret store / vault for every further provider |
 | **Stripe & payment providers** | ❌ No secret-key calls from the browser; billing not implemented | ✅ Server-only; verify webhook signatures; idempotency keys |
-| **Email providers** | ❌ Not from the browser | ✅ Server-only; no keys in bundle |
+| **Email providers** | ❌ Not from the browser. ✅ **ADR-72:** Resend HTTPS API from the Functions only (invitations) | ✅ Server-only; no keys in bundle |
 | **AI providers** | ❌ Not from the browser (also AGENT.md AI Placeholder Rule) | ✅ Server-only; keys server-side; cost caps (below) |
-| **File uploads** | ⚠️ Storage initialised but **unused**; needs Storage Security Rules **before** first use | ✅ Server validation: size/type/content, AV scanning, scoped paths |
+| **File uploads** | ✅ Storage in use since ADR-28 with `storage.rules` (scoped paths, role gates, content-type/size checks, create-only). ⚠️ Download URLs are bearer links (Deferred Control 46) | ✅ Server validation: content inspection, AV scanning, orphan cleanup |
 | **Webhooks** | N/A | ✅ Signature verification + replay/idempotency protection |
-| **Logging** | Console only; **never log secrets or PII** | ✅ Structured logs, redaction, retention policy |
-| **Audit trails** | ⚠️ `createdBy`/`approvedBy` + status timestamps only; no transition history | ✅ Full transition/edit logging (who/what/when) |
+| **Logging** | Browser console only; **never log secrets or PII**. ✅ **ADR-72:** structured `firebase-functions/logger` logs in the Functions (no tokens, passwords or secrets) | ✅ Structured logs, redaction, retention policy |
+| **Audit trails** | ⚠️ `createdBy`/`approvedBy` + status timestamps on financial records; no transition history. ✅ **ADR-72:** membership and invitation changes audited in `companies/{c}/auditEvents` | ✅ Full transition/edit logging (who/what/when) for financial records |
 | **Error messages** | ✅ Friendly, non-leaking (see `useProfile` graceful-degrade pattern) | Same, and server-side too — never leak internals |
 | **Dependency security** | ✅ `npm audit` in the validation checklist | Automated CI scanning + update policy |
 | **Cost & budget caps** | N/A (no metered providers) | ✅ Per-provider spend caps (AI/email/SMS/storage) with alerts |

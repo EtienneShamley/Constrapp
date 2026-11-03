@@ -4,14 +4,17 @@ import { ProfileProvider } from './hooks/useProfile'
 import { CompanyProvider } from './hooks/useCompany'
 import { ProjectsProvider } from './hooks/useProjects'
 import ProtectedRoute from './components/ProtectedRoute'
+import MembershipGate from './components/MembershipGate'
 import AppShell from './layouts/AppShell'
-import AuthLayout from './layouts/AuthLayout'
+import AuthLayout, { InviteLayout } from './layouts/AuthLayout'
 import ProjectDetailLayout from './layouts/ProjectDetailLayout'
 import ProjectCommercialLayout from './layouts/ProjectCommercialLayout'
 import ProjectDocumentsLayout from './layouts/ProjectDocumentsLayout'
 import Login          from './pages/Login'
 import CreateAccount  from './pages/CreateAccount'
 import ForgotPassword from './pages/ForgotPassword'
+import AcceptInvite   from './pages/AcceptInvite'
+import TeamSettings   from './pages/settings/TeamSettings'
 import Dashboard      from './pages/Dashboard'
 import Projects       from './pages/Projects'
 import Contacts       from './pages/Contacts'
@@ -62,8 +65,18 @@ export default function App() {
                   <Route path="forgot-password" element={<ForgotPassword />} />
                 </Route>
 
-                {/* Protected app routes — redirect to /login if not signed in */}
+                {/* Invitation acceptance (ADR-72) — the auth shell WITHOUT the
+                    signed-in redirect: a member may be signed in while they
+                    accept, or be told to switch account. */}
+                <Route element={<InviteLayout />}>
+                  <Route path="accept-invite" element={<AcceptInvite />} />
+                </Route>
+
+                {/* Protected app routes — redirect to /login if not signed in,
+                    then the membership gate (ADR-72): a signed-in user with no
+                    active company membership never reaches the shell. */}
                 <Route element={<ProtectedRoute />}>
+                  <Route element={<MembershipGate />}>
                   <Route element={<AppShell />}>
                     <Route index               element={<Dashboard />} />
                     <Route path="projects"     element={<Projects />} />
@@ -161,6 +174,9 @@ export default function App() {
 
                     <Route path="contacts"       element={<Contacts />} />
                     <Route path="settings/company" element={<CompanySettings />} />
+                    {/* Team management (ADR-72): members, roles, invitations —
+                        every write goes through the trusted backend. */}
+                    <Route path="settings/team" element={<TeamSettings />} />
                     <Route path="subcontractors" element={<Subcontractors />} />
                     <Route path="pulse"          element={<Pulse />} />
                     <Route path="shield"         element={<Shield />} />
@@ -170,6 +186,7 @@ export default function App() {
                     {/* Legacy top-level module routes are retired — Budgets, BOQ, Forecasting, etc.
                         now live under Project Detail. Send anything unmatched back to Projects. */}
                     <Route path="*" element={<Navigate to="/projects" replace />} />
+                  </Route>
                   </Route>
                 </Route>
               </Routes>

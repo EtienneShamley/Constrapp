@@ -47,7 +47,7 @@ indicators — 1A (ADR-47): the six commercial ones (forecast over budget, cost
 codes not forecast, negative forecast gross profit, programme activities
 overdue, supplier invoices past due, pending variation exposure); 1B (ADR-49,
 in production since 19 October 2026): acknowledgement with a required review-by
-date; 1C (ADR-67, **implemented, NOT YET DEPLOYED** — rules first, then
+date; 1C (ADR-67, **LIVE in production (confirmed by the Product Owner)** — rules first, then
 Hosting): the three Schedule Intelligence indicators composed from the GANTT
 selectors (programme activities blocked by predecessors, programme
 dependencies needing review, programme later than the approved baseline) —
@@ -123,14 +123,26 @@ npm run test:unit
 ### Security Rules tests (Firestore + Storage)
 
 Runs `frontend/firestore.rules` and `frontend/storage.rules` against the
-**Firestore and Storage emulators** — never a real project. Requires a JDK (17 is
-fine; `firebase-tools` is pinned to v13 for that reason). One command covers both
-trust boundaries. Run it before publishing **either** rules file. Separate from
-the unit suite.
+**Firestore and Storage emulators** — never a real project. Requires **JDK 21+**
+(`firebase-tools` 15). One command covers both trust boundaries. Run it before
+publishing **either** rules file. Separate from the unit suite.
 
 ```bash
 cd frontend
 npm run test:rules
+```
+
+### Trusted backend tests (ADR-72 — team management)
+
+`frontend/functions/` is its own npm package (Node.js 22 in production). Its
+pure tests need nothing; the integration suite runs the handlers, a real
+callable, the rules-denial checks and the operator scripts against the **Auth,
+Firestore and Functions emulators** (JDK 21+).
+
+```bash
+cd frontend/functions && npm install && npm run lint && npm test
+cd ..                 && npm run test:functions
+npm run test:team     # manual: emulators + bootstrap link + Vite, all disposable
 ```
 
 ## Firebase Setup
