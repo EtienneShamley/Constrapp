@@ -391,7 +391,7 @@ Two sources:
   (invoice exactly the approved claim — no more, no less; partial invoicing of a
   claim is deferred). PO and claim references and the claim's retention are
   copied. One approved claim may have only **one non-cancelled** supplier invoice
-  — **rules-enforced since ADR-68 (SHIELD 2A — implemented, not yet deployed)**:
+  — **rules-enforced since ADR-68 (SHIELD 2A — live in production, confirmed by the Product Owner)**:
   the claim's `supplierInvoiceId` backlink is written in the same transaction as
   the invoice and cleared in the same transaction as its cancellation
   (`lib/supplierInvoiceActions.js`); a posted invoice reserves the claim
@@ -1499,7 +1499,7 @@ All derived figures group PO/claim **line items by `costCodeId`** and are ex-GST
 | **Remaining** | `Budgeted − Actual` (per line and in total) | Computed |
 
 **Supplier variations and the six figures (ADR-62, M3-B1 — LIVE; ADR-63, M3-B2 —
-implemented, not yet deployed).** An approved supplier variation that names a sent/closed PO and has
+live in production, confirmed by the Product Owner).** An approved supplier variation that names a sent/closed PO and has
 been **applied** (the rules-stamped `commitmentAppliedAt/By` pair, written by the
 approve transition or the one-time legacy *Apply*) revises the PO line it
 extends — so its existing-line amounts are INSIDE Committed above, matured by
@@ -1858,7 +1858,7 @@ credits/omissions and are **not** clamped.
   separate.
 
 - **Claims and invoices against committed new scope (M3-B2, ADR-63 —
-  implemented, not yet deployed).** A claim on a PO carries, after the PO
+  live in production, confirmed by the Product Owner).** A claim on a PO carries, after the PO
   lines, one line per claimable new-scope variation line (`variationId` +
   `variationLineIndex`, `poLineIndex: null`, `variationLineTotal` = the
   ceiling; header `variationLineCount`); it is claimed cumulatively against

@@ -49,12 +49,14 @@ npm run test:rules
 That script runs
 `firebase emulators:exec --only firestore,storage --project constrapp-rules-test "vitest run --config vitest.rules.config.js"`.
 
-- **Requires a JDK.** `firebase-tools` is pinned to `^13` because v14+ requires
-  **JDK 21**, while the Firestore emulator under v13 runs on **JDK 17**. If you
-  upgrade `firebase-tools`, you must also install JDK 21+.
-- Config: `frontend/firebase.json` (both emulators + both rules pointers, plus
-  the Hosting block first deployed by hand on 19 October 2026; no functions and
-  **no `.firebaserc`**). The
+- **Requires JDK 21+.** Since ADR-72 `firebase-tools` is `^15` (the v13
+  Functions emulator cannot load `firebase-functions` v7), and v15 refuses a
+  JDK older than 21. Azure CI uses Java 21; locally any JDK ≥ 21 (for example
+  `JAVA_HOME=/opt/homebrew/opt/openjdk@26/libexec/openjdk.jdk/Contents/Home`).
+- Config: `frontend/firebase.json` (the emulators + both rules pointers, the
+  Hosting block first deployed by hand on 19 October 2026, and since ADR-72 the
+  `functions` codebase plus the Auth and Functions emulators; **no
+  `.firebaserc`**). The
   emulator commands pass `--only firestore,storage`, so the Hosting block is
   inert here. The Storage emulator runs on port 9199.
 - **Both boundaries are proven by the same command on purpose.** A separate
@@ -6865,7 +6867,7 @@ Rules suite **27 files / 1796 tests**; unit **60 files / 3592 tests**; lint
 2026 on arm64 Java 17. FINAL rules file **210,926 bytes** (207,620 before),
 transitional **211,378**, against the 245,000-byte budget.
 
-**Status: IMPLEMENTED, NOT YET DEPLOYED.** Three stages — transitional rules,
+**Status: LIVE IN PRODUCTION (confirmed by the Product Owner).** Three stages — transitional rules,
 Hosting, FINAL rules — see DEPLOYMENT.md → *M3-B1 release order*. **No production transaction is part of
 this section's automation**; the checks below are run once, after both publish
 steps, on a project the product owner chooses.
@@ -7111,7 +7113,7 @@ and the Stage-1 ruleset published in the test project for check 3.
    adding dependencies; a project with no dependencies shows no arrows, no
    flags and no disclosure line.
 
-## 42. Constrapp GANTT™ — Programme 1B, approved schedule baselines & progress variance (ADR-66) — implemented, NOT YET DEPLOYED
+## 42. Constrapp GANTT™ — Programme 1B, approved schedule baselines & progress variance (ADR-66) — LIVE in production (confirmed by the Product Owner)
 
 **Automated:** unit **68 files / 3,861 tests** (new `ganttBaseline.test.js`
 and `programmeBaselineActions.test.js`; `timelineGantt` and `ganttSurface`
@@ -7177,7 +7179,7 @@ milestone (one cancelled), admin / PM and QS logins, two browser tabs.
    column and every activity remains editable.
 
 
-## 43. Constrapp PULSE™ 1C — Schedule Intelligence (ADR-67) — implemented, NOT YET DEPLOYED
+## 43. Constrapp PULSE™ 1C — Schedule Intelligence (ADR-67) — LIVE in production (confirmed by the Product Owner)
 
 **Automated:** unit **69 files / 4,023 tests** (new `pulseSchedule.test.js`,
 47 — see §0b; `pulse.test.js` 394 and `pulseAttention.test.js` 68 after the
@@ -7321,7 +7323,7 @@ lint 0 / 0; build clean; `git diff --check` clean.
    edited or cancelled; Budget, Forecast, Commercial, Cash Flow, Dashboard and
    SHIELD figures are unchanged for every existing document.
 
-## 45. Constrapp SHIELD™ 2A — Claim-to-Invoice Source Pairing (ADR-68) — implemented, NOT YET DEPLOYED
+## 45. Constrapp SHIELD™ 2A — Claim-to-Invoice Source Pairing (ADR-68) — LIVE in production (confirmed by the Product Owner)
 
 **What is enforced.** One approved progress claim reserves at most ONE active
 (draft / approved / posted) claim-sourced supplier invoice — by Firestore Rules,
@@ -7525,7 +7527,7 @@ budget); transitional **235,159** (the same four marked lines).
    version. On the SHIELD tab, check 6 reads *No issue found* naming the
    version; a `subcontractor` sign-in cannot read any approval document.
 
-## 48. Constrapp SHIELD™ 2B2 — Controlled Budget Adjustments (ADR-71) — implemented, NOT YET DEPLOYED
+## 48. Constrapp SHIELD™ 2B2 — Controlled Budget Adjustments (ADR-71) — LIVE in production (confirmed by the Product Owner)
 
 **What is enforced.** An adjustment (`budgetAdjustments/{id}`) is ONE movement
 — increase, decrease or transfer between two different cost codes — of a
@@ -7603,3 +7605,85 @@ files / 2,160**. Lint 0 / 0; build clean; `rules:transitional:check` clean;
    both: one succeeds and the other reports *Another budget adjustment was
    approved…* (or that it is no longer a draft); the ledger shows ONE
    approval. A `subcontractor` sign-in cannot read any adjustment.
+
+## 49. L1 — Trusted Backend & Team Management (ADR-72) — implemented, NOT YET DEPLOYED
+
+**Automated.**
+
+- `frontend/functions/test/` (pure, `npm --prefix functions test`, also the
+  Functions predeploy hook): tokens (256-bit, hash-only, constant-time,
+  fragment link), strict input schemas, error codes, derived invitation
+  states, legacy-profile semantics, email rendering and the Resend adapter
+  (no retry on 4xx, one retry on 5xx, idempotency key), the emulator-only
+  outbox guard, and the callable surface (eight handlers, App Check, one
+  region, secret binding, instance cap, kill switch, unauthenticated refusal).
+  Also run on **Node.js 22** (the production runtime).
+- `frontend/tests/functions/` (`npm run test:functions` — Auth + Firestore +
+  Functions emulators):
+  - `team.handlers.test.js` — the handlers against real transactions and Auth
+    records: unauthenticated, no-membership, deactivated and non-admin
+    callers; every internal role; wrong-company targets; invitation creation,
+    normalisation, duplicate and already-member refusals, email failure then
+    resend, unconfigured URL, rate limits; token rotation, revocation, expiry,
+    the ten-guess lock and its reset; generic refusals for unknown and
+    cross-company ids; every preview account state including reactivation and
+    `blocked`; acceptance (atomic, idempotent, email-bound, operator links not
+    email-verified, other-company and already-member refusals, concurrent
+    acceptance → one membership); listing with legacy and operator-managed
+    members; role changes (self, stale, operator, unknown, unsupported,
+    concurrent last-admin); deactivation (history kept, Auth disabled, refresh
+    tokens revoked, idempotent, last admin, concurrent mutual deactivation,
+    injected Auth failure → pending → repeat completes); reactivation with the
+    same uid; the kill switch.
+  - `team.callable.test.js` — the DEPLOYED wrappers through the Functions
+    emulator over the callable protocol: a request without App Check is
+    refused before the handler (401); typed refusals; the full
+    invite → preview → browser-SDK registration → bare account refused →
+    accept → list → role change → deactivate flow; malformed input over the wire.
+  - `team.revocation.test.js` — the client SDK reading THROUGH THE RULES: a
+    bare Auth account reads nothing; after deactivation every new request is
+    denied and the member's own profile listener delivers the loss; a role
+    change applies on the next request. **Observed in the Firestore emulator
+    (4 November 2026): already-open company and project listeners received
+    `permission-denied` after the deactivation** — recorded, not asserted;
+    production is check 3 below.
+  - `scripts.test.js` — `bootstrap-company.mjs` (argument validation, dry run
+    writes nothing, company + operator invitation + link printed once,
+    acceptance makes the first admin, idempotent re-run, rotation instead of a
+    second invitation, refusal of an ambiguous rename) and
+    `reconcile-membership.mjs` (report vs `--fix`; only the pending Auth sync is
+    fixed).
+- `tests/rules/teamPaths.rules.test.js` — every browser role, including
+  `company_admin`, is denied get / list / create / update / delete on
+  `invitations`, `members`, `auditEvents`, `rateLimits`, `devOutbox` and
+  `system/membership`; `users/{uid}` stays client-read-only; a deactivated
+  profile (`companyId: null`) reads nothing of the company. **No rules bytes
+  changed** (241,924).
+- `tests/unit/team.test.js` and `tests/unit/teamSurface.test.js` — the pure
+  client helpers (fragment parsing, sessionStorage hand-off, accept steps,
+  membership gate, error copy) and the routing / gate / hooks-only / App Check
+  / dialog contracts.
+
+**Manual (three checks, after the DEPLOYMENT.md → L1 release order):**
+
+1. **Invitation end-to-end.** As the bootstrapped Company Admin, open Company
+   Settings → Team and invite a mailbox you control as *Project Manager*. The
+   email arrives from the verified sender; the link opens `/accept-invite`
+   and the address bar loses the `#c=…&t=…` part immediately. Create the
+   account (12+ characters) — you land on the Dashboard as Project Manager;
+   Team shows the member active and no pending invitation. Opening the same
+   link again reports *already been used*.
+2. **Guards.** As that Project Manager, Company Settings → Team shows the
+   read-only notice. As the admin, try to demote yourself (no Change role
+   button on your own row) and, with a second admin, demote one while the
+   other is the only admin left: *A company must keep at least one active
+   Company Admin*. Resend an invitation: the old link reports *not valid*,
+   the new one works.
+3. **Deactivation in production.** With the Project Manager signed in on a
+   second browser and a project open, deactivate them. Within seconds the
+   second browser leaves the project screens and shows the sign-in page (the
+   gate signs it out); signing in again shows *This account has been
+   disabled*. Record whether any open screen showed data written AFTER the
+   deactivation (expected: none). Re-invite the same email: the link reports
+   *Welcome back*, sign-in (or *Forgot password?*) works, and the member
+   returns with the same history.

@@ -64,9 +64,12 @@ export function ProfileProvider({ children }) {
   const settled = targetKey !== null && snap.key === targetKey
   const profile = settled ? snap.profile : null
   const profileLoading = targetKey !== null && !settled
+  // Exposed for the membership gate (ADR-72): a FAILED profile read must
+  // present as "could not load your membership", never as "no membership".
+  const profileError = settled ? snap.error : false
 
   return (
-    <ProfileContext.Provider value={{ profile, profileLoading }}>
+    <ProfileContext.Provider value={{ profile, profileLoading, profileError }}>
       {children}
     </ProfileContext.Provider>
   )

@@ -82,6 +82,22 @@ export default function AuthLayout() {
   if (loading) return <Spinner />
   if (user) return <Navigate to="/" replace />
 
+  return <AuthShell><Outlet /></AuthShell>
+}
+
+// /accept-invite (ADR-72): the SAME shell, but no signed-in redirect. A
+// person may be signed in while they accept an invitation — as the invited
+// email (one click) or as someone else (told to switch account) — so the
+// page itself decides what to show once auth has settled.
+export function InviteLayout() {
+  const { loading } = useAuth()
+
+  if (loading) return <Spinner />
+
+  return <AuthShell><Outlet /></AuthShell>
+}
+
+function AuthShell({ children }) {
   return (
     <div className="min-h-svh bg-brand-bg lg:grid lg:grid-cols-[minmax(0,55fr)_minmax(0,45fr)]">
 
@@ -158,7 +174,7 @@ export default function AuthLayout() {
 
           {/* Below lg the form sits on a card; at lg the column is the surface */}
           <div className="rounded-2xl border border-brand-border bg-brand-sidebar p-6 sm:p-8 lg:rounded-none lg:border-0 lg:bg-transparent lg:p-0">
-            <Outlet />
+            {children}
           </div>
 
           <p className="lg:hidden mt-8 text-center text-xs text-brand-text-soft">

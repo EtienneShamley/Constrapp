@@ -5,6 +5,15 @@ export const formatDate = (ts) => {
   return ts.toDate().toLocaleDateString('en-AU', { day: '2-digit', month: '2-digit', year: 'numeric' })
 }
 
+// ISO-8601 strings, as the trusted backend returns them (ADR-72). Same locale
+// and shape as formatDate; an unparseable value renders as "—", never "Invalid Date".
+export const formatIsoDate = (iso) => {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleDateString('en-AU', { day: '2-digit', month: '2-digit', year: 'numeric' })
+}
+
 const pct = new Intl.NumberFormat('en-AU', { style: 'percent', maximumFractionDigits: 1 })
 
 export const percent = (n) => pct.format(n / 100)

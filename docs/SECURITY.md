@@ -59,7 +59,7 @@ Controls now in place:
 - **M3-A (ADR-61, 29 October 2026, LIVE since 29 October 2026)** adds the award →
   PO source link to the `purchaseOrders` and `tenderPackages` blocks:
   **201,523 → 207,620 bytes** (+6,097), 37,380 under the budget.
-- **M3-B2 (ADR-63, 31 October 2026, IMPLEMENTED — NOT YET DEPLOYED)** adds the
+- **M3-B2 (ADR-63, 31 October 2026, LIVE IN PRODUCTION (confirmed by the Product Owner))** adds the
   new-scope commitment pair (`variations`), the `variationLineCount` header and
   the first/last variation-line shape pins (`progressClaims`), and the
   claim-sourced invoice count guard (`supplierInvoices`): FINAL
@@ -85,7 +85,7 @@ Controls now in place:
   `tests/unit/rulesTransitional.test.js`). One extra `get()` (the PO) on every
   PO-linked approve and on the legacy Apply — three document reads on those
   writes, five on create as before.
-- **GANTT™ 1B (ADR-66, 1 November 2026, IMPLEMENTED — NOT YET DEPLOYED)** adds
+- **GANTT™ 1B (ADR-66, 1 November 2026, LIVE IN PRODUCTION (confirmed by the Product Owner))** adds
   the two programme-baseline blocks (`programmeBaselines`,
   `programmeBaselineSnapshots`) before the `activities` block, which is
   byte-for-byte unchanged: FINAL `firestore.rules` **219,930 → 228,967 bytes**
@@ -139,7 +139,7 @@ Controls now in place:
   pair 3; every new evaluation ran clean of the 1000-expression ceiling in
   the emulator (`tests/rules/budgetApprovals.rules.test.js`, incl. the
   2,000-entry write).
-- **SHIELD™ 2B2 (ADR-71, 3 November 2026, IMPLEMENTED — NOT YET DEPLOYED)**
+- **SHIELD™ 2B2 (ADR-71, 3 November 2026, LIVE IN PRODUCTION (confirmed by the Product Owner))**
   adds the `budgetAdjustments` block before `boqItems`, one shared path
   helper, and extends the `approvedBudget/current` block with the OPTIONAL
   adjustment ledger (three keys in `pointerKeys().hasOnly`, the ledger reset
@@ -160,6 +160,18 @@ Controls now in place:
   version is published*.
 
 ## Authentication & Membership — Implemented
+
+> **ADR-72 (L1 — Trusted Backend & Team Management) — IMPLEMENTED, NOT YET
+> DEPLOYED.** Membership is now issued, changed and removed by eight 2nd-gen
+> Callable Cloud Functions (`frontend/functions/`) using the Admin SDK — never
+> by the browser. `users/{uid}` stays the ONE authoritative membership
+> document and stays **client-read-only**; no rules changed. Company Admins
+> invite `company_admin` / `project_manager` / `qs` only; `subcontractor`,
+> `client` and `super_admin` remain operator-provisioned. New companies come
+> only from the operator bootstrap script — there is no public tenant
+> registration. Full model: *Team management — trusted backend (ADR-72)*
+> below. Until the Functions and Hosting are deployed, everything in the
+> bullets below still describes production.
 
 - Firebase Auth **email/password** sign-in only. The Create Account and Forgot
   **Password reset is implemented** — `pages/ForgotPassword.jsx` calls
@@ -218,7 +230,7 @@ Control 20).
 | `…/projects/{id}/budgetApprovals/{id}` | **financial roles only** | capture: financial roles, exact keys, born `draft` at revision 1 with creator / audit stamps at server time, currency pinned to the project's, ONLY with its snapshot in the same commit (`getAfter()`: same caller, time, count, total, currency); `draft → approved` (approvers only, stamps-only, `version` == the pointer written in the same commit) and `draft → withdrawn` (an approver or the capturer, reasoned) with `revision` +1; approved and withdrawn TERMINAL (ADR-70) | blocked |
 | `…/projects/{id}/budgetApprovalSnapshots/{id}` | **financial roles only** | financial roles, **create-only** with a `draft` header in the same commit (`getAfter()`); exact keys, `capturedBy == caller`, `capturedAt == request.time`, `entries` a list of 1–2000 with `size() == entryCount`, the FIRST and LAST entries pinned (exact entry keys, source budget line `get()` — same cost code and whole-cent amount, cost code `exists()`); **`update` and `delete` blocked for everyone** (ADR-70) | blocked |
 | `…/projects/{id}/boqItems/{id}` | **financial roles only** | financial roles, **create active-only; transitions, post-void immutability and the `amount == quantity × rate` invariant rules-enforced; the optional `quantApplied` map (ADR-52) absent at create and, on an edit, preserved verbatim or fresh — exact keys, `by == caller`, `at == request.time`, `quantity == the written quantity`** — the version guard on edits and the Quant apply is CLIENT-only (DC33) | blocked — void via status |
-| `…/projects/{id}/purchaseOrders/{id}` | **financial roles only** (ADR-56; was company member) | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time and the project's resolved currency; draft-only content edits (`hasOnly`); `draft\|pending_approval → sent`, `sent → closed`, `draft\|pending_approval → cancelled`, `sent → cancelled` each stamps-only with actor == caller and time == `request.time`; identity, money and earlier stamps frozen after send; `subtotal + gst == total` in cents and `gst` exactly 10% half-up (one cent below also accepted on a half-cent boundary only); nothing enters `pending_approval`; closed / cancelled terminal — ALL RULES-ENFORCED (ADR-57, M2-B1, live since 27 October 2026)**. **Since ADR-61 (M3-A, not yet deployed): the OPTIONAL source triple `sourceTenderPackageId / sourceTenderBidId / sourceTenderNumber` is admitted at create only all-present and `get()`-verified against an AWARDED same-project package and its RECEIVED winning bid (supplier id + name match), with the package pointing back at this PO after the commit (`getAfter()`); frozen for life.** `lineItems` contents, Σ lineTotal, the linked claim / invoice / supplier-variation cancel policy (DC35) and that a raised PO's lines equal the bid's (DC38) are client-only | blocked — cancel via status |
+| `…/projects/{id}/purchaseOrders/{id}` | **financial roles only** (ADR-56; was company member) | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time and the project's resolved currency; draft-only content edits (`hasOnly`); `draft\|pending_approval → sent`, `sent → closed`, `draft\|pending_approval → cancelled`, `sent → cancelled` each stamps-only with actor == caller and time == `request.time`; identity, money and earlier stamps frozen after send; `subtotal + gst == total` in cents and `gst` exactly 10% half-up (one cent below also accepted on a half-cent boundary only); nothing enters `pending_approval`; closed / cancelled terminal — ALL RULES-ENFORCED (ADR-57, M2-B1, live since 27 October 2026)**. **Since ADR-61 (M3-A, live in production, confirmed by the Product Owner): the OPTIONAL source triple `sourceTenderPackageId / sourceTenderBidId / sourceTenderNumber` is admitted at create only all-present and `get()`-verified against an AWARDED same-project package and its RECEIVED winning bid (supplier id + name match), with the package pointing back at this PO after the commit (`getAfter()`); frozen for life.** `lineItems` contents, Σ lineTotal, the linked claim / invoice / supplier-variation cancel policy (DC35) and that a raised PO's lines equal the bid's (DC38) are client-only | blocked — cancel via status |
 | `…/projects/{id}/progressClaims/{id}` | **financial roles only** (ADR-56; was company member) | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time, the project's resolved currency and a `get()` on the source PO (same project, exists, `sent`; number, supplier identity and line count pinned); draft-only content edits (`hasOnly`, line count fixed); `draft → submitted`, `submitted\|under_review → approved`, `draft\|submitted\|under_review → rejected` each with actor == caller and time == `request.time` (approval also carrying the certified lines, the approved header and the notes); claimed header frozen after submit, approved values frozen forever; whole-cent headers on both sides (retention ≥ 0 and ≤ subtotal, GST exactly 10% of the net half-up or one cent below on a boundary, totals exact, approved subtotal ≤ claimed subtotal); `revision` exactly +1 on every update; `under_review` / `invoiced` unauthorable; approved / rejected / invoiced terminal — ALL RULES-ENFORCED (ADR-58, M2-B2, live since 27 October 2026)**. `lineItems` contents, Σ lines, one open claim per PO, cumulative ceilings, the mixed-mode overlap and creator ≠ approver are client-only (DC36) | blocked — reject via status |
 | `…/projects/{id}/supplierInvoices/{id}` | **financial roles only** | financial roles | blocked — cancel via status |
 | `…/projects/{id}/clientInvoices/{id}` | **financial roles only** | financial roles, **create draft-only; transitions and issued-immutability rules-enforced** | blocked — void via status |
@@ -226,7 +238,7 @@ Control 20).
 | `…/projects/{id}/supplierPayments/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability and the scalar amount invariant rules-enforced** | blocked — void via status |
 | `…/projects/{id}/supplierCreditNotes/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, posted-immutability, the header cent invariant, AND the target-invoice checks (exists, posted, zero retention, supplier/currency match, grossTotal ≤ payableTotal) rules-enforced via a `get()` on the target at create, draft edit, and posting** | blocked — void via status |
 | `…/projects/{id}/variations/{id}` | **financial roles only** | financial roles, **create draft-only with the exact key set, creator / audit stamps at server time, the project's resolved currency, a type-consistent counterparty (`CV-` client / `SV-` supplier, the other side null) and — for a PO-linked supplier variation — a `get()` on the source PO (same project, exists, `sent`\|`closed`; number and supplier snapshot pinned); draft-only content edits (`hasOnly`, line count free); `draft → submitted`, `submitted\|under_review → approved`, `submitted\|under_review → rejected`, `draft\|submitted\|under_review → withdrawn` each with actor == caller and time == `request.time` (approval also carrying the certified lines, the SIGNED approved header, the notes and the dates); submitted header frozen after submit, approved values frozen forever; SIGNED whole-cent headers on both sides (never clamped; `subtotal + gst == total` exact); `revision` exactly +1 on every update; the originating-RFI link (`originRfi*`) rules-verified via a `get()` when it changes and frozen outside `draft` (ADR-34); reserved statuses unauthorable; approved / rejected / withdrawn terminal — ALL RULES-ENFORCED (ADR-59, M2-B3, live since 27 October 2026)**. `lineItems` contents, the header GST against the lines, notes-required-when-differing, uniqueness and creator ≠ approver are client-only (DC37) | blocked — reject/withdraw via status |
-| `…/projects/{id}/tenderPackages/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, issued-scope freeze, the closingDate/notes carve-out, and award integrity (bid exists · same package · received · name snapshot · once) rules-enforced; since ADR-61 (M3-A, not yet deployed) an AWARDED package records the ONE current PO raised from it — `raisedPoId / raisedPoNumber / raisedPoAt / raisedPoBy`, written once (branch f) or again only after the linked PO is `get()`-verified CANCELLED (branch g), actor == caller, time == `request.time`, and only in the commit that creates that PO (`getAfter()`)** | blocked — cancel via status |
+| `…/projects/{id}/tenderPackages/{id}` | **financial roles only** | financial roles, **create draft-only; transitions, issued-scope freeze, the closingDate/notes carve-out, and award integrity (bid exists · same package · received · name snapshot · once) rules-enforced; since ADR-61 (M3-A, live in production, confirmed by the Product Owner) an AWARDED package records the ONE current PO raised from it — `raisedPoId / raisedPoNumber / raisedPoAt / raisedPoBy`, written once (branch f) or again only after the linked PO is `get()`-verified CANCELLED (branch g), actor == caller, time == `request.time`, and only in the commit that creates that PO (`getAfter()`)** | blocked — cancel via status |
 | `…/projects/{id}/tenderBids/{id}` | **financial roles only** | financial roles, **create received-only against an issued same-project package with a real supplier/subcontractor contact; edits/voids only while the package stays issued; bids freeze on award/cancel** | blocked — void via status |
 | `…/projects/{id}/forecastLines/{id}` | **financial roles only** | financial roles | blocked — clear via `null`, never deleted |
 | `…/projects/{id}/cashFlowLines/{id}` | **financial roles only** | financial roles, **create active-only; transitions and post-void immutability rules-enforced** | blocked — void via status |
@@ -351,7 +363,7 @@ Existing documents are unaffected: `cancelledBy` is compared through
 incoming document, so a pre-ADR-40 invoice stays editable and acquires the new
 fields on its next valid write.
 
-### Claim-to-invoice source pairing (ADR-68, SHIELD 2A — IMPLEMENTED, NOT YET DEPLOYED)
+### Claim-to-invoice source pairing (ADR-68, SHIELD 2A — LIVE IN PRODUCTION (confirmed by the Product Owner))
 
 **One approved claim reserves at most ONE active (draft / approved / posted)
 claim-sourced supplier invoice — rules-enforced for every new-format claim.**
@@ -626,7 +638,7 @@ document, a missing `revision` reads as 0, and the exact key set applies to
 `create` only, so a pre-ADR-58 claim stays editable, submittable, approvable
 and rejectable and acquires the new fields on its next valid write.
 
-### The supplier-invoice link (ADR-68, SHIELD 2A — IMPLEMENTED, NOT YET DEPLOYED)
+### The supplier-invoice link (ADR-68, SHIELD 2A — LIVE IN PRODUCTION (confirmed by the Product Owner))
 
 Three OPTIONAL keys — `supplierInvoiceId`, `supplierInvoiceLinkedAt`,
 `supplierInvoiceLinkedBy` — carry the ONE current claim-sourced invoice that
@@ -680,7 +692,7 @@ counterparty or PO, convert a supplier variation into a client one, revive a
 rejected one, forge `approvedBy`, or store a header unrelated to its own
 total. **Everything below has been enforced in production since the M2-B3
 ruleset was published on 27 October 2026** (DEPLOYMENT.md → *M2-B3 release
-order*); the ADR-62 additions at the end of this section are NOT yet deployed.
+order*); the ADR-62 additions at the end of this section are LIVE (M3-B1, confirmed by the Product Owner).
 
 **Reads** stay restricted to `company_admin` / `project_manager` / `qs`.
 **Delete** stays blocked for every role and every status.
@@ -884,7 +896,7 @@ a reload loads the new bundle. Rules-first is claimed safe ONLY because
 against both payloads and `tests/rules/variations.rules.test.js` proves the
 FINAL file denies the unstamped PO-linked approve.
 
-### New-scope commitment and variation-origin lines (ADR-63, M3-B2 — IMPLEMENTED, NOT YET DEPLOYED)
+### New-scope commitment and variation-origin lines (ADR-63, M3-B2 — LIVE IN PRODUCTION (confirmed by the Product Owner))
 
 **Three blocks, additive; every M2 / M3-B1 control unchanged.** M3-B2 gives a
 positive NEW_SCOPE line of an approved supplier variation a commitment identity
@@ -1801,7 +1813,7 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
    29).
 3. **One-open-claim / one-invoice-per-claim race protection** — **the
    one-invoice-per-claim half is CLOSED for every new-format claim by ADR-68
-   (SHIELD 2A — implemented, not yet deployed)**: the claim's own
+   (SHIELD 2A — live in production, confirmed by the Product Owner)**: the claim's own
    `supplierInvoiceId` backlink is the sibling the rules CAN see, written
    atomically with the invoice and cleared atomically with its cancellation
    through `getAfter()` pairing; two concurrent creates, a retry and a
@@ -3121,6 +3133,18 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     `frontend/tests/unit/budgetApproval.test.js` or
     `frontend/tests/unit/budgetApprovalActions.test.js`.
 
+46. **Storage download URLs outlive a membership (ADR-72) — a
+    PRE-EXTERNAL-LAUNCH requirement.** `hooks/useStorageUpload.jsx` mints
+    `getDownloadURL()` links for viewing drawings and documents. Such a link
+    is a bearer URL served without Storage Rules; a member who copied one
+    keeps file access after deactivation until the object's download token is
+    rotated, which no code does. The app never PERSISTS these URLs (AGENT.md →
+    Cloud Storage Conventions), so the exposure is limited to links a person
+    copied while they were a member. **Must be closed before external
+    (subcontractor / client) users are onboarded** — by moving viewing to
+    `getBytes`/`getBlob` (rules-checked on every read) or rotating tokens on
+    deactivation through the trusted backend. Not claimed as revoked anywhere.
+
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
 is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.
@@ -3634,6 +3658,147 @@ were written the obvious way.
 **What is NOT enforced** is listed in Deferred Control 27 — most notably
 number uniqueness, `raisedByName` truthfulness, and reference-label accuracy.
 
+## Team management — trusted backend (ADR-72, L1 — IMPLEMENTED, NOT YET DEPLOYED)
+
+**Shape.** Eight Callable functions (`onCall`, 2nd gen, Node.js 22, region
+`australia-southeast1`): `listTeam`, `createInvitation`, `resendInvitation`,
+`revokeInvitation`, `previewInvitation`, `acceptInvitation`,
+`changeMemberRole`, `deactivateMember`. No Express, no HTTP router, no
+triggers, no scheduled jobs, no new database. Source: `frontend/functions/src`.
+
+**The Admin SDK bypasses Security Rules — so authorisation lives in the
+functions.** Every privileged callable runs `requireCompanyAdmin`
+(`lib/authz.js`): the caller must be authenticated, have a `users/{uid}`
+document, not be deactivated, name a company and hold `company_admin`. The
+company is taken from THAT document — **no admin callable accepts a
+companyId**, so a cross-tenant request cannot be expressed. A target that is
+not an active member of the caller's company answers `not-found` (it reveals
+nothing). Inputs are parsed by strict schemas (`lib/validation.js`): unknown
+keys refused, emails normalised and bounded, ids pattern-checked, roles from
+the three internal roles only.
+
+**Collections (no rules block — denied to every browser by default).**
+`companies/{c}/invitations`, `members` (history/listing, never a permission
+source), `auditEvents` (append-only, written in the same transaction as the
+change), `system/membership` (the lock), `rateLimits`, and — emulator only —
+`devOutbox`. `tests/rules/teamPaths.rules.test.js` proves get / list / create /
+update / delete are denied on all of them for every role, including
+`company_admin`. **Zero bytes of `firestore.rules` changed** (241,924 bytes,
+unchanged).
+
+**Invitations.** 256-bit random token (base64url), **only its SHA-256 hash
+stored**, constant-time comparison; the link carries the credential in the
+URL **fragment** (`/accept-invite#c=…&i=…&t=…`), which browsers never send to a
+server or a Referer header; the page moves it to `sessionStorage` and strips
+it from the address bar. Seven-day expiry and a lock after ten wrong tokens
+are DERIVED at read time. Resend ROTATES the token (the old link is refused
+without counting as a guess) and resets expiry and attempts. Revoke is
+idempotent. One pending invitation per (company, email). Enumeration: a holder
+without a matching token gets the same `invalid-invitation` for unknown,
+wrong-token, revoked-elsewhere and cross-company ids; precise reasons
+(expired, locked, revoked, accepted) only after the hash matches. No counter
+document is created for an invitation id that does not exist.
+
+**Acceptance — no password ever reaches a callable.** The invitee previews
+(App Check, no sign-in), REGISTERS or SIGNS IN through the supported browser
+Firebase Auth SDK, then calls `acceptInvitation` signed in. The function
+requires BOTH token possession (hash match) AND that the Auth record's email —
+read server-side from Firebase Auth, not from the client — equals the invited
+email. One transaction writes `users/{uid}` (role, company, `status: active`),
+`members/{uid}`, consumes the invitation and writes the audit event. A repeat
+by the same uid returns the same result; any other uid gets
+`invitation-accepted`. A member of another company is refused (one company
+per user — the existing schema). `emailVerified` is set to true only when the
+invitation travelled **by email** to that address and the signed-in account is
+that address; an operator-delivered (bootstrap) link proves nothing about the
+mailbox and leaves it false. **A bare Auth account (registered but not
+accepted) has no `users/{uid}` and therefore no access** — rules deny it
+everything (`tests/functions/team.revocation.test.js`).
+
+**Reactivation (re-invite of a deactivated member).** `previewInvitation`
+re-enables the disabled Auth account ONLY when the token matches a live
+invitation and the account has no active membership anywhere; the uid and all
+history are preserved, no password is set, and the holder then signs in with
+their existing password or uses the normal Firebase password-reset email
+(sent to the same mailbox the invitation reached). An account that is disabled
+but still active in some company is `blocked` and never touched. Re-enabling
+alone grants nothing: membership is only written by `acceptInvitation`.
+
+**Role changes.** `company_admin` may assign any of the three internal roles
+(including `company_admin` — there is no higher assignable role); never to
+self (`self-target`); `expectedRole` guards against stale screens; operator
+roles are read-only (`unsupported-target`). The role is re-read by the rules on
+the member's next request — no new session needed.
+
+**Serialisation and the last admin.** Every membership mutation reads and
+writes `companies/{c}/system/membership` inside its transaction, so two
+mutations in one company serialise under pessimistic or optimistic
+concurrency. The active-admin count is a query over the AUTHORITATIVE
+`users` collection inside that same transaction (legacy profiles without
+`status` count as active). Demoting or deactivating the last active
+`company_admin` is refused (`last-admin`); two admins demoting or deactivating
+each other at once leave exactly one (emulator-proven, both operations).
+
+**Deactivation — Firestore first, then Auth.** One transaction sets
+`users/{uid}` to `companyId: null, role: null, status: 'deactivated'` (keeping
+name, email, `formerCompanyId`, `formerRole`), marks `members/{uid}`
+deactivated and writes the audit event. Only then: disable the Auth account
+and `revokeRefreshTokens`. If the Auth step fails, `authSyncPending: true`
+remains on both documents; repeating the call, or
+`scripts/reconcile-membership.mjs --fix`, completes it. What this does and
+does not do, measured in the emulator:
+
+- **Every NEW Firestore/Storage request is denied immediately** — the rules
+  re-read `users/{uid}.companyId` on each request and it is null.
+- **Already-open listeners:** in the Firestore EMULATOR, open company and
+  project listeners received `permission-denied` after the deactivation. This
+  is NOT documented by Firebase and is recorded, not asserted; TESTING.md §49
+  carries the production check. A one-shot `getDoc` on a document that already
+  has an open listener is served from that listener (no new rules check).
+- **The client reacts:** the member's own `users/{uid}` listener receives the
+  change, the membership gate unmounts the whole shell (and with it every
+  protected listener) and signs the user out.
+- **ID tokens already issued stay cryptographically valid until they expire
+  (up to one hour).** Revoking refresh tokens stops renewal; it does not make
+  Firestore reject the current token. That is harmless here only because every
+  rule also requires the membership document.
+- **Storage download URLs are NOT revoked** — see Deferred Control 46.
+
+**App Check.** Every callable is deployed with `enforceAppCheck: true`; the
+web app uses reCAPTCHA Enterprise (`VITE_FIREBASE_APPCHECK_SITE_KEY`, public).
+Without a configured site key the client does not initialise App Check and
+every callable refuses — fail closed. App Check proves the request came from
+the app; it is never treated as authorisation. The Functions emulator skips
+App Check verification (documented emulator behaviour); the automated suite
+proves a request WITHOUT a token is refused before the handler runs.
+
+**Rate limits (fixed window, Admin-SDK counters).** 20 invitations per admin
+per hour, 100 per company per day, 3 resends per invitation per day, 30
+previews/acceptance lookups per invitation per hour, and the derived lock at
+10 wrong tokens; plus `maxInstances: 5` per function as a cost ceiling.
+
+**Email.** Resend's HTTPS API through a small injected adapter
+(`lib/email.js`), no SDK. The key is the Secret Manager secret `EMAIL_API_KEY`,
+bound to the functions, never in the repository or the bundle. Sending
+happens after the invitation is committed; a failure is recorded
+(`lastSendError`), shown to the admin as "Not delivered" and fixed by Resend —
+never by a second invitation. There is **no production copy-link**: the raw
+link is never returned by a callable. Only the operator bootstrap prints one.
+
+**Audit.** `invite.created / resent / revoked / accepted`,
+`member.role_changed / deactivated / auth_synced / auth_reenabled`,
+`company.bootstrapped`, `reconcile.fix` — actor, target, before/after, request
+id, time. No browser can read them (an admin UI for them is not built).
+
+**Kill switch.** `TEAM_MANAGEMENT_ENABLED=false` plus a Functions redeploy
+makes every callable answer `team-management-disabled` without touching data.
+
+**Not enforced / not built (stated plainly).** No custom claims (rules still
+`get()` `users/{uid}`); no self-service company registration; no external
+(subcontractor/client) onboarding — DC20 still stands; no MFA; no admin UI
+over the audit log; no automated email bounce handling; App Check and the
+email secret are production prerequisites, not code.
+
 ## Secrets & the Vite bundle
 
 **Every `VITE_`-prefixed environment variable is compiled into the public
@@ -3646,12 +3811,19 @@ frontend bundle and is readable by anyone.** Treat all `VITE_*` values as public
 - **No real secret may ever be `VITE_`-prefixed or read from frontend code.**
   That includes Stripe secret keys, AI provider API keys, email/SMS provider
   keys, webhook signing secrets, and any Firebase **service-account** JSON.
-  These belong only in a trusted backend's server-side environment (which does
-  not exist yet).
+  These belong only in a trusted backend's server-side environment — since
+  ADR-72, Google Secret Manager bound to the Cloud Functions in
+  `frontend/functions/` (`firebase functions:secrets:set`).
 - **Privileged provider operations must not be called directly from the
   browser.** Payment charges, AI inference against a keyed provider, and
   transactional email must run server-side once that provider is introduced —
   see Trusted-Backend Activation Requirements.
+- **The App Check site key (`VITE_FIREBASE_APPCHECK_SITE_KEY`) is public**, like
+  the rest of the web config; the reCAPTCHA Enterprise SECRET never leaves
+  Google. `VITE_FIREBASE_APPCHECK_DEBUG_TOKEN` is honoured only in a dev build.
+- `functions/.env.<projectId>` files carry NON-secret parameters only
+  (`APP_BASE_URL`, `EMAIL_FROM`, `TEAM_MANAGEMENT_ENABLED`) and are committed;
+  `functions/.secret.local` (emulator secret overrides) is git-ignored.
 - `.env.local` is git-ignored and must never be committed; neither may any
   service-account key file (AGENT.md → Git Workflow). The root `.env.example`
   carries a few extra placeholders the app never reads — the canonical file is
@@ -3770,12 +3942,21 @@ place before any non-hand-provisioned (external) users are onboarded — see
    blocked, **signup, invitations, and user administration cannot be built
    without this trusted backend** — membership must be issued via the Admin
    SDK, never from the browser.
+   **ADR-72 (implemented, not yet deployed):** invitations, invitation
+   acceptance, member listing, role changes and deactivation are built on the
+   trusted backend; company creation is operator-only (bootstrap script).
+   Custom claims and self-serve company signup remain NOT built.
 4. **Rate limiting** on all write/mutating endpoints and auth flows.
+   *ADR-72: in place for the team-management callables only* (fixed-window
+   counters + App Check + instance caps); the financial writes are client-SDK
+   writes and cannot be rate-limited without moving them server-side.
 5. **Server-side input validation and explicit API schemas** — the client
    validation is convenience only; the server is authoritative.
 6. **Secrets server-side** — Stripe, AI, email/SMS provider keys and any
    service-account credentials held in a server secret store, never in the
    bundle; **privileged provider calls run server-side only.**
+   *ADR-72: the email provider key (`EMAIL_API_KEY`) is the first such secret
+   — Secret Manager, bound per function, never in the repository or bundle.*
 7. **Webhook security** — signature verification plus replay/idempotency
    protection on every inbound webhook (payments, email events, etc.).
 8. **File-upload controls** — *partially satisfied.* Firebase Storage Security
@@ -3787,7 +3968,12 @@ place before any non-hand-provisioned (external) users are onboarded — see
    see declared metadata only), and orphan cleanup.
 9. **Audit logging** — who performed each transition/edit, when, and from what
    prior state, beyond the current `createdBy`/`approvedBy` stamps.
+   *ADR-72: every membership and invitation change is audited
+   (`companies/{c}/auditEvents`); financial transitions are still not.*
 10. **Cost & budget caps** — per-provider spend caps and alerting on metered
     services (AI inference, email/SMS, storage) to bound abuse and runaway cost.
+    *ADR-72: instance caps and invitation rate limits are in code; the GCP
+    budget alert and the Resend plan limit are Product Owner setup
+    (DEPLOYMENT.md → L1).*
 11. **Dependency scanning in CI** — automated advisory scanning and an update
     policy, in addition to the manual `npm audit` gate used today.

@@ -61,7 +61,11 @@ label for amounts entered in it, never a conversion instruction.
 
 ## users/{uid}
 
-Document ID = Firebase Auth UID. Created manually today (no signup/invite flow).
+Document ID = Firebase Auth UID. Before ADR-72 created manually in the console;
+**since ADR-72 (implemented, not yet deployed) written ONLY by the trusted
+backend** (`frontend/functions/`, Admin SDK) on invitation acceptance, role
+change and deactivation. Console-provisioned (legacy) documents keep working
+unchanged — no migration, no backfill.
 
 **Client-read-only (ADR-27).** A user may read their own profile; `create`,
 `update` and `delete` are **all blocked by rules**. No field below is writable
@@ -81,11 +85,24 @@ flow must issue membership from a **trusted backend**, never from the client.
 | `role` | string | `super_admin` \| `company_admin` \| `project_manager` \| `qs` \| `subcontractor` \| `client` |
 | `companyId` | string | Links the user to their company — the multi-tenancy anchor; security rules `get()` this document |
 | `avatarInitials` | string | Optional; falls back to initials derived from name/email |
+| `status` | `'active' \| 'deactivated'` (OPTIONAL) | **ADR-72.** ABSENT on legacy profiles and means ACTIVE. Rules never read it — they read `companyId`/`role` |
+| `joinedAt`, `inviteId` | timestamp, string (OPTIONAL) | **ADR-72.** Set on invitation acceptance |
+| `updatedAt`, `updatedBy` | timestamp, uid (OPTIONAL) | **ADR-72.** Stamped by every backend change |
+| `formerCompanyId`, `formerRole` | string \| null (OPTIONAL) | **ADR-72.** Set by deactivation (history); cleared by re-acceptance |
+| `deactivatedAt`, `deactivatedBy` | timestamp, uid \| null (OPTIONAL) | **ADR-72.** Set by deactivation |
+| `authSyncPending`, `authSyncedAt` | bool, timestamp (OPTIONAL) | **ADR-72.** `true` between the Firestore commit of a deactivation and the Auth disable + refresh-token revocation |
+
+**Deactivation (ADR-72)** sets `companyId: null` and `role: null`. Because
+every rule authorises by `users/{uid}.companyId`, a deactivated profile reads
+nothing of any company (`tests/rules/teamPaths.rules.test.js`). One company
+per user: there is no multi-membership model.
 
 ## companies/{companyId}
 
-Company **creation and deletion are blocked** from the client (admin tooling
-only). Rules permit `company_admin` to update **four named currency fields and
+Company **creation and deletion are blocked** from the client. Since ADR-72 a
+company is created only by the operator script
+`frontend/functions/scripts/bootstrap-company.mjs` (`name`, optional
+`countryCode` / `baseCurrency`, `createdAt`, `createdBy: 'operator'`). Rules permit `company_admin` to update **four named currency fields and
 nothing else** — `name` and every other field remain immutable from the client.
 
 | Field | Type | Notes |
@@ -98,6 +115,56 @@ nothing else** — `name` and every other field remain immutable from the client
 Other fields (e.g. `createdAt`, `plan`) are incidental. Changing `baseCurrency`
 later affects only the default for **new** projects — it never converts,
 recalculates, or relabels any existing project or amount.
+
+## Team management collections (ADR-72 — implemented, not yet deployed)
+
+All under `companies/{companyId}/…`, **written and read ONLY by the trusted
+backend's Admin SDK**. None has a `match` block in `firestore.rules`, so every
+browser request — any role, including `company_admin` — is denied
+(`tests/rules/teamPaths.rules.test.js`). No rules bytes were added.
+
+### invitations/{inviteId}
+
+| Field | Type | Notes |
+|---|---|---|
+| `email` | string | Normalised (trimmed, lower-case). One `pending` invitation per (company, email) |
+| `role` | `'company_admin' \| 'project_manager' \| 'qs'` | Never `subcontractor` / `client` / `super_admin` |
+| `status` | `'pending' \| 'accepted' \| 'revoked'` | Stored states. `expired` (now ≥ `expiresAt`) and `locked` (`failedAttempts` ≥ 10) are DERIVED at read time, never written |
+| `tokenHash`, `previousTokenHash` | hex SHA-256 | Only the hash of the 256-bit token is stored; the previous hash lets a rotated-away link be refused without counting as a guess |
+| `expiresAt` | timestamp | Seven days from creation or the last resend |
+| `failedAttempts` | int | Wrong-token count; reset by resend |
+| `deliveredVia` | `'email' \| 'operator'` | `operator` = the bootstrap script printed the link (no mailbox proof) |
+| `sentAt`, `lastSendAt`, `sendCount`, `lastSendError`, `lastProviderId` | — | Email outcome; `lastSendError` non-null ⇒ shown as "Not delivered" |
+| `createdBy`, `createdByName`, `createdAt`, `updatedAt` | — | Inviter |
+| `acceptedUid`, `acceptedAt` | uid, timestamp \| null | Set once on acceptance (consumed) |
+| `revokedBy`, `revokedAt` | uid, timestamp \| null | |
+| `reactivatedUid` | uid \| null | The disabled account re-enabled by a preview of this invitation |
+
+### members/{uid}
+
+History and listing only — **never a permission source** (rules read
+`users/{uid}`). `email`, `name`, `role`, `status` (`active` / `deactivated`),
+`joinedAt`, `invitedBy`, `inviteId`, `deactivatedAt`, `deactivatedBy`,
+`authSyncPending`, `authSyncedAt`, `updatedAt`. Created on acceptance or on the
+first role change / deactivation of a legacy member; `listTeam` lists active
+members from `users` and deactivated history from here.
+
+### auditEvents/{eventId}
+
+Append-only, written in the same transaction as the change: `type`
+(`invite.created` · `invite.resent` · `invite.revoked` · `invite.accepted` ·
+`member.role_changed` · `member.deactivated` · `member.auth_synced` ·
+`member.auth_reenabled` · `company.bootstrapped` · `reconcile.fix`),
+`actorUid`, `targetUid`, `targetEmail`, `inviteId`, `before`, `after`,
+`requestId`, `source` (`callable` / `operator`), `at`.
+
+### system/membership · rateLimits/{key} · devOutbox/{inviteId}
+
+`system/membership` — `{ version, updatedAt }`, the lock every membership
+transaction reads and writes. `rateLimits/{key}` — `{ windowStart, count,
+updatedAt }` fixed-window counters. `devOutbox/{inviteId}` — **emulator
+only**: the rendered invitation email and link, written instead of sending
+when the Functions emulator runs with a Firestore emulator and no email key.
 
 ## companies/{companyId}/costCodes/{costCodeId}
 
@@ -417,7 +484,7 @@ application build ships first and the rules second ([DEPLOYMENT.md](DEPLOYMENT.m
 writes them, the new rules accept every old write, and the new bundle's raise
 needs the new rules.
 
-**Applied supplier variations (ADR-62, M3-B1 — LIVE) and committed new-scope lines (ADR-63, M3-B2 — implemented, not yet deployed).**
+**Applied supplier variations (ADR-62, M3-B1 — LIVE) and committed new-scope lines (ADR-63, M3-B2 — live in production, confirmed by the Product Owner).**
 Nothing is written onto a PO. An approved supplier variation that names this PO
 and carries the rules-stamped `commitmentAppliedAt/By` pair (see *variations*)
 revises the PO LINE its `poLineIndex` names at read time — `revised = lineTotal
@@ -474,7 +541,7 @@ cumulative claiming and the mixed-mode overlap stay client-only (SECURITY.md
 | `periodEnding` | string | Date string (may be empty) |
 | `claimRef` | string | Supplier's own reference |
 | `variationId` | string \| null | **Reserved header — stays `null` by decision (ADR-63).** Rules require null at create and freeze it (ADR-58). Several variations may share one claim, so the variation identity lives on the LINES (`variationId` + `variationLineIndex` per line, below) — the header is never activated |
-| `variationLineCount` | int | **ADR-63 (M3-B2 — implemented, not yet deployed).** The number of VARIATION-ORIGIN lines after the PO lines (0 when none). Non-negative int; **REQUIRED at create by the FINAL rules** (optional in the Stage-1 transitional ruleset — absent reads 0; every pre-M3-B2 claim has no key); frozen for life (`corePreserved`). Rules pin **`PO lines + variationLineCount == lineItems.size()`** at create and the FIRST / LAST variation-origin lines' shape (null `poLineIndex`, string `variationId`) at create, draft edit and approve — the old-browser guard. Element contents beyond that are client-only (DC40) |
+| `variationLineCount` | int | **ADR-63 (M3-B2 — live in production, confirmed by the Product Owner).** The number of VARIATION-ORIGIN lines after the PO lines (0 when none). Non-negative int; **REQUIRED at create by the FINAL rules** (optional in the Stage-1 transitional ruleset — absent reads 0; every pre-M3-B2 claim has no key); frozen for life (`corePreserved`). Rules pin **`PO lines + variationLineCount == lineItems.size()`** at create and the FIRST / LAST variation-origin lines' shape (null `poLineIndex`, string `variationId`) at create, draft edit and approve — the old-browser guard. Element contents beyond that are client-only (DC40) |
 | `lineItems` | array | **Embedded, and the line SET IS FIXED**: exactly one line per PO line, created one-to-one when the claim is raised, followed (ADR-63) by one line per CLAIMABLE new-scope variation line on that PO (a positive new-scope line of an approved, applied, scope-committed supplier variation — `lib/variations.js → claimableNewScopeLines`). Lines are never added, removed or reordered — the SOURCE-LINE IDENTITY (`poLineIndex`, or `variationId` + `variationLineIndex`; `lib/sourceLine.js`) is downstream identity. A draft edit authors only each line's `claimedToDate`; every identity field is rebuilt from the stored line and `claimedThisPeriod` is re-derived (ADR-37). **Rules pin the COUNT** (to the PO's lines + `variationLineCount` at create, 1–200; to the stored count on edit and approval) and the two end variation lines' shape — other element contents are client-only (DC36 / DC40). See below |
 | `retention` | number | Ex-GST amount withheld, clamped to subtotal |
 | `claimedSubtotal`, `claimedGst`, `claimedTotal` | number | GST applies to (subtotal − retention). **Whole-cent header rules-enforced at create and draft edit** (ADR-58): `retention >= 0` and `<= claimedSubtotal`, `claimedSubtotal > 0`, GST exactly 10% of the net half-up (one cent below on a half-cent boundary), total exact; frozen from `submitted` |
@@ -483,7 +550,7 @@ cumulative claiming and the mixed-mode overlap stay client-only (SECURITY.md
 | `currency` | string | **Audit snapshot** of the project currency at write time (never read for display; historical `AUD` values are never rewritten) — rules pin it to the project's resolved currency at create and freeze it |
 | `revision` | number | **1 at create; EXACTLY +1 on every update, rules-enforced** (ADR-58). The client transactions write the revision they reviewed + 1 after confirming the server copy's status and revision, so a stale edit or assessment is refused (rules-ASSISTED — a direct caller who reads first passes; DC36). Every claim written before ADR-58 holds 1; a missing key reads as 0. **No consumer reads it** |
 | `submittedAt`, `approvedAt`, `rejectedAt`, `invoicedAt` | timestamp \| null | Stamped on transition, `== request.time`; `invoicedAt` is reserved — no path writes it (a draft invoice is a reservation, not an invoicing event — ADR-68) |
-| `supplierInvoiceId` | string \| null | **ADR-68 (SHIELD 2A — implemented, not yet deployed).** The ONE current claim-sourced supplier invoice (draft / approved / posted) that reserves this approved claim; null while unlinked. **The key's PRESENCE is the legacy discriminator**: a claim with NO such key predates the pairing and is never invoiceable until it records its existing active invoice (rules branch (g)) or is backfilled by the trusted procedure. Written null at create and approve by the new bundle (FINAL rules require it; Stage 1 tolerates its absence); set by the LINK write in the same commit as the invoice create (rules `getAfter()` pair them); cleared by the UNLINK write in the same commit as the invoice's cancellation; permanent once the invoice posts. **Workflow state — no selector reads it**; Actual still hands over from the claim to the invoice when the invoice POSTS |
+| `supplierInvoiceId` | string \| null | **ADR-68 (SHIELD 2A — live in production, confirmed by the Product Owner).** The ONE current claim-sourced supplier invoice (draft / approved / posted) that reserves this approved claim; null while unlinked. **The key's PRESENCE is the legacy discriminator**: a claim with NO such key predates the pairing and is never invoiceable until it records its existing active invoice (rules branch (g)) or is backfilled by the trusted procedure. Written null at create and approve by the new bundle (FINAL rules require it; Stage 1 tolerates its absence); set by the LINK write in the same commit as the invoice create (rules `getAfter()` pair them); cleared by the UNLINK write in the same commit as the invoice's cancellation; permanent once the invoice posts. **Workflow state — no selector reads it**; Actual still hands over from the claim to the invoice when the invoice POSTS |
 | `supplierInvoiceLinkedAt`, `supplierInvoiceLinkedBy` | timestamp \| null, uid \| null | The link's stamps: `== request.time` / `== request.auth.uid` when linked, null when unlinked (ADR-68) |
 | `submittedBy`, `approvedBy`, `rejectedBy` | uid \| null | **The verified actor** (`== request.auth.uid`, ADR-58). `submittedBy` / `rejectedBy` are absent on documents written before M2-B2 and acquired on the next valid write |
 | `externalRefs` | map | Reserved for accounting integrations |
@@ -586,7 +653,7 @@ enforced; see [SECURITY.md](SECURITY.md) → Deferred Control 29.
 | `supplierName` | string | Snapshot from the PO/claim — never re-read |
 | `poId`, `poNumber` | string \| null | The one PO this invoice bills against (snapshot) |
 | `progressClaimId`, `claimNumber` | string \| null | The one approved claim (source `progress_claim`), else null |
-| `variationLineCount` | int (OPTIONAL) | **ADR-63 (M3-B2 — implemented, not yet deployed).** The number of VARIATION-ORIGIN lines stored on the invoice (0 on a `direct_po` invoice; for a `progress_claim` invoice at most the claim's — lines certified at zero are not stored). Absent on every pre-M3-B2 document (reads 0). **Rules:** non-negative int when present, frozen (`corePreserved`), the LAST line's shape must match it, a `direct_po` invoice requires 0/absent, and a `progress_claim` invoice whose claim carries variation lines MUST declare a count ≤ the claim's — the pre-M3-B2 bundle never writes the key and is refused, so no posted invoice can carry new-scope work onto PO line 0 |
+| `variationLineCount` | int (OPTIONAL) | **ADR-63 (M3-B2 — live in production, confirmed by the Product Owner).** The number of VARIATION-ORIGIN lines stored on the invoice (0 on a `direct_po` invoice; for a `progress_claim` invoice at most the claim's — lines certified at zero are not stored). Absent on every pre-M3-B2 document (reads 0). **Rules:** non-negative int when present, frozen (`corePreserved`), the LAST line's shape must match it, a `direct_po` invoice requires 0/absent, and a `progress_claim` invoice whose claim carries variation lines MUST declare a count ≤ the claim's — the pre-M3-B2 bundle never writes the key and is refused, so no posted invoice can carry new-scope work onto PO line 0 |
 | `invoiceDate` | string | Supplier's tax-invoice date (`YYYY-MM-DD`) |
 | `receivedDate` | string | When the invoice was received |
 | `dueDate` | string | Explicit; seeded from payment terms, editable |
@@ -659,7 +726,7 @@ afterwards — both are core-preserved, so re-checking could only strand an invo
 whose PO later closed or was cancelled (the ADR-34 rule).
 
 **A `progress_claim` invoice is PAIRED with its claim (ADR-68, SHIELD 2A —
-implemented, not yet deployed).** The invoice carries no new key; the pairing
+live in production, confirmed by the Product Owner).** The invoice carries no new key; the pairing
 lives on the claim (`supplierInvoiceId`, above). At create the rules also
 require the claim to name this invoice's `poId`, `claimNumber`, `supplierId`
 and trimmed `supplierName`, to be NEW-FORMAT and UNLINKED before the commit, and
@@ -1009,7 +1076,7 @@ with `subtotal + gst == total` exact on both sides — never clamped, never
 bounded against submitted. `lineItems` CONTENTS, the header GST against the
 lines, notes-required-when-differing and uniqueness stay client-only
 (SECURITY.md → *Variations — rules-enforced lifecycle*, Deferred Control 37).
-**Commitment application (ADR-62, M3-B1 — LIVE; ADR-63, M3-B2 — implemented, not yet deployed):** a
+**Commitment application (ADR-62, M3-B1 — LIVE; ADR-63, M3-B2 — live in production, confirmed by the Product Owner):** a
 PO-linked supplier variation approves ONLY with `commitmentAppliedAt/By` and ONLY
 while its PO exists in this project and is sent/closed (approve + apply in one
 write; a cancelled, draft or missing PO refuses the approval); branch (f) applies
@@ -1050,7 +1117,7 @@ still missing; a negative new-scope line is never matured or claimable.
 | `attachments` | array | **Reserved** — always `[]`; no Storage uploads yet |
 | `externalRefs` | map | **Reserved** — accounting-system IDs |
 | `supersededByVariationId` | string \| null | **Reserved** — revision workflow; null at create and frozen (rules) |
-| `scopeCommittedAt`, `scopeCommittedBy` | timestamp, uid (OPTIONAL) | **ADR-63 (M3-B2 — implemented, not yet deployed).** The SECOND, independent pair — the new-scope commitment: present TOGETHER once the variation's POSITIVE NEW_SCOPE lines have been committed as claimable commitment lines in their own right (ceiling = the line's `approvedAmount`, on the line's own cost code, identity `variationId` + line index); **absent** otherwise (never null; absent at create by rules). Written WITH the applied pair by the approve of any PO-linked supplier variation (REQUIRED by the FINAL rules; optional in the Stage-1 transitional ruleset for the M3-B1 bundle), or once by the legacy action — "Apply to commitment" writes both pairs on a never-applied variation, "Commit new scope" writes this pair alone on a variation applied under M3-B1 that carries a positive new-scope line — `scopeCommittedBy == request.auth.uid`, `scopeCommittedAt == request.time`, the PO `get()`-verified sent/closed, each written pair's stored value null (a repeat is refused by rules per pair; a present pair is never rewritten). Read by `lib/variations.js → isScopeCommitted / appliedSupplierVariationAdjustments().newScopeLines`. A NEGATIVE new-scope line is never matured or claimable whatever the stamps say (signed exposure, state *Negative new scope — review*). Absent on every variation written before M3-B2 (legacy new scope = exposure, unchanged, until the explicit commit) |
+| `scopeCommittedAt`, `scopeCommittedBy` | timestamp, uid (OPTIONAL) | **ADR-63 (M3-B2 — live in production, confirmed by the Product Owner).** The SECOND, independent pair — the new-scope commitment: present TOGETHER once the variation's POSITIVE NEW_SCOPE lines have been committed as claimable commitment lines in their own right (ceiling = the line's `approvedAmount`, on the line's own cost code, identity `variationId` + line index); **absent** otherwise (never null; absent at create by rules). Written WITH the applied pair by the approve of any PO-linked supplier variation (REQUIRED by the FINAL rules; optional in the Stage-1 transitional ruleset for the M3-B1 bundle), or once by the legacy action — "Apply to commitment" writes both pairs on a never-applied variation, "Commit new scope" writes this pair alone on a variation applied under M3-B1 that carries a positive new-scope line — `scopeCommittedBy == request.auth.uid`, `scopeCommittedAt == request.time`, the PO `get()`-verified sent/closed, each written pair's stored value null (a repeat is refused by rules per pair; a present pair is never rewritten). Read by `lib/variations.js → isScopeCommitted / appliedSupplierVariationAdjustments().newScopeLines`. A NEGATIVE new-scope line is never matured or claimable whatever the stamps say (signed exposure, state *Negative new scope — review*). Absent on every variation written before M3-B2 (legacy new scope = exposure, unchanged, until the explicit commit) |
 | `commitmentAppliedAt`, `commitmentAppliedBy` | timestamp, uid (OPTIONAL) | **ADR-62 (M3-B1 — LIVE).** The commitment-application pair: present TOGETHER once an approved, PO-linked SUPPLIER variation has been applied to its PO's commitment; **absent** otherwise (never null; absent at create by rules). REQUIRED by the FINAL rules on the approve of any PO-linked supplier variation (branch c; the PO must exist here and be sent/closed — otherwise the approval is refused, never approved unapplied), or written once by the legacy *Apply* (branch f) on an approved document whose pair is still absent — `commitmentAppliedBy == request.auth.uid`, `commitmentAppliedAt == request.time`, the PO `get()`-verified sent/closed, both rules-enforced; a repeat Apply is refused by rules (stored pair must be null); manual-mode supplier and client variations can never carry the pair. Read by `lib/variations.js → isCommitmentApplied / appliedSupplierVariationAdjustments`: an applied variation's EXISTING-LINE amounts (a `poLineIndex` whose cost code matches the PO line) revise that PO line at read time; its new-scope and invalid lines stay in unapplied exposure. Absent on every variation written before M3-B1 (legacy = unapplied = the pre-ADR-62 figures, unchanged) |
 | `createdAt` / `createdBy` | timestamp / uid | `== request.time` / `== request.auth.uid` at create; immutable (ADR-59) |
 | `updatedAt` / `updatedBy` | timestamp / uid | **ADR-59 addition (M2-B3).** Required by rules on **every** write — create, draft edit and all four transitions. Absent on variations written before M2-B3; required only of the *incoming* document, so those acquire it on their next valid write |

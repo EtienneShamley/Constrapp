@@ -23,10 +23,12 @@ steps:
     inputs:
       version: '24.19.0'
 
+  # firebase-tools 15 (ADR-72, needed by the firebase-functions v7 emulator)
+  # refuses to start the emulators on a JDK older than 21.
   - task: JavaToolInstaller@0
-    displayName: Use Java 17
+    displayName: Use Java 21
     inputs:
-      versionSpec: '17'
+      versionSpec: '21'
       jdkArchitectureOption: 'x64'
       jdkSourceOption: 'PreInstalled'
 
@@ -40,6 +42,11 @@ steps:
     displayName: Install dependencies
     workingDirectory: $(workingDirectory)
 
+  # Trusted backend (ADR-72): its own package, its own lockfile.
+  - script: npm ci
+    displayName: Install Functions dependencies
+    workingDirectory: $(workingDirectory)/functions
+
   # Lint runs FIRST and is BLOCKING (ADR-41). It takes seconds, while the Rules
   # suite boots the Firestore and Storage emulators under a JDK and takes
   # minutes — so a lint failure should not cost a full emulator run. The script
@@ -49,12 +56,43 @@ steps:
     displayName: Lint
     workingDirectory: $(workingDirectory)
 
+  - script: npm run functions:lint
+    displayName: Functions lint
+    workingDirectory: $(workingDirectory)
+
   - script: npm run test:unit
     displayName: Unit and behaviour tests
     workingDirectory: $(workingDirectory)
 
+  - script: npm run functions:test
+    displayName: Functions pure tests
+    workingDirectory: $(workingDirectory)
+
+  # Dependency checks. The Functions runtime dependencies gate the build at
+  # HIGH. The frontend audit is REPORTED, not gating: its findings pre-date
+  # ADR-72 (identical on main) and are tracked separately in ROADMAP.md.
+  - script: npm audit --omit=dev --audit-level=high
+    displayName: Functions dependency audit (gating, high)
+    workingDirectory: $(workingDirectory)/functions
+
+  - script: npm audit --omit=dev || true
+    displayName: Frontend dependency audit (report only)
+    workingDirectory: $(workingDirectory)
+
   - script: npm run test:rules
     displayName: Firestore and Storage Rules tests
+    workingDirectory: $(workingDirectory)
+
+  - script: npm run rules:transitional:check
+    displayName: Transitional rules up to date
+    workingDirectory: $(workingDirectory)
+
+  # Auth + Firestore + Functions emulators: handler, real-callable, revocation
+  # and operator-script tests (ADR-72). Runs the functions on the CI Node
+  # (24.x) while production pins nodejs22 in firebase.json; the pure suite and
+  # the deploy-time predeploy hook keep the code within Node 22.
+  - script: npm run test:functions
+    displayName: Trusted backend emulator tests
     workingDirectory: $(workingDirectory)
 
   - script: npm run build

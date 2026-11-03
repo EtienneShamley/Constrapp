@@ -15,7 +15,7 @@ Preconstruction → Procurement → Delivery → Cost Control → Forecasting �
 | Phase | What happens | Modules (status) |
 |---|---|---|
 | **Preconstruction** | Measure quantities, build the BOQ, estimate, transfer to an approved budget | **Drawings** *(implemented — foundation)*; **Quant™ 1A manual takeoff** *(live in production — measurement records)*; **Quant™ 1B** *(live in production — link a measurement to a BOQ item and explicitly apply the reviewed total, ADR-52)*; **Quant™ 1C** *(live in production since 23 October 2026; 1C-A area-geometry correctness, draft protection, full geometry editing, on-sheet selection, anchored pan/zoom, accessible dialogs; 1C-B read-only project summary, attention list and Open-in-Quant traceability — no schema or rules change, ADR-53)*; **Quant™ 1D** *(live in production since 26 October 2026 — manual opening and void deductions, ADR-54)*; **BOQ** *(implemented — foundation)*; Estimating incl. BOQ → Budget transfer *(planned)*; **Cost Codes**, **Budgets** *(implemented)* |
-| **Procurement** | Tender packages, subcontractor invitations, bid levelling, award, commitment | **Tender & Award** *(implemented — foundation)*; **Award → linked draft PO** *(implemented — M3-A, ADR-61; not yet deployed)*; subcontractor invitations and bid levelling *(planned)* → **Purchase Orders** *(implemented)* |
+| **Procurement** | Tender packages, subcontractor invitations, bid levelling, award, commitment | **Tender & Award** *(implemented — foundation)*; **Award → linked draft PO** *(implemented — M3-A, ADR-61; live in production, confirmed by the Product Owner)*; subcontractor invitations and bid levelling *(planned)* → **Purchase Orders** *(implemented)* |
 | **Delivery** | Scope variations, cumulative progress claims against commitments | **Variations** *(implemented — foundation)*; **Progress Claims** *(implemented)* |
 | **Cost Control** | Supplier invoices, actual cost, payments/credit notes | **Supplier Invoices**, **Supplier Payments**, **Supplier Credit Notes** *(implemented)*; Retention Release *(future)* |
 | **Revenue Control** | Client invoices issued against the contract sum and approved client variations; receivables, and the cash received to settle them | **Client Invoices / Accounts Receivable**, **Client Receipts** *(implemented — foundation)* |
@@ -48,31 +48,53 @@ modules** (screens exist, no functionality) are listed in the module-status tabl
 | Routing | React Router 7 (`react-router-dom`) | `BrowserRouter` |
 | State | React Context + hooks | No Redux/Zustand |
 | Charts | Recharts 3 | Cash Flow chart only. The Dashboard uses **plain SVG** (no chart library): the Budget, cost & revenue bars and the programme status donut (ADR-45) — its original charts were fabricated data and were removed |
-| Backend | Firebase JS SDK 12 — Auth, Firestore, Storage | **Client SDK only** |
+| Backend | Firebase JS SDK 12 — Auth, Firestore, Storage, Functions, App Check | **Client SDK for all project/financial data**; since ADR-72 a narrow **trusted backend** — eight Callable Cloud Functions (2nd gen, Node.js 22, Admin SDK 14, firebase-functions 7) in `frontend/functions/` for team management only |
 | Lint | ESLint 10 (flat config) | `npm run lint` = `eslint . --max-warnings 0`. Standing policy **0 errors / 0 warnings**, blocking in CI (ADR-41) |
 | Rules tests | Vitest 4 + `@firebase/rules-unit-testing` + `firebase-tools` 13 (emulator) | `npm run test:rules` — **dev-only**. Requires JDK 17 |
 | Unit tests | Vitest 4 (Node, no emulator) | `npm run test:unit` — pure `lib/` domain logic plus a few structural source tests (`tests/unit/`); separate config (`vitest.config.js`). **No jsdom, no testing-library** |
 | CI | Azure Pipelines (`azure-pipelines.yml`) | `npm ci → lint → test:unit → test:rules → build`, all blocking. No deploy stage |
 
-## Client-SDK-Only Backend
+## Client-SDK Data Access + One Narrow Trusted Backend (ADR-72)
 
-There is **no backend code**: no Cloud Functions, no server, no `functions/`
-directory, and no `.firebaserc`. (`frontend/firebase.json` declares the Firestore
-and Storage emulators, the two rules-file paths for the automated Security Rules
-suites, and a **Firebase Hosting** block, first deployed by hand on 19 October
-2026 — no functions target, and with no `.firebaserc` a deploy must name
-`--project` explicitly.) The browser talks directly to
-Firebase Auth, Firestore **and Cloud Storage**, which since the Documents &
-Drawings foundation carries real file bytes. All business rules run client-side,
-backed by **two** rules files — `firestore.rules` and `storage.rules` — which are
-the only trust boundaries (see [SECURITY.md](SECURITY.md) for what they do and do
-not enforce). Cloud Functions and server-side enforcement are deliberate
-deferrals — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md).
+**All project and financial data is read and written by the browser through
+the client SDK** — Auth, Firestore and Cloud Storage — behind **two** rules
+files, `firestore.rules` and `storage.rules`, which remain the trust boundary
+for that data (see [SECURITY.md](SECURITY.md) for what they do and do not
+enforce). Nothing financial runs server-side.
 
-A root-level `backend/` directory exists but is a **reserved, intentionally empty
-placeholder** — it holds no code and no configuration. It marks where a future
-trusted backend would live; do not treat it as an existing backend. The controls
-that must be activated when that backend arrives are listed in
+**Since ADR-72 there is ONE trusted backend, and it does one job: team
+membership.** `frontend/functions/` is a separate npm package (Node.js 22,
+ES modules, `firebase-admin` 14, `firebase-functions` 7) deployed as eight
+2nd-gen **Callable** functions in `australia-southeast1`: `listTeam`,
+`createInvitation`, `resendInvitation`, `revokeInvitation`,
+`previewInvitation`, `acceptInvitation`, `changeMemberRole`,
+`deactivateMember`. They use the Admin SDK (which bypasses Security Rules), so
+each authorises its caller itself from `users/{uid}` — the same document the
+rules trust — and derives the company from it. App Check is enforced on every
+callable. There is no Express, no HTTP router, no trigger, no scheduled job and
+no other database. Operator scripts (`functions/scripts/`) bootstrap a company
+and reconcile membership with the operator's own credentials.
+
+```
+frontend/functions/
+  package.json             its own lockfile; engines node 22
+  src/index.js             the eight onCall exports (region, App Check, secret, caps)
+  src/team/handlers.js     callable handlers over injected deps (db, auth, email, clock)
+  src/lib/                 authz · validation · tokens · invitations · members ·
+                           companyLock · rateLimit · audit · email (Resend adapter) ·
+                           membershipState · errors · params · firebaseAdmin
+  scripts/                 bootstrap-company.mjs · reconcile-membership.mjs
+  test/                    pure unit tests (no emulator)
+  .env.<projectId>         NON-secret parameters (APP_BASE_URL, EMAIL_FROM, kill switch)
+```
+
+`frontend/firebase.json` declares Hosting, the two rules files, the
+`functions` codebase (`nodejs22`, predeploy lint + tests) and the Auth,
+Firestore, Storage and Functions emulators. There is still **no
+`.firebaserc`**: every deploy names `--project`. There is no root `backend/`
+directory (earlier documents described an empty placeholder; it does not
+exist). Any further server-side capability (AI, billing, financial
+enforcement) needs its own ADR; the controls that must accompany it are in
 [SECURITY.md](SECURITY.md) → Trusted-Backend Activation Requirements and
 [ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md) §6.
 
@@ -83,12 +105,17 @@ frontend/                  The entire application (run all npm commands here)
   firestore.rules          Firestore security rules — published manually (see DEPLOYMENT.md)
   storage.rules            Cloud Storage security rules — the SECOND trust boundary,
                            also published manually
-  firebase.json            Firestore + Storage EMULATORS, both rules paths, and a
-                           Hosting block, deployed by hand since 19 October 2026 (no functions, no .firebaserc)
+  firebase.json            Hosting (deployed by hand since 19 October 2026), both rules
+                           paths, the `functions` codebase (ADR-72) and the Auth,
+                           Firestore, Storage and Functions EMULATORS (no .firebaserc)
+  functions/               The trusted backend (ADR-72): team-management callables,
+                           operator scripts, own package.json — see above
   vitest.rules.config.js   Vitest config for the rules suite (Node, no app plugins)
   vitest.config.js         Vitest config for the UNIT suite (tests/unit/ only)
   tests/rules/             Firestore AND Storage Security Rules tests (both emulators)
   tests/unit/              Unit tests for pure lib/ domain logic (no emulator)
+  tests/functions/         Trusted-backend tests against the Auth + Firestore + Functions
+                           emulators (vitest.functions.config.js, `npm run test:functions`)
   .env.example             Vite env vars (Firebase web config)
   src/
     main.jsx               Entry — StrictMode + App
@@ -303,9 +330,14 @@ the two takeoff hooks and `useDrawings` read-only; the Quant workspace mounts `u
 
 ```
 /login, /create-account, /forgot-password    AuthLayout (redirects to / when signed in)
+/accept-invite                               InviteLayout (same shell, NO signed-in redirect — ADR-72)
 
 ProtectedRoute (redirects to /login when signed out)
-└─ AppShell (Sidebar + TopBar)
+└─ MembershipGate (ADR-72: enters the shell only while users/{uid} names a company and
+   │               is not deactivated; otherwise a "no active membership" screen, and
+   │               signs out when an active membership is lost)
+   └─ AppShell (Sidebar + TopBar)
+   ├─ /settings/company        Company Settings (country & currency) · /settings/team  Team (ADR-72)
    ├─ /                        Dashboard
    ├─ /projects                Projects list
    ├─ /projects/:projectId     ProjectDetailLayout (tab bar; index → overview)
@@ -422,19 +454,19 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Supplier Credit Notes | Implemented (foundation) — reduction records against exactly one posted, retention-free supplier invoice; rules-enforced lifecycle **with target-invoice `get()` checks**; read-time subtraction from Invoiced/Actual/Remaining Payable; lives inside the Supplier Invoices view; **no client credit notes, no refunds** |
 | Supplier Retention & Retention Release | Implemented (foundation) — read-time register grouped by supplier; retention **held** derived from posted invoices, **released** from posted `retentionReleases`; partial releases with cumulative-snapshot GST; **no client retention, no retention due/DLP dates, no retention-paid attribution** (ADR-30) |
 | Cash Flow (actual + forecast) | Implemented (foundation) — read-time monthly actual, automatic invoice due-date forecast, manual `cashFlowLines` timing, projected cumulative/closing position, completeness, untimed reporting, peak funding with suppression, and a two-panel chart that consumes those derived rows without re-deriving them (ADR-26); **no date filtering, not a bank balance** |
-| Variations (client + supplier) | Implemented (foundation); **M3-B1 supplier-variation commitment integration (ADR-62) LIVE**; **M3-B2 new-scope claim & invoice integration (ADR-63) implemented — not yet deployed** |
-| Tenders (packages, bids, comparison, award) | Implemented (foundation) — cost-code + free-text scope (BOQ-independent), manual bids, read-time comparison, award as a decision record; **no stored totals, closing date informational**; since M3-A (ADR-61, not yet deployed) an award raises ONE linked **draft** PO through a reviewed, confirmed, guarded transaction — never sent automatically |
+| Variations (client + supplier) | Implemented (foundation); **M3-B1 supplier-variation commitment integration (ADR-62) LIVE**; **M3-B2 new-scope claim & invoice integration (ADR-63) live in production, confirmed by the Product Owner** |
+| Tenders (packages, bids, comparison, award) | Implemented (foundation) — cost-code + free-text scope (BOQ-independent), manual bids, read-time comparison, award as a decision record; **no stored totals, closing date informational**; since M3-A (ADR-61, live in production, confirmed by the Product Owner) an award raises ONE linked **draft** PO through a reviewed, confirmed, guarded transaction — never sent automatically |
 | Forecast Cost to Complete | Implemented (foundation) — read-time, cost-side |
 | Project Margin (Commercial tab) | Implemented (foundation) — read-time, ex-GST; commercial baseline is the only stored input |
 | Dashboard | **Premium Dashboard v2 (ADR-45)** over Analytics v1 (ADR-42) — portfolio counts and status breakdown (null until the projects read settles — never a false 0) and the register (table from `lg:`, cards below) from the existing projects subscription (no new listener, no money); plus a financial-role-only **Project Snapshot** for one selected project (`?project=<id>`): four headline KPIs, the remaining established figures, and a plain-SVG **Budget, cost & revenue** chart. The snapshot child mounts ten existing project-scoped hooks and renders `lib/projectSnapshot.js`, which only composes `projectForecastTotals` / `computeMargin` / `payablesSummary`. Beside the chart, a programme-role-only **Programme** panel mounts the one added subscription (`useProjectActivities`, selected project only) and renders `timelineSummary` counts — no completion %. No portfolio money, no rules change |
 | Contacts | Implemented (foundation) — company-wide directory; supplier picker on POs |
 | Subcontractors | Implemented — filtered contacts view (the IQ™ "Coming Soon" card was removed for private beta) |
 | Documents & Drawings | Implemented (foundation) — drawing masters + **immutable** revisions with a transactional current-revision pointer, revision history, current/superseded/withdrawn lifecycle, explicit succession on withdrawal, and a flat general-document register with project/internal visibility. Bytes in Cloud Storage, metadata in Firestore, **uploads Storage-first**; **no photos, DWG, markup, OCR, AI or takeoff** |
-| Constrapp PULSE™ | **Implemented and live in production (1A ADR-47; 1B ADR-49, released 19 October 2026)** — a project tab of nine deterministic, explainable indicators (forecast over budget · cost codes not forecast · negative forecast gross profit · overdue programme activities · blocked by predecessors · dependencies needing review · later than the approved baseline (the last three PULSE™ 1C, ADR-67 — implemented, NOT YET DEPLOYED) · past-due supplier invoices · pending variation exposure), each in one of five states (loading / unavailable / needs data / finding / no issue), composed in `lib/pulse.js` from `projectForecastRows` / `computeMargin` / `payablesSummary` / `isOverdue` through the ADR-42 `figureState` vocabulary; evidence rows and tab-level links; **no score, threshold, trend, prediction or Dashboard surface**. **PULSE™ 1B (ADR-49)** adds the one PULSE write path: an acknowledgement per indicator (`…/pulseAcknowledgements/{indicatorId}`, new rules block) with a note and a required review-by date, withdrawable, derived *needs attention / acknowledged / no longer present / unknown* status beside each finding (`lib/pulseAttention.js`) — never a resolution, never a change to an indicator. **PULSE™ 1C (ADR-67)** composes the GANTT 1A2 / 1B selectors (`dependencyStates`, `baselineComparison`, `baselineSummary`) through the pure `lib/pulseSchedule.js` into the three schedule indicators, reads the baseline headers and the ONE active snapshot read-only, and adds three ids to the acknowledgement allowlist — the only rules change. The top-level `/pulse` route is a hidden pointer to the tab |
+| Constrapp PULSE™ | **Implemented and live in production (1A ADR-47; 1B ADR-49, released 19 October 2026)** — a project tab of nine deterministic, explainable indicators (forecast over budget · cost codes not forecast · negative forecast gross profit · overdue programme activities · blocked by predecessors · dependencies needing review · later than the approved baseline (the last three PULSE™ 1C, ADR-67 — LIVE in production (confirmed by the Product Owner)) · past-due supplier invoices · pending variation exposure), each in one of five states (loading / unavailable / needs data / finding / no issue), composed in `lib/pulse.js` from `projectForecastRows` / `computeMargin` / `payablesSummary` / `isOverdue` through the ADR-42 `figureState` vocabulary; evidence rows and tab-level links; **no score, threshold, trend, prediction or Dashboard surface**. **PULSE™ 1B (ADR-49)** adds the one PULSE write path: an acknowledgement per indicator (`…/pulseAcknowledgements/{indicatorId}`, new rules block) with a note and a required review-by date, withdrawable, derived *needs attention / acknowledged / no longer present / unknown* status beside each finding (`lib/pulseAttention.js`) — never a resolution, never a change to an indicator. **PULSE™ 1C (ADR-67)** composes the GANTT 1A2 / 1B selectors (`dependencyStates`, `baselineComparison`, `baselineSummary`) through the pure `lib/pulseSchedule.js` into the three schedule indicators, reads the baseline headers and the ONE active snapshot read-only, and adds three ids to the acknowledgement allowlist — the only rules change. The top-level `/pulse` route is a hidden pointer to the tab |
 | Constrapp SHIELD™ | **Implemented and live in production (foundation, ADR-50, released 19 October 2026).** Commercial assurance, never HSEQ. A project tab of five deterministic, read-only checks (potential duplicate supplier invoices · supplier invoice integrity · purchase order over-invoicing exposure · commitment records requiring reconciliation · existing financial exceptions), each in one of five states (loading / unavailable / needs data / finding / no issue), composed in `lib/shield.js` from existing selectors and status constants through the ADR-42 `figureState` vocabulary over declared dependencies; evidence rows with source ids and tab-level links; **no write path, persistence, score, severity, trend, prediction or Dashboard surface**. The top-level `/shield` route is a hidden pointer to the tab |
 | Constrapp Quant™ | **Quant 1A, 1B and 1C live in production (ADR-51, ADR-52 — October 2026; ADR-53 — 23 October 2026); Quant 1D (ADR-54, deductions) live in production since 26 October 2026 (rules published first, then Hosting; production-verified).** Manual drawing measurement: a project tab that renders one page of an existing drawing revision (PDF through the pinned, lazily loaded `pdfjs-dist`; PNG/JPEG through `<img>`), calibrates it from one known metric distance, measures lengths, areas and counts as canonical page-space geometry, and persists each as a traceable record (`takeoffPages`, `takeoffMeasurements` — two new rules blocks) with a required cost code and a calibration snapshot; quantities are **derived at read time, never stored**; re-calibration flags dependent measurements for review; superseded revisions stay inspectable with a warning; every write is a revision-guarded transaction. **The tab writes no BOQ quantity and no financial figure; no AI.** **Quant 1B (ADR-52):** a measurement may carry an optional `boqItemId` link to one ACTIVE BOQ item on the SAME cost code (rules `get()` the target; unit compatibility — length `m`/`lm`, area `m2`/`m²`/`sqm`, count `no`/`nr`/`each`, factor 1 only — is client-side); the BOQ tab's *Quant (n)* dialog derives the eligible total from the existing subscriptions (current revision, reviewed, calibrated, compatible — any blocked measurement blocks the apply), previews existing → proposed quantity and amount through `boqLineAmount`, and on one explicit confirmation writes that item's `quantity`, derived `amount` and a `quantApplied` record through a version-guarded transaction (`lib/boqActions.js`) that also now guards the manual editor (released rules-first, then Hosting). **Quant 1C-A (ADR-53):** a crossed or collapsed area outline is refused at save and derives as INVALID (with a reason) when stored — never summed, blocks the apply; drafts and geometry edits are remembered per project in sessionStorage and restored on the same sheet, with one confirmation before a sheet or tool change discards them and the browser's prompt before unload; geometry editing gains insert / remove / count markers / undo; Select hit-tests shapes on the sheet; Ctrl/⌘-wheel, pinch and toolbar zoom are anchored, drag-to-pan with Select; 44 px vertex targets; the three Quant dialogs share `QuantDialog`. **Quant 1C-B:** a *Project summary* view on the same tab (`lib/quantSummary.js` over the existing subscriptions — no new listener): per-kind totals of current, valid measurements, historical sheets totalled apart, one attention list, grouping by cost code and drawing → revision → page, loading / unavailable said out loud; *Open* validates the target and moves the workspace's own selection to the exact sheet with the measurement highlighted; the BOQ apply dialog's *Open in Quant* hands over through the remembered selection's optional `measurementId`; measured dates from the stored timestamp only; drafts remembered per sheet (no schema, rules, BOQ-write or selector change — a Hosting-only release, verified in production on 23 October 2026). **Quant 1D (ADR-54):** manual opening and void deductions — an AREA may carry `deductions: [{ id, label, points }]` (≤ 50 holes of ≤ 100 points, written only once the first exists; rules accept the key on an area only, as a list, ≤ 50); `measurementQuantity` derives the area's **NET** (gross − Σ holes, one derivation — page totals, summary, BOQ aggregate and fingerprint all carry net, no second formula); holes must be simple, inside or touching the parent, strictly disjoint, and leave a positive net at 3 dp (client-only, DC32 — refused at Finish/Save and against the server outline in `runUpdateMeasurement`, derived INVALID with the hole named when stored anyway, blocking the apply); add / edit outline / rename / remove are one guarded update each (+1, snapshot untouched, stale kept and explained); evenodd fill with dashed holes, *Deduct* from the selection bar or list, `DeductionDialog` on the shared shell; the fingerprint gains the holes only when present (v1 unchanged otherwise); no history of a removed hole. `/quant` is a hidden pointer |
 | BOQ (Bill of Quantities) | Implemented (foundation) — measured items with optional rates, rules-enforced derived amounts, read-time budget comparison; **feeds no financial figure**; since ADR-52 the edit is version-guarded and an item can receive a reviewed Quant total explicitly (`quantApplied` records the latest application); Estimating and BOQ → Budget transfer are later branches |
-| Constrapp GANTT™ (Project Timeline / programme) | **Programme 1A1 (ADR-64) and 1A2 (ADR-65) LIVE in production (confirmed by the Product Owner). Programme 1B — approved schedule baselines & variance (ADR-66) — implemented, NOT YET DEPLOYED (rules first, then Hosting): `programmeBaselines` headers + ONE immutable `programmeBaselineSnapshots` payload per version, captured from a server read and rules-paired; active = latest approval, original kept; `lib/ganttBaseline.js` variance in calendar days; dashed-outline ghosts, a List column and a summary of counts only.** The ADR-29 programme under its module name: activities + milestones, date-only planned/actual dates, manual progress, read-time overdue/horizon derivation, Due filter, guarded quick status actions and a midnight-advancing clock (ADR-46); the GANTT tab (route still `timeline`) shows a branded heading (`brand-gantt` tile, dot and pause control), a **Chart** (day / week / month zoom over one geometry, grouping by cost code or responsible with collapse, sticky labels and header, scroll-to-today, keyboard-reachable bars that open the existing editor for authors and a read-only detail for QS, recorded dates drawn beneath the plan and compared with the **current plan**) and the activity **List** as two views of one filtered set; CSS boxes, **no new dependency**; cancel-not-delete; a hidden `/gantt` pointer. **`qs` is read-only**, subcontractor/client denied; **no baseline, no drag, no financial effect**. **Programme 1A2 implemented — NOT YET DEPLOYED (ADR-65; Rules AND Hosting, three stages):** optional `predecessors` (finish-to-start, ≤ 20, lag 0–365) on the successor, read-time conflict / blocked / review states (`lib/ganttDependencies.js` — a cancelled, missing, malformed or cyclic predecessor never satisfies a link), arrows as one `aria-hidden` SVG overlay, a *Predecessors* fieldset in the editor with cycle prevention and a conflict acknowledgement, predecessor and successor lists in the detail, and **every activity write a revision-guarded transaction** (`lib/activityActions.js` + the quick actions; rules require `revision` + 1; Stage-1 transitional ruleset for the 1A1 bundle). **No index, no dependency; `firestore.rules` 219,930 bytes** |
+| Constrapp GANTT™ (Project Timeline / programme) | **Programme 1A1 (ADR-64) and 1A2 (ADR-65) LIVE in production (confirmed by the Product Owner). Programme 1B — approved schedule baselines & variance (ADR-66) — LIVE in production (confirmed by the Product Owner) (rules first, then Hosting): `programmeBaselines` headers + ONE immutable `programmeBaselineSnapshots` payload per version, captured from a server read and rules-paired; active = latest approval, original kept; `lib/ganttBaseline.js` variance in calendar days; dashed-outline ghosts, a List column and a summary of counts only.** The ADR-29 programme under its module name: activities + milestones, date-only planned/actual dates, manual progress, read-time overdue/horizon derivation, Due filter, guarded quick status actions and a midnight-advancing clock (ADR-46); the GANTT tab (route still `timeline`) shows a branded heading (`brand-gantt` tile, dot and pause control), a **Chart** (day / week / month zoom over one geometry, grouping by cost code or responsible with collapse, sticky labels and header, scroll-to-today, keyboard-reachable bars that open the existing editor for authors and a read-only detail for QS, recorded dates drawn beneath the plan and compared with the **current plan**) and the activity **List** as two views of one filtered set; CSS boxes, **no new dependency**; cancel-not-delete; a hidden `/gantt` pointer. **`qs` is read-only**, subcontractor/client denied; **no baseline, no drag, no financial effect**. **Programme 1A2 LIVE in production (confirmed by the Product Owner) (ADR-65; Rules AND Hosting, three stages):** optional `predecessors` (finish-to-start, ≤ 20, lag 0–365) on the successor, read-time conflict / blocked / review states (`lib/ganttDependencies.js` — a cancelled, missing, malformed or cyclic predecessor never satisfies a link), arrows as one `aria-hidden` SVG overlay, a *Predecessors* fieldset in the editor with cycle prevention and a conflict acknowledgement, predecessor and successor lists in the detail, and **every activity write a revision-guarded transaction** (`lib/activityActions.js` + the quick actions; rules require `revision` + 1; Stage-1 transitional ruleset for the 1A1 bundle). **No index, no dependency; `firestore.rules` 219,930 bytes** |
 | Photos, Reports tabs | Placeholder (`ProjectPlaceholder`) — routes and pages live, **hidden from the project tab bar** for private beta (`lib/projectTabs.js`) |
 
 ## Hooks-Only Firestore Access

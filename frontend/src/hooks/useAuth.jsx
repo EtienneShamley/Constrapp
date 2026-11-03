@@ -1,5 +1,8 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import { onAuthStateChanged, signOut as firebaseSignOut } from 'firebase/auth'
+import {
+  onAuthStateChanged, signOut as firebaseSignOut,
+  signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, sendPasswordResetEmail,
+} from 'firebase/auth'
 import { auth } from '../lib/firebase'
 
 const AuthContext = createContext(null)
@@ -20,8 +23,30 @@ export function AuthProvider({ children }) {
     return firebaseSignOut(auth)
   }
 
+  // ── Invitation acceptance (ADR-72) ───────────────────────────────────────
+  // The /accept-invite page signs in, registers and requests password resets
+  // through these, so no page imports `firebase/auth` directly. Registration
+  // is the SUPPORTED browser-SDK flow: the browser creates the Auth account;
+  // the trusted backend never sees a password. A bare Auth account has no
+  // membership and therefore no access until acceptInvitation succeeds.
+  function signIn(email, password) {
+    return signInWithEmailAndPassword(auth, email, password)
+  }
+
+  async function register(email, password, displayName) {
+    const cred = await createUserWithEmailAndPassword(auth, email, password)
+    if (displayName) {
+      try { await updateProfile(cred.user, { displayName }) } catch { /* name is also stored server-side */ }
+    }
+    return cred
+  }
+
+  function sendPasswordReset(email) {
+    return sendPasswordResetEmail(auth, email)
+  }
+
   return (
-    <AuthContext.Provider value={{ user, loading, signOut }}>
+    <AuthContext.Provider value={{ user, loading, signOut, signIn, register, sendPasswordReset }}>
       {children}
     </AuthContext.Provider>
   )
