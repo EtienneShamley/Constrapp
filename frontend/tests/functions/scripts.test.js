@@ -15,8 +15,21 @@ function run(script, args, extraEnv = {}) {
     env: { ...process.env, APP_BASE_URL: 'http://localhost:5173', GOOGLE_APPLICATION_CREDENTIALS: '', ...extraEnv },
     encoding: 'utf8',
   })
-  return { code: r.status, out: `${r.stdout}\n${r.stderr}` }
+  return { code: r.status, stdout: r.stdout, stderr: r.stderr, out: `${r.stdout}\n${r.stderr}` }
 }
+
+// RECONCILE_JSON=1 contract: stdout is EXACTLY one line of JSON; everything
+// else (the human report, Node/SDK warnings) is on stderr. Parsed from stdout
+// alone — never from the combined stream, whose last line is stderr's whenever
+// the runtime prints a warning (Azure builds #136/#137: a MetadataLookupWarning
+// on an agent with no ADC made the "last line" Node's `(Use \`node --trace-…`).
+function findingsOf(r) {
+  const lines = r.stdout.split('\n').filter(l => l.length > 0)
+  expect(lines, `stdout must be one JSON line; stderr was:\n${r.stderr}`).toHaveLength(1)
+  return JSON.parse(lines[0])
+}
+
+const WARNING_PRELOAD = resolve(HERE, 'fixtures/emit-warning.mjs')
 
 let A
 beforeAll(async () => { A = await admin() })
@@ -99,7 +112,7 @@ describe('reconcile-membership.mjs', () => {
 
     const report = run('reconcile-membership.mjs', ['--project', PROJECT_ID], { RECONCILE_JSON: '1' })
     expect(report.code).toBe(0)
-    const findings = JSON.parse(report.out.trim().split('\n').at(-1))
+    const findings = findingsOf(report)
     expect(findings.map(f => f.code).sort()).toEqual(['F1', 'R1', 'R2'])
     expect((await A.auth.getUser('u_pm')).disabled).toBe(false)   // report only
 
@@ -112,6 +125,31 @@ describe('reconcile-membership.mjs', () => {
     expect(audits).toContain('reconcile.fix')
 
     const clean = run('reconcile-membership.mjs', ['--project', PROJECT_ID, '--company-id', COMPANY_A], { RECONCILE_JSON: '1' })
-    expect(JSON.parse(clean.out.trim().split('\n').at(-1)).map(f => f.code)).toEqual(['R2'])
+    expect(findingsOf(clean).map(f => f.code)).toEqual(['R2'])
+  })
+
+  // Regression (Azure #136/#137): a runtime warning on stderr must not corrupt
+  // the machine-readable report, and the human report must keep its stream.
+  it('keeps the JSON report on stdout when the runtime prints warnings, and the human report off it', async () => {
+    await seedCompany('emptyco')   // no admin → exactly one R1
+
+    const noisy = run('reconcile-membership.mjs', ['--project', PROJECT_ID], {
+      RECONCILE_JSON: '1',
+      NODE_OPTIONS: `--import=${WARNING_PRELOAD}`,
+    })
+    expect(noisy.code).toBe(0)
+    expect(noisy.stderr).toContain('CiDiagnosticWarning')          // the warning really fired
+    expect(noisy.stderr).toContain('[REPORT] Project')               // human report → stderr in JSON mode
+    expect(noisy.stdout).not.toContain('[REPORT]')
+    expect(findingsOf(noisy)).toEqual([expect.objectContaining({ code: 'R1' })])
+    // The old combined-stream parse is exactly what broke: its last line is Node's hint.
+    expect(() => JSON.parse(noisy.out.trim().split('\n').at(-1))).toThrow(SyntaxError)
+
+    // Without RECONCILE_JSON the operator still reads the report on stdout, and no JSON is printed.
+    const human = run('reconcile-membership.mjs', ['--project', PROJECT_ID])
+    expect(human.code).toBe(0)
+    expect(human.stdout).toContain('[REPORT] Project')
+    expect(human.stdout).toContain('R1  company emptyco has NO active company_admin')
+    expect(human.stdout).not.toMatch(/^\[(\]|\{)/m)   // no JSON array line
   })
 })
