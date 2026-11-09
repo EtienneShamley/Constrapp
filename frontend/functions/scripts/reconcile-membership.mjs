@@ -23,6 +23,14 @@
 
 import { parseArgs, usage, configureProject, log, silentLogger } from './_cli.mjs'
 
+// Output contract. Default: a human report on stdout. With RECONCILE_JSON=1,
+// stdout carries EXACTLY ONE line — the JSON array of findings — and every
+// human line goes to stderr, beside anything the runtime itself prints there
+// (Node process warnings, SDK diagnostics). A consumer parses stdout whole and
+// never has to pick the JSON out of mixed output.
+const JSON_MODE = process.env.RECONCILE_JSON === '1'
+const say = JSON_MODE ? (...a) => console.error(...a) : log.info
+
 const SPEC = {
   'project':    { required: true, pattern: /^[a-z0-9-]{4,40}$/, help: 'Firebase project id (explicit, always)' },
   'company-id': { pattern: /^[A-Za-z0-9_-]{1,64}$/, help: 'limit to one company (default: all)' },
@@ -31,7 +39,7 @@ const SPEC = {
 
 async function main() {
   let args
-  try { args = parseArgs(process.argv.slice(2), SPEC) } catch (e) { log.error(e.message); console.log(usage('scripts/reconcile-membership.mjs', SPEC)); process.exit(2) }
+  try { args = parseArgs(process.argv.slice(2), SPEC) } catch (e) { log.error(e.message); say(usage('scripts/reconcile-membership.mjs', SPEC)); process.exit(2) }
   const { emulated } = configureProject(args.project)
   const { getDb, getAdminAuth } = await import('../src/lib/firebaseAdmin.js')
   const { syncDeactivatedAuth } = await import('../src/lib/members.js')
@@ -42,9 +50,9 @@ async function main() {
   const now = () => new Date()
   const fix = !!args.fix
   const findings = []
-  const report = (code, msg, meta = {}) => { findings.push({ code, msg, meta }); log.info(`  ${code}  ${msg}`) }
+  const report = (code, msg, meta = {}) => { findings.push({ code, msg, meta }); say(`  ${code}  ${msg}`) }
 
-  log.info(`${fix ? '[FIX] ' : '[REPORT] '}Project ${args.project}${emulated ? ' (EMULATORS)' : ''}${args['company-id'] ? ` · company ${args['company-id']}` : ' · all companies'}`)
+  say(`${fix ? '[FIX] ' : '[REPORT] '}Project ${args.project}${emulated ? ' (EMULATORS)' : ''}${args['company-id'] ? ` · company ${args['company-id']}` : ' · all companies'}`)
 
   const companiesSnap = args['company-id']
     ? [await db.collection('companies').doc(args['company-id']).get()].filter(s => s.exists)
@@ -63,7 +71,7 @@ async function main() {
     report('F1', `users/${u.uid} deactivated from ${companyId ?? '?'} but Auth sync is pending`)
     if (fix && companyId) {
       const ok = await syncDeactivatedAuth({ db, auth, now, log: silentLogger }, { companyId, uid: u.uid, actorUid: 'operator', source: 'operator' })
-      log.info(ok ? `       → fixed: Auth disabled, refresh tokens revoked` : `       → Auth sync failed again; left pending`)
+      say(ok ? `       → fixed: Auth disabled, refresh tokens revoked` : `       → Auth sync failed again; left pending`)
       if (ok) await auditNow(db, companyId, { type: AUDIT.RECONCILE_FIX, actorUid: 'operator', targetUid: u.uid, after: { fix: 'F1' }, source: 'operator' }, now())
     }
   }
@@ -114,9 +122,9 @@ async function main() {
     }
   }
 
-  log.info('')
-  log.info(findings.length === 0 ? 'No inconsistencies found.' : `${findings.length} finding(s). ${fix ? 'Fixes applied where unambiguous.' : 'Re-run with --fix to apply F1 fixes.'}`)
-  if (process.env.RECONCILE_JSON === '1') console.log(JSON.stringify(findings))
+  say('')
+  say(findings.length === 0 ? 'No inconsistencies found.' : `${findings.length} finding(s). ${fix ? 'Fixes applied where unambiguous.' : 'Re-run with --fix to apply F1 fixes.'}`)
+  if (JSON_MODE) process.stdout.write(`${JSON.stringify(findings)}\n`)
 }
 
 main().catch((e) => { log.error(e?.message ?? e); process.exit(1) })
