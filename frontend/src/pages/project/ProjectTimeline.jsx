@@ -294,7 +294,7 @@ export default function ProjectTimeline() {
           <div className="text-4xl mb-3 leading-none" aria-hidden="true">⏱</div>
           <h3 className="text-brand-text font-bold text-base mb-2 m-0">No programme yet</h3>
           <p className="text-brand-muted text-[12.5px] mb-4 max-w-md mx-auto">
-            Add the activities and milestones this project runs on. Constrapp keeps a simple, current
+            Add the activities and milestones this project runs on. Constrap keeps a simple, current
             programme — dates, responsibility and progress — not a critical-path schedule.
           </p>
           {canWrite

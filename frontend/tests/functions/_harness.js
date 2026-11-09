@@ -97,7 +97,7 @@ export const silentLog = { info() {}, warn() {}, error() {}, debug() {} }
 
 export async function makeHandlers({ mailer = fakeMailer(), now = clock(), config = {}, auth = null } = {}) {
   const a = await admin()
-  const cfg = { appBaseUrl: 'http://localhost:5173', emailFrom: 'Constrapp <noreply@localhost>', enabled: true, inviteTtlMs: 7 * DAY, ...config }
+  const cfg = { appBaseUrl: 'http://localhost:5173', emailFrom: 'Constrap <noreply@localhost>', enabled: true, inviteTtlMs: 7 * DAY, ...config }
   const deps = { db: a.db, auth: auth ?? a.auth, email: mailer, now, config: () => cfg, log: silentLog }
   return { handlers: a.createTeamHandlers(deps), deps, mailer, now, cfg }
 }

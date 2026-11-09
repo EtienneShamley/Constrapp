@@ -973,7 +973,8 @@ attempt Firestore and Storage rules, and **rules publishing is manual and
 reviewed** (below). Never widen this command.
 
 Not configured, and out of scope here: a CI deploy stage, Azure secret
-management, custom domains, and cache-control headers.
+management and cache-control headers. The planned custom domain is documented
+in *Custom domain — app.constrap.com* below; it is not yet connected.
 
 ### Constrapp GANTT™ — Programme 1A1 (ADR-64) — Hosting-only release
 
@@ -1569,10 +1570,13 @@ bytes; nothing is published to Rules for this release.
    `cd frontend && npx firebase functions:secrets:set EMAIL_API_KEY --project constrapp-69b5d`
    (paste the key; it goes to Google Secret Manager, never the repository).
 4. **Parameters.** Edit `frontend/functions/.env.constrapp-69b5d` (committed,
-   non-secret): `APP_BASE_URL=https://<your production origin>` and
-   `EMAIL_FROM=Constrapp <invitations@<verified-domain>>`. Both are empty on
-   purpose: until set, invitations are refused (`app-url-not-configured`)
-   rather than sent with a broken link.
+   non-secret): `APP_BASE_URL=https://app.constrap.com` and
+   `EMAIL_FROM=Constrap <invites@constrap.com>` — the planned values are
+   staged as comments in that file. Both are empty on purpose: until set,
+   invitations are refused (`app-url-not-configured`) rather than sent with a
+   broken link. Set them only once `app.constrap.com` serves the app and
+   `constrap.com` is verified in Resend (*Custom domain — app.constrap.com*
+   below); invitations sent before that would carry an unreachable link.
 5. **App Check.** Console → App Check → register the web app with
    **reCAPTCHA Enterprise** (add the production domain to the key). Put the
    site key in the build environment as `VITE_FIREBASE_APPCHECK_SITE_KEY`.
@@ -1644,6 +1648,49 @@ severity>=ERROR AND labels."goog-managed-by"="cloudfunctions"` (Console →
 Logging → Create alert). Invitation delivery failures show in Team as "Not
 delivered" and in the logs as `invitation email failed`. Membership history is
 in `companies/{c}/auditEvents` (console read only).
+
+## Custom domain — app.constrap.com — PLANNED, NOT YET CONNECTED
+
+The customer-facing brand is **Constrap** (AGENT.md → Brand Name). The
+application's planned public origin is **`https://app.constrap.com`**; the
+existing `https://constrapp-69b5d.web.app` and `.firebaseapp.com` origins keep
+working throughout and after the transition (Firebase Hosting serves every
+connected domain from the same site). Nothing in the client hard-codes an
+origin: `/accept-invite` links are built server-side from `APP_BASE_URL`, and
+password-reset links use Firebase's hosted action page on `authDomain`.
+
+**Nothing below is done by an implementation task.** It is Product Owner
+console / DNS work, in this order:
+
+1. **Hosting → Add custom domain** `app.constrap.com` on the existing
+   `constrapp-69b5d` site. Add the DNS records Firebase shows at the
+   `constrap.com` registrar; wait for the certificate to be issued
+   (*Connected*). Verify a deep link (e.g. `/projects`) hard-refreshes to the
+   app, not a 404.
+2. **Authentication → Settings → Authorized domains**: add
+   `app.constrap.com`. Without it, Auth operations from the new origin are
+   refused. Keep `VITE_FIREBASE_AUTH_DOMAIN=constrapp-69b5d.firebaseapp.com`;
+   email/password sign-in does not need it changed.
+3. **Storage CORS**: apply the rule in *Cloud Storage CORS for the Quant™
+   viewer* with `https://app.constrap.com` in `origin` (already listed in the
+   documented rule). Without it the Quant™ PDF viewer fails on the new origin
+   only.
+4. **Project settings → Public-facing name**: set to `Constrap`. Firebase
+   Auth's own emails (password reset) show this name; it is not in the
+   repository. Optionally edit the Authentication → Templates sender name.
+5. **Resend**: verify `constrap.com` as a sending domain (SPF / DKIM, plus
+   DMARC if absent). Then fill `frontend/functions/.env.constrapp-69b5d`:
+   `APP_BASE_URL=https://app.constrap.com`,
+   `EMAIL_FROM=Constrap <invites@constrap.com>`, and redeploy the `team`
+   Functions (L1 release order above).
+6. **App Check (only when L1 is released, not before)**: add `app.constrap.com`
+   to the reCAPTCHA Enterprise key's domain list alongside the existing
+   origins. This step does not enable App Check.
+
+**Verification:** sign in at `https://app.constrap.com`; the tab title reads
+*Constrap*; open a Quant™ PDF sheet; send a test invitation and confirm the
+link opens `https://app.constrap.com/accept-invite#…` and the email reads
+*on Constrap* from `invites@constrap.com`. Record the date here when done.
 
 ## Publishing Firestore Rules — Manual Process
 
@@ -1812,7 +1859,8 @@ only be seen with the command in step 1.
      {
        "origin": [
          "https://constrapp-69b5d.web.app",
-         "https://constrapp-69b5d.firebaseapp.com"
+         "https://constrapp-69b5d.firebaseapp.com",
+         "https://app.constrap.com"
        ],
        "method": ["GET"],
        "responseHeader": [
@@ -1941,4 +1989,5 @@ proves Storage (steps 7-9) actually landed.
   [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) ADR-14)
 - CI: a deploy stage, and Azure secret management for the production
   `VITE_FIREBASE_*` values
-- Cache-control headers and a custom domain for Hosting
+- Cache-control headers for Hosting (the custom domain is planned — see
+  *Custom domain — app.constrap.com*)

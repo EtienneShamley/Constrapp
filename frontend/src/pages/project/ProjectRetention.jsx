@@ -218,7 +218,7 @@ export default function ProjectRetention() {
             ))}
           </div>
           <p className="m-0 mt-2 text-[11.5px] text-brand-muted">
-            Constrapp blocks this in the app, so it indicates concurrent releasing or a direct SDK write.
+            Constrap blocks this in the app, so it indicates concurrent releasing or a direct SDK write.
             Void the release that should not stand — nothing is reversed automatically.
           </p>
         </Card>

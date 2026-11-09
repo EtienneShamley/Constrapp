@@ -157,7 +157,7 @@ describe('split-screen layout is responsive', () => {
   })
 
   it('the product panel is a labelled landmark hidden below lg', () => {
-    expect(LAYOUT).toMatch(/<aside\s+aria-label="About Constrapp"\s+className="hidden lg:flex /)
+    expect(LAYOUT).toMatch(/<aside\s+aria-label="About Constrap"\s+className="hidden lg:flex /)
   })
 
   it('the form lives in <main>, with compact branding shown only below lg', () => {

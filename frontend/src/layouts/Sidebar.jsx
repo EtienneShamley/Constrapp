@@ -44,7 +44,7 @@ export default function Sidebar({ open, onClose }) {
         {/* Logo */}
         <div className="flex items-center gap-2.5 px-4 border-b border-brand-border shrink-0" style={{ height: 56 }}>
           <Logo />
-          <span className="text-[17px] font-black text-brand-text tracking-tight">Constrapp</span>
+          <span className="text-[17px] font-black text-brand-text tracking-tight">Constrap</span>
         </div>
 
         {/* Company name → Company Settings */}

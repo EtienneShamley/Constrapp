@@ -409,7 +409,7 @@ function InvoiceEditorModal({
             <span>
               I understand this invoice exceeds the available contract or variation value and want to save it anyway.
               <span className="block text-brand-muted mt-0.5">
-                Constrapp warns but never blocks over-invoicing, and cannot prevent two users invoicing the same
+                Constrap warns but never blocks over-invoicing, and cannot prevent two users invoicing the same
                 remaining value at the same time.
               </span>
             </span>
@@ -613,7 +613,7 @@ function DetailModal({ invoice, reconciliation, allocatedReceipts, currencyCode,
 
         <p className="m-0 text-[11px] text-brand-muted border-t border-brand-border pt-3">
           Amounts are ex-GST plus per-line Australian GST, shown in this project&apos;s currency ({currencyCode}).
-          Constrapp does not produce a compliant Australian Tax Invoice — company legal name, ABN, and address are
+          Constrap does not produce a compliant Australian Tax Invoice — company legal name, ABN, and address are
           not captured — so issue the tax invoice from your accounting system and record its reference above.
         </p>
       </div>
@@ -1033,7 +1033,7 @@ export default function ProjectClientInvoices() {
       </Card>
 
       <p className="m-0 mt-3 text-[11px] text-brand-muted">
-        Constrapp records what has been invoiced and what has been received against it. It does
+        Constrap records what has been invoiced and what has been received against it. It does
         {' '}<span className="font-semibold">not</span> yet produce a compliant Australian Tax Invoice — company legal
         name, ABN, and address are not captured — so issue the tax invoice from your accounting system and record its
         reference on each invoice. GST is a flat Australian 10% regardless of the project&apos;s currency. Received

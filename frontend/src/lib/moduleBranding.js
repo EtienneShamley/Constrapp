@@ -7,9 +7,9 @@
 // nothing renders it. Compact labels (e.g. the "PULSE" project tab) live with
 // their navigation.
 export const MODULE_NAMES = {
-  pulse:  'Constrapp PULSE™',
-  shield: 'Constrapp SHIELD™',
-  quant:  'Constrapp Quant™',
-  gantt:  'Constrapp GANTT™',
-  iq:     'Constrapp IQ™',
+  pulse:  'Constrap PULSE™',
+  shield: 'Constrap SHIELD™',
+  quant:  'Constrap Quant™',
+  gantt:  'Constrap GANTT™',
+  iq:     'Constrap IQ™',
 }

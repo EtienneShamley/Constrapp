@@ -319,7 +319,7 @@ export default function LineEditorModal({
           ) : sourceType === CFL_SOURCE_TYPE.MANUAL && (
             <p className="sm:col-span-2 m-0 text-[10.5px] text-brand-muted">
               A manual adjustment carries no source coverage — it appears in the cash months but not in
-              completeness. Use it for cash Constrapp cannot derive (e.g. an expected retention release).
+              completeness. Use it for cash Constrap cannot derive (e.g. an expected retention release).
             </p>
           )}
 

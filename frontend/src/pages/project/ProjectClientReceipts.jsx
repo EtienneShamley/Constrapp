@@ -393,7 +393,7 @@ function ReceiptEditorModal({
             <span>
               I understand this allocates more than the invoice&apos;s remaining balance and want to save it anyway.
               <span className="block text-brand-muted mt-0.5">
-                Constrapp warns but never blocks over-allocation, and cannot prevent two users allocating the same
+                Constrap warns but never blocks over-allocation, and cannot prevent two users allocating the same
                 remaining balance at the same time.
               </span>
             </span>
@@ -887,7 +887,7 @@ export default function ProjectClientReceipts() {
       </Card>
 
       <p className="m-0 mt-3 text-[11px] text-brand-muted">
-        Constrapp records cash movements and their allocations. It cannot verify that money was genuinely received,
+        Constrap records cash movements and their allocations. It cannot verify that money was genuinely received,
         cannot block over-allocation, and cannot prevent two users allocating the same remaining balance
         concurrently — Firestore rules cannot sum sibling documents. Bank reconciliation and accounting integrations
         are future work.

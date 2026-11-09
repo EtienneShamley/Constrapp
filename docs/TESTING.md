@@ -1799,7 +1799,7 @@ cannot make.
 ## 3b. Subcontractors View
 
 - [ ] `/subcontractors` lists only active contacts whose types include Subcontractor; records edited on `/contacts` update here live.
-- [ ] The Constrapp IQ™ "Coming Soon" card still renders below the list.
+- [ ] The Constrap IQ™ "Coming Soon" card still renders below the list.
 - [ ] "Manage in Contacts" navigates to `/contacts`.
 
 ## 3c. Contact Project Assignments
@@ -5087,7 +5087,7 @@ Codes:
       still renders the existing placeholder pages — hiding is not deleting.
 - [ ] The TopBar has **no search box** and **no notification bell / red unread
       dot**. The user menu still opens and Sign out still works.
-- [ ] Subcontractors shows the contacts table with **no Constrapp IQ™ "Coming
+- [ ] Subcontractors shows the contacts table with **no Constrap IQ™ "Coming
       Soon" card** beneath it.
 - [ ] No "Sprint 3 / 4 / 5" text appears anywhere a beta user can reach.
 
@@ -5485,7 +5485,7 @@ not a render test.
 - [ ] Screen reader: inputs announce their labels ("Email", "Password"); a
       failed sign-in announces the error and the inputs report invalid.
 - [ ] One `<h1>` per page ("Sign in" / "Reset password" / "Create Account"); the
-      product panel is an "About Constrapp" landmark, the form is in `main`.
+      product panel is an "About Constrap" landmark, the form is in `main`.
 - [ ] 200% browser zoom: no overlap, no horizontal scroll.
 - [ ] Forced-colors / high-contrast mode: input focus is still visible.
 - [ ] Password-manager autofill works for email and password.
@@ -5615,7 +5615,7 @@ eleven subscriptions. The ADR-47 tab pin in `pulse.test.js` now expects
 Manual — three checks only:
 
 - [ ] **PULSE heading and dot.** Open a project's PULSE tab (financial role):
-      the heading reads *Constrapp PULSE™* / *Project health indicators* beside
+      the heading reads *Constrap PULSE™* / *Project health indicators* beside
       a pink heartbeat-line tile; the small pink dot at the tile corner beats
       gently and **continuously** (about one lub-dub every 1.8s), always softly
       glowing and never vanishing or flashing; the heartbeat line itself never
@@ -5627,12 +5627,12 @@ Manual — three checks only:
       still but still glowing, and the Pause control is not shown. Then, with
       reduced motion off and VoiceOver/NVDA running: the control is announced
       "Pause heartbeat animation, button" (then "Resume heartbeat
-      animation"), the tab "PULSE, link" and the heading "Constrapp PULSE™,
+      animation"), the tab "PULSE, link" and the heading "Constrap PULSE™,
       heading level 2" — the mark and dot are not announced.
 - [ ] **Tabs and hidden pages at 375 / 768 / 1280px.** The tab bar wraps with
       PULSE (mark + label) after Overview, nothing animates in it, the active
       underline is teal like every other tab, and keyboard Tab/Enter reaches
-      and opens it. Typing `/shield` shows *Constrapp SHIELD™* with a static
+      and opens it. Typing `/shield` shows *Constrap SHIELD™* with a static
       cyan shield and no animation (since ADR-50 it is a pointer page naming
       the five checks and linking to Projects — the **Coming Soon** badge this
       step originally checked is gone; see §26); typing `/pulse` shows the
@@ -5775,7 +5775,7 @@ third with its mark and the `/shield` pointer opens no subscription.
 Manual — three checks only, all read-only (SHIELD writes nothing):
 
 - [ ] **Role gate and honest states.** As **qs** open a project's **SHIELD**
-      tab: the *Constrapp SHIELD™* heading with the cyan tile whose small dot
+      tab: the *Constrap SHIELD™* heading with the cyan tile whose small dot
       glows and gently beats (Pause / Resume beside it; still but lit when
       paused or under reduced motion), five state counts, and five check cards
       each with a state badge.
@@ -5804,7 +5804,7 @@ Manual — three checks only, all read-only (SHIELD writes nothing):
       card's module links and **Show all** / **Show fewer** controls are ≥44px
       tall; each evidence table scrolls inside its own container with no
       horizontal page scroll; *No issue found* stays collapsed; VoiceOver/NVDA
-      announces "Constrapp SHIELD™, heading level 2" and each check as a
+      announces "Constrap SHIELD™, heading level 2" and each check as a
       level-3 heading, and the shield mark is not announced.
 
 ## 27. Constrapp Quant™ 1A — manual drawing measurement (ADR-51)
@@ -5938,7 +5938,7 @@ Manual — three checks only, on `npm run test:quant` (Quant writes measurement
 records; it never writes a BOQ item):
 
 - [ ] **Calibrate, measure, persist, return.** As **qs** open a project's
-      **Quant** tab: the *Constrapp Quant™ · Manual quantity takeoff* heading
+      **Quant** tab: the *Constrap Quant™ · Manual quantity takeoff* heading
       with the lime tile whose dot glows and gently beats (Pause / Resume
       beside it; still but lit when paused or under reduced motion). Choose a
       drawing with a **PNG or JPEG** revision (needs no CORS) — the sheet
@@ -7014,7 +7014,7 @@ responsible contacts; an admin / PM login and a QS login.
 1. **Branded module, zoom and sticky layout (1280 px, then 768 px).** The
    project tab bar reads **GANTT** with a static orange mark (nothing animates
    in the tab bar). The tab opens at `/projects/{id}/timeline` with the
-   *Constrapp GANTT™ · Construction programme* heading, an orange tile whose
+   *Constrap GANTT™ · Construction programme* heading, an orange tile whose
    corner dot beats gently, and a **Pause** button that stills it (Resume
    restores it). With the OS *reduce motion* setting on, the dot is still and
    lit and the Pause button is absent. Switch **Day → Week → Month**: a
@@ -7687,3 +7687,27 @@ files / 2,160**. Lint 0 / 0; build clean; `rules:transitional:check` clean;
    deactivation (expected: none). Re-invite the same email: the link reports
    *Welcome back*, sign-in (or *Forgot password?*) works, and the member
    returns with the same history.
+
+## 50. Brand — Constrap (chore/constrap-branding) — implemented, NOT YET DEPLOYED
+
+Presentation only: no rule, field, collection, financial formula or
+permission changed. Run on the Hosting preview (or production after release)
+at the existing `web.app` origin; repeat step 4 at `https://app.constrap.com`
+only once that domain is connected (DEPLOYMENT.md → *Custom domain —
+app.constrap.com*).
+
+1. - [ ] Signed out: the browser tab reads **Constrap**; the sign-in page shows
+      the **Constrap** wordmark, *Access your Constrap workspace.* and the
+      "About Constrap" product panel at ≥ lg. `/create-account` reads
+      *Constrap accounts are created by invitation.*
+2. - [ ] Signed in: the sidebar wordmark reads **Constrap**; the PULSE,
+      SHIELD, Quant and GANTT tabs head with *Constrap PULSE™*, *Constrap
+      SHIELD™*, *Constrap Quant™* and *Constrap GANTT™*. No screen shows
+      "Constrapp".
+3. - [ ] Existing data, sign-in, a pending invitation link created before the
+      release, and an unsaved Quant™ draft (sessionStorage) all still work —
+      their keys and identifiers were deliberately not renamed.
+4. - [ ] Once L1 email is configured: a new invitation's subject reads
+      *You're invited to {company} on Constrap*, arrives from
+      `invites@constrap.com`, and its link opens the configured
+      `APP_BASE_URL`'s `/accept-invite`.

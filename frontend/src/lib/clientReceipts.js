@@ -337,7 +337,7 @@ export function isPastDueUnreconciled(invoice, remaining, now = new Date()) {
 
 // Replaces the pre-Receipts disclaimer. Still honest about what is NOT enforced.
 export const AR_RECONCILIATION_NOTICE =
-  'Balances reflect posted receipts allocated to each invoice. Constrapp warns but does not block ' +
+  'Balances reflect posted receipts allocated to each invoice. Constrap warns but does not block ' +
   'over-allocation, and cannot prevent two users allocating the same balance concurrently. Unallocated ' +
   'receipts are shown separately and do not reduce any invoice balance.'
 

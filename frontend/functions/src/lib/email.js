@@ -44,9 +44,9 @@ export function renderInviteEmail({ companyName, inviterName, role, link, expire
   const roleLabel = ROLE_LABELS[role] ?? role
   const expires = expiresAt instanceof Date ? expiresAt.toISOString().slice(0, 10) : String(expiresAt)
   const who = inviterName ? `${inviterName} has invited you` : 'You have been invited'
-  const subject = `You're invited to ${companyName} on Constrapp`
+  const subject = `You're invited to ${companyName} on Constrap`
   const text = [
-    `${who} to join ${companyName} on Constrapp as ${roleLabel}.`,
+    `${who} to join ${companyName} on Constrap as ${roleLabel}.`,
     '',
     'Open this link to accept the invitation:',
     link,
@@ -55,7 +55,7 @@ export function renderInviteEmail({ companyName, inviterName, role, link, expire
     'If you were not expecting this invitation, you can ignore this email.',
   ].join('\n')
   const html = [
-    `<p>${escapeHtml(who)} to join <strong>${escapeHtml(companyName)}</strong> on Constrapp as <strong>${escapeHtml(roleLabel)}</strong>.</p>`,
+    `<p>${escapeHtml(who)} to join <strong>${escapeHtml(companyName)}</strong> on Constrap as <strong>${escapeHtml(roleLabel)}</strong>.</p>`,
     `<p><a href="${escapeHtml(link)}">Accept the invitation</a></p>`,
     `<p style="font-size:12px;color:#555">The link is personal to you and expires on ${escapeHtml(expires)}. ` +
     'If you were not expecting this invitation, you can ignore this email.</p>',

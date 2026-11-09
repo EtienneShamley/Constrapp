@@ -209,7 +209,7 @@ export function buildAwardPurchaseOrderProposal({
 
   const sameSupplier = sameSupplierPurchaseOrders(pkg, bid, purchaseOrders)
   if (sameSupplier.length) {
-    warnings.push(`${sameSupplier.length === 1 ? 'A purchase order' : `${sameSupplier.length} purchase orders`} to this supplier already exist${sameSupplier.length === 1 ? 's' : ''} on this project (${sameSupplier.map(po => po.poNumber).join(', ')}). This may or may not cover the same scope — Constrapp cannot tell.`)
+    warnings.push(`${sameSupplier.length === 1 ? 'A purchase order' : `${sameSupplier.length} purchase orders`} to this supplier already exist${sameSupplier.length === 1 ? 's' : ''} on this project (${sameSupplier.map(po => po.poNumber).join(', ')}). This may or may not cover the same scope — Constrap cannot tell.`)
   }
 
   return {

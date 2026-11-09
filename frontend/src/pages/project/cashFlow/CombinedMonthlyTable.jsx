@@ -137,7 +137,7 @@ export default function CombinedMonthlyTable({
           Click a month for its breakdown.
         </p>
         <p className="m-0 mt-1 text-[11px] text-brand-muted">
-          Cumulative net cash movement on this project. Not a bank balance. Constrapp does not model a bank
+          Cumulative net cash movement on this project. Not a bank balance. Constrap does not model a bank
           account, an opening cash position or project financing. This shows cash recorded into and out of this
           project only.
         </p>

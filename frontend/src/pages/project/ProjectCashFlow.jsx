@@ -417,7 +417,7 @@ export default function ProjectCashFlow() {
                 help={combinedRows.length ? `At ${monthLabel(combinedRows[combinedRows.length - 1].monthKey)} · from a zero opening position` : ''}
               />
               <p className="m-0 mt-2 text-[11px] text-brand-muted">
-                Cumulative net cash movement on this project. Not a bank balance. Constrapp does not model a
+                Cumulative net cash movement on this project. Not a bank balance. Constrap does not model a
                 bank account, an opening cash position or project financing.
               </p>
             </Card>
@@ -813,7 +813,7 @@ export default function ProjectCashFlow() {
         <p className="text-[13px] font-bold text-brand-text m-0 mb-2">Limitations</p>
         <ul className="m-0 pl-4 space-y-1.5">
           <li className="text-[11.5px] text-brand-muted">
-            Cash Flow records cash entered in Constrapp. It is not a bank balance and does not include
+            Cash Flow records cash entered in Constrap. It is not a bank balance and does not include
             financing, bank feeds, bank reconciliation or an opening cash position.
           </li>
           <li className="text-[11.5px] text-brand-muted">
@@ -835,7 +835,7 @@ export default function ProjectCashFlow() {
           </li>
           <li className="text-[11.5px] text-brand-muted">
             Forecast timing is authored, not enforced: an active line can be edited after being reported, and
-            Constrapp keeps no period locks or immutable snapshots. Date filtering is a later branch — the
+            Constrap keeps no period locks or immutable snapshots. Date filtering is a later branch — the
             chart and table always show the project&apos;s full month range.
           </li>
         </ul>

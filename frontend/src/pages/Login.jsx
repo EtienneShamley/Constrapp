@@ -31,7 +31,7 @@ export default function Login() {
   return (
     <>
       <h1 className="text-2xl font-bold text-brand-text mb-1.5">Sign in</h1>
-      <p className="text-[13px] text-brand-text-soft mb-7">Access your Constrapp workspace.</p>
+      <p className="text-[13px] text-brand-text-soft mb-7">Access your Constrap workspace.</p>
 
       <form onSubmit={handleSubmit}>
         <div className="space-y-3.5">
@@ -91,7 +91,7 @@ export default function Login() {
           <path d="M12 16v-4M12 8h.01" />
         </svg>
         <p className="text-xs text-brand-text-soft leading-relaxed m-0">
-          No account? Constrapp accounts are set up for you — contact your
+          No account? Constrap accounts are set up for you — contact your
           company admin.
         </p>
       </div>

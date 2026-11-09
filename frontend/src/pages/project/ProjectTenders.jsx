@@ -1189,7 +1189,7 @@ export default function ProjectTenders() {
         A tender is a decision record, not a financial document: nothing here changes Budget, Committed, Actual,
         Invoiced, Forecast, Margin, or Cash Flow, and an award creates no purchase order by itself — the draft PO
         raised from it counts only once it is sent. Closing dates are
-        informational only — Constrapp does not block late bids. Bid totals are derived from lines on every read;
+        informational only — Constrap does not block late bids. Bid totals are derived from lines on every read;
         no total is stored.
       </p>
 

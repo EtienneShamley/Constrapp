@@ -308,7 +308,7 @@ function PaymentEditorModal({
             <label className={labelCls}>Remittance Reference</label>
             <input className={inputCls} placeholder="e.g. RA-0031" value={remittanceReference} onChange={e => setRemittanceReference(e.target.value)} />
             <p className="m-0 mt-1 text-[11px] text-brand-muted">
-              Optional — the reference you gave the supplier. Constrapp generates no remittance advice.
+              Optional — the reference you gave the supplier. Constrap generates no remittance advice.
             </p>
           </div>
         </div>
@@ -448,7 +448,7 @@ function PaymentEditorModal({
             <span>
               I understand this pays more than the invoice&apos;s remaining payable and want to save it anyway.
               <span className="block text-brand-muted mt-0.5">
-                Constrapp warns but never blocks over-reconciliation, and cannot prevent two users allocating the
+                Constrap warns but never blocks over-reconciliation, and cannot prevent two users allocating the
                 same remaining payable at the same time.
               </span>
             </span>
@@ -570,7 +570,7 @@ function VoidModal({ payment, onClose, onConfirm }) {
           {' '}<span className="font-semibold">{payment.paymentNumber}</span> number is retained, leaving an
           intentional gap in the sequence. Its allocations stop counting immediately, so every supplier invoice
           balance is restored at the next render. <span className="font-semibold">No bank reversal or refund is
-          created</span> — voiding corrects Constrapp&apos;s record, not your bank account. Financial records are
+          created</span> — voiding corrects Constrap&apos;s record, not your bank account. Financial records are
           never deleted.
         </p>
         <div>
@@ -873,7 +873,7 @@ export default function ProjectSupplierPayments() {
           </p>
           <p className="m-0 mt-1 text-[12px] text-brand-muted">
             Posted credit notes reduce what is still owed on each supplier invoice. Because they cannot be read,
-            Constrapp does <span className="font-semibold">not</span> know the true remaining payable and will not
+            Constrap does <span className="font-semibold">not</span> know the true remaining payable and will not
             show it as though no credits exist. Recording, editing, and posting payments are disabled until the
             read succeeds, so a payment cannot be made against money that has already been credited. Voiding an
             existing payment is still permitted. Reload the page; if this persists, check your connection and
@@ -1165,7 +1165,7 @@ export default function ProjectSupplierPayments() {
       )}
 
       <p className="m-0 mt-3 text-[11px] text-brand-muted">
-        Constrapp records cash movements and their allocations. It cannot verify that money genuinely left your
+        Constrap records cash movements and their allocations. It cannot verify that money genuinely left your
         bank account, cannot block over-reconciliation, and cannot prevent two users allocating the same remaining
         payable concurrently — Firestore rules cannot sum sibling documents. Supplier Credit Notes are recorded on
         the Supplier Invoices view and reduce each invoice&apos;s remaining payable here. Retention release is

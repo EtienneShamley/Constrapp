@@ -477,7 +477,7 @@ function CommercialWorkspace({ projectId, currencyCode }) {
         <p className="m-0 mt-3 text-[11px] text-brand-muted">
           All figures are ex-GST, derived at read time, and shown in this project&apos;s currency ({currencyCode}). Forecast
           Final Cost is the same Estimate at Completion shown on the Forecast tab. Currency is a label, never a conversion —
-          Constrapp performs no FX conversion. Tax calculations remain Australian GST regardless of currency.
+          Constrap performs no FX conversion. Tax calculations remain Australian GST regardless of currency.
         </p>
       </Card>
 

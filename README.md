@@ -1,6 +1,6 @@
-# Constrapp
+# Constrap
 
-**Constrapp is the connected commercial operating system for construction projects.**
+**Constrap is the connected commercial operating system for construction projects.**
 
 Australian-built and web-first, it gives builders, contractors, and quantity surveyors one connected commercial dataset — from preconstruction to final account — instead of disconnected spreadsheets and tools. Projects report in a configurable currency (no FX conversion); tax calculation remains Australian GST.
 
@@ -17,7 +17,7 @@ Drawing → Quantity → BOQ → Estimate → Tender → Award → Approved Budg
   → Final Project Margin → Final Account
 ```
 
-Today the delivery-and-cost-control middle of this lifecycle is implemented (budgets → POs → variations → claims → supplier invoices → forecasting → margin → cash flow), and the preconstruction front has begun with the **BOQ foundation** (measured quantities by cost code; the BOQ feeds no financial figure), **Tenders**, and **Constrapp Quant™** manual takeoff (1A to 1D live in production — measurement, BOQ linking and explicit apply, geometry editing and project summary, manual deductions). Estimating remains planned. See [PRODUCT.md](PRODUCT.md) and [ROADMAP.md](ROADMAP.md) for module-by-module status, and [PRODUCT.md](PRODUCT.md) → "What Constrapp Is Not" for the strategic boundaries.
+Today the delivery-and-cost-control middle of this lifecycle is implemented (budgets → POs → variations → claims → supplier invoices → forecasting → margin → cash flow), and the preconstruction front has begun with the **BOQ foundation** (measured quantities by cost code; the BOQ feeds no financial figure), **Tenders**, and **Constrap Quant™** manual takeoff (1A to 1D live in production — measurement, BOQ linking and explicit apply, geometry editing and project summary, manual deductions). Estimating remains planned. See [PRODUCT.md](PRODUCT.md) and [ROADMAP.md](ROADMAP.md) for module-by-module status, and [PRODUCT.md](PRODUCT.md) → "What Constrap Is Not" for the strategic boundaries.
 
 ## What Works Today
 
@@ -42,7 +42,7 @@ Today the delivery-and-cost-control middle of this lifecycle is implemented (bud
 
 The Dashboard is deliberately sparse: its fabricated KPIs and charts were
 removed rather than rederived, so every figure on it now comes from Firestore.
-Constrapp PULSE™ is a live project tab of nine deterministic, read-only health
+Constrap PULSE™ is a live project tab of nine deterministic, read-only health
 indicators — 1A (ADR-47): the six commercial ones (forecast over budget, cost
 codes not forecast, negative forecast gross profit, programme activities
 overdue, supplier invoices past due, pending variation exposure); 1B (ADR-49,
@@ -52,10 +52,10 @@ Hosting): the three Schedule Intelligence indicators composed from the GANTT
 selectors (programme activities blocked by predecessors, programme
 dependencies needing review, programme later than the approved baseline) —
 with its static mark in the tab (ADR-48); the top-level `/pulse` route is a
-hidden pointer to it. Constrapp
+hidden pointer to it. Constrap
 SHIELD™ (ADR-50, **live in production since 19 October 2026**) is a second
 project tab of five read-only commercial assurance checks over existing records;
-`/shield` is its hidden pointer. Constrapp Quant™ 1A (ADR-51, **live in
+`/shield` is its hidden pointer. Constrap Quant™ 1A (ADR-51, **live in
 production since October 2026**) is a third module tab: manual drawing
 measurement — calibrate a drawing revision's page from a known distance,
 measure lengths, areas and counts, and keep each as a traceable record; the tab

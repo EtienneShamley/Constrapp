@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { MODULE_NAMES } from '../../src/lib/moduleBranding.js'
 import { PROJECT_TABS } from '../../src/lib/projectTabs.js'
@@ -41,11 +41,11 @@ const ganttHeadingOf = (page) =>
 describe('exact module branding', () => {
   it('the five approved full product names, and no others', () => {
     expect(MODULE_NAMES).toEqual({
-      pulse:  'Constrapp PULSE™',
-      shield: 'Constrapp SHIELD™',
-      quant:  'Constrapp Quant™',
-      gantt:  'Constrapp GANTT™',
-      iq:     'Constrapp IQ™',
+      pulse:  'Constrap PULSE™',
+      shield: 'Constrap SHIELD™',
+      quant:  'Constrap Quant™',
+      gantt:  'Constrap GANTT™',
+      iq:     'Constrap IQ™',
     })
   })
 
@@ -441,5 +441,42 @@ describe('no new data flow or dependency', () => {
       '@tailwindcss/vite', 'firebase', 'pdfjs-dist', 'react', 'react-dom', 'react-router-dom', 'recharts', 'tailwindcss',
     ])
     expect(pkg.dependencies['pdfjs-dist']).toMatch(/^\d+\.\d+\.\d+$/) // exact pin, no range
+  })
+})
+
+// ── Product brand: Constrap (chore/constrap-branding) ───────────────────────
+//
+// The customer-facing name is "Constrap". The former name "Constrapp" may
+// survive ONLY in comments and in lowercase technical identifiers (Firebase
+// project ids, storage keys such as `constrapp.pendingInvite`, error codes)
+// — never in rendered copy, the document title or the invitation email.
+describe('product brand', () => {
+  const srcRoot = fileURLToPath(new URL('../../src/', import.meta.url))
+  const sourceFiles = readdirSync(srcRoot, { recursive: true })
+    .filter(f => /\.(jsx?|css)$/.test(f))
+
+  it('no rendered source string names the former brand', () => {
+    const offenders = sourceFiles.filter(f => /Constrapp/.test(stripComments(read(f))))
+    expect(offenders).toEqual([])
+  })
+
+  it('the document title, wordmarks and invitation email use Constrap', () => {
+    expect(readRoot('index.html')).toContain('<title>Constrap</title>')
+    expect(read('layouts/Sidebar.jsx')).toContain('>Constrap</span>')
+    expect(read('layouts/AuthLayout.jsx')).toContain('aria-label="About Constrap"')
+    const email = readRoot('functions/src/lib/email.js')
+    expect(email).toContain('on Constrap`')
+    expect(email).not.toMatch(/Constrapp/)
+  })
+
+  it('the favicon is the Constrap chevron mark in brand tokens, not the Vite logo', () => {
+    expect(readRoot('index.html')).toContain('<link rel="icon" type="image/svg+xml" href="/favicon.svg" />')
+    const icon = readRoot('public/favicon.svg')
+    // The same two chevrons the sidebar and sign-in Logo components draw.
+    expect(icon).toContain('d="M28 8L16 20L28 32"')
+    expect(icon).toContain('d="M20 8L8 20L20 32"')
+    expect(icon).toContain('#00C9A7') // brand-accent
+    expect(icon).toContain('#0B1629') // brand-bg
+    expect(icon).not.toMatch(/863bff|7e14ff|47bfff/i) // Vite logo colours
   })
 })
