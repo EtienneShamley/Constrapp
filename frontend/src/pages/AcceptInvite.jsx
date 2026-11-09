@@ -164,7 +164,7 @@ export default function AcceptInvite() {
         {intro}
         <AuthError id={`${uid}-blocked`}>
           {step === ACCEPT_STEP.OTHER_COMPANY
-            ? 'This email address already belongs to another company on Constrapp, so it cannot join a second one.'
+            ? 'This email address already belongs to another company on Constrap, so it cannot join a second one.'
             : 'This account cannot accept invitations. Contact your administrator.'}
         </AuthError>
         <div className="mt-3"><Link to="/login" className={authLinkCls}>← Back to sign in</Link></div>
@@ -203,7 +203,7 @@ export default function AcceptInvite() {
       <>
         <h1 className="text-2xl font-bold text-brand-text mb-1.5">You’re already a member</h1>
         {intro}
-        <Btn onClick={() => { clearPendingInvite(window.sessionStorage); navigate('/', { replace: true }) }} className={submitCls}>Open Constrapp</Btn>
+        <Btn onClick={() => { clearPendingInvite(window.sessionStorage); navigate('/', { replace: true }) }} className={submitCls}>Open Constrap</Btn>
       </>
     )
   }

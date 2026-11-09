@@ -137,7 +137,7 @@ describe('membership state', () => {
 describe('email', () => {
   it('renders an invitation with the link and escapes html', () => {
     const r = renderInviteEmail({ companyName: 'A <B>', inviterName: 'Jo', role: 'qs', link: 'https://x/accept-invite#t=1', expiresAt: NOW })
-    expect(r.subject).toBe("You're invited to A <B> on Constrapp")
+    expect(r.subject).toBe("You're invited to A <B> on Constrap")
     expect(r.text).toContain('https://x/accept-invite#t=1')
     expect(r.text).toContain('Quantity Surveyor')
     expect(r.html).toContain('A &lt;B&gt;')

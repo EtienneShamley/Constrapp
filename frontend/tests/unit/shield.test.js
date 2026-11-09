@@ -1175,7 +1175,7 @@ describe('ProjectShield page — role gate, subscriptions, isolation, no writes'
       expect(f).not.toMatch(/Coming Soon|recharts|<canvas|health score|score ring|risk rating|\bAI\b/i)
     }
     expect(code).toContain("import { MODULE_NAMES } from '../../lib/moduleBranding'")
-    expect(MODULE_NAMES.shield).toBe('Constrapp SHIELD™')
+    expect(MODULE_NAMES.shield).toBe('Constrap SHIELD™')
     expect(cardCode).not.toContain('brand-shield') // cyan is a brand mark, never a status colour
   })
 

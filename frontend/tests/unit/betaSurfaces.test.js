@@ -114,11 +114,11 @@ describe('project tabs offer no placeholder module', () => {
 })
 
 describe('the sidebar offers no module pointer', () => {
-  it('Constrapp PULSE™ is not in the sidebar', () => {
+  it('Constrap PULSE™ is not in the sidebar', () => {
     expect(nav).not.toMatch(/to:\s*'\/pulse'/)
   })
 
-  it('Constrapp SHIELD™ is not in the sidebar', () => {
+  it('Constrap SHIELD™ is not in the sidebar', () => {
     expect(nav).not.toMatch(/to:\s*'\/shield'/)
   })
 

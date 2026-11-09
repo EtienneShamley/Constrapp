@@ -204,7 +204,7 @@ function ProjectCurrencyCard({ project, projectId, currencyCode, sources: shared
                   ? <>Locked because this project already has {reasons.join(', ')}. </>
                   : <>Locked — the currency ratchet is set on this project (its monetary records may still be loading or unavailable). </>}
                 Changing currency now would relabel
-                those amounts without converting them — Constrapp never converts. If the currency is wrong, raise a
+                those amounts without converting them — Constrap never converts. If the currency is wrong, raise a
                 new project in the correct currency.
               </p>
             </>
@@ -240,7 +240,7 @@ function ProjectCurrencyCard({ project, projectId, currencyCode, sources: shared
               {evidence.state === FIGURE_STATE.UNAVAILABLE && (
                 <p className="m-0 mt-1.5 text-[12px] text-brand-amber max-w-[560px]">
                   Currency cannot be changed right now: could not load {failedLabel(evidence.failedSources)}, so
-                  Constrapp cannot confirm this project holds no monetary records. Reload the page, and check your
+                  Constrap cannot confirm this project holds no monetary records. Reload the page, and check your
                   connection and permissions if this persists.
                 </p>
               )}

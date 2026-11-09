@@ -28,7 +28,7 @@ export default class ErrorBoundary extends Component {
 
   componentDidCatch(error, info) {
     // Console only — never rendered. See the note above.
-    console.error('[Constrapp] Unhandled render error:', error, info?.componentStack)
+    console.error('[Constrap] Unhandled render error:', error, info?.componentStack)
   }
 
   render() {
@@ -42,7 +42,7 @@ export default class ErrorBoundary extends Component {
               <path d="M28 8L16 20L28 32" stroke="#00C9A7" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
               <path d="M20 8L8 20L20 32" stroke="#00C9A7" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" opacity="0.45" />
             </svg>
-            <span className="text-xl font-black text-brand-text tracking-tight">Constrapp</span>
+            <span className="text-xl font-black text-brand-text tracking-tight">Constrap</span>
           </div>
 
           <h1 className="text-lg font-bold text-brand-text mb-2 m-0">Something went wrong</h1>
@@ -51,7 +51,7 @@ export default class ErrorBoundary extends Component {
               "your data has not been changed" would be a guarantee this boundary
               is in no position to make. Neutral copy is the only honest copy. */}
           <p className="text-sm text-brand-muted mb-6">
-            Something went wrong while displaying this page. Reload Constrapp and
+            Something went wrong while displaying this page. Reload Constrap and
             try again. If the problem continues, contact your company administrator.
           </p>
 
@@ -60,7 +60,7 @@ export default class ErrorBoundary extends Component {
             onClick={() => window.location.reload()}
             className="w-full bg-brand-accent text-brand-bg font-bold text-sm rounded-lg py-2.5 min-h-[44px] hover:opacity-90 transition-opacity cursor-pointer"
           >
-            Reload Constrapp
+            Reload Constrap
           </button>
         </div>
       </div>

@@ -413,7 +413,7 @@ export default function ActivityEditorModal({
                   onChange={(e) => set('percentComplete')(e.target.value)}
                 />
                 <p className={hintCls}>
-                  Whole numbers only. <strong>Manually entered</strong> — Constrapp never derives it from
+                  Whole numbers only. <strong>Manually entered</strong> — Constrap never derives it from
                   dates or from progress claims, and it feeds no budget, forecast, margin or cash figure.
                 </p>
               </>

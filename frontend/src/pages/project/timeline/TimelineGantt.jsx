@@ -418,7 +418,7 @@ export default function TimelineGantt({
 
       <p className="m-0 px-3.5 pb-3.5 text-[11px] text-brand-muted">
         Dates are changed by opening an activity — there is no drag-to-reschedule, and nothing moves
-        automatically: a dependency is shown, never enforced by moving a date, and Constrapp has no
+        automatically: a dependency is shown, never enforced by moving a date, and Constrap has no
         critical path. Calendar days; weekends and public holidays are not modelled.
       </p>
     </div>

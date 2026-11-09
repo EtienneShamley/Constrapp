@@ -2,7 +2,7 @@
 
 ## Strategic Positioning
 
-**Constrapp is the connected commercial operating system for construction projects.** Every session must preserve:
+**Constrap is the connected commercial operating system for construction projects.** Every session must preserve:
 
 - **The connected commercial lifecycle** — Drawing → Quantity → BOQ → Estimate → Tender → Award → Approved Budget → Commitment → PO → Variation → Progress Claim → Supplier Invoice → Actual Cost → Forecast → Cash Flow → Final Project Margin → Final Account.
 - **The cost-code spine** — Cost Codes join every commercial stage; new commercial modules integrate through them.

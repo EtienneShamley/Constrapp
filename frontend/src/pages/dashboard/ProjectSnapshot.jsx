@@ -261,7 +261,7 @@ export default function ProjectSnapshot({ project, currencyCode, aside = null })
       </div>
 
       <p className="m-0 text-[11px] text-brand-muted">
-        One project, in its own currency ({snapshot.currencyCode}) — Constrapp never converts or sums currencies. Cost and
+        One project, in its own currency ({snapshot.currencyCode}) — Constrap never converts or sums currencies. Cost and
         margin figures are ex-GST and are the same read-time figures shown on the project&apos;s Forecast and Commercial
         tabs; Remaining Payable is gross, as on Supplier Payments. Unsaved forecast edits are not included.
       </p>

@@ -103,7 +103,7 @@ function AuthShell({ children }) {
 
       {/* LEFT — product introduction (desktop only) */}
       <aside
-        aria-label="About Constrapp"
+        aria-label="About Constrap"
         className="hidden lg:flex relative overflow-hidden flex-col justify-center bg-brand-bg px-14 py-10 xl:px-20 [@media(min-height:900px)]:py-[70px]"
       >
         {/* Depth: the prototype's darkened diagonal wash and two faint circles */}
@@ -114,7 +114,7 @@ function AuthShell({ children }) {
         <div className="relative my-auto">
           <div className="flex items-center gap-4 mb-8 [@media(min-height:900px)]:mb-[50px]">
             <Logo className="size-10" />
-            <span className="text-[34px] font-bold text-brand-text tracking-[-1px] leading-none">Constrapp</span>
+            <span className="text-[34px] font-bold text-brand-text tracking-[-1px] leading-none">Constrap</span>
           </div>
 
           {/* Not a heading: each auth page owns the one <h1> ("Sign in", …) */}
@@ -164,7 +164,7 @@ function AuthShell({ children }) {
           <div className="lg:hidden flex flex-col items-center text-center mb-8">
             <div className="flex items-center gap-3">
               <Logo className="size-9" />
-              <span className="text-[28px] font-bold text-brand-text tracking-[-0.75px] leading-none">Constrapp</span>
+              <span className="text-[28px] font-bold text-brand-text tracking-[-0.75px] leading-none">Constrap</span>
             </div>
             <p className="mt-3 text-[13px] text-brand-text-soft text-balance m-0">
               Commercial control for construction,{' '}

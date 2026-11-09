@@ -98,7 +98,7 @@ if (useFirestoreEmulator) {
   // Loud on purpose — nobody should ever be unsure which datastore they are
   // looking at while doing manual financial acceptance.
   console.warn(
-    `%c[Constrapp] FIRESTORE → LOCAL EMULATOR ${host}:${port} (project "${firebaseConfig.projectId}") — data is disposable and NOT production. Auth is real.`,
+    `%c[Constrap] FIRESTORE → LOCAL EMULATOR ${host}:${port} (project "${firebaseConfig.projectId}") — data is disposable and NOT production. Auth is real.`,
     'background:#F5A623;color:#000;font-weight:bold;padding:2px 6px;border-radius:3px',
   )
 }
@@ -125,7 +125,7 @@ if (useStorageEmulator) {
   const port = Number(import.meta.env.VITE_STORAGE_EMULATOR_PORT || 9199)
   connectStorageEmulator(storage, host, port)
   console.warn(
-    `%c[Constrapp] STORAGE → LOCAL EMULATOR ${host}:${port} (bucket "${firebaseConfig.storageBucket}") — files are disposable and NOT production.`,
+    `%c[Constrap] STORAGE → LOCAL EMULATOR ${host}:${port} (bucket "${firebaseConfig.storageBucket}") — files are disposable and NOT production.`,
     'background:#F5A623;color:#000;font-weight:bold;padding:2px 6px;border-radius:3px',
   )
 }
@@ -152,7 +152,7 @@ if (useFunctionsEmulator) {
   connectAuthEmulator(auth, `http://${host}:${authPort}`, { disableWarnings: true })
   connectFunctionsEmulator(functions, host, fnPort)
   console.warn(
-    `%c[Constrapp] AUTH → ${host}:${authPort}, FUNCTIONS → ${host}:${fnPort} (LOCAL EMULATORS) — accounts and invitations are disposable and NOT production.`,
+    `%c[Constrap] AUTH → ${host}:${authPort}, FUNCTIONS → ${host}:${fnPort} (LOCAL EMULATORS) — accounts and invitations are disposable and NOT production.`,
     'background:#F5A623;color:#000;font-weight:bold;padding:2px 6px;border-radius:3px',
   )
 }

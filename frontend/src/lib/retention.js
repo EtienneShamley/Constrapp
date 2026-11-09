@@ -477,7 +477,7 @@ export const RETENTION_RELEASED_NOTICE =
   + 'authorisation, not a supplier invoice, tax invoice, credit note, or payment, and moves no cash by itself.'
 
 export const RETENTION_RELEASE_CONCURRENCY_NOTICE =
-  'Constrapp blocks a release that exceeds the retention still available on an invoice, using the releases '
+  'Constrap blocks a release that exceeds the retention still available on an invoice, using the releases '
   + 'loaded now. Firestore rules cannot sum sibling releases, so two people releasing the same retention at the '
   + 'same moment can still both succeed — the register reports any over-release rather than hiding it.'
 

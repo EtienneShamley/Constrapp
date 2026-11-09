@@ -552,7 +552,7 @@ export function isPastDuePayable(invoice, remaining, now = new Date()) {
 // Still honest about what is NOT enforced.
 export const AP_RECONCILIATION_NOTICE =
   'Balances reflect posted Supplier Payments allocated to each invoice, net of posted Supplier Credit Notes, ' +
-  'plus any retention released against it. Constrapp warns but does not block over-reconciliation, and cannot ' +
+  'plus any retention released against it. Constrap warns but does not block over-reconciliation, and cannot ' +
   'prevent two users allocating the same remaining payable concurrently. Unallocated payments are shown ' +
   'separately and reduce no invoice balance. Retention still HELD is excluded — it is not payable until it is ' +
   'released.'

@@ -1,4 +1,4 @@
-# Constrapp — Development Roadmap
+# Constrap — Development Roadmap
 
 ## Guiding Principles
 
@@ -410,6 +410,7 @@ forecast/cash-flow delay derivation itself (dependencies shipped in Programme
 
 - Budget burn bar and variance indicators; project edit
 - ~~User management (invite, assign role, assign company)~~ **L1 — Trusted Backend & Team Management (ADR-72) — implemented, NOT YET DEPLOYED.** Eight Callable Cloud Functions (`frontend/functions/`) for invitations, acceptance, roles and deactivation; Company Settings → Team; `/accept-invite`; a membership gate; operator bootstrap and reconciliation scripts. Internal roles only; no public tenant sign-up; no rules change. **Remaining:** custom claims, MFA, an audit-log viewer, external (subcontractor/client) onboarding after project-level scoping (DC20) and closing Storage download-URL persistence (DC46). The frontend production dependency audit findings (pre-existing on `main`) are tracked here for a separate dependency-update task.
+- **Brand: Constrap (chore/constrap-branding) — implemented, NOT YET DEPLOYED.** Customer-facing name changed from "Constrapp" to **Constrap** (app title, wordmarks, module names, UI copy, invitation email, current product docs). Internal identifiers and historical entries in this roadmap keep the old spelling (AGENT.md → Brand Name). **Remaining:** connect `app.constrap.com`, verify `constrap.com` in Resend and set the L1 parameters (DEPLOYMENT.md → *Custom domain — app.constrap.com*).
 - Subcontractors module — linked to contacts and cost codes
 
 ## Anti-Goals (out of scope without an approved strategy change)

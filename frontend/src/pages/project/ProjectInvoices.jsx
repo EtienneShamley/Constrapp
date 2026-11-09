@@ -1489,7 +1489,7 @@ export default function ProjectInvoices() {
           </p>
           <p className="m-0 mt-1 text-[12px] text-brand-muted">
             Posted credit notes reduce each invoice&apos;s remaining payable and its contribution to Invoiced and
-            Actual. Because they cannot be read, Constrapp will <span className="font-semibold">not</span> show
+            Actual. Because they cannot be read, Constrap will <span className="font-semibold">not</span> show
             those balances as though no credits exist. Credit-note actions are disabled — raising one requires the
             existing credits to apply the cumulative cap. Recording a payment is still reachable from the Supplier
             Payments view, which applies the same guard. Reload the page; if this persists, check your connection

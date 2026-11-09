@@ -8,7 +8,7 @@ export default function CreateAccount() {
       {/* No public registration (ADR-27 / ADR-72). Accounts are created only
           through an invitation link sent by a Company Admin, on /accept-invite. */}
       <p className="text-[13px] text-brand-text-soft leading-relaxed mb-4">
-        Constrapp accounts are created by invitation. Ask your Company Admin to invite you, then open the link in the email they send.
+        Constrap accounts are created by invitation. Ask your Company Admin to invite you, then open the link in the email they send.
       </p>
       <Link to="/login" className={`${authLinkCls} text-sm font-semibold`}>
         ← Back to sign in

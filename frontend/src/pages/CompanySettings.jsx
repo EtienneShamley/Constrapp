@@ -137,13 +137,13 @@ function CurrencyForm({ company, configured, saveCompanyCurrency, projects, proj
         {showTax && (
           <p className="m-0 mt-3.5 text-[12px] text-brand-amber">
             <span className="font-semibold">Tax:</span> {TAX_LIMITATION_NOTICE} Selecting{' '}
-            {countryName(countryCode)} does not make Constrapp tax-compliant there — purchase orders, claims,
+            {countryName(countryCode)} does not make Constrap tax-compliant there — purchase orders, claims,
             invoices, and variations still calculate and label a flat Australian GST of 10%.
           </p>
         )}
 
         <p className="m-0 mt-3 text-[11px] text-brand-muted">
-          Currency is a <span className="font-semibold">label</span>, never a conversion. Constrapp performs no FX
+          Currency is a <span className="font-semibold">label</span>, never a conversion. Constrap performs no FX
           conversion: no existing amount is recalculated, converted, or changed by anything on this page.
         </p>
       </Card>

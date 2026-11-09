@@ -241,7 +241,7 @@ describe('existing links, labels and tokens', () => {
     // implication.
     expect(chart).toContain('is compared with the current plan.')
     expect(chart).toContain('No approved baseline is shown, so nothing here is slippage against an approved programme.')
-    expect(chart).toContain('a dependency is shown, never enforced by moving a date, and Constrapp has no\n        critical path')
+    expect(chart).toContain('a dependency is shown, never enforced by moving a date, and Constrap has no\n        critical path')
     expect(page).toContain('Current plan, compared with an approved baseline when one exists.')
     expect(page).toContain('Without an approved baseline nothing here is\n                slippage against an approved programme.')
   })

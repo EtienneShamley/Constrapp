@@ -1,6 +1,6 @@
-# Constrapp — Frontend
+# Constrap — Frontend
 
-The entire Constrapp application lives in this directory (React 19 + Vite +
+The entire Constrap application lives in this directory (React 19 + Vite +
 Tailwind CSS v4 + Firebase client SDK).
 
 **Start with the [root README](../README.md)** for project overview, Firebase

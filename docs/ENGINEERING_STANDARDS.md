@@ -1,8 +1,8 @@
 # Engineering & Security Standards
 
-Permanent, binding standards for **all** future Constrapp development — by humans or
+Permanent, binding standards for **all** future Constrap development — by humans or
 AI coding agents. They exist to stop vague or generic implementation: every change
-must follow Constrapp's *actual* architecture, not a plausible-looking pattern from
+must follow Constrap's *actual* architecture, not a plausible-looking pattern from
 elsewhere.
 
 These standards are as binding as the Strategic Invariants ([AGENT.md](../AGENT.md))
@@ -62,7 +62,7 @@ without an approved architecture change (record it in
    read or write. A new collection/field needs a rules block **before** the feature is
    done (§8).
 4. Confirm the task is in scope ([ROADMAP.md](../ROADMAP.md), [PRODUCT.md](../PRODUCT.md)
-   → "What Constrapp Is Not"). If it is out of scope or requires a strategy change,
+   → "What Constrap Is Not"). If it is out of scope or requires a strategy change,
    **flag it — do not build it.**
 5. Identify the **cost-code spine impact** and the **read-time derivation impact**
    (does any figure need deriving? never storing?).

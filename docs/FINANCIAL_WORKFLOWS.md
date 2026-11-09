@@ -13,7 +13,7 @@ against accounting exports later.
 ## Currency & tax
 
 **Currency is a label, never a conversion.** Each project reports in exactly one
-currency. Constrapp performs **no FX conversion**, holds no exchange rates, and
+currency. Constrap performs **no FX conversion**, holds no exchange rates, and
 supports no mixed-currency project transactions. Changing a currency never
 converts, recalculates, or alters a stored amount — which is why the project
 currency **locks** as soon as the project holds any monetary value (a non-zero
@@ -35,7 +35,7 @@ documents created before this foundation keep their stored `AUD`. Definitions:
 > handling — is **Australian GST**. Selecting New Zealand (GST 15%), South Africa
 > (VAT 15%), the United Kingdom (VAT 20%), the United States (sales tax, a
 > different model), or any other country changes **only the currency label** and
-> does **not** make Constrapp tax-compliant there. Company Settings states this
+> does **not** make Constrap tax-compliant there. Company Settings states this
 > whenever the chosen country is not `AU`. Country-specific tax configuration is
 > a separate future foundation.
 
@@ -611,7 +611,7 @@ PO, a progress claim, or a supplier. Numbering: `CI-0001` from
 > now exist (see *Client Receipts* below), so a real receivables balance is
 > available — but it is **derived at read time from receipt allocations and never
 > stored on an invoice**. There is still **no `paid` status** on any invoice, and
-> *paid*/*unpaid* are never used as an invoice status. Constrapp records the cash
+> *paid*/*unpaid* are never used as an invoice status. Constrap records the cash
 > a user tells it about; it cannot verify that money was genuinely received.
 
 ### The six terms that must never blur
@@ -647,7 +647,7 @@ draft ──▶ issued ──▶ void        (void is terminal)
 - **Void** — terminal audit record, contributing nothing forever. Requires a
   **non-empty reason**. The invoice number is retained, so a void leaves an
   intentional, visible gap in the sequence. Financial records are never deleted.
-- **`sent` is reserved** (defined with no transition into it). Constrapp has no
+- **`sent` is reserved** (defined with no transition into it). Constrap has no
   delivery mechanism and no email provider, so a `sent` status would assert that
   a client received something the app cannot evidence.
 - **There is no `paid` or `partially_paid` status — not even reserved.** Payment
@@ -758,7 +758,7 @@ The pre-Receipts disclaimer ("Constrapp has no Receipt records, so every issued
 invoice stays here until it is voided") is **removed**, replaced by the limits
 that genuinely remain:
 
-> Balances reflect posted receipts allocated to each invoice. Constrapp warns but
+> Balances reflect posted receipts allocated to each invoice. Constrap warns but
 > does not block over-allocation, and cannot prevent two users allocating the
 > same balance concurrently. Unallocated receipts are shown separately and do not
 > reduce any invoice balance.
@@ -788,7 +788,7 @@ since **shipped** — see *Client Receipts* below.)
 
 Client Receipts record **money actually received** from a head-contract client
 and allocate it against issued Client Invoices. They are the settlement half of
-accounts receivable, and the first real cash record in Constrapp. Numbering:
+accounts receivable, and the first real cash record in Constrap. Numbering:
 `CR-0001` from `counters/clientReceipts`, incremented in the same transaction as
 the write. Schema: [DATA_MODEL.md](DATA_MODEL.md); rationale: ADR-23.
 
@@ -852,7 +852,7 @@ overpays, or the payment is recorded before the allocation is known.
 
 **Unallocated money reduces no invoice balance.** It is reported separately as
 *"Unallocated — on account"* and is **never** auto-applied to the oldest invoice:
-that is an accounting policy decision Constrapp does not make on the user's
+that is an accounting policy decision Constrap does not make on the user's
 behalf. An explicit **"Allocate oldest first"** action exists, produces an
 editable proposal, and runs only when pressed.
 
@@ -898,7 +898,7 @@ never `createdAt` or `postedAt`,** and can group by month with
 ### Allocation exceptions
 
 An issued invoice can be **voided after** a receipt was posted against it; rules
-cannot prevent that (voiding needs no cross-document read). Constrapp surfaces it
+cannot prevent that (voiding needs no cross-document read). Constrap surfaces it
 rather than automating a fix:
 
 - the **cash stays real** — the receipt keeps its amount and stays counted;
@@ -959,7 +959,7 @@ draft ──▶ posted ──▶ void        (void is terminal)
 - **Void** — terminal audit record, contributing nothing forever. Requires a
   **non-whitespace reason**. The number is retained, leaving an intentional,
   visible gap. Financial records are never deleted. **No reversal, refund, or
-  bank-reversal record is created** — voiding corrects Constrapp's record, not
+  bank-reversal record is created** — voiding corrects Constrap's record, not
   the bank account.
 
 Like `clientInvoices` and `clientReceipts`, **this lifecycle is enforced by
@@ -1005,7 +1005,7 @@ invoice that could never be settled.
 
 Allocations are **embedded** on the payment (ADR-6 idiom):
 `{ supplierInvoiceId, invoiceNumber, supplierInvoiceNumber, allocatedAmount }`.
-**Both** invoice references are frozen — Constrapp's `SI-0007` and the supplier's
+**Both** invoice references are frozen — Constrap's `SI-0007` and the supplier's
 own `INV-4471`, which is what AP staff reconcile against — and both are
 searchable.
 
@@ -1136,7 +1136,7 @@ longer owed, so it never ages as arrears.
 Honest limits, shown in the UI:
 
 > Balances reflect posted Supplier Payments allocated to each invoice, net of
-> posted Supplier Credit Notes. Constrapp warns but does not block
+> posted Supplier Credit Notes. Constrap warns but does not block
 > over-reconciliation, and cannot prevent two users allocating the same
 > remaining payable concurrently. Unallocated payments are shown separately and
 > reduce no invoice balance. Retention withheld is excluded — retention release
@@ -1146,7 +1146,7 @@ Honest limits, shown in the UI:
 
 A posted supplier invoice can be **cancelled after** a payment was posted against
 it. Rules cannot prevent that — supplier-invoice lifecycle legality is still
-client-enforced, so a **direct SDK call** can cancel a posted invoice. Constrapp
+client-enforced, so a **direct SDK call** can cancel a posted invoice. Constrap
 surfaces it rather than automating a fix:
 
 - the **cash stays real** — the payment keeps its amount and stays counted;
@@ -1296,7 +1296,7 @@ forgeable `paid`), so a credit and its invoice can never disagree about whether
 the invoice's cost exists. Nothing is deleted, reassigned, or reversed
 automatically.
 
-⚠️ This gate protects the figures Constrapp renders. It is **not** enforcement
+⚠️ This gate protects the figures Constrap renders. It is **not** enforcement
 and does not repair the stored document — see [SECURITY.md](SECURITY.md) →
 Deferred Control 25.
 
@@ -1586,7 +1586,7 @@ Payable is **gross** and is labelled so. The Programme panel is non-financial
 (activity counts only).
 
 **There is no portfolio monetary figure.** Projects may carry different
-currencies and Constrapp never converts, so no amount is ever summed across
+currencies and Constrap never converts, so no amount is ever summed across
 projects.
 
 ## Planned Commercial Lifecycle (not yet implemented)
@@ -2002,7 +2002,7 @@ cash-row adapters (`lib/clientReceipts.js → cashInRows()` and
 (`npm run test:unit`).
 
 > **⚠️ Not a bank balance.** The cumulative position starts at **zero** and is
-> the project's net recorded cash movement. Constrapp models no bank account,
+> the project's net recorded cash movement. Constrap models no bank account,
 > no opening cash position, no financing, and no GST/BAS remittance — the page
 > states this permanently.
 

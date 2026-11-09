@@ -209,7 +209,7 @@ export default function RaisePurchaseOrderModal({ pkg, bid, proposal, currencyCo
                 ))}
               </ul>
               <p className="m-0 mt-1 text-[11px] text-brand-muted">
-                These purchase orders go to the same supplier on this project. Constrapp cannot tell whether they cover
+                These purchase orders go to the same supplier on this project. Constrap cannot tell whether they cover
                 the same scope — this is a prompt to check, not a finding.
               </p>
             </div>

@@ -37,10 +37,10 @@ is the `@theme` block in `frontend/src/index.css` — there is **no**
 | `brand-text` | `#E8F0F7` | Body copy |
 | `brand-text-soft` | `#94A9BE` | Secondary copy |
 | `brand-muted` | `#546E84` | Labels, metadata, disabled |
-| `brand-pulse` | `#FF6B9D` | Constrapp PULSE™ mark and indicator dot only — never a status (ADR-48) |
-| `brand-shield` | `#00D4FF` | Constrapp SHIELD™ mark only — never a status (ADR-48) |
-| `brand-quant` | `#A3E635` | Constrapp Quant™ mark, header dot, active tool and saved-measurement geometry on the sheet — never a status (ADR-51); errors stay `brand-red`, review flags `brand-amber`, selection `brand-accent` |
-| `brand-gantt` | `#FB923C` | Constrapp GANTT™ mark, tile and header dot ONLY — never a bar, status or overdue colour (ADR-64): on the chart in progress stays `brand-blue`, on hold `brand-amber`, completed `brand-accent`, not started / cancelled `brand-muted`, overdue `brand-red`, milestones `brand-purple`, the today line `brand-accent`, recorded (actual) dates `brand-text-soft` |
+| `brand-pulse` | `#FF6B9D` | Constrap PULSE™ mark and indicator dot only — never a status (ADR-48) |
+| `brand-shield` | `#00D4FF` | Constrap SHIELD™ mark only — never a status (ADR-48) |
+| `brand-quant` | `#A3E635` | Constrap Quant™ mark, header dot, active tool and saved-measurement geometry on the sheet — never a status (ADR-51); errors stay `brand-red`, review flags `brand-amber`, selection `brand-accent` |
+| `brand-gantt` | `#FB923C` | Constrap GANTT™ mark, tile and header dot ONLY — never a bar, status or overdue colour (ADR-64): on the chart in progress stays `brand-blue`, on hold `brand-amber`, completed `brand-accent`, not started / cancelled `brand-muted`, overdue `brand-red`, milestones `brand-purple`, the today line `brand-accent`, recorded (actual) dates `brand-text-soft` |
 | `--font-sans` | Sora, DM Sans, system-ui | Default font stack |
 
 Do not add new colour values; map new needs onto these tokens. The module
@@ -48,13 +48,13 @@ brand tokens are the only exception: `brand-pulse` and `brand-shield` were
 approved narrowly by ADR-48 to replace existing hard-coded module colours,
 `brand-quant` by ADR-51 when the Quant™ page shipped (the convention ADR-48
 recorded for a module's own token), and `brand-gantt` by ADR-64 when the
-programme tab became Constrapp GANTT™.
+programme tab became Constrap GANTT™.
 
 ## Module Branding (ADR-48)
 
-- **Names** come from `lib/moduleBranding.js` → `MODULE_NAMES`: *Constrapp
-  PULSE™*, *Constrapp SHIELD™*, *Constrapp Quant™*, *Constrapp GANTT™*
-  (ADR-64), *Constrapp IQ™*. Headers use the full name; navigation uses a
+- **Names** come from `lib/moduleBranding.js` → `MODULE_NAMES`: *Constrap
+  PULSE™*, *Constrap SHIELD™*, *Constrap Quant™*, *Constrap GANTT™*
+  (ADR-64), *Constrap IQ™*. Headers use the full name; navigation uses a
   compact label ("PULSE", "GANTT", no ™).
 - **Marks** — `components/ModuleMark.jsx`: `ModuleMark` is a 24-unit, 2px,
   round-capped `currentColor` line SVG (PULSE: heartbeat line; SHIELD: shield
@@ -92,7 +92,7 @@ programme tab became Constrapp GANTT™.
   four; GANTT is the existing `timeline` route relabelled, not a new tab); the
   layout renders a 14px static mark before the label and keeps the shared
   active styling.
-- **Constrapp GANTT™ chart (ADR-64).** The programme chart
+- **Constrap GANTT™ chart (ADR-64).** The programme chart
   (`pages/project/timeline/TimelineGantt.jsx` over the pure
   `lib/timelineGantt.js` + `lib/ganttGrouping.js`) is ONE `overflow-auto`
   scroller (`max-h-[70vh]`) with the 240 px label column `sticky left-0` and
@@ -325,7 +325,7 @@ code before raising purchase orders" + "Go to Cost Codes").
 **Auth pages** — `layouts/AuthLayout.jsx` owns the shell for `/login`,
 `/forgot-password` and `/create-account` (a recreation of the v5 prototype's
 login): from `lg:` a flexible product panel (`<aside aria-label="About
-Constrapp">`, `brand-bg` under a `black/…` diagonal wash with two faint
+Constrap">`, `brand-bg` under a `black/…` diagonal wash with two faint
 `brand-accent`/`brand-blue` circles) beside a `brand-sidebar` sign-in panel, split ≈55/45
 (`grid-cols-[minmax(0,55fr)_minmax(0,45fr)]`) with the form centred at
 `max-w-[420px]`; below
