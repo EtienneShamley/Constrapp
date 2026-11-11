@@ -7606,7 +7606,30 @@ files / 2,160**. Lint 0 / 0; build clean; `rules:transitional:check` clean;
    approved…* (or that it is no longer a draft); the ledger shows ONE
    approval. A `subcontractor` sign-in cannot read any adjustment.
 
-## 49. L1 — Trusted Backend & Team Management (ADR-72) — implemented, NOT YET DEPLOYED
+## 49. L1 — Trusted Backend & Team Management (ADR-72) — LIVE in production (confirmed by the Product Owner, 11 November 2026)
+
+**Production acceptance record (11 November 2026, `https://app.constrap.com`,
+reported by the Product Owner).** Passed:
+
+- All eight callables deployed in `australia-southeast1` on Node.js 22, with App
+  Check enforced on the callables.
+- **App Check refusal probe (release order step 2) — PASSED.** A production
+  `POST` to `listTeam` with **no** App Check token returned `HTTP/2 401` with
+  `{"error":{"message":"Unauthenticated","status":"UNAUTHENTICATED"}}`. The
+  subsequent authenticated `listTeam` request returned `HTTP 200`.
+- **Check 1 (invitation end-to-end):** the invitation email was delivered
+  through Resend, the invitation was accepted, and the new member worked as
+  **Project Manager** with the expected permissions.
+- **Check 3 (deactivation):** the member was deactivated and lost access.
+- Regressions: Quant™ PDF viewing and Storage; Authentication. Azure CI
+  green on `main`.
+
+**Not recorded as run (do not treat as verified):** the check 2 guards (the
+last-admin refusal with two admins, self-demotion, and resend making the old
+link *not valid*); check 3's two sub-steps — whether an open screen showed data
+written AFTER the deactivation, and the *Welcome back* re-invitation of the
+same email. General App Check enforcement for Firestore, Storage and Authentication
+is **OFF**, and no App Check monitoring period has been completed.
 
 **Automated.**
 
@@ -7688,13 +7711,19 @@ files / 2,160**. Lint 0 / 0; build clean; `rules:transitional:check` clean;
    *Welcome back*, sign-in (or *Forgot password?*) works, and the member
    returns with the same history.
 
-## 50. Brand — Constrap (chore/constrap-branding) — implemented, NOT YET DEPLOYED
+## 50. Brand — Constrap (chore/constrap-branding) — LIVE in production at `https://app.constrap.com` (confirmed live on 11 November 2026)
 
 Presentation only: no rule, field, collection, financial formula or
 permission changed. Run on the Hosting preview (or production after release)
 at the existing `web.app` origin; repeat step 4 at `https://app.constrap.com`
-only once that domain is connected (DEPLOYMENT.md → *Custom domain —
+(confirmed live on 11 November 2026 — DEPLOYMENT.md → *Custom domain —
 app.constrap.com*).
+
+**Recorded so far (11 November 2026):** the live tab title reads *Constrap*
+(observed), and the L1 acceptance delivered a Resend invitation from the
+`constrap.com` domain whose link was accepted on the production origin (part
+of step 4). The checkboxes below have **not** been recorded as run in full;
+leave them unticked until they are.
 
 1. - [ ] Signed out: the browser tab reads **Constrap**; the sign-in page shows
       the **Constrap** wordmark, *Access your Constrap workspace.* and the

@@ -62,7 +62,7 @@ label for amounts entered in it, never a conversion instruction.
 ## users/{uid}
 
 Document ID = Firebase Auth UID. Before ADR-72 created manually in the console;
-**since ADR-72 (implemented, not yet deployed) written ONLY by the trusted
+**since ADR-72 (live since 11 November 2026) written ONLY by the trusted
 backend** (`frontend/functions/`, Admin SDK) on invitation acceptance, role
 change and deactivation. Console-provisioned (legacy) documents keep working
 unchanged — no migration, no backfill.
@@ -116,7 +116,7 @@ Other fields (e.g. `createdAt`, `plan`) are incidental. Changing `baseCurrency`
 later affects only the default for **new** projects — it never converts,
 recalculates, or relabels any existing project or amount.
 
-## Team management collections (ADR-72 — implemented, not yet deployed)
+## Team management collections (ADR-72 — live since 11 November 2026)
 
 All under `companies/{companyId}/…`, **written and read ONLY by the trusted
 backend's Admin SDK**. None has a `match` block in `firestore.rules`, so every

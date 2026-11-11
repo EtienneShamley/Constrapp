@@ -3658,7 +3658,7 @@ were written the obvious way.
 **What is NOT enforced** is listed in Deferred Control 27 — most notably
 number uniqueness, `raisedByName` truthfulness, and reference-label accuracy.
 
-## Team management — trusted backend (ADR-72, L1 — IMPLEMENTED, NOT YET DEPLOYED)
+## Team management — trusted backend (ADR-72, L1 — LIVE IN PRODUCTION since 11 November 2026, confirmed by the Product Owner)
 
 **Shape.** Eight Callable functions (`onCall`, 2nd gen, Node.js 22, region
 `australia-southeast1`): `listTeam`, `createInvitation`, `resendInvitation`,
@@ -3771,6 +3771,14 @@ every callable refuses — fail closed. App Check proves the request came from
 the app; it is never treated as authorisation. The Functions emulator skips
 App Check verification (documented emulator behaviour); the automated suite
 proves a request WITHOUT a token is refused before the handler runs.
+**Scope of enforcement in production (11 November 2026):** App Check is
+enforced **only on the eight callables** (in code). The web app now attaches
+App Check tokens to Firestore, Storage and Authentication requests too, but
+**console enforcement for those services is OFF** — for them App Check is
+metrics only and protects nothing. Firestore and Storage Security Rules remain
+the only trust boundary for client-SDK data. Turning on general enforcement is
+deferred until a monitoring window has been reviewed; no such window has been
+completed (DEPLOYMENT.md → *Deferred: general App Check enforcement*).
 
 **Rate limits (fixed window, Admin-SDK counters).** 20 invitations per admin
 per hour, 100 per company per day, 3 resends per invitation per day, 30
@@ -3796,8 +3804,12 @@ makes every callable answer `team-management-disabled` without touching data.
 **Not enforced / not built (stated plainly).** No custom claims (rules still
 `get()` `users/{uid}`); no self-service company registration; no external
 (subcontractor/client) onboarding — DC20 still stands; no MFA; no admin UI
-over the audit log; no automated email bounce handling; App Check and the
-email secret are production prerequisites, not code.
+over the audit log; no automated email bounce handling; **Storage download
+URLs are not revoked on deactivation (Deferred Control 46, still open)**;
+**general App Check enforcement for Firestore, Storage and Authentication is
+not enabled** (callables only). App Check and the email secret are
+production configuration, not code — both are in place for `constrapp-69b5d`
+as of 11 November 2026.
 
 ## Secrets & the Vite bundle
 
@@ -3942,7 +3954,7 @@ place before any non-hand-provisioned (external) users are onboarded — see
    blocked, **signup, invitations, and user administration cannot be built
    without this trusted backend** — membership must be issued via the Admin
    SDK, never from the browser.
-   **ADR-72 (implemented, not yet deployed):** invitations, invitation
+   **ADR-72 (live in production since 11 November 2026):** invitations, invitation
    acceptance, member listing, role changes and deactivation are built on the
    trusted backend; company creation is operator-only (bootstrap script).
    Custom claims and self-serve company signup remain NOT built.
