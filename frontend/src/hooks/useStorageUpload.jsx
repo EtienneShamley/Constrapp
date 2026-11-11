@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
-import { ref as storageRef, uploadBytesResumable, getDownloadURL, getBytes } from 'firebase/storage'
+import { ref as storageRef, uploadBytesResumable, getBlob, getBytes } from 'firebase/storage'
 import { storage } from '../lib/firebase'
-import { uploadErrorMessage, DRAWING_MAX_BYTES } from '../lib/files'
+import { uploadErrorMessage, downloadErrorMessage, DRAWING_MAX_BYTES } from '../lib/files'
 
 // ── Firebase Storage uploads ─────────────────────────────────────────────────
 //
@@ -81,43 +81,54 @@ export function useStorageUpload() {
   return { upload, cancel, reset, progress, uploading, error }
 }
 
-// Mints a short-lived, on-demand download URL for a stored object.
+export const FILE_BYTES_TIMEOUT_MS = 20_000
+
+// Fetches a stored object as a Blob through the AUTHENTICATED Storage SDK — the
+// one way the app reads a file for viewing or downloading (DC46-A, ADR-73).
 //
-// ⚠️ THE RESULT IS NEVER PERSISTED. A Firebase download URL carries a bearer
-// token: anyone holding the link can fetch the bytes without signing in, and
-// writing one into Firestore would turn a rules-protected drawing into a public
-// link the moment that document is read. URLs are generated only when a user
-// actually asks to open or download a file, and are thrown away afterwards.
+// ⚠️ THE APP NEVER CALLS getDownloadURL. A Firebase download URL carries the
+// object's download token: it is a bearer link that is served WITHOUT Storage
+// Rules, to anyone, for as long as the token exists — including to a member
+// who has since been deactivated. `getBlob` is a rules-checked `get` on every
+// call, so a deactivated member, another company and a non-internal role on an
+// internal document are all denied at the moment they ask. The caller shows the
+// bytes from a `blob:` URL (lib/fileBlob.js), which is not a shareable link.
 //
-// Throws a human message on failure (typically a rules rejection).
-export async function getFileUrl(storagePath) {
+// ⚠️ THIS DOES NOT REVOKE ANYTHING ALREADY ISSUED. Objects still carry their
+// download tokens, and a URL copied before this change keeps working until the
+// tokens are removed out of band (Deferred Control 46 — still OPEN).
+//
+// The whole object is held in memory (up to `maxBytes`); there is no streaming
+// and no progressive rendering. Like getFileBytes, this is an XHR and needs the
+// bucket CORS rule for the Hosting origin (docs/DEPLOYMENT.md). The timeout
+// stops the WAIT, not the request — the SDK offers no cancellation for it.
+//
+// Throws a human message on failure (lib/files.js → downloadErrorMessage).
+export async function getFileBlob(storagePath, { maxBytes = DRAWING_MAX_BYTES, timeoutMs = FILE_BYTES_TIMEOUT_MS } = {}) {
   if (!storagePath) throw new Error('This file is not available')
+  let timer
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error('timeout'), { code: 'constrapp/timeout' })), timeoutMs)
+  })
   try {
-    return await getDownloadURL(storageRef(storage, storagePath))
+    return await Promise.race([getBlob(storageRef(storage, storagePath), maxBytes), timeout])
   } catch (err) {
-    if (err?.code === 'storage/object-not-found') {
-      throw new Error('The file for this record is missing from storage.', { cause: err })
-    }
-    if (err?.code === 'storage/unauthorized') {
-      throw new Error('You do not have permission to open this file.', { cause: err })
-    }
-    throw new Error('Could not open this file. Check your connection and try again.', { cause: err })
+    throw new Error(downloadErrorMessage(err), { cause: err })
+  } finally {
+    clearTimeout(timer)
   }
 }
 
 // Fetches a stored object's BYTES into memory — the Quant™ takeoff viewer
-// needs the PDF itself, not a link to it (a cross-origin <iframe> exposes no
-// page geometry). Same rules-protected `get` the download URL uses; nothing
-// is persisted and the buffer lives only in the viewer.
+// needs the PDF itself, not a link to it. Same rules-protected `get` as
+// getFileBlob; nothing is persisted and the buffer lives only in the viewer.
 //
 // ⚠️ OPERATIONAL PREREQUISITE. The SDK fetches with XHR, so the browser
 // enforces CORS on the Storage endpoint. If the production bucket has no CORS
 // rule for the Hosting origin, this fails — the SDK then retries silently for
 // up to two minutes, so the wait is bounded here and the failure is named
-// (docs/DEPLOYMENT.md → Cloud Storage CORS for the Quant viewer). Images are
-// unaffected: they render through <img> from a download URL.
-export const FILE_BYTES_TIMEOUT_MS = 20_000
-
+// (docs/DEPLOYMENT.md → Cloud Storage CORS for the Quant viewer). Images go
+// through getFileBlob and have the same prerequisite.
 export async function getFileBytes(storagePath, { maxBytes = DRAWING_MAX_BYTES, timeoutMs = FILE_BYTES_TIMEOUT_MS } = {}) {
   if (!storagePath) throw new Error('This file is not available')
   let timer

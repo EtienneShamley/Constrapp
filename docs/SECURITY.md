@@ -1714,7 +1714,9 @@ non-internal role is **denied**, because visibility is not yet knowable.
 - **Per-trade drawing distribution.** Every company member sees every drawing;
   there is no "issued to" list.
 - **Revocation of already-issued download URLs.** A Firebase download URL is a
-  bearer link. The app never persists one, but a user who copies a URL keeps
+  bearer link. Since ADR-73 the app no longer mints one (viewing and
+  downloading are authenticated SDK reads), and it never persisted one, but
+  every object still carries its token and a user who copied a URL keeps
   working access until the object's token is rotated out of band — including
   after a revision is superseded or withdrawn, or a document is made internal.
 
@@ -3134,16 +3136,48 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     `frontend/tests/unit/budgetApprovalActions.test.js`.
 
 46. **Storage download URLs outlive a membership (ADR-72) — a
-    PRE-EXTERNAL-LAUNCH requirement.** `hooks/useStorageUpload.jsx` mints
-    `getDownloadURL()` links for viewing drawings and documents. Such a link
-    is a bearer URL served without Storage Rules; a member who copied one
-    keeps file access after deactivation until the object's download token is
-    rotated, which no code does. The app never PERSISTS these URLs (AGENT.md →
-    Cloud Storage Conventions), so the exposure is limited to links a person
-    copied while they were a member. **Must be closed before external
-    (subcontractor / client) users are onboarded** — by moving viewing to
-    `getBytes`/`getBlob` (rules-checked on every read) or rotating tokens on
-    deactivation through the trusted backend. Not claimed as revoked anywhere.
+    PRE-EXTERNAL-LAUNCH requirement. STILL OPEN; part A implemented
+    (ADR-73, NOT YET DEPLOYED), part B not approved.** A Firebase download
+    URL carries the object's download token and is served WITHOUT Storage
+    Rules, so a member who copied one keeps file access after deactivation
+    until the token is removed, which no code does.
+
+    **Part A — implemented (ADR-73).** The app no longer mints a download
+    URL anywhere: `hooks/useStorageUpload.jsx` reads through `getBlob` /
+    `getBytes`, which Storage Rules authorise on every call, and
+    `lib/fileBlob.js` shows the bytes from `blob:` URLs. A static test fails
+    if `getDownloadURL`, `downloadTokens` or a hand-built token URL appears
+    in `src/`. **Proven** (`tests/rules/storage.rules.test.js` 47–57,
+    emulator): an active member reads bytes; a deactivated member, another
+    company, an unauthenticated caller and a non-internal role on an
+    internal document are denied on the next call; a re-invited member reads
+    again.
+
+    **What part A does NOT do — do not round up:**
+    - It revokes nothing. Every existing object still carries its token, and
+      a URL copied before the release keeps working.
+    - It does not stop an ACTIVE member obtaining a URL. `getDownloadURL` and
+      `getMetadata` are the same rules `get` as a byte read, so any member who
+      may read an object can ask the SDK for its token from the browser
+      console. Removing the call from the app is a client-side change only;
+      it can be bypassed by a direct SDK call.
+    - It cannot recall bytes already downloaded.
+
+    **Part B — required to close this control, not approved.** Remove the
+    existing tokens from every object under `companies/` (an operator
+    Admin-SDK run), and decide how new tokens are prevented or periodically
+    removed. Three behaviours this depends on are **not documented by
+    Firebase and require empirical validation** on a non-customer test
+    object: whether a client upload creates a token automatically; whether
+    removing the `firebaseStorageDownloadTokens` metadata invalidates the old
+    URL; and whether an authorised `getDownloadURL` / metadata read creates a
+    NEW token on an object that has none. (The Storage EMULATOR does all
+    three — creates on upload, and re-creates on a rules-authorised metadata
+    read — which is an observation about the emulator, not evidence about
+    production.) If production re-creates tokens on read, a one-off removal
+    is not durable against an active member, and a durable control needs
+    either periodic removal or byte delivery that client rules do not grant.
+    Not claimed as revoked anywhere.
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
@@ -3209,8 +3243,9 @@ afterwards.
 a BOQ item, a budget line or any financial collection** — the takeoff hook
 writes only the two takeoff collections and stages no currency lock (pinned by
 `tests/unit/quant.test.js`). Storage Rules are unchanged: the viewer reads a
-drawing object through the existing `get` grant (bytes via the SDK for PDFs, a
-download URL for images) and persists neither.
+drawing object through the existing `get` grant — bytes via the SDK for PDFs
+and, since ADR-73, for images too (`getFileBlob`, shown from a `blob:` URL) —
+and persists neither.
 
 **Quant 1B — the BOQ link (ADR-52).** `takeoffMeasurements` gains ONE
 optional key, `boqItemId` (string | null). It sits in `hasOnly` but **not**
@@ -3762,7 +3797,8 @@ does not do, measured in the emulator:
   (up to one hour).** Revoking refresh tokens stops renewal; it does not make
   Firestore reject the current token. That is harmless here only because every
   rule also requires the membership document.
-- **Storage download URLs are NOT revoked** — see Deferred Control 46.
+- **Storage download URLs are NOT revoked** — see Deferred Control 46. ADR-73
+  stops the app minting new ones; existing tokens remain until part B.
 
 **App Check.** Every callable is deployed with `enforceAppCheck: true`; the
 web app uses reCAPTCHA Enterprise (`VITE_FIREBASE_APPCHECK_SITE_KEY`, public).

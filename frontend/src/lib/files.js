@@ -184,3 +184,45 @@ export function uploadErrorMessage(error) {
       return 'Upload failed. Check your connection and try again.'
   }
 }
+
+// ── Download failures ────────────────────────────────────────────────────────
+
+// How long an authenticated download may take before it is abandoned. A fixed
+// 20 s suits a small sheet but not a 50 MB drawing on a site connection, so the
+// allowance grows with the recorded size: 20 s plus one second per 256 KB
+// (≈ 2 Mbit/s), capped at five minutes. 50 MB → 220 s.
+export const DOWNLOAD_TIMEOUT_BASE_MS = 20_000
+export const DOWNLOAD_TIMEOUT_MAX_MS  = 300_000
+
+export function downloadTimeoutMs(fileSize) {
+  const n = Number(fileSize)
+  if (!Number.isFinite(n) || n <= 0) return DOWNLOAD_TIMEOUT_BASE_MS
+  const ms = DOWNLOAD_TIMEOUT_BASE_MS + Math.ceil(n / (256 * 1024)) * 1000
+  return Math.min(ms, DOWNLOAD_TIMEOUT_MAX_MS)
+}
+
+// A human sentence for a failed authenticated download (getFileBlob). Pure, for
+// the same reason as uploadErrorMessage.
+//
+// `storage/unauthorized` is what Storage Rules return — to a member of another
+// company, to a non-internal role on an internal document, and to a member who
+// has been DEACTIVATED (their profile no longer names the company). It is a
+// real denial, not a fault.
+export function downloadErrorMessage(error) {
+  switch (error?.code) {
+    case 'storage/object-not-found':
+      return 'The file for this record is missing from storage.'
+    case 'storage/unauthorized':
+      return 'You do not have permission to open this file.'
+    case 'storage/unauthenticated':
+      return 'Your session has expired. Sign in and try again.'
+    case 'constrapp/timeout':
+    case 'storage/retry-limit-exceeded':
+    case 'storage/unknown':
+      return 'The file could not be downloaded. Large drawings can take a while on a slow connection — check your '
+        + 'connection and try again. If it keeps failing, the Storage bucket may not allow browser downloads '
+        + '(CORS) — see docs/DEPLOYMENT.md.'
+    default:
+      return 'Could not open this file. Check your connection and try again.'
+  }
+}

@@ -8,6 +8,7 @@ import {
   assertFails,
 } from '@firebase/rules-unit-testing'
 import { doc, setDoc, Timestamp } from 'firebase/firestore'
+import { ref as modularRef, getBytes } from 'firebase/storage'
 
 // ── Firebase Storage Security Rules — emulator tests ─────────────────────────
 //
@@ -27,6 +28,14 @@ import { doc, setDoc, Timestamp } from 'firebase/firestore'
 //   · objects are CREATE-ONLY: no overwrite, no update, no delete, ever
 //   · content-type, object-name and size rules, including zero-byte rejection
 //   · everything outside the two approved path shapes is denied
+//   · (DC46-A, ADR-73) the AUTHENTICATED BYTE READ the app now uses for every
+//     view and download is rules-checked per call: an active member gets the
+//     bytes; a DEACTIVATED member, another company and an unauthenticated
+//     caller do not — and a re-invited member gets them back
+//
+// ⚠️ What it does NOT prove: anything about download-token URLs. A token URL is
+// served without rules, and the emulator's token behaviour is not evidence of
+// production's (Deferred Control 46 — still OPEN).
 //
 // It runs against BOTH emulators, because the document read rule performs a
 // `firestore.get()`. `npm run test:rules` starts firestore and storage together.
@@ -79,6 +88,22 @@ const upload = (user, path, data = SMALL, contentType = PDF) =>
   storageOf(user).ref(path).put(data, { contentType })
 
 const read = (user, path) => storageOf(user).ref(path).getDownloadURL()
+
+// The byte read the APP performs (DC46-A): the modular SDK `getBytes` — the
+// Node counterpart of the browser's `getBlob`, same request, same rules `get`.
+// `_delegate` is the modular instance behind the compat test context.
+const readBytes = (user, path) => getBytes(modularRef(storageOf(user)._delegate, path))
+
+// What ADR-72 deactivation leaves in users/{uid} (functions/src/lib/members.js).
+async function deactivate(user) {
+  await testEnv.withSecurityRulesDisabled(async (c) => {
+    await setDoc(doc(c.firestore(), 'users', user.uid), {
+      name: user.uid, companyId: null, role: null, status: 'deactivated',
+      formerCompanyId: user.companyId, formerRole: user.role,
+      deactivatedAt: Timestamp.now(), deactivatedBy: USERS.admin.uid, authSyncPending: false,
+    })
+  })
+}
 
 // Seeds an object directly, bypassing rules — the arrange step for read tests.
 async function seedObject(path, contentType = PDF) {
@@ -458,5 +483,111 @@ describe('CATCH-ALL — every other bucket path is denied', () => {
 
   it('46. the company root is not writable', async () => {
     await assertFails(upload(USERS.admin, `companies/${COMPANY_A}/original.pdf`))
+  })
+})
+
+// ── AUTHENTICATED BYTE READS (DC46-A, ADR-73) ────────────────────────────────
+//
+// The app no longer mints a download URL; it reads bytes through the SDK. These
+// cases prove that read is authorised by Storage Rules at the moment of EVERY
+// call — which is the whole point of the change.
+
+describe('AUTHENTICATED BYTE READS — the path every view and download now uses', () => {
+  beforeEach(async () => {
+    await seedObject(drawingPath())
+    await seedObject(documentPath({ documentId: 'docProject' }))
+    await seedDocumentMetadata('docProject', 'project')
+    await seedObject(documentPath({ documentId: 'docInternal' }))
+    await seedDocumentMetadata('docInternal', 'internal')
+  })
+
+  it('47. an ACTIVE member reads the real bytes of a drawing and of a project document', async () => {
+    for (const user of [USERS.admin, USERS.pm, USERS.qs, USERS.sub, USERS.client]) {
+      const drawing = await assertSucceeds(readBytes(user, drawingPath()))
+      if (drawing.byteLength !== SMALL.byteLength) throw new Error(`expected ${SMALL.byteLength} bytes, got ${drawing.byteLength}`)
+      await assertSucceeds(readBytes(user, documentPath({ documentId: 'docProject' })))
+    }
+  })
+
+  it('48. a DEACTIVATED member is denied bytes AND metadata on drawings and documents — on the very next call', async () => {
+    for (const user of [USERS.admin, USERS.pm, USERS.sub]) {
+      await assertSucceeds(readBytes(user, drawingPath()))
+      await deactivate(user)
+      await assertFails(readBytes(user, drawingPath()))
+      await assertFails(read(user, drawingPath()))
+      await assertFails(readBytes(user, documentPath({ documentId: 'docProject' })))
+      await assertFails(readBytes(user, documentPath({ documentId: 'docInternal' })))
+    }
+  })
+
+  it('49. a deactivated member cannot upload either', async () => {
+    await deactivate(USERS.pm)
+    await assertFails(upload(USERS.pm, drawingPath({ revisionId: 'afterDeactivation' })))
+    await assertFails(upload(USERS.pm, documentPath({ documentId: 'afterDeactivation' })))
+  })
+
+  it('50. deactivating ONE member leaves every other member of the company reading', async () => {
+    await deactivate(USERS.sub)
+    await assertFails(readBytes(USERS.sub, drawingPath()))
+    await assertSucceeds(readBytes(USERS.client, drawingPath()))
+    await assertSucceeds(readBytes(USERS.admin, drawingPath()))
+  })
+
+  it('51. a RE-INVITED member (profile restored) reads again', async () => {
+    await deactivate(USERS.qs)
+    await assertFails(readBytes(USERS.qs, drawingPath()))
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(doc(c.firestore(), 'users', USERS.qs.uid), {
+        name: USERS.qs.uid, role: USERS.qs.role, companyId: USERS.qs.companyId, status: 'active',
+      })
+    })
+    await assertSucceeds(readBytes(USERS.qs, drawingPath()))
+  })
+
+  it('52. a member deactivated from Company A and re-invited into COMPANY B reads B, never A', async () => {
+    await seedObject(drawingPath({ companyId: COMPANY_B }))
+    await deactivate(USERS.pm)
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(doc(c.firestore(), 'users', USERS.pm.uid), {
+        name: USERS.pm.uid, role: 'project_manager', companyId: COMPANY_B, status: 'active',
+      })
+    })
+    await assertSucceeds(readBytes(USERS.pm, drawingPath({ companyId: COMPANY_B })))
+    await assertFails(readBytes(USERS.pm, drawingPath()))
+  })
+
+  it('53. CROSS-TENANT: another company is denied bytes in both directions', async () => {
+    await seedObject(drawingPath({ companyId: COMPANY_B }))
+    await assertFails(readBytes(USERS.other, drawingPath()))
+    await assertFails(readBytes(USERS.other, documentPath({ documentId: 'docProject' })))
+    await assertFails(readBytes(USERS.admin, drawingPath({ companyId: COMPANY_B })))
+  })
+
+  it('54. an unauthenticated caller and a bare Auth account are denied bytes', async () => {
+    const anon = testEnv.unauthenticatedContext().storage()
+    await assertFails(getBytes(modularRef(anon._delegate, drawingPath())))
+    await assertFails(getBytes(modularRef(anon._delegate, documentPath({ documentId: 'docProject' }))))
+    const bare = testEnv.authenticatedContext('u_nobody').storage()
+    await assertFails(getBytes(modularRef(bare._delegate, drawingPath())))
+  })
+
+  it('55. INTERNAL document bytes: internal roles yes; subcontractor, client and super_admin no', async () => {
+    const path = documentPath({ documentId: 'docInternal' })
+    for (const user of [USERS.admin, USERS.pm, USERS.qs]) await assertSucceeds(readBytes(user, path))
+    for (const user of [USERS.sub, USERS.client, USERS.sup]) await assertFails(readBytes(user, path))
+  })
+
+  it('56. switching a document to INTERNAL removes a subcontractor’s byte access at the next read', async () => {
+    const path = documentPath({ documentId: 'docProject' })
+    await assertSucceeds(readBytes(USERS.sub, path))
+    await seedDocumentMetadata('docProject', 'internal')
+    await assertFails(readBytes(USERS.sub, path))
+  })
+
+  it('57. a size-capped read (what the app sends) still returns the whole object when it is under the cap', async () => {
+    const capped = await assertSucceeds(
+      getBytes(modularRef(storageOf(USERS.admin)._delegate, drawingPath()), 52428800),
+    )
+    if (capped.byteLength !== SMALL.byteLength) throw new Error(`expected ${SMALL.byteLength} bytes, got ${capped.byteLength}`)
   })
 })

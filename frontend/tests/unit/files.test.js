@@ -6,6 +6,7 @@ import {
   drawingStoragePath, documentStoragePath,
   validateFile, formatFileSize, originalFileName,
   isImageContentType, isPdfContentType, uploadErrorMessage,
+  downloadErrorMessage, downloadTimeoutMs, DOWNLOAD_TIMEOUT_BASE_MS, DOWNLOAD_TIMEOUT_MAX_MS,
 } from '../../src/lib/files.js'
 
 // ── lib/files.js — file types, size ceilings, and storage paths ──────────────
@@ -243,5 +244,61 @@ describe('uploadErrorMessage', () => {
     expect(uploadErrorMessage({ code: 'storage/unknown' }))
       .toBe('Upload failed. Check your connection and try again.')
     expect(uploadErrorMessage(null)).toBe('Upload failed. Check your connection and try again.')
+  })
+})
+
+// ── Authenticated downloads (DC46-A) ─────────────────────────────────────────
+
+describe('downloadTimeoutMs — the wait grows with the recorded file size', () => {
+  it('is the 20 s base for an unknown, zero or invalid size', () => {
+    for (const size of [undefined, null, 0, -1, NaN, 'abc']) {
+      expect(downloadTimeoutMs(size)).toBe(DOWNLOAD_TIMEOUT_BASE_MS)
+    }
+    expect(DOWNLOAD_TIMEOUT_BASE_MS).toBe(20_000)
+  })
+
+  it('adds one second per 256 KB', () => {
+    expect(downloadTimeoutMs(1)).toBe(21_000)
+    expect(downloadTimeoutMs(256 * 1024)).toBe(21_000)
+    expect(downloadTimeoutMs(1024 * 1024)).toBe(24_000)
+  })
+
+  it('gives a 50 MB drawing 220 s and a 25 MB document 120 s', () => {
+    expect(downloadTimeoutMs(DRAWING_MAX_BYTES)).toBe(220_000)
+    expect(downloadTimeoutMs(DOCUMENT_MAX_BYTES)).toBe(120_000)
+  })
+
+  it('never exceeds five minutes', () => {
+    expect(downloadTimeoutMs(10 * 1024 * 1024 * 1024)).toBe(DOWNLOAD_TIMEOUT_MAX_MS)
+    expect(DOWNLOAD_TIMEOUT_MAX_MS).toBe(300_000)
+  })
+})
+
+describe('downloadErrorMessage', () => {
+  const msg = (code) => downloadErrorMessage({ code })
+
+  it('names a rules denial as a permission failure', () => {
+    expect(msg('storage/unauthorized')).toBe('You do not have permission to open this file.')
+  })
+
+  it('names a missing object and an expired session', () => {
+    expect(msg('storage/object-not-found')).toMatch(/missing from storage/)
+    expect(msg('storage/unauthenticated')).toMatch(/session has expired/)
+  })
+
+  it('names connection AND the CORS prerequisite for a timeout, retry-limit or unknown failure', () => {
+    for (const code of ['constrapp/timeout', 'storage/retry-limit-exceeded', 'storage/unknown']) {
+      expect(msg(code)).toMatch(/connection/)
+      expect(msg(code)).toMatch(/CORS/)
+      expect(msg(code)).toMatch(/docs\/DEPLOYMENT\.md/)
+    }
+  })
+
+  it('falls back to a generic sentence and never leaks a raw code', () => {
+    for (const input of [undefined, null, {}, { code: 'storage/something-new' }]) {
+      const m = downloadErrorMessage(input)
+      expect(m).toBe('Could not open this file. Check your connection and try again.')
+      expect(m).not.toMatch(/storage\//)
+    }
   })
 })
