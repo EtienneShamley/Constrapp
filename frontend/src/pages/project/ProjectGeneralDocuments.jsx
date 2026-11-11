@@ -5,14 +5,15 @@ import Btn from '../../components/Btn'
 import Badge from '../../components/Badge'
 import { useProfile } from '../../hooks/useProfile'
 import { useProjectDocuments } from '../../hooks/useProjectDocuments'
-import { getFileUrl } from '../../hooks/useStorageUpload'
+import { getFileBlob } from '../../hooks/useStorageUpload'
 import {
   DOCUMENT_CATEGORIES, DOCUMENT_STATUS,
   canWriteDocuments, filterDocuments,
   formatDocumentCategory, formatDocumentStatus, formatDocumentVisibility,
   isInternalDocument,
 } from '../../lib/projectDocuments'
-import { formatFileSize } from '../../lib/files'
+import { DOCUMENT_MAX_BYTES, downloadTimeoutMs, formatFileSize } from '../../lib/files'
+import { openStoredFile, openOutcomeNotice } from '../../lib/fileBlob'
 import DocumentUploadModal from './documents/DocumentUploadModal'
 import DocumentWithdrawModal from './documents/DocumentWithdrawModal'
 import { inputCls, thCls } from './documents/styles'
@@ -42,26 +43,38 @@ export default function ProjectGeneralDocuments() {
   const [replaces, setReplaces]                 = useState(null)
   const [withdrawTarget, setWithdrawTarget]     = useState(null)
   const [openError, setOpenError]               = useState(null)
+  const [openNotice, setOpenNotice]             = useState(null)
+  const [openingId, setOpeningId]               = useState(null)
 
   const canWrite = canWriteDocuments(profile?.role)
   const rows = filterDocuments(documents, { search, category, includeWithdrawn })
 
-  // The tab is opened SYNCHRONOUSLY inside the click, then pointed at the URL
-  // once it resolves — a popup opened after an await is blocked by most
-  // browsers. `opener` is cleared so the new tab cannot reach back into the app.
+  // The file is read through the AUTHENTICATED SDK (a rules-checked read on
+  // every call) and shown from a `blob:` URL — never a Firebase download URL,
+  // which is a bearer link that outlives a membership (DC46-A, ADR-73).
   //
-  // The URL itself is minted here and thrown away; it is never persisted.
+  // lib/fileBlob.js opens the tab SYNCHRONOUSLY inside the click, then points
+  // it at the bytes once they arrive — a tab opened after an await is blocked
+  // as a popup. Where a tab cannot work (blocked, or a browser with no PDF
+  // viewer) the file is saved under its original name and the user is told.
   async function openFile(document) {
+    if (openingId) return
     setOpenError(null)
-    const tab = window.open('', '_blank')
-    if (tab) tab.opener = null
+    setOpenNotice(null)
+    setOpeningId(document.id)
     try {
-      const url = await getFileUrl(document.storagePath)
-      if (tab) tab.location.href = url
-      else window.location.assign(url)
+      const outcome = await openStoredFile({
+        fetchBlob: () => getFileBlob(document.storagePath, {
+          maxBytes: DOCUMENT_MAX_BYTES, timeoutMs: downloadTimeoutMs(document.fileSize),
+        }),
+        contentType: document.contentType,
+        fileName: document.fileName,
+      })
+      setOpenNotice(openOutcomeNotice(outcome))
     } catch (err) {
-      tab?.close()
       setOpenError(err.message)
+    } finally {
+      setOpeningId(null)
     }
   }
 
@@ -126,7 +139,9 @@ export default function ProjectGeneralDocuments() {
         </label>
       </div>
 
-      {openError && <p className="text-[12px] text-brand-red mb-2">{openError}</p>}
+      {openError && <p className="text-[12px] text-brand-red mb-2" role="alert">{openError}</p>}
+      {openNotice && <p className="text-[12px] text-brand-muted mb-2" role="status">{openNotice}</p>}
+      {openingId && <p className="text-[12px] text-brand-muted mb-2" role="status">Opening file — large documents can take a moment…</p>}
 
       <Card padding={false}>
         {documentsError ? (
@@ -194,7 +209,7 @@ export default function ProjectGeneralDocuments() {
                       </td>
                       <td className="px-3.5 py-3">
                         <div className="flex justify-end gap-2 whitespace-nowrap">
-                          <Btn variant="ghost" sm onClick={() => openFile(d)}>Open</Btn>
+                          <Btn variant="ghost" sm onClick={() => openFile(d)} disabled={openingId !== null} aria-busy={openingId === d.id}>Open</Btn>
                           {canWrite && d.status === DOCUMENT_STATUS.ACTIVE && (
                             <>
                               <Btn variant="ghost" sm onClick={() => startReplace(d)}>Replace</Btn>
@@ -236,7 +251,7 @@ export default function ProjectGeneralDocuments() {
                   </div>
 
                   <div className="flex flex-wrap gap-2 mt-2.5">
-                    <Btn variant="ghost" sm onClick={() => openFile(d)}>Open</Btn>
+                    <Btn variant="ghost" sm onClick={() => openFile(d)} disabled={openingId !== null} aria-busy={openingId === d.id}>Open</Btn>
                     {canWrite && d.status === DOCUMENT_STATUS.ACTIVE && (
                       <>
                         <Btn variant="ghost" sm onClick={() => startReplace(d)}>Replace</Btn>

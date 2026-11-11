@@ -5909,7 +5909,7 @@ the default, with the variable unset, must stay disposable.
 
 **If a sheet stays at *Loading sheet…*** (and a measurement card offers only
 *Show* and *Void*), the Storage emulator is not answering: the viewer's
-`getDownloadURL` retries for up to two minutes before it reports an error, and
+Storage read retries (bounded by the download timeout) before it reports an error, and
 without the sheet's geometry nothing is measurable, so *Details*, *Geometry*
 and the tools stay hidden by design. Seen in a `test:quant` session left
 running for a day: the Storage emulator had exited while Firestore and Vite
@@ -7740,3 +7740,58 @@ leave them unticked until they are.
       *You're invited to {company} on Constrap*, arrives from
       `invites@constrap.com`, and its link opens the configured
       `APP_BASE_URL`'s `/accept-invite`.
+
+## 51. DC46-A — Authenticated Storage downloads (ADR-73) — NOT YET DEPLOYED
+
+Hosting only. Use a TEST company and TEST files; never open, copy or record a
+customer's file or URL. Deferred Control 46 stays OPEN after this section
+passes — step 9 is expected to show that.
+
+**Automated (must pass first):** `tests/unit/fileBlob.test.js`,
+`tests/unit/storageDownloads.test.js`, `tests/unit/files.test.js`,
+`tests/rules/storage.rules.test.js` 47–57.
+
+**Desktop (Chrome, Safari, Firefox)**
+
+1. - [ ] Drawing with a PDF revision: the preview appears below the buttons;
+      **Open** shows the PDF in a new tab whose address begins `blob:`;
+      **Download** saves a file with the ORIGINAL uploaded filename.
+2. - [ ] The same for a PNG and a JPEG revision (inline image, Open, Download).
+3. - [ ] Switch revisions quickly: no stale preview, the new revision loads,
+      and a tab opened for the earlier revision still shows and reloads.
+4. - [ ] Leave the drawing page with an opened PDF tab still open: the tab
+      still scrolls, searches and prints.
+5. - [ ] General Documents → **Open** for a PDF and an image; with popups
+      blocked, the file is saved instead and the notice says so.
+6. - [ ] DevTools → Network while doing steps 1–5: no request URL contains
+      `token=`; the address bar and page source never show
+      `firebasestorage.googleapis.com/...token=`.
+7. - [ ] Quant: open a PDF sheet and an image sheet; calibrate, measure a
+      length, an area and a count; switch page and revision. Results match a
+      pre-release measurement of the same sheet.
+
+**Access control (two browsers, test company)**
+
+8. - [ ] As a test member, open a drawing. Have an admin **deactivate** that
+      member. Without reloading, press Open / Download / switch revision:
+      *You do not have permission to open this file.* within seconds.
+9. - [ ] **Expected to still work (DC46 is open):** a download URL for a test
+      object obtained BEFORE this release opens in a private window. Record
+      the result; do not treat it as a failure of this release.
+10. - [ ] A member of a second test company cannot open the first company's
+       drawing by any route the app offers; a subcontractor cannot open an
+       `internal` document.
+11. - [ ] Re-invite the deactivated member; after accepting, files open again.
+
+**Mobile and large files**
+
+12. - [ ] iPhone Safari and Android Chrome: opening a PDF drawing page starts
+       NO file download (Network / data counter) until Open or Download is
+       tapped. Open shows the PDF (iOS) or saves it under its real filename
+       with the notice (Android without a PDF viewer). Download keeps the
+       filename.
+13. - [ ] A drawing close to 50 MB on a throttled connection (DevTools *Fast
+       4G*): the buttons show progress text, the file opens, and the tab
+       stays responsive. Note the time taken.
+14. - [ ] Go offline and press Open: a readable error, the placeholder tab
+       closes, and a retry after reconnecting works.

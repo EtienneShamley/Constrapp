@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
-import { getFileBytes, getFileUrl } from '../../../hooks/useStorageUpload'
-import { isImageContentType, isPdfContentType } from '../../../lib/files'
+import { getFileBytes, getFileBlob } from '../../../hooks/useStorageUpload'
+import { downloadTimeoutMs, isImageContentType, isPdfContentType } from '../../../lib/files'
+import { createObjectUrl, typedBlob } from '../../../lib/fileBlob'
 import { openPdf, pageGeometry, renderPage, isRenderCancelled } from '../../../lib/pdfRender'
 import {
   PAGE_SOURCE, RENDER_LIMITS, HIT_TOLERANCE_PX,
@@ -22,8 +23,9 @@ import MeasurementOverlay from './MeasurementOverlay'
 // Resources are released on every change: an in-flight render is cancelled,
 // the page proxy is cleaned up, and the document is destroyed when the
 // revision changes or the viewer unmounts. Bytes are fetched once per
-// revision (getFileBytes); a download URL is minted for images and never
-// persisted.
+// revision through the authenticated SDK — getFileBytes for a PDF, getFileBlob
+// for an image, which is shown from a `blob:` URL that is revoked with the
+// revision. No Firebase download URL is ever minted (DC46-A, ADR-73).
 //
 // INTERACTION (Quant 1C-A). One pointer model on the <svg>, resolved in
 // canonical units so nothing depends on zoom:
@@ -77,6 +79,7 @@ export default function PageViewer({
 
   const storagePath = revision?.storagePath ?? null
   const contentType = revision?.contentType ?? null
+  const fileSize    = revision?.fileSize ?? null
   const isPdf   = isPdfContentType(contentType)
   const isImage = isImageContentType(contentType)
 
@@ -106,11 +109,12 @@ export default function PageViewer({
     return () => ro.disconnect()
   }, [])
 
-  // ── Load the document (PDF bytes → PDF.js; image → download URL) ─────────
+  // ── Load the document (PDF bytes → PDF.js; image blob → object URL) ──────
   useEffect(() => {
     if (!storagePath || (!isPdf && !isImage)) return undefined
     let cancelled = false
     let handle = null
+    let imageHandle = null
 
     if (isPdf) {
       Promise.all([loadPdfjs(), getFileBytes(storagePath)])
@@ -124,16 +128,22 @@ export default function PageViewer({
           if (!cancelled) setDocState({ key: storagePath, pdf: null, imageUrl: null, error: err?.message || 'Could not open this PDF.' })
         })
     } else {
-      getFileUrl(storagePath).then(
-        (url) => { if (!cancelled) setDocState({ key: storagePath, pdf: null, imageUrl: url, error: null }) },
-        (err) => { if (!cancelled) setDocState({ key: storagePath, pdf: null, imageUrl: null, error: err?.message || 'Could not open this image.' }) },
-      )
+      getFileBlob(storagePath, { timeoutMs: downloadTimeoutMs(fileSize) })
+        .then((blob) => {
+          if (cancelled) return
+          imageHandle = createObjectUrl(typedBlob(blob, contentType))
+          setDocState({ key: storagePath, pdf: null, imageUrl: imageHandle.url, error: null })
+        })
+        .catch((err) => {
+          if (!cancelled) setDocState({ key: storagePath, pdf: null, imageUrl: null, error: err?.message || 'Could not open this image.' })
+        })
     }
     return () => {
       cancelled = true
       if (handle) handle.destroy()
+      if (imageHandle) imageHandle.revoke()
     }
-  }, [storagePath, isPdf, isImage])
+  }, [storagePath, isPdf, isImage, contentType, fileSize])
 
   const docSettled = docState.key === storagePath
   const pdf      = docSettled ? docState.pdf : null

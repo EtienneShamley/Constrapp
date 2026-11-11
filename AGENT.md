@@ -152,7 +152,8 @@ frontend/
                     useLocalToday (viewer's calendar day, advanced at local
                     midnight — a timer, NOT a subscription),
                     useStorageUpload (the ONLY place file bytes are written —
-                    and read: getFileUrl / getFileBytes),
+                    and read: getFileBlob / getFileBytes — authenticated
+                    SDK reads only, NEVER getDownloadURL, ADR-73),
                     useTakeoff (Quant™ 1A — useTakeoffPages +
                     useTakeoffMeasurements; revision-guarded transactions via
                     lib/quantActions.js; writes ONLY the two takeoff
@@ -328,7 +329,7 @@ debt, not licence to add more) are in [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM
 - **The path is the authority.** Object paths are deterministic and company-namespaced, built by `lib/files.js` from Firestore document IDs; every object is named `original.{ext}`. The uploaded filename is metadata only, and `customMetadata` is never consulted for authorisation
 - **Upload order is Storage FIRST, Firestore SECOND.** An orphaned object is preferable to a register row pointing at bytes that never arrived
 - **Objects are create-only.** `update` and `delete` are denied on every path, so a retry must mint a new document ID and a new path. Orphans are accepted and documented; there is no cleanup path without a trusted backend
-- **Never persist `getDownloadURL()` output.** A download URL is a bearer link; mint it on demand and discard it
+- **Never call `getDownloadURL()` — and never read `downloadTokens` from object metadata (ADR-73, DC46-A).** A download URL is a bearer link served WITHOUT Storage Rules, so it outlives a deactivated membership. Files are read through `getFileBlob` / `getFileBytes` (a rules-checked `get` on every call) and shown from `blob:` URLs created ONLY by `lib/fileBlob.js`, which also forces the blob to one of the three allowed content types (a blob URL is same-origin with the app). `tests/unit/storageDownloads.test.js` fails the build if a download URL reappears in `src/`. **Deferred Control 46 is still OPEN:** objects keep their existing download tokens, and nothing revokes a URL copied before this change
 
 ## Firestore Data Model (summary)
 

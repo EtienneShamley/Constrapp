@@ -158,7 +158,7 @@ provisioned (external) users are onboarded.
 | **Stripe & payment providers** | ❌ No secret-key calls from the browser; billing not implemented | ✅ Server-only; verify webhook signatures; idempotency keys |
 | **Email providers** | ❌ Not from the browser. ✅ **ADR-72:** Resend HTTPS API from the Functions only (invitations) | ✅ Server-only; no keys in bundle |
 | **AI providers** | ❌ Not from the browser (also AGENT.md AI Placeholder Rule) | ✅ Server-only; keys server-side; cost caps (below) |
-| **File uploads** | ✅ Storage in use since ADR-28 with `storage.rules` (scoped paths, role gates, content-type/size checks, create-only). ⚠️ Download URLs are bearer links (Deferred Control 46) | ✅ Server validation: content inspection, AV scanning, orphan cleanup |
+| **File uploads** | ✅ Storage in use since ADR-28 with `storage.rules` (scoped paths, role gates, content-type/size checks, create-only). Viewing and downloading use authenticated SDK reads, never a download URL (ADR-73). ⚠️ Objects still carry download tokens and previously copied URLs are not revoked (Deferred Control 46 — OPEN) | ✅ Server validation: content inspection, AV scanning, orphan cleanup |
 | **Webhooks** | N/A | ✅ Signature verification + replay/idempotency protection |
 | **Logging** | Browser console only; **never log secrets or PII**. ✅ **ADR-72:** structured `firebase-functions/logger` logs in the Functions (no tokens, passwords or secrets) | ✅ Structured logs, redaction, retention policy |
 | **Audit trails** | ⚠️ `createdBy`/`approvedBy` + status timestamps on financial records; no transition history. ✅ **ADR-72:** membership and invitation changes audited in `companies/{c}/auditEvents` | ✅ Full transition/edit logging (who/what/when) for financial records |

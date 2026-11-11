@@ -1711,6 +1711,36 @@ Logging → Create alert). Invitation delivery failures show in Team as "Not
 delivered" and in the logs as `invitation email failed`. Membership history is
 in `companies/{c}/auditEvents` (console read only).
 
+## DC46-A — Authenticated Storage downloads (ADR-73) — NOT YET DEPLOYED — HOSTING ONLY
+
+Branch `security/dc46-authenticated-downloads`. **No Rules publish, no
+Functions deploy, no bucket or data change.** Deferred Control 46 stays OPEN
+after this release: it stops the app minting download URLs; it does not
+revoke any URL already copied.
+
+**Before deploying**
+
+1. Confirm the bucket CORS rule lists `https://app.constrap.com` (and
+   `X-Firebase-AppCheck`) — *Cloud Storage CORS for the Quant™ viewer*, step 1.
+   Every file view now depends on it, not only Quant.
+2. `npm run lint`, `npm run test:unit`, `npm run test:rules`,
+   `npm run test:functions`, `npm run build` all pass.
+
+**Release.** `firebase deploy --only hosting --project constrapp-69b5d`, then
+run TESTING.md §51 on `https://app.constrap.com`.
+
+**Rollback.** Redeploy the previous Hosting release. Safe at any time while
+part B has not run: the objects still carry their download tokens, so the
+previous build's `getDownloadURL` calls keep working. **Once any download
+tokens have been removed (part B), this release becomes the floor** — whether
+an older build could still open files would then depend on undocumented
+Firebase behaviour.
+
+**What to watch.** Reports of drawings that never finish loading on site
+connections (the whole file downloads before anything shows — 50 MB needs
+about 40 s at 10 Mbit/s), a blank tab after Open on iOS or in an in-app
+browser, and downloads with a wrong filename on Android.
+
 ## Custom domain — app.constrap.com — CONNECTED (production; confirmed live on 11 November 2026)
 
 The customer-facing brand is **Constrap** (AGENT.md → Brand Name). The
@@ -1889,6 +1919,12 @@ Reading bytes with script does not: the browser enforces **CORS**, and a Cloud
 Storage bucket serves no CORS headers until a rule is set on it. The Firebase
 documentation (*Download files on Web → CORS configuration*) requires this
 step for browser downloads.
+
+**Since ADR-73 (DC46-A) this rule is load-bearing for EVERY file view, not
+only Quant.** `Open`, `Download`, the drawing preview and Quant image sheets
+all read bytes through the SDK (`getBlob`), so a bucket without the CORS rule
+for the Hosting origin shows no files at all. Confirm step 1 before that
+Hosting release.
 
 **Status: production rule updated by the Product Owner (11 November 2026)**
 to include `https://app.constrap.com` in `origin` and `X-Firebase-AppCheck` in

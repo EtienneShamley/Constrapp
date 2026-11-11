@@ -418,9 +418,10 @@ describe('image pages', () => {
     expect(validatePageGeometry({ source: 'pdf', pageWidth: 1, pageHeight: 1, pageRotation: 270 })).toBeNull()
   })
 
-  it('the viewer reads an image through <img> (no bytes, no CORS) and a PDF through getFileBytes', () => {
+  it('the viewer reads an image into <img> from an authenticated blob (DC46-A — no download URL) and a PDF through getFileBytes', () => {
     const viewer = stripComments(read('pages/project/quant/PageViewer.jsx'))
-    expect(viewer).toContain('getFileUrl(storagePath)')
+    expect(viewer).toContain('getFileBlob(storagePath, { timeoutMs: downloadTimeoutMs(fileSize) })')
+    expect(viewer).not.toContain('getFileUrl')
     expect(viewer).toContain('getFileBytes(storagePath)')
     expect(viewer).toContain('onLoad={onImageLoad}')
     expect(viewer).toContain('img.naturalWidth')

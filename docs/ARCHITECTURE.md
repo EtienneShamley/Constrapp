@@ -496,8 +496,10 @@ no document shapes of its own beyond the timing-line vocabulary and is covered
 by the unit suite (`npm run test:unit`).
 
 **Cloud Storage follows the same discipline.** `hooks/useStorageUpload.jsx` is
-the only place the app writes file bytes or mints a download URL; pages never
-import `firebase/storage`. `lib/files.js` holds the pure half — allowed types,
+the only place the app writes or reads file bytes; pages never import
+`firebase/storage`. Reads are authenticated SDK downloads (`getFileBlob`,
+`getFileBytes`) — the app mints no Firebase download URL (ADR-73) — and
+`lib/fileBlob.js` is the only place a `blob:` URL is created, shown or saved. `lib/files.js` holds the pure half — allowed types,
 size ceilings, and the **deterministic storage paths** that Firestore Rules and
 Storage Rules each independently recompute — with `lib/drawings.js` and
 `lib/projectDocuments.js` holding the register vocabulary, lifecycle legality,
