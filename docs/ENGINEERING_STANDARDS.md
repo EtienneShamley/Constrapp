@@ -147,7 +147,7 @@ provisioned (external) users are onboarded.
 |---|---|---|
 | **Firestore Security Rules** | ✅ **Sole boundary** — required for every collection/field | Keep as defense-in-depth |
 | **PostgreSQL / Supabase RLS** | N/A — Firestore uses **Security Rules, not SQL RLS** | ✅ **Mandatory and tested on every tenant-owned table** |
-| **Authentication** | ✅ Firebase email/password; role+`companyId` on `users/{uid}`; **no custom claims**. ✅ **ADR-72 (not yet deployed):** invitations, acceptance, role changes and deactivation via the Callable Functions; company creation operator-only | Custom claims, self-serve company signup, MFA |
+| **Authentication** | ✅ Firebase email/password; role+`companyId` on `users/{uid}`; **no custom claims**. ✅ **ADR-72 (live since 11 November 2026):** invitations, acceptance, role changes and deactivation via the Callable Functions; company creation operator-only | Custom claims, self-serve company signup, MFA |
 | **Authorisation** | ⚠️ Rules-level tenant+role only; **client role checks are UX** | Move lifecycle legality, immutability, segregation server-side |
 | **Company/project tenant isolation** | ✅ Enforced via `companyId` `get()` in rules | Re-enforce in RLS / backend queries |
 | **Rate limiting** | ❌ Not possible for client-SDK writes. ✅ **ADR-72:** fixed-window limits + App Check + instance caps on the team-management callables | ✅ Required at API/gateway for any further endpoint |

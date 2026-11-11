@@ -4,7 +4,7 @@
 
 **Constrap is the connected commercial operating system for construction projects.**
 
-*Brand:* **Constrap** — formerly "Constrapp" (renamed 10 November 2026). The application will be served at `https://app.constrap.com` once that domain is connected; invitations will come from `invites@constrap.com`. Internal identifiers and historical records keep the old spelling (see [AGENT.md](AGENT.md) → Brand Name).
+*Brand:* **Constrap** — formerly "Constrapp" (renamed 10 November 2026). The application is served at `https://app.constrap.com` (confirmed live on 11 November 2026); invitations come from `invites@constrap.com`. Internal identifiers and historical records keep the old spelling (see [AGENT.md](AGENT.md) → Brand Name).
 
 Australian-built and web-first, it gives builders, contractors, and quantity surveyors one connected commercial dataset that runs from preconstruction through to final account. It replaces spreadsheets and disconnected tools with a single source of commercial truth covering budgets, procurement, purchase orders, variations, progress claims, supplier invoices, forecasting, and margin — with **Cost Codes as the spine** that joins every stage.
 
@@ -56,7 +56,7 @@ Product intent — the full role model the product is designed around:
 
 **Implemented today:** role is a field on the user's Firestore document; security rules distinguish only *company member (read)* vs *company_admin / project_manager / qs (write)*. Super Admin has no special powers yet, and Subcontractor/Client scoping is not implemented. See [docs/SECURITY.md](docs/SECURITY.md).
 
-**Team management (L1, ADR-72) — implemented, NOT YET DEPLOYED.** A Company Admin manages their own internal team under Company Settings → Team: invite by email (Company Admin, Project Manager or QS / Office), resend or revoke invitations, change roles and deactivate members, with the last Company Admin protected. Invitees accept through a secure, expiring email link and register with the normal sign-in. New companies are set up by the operator (no public sign-up); Subcontractor and Client users are still not onboarded until project-level access exists.
+**Team management (L1, ADR-72) — LIVE in production since 11 November 2026 (confirmed by the Product Owner).** A Company Admin manages their own internal team under Company Settings → Team: invite by email (Company Admin, Project Manager or QS / Office), resend or revoke invitations, change roles and deactivate members, with the last Company Admin protected. Invitees accept through a secure, expiring email link and register with the normal sign-in. New companies are set up by the operator (no public sign-up); Subcontractor and Client users are still not onboarded until project-level access exists.
 
 ## Commercial Workflow Module Tiers
 

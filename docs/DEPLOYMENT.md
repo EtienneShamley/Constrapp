@@ -871,8 +871,8 @@ while the 1B bundle is live would re-break measurement saves; do not.
   console installs a permissive starter ruleset that **must** be replaced with
   `frontend/storage.rules` in the same sitting.
 - Users provisioned manually: an Auth user plus a matching `users/{uid}`
-  document — see [SECURITY.md](SECURITY.md). **Once ADR-72 (L1) is deployed**,
-  companies are bootstrapped by the operator script and every further member
+  document — see [SECURITY.md](SECURITY.md). **Since ADR-72 (L1) went live
+  (11 November 2026)**, companies are bootstrapped by the operator script and every further member
   joins by invitation (see *L1 — Trusted Backend & Team Management* below).
 - **Emulator suites need Java 21+** (firebase-tools 15). Node.js 24.19.0 for
   the frontend (`engines`); the Functions run on **Node.js 22** in production
@@ -973,8 +973,9 @@ attempt Firestore and Storage rules, and **rules publishing is manual and
 reviewed** (below). Never widen this command.
 
 Not configured, and out of scope here: a CI deploy stage, Azure secret
-management and cache-control headers. The planned custom domain is documented
-in *Custom domain — app.constrap.com* below; it is not yet connected.
+management and cache-control headers. The custom domain is documented in
+*Custom domain — app.constrap.com* below; it is connected (confirmed live on
+11 November 2026).
 
 ### Constrapp GANTT™ — Programme 1A1 (ADR-64) — Hosting-only release
 
@@ -1545,7 +1546,7 @@ is run by an implementation task.**
   adjustment is corrected by a separately approved compensating adjustment,
   or superseded by a re-approval.
 
-## L1 — Trusted Backend & Team Management (ADR-72) — IMPLEMENTED, NOT YET DEPLOYED
+## L1 — Trusted Backend & Team Management (ADR-72) — LIVE IN PRODUCTION (deployment and live acceptance confirmed by the Product Owner, 11 November 2026)
 
 **What ships:** eight Callable Cloud Functions (`frontend/functions/`, codebase
 `team`, Node.js 22, region `australia-southeast1`) and a Hosting bundle with
@@ -1553,7 +1554,55 @@ Company Settings → Team, `/accept-invite` and the membership gate.
 **No Firestore or Storage rules change** — `firestore.rules` stays 241,924
 bytes; nothing is published to Rules for this release.
 
-### Product Owner setup (once, before the first Functions deploy)
+### Production release record (11 November 2026)
+
+Confirmed by the Product Owner unless marked *(observed)*. No secret value is
+recorded here or anywhere in the repository.
+
+| Item | Production state |
+|---|---|
+| Project / origin | `constrapp-69b5d`, served at `https://app.constrap.com` (the `web.app` and `firebaseapp.com` origins keep working) |
+| Functions | All eight `team` callables deployed in `australia-southeast1` on Node.js 22, each with `enforceAppCheck: true` in code |
+| Functions parameters | `frontend/functions/.env.constrapp-69b5d` (committed, non-secret): `APP_BASE_URL=https://app.constrap.com`, `EMAIL_FROM="Constrap <invites@constrap.com>"` (quoted; firebase-tools' dotenv parser yields `Constrap <invites@constrap.com>`), `TEAM_MANAGEMENT_ENABLED=true` |
+| Email secret | `EMAIL_API_KEY` created **manually in Google Cloud Secret Manager** (not through `functions:secrets:set`); version 1 ENABLED *(observed)*. `firebase deploy` grants the runtime service account `roles/secretmanager.secretAccessor` on each bound secret, so no manual IAM step was needed. |
+| Resend | Sending domain `constrap.com` verified; invitations from `invites@constrap.com` |
+| App Check (web) | Registered with reCAPTCHA Enterprise (console name *Fraud Defense*). Site key supplied at build time through `frontend/.env.production.local` (git-ignored by `*.local`) as `VITE_FIREBASE_APPCHECK_SITE_KEY`; no debug token in the production build *(observed in the build)* |
+| App Check enforcement | **Callables only** (in code). **Console enforcement for Firestore, Storage and Authentication remains OFF** — see *Deferred: general App Check enforcement* below |
+| Storage CORS | Bucket rule updated with `https://app.constrap.com` in `origin` and `X-Firebase-AppCheck` in `responseHeader` (see *Cloud Storage CORS for the Quant™ viewer*) |
+| Rules | Not published (no change) |
+
+**Live acceptance passed:** the App Check refusal probe (a production `POST`
+to `listTeam` with no App Check token returned `HTTP/2 401`
+`UNAUTHENTICATED`; the subsequent authenticated `listTeam` returned
+`HTTP 200`); invitation email delivered through Resend;
+invitation acceptance; Project Manager permissions; member deactivation and
+access revocation; Quant™ PDF and Storage regression; Authentication
+regression. Azure CI green on `main`. See TESTING.md §49 for exactly which
+manual checks this covers and which are not recorded.
+
+**Release-order note *(observed 11 November 2026, before the Functions
+deploy)*:** the Hosting bundle then live at `app.constrap.com` already
+contained the L1 Team surface but no App Check site key, while the Cloud
+Functions API had never been enabled — Hosting had gone out ahead of
+Functions. Existing members were unaffected (membership is read from
+Firestore). The release was completed in protocol order — Functions, verify
+401, then a fresh Hosting build with the site key. Future releases must keep
+**Functions first**.
+
+### Deferred: general App Check enforcement — NOT ENABLED
+
+App Check tokens are now attached to Firestore, Storage and Authentication
+requests, but **those services do not reject unverified requests**: until
+console enforcement is turned on, App Check gives them **metrics only, no
+protection**. Security Rules remain the only trust boundary for client-SDK
+data. No monitoring period has been completed. Before enabling enforcement
+(a separate, approved change): review Console → App Check request metrics
+over a monitoring window and confirm verified requests are close to 100 %;
+then enforce one service at a time (Storage, then Firestore, then
+Authentication), re-running the Quant™ PDF, upload, sign-in and
+password-reset checks after each. Rollback is the same console toggle.
+
+### Product Owner setup (once, before the first Functions deploy — completed for `constrapp-69b5d`)
 
 1. **Blaze plan** on `constrapp-69b5d` (required to deploy Functions and use
    Secret Manager). Add a **GCP budget alert** (Billing → Budgets & alerts),
@@ -1569,21 +1618,31 @@ bytes; nothing is published to Rules for this release.
    have none), create an API key with *Sending access* only, then:
    `cd frontend && npx firebase functions:secrets:set EMAIL_API_KEY --project constrapp-69b5d`
    (paste the key; it goes to Google Secret Manager, never the repository).
-4. **Parameters.** Edit `frontend/functions/.env.constrapp-69b5d` (committed,
-   non-secret): `APP_BASE_URL=https://app.constrap.com` and
-   `EMAIL_FROM=Constrap <invites@constrap.com>` — the planned values are
-   staged as comments in that file. Both are empty on purpose: until set,
-   invitations are refused (`app-url-not-configured`) rather than sent with a
-   broken link. Set them only once `app.constrap.com` serves the app and
-   `constrap.com` is verified in Resend (*Custom domain — app.constrap.com*
-   below); invitations sent before that would carry an unreachable link.
+   Creating the secret directly in Google Cloud Secret Manager under the same
+   name is equivalent (this is how production was set up). Either way, store
+   the key **without a trailing newline** — the Resend adapter sends it
+   verbatim in the `Authorization` header — and check it without printing it:
+   `gcloud secrets versions access latest --secret=EMAIL_API_KEY --project=constrapp-69b5d | tail -c1 | xxd`
+   must not show `0a`.
+4. **Parameters.** `frontend/functions/.env.constrapp-69b5d` (committed,
+   non-secret) — **set for production:** `APP_BASE_URL=https://app.constrap.com`
+   and `EMAIL_FROM="Constrap <invites@constrap.com>"` (quote the value: it
+   contains a space and angle brackets). Left empty, invitations are refused
+   (`app-url-not-configured`) rather than sent with a broken link. The file is
+   deployed with the `team` codebase (it does not match the default `*.local`
+   ignore).
 5. **App Check.** Console → App Check → register the web app with
-   **reCAPTCHA Enterprise** (add the production domain to the key). Put the
-   site key in the build environment as `VITE_FIREBASE_APPCHECK_SITE_KEY`.
-   Leave the *Cloud Functions* enforcement toggle as is: the functions enforce
-   App Check in code (`enforceAppCheck: true`). **Do not release the Hosting
-   bundle until a production preview has shown an App Check token being
-   issued** — without one, every team call is refused (fail closed).
+   **reCAPTCHA Enterprise** (a score-based website key whose domain list holds
+   `app.constrap.com`, `constrapp-69b5d.web.app` and
+   `constrapp-69b5d.firebaseapp.com`). Put the site key in
+   `frontend/.env.production.local` (git-ignored) as
+   `VITE_FIREBASE_APPCHECK_SITE_KEY` — not in `.env.local`, which would also
+   switch App Check on for `npm run dev` and the local launchers on
+   `localhost`. Leave the *Cloud Functions* enforcement toggle as is: the
+   functions enforce App Check in code (`enforceAppCheck: true`). **Do not
+   release the Hosting bundle until a production preview has shown an App
+   Check token being issued** — without one, every team call is refused (fail
+   closed).
 6. **Auth settings.** Console → Authentication → Settings: turn on **Email
    enumeration protection**; confirm the production domain is in *Authorized
    domains*. Email/Password sign-in stays enabled (invitees register with it).
@@ -1605,8 +1664,11 @@ bytes; nothing is published to Rules for this release.
    `cd frontend/functions && node scripts/bootstrap-company.mjs --project constrapp-69b5d --company-id <slug> --company-name "<Name>" --admin-email <email> --app-url https://<origin> --dry-run`,
    then the same without `--dry-run`. It prints the acceptance link ONCE; hand
    it over a trusted channel.
-4. **Hosting:** build with the production `VITE_FIREBASE_*` values **plus
-   `VITE_FIREBASE_APPCHECK_SITE_KEY`**, then
+4. **Hosting:** build fresh (`rm -rf dist && npm run build`) with the
+   production `VITE_FIREBASE_*` values **plus `VITE_FIREBASE_APPCHECK_SITE_KEY`**
+   — never redeploy a `dist/` built without the key — confirm the bundle
+   contains the site key (e.g. `grep -c -F "<key>" dist/assets/index-*.js`
+   without echoing it), then
    `npx firebase deploy --only hosting --project constrapp-69b5d`.
 5. **Verify onboarding end-to-end** — TESTING.md §49 (the three manual checks).
 
@@ -1649,10 +1711,10 @@ Logging → Create alert). Invitation delivery failures show in Team as "Not
 delivered" and in the logs as `invitation email failed`. Membership history is
 in `companies/{c}/auditEvents` (console read only).
 
-## Custom domain — app.constrap.com — PLANNED, NOT YET CONNECTED
+## Custom domain — app.constrap.com — CONNECTED (production; confirmed live on 11 November 2026)
 
 The customer-facing brand is **Constrap** (AGENT.md → Brand Name). The
-application's planned public origin is **`https://app.constrap.com`**; the
+application's public origin is **`https://app.constrap.com`**; the
 existing `https://constrapp-69b5d.web.app` and `.firebaseapp.com` origins keep
 working throughout and after the transition (Firebase Hosting serves every
 connected domain from the same site). Nothing in the client hard-codes an
@@ -1690,7 +1752,11 @@ console / DNS work, in this order:
 **Verification:** sign in at `https://app.constrap.com`; the tab title reads
 *Constrap*; open a Quant™ PDF sheet; send a test invitation and confirm the
 link opens `https://app.constrap.com/accept-invite#…` and the email reads
-*on Constrap* from `invites@constrap.com`. Record the date here when done.
+*on Constrap* from `invites@constrap.com`. **Done — 11 November 2026**
+(confirmed by the Product Owner as part of the L1 live acceptance: production
+URL, Resend invitation email, acceptance, Quant™ PDF and Authentication
+regressions; the tab title *Constrap* was also observed on the live origin).
+Steps 1–6 above are complete for production.
 
 ## Publishing Firestore Rules — Manual Process
 
@@ -1824,10 +1890,15 @@ Storage bucket serves no CORS headers until a rule is set on it. The Firebase
 documentation (*Download files on Web → CORS configuration*) requires this
 step for browser downloads.
 
-**Status: not verified from the repository.** No CORS configuration is
-recorded anywhere in this repo, and an implementation task **must not** change
-bucket configuration. Whether the production bucket already carries a rule can
-only be seen with the command in step 1.
+**Status: production rule updated by the Product Owner (11 November 2026)**
+to include `https://app.constrap.com` in `origin` and `X-Firebase-AppCheck` in
+`responseHeader`; the Quant™ PDF and Storage regression passed afterwards on
+`app.constrap.com`. The bucket rule itself is not stored in this repository,
+and an implementation task **must not** change bucket configuration — confirm
+the live rule with the command in step 1. (A preflight probe of
+`firebasestorage.googleapis.com` on 11 November 2026 already allowed
+`X-Firebase-AppCheck`; the GET's `206` with `Access-Control-Allow-Origin`
+in step 3 remains the check that matters.)
 
 1. **Inspect the current rule** (replace `<bucket>` with the value of
    `VITE_FIREBASE_STORAGE_BUCKET`, e.g. `constrapp-69b5d.appspot.com` or
@@ -1845,8 +1916,9 @@ only be seen with the command in step 1.
    `getBytes(ref, maxDownloadSizeBytes)`: a `GET …?alt=media` with the request
    headers `Authorization: Firebase <token>`, `Range: bytes=0-<max>`,
    `X-Firebase-Storage-Version` and `X-Firebase-GMPID` (sent because the app is
-   configured with `VITE_FIREBASE_APP_ID`; `X-Firebase-AppCheck` would be added
-   only if App Check were enabled, which it is not), and a **206 Partial
+   configured with `VITE_FIREBASE_APP_ID`), **`X-Firebase-AppCheck`** (sent
+   since the L1 release initialised App Check, even though Storage enforcement
+   is off), and a **206 Partial
    Content** response that the SDK accepts as success. Those request headers
    are not CORS-safelisted, so the browser **preflights** with OPTIONS, and
    Cloud Storage answers the preflight's `Access-Control-Allow-Headers` from
@@ -1868,6 +1940,7 @@ only be seen with the command in step 1.
          "Range",
          "X-Firebase-Storage-Version",
          "X-Firebase-GMPID",
+         "X-Firebase-AppCheck",
          "Content-Type",
          "Content-Length",
          "Content-Range"

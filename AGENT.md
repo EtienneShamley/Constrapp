@@ -16,7 +16,7 @@ Constrap is **the connected commercial operating system for construction project
 
 ## Brand Name — Constrap (mandatory)
 
-The customer-facing brand is **Constrap** (renamed from "Constrapp" on 10 November 2026; domain `constrap.com`, planned app origin `https://app.constrap.com`). Module names are **Constrap PULSE™, Constrap SHIELD™, Constrap Quant™, Constrap GANTT™, Constrap IQ™**, always read from `lib/moduleBranding.js` → `MODULE_NAMES`. All new UI copy, emails, page titles and current product docs say *Constrap*.
+The customer-facing brand is **Constrap** (renamed from "Constrapp" on 10 November 2026; domain `constrap.com`, app origin `https://app.constrap.com`, confirmed live on 11 November 2026). Module names are **Constrap PULSE™, Constrap SHIELD™, Constrap Quant™, Constrap GANTT™, Constrap IQ™**, always read from `lib/moduleBranding.js` → `MODULE_NAMES`. All new UI copy, emails, page titles and current product docs say *Constrap*.
 
 The old spelling is **deliberately kept** wherever renaming would migrate something or rewrite history: the Firebase project `constrapp-69b5d` (and its `web.app` / `firebaseapp.com` / bucket names), the emulator project `constrapp-rules-test`, the `functions/.env.constrapp-*` files, the Functions package name, browser-storage keys (`constrapp.pendingInvite`, `constrapp.quant.*`), the internal error code `constrapp/timeout`, the repository directory, Git history, the `docs/Constrapp_v5.jsx` prototype, code comments, and every historical ADR, release record and test evidence. Never search-and-replace the old name across the repository; `tests/unit/moduleBranding.test.js` → *product brand* fails if the old name reaches rendered source.
 
