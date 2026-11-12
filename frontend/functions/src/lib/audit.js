@@ -21,6 +21,10 @@ export const AUDIT = {
   MEMBER_AUTH_REENABLED: 'member.auth_reenabled',
   COMPANY_BOOTSTRAPPED:  'company.bootstrapped',
   RECONCILE_FIX:         'reconcile.fix',
+  // ADR-74 — counts and sequence numbers only; never a token value.
+  FILE_LINKS_REVOCATION_REQUESTED:  'file_links.revocation_requested',
+  FILE_LINKS_REVOKED:               'file_links.revoked',
+  FILE_LINKS_REVOCATION_INCOMPLETE: 'file_links.revocation_incomplete',
 }
 
 export const auditCollection = (db, companyId) =>

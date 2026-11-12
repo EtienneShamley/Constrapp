@@ -153,3 +153,34 @@ describe('reconcile-membership.mjs', () => {
     expect(human.stdout).not.toMatch(/^\[(\]|\{)/m)   // no JSON array line
   })
 })
+
+describe('revoke-file-links.mjs', () => {
+  const base = ['--project', PROJECT_ID, '--bucket', 'some-bucket.firebasestorage.app']
+
+  it('refuses to run without an explicit project, bucket and exactly one scope', () => {
+    expect(run('revoke-file-links.mjs', []).code).toBe(2)
+    expect(run('revoke-file-links.mjs', ['--project', PROJECT_ID, '--all-companies']).code).toBe(2)          // no bucket
+    expect(run('revoke-file-links.mjs', ['--bucket', 'b-u-c', '--all-companies']).code).toBe(2)              // no project
+    const noScope = run('revoke-file-links.mjs', base)
+    expect(noScope.code).toBe(2)
+    expect(noScope.out).toContain('exactly one scope')
+    expect(run('revoke-file-links.mjs', [...base, '--company-id', COMPANY_A, '--all-companies']).code).toBe(2)
+    expect(run('revoke-file-links.mjs', [...base, '--company-id', 'bad/id']).code).toBe(2)
+    expect(run('revoke-file-links.mjs', [...base, '--all-companies', '--bogus']).code).toBe(2)
+  })
+
+  it('never executes without the project id repeated as confirmation', () => {
+    const bare = run('revoke-file-links.mjs', [...base, '--all-companies', '--execute'])
+    expect(bare.code).toBe(2)
+    expect(bare.out).toContain('--execute needs --confirm-project')
+    expect(run('revoke-file-links.mjs', [...base, '--all-companies', '--execute', '--confirm-project', 'another-project']).code).toBe(2)
+    // A confirmation without --execute is a mistake, not a dry run.
+    expect(run('revoke-file-links.mjs', [...base, '--all-companies', '--confirm-project', PROJECT_ID]).code).toBe(2)
+  })
+
+  it('refuses a key file, like every operator script', () => {
+    const r = run('revoke-file-links.mjs', [...base, '--company-id', COMPANY_A], { GOOGLE_APPLICATION_CREDENTIALS: '/tmp/key.json' })
+    expect(r.code).toBe(1)
+    expect(r.out).toContain('never a key file')
+  })
+})

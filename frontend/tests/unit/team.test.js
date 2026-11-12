@@ -3,7 +3,7 @@ import {
   TEAM_ROLES, TEAM_ROLE_VALUES, isTeamRole, canManageTeam,
   parseInviteFragment, isInviteCredential, readPendingInvite, storePendingInvite, clearPendingInvite, PENDING_INVITE_KEY,
   acceptStepFor, ACCEPT_STEP, passwordProblem, PASSWORD_MIN,
-  membershipGate, GATE, inviteStatusBadge, deliveryBadge, memberStatusBadge, canEditMember,
+  membershipGate, GATE, inviteStatusBadge, deliveryBadge, memberStatusBadge, canEditMember, fileLinkNote, FILE_LINK_STATUS,
   teamErrorMessage, teamErrorCode, authErrorMessage,
 } from '../../src/lib/team.js'
 
@@ -122,5 +122,40 @@ describe('errors', () => {
     expect(authErrorMessage('auth/invalid-credential')).toBe('Incorrect email or password.')
     expect(authErrorMessage('auth/email-already-in-use')).toContain('Sign in instead')
     expect(authErrorMessage('auth/nope')).toBe('That did not work. Please try again.')
+  })
+})
+
+// ── Old file links (ADR-74, DC46-B) ─────────────────────────────────────────
+describe('file-link revocation note', () => {
+  const note = (fileLinks) => fileLinkNote({ status: 'deactivated', fileLinks })
+
+  it('shows nothing when the backend reports nothing', () => {
+    expect(fileLinkNote(null)).toBe(null)
+    expect(fileLinkNote({ status: 'active' })).toBe(null)
+    expect(fileLinkNote({ status: 'active', fileLinks: null })).toBe(null)
+    expect(note({ status: 'something-new' })).toBe(null)
+  })
+
+  it('uses exactly the approved wording for the three states', () => {
+    expect(note({ status: FILE_LINK_STATUS.PENDING })).toEqual({ text: 'Old file links: revocation pending', tone: 'pending' })
+    expect(note({ status: FILE_LINK_STATUS.REVOKED })).toEqual({ text: 'Old file links: revoked', tone: 'muted' })
+    expect(note({ status: FILE_LINK_STATUS.DELAYED })).toEqual({ text: 'Revocation delayed: retrying', tone: 'warning' })
+  })
+
+  it('names the outstanding files when the backend counts them', () => {
+    expect(note({ status: 'delayed', outstanding: 1 }).text).toBe('Revocation delayed: retrying (1 file outstanding)')
+    expect(note({ status: 'delayed', outstanding: 12 }).text).toBe('Revocation delayed: retrying (12 files outstanding)')
+    expect(note({ status: 'delayed', outstanding: 0 }).text).toBe('Revocation delayed: retrying')
+  })
+
+  it('a member removed before this feature is "not yet revoked", never "revoked"', () => {
+    expect(note({ status: FILE_LINK_STATUS.NOT_REQUESTED })).toEqual({ text: 'Old file links: not yet revoked', tone: 'warning' })
+  })
+
+  it('never claims immediacy and mirrors the backend status values', () => {
+    for (const status of Object.values(FILE_LINK_STATUS)) {
+      expect(note({ status }).text).not.toMatch(/immediate|instant|at once|straight away/i)
+    }
+    expect(FILE_LINK_STATUS).toEqual({ PENDING: 'pending', REVOKED: 'revoked', DELAYED: 'delayed', NOT_REQUESTED: 'not_requested' })
   })
 })

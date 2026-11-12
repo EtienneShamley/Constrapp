@@ -145,7 +145,9 @@ browser request — any role, including `company_admin` — is denied
 History and listing only — **never a permission source** (rules read
 `users/{uid}`). `email`, `name`, `role`, `status` (`active` / `deactivated`),
 `joinedAt`, `invitedBy`, `inviteId`, `deactivatedAt`, `deactivatedBy`,
-`authSyncPending`, `authSyncedAt`, `updatedAt`. Created on acceptance or on the
+`authSyncPending`, `authSyncedAt`, `updatedAt`, and since ADR-74
+`fileLinkRevocationSeq` (the revocation request sequence stamped when this
+person's file access was reduced) and `fileAccessReducedAt`. Created on acceptance or on the
 first role change / deactivation of a legacy member; `listTeam` lists active
 members from `users` and deactivated history from here.
 
@@ -154,9 +156,12 @@ members from `users` and deactivated history from here.
 Append-only, written in the same transaction as the change: `type`
 (`invite.created` · `invite.resent` · `invite.revoked` · `invite.accepted` ·
 `member.role_changed` · `member.deactivated` · `member.auth_synced` ·
-`member.auth_reenabled` · `company.bootstrapped` · `reconcile.fix`),
+`member.auth_reenabled` · `company.bootstrapped` · `reconcile.fix` ·
+`file_links.revocation_requested` · `file_links.revoked` ·
+`file_links.revocation_incomplete` — ADR-74, sequence numbers and counts
+only),
 `actorUid`, `targetUid`, `targetEmail`, `inviteId`, `before`, `after`,
-`requestId`, `source` (`callable` / `operator`), `at`.
+`requestId`, `source` (`callable` / `operator` / `worker`), `at`.
 
 ### system/membership · rateLimits/{key} · devOutbox/{inviteId}
 
@@ -165,6 +170,25 @@ transaction reads and writes. `rateLimits/{key}` — `{ windowStart, count,
 updatedAt }` fixed-window counters. `devOutbox/{inviteId}` — **emulator
 only**: the rendered invitation email and link, written instead of sending
 when the Functions emulator runs with a Firestore emulator and no email key.
+
+### system/fileLinkRevocation · fileLinkRevocationQueue/pending (ADR-74)
+
+Admin SDK only — no rules block, so denied to every browser. **No token
+value is ever stored.**
+
+`system/fileLinkRevocation` — the durable state of legacy download-token
+revocation for the company: `requestSeq`, `requestedAt`, `requestedBy`,
+`requestReason` (`member.deactivated` / `member.role_reduced` / `operator`),
+`completedSeq`, `completedAt`, `completedPassStartedAt`, `lastPass` (`seq`,
+`pages`, `scanned`, `removed`, `failed`, `complete`, `finishedAt`),
+`consecutiveIncomplete`, `nextAttemptAt` (retry backoff), and while a sweep is
+open `pass` (`seq`, `startedAt`, `pageToken`, `pages`, `scanned`, `removed`,
+`failed`) and `lease` (`owner`, `expiresAt`). A member's old links count as
+revoked only when `completedSeq ≥ members/{uid}.fileLinkRevocationSeq`.
+
+`fileLinkRevocationQueue/pending` — `{ companyId, requestSeq, requestedAt }`.
+Exists only while a request is outstanding; the scheduled worker finds work by
+listing this collection group.
 
 ## companies/{companyId}/costCodes/{costCodeId}
 
