@@ -3,7 +3,7 @@ import { onSchedule } from 'firebase-functions/scheduler'
 import * as logger from 'firebase-functions/logger'
 import { getDb, getAdminAuth, getBucket } from './lib/firebaseAdmin.js'
 import { EMAIL_API_KEY, REGION, FILE_LINK_WORKER_SERVICE_ACCOUNT, readConfig, readFileLinkConfig } from './lib/params.js'
-import { runRevocationWorker } from './lib/fileLinkRevocation.js'
+import { runScheduledWorker } from './lib/fileLinkRevocation.js'
 import { selectEmailAdapter } from './lib/email.js'
 import { createTeamHandlers, HANDLER_NAMES } from './team/handlers.js'
 
@@ -86,8 +86,14 @@ export const EXPORTED_CALLABLES = HANDLER_NAMES
 //
 //   · no caller: Cloud Scheduler invokes it, so there is no App Check and no
 //     request data — it acts only on requests the membership transactions wrote
-//   · ONE instance, no Scheduler retry: an overlapping run is skipped and the
-//     next minute picks the work up from its checkpoint
+//   · ONE instance AND one request at a time (`concurrency: 1`, ADR-75), no
+//     Scheduler retry. `maxInstances: 1` alone does not stop two ticks running
+//     side by side: a 2nd-gen function defaults to 80 concurrent requests per
+//     instance. With both, an overlapping tick is refused and the next free
+//     minute picks the work up from its checkpoint. The per-company lease
+//     keeps even an overlap safe; this setting keeps the time budgets honest.
+//   · FILE_LINK_RECONCILE_INTERVAL_HOURS (ADR-75) switches periodic
+//     reconciliation on; 0, the default, leaves it off
 //   · binds no secret
 //   · runs as its OWN service account (FILE_LINK_WORKER_SERVICE_ACCOUNT), never
 //     the shared default compute account; Cloud Scheduler calls it with an
@@ -99,6 +105,7 @@ export const FILE_LINK_WORKER_OPTIONS = {
   serviceAccount: FILE_LINK_WORKER_SERVICE_ACCOUNT,
   timeoutSeconds: 300,
   maxInstances: 1,
+  concurrency: 1,
   retryCount: 0,
 }
 
@@ -106,9 +113,9 @@ export const processFileLinkRevocations = onSchedule(FILE_LINK_WORKER_OPTIONS, a
   const cfg = readFileLinkConfig()
   if (!cfg.enabled) { logger.info('file-links: worker paused by FILE_LINK_REVOCATION_ENABLED'); return }
   try {
-    await runRevocationWorker(
+    await runScheduledWorker(
       { db: getDb(), bucket: getBucket(cfg.bucket), now: () => new Date(), log: logger },
-      { owner: `worker:${process.env.K_REVISION ?? 'local'}:${Date.now()}` },
+      { owner: `worker:${process.env.K_REVISION ?? 'local'}:${Date.now()}`, reconcileIntervalRaw: cfg.reconcileIntervalRaw },
     )
   } catch (err) {
     logger.error('file-links: worker run failed', { message: err?.message, stack: err?.stack })

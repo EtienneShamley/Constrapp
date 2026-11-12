@@ -2086,6 +2086,83 @@ success. Without it every Storage request is refused. Production already has
 the grant; any NEW project or a CI rules deploy must add it explicitly and
 allow tens of minutes for it to take effect.
 
+## DC46-C — Periodic token reconciliation, Stage 1 (ADR-75) — IMPLEMENTED, NOT DEPLOYED (12 November 2026)
+
+On `security/dc46-c-periodic-reconciliation`. **No deploy has been made and
+none is authorised. Periodic reconciliation ships switched OFF.** Functions
+only: no Rules publish, no Hosting deploy, no IAM change, no new function,
+Scheduler job or service account. Deferred Control 46 stays OPEN.
+
+**What changes on deploy.** The existing worker `processFileLinkRevocations`
+gains: periodic planning (off while the interval is `0`), urgent-before-routine
+ordering with time slices, recovery rules for interrupted sweeps, and
+`concurrency: 1`. The eight callables' behaviour is unchanged, though the
+shared library file they import is, so a full Functions deploy rolls them.
+
+**Required configuration** — `frontend/functions/.env.constrapp-69b5d`:
+
+| Parameter | Value | Meaning |
+|---|---|---|
+| `FILE_LINK_RECONCILE_INTERVAL_HOURS` | `0` (committed) | Off. No planning, no cursor read or write, no periodic request |
+| | `1`–`168` | A company is swept again once its last successful sweep started that many hours ago. Proposed: `24` |
+| | anything else | **Invalid.** The predeploy tests fail (`functions/test/fileLinks.test.js` → *DEPLOY GUARD*). If it reached production anyway, the worker would still do its revocation work, keep reconciliation off, and fail every run with an error naming the setting |
+
+The line must be present: a non-interactive deploy refuses a parameter with no
+dotenv value, defaults included. All other parameters are unchanged.
+
+**Order — each step separately authorised.**
+
+1. **Read-only pre-check.** Record the worker's current concurrency and the
+   Scheduler job's attempt deadline (`gcloud run services describe` on the
+   worker's service and `gcloud scheduler jobs describe` on its job, both in
+   `australia-southeast1`; take the exact resource names from the console).
+   The library default concurrency is 80; the deployed value has never been
+   read.
+2. **Worker only, interval `0`** —
+   `firebase deploy --only functions:team:processFileLinkRevocations --project constrapp-69b5d`.
+   Verify: one Scheduler job, still every minute; the service now shows
+   concurrency 1 and max instances 1; same runtime account; runs succeed and
+   are silent; no `system/fileLinkReconciliation` document; queue empty.
+   TESTING.md §53 steps 2–3.
+3. **All Functions** — `firebase deploy --only functions`, so the callables
+   run the same library source as `main`. No behaviour change expected;
+   each still answers 401 without an App Check token.
+4. **Activation — only on explicit authorisation.** Edit the interval in
+   `.env.constrapp-69b5d`, redeploy the worker alone, run TESTING.md §53
+   steps 4–7 on the development tenant, then set the approved value.
+
+**Rollback — none of these loses a queued request.**
+
+| Situation | Action |
+|---|---|
+| Stop periodic reconciliation | Set the interval to `0`, redeploy the worker. Requests already queued are still swept once; no new ones are written. The cursor document is left in place and ignored |
+| Stop the worker entirely | `FILE_LINK_REVOCATION_ENABLED=false`, redeploy. Membership changes keep queuing |
+| Revert the code | Redeploy the ADR-74 revision of the worker (`main` `a70bd45`). It ignores the new fields, serves markers in path order and sweeps a queued periodic request as an ordinary one (audited `file_links.revoked`). Remove `concurrency` only by redeploying that revision |
+
+The Hosting rollback floor is unchanged (the ADR-73 build).
+
+**Measured versus unmeasured.** Measured: nothing in production. Automated
+evidence is emulator-only (TESTING.md §53). The time budgets — 240 s run,
+195 s urgent phase when routine work waits, 45 s routine share, 60 s and 30 s
+slices, no page after 255 s — are design values inside the 300 s timeout, not
+observed latencies. Do not quote a revocation or reconciliation time.
+
+**Operational signals (Cloud Logging, once deployed).**
+
+| Log message | Level | Meaning |
+|---|---|---|
+| `file-links: worker run` | info | Counts by action, urgent and periodic totals, at most 25 results |
+| `file-links: reconciliation plan complete` | info | The planning heartbeat, about hourly while switched on. **Its absence means planning has stopped** |
+| `file-links: reconciliation overdue…` | error | Companies two intervals without a successful sweep |
+| `file-links: sweep incomplete…` | warn, then error from the third | As in ADR-74 |
+| `file-links: urgent work used the whole run…` | warn | Routine work was skipped for one run |
+| `file-links: reconciliation cursor unreadable…` | error | The cursor was corrupted and reset |
+| `file-links: FILE_LINK_RECONCILE_INTERVAL_HOURS is set but…` | error, and the run fails | The interval is invalid; reconciliation is not running |
+| `file-links: reconciliation planning paused; periodic queue is full` | info | 200 periodic requests are queued; planning resumes when they drain |
+
+No alert policy exists yet; creating one is a cloud change proposed for
+Stage 4.
+
 ## Custom domain — app.constrap.com — CONNECTED (production; confirmed live on 11 November 2026)
 
 The customer-facing brand is **Constrap** (AGENT.md → Brand Name). The

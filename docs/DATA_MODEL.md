@@ -190,6 +190,26 @@ revoked only when `completedSeq ≥ members/{uid}.fileLinkRevocationSeq`.
 Exists only while a request is outstanding; the scheduled worker finds work by
 listing this collection group.
 
+**ADR-75, Stage 1 — implemented, NOT DEPLOYED.** Additional Admin-only fields
+and one new document; none has a rules block, so every browser read and write
+is denied by default.
+- On the state: `requestPriority` (`urgent` | `periodic`), `queuedAt` (when the
+  outstanding work was first queued), `overdueSince` (set once when the company
+  has gone two intervals without a successful sweep; cleared by the next one).
+  `completedPassStartedAt` — the start of the last SUCCESSFUL sweep — is the
+  reconciliation clock; an incomplete sweep never moves it.
+- On an open sweep (`pass`): `priority`, `errors` (consecutive failed or
+  killed runs), `restarts` (pre-emptions), `yields`.
+- On the marker: `priority`, `queuedAt`, `servedAt` (queue order: least recently
+  served first; stamped when a turn starts). A marker without `priority` is
+  `urgent`.
+- `system/fileLinkReconciliation` (top level) — the planning cursor:
+  `passSeq`, `passStartedAt`, `cursor` (last company id examined), `examined`,
+  `requested`, `overdue`, `invalid`, `oldestSweepStartedAt`, `lastPass`,
+  `nextPassAt`, `intervalHours`, `updatedAt`. Never read or written while
+  `FILE_LINK_RECONCILE_INTERVAL_HOURS` is `0`. It is an optimisation only:
+  eligibility is decided from each company's own state.
+
 ## companies/{companyId}/costCodes/{costCodeId}
 
 Company-wide taxonomy shared by every project (see

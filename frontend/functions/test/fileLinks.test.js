@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
   TOKEN_KEY, LIST_FIELDS, MAX_ATTEMPTS, OUTCOME, companyPrefix, listPage, removeToken, sweepPage, inventoryCompany,
 } from '../src/lib/fileLinkTokens.js'
 import {
   FILE_LINK_STATUS, DELAY_AFTER_MS, LEGACY_MARGIN_MS, REASON, fileLinkStatus, fileLinkRow, reducesFileAccess,
+  PRIORITY, priorityOf, reconcileIntervalMs, reconcileSetting, reconciliationDue, reconciliationOverdue, readCursor,
+  WORK_BUDGET_MS, ROUTINE_BUDGET_MS, HARD_STOP_MS, URGENT_SLICE_MS, PERIODIC_SLICE_MS, PLAN_BUDGET_MS, PLAN_BATCH, LEASE_MS, MAX_INTERRUPTIONS,
+  PERIODIC_BACKLOG_MAX,
 } from '../src/lib/fileLinkRevocation.js'
 import { AUDIT, auditPayload } from '../src/lib/audit.js'
 import { fakeBucket, seedObjects, drawingObject, documentObject, tokensLeft, SECRET } from './_fakeBucket.js'
@@ -332,7 +335,150 @@ describe('audit', () => {
     expect(AUDIT.FILE_LINKS_REVOCATION_REQUESTED).toBe('file_links.revocation_requested')
     expect(AUDIT.FILE_LINKS_REVOKED).toBe('file_links.revoked')
     expect(AUDIT.FILE_LINKS_REVOCATION_INCOMPLETE).toBe('file_links.revocation_incomplete')
-    expect(Object.values(REASON)).toEqual(['member.deactivated', 'member.role_reduced', 'operator'])
+    expect(Object.values(REASON)).toEqual(['member.deactivated', 'member.role_reduced', 'operator', 'periodic'])
     expect(() => auditPayload({ type: AUDIT.FILE_LINKS_REVOKED, after: { seq: 1, scanned: 2, removed: 1, failed: 0 } }, new Date())).not.toThrow()
+  })
+})
+
+// ── ADR-75 (DC46-C, Stage 1) — the pure rules of periodic reconciliation ─────
+describe('ADR-75: the reconciliation interval', () => {
+  const H = 60 * 60 * 1000
+  it('0 is OFF, and so is every value that is not a whole number of hours from 1 to 168', () => {
+    for (const off of [0, '0', -1, 0.5, 1.5, 169, 1000, NaN, Infinity, null, undefined, '', 'abc', '24h', true, {}, []]) {
+      expect(reconcileIntervalMs(off), String(off)).toBe(0)
+    }
+    expect(reconcileIntervalMs(1)).toBe(H)
+    expect(reconcileIntervalMs(24)).toBe(24 * H)
+    expect(reconcileIntervalMs('24')).toBe(24 * H)
+    expect(reconcileIntervalMs(168)).toBe(168 * H)
+  })
+
+  it('ABSENT and "0" are valid and off; 1–168 are valid; everything else is INVALID — off, but never silently', () => {
+    expect(reconcileSetting(undefined)).toEqual({ valid: true, hours: 0, ms: 0, configured: false })
+    expect(reconcileSetting('0')).toEqual({ valid: true, hours: 0, ms: 0, configured: true })
+    expect(reconcileSetting('1')).toEqual({ valid: true, hours: 1, ms: H, configured: true })
+    expect(reconcileSetting('24')).toEqual({ valid: true, hours: 24, ms: 24 * H, configured: true })
+    expect(reconcileSetting('168')).toEqual({ valid: true, hours: 168, ms: 168 * H, configured: true })
+    // The raw text is checked: an int parameter would read "24h" as 24 and "1.5" as 1.
+    for (const bad of ['', ' ', '24h', '1.5', '-1', '169', '1000', '007', ' 24', '24 ', 'abc', 'true', 'NaN', '0x18', '1e2', true, {}, [], NaN, 0.5]) {
+      expect(reconcileSetting(bad), JSON.stringify(bad)).toEqual({ valid: false, hours: 0, ms: 0, configured: true })
+    }
+  })
+
+  it('DEPLOY GUARD: every project env file sets the interval exactly once, to a valid value — and production is 0', () => {
+    // firebase.json runs this suite as a predeploy step. The CLI itself does
+    // not range-check a dotenv value, so this test is what refuses a deploy
+    // with an unusable interval.
+    const params = src('lib/params.js')
+    expect(params).toContain("export const RECONCILE_INTERVAL_ENV = 'FILE_LINK_RECONCILE_INTERVAL_HOURS'")
+    expect(params).toMatch(/defineInt\(RECONCILE_INTERVAL_ENV, \{ default: 0 \}\)/)
+    expect(params).toContain('reconcileIntervalRaw: process.env[RECONCILE_INTERVAL_ENV]')
+    const dir = fileURLToPath(new URL('../', import.meta.url))
+    const files = readdirSync(dir).filter(f => /^\.env\.[a-z0-9-]+$/.test(f) && f !== '.env.local')
+    expect(files).toEqual(expect.arrayContaining(['.env.constrapp-69b5d', '.env.constrapp-rules-test']))
+    for (const f of files) {
+      const lines = readFileSync(`${dir}${f}`, 'utf8').split('\n').filter(l => l.startsWith('FILE_LINK_RECONCILE_INTERVAL_HOURS='))
+      expect(lines, f).toHaveLength(1)
+      const setting = reconcileSetting(lines[0].slice('FILE_LINK_RECONCILE_INTERVAL_HOURS='.length))
+      expect(setting.valid, `${f}: ${lines[0]}`).toBe(true)
+    }
+    // ⚠️ Periodic reconciliation is NOT authorised in production. Changing this
+    // line is the deliberate, reviewed act of switching it on (DEPLOYMENT.md → DC46-C).
+    expect(readFileSync(`${dir}.env.constrapp-69b5d`, 'utf8').split('\n')).toContain('FILE_LINK_RECONCILE_INTERVAL_HOURS=0')
+  })
+
+  it('the scheduled function runs through runScheduledWorker with the RAW setting', () => {
+    const index = src('index.js')
+    expect(index).toContain('await runScheduledWorker(')
+    expect(index).toContain('reconcileIntervalRaw: cfg.reconcileIntervalRaw')
+    expect(index).not.toMatch(/runRevocationWorker\(/)
+  })
+
+  it('the budgets fit the 300 s function timeout and the lease outlives it', () => {
+    expect(HARD_STOP_MS).toBeLessThan(300 * 1000)
+    expect(WORK_BUDGET_MS).toBeLessThanOrEqual(HARD_STOP_MS)
+    expect(ROUTINE_BUDGET_MS).toBeLessThan(60 * 1000)
+    expect(PLAN_BUDGET_MS).toBeLessThan(ROUTINE_BUDGET_MS)
+    expect(PERIODIC_SLICE_MS).toBeLessThanOrEqual(ROUTINE_BUDGET_MS)
+    expect(URGENT_SLICE_MS).toBeLessThan(WORK_BUDGET_MS - ROUTINE_BUDGET_MS)
+    expect(LEASE_MS).toBeGreaterThan(300 * 1000)
+    expect(PLAN_BATCH).toBe(100)
+    expect(MAX_INTERRUPTIONS).toBe(5)
+    expect(PERIODIC_BACKLOG_MAX).toBeGreaterThanOrEqual(PLAN_BATCH)
+  })
+})
+
+describe('ADR-75: eligibility is the START of the last SUCCESSFUL sweep', () => {
+  const H = 60 * 60 * 1000
+  const T = Date.parse('2026-11-12T10:00:00Z')
+  const I = 24 * H
+  const swept = (agoMs, extra = {}) => ({ requestSeq: 3, completedSeq: 3, completedPassStartedAt: new Date(T - agoMs), ...extra })
+
+  it('due: never swept, or started at least one interval ago; not due before that', () => {
+    expect(reconciliationDue(null, T, I)).toBe(true)
+    expect(reconciliationDue({}, T, I)).toBe(true)
+    expect(reconciliationDue(swept(I), T, I)).toBe(true)
+    expect(reconciliationDue(swept(I + 1), T, I)).toBe(true)
+    expect(reconciliationDue(swept(I - 1), T, I)).toBe(false)
+  })
+
+  it('the COMPLETION time is not the clock: a sweep that started long ago but finished just now is still due', () => {
+    expect(reconciliationDue(swept(I, { completedAt: new Date(T - 1000) }), T, I)).toBe(true)
+  })
+
+  it('never due while anything is outstanding — queued, in progress, or failed and backing off', () => {
+    expect(reconciliationDue(swept(2 * I, { requestSeq: 4 }), T, I)).toBe(false)
+    expect(reconciliationDue(swept(2 * I, { pass: { seq: 3 } }), T, I)).toBe(false)
+    expect(reconciliationDue(swept(2 * I, { requestSeq: 4, consecutiveIncomplete: 2, nextAttemptAt: new Date(T + H) }), T, I)).toBe(false)
+  })
+
+  it('never due when the interval is off', () => {
+    expect(reconciliationDue(swept(100 * I), T, 0)).toBe(false)
+    expect(reconciliationOverdue(swept(100 * I), T, 0)).toBe(false)
+  })
+
+  it('overdue after two intervals without a successful sweep; a never-swept company is measured from when it was queued', () => {
+    expect(reconciliationOverdue(swept(2 * I), T, I)).toBe(false)
+    expect(reconciliationOverdue(swept(2 * I + 1), T, I)).toBe(true)
+    expect(reconciliationOverdue(swept(2 * I + 1, { requestSeq: 4, consecutiveIncomplete: 5 }), T, I)).toBe(true)
+    expect(reconciliationOverdue({ requestSeq: 1, completedSeq: 0, queuedAt: new Date(T - 2 * I - 1) }, T, I)).toBe(true)
+    expect(reconciliationOverdue({ requestSeq: 1, completedSeq: 0, queuedAt: new Date(T - I) }, T, I)).toBe(false)
+    expect(reconciliationOverdue(null, T, I)).toBe(false)
+    expect(reconciliationOverdue({}, T, I)).toBe(false)
+  })
+
+  it('a marker or state without a priority is URGENT', () => {
+    expect(priorityOf(undefined)).toBe(PRIORITY.URGENT)
+    expect(priorityOf(null)).toBe(PRIORITY.URGENT)
+    expect(priorityOf('nonsense')).toBe(PRIORITY.URGENT)
+    expect(priorityOf('urgent')).toBe(PRIORITY.URGENT)
+    expect(priorityOf('periodic')).toBe(PRIORITY.PERIODIC)
+  })
+})
+
+describe('ADR-75: the planning cursor is validated before it is trusted', () => {
+  const ts = new Date('2026-11-12T10:00:00Z')
+  it('reads an idle cursor and an open pass', () => {
+    expect(readCursor({ passSeq: 4, passStartedAt: null, cursor: null, nextPassAt: ts })).toMatchObject({ passSeq: 4, open: false, cursor: null, nextPassAtMs: ts.getTime() })
+    expect(readCursor({ passSeq: 5, passStartedAt: ts, cursor: 'companyM', examined: 100, requested: 7, overdue: 1, nextPassAt: ts }))
+      .toMatchObject({ passSeq: 5, open: true, cursor: 'companyM', examined: 100, requested: 7, overdue: 1, passStartedAtMs: ts.getTime() })
+  })
+
+  it('refuses every malformed shape', () => {
+    const bad = [
+      null, 'x', 7, {}, { passSeq: -1 }, { passSeq: 1.5 }, { passSeq: '3' },
+      { passSeq: 3, passStartedAt: 'yesterday' }, { passSeq: 3, nextPassAt: 'soon' },
+      { passSeq: 3, passStartedAt: ts, cursor: 'a/b' }, { passSeq: 3, passStartedAt: ts, cursor: 42 }, { passSeq: 3, passStartedAt: ts, cursor: '' },
+      { passSeq: 3, passStartedAt: null, cursor: 'companyM' },
+      { passSeq: 3, passStartedAt: ts, cursor: 'c', examined: -1 }, { passSeq: 3, passStartedAt: ts, cursor: 'c', requested: 'many' },
+    ]
+    for (const b of bad) expect(readCursor(b), JSON.stringify(b)).toBe(null)
+  })
+})
+
+describe('ADR-75: audit types', () => {
+  it('a reconciled sweep and an overdue company have their own types', () => {
+    expect(AUDIT.FILE_LINKS_RECONCILED).toBe('file_links.reconciled')
+    expect(AUDIT.FILE_LINKS_RECONCILIATION_OVERDUE).toBe('file_links.reconciliation_overdue')
   })
 })

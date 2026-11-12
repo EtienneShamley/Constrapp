@@ -1,5 +1,5 @@
 import { getApps, initializeApp } from 'firebase-admin/app'
-import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore'
+import { getFirestore, FieldPath, FieldValue, Timestamp } from 'firebase-admin/firestore'
 import { getAuth } from 'firebase-admin/auth'
 import { getStorage } from 'firebase-admin/storage'
 
@@ -29,4 +29,4 @@ export const getAdminAuth = () => getAuth(adminApp())
 // name, the project's default bucket (FIREBASE_CONFIG) is used.
 export const getBucket = (name = '') => (name ? getStorage(adminApp()).bucket(name) : getStorage(adminApp()).bucket())
 
-export { FieldValue, Timestamp }
+export { FieldPath, FieldValue, Timestamp }

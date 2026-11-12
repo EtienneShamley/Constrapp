@@ -25,6 +25,11 @@ export const AUDIT = {
   FILE_LINKS_REVOCATION_REQUESTED:  'file_links.revocation_requested',
   FILE_LINKS_REVOKED:               'file_links.revoked',
   FILE_LINKS_REVOCATION_INCOMPLETE: 'file_links.revocation_incomplete',
+  // ADR-75 — a ROUTINE sweep that removed at least one token, and a company
+  // that has gone two intervals without a successful sweep. A routine request,
+  // and a routine sweep that found nothing, write no event.
+  FILE_LINKS_RECONCILED:              'file_links.reconciled',
+  FILE_LINKS_RECONCILIATION_OVERDUE:  'file_links.reconciliation_overdue',
 }
 
 export const auditCollection = (db, companyId) =>
