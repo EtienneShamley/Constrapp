@@ -3221,6 +3221,33 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     sweep at volume and decide the external-role removal procedure. Not
     claimed as closed anywhere.
 
+    **Part C — ADR-75. Stage 1 is IMPLEMENTED on
+    `security/dc46-c-periodic-reconciliation` and NOT DEPLOYED (12 November
+    2026). Nothing in production has changed, so every statement above still
+    describes production, and this control stays OPEN.**
+    - *What Stage 1 adds, once deployed AND switched on:* the same worker
+      also sweeps each company on a timer — when its last successful sweep
+      started at least `FILE_LINK_RECONCILE_INTERVAL_HOURS` ago — so a token
+      on a new upload, or one created by any other means, is removed without
+      waiting for a membership change. Membership and operator requests are
+      always served first.
+    - *It is OFF by default (`0`).* With `0` the worker does no planning at
+      all. Switching it on in production needs its own authorisation.
+    - *It is a bound, not a guarantee, and not prevention.* A token lives
+      until the next successful sweep of its company: the interval plus
+      planning, queue and sweep time, and longer while a sweep is incomplete
+      or the worker is paused. An active member can obtain a new link the
+      moment after a sweep. Never describe it as "revoked within 24 hours".
+    - *Enforced by the trusted backend (when deployed):* tenant-confined
+      sweeps, urgent-before-routine order, completion only with zero
+      failures. *Enforced by Firestore Rules (default deny):* no browser can
+      read or write the planning cursor, the state or the queue.
+    - *Proven only in the emulator with a fake bucket:* everything about
+      Stage 1. Nothing about it has run against real Cloud Storage.
+    - *Still open after Stage 1:* document visibility reduction (Stage 2),
+      external-member removal (Stage 3), measurement at volume (Stage 4),
+      and the unproven cause of the tokens that reappeared in production.
+
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
 is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.

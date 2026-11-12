@@ -1,4 +1,4 @@
-import { defineBoolean, defineSecret, defineString } from 'firebase-functions/params'
+import { defineBoolean, defineInt, defineSecret, defineString } from 'firebase-functions/params'
 
 // ── Deployment parameters ────────────────────────────────────────────────────
 //
@@ -25,6 +25,24 @@ export const TEAM_MANAGEMENT_ENABLED = defineBoolean('TEAM_MANAGEMENT_ENABLED', 
 //   default bucket from the runtime configuration.
 export const FILE_LINK_REVOCATION_ENABLED = defineBoolean('FILE_LINK_REVOCATION_ENABLED', { default: true })
 export const STORAGE_BUCKET = defineString('STORAGE_BUCKET', { default: '' })
+
+// ADR-75 (DC46-C) — periodic reconciliation by the SAME worker.
+//   0 (the default) = OFF: no planning, no cursor read or write, no periodic
+//   request. Membership and operator revocation run exactly as in ADR-74.
+//   1–168 = a company is swept again once its last SUCCESSFUL sweep started
+//   that many hours ago.
+//   Anything else is INVALID. The CLI does not range-check a dotenv value, so
+//   two things stand guard: `functions/test/fileLinks.test.js` — run by the
+//   deploy's predeploy step — fails on an invalid value in any
+//   `.env.<projectId>`; and at run time the worker still does its revocation
+//   work, keeps reconciliation off, and then FAILS the run naming this setting
+//   (lib/fileLinkRevocation.js → runScheduledWorker). It is never silently off.
+//   The run-time check reads the RAW text, because an int parameter would
+//   read "24h" as 24.
+// ⚠️ Setting this above 0 in production needs its own authorisation
+//    (docs/DEPLOYMENT.md → DC46-C). It is a bound, never a guarantee.
+export const RECONCILE_INTERVAL_ENV = 'FILE_LINK_RECONCILE_INTERVAL_HOURS'
+export const FILE_LINK_RECONCILE_INTERVAL_HOURS = defineInt(RECONCILE_INTERVAL_ENV, { default: 0 })
 
 // The worker's DEDICATED runtime identity (ADR-74) — a FULL email, set per
 // project in `functions/.env.<projectId>`, so production and the validation
@@ -64,4 +82,5 @@ export const readConfig = () => ({
 export const readFileLinkConfig = () => ({
   enabled: FILE_LINK_REVOCATION_ENABLED.value(),
   bucket: STORAGE_BUCKET.value(),
+  reconcileIntervalRaw: process.env[RECONCILE_INTERVAL_ENV],
 })

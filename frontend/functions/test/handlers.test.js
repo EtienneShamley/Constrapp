@@ -72,6 +72,10 @@ describe('callable surface', () => {
     expect(opts).toMatch(/schedule:\s*'every 1 minutes'/)
     expect(opts).toMatch(/region:\s*REGION/)
     expect(opts).toMatch(/maxInstances:\s*1,/)
+    // ADR-75: one REQUEST at a time as well. `maxInstances: 1` alone still lets
+    // two Scheduler ticks run side by side (2nd-gen default concurrency is 80).
+    expect(opts).toMatch(/concurrency:\s*1,/)
+    expect(opts).toMatch(/timeoutSeconds:\s*300,/)
     expect(opts).toMatch(/retryCount:\s*0/)
     expect(opts).not.toMatch(/secrets/)
     // A dedicated, PROJECT-RELATIVE runtime identity: the CLI expands `name@`

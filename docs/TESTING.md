@@ -7912,3 +7912,66 @@ PDFs, token values never printed (SHA-256 fingerprints).
 15. - [ ] Spot-check three customers' Team pages (with their consent or as
        the operator): no row reads *pending* or *delayed*.
 16. - [ ] Regression: §51 steps 1–7 and 12 (including **Android Chrome**).
+
+## 53. DC46-C — Periodic token reconciliation, Stage 1 (ADR-75) — IMPLEMENTED, NOT DEPLOYED (12 November 2026)
+
+On `security/dc46-c-periodic-reconciliation`. **Nothing in this section has
+been run in production, and periodic reconciliation is OFF by default**
+(`FILE_LINK_RECONCILE_INTERVAL_HOURS=0`). Switching it on needs its own
+authorisation (DEPLOYMENT.md → *DC46-C*). Deferred Control 46 stays OPEN.
+
+**Automated (must pass first).** Run from `frontend/`; the emulator suites
+need Java 21+.
+
+| Suite | Command | Result, 12 November 2026 |
+|---|---|---|
+| Functions, pure | `npm run functions:test` | 3 files, 70 tests |
+| Functions, emulator | `npm run test:functions` | 6 files, 134 tests (51 in the new file) |
+| Frontend unit | `npm run test:unit` | 80 files, 4,427 tests |
+| Rules | `npm run test:rules` | 35 files, 2,204 tests |
+| Lint | `npm run lint`, `npm run functions:lint` | clean |
+| Build | `npm run build` | clean |
+
+`tests/functions/team.reconciliation.test.js` uses the Firestore emulator, the
+fake bucket and an injected clock. Where a test needs time to pass, the fake
+bucket's listing advances the clock by a fixed cost; nothing sleeps.
+
+| Group | What is asserted |
+|---|---|
+| A. Interval `0` | No cursor read, no company enumeration, no periodic request over repeated runs; urgent revocation unchanged |
+| Configuration | Absent and `0` are off and valid; a valid value switches planning on; an invalid value does the urgent work, keeps reconciliation off and fails the run; every env file holds a valid value and production holds `0` |
+| B. Eligibility | Due, not due, never swept; a zero-removal sweep writes no audit event and moves the clock to its START; a removal writes `file_links.reconciled`; an incomplete sweep moves nothing; outstanding and backing-off companies get no second request |
+| C. Cursor | 250 companies in three bounded invocations, each examined once; budget-limited batches; a failed batch repeated without duplicates; companies added and removed mid-pass; five corrupted shapes; resume after a valid cursor; two planners at once; a cursor changed underneath; invalid ids; planning failure does not stop urgent work |
+| D. Priority and fairness | Urgent before periodic; routine run bounded to 45 s plus one page; large company yields and resumes from its checkpoint; any number of yields is not a failure; a lone company is not sliced; routine share under endless urgent work; hard stop; no company served twice while another waits; same-company pre-emption without false completion; urgent sweeps never restarted |
+| E. Failure | Failed listing resumes; HTTP 400, 410, 404 and 403 while resuming keep the checkpoint and restart nothing; a position refused for good ends in five failures, a backoff and a fresh sweep from the first page; five consecutive failed runs close as incomplete; a new urgent request then clears the backoff; killed runs count as failures; failures must be consecutive; a persistent conditional-update failure is never complete; repeated runs after success change nothing |
+| Fairness under stress | A killed run does not keep its company at the front; sustained urgent arrivals do not starve a waiting company; a page slower than the whole run only yields; work finished elsewhere mid-run is passed over and new work is picked up next run; planning pauses on a full periodic queue |
+| Overdue | Counted each pass, error log, one audit per episode, cleared by success |
+| F. Isolation | Only the company's own prefix listed and changed (including a prefix that begins with another company's name); no token value or URL in any document, log or result; bounded log line |
+
+**⚠️ What these tests do NOT prove.** They use a fake bucket and an injected
+clock. Not measured or verified anywhere: how long a real page takes; whether
+the 60 s / 30 s slices and the 45 s routine share suit real workloads; which
+error Cloud Storage returns for a stale page token (none is assumed); `concurrency: 1` on the
+deployed function; Cloud Scheduler's behaviour when an overlapping tick is
+refused. No latency figure may be quoted from this section.
+
+**Manual, in production — NOT RUN, NOT AUTHORISED.** To be run on the
+development tenant only, with test files only, after explicit authorisation.
+
+1. - [ ] Read-only: record the deployed worker's concurrency and the
+      Scheduler job's attempt deadline before the deploy.
+2. - [ ] Deploy the worker with the interval `0`. For ten minutes: every run
+      succeeds and logs nothing; no `system/fileLinkReconciliation` document
+      exists; the queue is empty.
+3. - [ ] Deactivate a test member: *pending* → *revoked* exactly as in §52.
+4. - [ ] With authorisation, set a short interval and redeploy the worker.
+      Within about an hour a `file-links: reconciliation plan complete` log
+      line appears and the cursor document exists.
+5. - [ ] Obtain a download URL for a test file (it opens). Make no membership
+      change. After the next periodic sweep the URL returns **403**, the file
+      still opens in the app, and the audit trail has `file_links.reconciled`
+      with a count and no token value.
+6. - [ ] While a periodic sweep is queued, deactivate a test member: that
+      revocation completes first.
+7. - [ ] A company with no tokens is swept without an audit event.
+8. - [ ] Set the approved interval and redeploy. Regression: §51 and §52.
