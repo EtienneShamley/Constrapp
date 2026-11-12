@@ -72,7 +72,7 @@ ES modules, `firebase-admin` 14, `firebase-functions` 7) deployed as eight
 each authorises its caller itself from `users/{uid}` — the same document the
 rules trust — and derives the company from it. App Check is enforced on every
 callable. There is no Express, no HTTP router, no event trigger and no other
-database. **One scheduled worker (ADR-74, not yet deployed)**,
+database. **One scheduled worker (ADR-74, live since 12 November 2026)**,
 `processFileLinkRevocations`, runs every minute and removes legacy Firebase
 download tokens from the Storage objects of companies whose membership
 transactions queued a request (`lib/fileLinkRevocation.js`,

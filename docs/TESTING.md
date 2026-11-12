@@ -7802,7 +7802,34 @@ passes — step 9 is expected to show that.
 14. - [ ] Go offline and press Open: a readable error, the placeholder tab
        closes, and a retry after reconnecting works.
 
-## 52. DC46-B — Legacy download-token revocation (ADR-74) — NOT YET DEPLOYED
+## 52. DC46-B — Legacy download-token revocation (ADR-74) — LIVE IN PRODUCTION (deployed and accepted, 12 November 2026)
+
+**Production acceptance record — 12 November 2026 (`constrapp-69b5d`).**
+Constrap had not launched; the only company was the Product Owner's
+development tenant, so "test company" below was that tenant. Deployment
+sequence and infrastructure checks: DEPLOYMENT.md → *DC46-B* → *Production
+release record*. Times are UTC.
+
+| Step below | Result in production |
+|---|---|
+| 1 — worker runs each minute, silent when idle | **Passed.** Deployed alone first; every run HTTP 200, no log line while the queue was empty |
+| 2 — operator dry run | **Passed.** 1 company, 4 objects, 4 with a token; a repeat gave the same counts |
+| 12–14 — clean-up, run with `--company-id` (the only company) | **Passed.** Exit 0; *4 scanned, 4 token(s) removed, 0 failed*; dry run afterwards 0 with a token; generation, size and MD5 of every object unchanged |
+| 3 — upload a test file, its download URL opens | **Passed** (Product Owner; a disposable PDF; URL taken from the Firebase console, checked with `curl`, never displayed) |
+| 4 — deactivate a test member → *revocation pending* | **Passed** (Product Owner). The member had been re-invited first (§49 reactivation: `member.auth_reenabled`, `invite.accepted`) |
+| 5 — *revoked*; old URL 403; file still opens in the app | **Passed** (Product Owner). Worker sweep finished 24 s after the deactivation: *5 scanned, 3 removed, 0 failed* |
+| 9 — audit events, no token value | **Passed.** `file_links.revocation_requested` (source `callable`, same timestamp as `member.deactivated`) and `file_links.revoked` (source `worker`); no token-shaped string in state, queue, audit events or logs |
+| 10 — browsers cannot read the state document | **Not run in the browser.** The published Firestore ruleset is byte-identical to the repository and has no block for either path (default deny); proven in the emulator suite |
+| 6 — dialog and notice wording | **Not recorded** as a separate check |
+| 7, 8 — overlapping clean-ups; *delayed* after a paused worker | **Not run in production.** Validation project and automated suites only |
+| 11 — *not yet revoked* for a member deactivated before the release | **Not recorded** |
+| 15 — spot-check customers' Team pages | **Not applicable** — no customers yet |
+| 16 — regression §51 (including Android Chrome) | **Not recorded**; Android Chrome is still untested |
+
+**Unexpected in step 5:** three tokens were removed, not one. Two objects
+cleaned earlier that day had a token again (`metageneration` 2 → 4). Cause
+unproven (no Storage data-access logs; the Firebase console's file panel is
+the likely source). Tracked under Deferred Control 46.
 
 Functions first, then Hosting. Use a TEST company and TEST files only; never
 capture, open or record a customer's file or URL. Deferred Control 46 stays
