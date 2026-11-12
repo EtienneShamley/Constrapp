@@ -147,6 +147,37 @@ export const memberStatusBadge = (member) =>
     ? { label: member.authSyncPending ? 'Deactivated · sync pending' : 'Deactivated', variant: 'soon' }
     : { label: 'Active', variant: 'active' }
 
+// ── Old file links (ADR-74, DC46-B) ──────────────────────────────────────────
+//
+// Removing a member is immediate; revoking file links they may have copied
+// earlier is a BACKGROUND clean-up reported by the backend (listTeam →
+// member.fileLinks). The wording never says "immediately", and "revoked"
+// appears only when the backend says a full clean-up finished after the
+// member's access changed. `null` means there is nothing to show.
+export const FILE_LINK_STATUS = { PENDING: 'pending', REVOKED: 'revoked', DELAYED: 'delayed', NOT_REQUESTED: 'not_requested' }
+
+export const fileLinkNote = (member) => {
+  const f = member?.fileLinks
+  if (!f) return null
+  switch (f.status) {
+    case FILE_LINK_STATUS.REVOKED:
+      return { text: 'Old file links: revoked', tone: 'muted' }
+    case FILE_LINK_STATUS.PENDING:
+      return { text: 'Old file links: revocation pending', tone: 'pending' }
+    case FILE_LINK_STATUS.DELAYED:
+      return {
+        text: Number.isInteger(f.outstanding) && f.outstanding > 0
+          ? `Revocation delayed: retrying (${f.outstanding} ${f.outstanding === 1 ? 'file' : 'files'} outstanding)`
+          : 'Revocation delayed: retrying',
+        tone: 'warning',
+      }
+    case FILE_LINK_STATUS.NOT_REQUESTED:
+      return { text: 'Old file links: not yet revoked', tone: 'warning' }
+    default:
+      return null
+  }
+}
+
 export const canEditMember = (member) =>
   !!member && member.status === MEMBER_STATUS.ACTIVE && member.managed === 'team' && !member.isSelf && isTeamRole(member.role)
 

@@ -10,7 +10,7 @@ import { useProfile } from '../../hooks/useProfile'
 import { useTeam } from '../../hooks/useTeam'
 import { formatRole, formatIsoDate } from '../../lib/formatters'
 import {
-  TEAM_ROLES, canManageTeam, canEditMember, inviteStatusBadge, deliveryBadge, memberStatusBadge,
+  TEAM_ROLES, canManageTeam, canEditMember, inviteStatusBadge, deliveryBadge, memberStatusBadge, fileLinkNote,
   teamErrorMessage, INVITE_STATUS, MEMBER_STATUS,
 } from '../../lib/team'
 
@@ -41,6 +41,16 @@ function Notice({ notice, onDismiss }) {
       <button type="button" onClick={onDismiss} aria-label="Dismiss" className="min-w-[32px] min-h-[24px] -mr-1 -my-1 opacity-80 hover:opacity-100">✕</button>
     </div>
   )
+}
+
+// ADR-74: whether links this person may have copied earlier are revoked yet.
+// A background clean-up reported by the backend — never shown as immediate.
+const FILE_LINK_TONE = { muted: 'text-brand-muted', pending: 'text-brand-muted', warning: 'text-brand-amber' }
+
+function FileLinkNote({ member }) {
+  const note = fileLinkNote(member)
+  if (!note) return null
+  return <span className={`block text-[11px] mt-1 ${FILE_LINK_TONE[note.tone]}`}>{note.text}</span>
 }
 
 function RoleSelect({ id, value, onChange, disabled }) {
@@ -204,7 +214,10 @@ export default function TeamSettings() {
                               {formatRole(m.role)}
                               {m.managed === 'operator' && <span className="block text-[11px] text-brand-muted">Managed by operator</span>}
                             </td>
-                            <td className={tdCls}><Badge label={status.label} variant={status.variant} sm /></td>
+                            <td className={tdCls}>
+                              <Badge label={status.label} variant={status.variant} sm />
+                              <FileLinkNote member={m} />
+                            </td>
                             <td className={tdCls}>{m.lastSignInAt ? formatIsoDate(m.lastSignInAt) : '—'}</td>
                             <td className={`${tdCls} text-right whitespace-nowrap`}>
                               {canEditMember(m) && (
@@ -231,6 +244,7 @@ export default function TeamSettings() {
                             <p className="text-[13px] font-semibold text-brand-text m-0 truncate">{m.name || m.email || m.uid}{m.isSelf && <span className="ml-1.5 text-[11px] font-normal text-brand-muted">(you)</span>}</p>
                             {m.email && <p className="text-[11.5px] text-brand-muted m-0 truncate">{m.email}</p>}
                             <p className="text-[12px] text-brand-text m-0 mt-1">{formatRole(m.role)}{m.managed === 'operator' && <span className="text-brand-muted"> · managed by operator</span>}</p>
+                            <FileLinkNote member={m} />
                           </div>
                           <Badge label={status.label} variant={status.variant} sm />
                         </div>
@@ -385,6 +399,7 @@ export default function TeamSettings() {
           <ul className="text-[12px] text-brand-text-soft m-0 mb-3 pl-4 space-y-1">
             <li>Their membership is removed immediately — every new request is denied.</li>
             <li>Their sign-in is disabled and their sessions are revoked.</li>
+            <li>File links they may have copied earlier are revoked by a background clean-up, not straight away. This page shows when it has finished.</li>
             <li>Their history, approvals and audit records are kept.</li>
             <li>You can invite them again later; they keep the same account.</li>
           </ul>
@@ -397,7 +412,7 @@ export default function TeamSettings() {
             <Btn type="button" variant="danger" disabled={busy} onClick={() => run(
               () => team.deactivateMember({ uid: dialog.member.uid }),
               (res) => res.authSynced
-                ? { kind: 'success', text: `${dialog.member.name || dialog.member.email} was deactivated.` }
+                ? { kind: 'success', text: `${dialog.member.name || dialog.member.email} was deactivated. Old file links are being revoked in the background.` }
                 : { kind: 'warning', text: `${dialog.member.name || dialog.member.email} was deactivated, but disabling their sign-in did not complete. Run Deactivate again to finish.` },
             )}>{busy ? 'Deactivating…' : 'Deactivate'}</Btn>
           </div>

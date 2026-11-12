@@ -396,7 +396,7 @@ describe('listTeam', () => {
 describe('changeMemberRole', () => {
   it('changes the role, mirrors it to members, audits, and applies on the next read', async () => {
     const res = await H.changeMemberRole(req('u_admin', { uid: 'u_pm', role: 'qs', expectedRole: 'project_manager' }))
-    expect(res).toEqual({ uid: 'u_pm', role: 'qs', changed: true })
+    expect(res).toEqual({ uid: 'u_pm', role: 'qs', changed: true, fileLinksRevocationQueued: false })
     expect((await userDoc('u_pm')).role).toBe('qs')
     const m = await A.db.collection('companies').doc(COMPANY_A).collection('members').doc('u_pm').get()
     expect(m.data().role).toBe('qs')
@@ -447,7 +447,7 @@ describe('deactivateMember', () => {
     // tokensValidAfterTime has one-second resolution; step past the creation second.
     await new Promise(r => setTimeout(r, 1100))
     const res = await H.deactivateMember(req('u_admin', { uid: 'u_pm' }))
-    expect(res).toEqual({ uid: 'u_pm', status: 'deactivated', changed: true, authSynced: true })
+    expect(res).toEqual({ uid: 'u_pm', status: 'deactivated', changed: true, authSynced: true, fileLinks: 'pending' })
     const u = await userDoc('u_pm')
     expect(u).toMatchObject({ companyId: null, role: null, status: 'deactivated', formerCompanyId: COMPANY_A, formerRole: 'project_manager', deactivatedBy: 'u_admin', authSyncPending: false })
     expect(u.name).toBe('Pat PM')
@@ -456,7 +456,8 @@ describe('deactivateMember', () => {
     expect(after.tokensValidAfterTime).not.toBe(before.tokensValidAfterTime)
     const m = await A.db.collection('companies').doc(COMPANY_A).collection('members').doc('u_pm').get()
     expect(m.data()).toMatchObject({ status: 'deactivated', role: 'project_manager', authSyncPending: false })
-    expect((await audits(COMPANY_A)).map(e => e.type)).toEqual(['member.auth_synced', 'member.deactivated'])
+    // ADR-74: the same transaction also records the file-link revocation request.
+    expect((await audits(COMPANY_A)).map(e => e.type).sort()).toEqual(['file_links.revocation_requested', 'member.auth_synced', 'member.deactivated'])
   })
 
   it('is idempotent and refuses self, the last admin, operator-managed and foreign targets', async () => {

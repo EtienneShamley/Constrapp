@@ -1548,7 +1548,7 @@ is run by an implementation task.**
 
 ## L1 — Trusted Backend & Team Management (ADR-72) — LIVE IN PRODUCTION (deployment and live acceptance confirmed by the Product Owner, 11 November 2026)
 
-**What ships:** eight Callable Cloud Functions (`frontend/functions/`, codebase
+**What ships:** eight Callable Cloud Functions (ADR-74 later adds one scheduled worker — see *DC46-B*) (`frontend/functions/`, codebase
 `team`, Node.js 22, region `australia-southeast1`) and a Hosting bundle with
 Company Settings → Team, `/accept-invite` and the membership gate.
 **No Firestore or Storage rules change** — `firestore.rules` stays 241,924
@@ -1711,9 +1711,14 @@ Logging → Create alert). Invitation delivery failures show in Team as "Not
 delivered" and in the logs as `invitation email failed`. Membership history is
 in `companies/{c}/auditEvents` (console read only).
 
-## DC46-A — Authenticated Storage downloads (ADR-73) — NOT YET DEPLOYED — HOSTING ONLY
+## DC46-A — Authenticated Storage downloads (ADR-73) — LIVE IN PRODUCTION (Hosting deployed and production-tested; confirmed by the Product Owner, 11 November 2026)
 
-Branch `security/dc46-authenticated-downloads`. **No Rules publish, no
+**Release record.** Merged to `main` as `1ef6689`. Passed in production: the
+drawing viewer, General Documents, Quant PDF and image viewing, iPhone
+Safari, and a deactivated member refused new Open / Download requests.
+**Android Chrome has not been tested yet** (TESTING.md §51 step 12).
+
+**No Rules publish, no
 Functions deploy, no bucket or data change.** Deferred Control 46 stays OPEN
 after this release: it stops the app minting download URLs; it does not
 revoke any URL already copied.
@@ -1740,6 +1745,240 @@ Firebase behaviour.
 connections (the whole file downloads before anything shows — 50 MB needs
 about 40 s at 10 Mbit/s), a blank tab after Open on iOS or in an in-app
 browser, and downloads with a wrong filename on Android.
+
+## DC46-B — Legacy download-token revocation (ADR-74) — NOT YET DEPLOYED — FUNCTIONS FIRST, THEN HOSTING
+
+Branch `security/dc46-b-token-revocation`. **No Rules publish.** One new
+scheduled function, changes to two callables and `listTeam`, a Team-page
+status line, and an operator script. Deferred Control 46 stays OPEN after this
+release (SECURITY.md).
+
+### Continuity checkpoint — 12 November 2026
+
+**State.** Implemented and validated on `security/dc46-b-token-revocation`;
+architect GO for Git integration and Azure CI. **Production deployment is NOT
+authorised.** Deferred Control 46 stays **OPEN**.
+
+**What was built (ADR-74).** Membership transactions (`deactivateMember`;
+`changeMemberRole` when file access drops) record a revocation request in the
+same transaction. The scheduled worker `processFileLinkRevocations` (every
+minute, one instance) removes Firebase download tokens under
+`companies/{companyId}/` with leases, per-page checkpoints and
+generation/metageneration preconditions. A member reads *revoked* only after a
+zero-failure sweep that started after their change. The Team page shows
+*pending / revoked / delayed*, never "immediate". Operator script
+`functions/scripts/revoke-file-links.mjs`: dry run by default; `--execute`
+needs `--confirm-project`; exit 3 when incomplete.
+
+**Evidence (real Firebase, `constrap-dc46-validation`).** Token removal makes
+old URLs 403 at once; authenticated reads keep working without re-creating a
+token; metadata preserved. The worker's IAM-forced failure stays *delayed*
+and recovers on the next sweep; repeats are idempotent. The operator script
+passed dry run, confirmation guard, execute, repeat, and partial failure
+(exit 3) with recovery. TESTING.md §52; ADR-74.
+
+**Security decisions.**
+- Token REMOVAL, not rotation.
+- Fail closed on any listing without version counters. This fixes the false
+  *revoked* that Stage 0 found.
+- Dedicated `file-link-worker@<projectId>` runtime account, named per project
+  by `FILE_LINK_WORKER_SERVICE_ACCOUNT`. Its Scheduler/OIDC identity is the
+  same account — an accepted trade-off of Firebase `onSchedule`, with invoker
+  granted on this service only. The shared default compute account is
+  untouched.
+- Keyless operator access by impersonating `file-link-operator@<projectId>`.
+- No Rules change.
+
+**Outstanding risks.**
+- Not immediate.
+- Active members can still mint a URL.
+- New uploads carry a token until the next sweep (no periodic sweep).
+- **Document visibility reduction (`project` → `internal`) is not covered.**
+- Operator-managed external roles need a manual run.
+- IAM cannot narrow `datastore.user` or the bucket role to `companies/`.
+- Firebase token behaviour is undocumented.
+- Scale is unmeasured.
+
+**Next production steps (each needs separate authorisation).**
+1. Create the worker and operator accounts, the custom role and the bindings
+   (below).
+2. Deploy Functions.
+3. Deploy Hosting.
+4. Read-only inventory.
+5. Pilot on a test company.
+6. All-company `--execute` (Product Owner approval).
+7. Confirm 0 tokens remain, run TESTING §52, revoke operator ADC.
+
+**Validation project.** Keep it until production completes. The Scheduler is
+paused. It holds two service accounts, a custom role, a placeholder
+`EMAIL_API_KEY`, test users and about 23 small objects.
+`functions/.env.constrap-dc46-validation` is local-only and never committed.
+
+**Identities — three, kept apart (verified in `constrap-dc46-validation`, 12 November 2026)**
+
+| Identity | Who | Holds | Never holds |
+|---|---|---|---|
+| **Worker runtime** | `file-link-worker@<projectId>.iam.gserviceaccount.com` (dedicated; must exist before the deploy) | `roles/datastore.user` (project); the custom role *file-link cleaner* (`storage.objects.list`, `storage.objects.get`, `storage.objects.update`) on the **one bucket**; `roles/run.invoker` on **this one Cloud Run service** — granted by the CLI, see below | project-wide `run.invoker`, `storage.objects.create` / `.delete`, any secret, any other bucket |
+| **Scheduler invocation** | the SAME account, as an OIDC token | — | — |
+| **Build** | the shared default compute account (`<number>-compute@developer.gserviceaccount.com`) | unchanged — it builds every function | **do not remove its roles**: in Stage 0 that broke the next deploy (*missing permission on the build service account*) |
+| **Operator** | `file-link-operator@<projectId>.iam.gserviceaccount.com`, impersonated through keyless ADC | `roles/datastore.user` (project); the same custom role on the one bucket; each human operator gets `roles/iam.serviceAccountTokenCreator` on THIS account only | anything else — an impersonated credential cannot reach another project |
+
+**Why the runtime and the Scheduler identity are the same account.** For
+`onSchedule`, the Firebase CLI always sets the Scheduler job's OIDC identity to
+the function's `serviceAccount` (`firebase-tools` `gcp/cloudscheduler.js`), and
+on every create AND update grants `run.invoker` for that account on the
+function's own Cloud Run service, replacing the previous invoker list
+(`deploy/functions/release/fabricator.js`). So the invoker right is
+**service-scoped and CLI-managed**: no project-level `run.invoker` is needed,
+and none was granted. A separate invoker account would mean an HTTP function
+plus a Scheduler job managed outside the CLI; not done — it adds a public-shaped
+endpoint and configuration drift for no security gain here.
+*Correction:* an earlier Stage 0 note said a deploy wipes the service's invoker
+binding and recommended project-level `run.invoker`. That was a misread (the
+probe used POST for Run `getIamPolicy`, which returns nothing). It is withdrawn.
+
+**What it needs in the project (check before deploying)**
+
+1. **APIs.** Cloud Scheduler, Cloud Run, Cloud Build, Artifact Registry,
+   Eventarc and Pub/Sub — the CLI enables any that are missing. Production
+   already runs 2nd-gen Functions, so only Cloud Scheduler is likely new.
+2. **The worker account** (once, Product Owner, console or `gcloud`):
+   ```
+   gcloud iam service-accounts create file-link-worker --project constrapp-69b5d \
+     --display-name "Constrap file-link revocation worker (ADR-74)"
+   gcloud iam roles create fileLinkCleaner --project constrapp-69b5d \
+     --title "File-link cleaner (ADR-74)" \
+     --permissions storage.objects.list,storage.objects.get,storage.objects.update
+   gcloud projects add-iam-policy-binding constrapp-69b5d \
+     --member serviceAccount:file-link-worker@constrapp-69b5d.iam.gserviceaccount.com \
+     --role roles/datastore.user
+   gcloud storage buckets add-iam-policy-binding gs://<bucket> \
+     --member serviceAccount:file-link-worker@constrapp-69b5d.iam.gserviceaccount.com \
+     --role projects/constrapp-69b5d/roles/fileLinkCleaner
+   ```
+   The person deploying needs `iam.serviceAccounts.actAs` on it (a project
+   owner has it). Do NOT grant it `run.invoker` yourself; the deploy does that
+   on the one service.
+3. **`functions/.env.constrapp-69b5d`** carries
+   `FILE_LINK_WORKER_SERVICE_ACCOUNT=file-link-worker@constrapp-69b5d.iam.gserviceaccount.com`
+   (committed with this branch). A deploy-time regex refuses anything that is
+   not `file-link-worker@<projectId>.iam.gserviceaccount.com`, and a unit test
+   fails if any `.env.<projectId>` names an account in a different project.
+   ⚠️ Do not use the CLI's short form `file-link-worker@`: firebase-tools 15
+   expands it for the function but sends it unexpanded to Cloud Scheduler,
+   which rejects the job (HTTP 400 — found in Stage 0).
+4. **Every parameter needs a dotenv value** for a non-interactive deploy,
+   defaults included: `STORAGE_BUCKET=` (empty = the default bucket) and
+   `FILE_LINK_REVOCATION_ENABLED=true` are in the production file.
+5. **`EMAIL_API_KEY` must exist** (it does): even
+   `--only functions:team:processFileLinkRevocations` checks every secret
+   parameter in the codebase. The worker does not bind it.
+6. **Artifact cleanup policy** — production already has one. A new project's
+   first non-interactive deploy ends with an error about it AFTER deploying;
+   set it with `firebase functions:artifacts:setpolicy --location
+   australia-southeast1 --days 1`.
+7. **Kill switch.** `FILE_LINK_REVOCATION_ENABLED=false` in
+   `functions/.env.<projectId>` + redeploy pauses the worker; requests still
+   queue. Pausing the Scheduler job also works: a later deploy updates a
+   paused job and leaves it paused (verified).
+8. **Operator credentials** (Stages 3 and 5) — keyless, scoped:
+   create `file-link-operator@` as in step 2 (same two role bindings), grant
+   the operator `roles/iam.serviceAccountTokenCreator` on that account only,
+   then
+   ```
+   gcloud auth application-default login \
+     --impersonate-service-account file-link-operator@constrapp-69b5d.iam.gserviceaccount.com
+   ```
+   and afterwards `gcloud auth application-default revoke`. No key file is
+   created; `GOOGLE_APPLICATION_CREDENTIALS` is refused by the script.
+
+**Stage 0 — evidence from `constrap-dc46-validation` (12 November 2026).**
+Only `processFileLinkRevocations` deployed, Scheduler paused when finished.
+- The first live run exposed a false *revoked* (the real client's listing
+  shape — ADR-74). Fixed, with a fail-closed check; re-verified live.
+- With the dedicated worker account (runtime = Scheduler OIDC identity,
+  `run.invoker` on the service only, no project-level invoker, the default
+  compute account untouched at `roles/editor`): tokens removed, old URLs
+  **403**, another company's URL **200**, authenticated reads **200** without
+  re-creating a token, metadata preserved, status *revoked*, no token value in
+  Cloud Logging.
+- With `storage.objects.update` withheld from the worker on the bucket: 1
+  object failed, the sweep stayed incomplete (*delayed*; the old URL still
+  200), and the first scheduled sweep after the role was restored completed it
+  (URL 403).
+- A repeat request removed 0 and touched no object; idle runs changed nothing.
+- Operator script results: TESTING.md §52 → *Operator evidence*.
+
+**Stage 1 — Functions.** `firebase deploy --only functions --project
+constrapp-69b5d`. The callables' new fields are additive, so the current
+Hosting build keeps working. Confirm in Cloud Logging that the worker runs
+each minute and is silent when nothing is queued.
+
+**Stage 2 — Hosting.** `firebase deploy --only hosting --project
+constrapp-69b5d`. The Team page now shows the status line.
+
+**Stage 3 — inventory (read only).** With the operator credential from
+step 8, from `frontend/functions`:
+
+```
+node scripts/revoke-file-links.mjs --project constrapp-69b5d \
+     --bucket <bucket> --all-companies
+```
+
+Prints, per company, how many objects exist and how many carry a download
+token. Changes nothing. Record the totals.
+
+**Stage 4 — pilot on a production TEST company.** Upload a test file, capture
+its download URL (browser console, test company only), deactivate a test
+member, wait for *Old file links: revoked*, confirm the URL is refused and
+the app still opens the file. TESTING.md §52.
+
+**Stage 5 — first all-company clean-up** (Product Owner approval; a
+production data change that cannot be undone):
+
+```
+node scripts/revoke-file-links.mjs --project constrapp-69b5d \
+     --bucket <bucket> --all-companies --execute --confirm-project constrapp-69b5d
+```
+
+Then repeat Stage 3 and confirm every company reports **0** objects with a
+token and `completed` equal to `requests`. Exit code 3 means at least one
+company did not complete — it stays queued and is retried by the worker;
+investigate before treating the release as done.
+
+**Rollback.**
+- *Pause (first move, seconds):* pause the Scheduler job
+  (`firebase-schedule-processFileLinkRevocations-australia-southeast1`) in the
+  console, or set `FILE_LINK_REVOCATION_ENABLED=false` and redeploy Functions.
+  Requests keep queuing; nothing is lost. A deploy leaves a paused job paused.
+- *Functions:* redeploy the previous Functions release. ⚠️ A non-interactive
+  deploy does not delete a function that has left the source, so the worker
+  keeps running — pause it first, then remove it deliberately with
+  `firebase functions:delete processFileLinkRevocations --project <id>`
+  (which also removes its Scheduler job). The state documents are inert
+  without it.
+- *Identities:* the worker and operator accounts can be disabled in IAM at any
+  time; nothing else depends on them. The default compute account was never
+  changed, so there is nothing to restore.
+- *Hosting:* redeploy the previous Hosting release — **not earlier than the
+  DC46-A build (`1ef6689`)**. An older build calls `getDownloadURL`; it would
+  still open files (Firebase re-creates a token on that call) but would put
+  bearer links back into the page.
+- *Removed tokens cannot be restored and do not need to be:* the app does not
+  use them.
+
+**What to watch.** Error-level `file-links: sweep incomplete` log lines (a
+company has failed three sweeps in a row); `file-links: sweep interrupted`;
+Team-page reports of *Revocation delayed*; the worker's execution time.
+
+**Cross-service rules — a deployment trap found during validation.**
+`storage.rules` calls `firestore.get()`, which needs the role
+`roles/firebaserules.firestoreServiceAgent` on the Firebase Storage service
+agent. The CLI offers the grant during an interactive Storage rules deploy —
+**and silently skips it with `--non-interactive`**, while still reporting
+success. Without it every Storage request is refused. Production already has
+the grant; any NEW project or a CI rules deploy must add it explicitly and
+allow tens of minutes for it to take effect.
 
 ## Custom domain — app.constrap.com — CONNECTED (production; confirmed live on 11 November 2026)
 

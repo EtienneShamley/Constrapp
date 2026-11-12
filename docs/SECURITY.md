@@ -3136,48 +3136,64 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     `frontend/tests/unit/budgetApprovalActions.test.js`.
 
 46. **Storage download URLs outlive a membership (ADR-72) — a
-    PRE-EXTERNAL-LAUNCH requirement. STILL OPEN; part A implemented
-    (ADR-73, NOT YET DEPLOYED), part B not approved.** A Firebase download
-    URL carries the object's download token and is served WITHOUT Storage
-    Rules, so a member who copied one keeps file access after deactivation
-    until the token is removed, which no code does.
+    PRE-EXTERNAL-LAUNCH requirement. STILL OPEN. Part A (ADR-73) is LIVE;
+    part B (ADR-74) is IMPLEMENTED and NOT YET DEPLOYED.** A Firebase
+    download URL carries the object's download token and is served WITHOUT
+    Storage Rules, so a member who copied one keeps file access after
+    deactivation until the token is removed.
 
-    **Part A — implemented (ADR-73).** The app no longer mints a download
-    URL anywhere: `hooks/useStorageUpload.jsx` reads through `getBlob` /
-    `getBytes`, which Storage Rules authorise on every call, and
+    **Part A — LIVE since 11 November 2026 (ADR-73).** The app no longer
+    mints a download URL anywhere: `hooks/useStorageUpload.jsx` reads through
+    `getBlob` / `getBytes`, which Storage Rules authorise on every call, and
     `lib/fileBlob.js` shows the bytes from `blob:` URLs. A static test fails
     if `getDownloadURL`, `downloadTokens` or a hand-built token URL appears
     in `src/`. **Proven** (`tests/rules/storage.rules.test.js` 47–57,
-    emulator): an active member reads bytes; a deactivated member, another
-    company, an unauthenticated caller and a non-internal role on an
-    internal document are denied on the next call; a re-invited member reads
-    again.
+    emulator; and observed in production by the Product Owner): an active
+    member reads bytes; a deactivated member is denied on the next call.
+    Part A revokes nothing by itself.
 
-    **What part A does NOT do — do not round up:**
-    - It revokes nothing. Every existing object still carries its token, and
-      a URL copied before the release keeps working.
-    - It does not stop an ACTIVE member obtaining a URL. `getDownloadURL` and
-      `getMetadata` are the same rules `get` as a byte read, so any member who
-      may read an object can ask the SDK for its token from the browser
-      console. Removing the call from the app is a client-side change only;
-      it can be bypassed by a direct SDK call.
-    - It cannot recall bytes already downloaded.
+    **Part B — implemented, NOT YET DEPLOYED (ADR-74).** When a member is
+    deactivated (or a role change reduces their file access), the membership
+    transaction records a revocation request; a scheduled worker then REMOVES
+    the download token from every object under that company's prefix, with
+    leases, per-page checkpoints and generation/metageneration
+    preconditions, and reports the result through `listTeam`. The behaviour
+    it relies on was **verified against real Firebase Storage on disposable
+    data** (ADR-74 evidence): removal refuses the old URL at once and for at
+    least five minutes; the app's own byte reads do not re-create a token.
+    That behaviour is **undocumented by Firebase** and may change.
 
-    **Part B — required to close this control, not approved.** Remove the
-    existing tokens from every object under `companies/` (an operator
-    Admin-SDK run), and decide how new tokens are prevented or periodically
-    removed. Three behaviours this depends on are **not documented by
-    Firebase and require empirical validation** on a non-customer test
-    object: whether a client upload creates a token automatically; whether
-    removing the `firebaseStorageDownloadTokens` metadata invalidates the old
-    URL; and whether an authorised `getDownloadURL` / metadata read creates a
-    NEW token on an object that has none. (The Storage EMULATOR does all
-    three — creates on upload, and re-creates on a rules-authorised metadata
-    read — which is an observation about the emulator, not evidence about
-    production.) If production re-creates tokens on read, a one-off removal
-    is not durable against an active member, and a durable control needs
-    either periodic removal or byte delivery that client rules do not grant.
-    Not claimed as revoked anywhere.
+    **What is true once part B is live — do not round up:**
+    - **Revocation is NOT immediate.** Membership is; old links stop working
+      only when a sweep that started after the member's change has finished
+      with zero failures. Until then the Team page says *pending* or
+      *delayed*, never *revoked*.
+    - **An ACTIVE member can still obtain a link.** `getDownloadURL` and
+      `getMetadata` are the same rules `get` as a byte read, so any member
+      who may read an object can ask the SDK for a token from the browser
+      console and share the URL. Removing the call from the app is a
+      client-side change only; it can be bypassed by a direct SDK call. The
+      link dies at the next sweep of that company.
+    - **Every new upload carries a token** until the next sweep. Sweeps run
+      only on a membership change or an operator request; there is no
+      periodic sweep.
+    - **Document visibility reduction is NOT covered.** Changing a general
+      document from `project` to `internal` is a client Firestore write that
+      no Function observes, so an external member keeps any link already
+      copied until the company is next swept. **This is the tracked gap that
+      keeps this control open**, together with the two items above.
+    - **Operator-managed external roles** (subcontractor, client) are removed
+      out of band; the operator must run
+      `functions/scripts/revoke-file-links.mjs` for the company afterwards.
+    - Bytes already downloaded cannot be recalled. Console users and project
+      IAM principals can read or create tokens. App Check's effect on token
+      URLs is untested.
+
+    **To close this control:** deploy part B and complete the first
+    all-company clean-up (DEPLOYMENT.md → *DC46-B*); then decide, by ADR, on
+    a periodic sweep (bounds the life of any token) and on the visibility
+    reduction path (a trigger or a trusted write). Not claimed as closed
+    anywhere.
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
@@ -3699,7 +3715,28 @@ number uniqueness, `raisedByName` truthfulness, and reference-label accuracy.
 `australia-southeast1`): `listTeam`, `createInvitation`, `resendInvitation`,
 `revokeInvitation`, `previewInvitation`, `acceptInvitation`,
 `changeMemberRole`, `deactivateMember`. No Express, no HTTP router, no
-triggers, no scheduled jobs, no new database. Source: `frontend/functions/src`.
+event triggers, no new database. Source: `frontend/functions/src`.
+
+**One scheduled worker (ADR-74 — implemented, NOT YET DEPLOYED).**
+`processFileLinkRevocations` runs every minute, one instance, same region, no
+secret and no caller: it acts only on revocation requests that the membership
+transactions (or the operator script) wrote. It is the only code that touches
+Cloud Storage with the Admin SDK, and it is confined to listing
+`companies/{companyId}/` and removing one metadata key
+(`lib/fileLinkTokens.js`). It runs as its OWN account,
+`file-link-worker@<projectId>`, holding only `roles/datastore.user` and a
+custom list/get/update role on the one bucket; Cloud Scheduler calls it with
+an OIDC token for that account, which may invoke this one service only (the
+CLI grants it on deploy). **IAM-level, stated plainly:** `datastore.user`
+cannot be narrowed to collections, so the worker's credential could read or
+write any Firestore document — the code confines it, IAM does not; and it may
+update the metadata of any object in the bucket, not only `companies/…` —
+again confined by the code (prefix check), not by IAM. A listing that does not
+carry each object's version counters stops the sweep (fail closed), so a
+misread response can never produce a *revoked* status. It writes no financial data. State lives in
+`companies/{c}/system/fileLinkRevocation` and
+`companies/{c}/fileLinkRevocationQueue/pending` — no rules block, so denied to
+every browser. Token values are never logged, stored or returned.
 
 **The Admin SDK bypasses Security Rules — so authorisation lives in the
 functions.** Every privileged callable runs `requireCompanyAdmin`
@@ -3797,8 +3834,11 @@ does not do, measured in the emulator:
   (up to one hour).** Revoking refresh tokens stops renewal; it does not make
   Firestore reject the current token. That is harmless here only because every
   rule also requires the membership document.
-- **Storage download URLs are NOT revoked** — see Deferred Control 46. ADR-73
-  stops the app minting new ones; existing tokens remain until part B.
+- **Storage download URLs are NOT revoked at once** — see Deferred Control
+  46. ADR-73 (live) stops the app minting new ones. ADR-74 (implemented, NOT
+  YET DEPLOYED) removes the existing tokens in the background after a
+  deactivation and reports when that has finished; until it is deployed and
+  the first clean-up has run, existing tokens remain.
 
 **App Check.** Every callable is deployed with `enforceAppCheck: true`; the
 web app uses reCAPTCHA Enterprise (`VITE_FIREBASE_APPCHECK_SITE_KEY`, public).
@@ -3841,7 +3881,9 @@ makes every callable answer `team-management-disabled` without touching data.
 `get()` `users/{uid}`); no self-service company registration; no external
 (subcontractor/client) onboarding — DC20 still stands; no MFA; no admin UI
 over the audit log; no automated email bounce handling; **Storage download
-URLs are not revoked on deactivation (Deferred Control 46, still open)**;
+URLs are not revoked immediately on deactivation — a background clean-up
+(ADR-74, NOT YET DEPLOYED) removes them afterwards (Deferred Control 46, still
+open)**;
 **general App Check enforcement for Firestore, Storage and Authentication is
 not enabled** (callables only). App Check and the email secret are
 production configuration, not code — both are in place for `constrapp-69b5d`

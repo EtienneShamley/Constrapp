@@ -109,3 +109,42 @@ describe('dialogs', () => {
     expect(TEAM).not.toMatch(/style=\{\{/)
   })
 })
+
+// ── ADR-74 (DC46-B) — old file links on the Team page ───────────────────────
+describe('file-link revocation surface', () => {
+  const TEAM_LIB = src('lib/team.js')
+  const FN_STATE = read('functions/src/lib/fileLinkRevocation.js')
+
+  it('both member layouts show the note, from the pure helper, with tokens-only styling', () => {
+    expect(TEAM.match(/<FileLinkNote member=\{m\} \/>/g)).toHaveLength(2)
+    expect(TEAM).toContain('const note = fileLinkNote(member)')
+    expect(TEAM).toContain("const FILE_LINK_TONE = { muted: 'text-brand-muted', pending: 'text-brand-muted', warning: 'text-brand-amber' }")
+    expect(TEAM).not.toMatch(/style=\{\{/)
+  })
+
+  it('deactivation copy separates the immediate membership loss from the background link clean-up', () => {
+    expect(TEAM).toContain('Their membership is removed immediately — every new request is denied.')
+    expect(TEAM).toContain('File links they may have copied earlier are revoked by a background clean-up, not straight away.')
+    expect(TEAM).toContain('Old file links are being revoked in the background.')
+    // No copy on the page claims links are revoked immediately.
+    expect(TEAM).not.toMatch(/links?[^.<]{0,60}(revoked|removed)\s+(immediately|instantly|at once)/i)
+    expect(TEAM_LIB).not.toMatch(/links?[^.'`]{0,60}(immediately|instantly)/i)
+  })
+
+  it('the page learns the status from listTeam only — no listener, no Storage call, no token', () => {
+    expect(TEAM).not.toMatch(/from\s*'firebase\//)
+    expect(TEAM + TEAM_LIB + USE_TEAM).not.toMatch(/getDownloadURL|downloadTokens|firebaseStorageDownloadTokens|getMetadata\s*\(/)
+    expect(USE_TEAM).not.toContain('onSnapshot(')
+  })
+
+  it('client and backend agree on the status values', () => {
+    expect(FN_STATE).toContain("export const FILE_LINK_STATUS = { PENDING: 'pending', REVOKED: 'revoked', DELAYED: 'delayed', NOT_REQUESTED: 'not_requested' }")
+    expect(TEAM_LIB).toContain("export const FILE_LINK_STATUS = { PENDING: 'pending', REVOKED: 'revoked', DELAYED: 'delayed', NOT_REQUESTED: 'not_requested' }")
+  })
+
+  it('the backend added NO rules: the state, the queue and the audit trail stay denied by default', () => {
+    const RULES = read('firestore.rules')
+    expect(RULES).not.toMatch(/fileLinkRevocation|fileLinkRevocationQueue/)
+    expect(read('storage.rules')).toContain('allow update, delete: if false;')
+  })
+})

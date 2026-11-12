@@ -7741,7 +7741,13 @@ leave them unticked until they are.
       `invites@constrap.com`, and its link opens the configured
       `APP_BASE_URL`'s `/accept-invite`.
 
-## 51. DC46-A — Authenticated Storage downloads (ADR-73) — NOT YET DEPLOYED
+## 51. DC46-A — Authenticated Storage downloads (ADR-73) — LIVE IN PRODUCTION (11 November 2026)
+
+**Recorded by the Product Owner, 11 November 2026:** drawing viewer — pass;
+General Documents — pass; Quant PDF and image viewing — pass; iPhone Safari —
+pass; deactivated member denied new Open / Download requests — pass.
+**Android Chrome — NOT YET TESTED** (step 12). Steps not named here were not
+reported individually.
 
 Hosting only. Use a TEST company and TEST files; never open, copy or record a
 customer's file or URL. Deferred Control 46 stays OPEN after this section
@@ -7795,3 +7801,87 @@ passes — step 9 is expected to show that.
        stays responsive. Note the time taken.
 14. - [ ] Go offline and press Open: a readable error, the placeholder tab
        closes, and a retry after reconnecting works.
+
+## 52. DC46-B — Legacy download-token revocation (ADR-74) — NOT YET DEPLOYED
+
+Functions first, then Hosting. Use a TEST company and TEST files only; never
+capture, open or record a customer's file or URL. Deferred Control 46 stays
+OPEN after this section passes.
+
+**Automated (must pass first):** `functions/test/fileLinks.test.js` (the
+Storage side and the status rule, fake bucket, plus `listPage` through the
+real `@google-cloud/storage` client), `functions/test/handlers.test.js`
+(worker options and per-project service accounts), `tests/functions/
+team.fileLinks.test.js` (the transactions, lease, checkpoints, audit and
+rules denial, Firestore emulator), `tests/functions/scripts.test.js`
+(operator script refusals), `tests/unit/team.test.js` and
+`tests/unit/teamSurface.test.js` (wording and surface).
+
+**⚠️ What the automated tests do NOT prove.** They use a fake bucket. That
+removing a token refuses a real URL was verified once, by hand, against real
+Firebase Storage (ADR-74 evidence). Steps 3–5 below are the production check.
+
+**Operator evidence — real Firebase Storage, `constrap-dc46-validation`, 12 November 2026.**
+Credential: Application Default Credentials of type
+`impersonated_service_account` (the operator's own login impersonating
+`file-link-operator@constrap-dc46-validation`; no key file;
+`GOOGLE_APPLICATION_CREDENTIALS` unset). The access token's `azp` matched that
+account's unique id. That account has roles only in the validation project
+(`datastore.user`, the file-link custom role on its bucket), so the credential
+cannot act on production; production was not probed. Scheduler paused
+throughout, so only the operator ran. Test company `dc46Op`, disposable 60-byte
+PDFs, token values never printed (SHA-256 fingerprints).
+
+| Check | Result |
+|---|---|
+| Default (no flags) | exit 0; *3 objects, 3 with a download token*; objects and revocation state byte-for-byte unchanged |
+| `--execute --confirm-project some-other-project` · `--execute` alone | both exit 2 (*--execute needs --confirm-project <the same project id>*); nothing changed |
+| `--execute --confirm-project constrap-dc46-validation` | exit 0; *3 scanned, 3 token(s) removed, 0 failed*; 0 tokens left; old URLs **403, 403, 403**; authenticated SDK reads **200, 200, 200**; audit `file_links.revocation_requested` + `file_links.revoked`, source `operator` |
+| Same command again | exit 0; *0 token(s) removed*; no object's `metageneration` changed |
+| Operator account limited to `storage.objectViewer` on the bucket, one new file with a token | **exit 3**; *NOT complete: 1 object(s) failed. Old links for those objects may still work*; old URL still **200**; `completedSeq` not advanced; `consecutiveIncomplete` 1 |
+| Role restored, same command | exit 0; *1 token(s) removed, 0 failed*; old URL **403**; authenticated read **200**; request complete |
+| Token values in any script output | none |
+
+**Rehearsal (disposable project) and production pilot (test company)**
+
+1. - [ ] Deploy Functions. In Cloud Logging the worker
+      (`processFileLinkRevocations`) runs every minute and logs nothing when
+      no company is queued.
+2. - [ ] Operator dry run (`--company-id <test company>`): prints object and
+      token counts, changes nothing (re-run: same counts).
+3. - [ ] As an admin of the test company, upload a test drawing. In the
+      browser console obtain its download URL (test company only) and confirm
+      it opens in a private window.
+4. - [ ] Deactivate a test member. **Immediately:** the member is refused
+      (§51 step 8). The Team row shows *Old file links: revocation pending* —
+      **not** *revoked*.
+5. - [ ] Within a few minutes, after reloading Team: *Old file links:
+      revoked*. The URL from step 3 now returns 403 in a private window. The
+      drawing still opens in the app (viewer, Download, Quant).
+6. - [ ] The deactivate dialog and its success notice say the links are
+      revoked by a background clean-up; nothing on the page says
+      "immediately" about links.
+7. - [ ] Deactivate a second test member while a clean-up is running (large
+      test company or rehearsal project): the second member stays *pending*
+      until a later clean-up finishes.
+8. - [ ] Pause the worker (`FILE_LINK_REVOCATION_ENABLED=false`, redeploy),
+      deactivate a test member, wait 15 minutes: *Revocation delayed:
+      retrying*. Re-enable: it becomes *revoked*.
+9. - [ ] Firestore console: `companies/{c}/auditEvents` holds
+      `file_links.revocation_requested` and `file_links.revoked` with a
+      sequence and counts, and **no token value** anywhere in
+      `system/fileLinkRevocation`, the queue, the audit events or the logs.
+10. - [ ] Signed in as a company admin, the browser console cannot read
+       `companies/{c}/system/fileLinkRevocation` (permission denied).
+11. - [ ] A member deactivated before this release shows *Old file links: not
+       yet revoked* until the all-company clean-up, then *revoked*.
+
+**First all-company clean-up (production, Product Owner approval)**
+
+12. - [ ] Dry run `--all-companies`: totals recorded.
+13. - [ ] `--execute --confirm-project constrapp-69b5d`: every company
+       completes with 0 failed; exit code 0.
+14. - [ ] Dry run again: 0 objects with a token in every company.
+15. - [ ] Spot-check three customers' Team pages (with their consent or as
+       the operator): no row reads *pending* or *delayed*.
+16. - [ ] Regression: §51 steps 1–7 and 12 (including **Android Chrome**).
