@@ -1746,14 +1746,118 @@ connections (the whole file downloads before anything shows — 50 MB needs
 about 40 s at 10 Mbit/s), a blank tab after Open on iOS or in an in-app
 browser, and downloads with a wrong filename on Android.
 
-## DC46-B — Legacy download-token revocation (ADR-74) — NOT YET DEPLOYED — FUNCTIONS FIRST, THEN HOSTING
+## DC46-B — Legacy download-token revocation (ADR-74) — LIVE IN PRODUCTION (deployed and accepted, 12 November 2026)
 
-Branch `security/dc46-b-token-revocation`. **No Rules publish.** One new
-scheduled function, changes to two callables and `listTeam`, a Team-page
-status line, and an operator script. Deferred Control 46 stays OPEN after this
-release (SECURITY.md).
+Merged to `main` (`0a2b3b8`). **No Rules publish.** One new scheduled
+function, changes to two callables and `listTeam`, a Team-page status line,
+and an operator script. **Deferred Control 46 stays OPEN after this release**
+(SECURITY.md) — this section closes the DC46-B release, not the control.
 
-### Continuity checkpoint — 12 November 2026
+### Production release record — 12 November 2026
+
+**State.** Deployed to `constrapp-69b5d` and accepted by the Product Owner in
+the browser. Constrap had not launched: the only company was the Product
+Owner's development tenant, so every production step below ran against that
+one tenant. Times are UTC.
+
+**Sequence actually used.** It differs from the staged plan further down: the
+worker was deployed ALONE first, so that nothing in production could queue a
+request while it was being verified. Each step was separately authorised.
+
+1. **Infrastructure** (Product Owner, `gcloud`). Cloud Scheduler API enabled;
+   `file-link-worker@` and `file-link-operator@` created; custom role
+   `fileLinkCleaner` (`storage.objects.get`, `.list`, `.update`); for both
+   accounts `roles/datastore.user` on the project and the custom role on the
+   bucket **`constrapp-69b5d.firebasestorage.app`**. Verified afterwards: no
+   user-managed keys, no other grant, no project-wide invoker, the default
+   compute account unchanged.
+2. **Worker only** —
+   `firebase deploy --only functions:team:processFileLinkRevocations --project constrapp-69b5d`.
+   The eight callables stayed on their L1 revisions. Verified: one Scheduler
+   job, enabled, every minute, OIDC identity = the worker account;
+   `run.invoker` for that account on that one service only; every run HTTP 200
+   and silent; queue count 0.
+3. **Operator set-up and inventory.** `roles/iam.serviceAccountTokenCreator`
+   for the operator on `file-link-operator@` only; impersonated ADC (no key
+   file). Dry run: 1 company, 4 objects, 4 with a download token.
+4. **Historical clean-up (operator script)** —
+   `--company-id <the tenant> --execute --confirm-project constrapp-69b5d`:
+   exit 0, *4 scanned, 4 token(s) removed, 0 failed*. Every object kept its
+   generation, size and MD5; only `metageneration` moved (1 → 2). Audit:
+   `file_links.revocation_requested` + `file_links.revoked`, source `operator`.
+5. **All Functions** — `firebase deploy --only functions`. The callables moved
+   to new revisions built from source byte-identical to `main`; the worker was
+   skipped as unchanged. Each callable still answered 401 without an App Check
+   token.
+6. **Hosting** — `firebase deploy --only hosting` (release 05:46). The live
+   files were byte-identical to a fresh build of `main`, with the App Check
+   site key present.
+7. **Browser acceptance (Product Owner)** — TESTING.md §52 → *Production
+   acceptance record*. Re-invited test member, test upload, deactivation,
+   *pending* → *revoked*, old URL **403**, in-app access kept.
+
+**What production showed for the end-to-end run.** The deactivation and its
+revocation request carry the same timestamp (06:12:39, one transaction). The
+scheduled worker completed the sweep at 06:13:03 — 24 seconds later — with
+*5 scanned, 3 removed, 0 failed*; audit source `worker`. Afterwards: request
+and completed sequence both 2, no lease, no open sweep, queue 0, five objects
+and none with a token, all nine functions ACTIVE, no warning or error in the
+logs, no token-shaped string in any function log.
+
+**Identity and IAM decisions, as deployed.** Exactly the table below
+(*Identities — three, kept apart*): a dedicated worker account that is also
+the Scheduler OIDC identity, with the invoker right on its own service only;
+keyless operator access by impersonation; the shared default compute account
+untouched (it remains the build account).
+
+**Evidence that is NOT from production.** Forced failure, retry/backoff,
+exit code 3, the *delayed* status and repeat-`--execute` idempotency were
+exercised only in `constrap-dc46-validation` and in the automated suites.
+Storage data-access audit logging is off in production, so per-object changes
+are evidenced by object version counters and the Firestore audit trail, not
+by an audit log of each request.
+
+**Found during the release — tracked, not fixed here** (SECURITY.md →
+Deferred Control 46):
+- **Tokens were re-created outside the app.** The acceptance sweep removed
+  three tokens although only one file was new: two already-cleaned objects had
+  gained a token again (`metageneration` 2 → 4). The cause is unproven; the
+  Firebase console's file panel is the likely source. The sweep removed them.
+- **No periodic sweep** — such tokens, and those on new uploads, live until
+  the next membership change or operator run.
+- **Role reduction cannot fire through the app** — `changeMemberRole` accepts
+  internal roles only, so removing an external role stays an operator
+  procedure followed by a manual script run.
+- **A re-invited member keeps the old revocation sequence**, so their ACTIVE
+  row can read *Old file links: revoked*.
+- **Scale is unmeasured** — the largest production sweep was five objects.
+
+**Functions source archive (corrected after this release).** The two Functions
+deploys above packaged local files into the uploaded source archive
+(`.env.local`, `.env.constrap-dc46-validation`): `firebase.json` had no
+`ignore` list, and the CLI's default excludes only `node_modules` and `.git` —
+`.gitignore` does not apply to packaging. No secret was in those files (key
+names checked). `firebase.json` → `functions[].ignore` now lists the standard
+Firebase entries plus `*.local` and `.env.*-validation`; the archive is exactly
+the 33 tracked files under `functions/`, including the required
+`.env.constrapp-69b5d`. The next Functions deploy will therefore see a changed
+source hash and roll all nine functions to new revisions with no code change.
+
+**Validation project — retirement plan.** `constrap-dc46-validation` is no
+longer needed for the release. Retire it once this record is merged (it is the
+only place the failure and retry behaviour was demonstrated, and the docs cite
+it): Product Owner runs `gcloud projects delete constrap-dc46-validation`
+(recoverable for 30 days), then deletes the local, never-committed
+`functions/.env.constrap-dc46-validation`.
+
+**Housekeeping still to do.** Revoke the operator's impersonated ADC
+(`gcloud auth application-default revoke`) and decide whether to keep the
+operator's token-creator binding for future manual runs.
+
+### Continuity checkpoint — 12 November 2026 (pre-release; superseded by the record above)
+
+*Historical. Kept as written before the production release; where it says
+"not authorised" or lists next steps, the record above is the current state.*
 
 **State.** Implemented and validated on `security/dc46-b-token-revocation`;
 architect GO for Git integration and Azure CI. **Production deployment is NOT
@@ -1852,7 +1956,7 @@ probe used POST for Run `getIamPolicy`, which returns nothing). It is withdrawn.
    gcloud projects add-iam-policy-binding constrapp-69b5d \
      --member serviceAccount:file-link-worker@constrapp-69b5d.iam.gserviceaccount.com \
      --role roles/datastore.user
-   gcloud storage buckets add-iam-policy-binding gs://<bucket> \
+   gcloud storage buckets add-iam-policy-binding gs://constrapp-69b5d.firebasestorage.app \
      --member serviceAccount:file-link-worker@constrapp-69b5d.iam.gserviceaccount.com \
      --role projects/constrapp-69b5d/roles/fileLinkCleaner
    ```
@@ -1909,7 +2013,9 @@ Only `processFileLinkRevocations` deployed, Scheduler paused when finished.
 - A repeat request removed 0 and touched no object; idle runs changed nothing.
 - Operator script results: TESTING.md §52 → *Operator evidence*.
 
-**Stage 1 — Functions.** `firebase deploy --only functions --project
+**Stage 1 — Functions.** *(As released on 12 November 2026 the worker was
+deployed alone first with `--only functions:team:processFileLinkRevocations`,
+then everything — see the release record above.)* `firebase deploy --only functions --project
 constrapp-69b5d`. The callables' new fields are additive, so the current
 Hosting build keeps working. Confirm in Cloud Logging that the worker runs
 each minute and is silent when nothing is queued.
@@ -1922,7 +2028,7 @@ step 8, from `frontend/functions`:
 
 ```
 node scripts/revoke-file-links.mjs --project constrapp-69b5d \
-     --bucket <bucket> --all-companies
+     --bucket constrapp-69b5d.firebasestorage.app --all-companies
 ```
 
 Prints, per company, how many objects exist and how many carry a download
@@ -1938,7 +2044,7 @@ production data change that cannot be undone):
 
 ```
 node scripts/revoke-file-links.mjs --project constrapp-69b5d \
-     --bucket <bucket> --all-companies --execute --confirm-project constrapp-69b5d
+     --bucket constrapp-69b5d.firebasestorage.app --all-companies --execute --confirm-project constrapp-69b5d
 ```
 
 Then repeat Stage 3 and confirm every company reports **0** objects with a

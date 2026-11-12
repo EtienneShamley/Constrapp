@@ -3137,7 +3137,7 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
 
 46. **Storage download URLs outlive a membership (ADR-72) — a
     PRE-EXTERNAL-LAUNCH requirement. STILL OPEN. Part A (ADR-73) is LIVE;
-    part B (ADR-74) is IMPLEMENTED and NOT YET DEPLOYED.** A Firebase
+    part B (ADR-74) is LIVE since 12 November 2026.** A Firebase
     download URL carries the object's download token and is served WITHOUT
     Storage Rules, so a member who copied one keeps file access after
     deactivation until the token is removed.
@@ -3152,7 +3152,9 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     member reads bytes; a deactivated member is denied on the next call.
     Part A revokes nothing by itself.
 
-    **Part B — implemented, NOT YET DEPLOYED (ADR-74).** When a member is
+    **Part B — LIVE since 12 November 2026 (ADR-74; deployed and accepted in
+    production — DEPLOYMENT.md → *DC46-B* → *Production release record*).**
+    When a member is
     deactivated (or a role change reduces their file access), the membership
     transaction records a revocation request; a scheduled worker then REMOVES
     the download token from every object under that company's prefix, with
@@ -3162,8 +3164,15 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     data** (ADR-74 evidence): removal refuses the old URL at once and for at
     least five minutes; the app's own byte reads do not re-create a token.
     That behaviour is **undocumented by Firebase** and may change.
+    **Observed in production (12 November 2026, the pre-launch development
+    tenant):** an operator run removed the four existing tokens; then a
+    deactivation through the Team page queued a request in the same
+    transaction, the scheduled worker completed the sweep 24 seconds later
+    with zero failures, the old URL returned 403 and the file still opened
+    in the app. Failure, retry and the *delayed* status were NOT exercised in
+    production — only in the validation project and the automated suites.
 
-    **What is true once part B is live — do not round up:**
+    **What is true now that part B is live — do not round up:**
     - **Revocation is NOT immediate.** Membership is; old links stop working
       only when a sweep that started after the member's change has finished
       with zero failures. Until then the Team page says *pending* or
@@ -3177,6 +3186,13 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     - **Every new upload carries a token** until the next sweep. Sweeps run
       only on a membership change or an operator request; there is no
       periodic sweep.
+    - **Tokens can be re-created outside the app.** In the production
+      acceptance run two objects that had already been cleaned carried a
+      token again before the next sweep (which removed them). The cause is
+      **unproven** — Storage data-access logging is off; the Firebase
+      console's file panel is the likely source, and a console user or
+      project IAM principal can always create one. Without a periodic sweep
+      such a token lives until the next membership change.
     - **Document visibility reduction is NOT covered.** Changing a general
       document from `project` to `internal` is a client Firestore write that
       no Function observes, so an external member keeps any link already
@@ -3185,15 +3201,25 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     - **Operator-managed external roles** (subcontractor, client) are removed
       out of band; the operator must run
       `functions/scripts/revoke-file-links.mjs` for the company afterwards.
+      The role-reduction hook cannot fire through the app at all today:
+      `changeMemberRole` accepts the three internal roles only.
+    - **A re-invited member keeps their earlier revocation sequence**, so
+      their ACTIVE Team row can read *Old file links: revoked*. Accurate for
+      links copied before the earlier deactivation, but it says nothing about
+      links copied since. Presentation only; not corrected.
+    - **Scale is unmeasured.** The largest production sweep was five objects.
     - Bytes already downloaded cannot be recalled. Console users and project
       IAM principals can read or create tokens. App Check's effect on token
       URLs is untested.
 
-    **To close this control:** deploy part B and complete the first
-    all-company clean-up (DEPLOYMENT.md → *DC46-B*); then decide, by ADR, on
-    a periodic sweep (bounds the life of any token) and on the visibility
-    reduction path (a trigger or a trusted write). Not claimed as closed
-    anywhere.
+    **To close this control:** part B is deployed and the first clean-up is
+    complete (DEPLOYMENT.md → *DC46-B*). What remains needs its own ADR —
+    recommended as the next focused security decision: **periodic
+    reconciliation** (a scheduled sweep that bounds the life of any token,
+    whatever created it) and **revocation on document-visibility reduction**
+    (a trigger or a trusted write). The same ADR should record a measured
+    sweep at volume and decide the external-role removal procedure. Not
+    claimed as closed anywhere.
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
@@ -3717,7 +3743,7 @@ number uniqueness, `raisedByName` truthfulness, and reference-label accuracy.
 `changeMemberRole`, `deactivateMember`. No Express, no HTTP router, no
 event triggers, no new database. Source: `frontend/functions/src`.
 
-**One scheduled worker (ADR-74 — implemented, NOT YET DEPLOYED).**
+**One scheduled worker (ADR-74 — LIVE in production since 12 November 2026).**
 `processFileLinkRevocations` runs every minute, one instance, same region, no
 secret and no caller: it acts only on revocation requests that the membership
 transactions (or the operator script) wrote. It is the only code that touches
@@ -3882,8 +3908,8 @@ makes every callable answer `team-management-disabled` without touching data.
 (subcontractor/client) onboarding — DC20 still stands; no MFA; no admin UI
 over the audit log; no automated email bounce handling; **Storage download
 URLs are not revoked immediately on deactivation — a background clean-up
-(ADR-74, NOT YET DEPLOYED) removes them afterwards (Deferred Control 46, still
-open)**;
+(ADR-74, live since 12 November 2026) removes them afterwards (Deferred
+Control 46, still open)**;
 **general App Check enforcement for Firestore, Storage and Authentication is
 not enabled** (callables only). App Check and the email secret are
 production configuration, not code — both are in place for `constrapp-69b5d`
