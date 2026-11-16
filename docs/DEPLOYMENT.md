@@ -2094,19 +2094,21 @@ success. Without it every Storage request is refused. Production already has
 the grant; any NEW project or a CI rules deploy must add it explicitly and
 allow tens of minutes for it to take effect.
 
-## DC46-C — Periodic token reconciliation, Stage 1 (ADR-75) — WORKER DEPLOYED 13 November 2026; revocation PRODUCTION-ACCEPTED 16 November 2026; periodic reconciliation NOT ACTIVATED
+## DC46-C — Periodic token reconciliation, Stage 1 (ADR-75) — WORKER DEPLOYED 13 November 2026; revocation PRODUCTION-ACCEPTED 16 November 2026; EIGHT CALLABLES REDEPLOYED AND ACCEPTED 16 November 2026; periodic reconciliation NOT ACTIVATED
 
-Merged to `main` (`38ab578`). **The updated worker is deployed and periodic
-reconciliation is switched OFF (`FILE_LINK_RECONCILE_INTERVAL_HOURS=0`); no
-non-zero interval is authorised.** Functions only: no Rules publish, no
-Hosting deploy, no IAM change, no new function, Scheduler job or service
-account. Deferred Control 46 stays OPEN.
+Merged to `main` (`38ab578`). **The updated worker is deployed, the eight
+callables now run the same source (redeployed 16 November 2026 — *Callable
+release record* below), and periodic reconciliation is switched OFF
+(`FILE_LINK_RECONCILE_INTERVAL_HOURS=0`); no non-zero interval is
+authorised.** Functions only: no Rules publish, no Hosting deploy, no IAM
+change, no new function, Scheduler job or service account. Deferred Control
+46 stays OPEN.
 
 | Status | What it covers |
 |---|---|
 | **IMPLEMENTED** | The Stage 1 periodic reconciliation framework |
-| **DEPLOYED** | The updated scheduled worker (step 2 below). The eight callables are **not** redeployed (step 3 is outstanding) |
-| **PRODUCTION-ACCEPTED** | The existing membership-triggered revocation through the updated worker |
+| **DEPLOYED** | The updated scheduled worker (step 2 below, 13 November 2026) and the eight callables (step 3 below, 16 November 2026 — callables only; the worker was not redeployed) |
+| **PRODUCTION-ACCEPTED** | The existing membership-triggered revocation through the updated worker (16 November, with the previous callable build). The eight-callable deploy itself (16 November, architect decision) — on configuration, source, refusal probes and one read-only `listTeam` call; **no membership-changing call has run on the new revisions** |
 | **NOT ACTIVATED** | Periodic reconciliation (step 4) |
 | **NOT COMPLETED** | Stages 2–4 and Deferred Control 46 |
 
@@ -2174,14 +2176,124 @@ in the DC46-B acceptance of 12 November; for 16 November the removal is
 evidenced by the worker's counters only. An earlier reported pass could not
 be found in the logs and is not part of this record (TESTING.md §53).
 
-**Outstanding after this release.** Step 3 (all Functions) — until then the
-callables run the ADR-74 build beside the Stage 1 worker, a pairing that the
-acceptance above exercised **and that is correct only while the interval is
-`0`** (*DC46-C monitoring readiness* → *Dependency on the all-Functions
-deploy*). Step 4 (activation) — not authorised. Monitoring — alert policies
-A and B and two notification channels were created on 16 November 2026,
-after this release (*DC46-C monitoring readiness* → *Monitoring release
-record*).
+**Outstanding after this release — as it stood on 16 November, before the
+callable deploy.** Step 3 (the callables) — until it was done the callables
+ran the ADR-74 build beside the Stage 1 worker, a pairing that the acceptance
+above exercised **and that was correct only while the interval is `0`**
+(*DC46-C monitoring readiness* → *Dependency on the all-Functions deploy*).
+**Step 3 was completed later on 16 November 2026 — next section.** Step 4
+(activation) — not authorised. Monitoring — alert policies A and B and two
+notification channels were created on 16 November 2026, after this release
+(*DC46-C monitoring readiness* → *Monitoring release record*).
+
+### Callable release record — 16 November 2026 (eight callables only; ACCEPTED)
+
+Project `constrapp-69b5d`, region `australia-southeast1`. Times are UTC,
+16 November 2026. Source: `main` at `44446a0`. **Cloud** means read by a
+read-only inspection of the Cloud Functions, Cloud Run, IAM, Secret Manager,
+Scheduler, Monitoring and Logging APIs; **Reported** means stated by the
+Product Owner and not independently observed.
+
+**Why.** Step 3 of the order below: the callables ran the ADR-74 build, which
+does not write the request priority (*Dependency on the all-Functions
+deploy*). This deploy brings them to the same library source as the worker.
+It changes no behaviour while the interval is `0` and activates nothing.
+
+**Scope — a recorded departure from step 3 as first written.** Step 3 named
+`firebase deploy --only functions`. On the architect's approval the Product
+Owner instead targeted **exactly the eight callables** —
+`--only functions:team:listTeam,functions:team:createInvitation,functions:team:resendInvitation,functions:team:revokeInvitation,functions:team:previewInvitation,functions:team:acceptInvitation,functions:team:changeMemberRole,functions:team:deactivateMember --project constrapp-69b5d`
+— so that the accepted worker could not be redeployed: the CLI never skips a
+function named in `--only` and never touches one that is not. **The worker
+was not redeployed.** No Hosting deploy, no Rules publish. The Firebase CLI
+version used was **not recorded**.
+
+**Before the deploy (Cloud, about 19:30).** All eight callables ACTIVE on
+their 12 November revisions (`-00002-*`), build hash `53bb71de…`; secret
+`EMAIL_API_KEY` with one version, `1`; worker `-00002-had`; queue count 0;
+policies A and B enabled; no open incident. Automated gates on `44446a0`:
+TESTING.md §55.
+
+**Deploy (Product Owner; revisions created 20:20:45–20:20:50, functions
+updated 20:20:58).** Firebase reported *Deploy complete!* (Reported).
+
+| Callable | Previous revision | New revision |
+|---|---|---|
+| `listTeam` | `listteam-00002-muq` | `listteam-00003-qon` |
+| `createInvitation` | `createinvitation-00002-vej` | `createinvitation-00003-pup` |
+| `resendInvitation` | `resendinvitation-00002-rum` | `resendinvitation-00003-nem` |
+| `revokeInvitation` | `revokeinvitation-00002-sof` | `revokeinvitation-00003-wag` |
+| `previewInvitation` | `previewinvitation-00002-sil` | `previewinvitation-00003-juq` |
+| `acceptInvitation` | `acceptinvitation-00002-haq` | `acceptinvitation-00003-giw` |
+| `changeMemberRole` | `changememberrole-00002-noj` | `changememberrole-00003-meb` |
+| `deactivateMember` | `deactivatemember-00002-pam` | `deactivatemember-00003-qey` |
+
+| Check after the deploy (Cloud, 20:22–20:25) | Result |
+|---|---|
+| State and traffic | All eight ACTIVE and Ready; 100 % of traffic on the new revision. The `-00002-*` revisions are retained |
+| Build | All eight carry build hash `afc3ba3a…` (before: `53bb71de…`). The uploaded source archive of `deactivateMember` was downloaded and compared with `main` `44446a0`: `src/`, `package.json` and `package-lock.json` identical. The other seven were not downloaded; they share the hash |
+| Request priority | The deployed `lib/fileLinkRevocation.js` writes `requestPriority: urgent` (ADR-75 decision 7) |
+| Runtime · region · timeout · memory · max instances · concurrency | `nodejs22` · `australia-southeast1` · 30 s · 256 Mi · 5 · 80 — all unchanged |
+| Runtime account | unchanged — the project's default compute account |
+| Secret | `EMAIL_API_KEY` bound at version `1` on all eight; the secret still has exactly one version and one accessor (the default compute account) |
+| Environment | `APP_BASE_URL`, `EMAIL_FROM`, `TEAM_MANAGEMENT_ENABLED=true`, `FILE_LINK_REVOCATION_ENABLED=true`, the worker-account parameter and the empty `STORAGE_BUCKET` preserved. **One addition:** `FILE_LINK_RECONCILE_INTERVAL_HOURS=0` now appears on each callable (the parameter is declared for the codebase; the callables do not read it) |
+| Invoker IAM | unchanged: `allUsers` on each callable (normal for a callable — the gate is App Check in code); the worker account alone on the worker. No `SetIamPolicy` in the audit log |
+| App Check refusal | A `POST` with no App Check token and no sign-in to each of the eight returned **HTTP 401** `UNAUTHENTICATED`, logged against each `-00003-*` revision at 20:24:14–20:24:17. The handler does not run on such a request |
+| Worker | still `processfilelinkrevocations-00002-had`, build hash `8df8d08d…`, last updated 13 November; concurrency 1, max instances 1, own account; `FILE_LINK_REVOCATION_ENABLED=true`, `FILE_LINK_RECONCILE_INTERVAL_HOURS=0` |
+| Scheduler | one job, `ENABLED`, every minute, last changed 13 November 06:43:20 |
+| Worker runs | 60 of 60 attempts in the preceding hour returned HTTP 200, through and after the deploy; no error-level worker line in 24 hours |
+| Reconciliation | not started: no reconciliation log line, queue count 0, no `system/fileLinkReconciliation` document (direct lookup: not found) |
+| Monitoring | policies A and B enabled, unedited since creation, each with both channels; both channels enabled; exactly two policies; no open incident |
+| Audit log | `UpdateFunction` for exactly the eight callables and the Cloud Run and Cloud Build calls that go with them. Nothing for the worker, Scheduler, IAM, Secret Manager or Monitoring |
+| Hosting · Rules | unchanged: last Hosting release 12 November 05:46; Firestore ruleset release 3 November; Storage ruleset release 20 September |
+| Billing | reads as enabled. Nothing else about billing is known (*Billing continuity* below) |
+
+**Live application (Product Owner evidence).** The Product Owner opened
+Settings → Team at `https://app.constrap.com` and supplied a screenshot: the
+page rendered with two active administrators, the previously deactivated
+test member still shown as deactivated, no pending invitation, and no visual
+or loading error — **Reported**. **Cloud:** the request log holds one
+`listTeam` call on `listteam-00003-qon` at 20:22:51 — `OPTIONS` 204, then
+`POST` **200** — which means that call passed App Check, sign-in and the
+company-administrator check. The screenshot and the log entry are two
+separate pieces of evidence: the screenshot does not prove that it shows the
+response to that exact request, and the log does not identify the caller.
+
+**Accepted** by architect decision on the evidence above.
+
+**Not tested — do not round up.**
+
+- **No membership-changing call has run on the new revisions in production**
+  (`createInvitation`, `resendInvitation`, `revokeInvitation`,
+  `acceptInvitation`, `changeMemberRole`, `deactivateMember`), nor
+  `previewInvitation` with a valid App Check token. Their behaviour rests on
+  the unchanged handler code, the identical-source comparison and the
+  emulator suites (TESTING.md §54–§55). **A controlled deactivation on the
+  development tenant — request, `file_links.revocation_requested`, worker
+  sweep, `file_links.revoked` — is part of the next acceptance gate and must
+  pass before any non-zero interval** (TESTING.md §55).
+- Sign-in and company authorisation were verified in the deployed **source**
+  and by one successful administrator call, not by probing each refusal path
+  in production; production callables cannot be scripted past App Check.
+- The request-priority behaviour itself (override of a periodic priority,
+  pre-emption) cannot occur while the interval is `0` and has never run in
+  production.
+
+**Observations, unchanged by this deploy.** The uploaded source archive
+includes `test/`, `scripts/` and the two committed, non-secret
+`.env.<projectId>` files (`firebase.json` does not ignore them). No secret is
+among them. `acceptInvitation` lacks the platform-set
+`FUNCTION_SIGNATURE_TYPE` variable the other seven carry, as it did before.
+Neither was changed here.
+
+**Rollback (not exercised).** There is no one-click Functions rollback.
+Redeploy the eight callables from the ADR-74 source (`main` `a70bd45`) with
+the same eight-function command — correct only while the interval is `0`,
+which is the state today. The `-00002-*` revisions are still retained in
+Cloud Run, but moving traffic to them by hand has not been rehearsed and
+leaves the Firebase CLI's view out of step — redeploy instead. No data needs
+reverting: the new fields are additive and the ADR-74 code ignores them.
+`TEAM_MANAGEMENT_ENABLED=false` plus a redeploy remains the kill switch.
 
 ### Billing interruption — 12–13 November 2026
 
@@ -2231,7 +2343,9 @@ needing its own approval:**
 gains: periodic planning (off while the interval is `0`), urgent-before-routine
 ordering with time slices, recovery rules for interrupted sweeps, and
 `concurrency: 1`. The eight callables' behaviour is unchanged, though the
-shared library file they import is, so a full Functions deploy rolls them.
+shared library file they import is, so a full Functions deploy rolls them
+(they were rolled on their own on 16 November 2026 — *Callable release
+record* above).
 
 **Required configuration** — `frontend/functions/.env.constrapp-69b5d`:
 
@@ -2258,17 +2372,24 @@ dotenv value, defaults included. All other parameters are unchanged.
    concurrency 1 and max instances 1; same runtime account; runs succeed and
    are silent; no `system/fileLinkReconciliation` document; queue empty.
    TESTING.md §53 steps 2–3.
-3. **All Functions — OUTSTANDING, not yet authorised** —
-   `firebase deploy --only functions --project constrapp-69b5d`, so the
-   callables run the same library source as `main`. **Not needed while the
-   interval is `0`; required before step 4** — the ADR-74 callable build
-   does not write the request priority, which matters once a periodic
-   request has existed (*DC46-C monitoring readiness* → *Dependency on the
-   all-Functions deploy*). Each callable must still answer 401 without an
-   App Check token. The worker should be skipped as unchanged; confirm its
-   revision afterwards.
+3. **The eight callables — DONE and accepted 16 November 2026 (*Callable
+   release record* above).** First written as
+   `firebase deploy --only functions --project constrapp-69b5d`; carried out
+   as a deploy of the eight callables by name, so that the worker was not
+   redeployed. The callables now run the same library source as `main`.
+   **It was not needed while the interval is `0`; it was required before
+   step 4** — the ADR-74 callable build did not write the request priority,
+   which matters once a periodic request has existed (*DC46-C monitoring
+   readiness* → *Dependency on the all-Functions deploy*). Verified: each
+   callable answers 401 without an App Check token; the worker's revision is
+   unchanged. **Not yet done:** a membership-changing call on the new
+   revisions (step 4's precondition below).
 4. **Activation — NOT ACTIVATED; only on explicit authorisation.** Before
-   it: step 3 done, and a decision on the monitoring gaps in *Billing
+   it: step 3 done (it is); **a controlled deactivation on the development
+   tenant through the new `deactivateMember` revision, confirmed in the
+   request log, the audit trail and the worker log (TESTING.md §55)**;
+   billing continuity (*Billing continuity* below); and a decision on the
+   monitoring gaps in *Billing
    interruption* above (a periodic control that can stop silently is not a
    bound). Then edit the interval in `.env.constrapp-69b5d`, redeploy the
    worker alone, run TESTING.md §53 steps 4–7 on the development tenant,
@@ -2312,13 +2433,16 @@ info or warn lines. **None of these signals fires when the worker is not
 running at all** — policy A watches for that, within the limits stated in the
 next section; see also *Billing interruption* above.
 
-## DC46-C monitoring readiness — POLICIES A AND B CREATED IN PRODUCTION 16 November 2026 (verified read-only; test delivery reported by both recipients; neither failure condition has fired; billing continuity NOT CONFIRMED)
+## DC46-C monitoring readiness — POLICIES A AND B CREATED IN PRODUCTION 16 November 2026 (verified read-only; test delivery reported by both recipients; neither failure condition has fired; billing continuity NOT CONFIRMED; the callable deploy it depended on is DONE)
 
 Prepared on `ops/dc46-c-monitoring-readiness` (merged, `5615239`) and created
 in production by the Product Owner on 16 November 2026. **Two alert policies
 and two email notification channels exist. No log-based metric, uptime check
 or budget was created; no Function was deployed; no Rule, IAM binding or
-Scheduler job was changed; periodic reconciliation stays OFF.** The policies
+Scheduler job was changed; periodic reconciliation stays OFF.** (That
+sentence describes the monitoring release. The eight callables were
+redeployed later the same day as a separate, separately approved step —
+*DC46-C* → *Callable release record*.) The policies
 are detection, not a control: they revoke nothing and do not replace the
 worker. Any further cloud step below needs its own authorisation. Deferred
 Control 46 stays OPEN.
@@ -2332,7 +2456,8 @@ Control 46 stays OPEN.
 | **NOT TESTED in production** | Policy A on a real absence; policy B on a real error line; anything during a billing suspension |
 | **NOT VERIFIED — administrator action** | Billing continuity (below) |
 | **SPECIFIED ONLY** | Policy C, the planning heartbeat — created with activation, not before |
-| **NOT AUTHORISED** | All-Functions deploy; activation of a non-zero interval |
+| **DONE 16 November 2026** | The callable deploy (the eight callables only; *DC46-C* → *Callable release record*) |
+| **NOT AUTHORISED** | Activation of a non-zero interval |
 
 ### Monitoring release record — 16 November 2026
 
@@ -2389,7 +2514,8 @@ and not independently observed.
   policy creations, one policy deletion, and two
   `ProvisionPublisherServiceAccount` calls made by Monitoring during channel
   set-up. No `SetIamPolicy`, no deploy, no Scheduler change, no Rules
-  release. The eight callables are on their 12 November revisions; the
+  release. The eight callables are on their 12 November revisions (as read
+  at 18:42; they were redeployed at about 20:20 the same day); the
   Firestore ruleset release is dated 3 November.
 
 **Delivery evidence — what is and is not shown.** The cloud shows that one
@@ -2696,22 +2822,32 @@ reliability work.
 5. Do not redeploy unless a check in step 3 fails. Record the times, the
    cause and the checks under *Billing interruption* above.
 
-### Dependency on the all-Functions deploy — proven by test, NOT AUTHORISED
+### Dependency on the all-Functions deploy — proven by test; MET 16 November 2026 (callables redeployed)
 
-The eight callables run the ADR-74 build (deployed 12 November); the worker
-runs Stage 1. `tests/functions/team.callableCompat.test.js` pins both sides:
+**Status, 16 November 2026: the dependency is met.** The eight callables were
+redeployed from `main` and now run the Stage 1 library, the same source as
+the worker (*DC46-C* → *Callable release record*). The deploy targeted the
+callables by name rather than all Functions. The rest of this section is
+kept as the reason the deploy was required, and as the reason a rollback of
+the callables to the ADR-74 build is safe only at interval `0`.
+
+From 13 to 16 November 2026 the eight callables ran the ADR-74 build
+(deployed 12 November) while the worker ran Stage 1.
+`tests/functions/team.callableCompat.test.js` pins both sides:
 
 | Callable build | Company state | Result |
 |---|---|---|
-| ADR-74 (deployed) | No periodic request has ever existed — interval `0` | Correct: served as urgent, audited `file_links.revoked`. This is production today |
-| ADR-74 (deployed) | A periodic request has existed | Tokens are removed and the request completes, **but** the sweep is recorded as periodic: no `file_links.revoked`; `file_links.reconciled` only if a token was found, otherwise no audit event; an open periodic sweep is not superseded |
-| Stage 1 (`main`) | Any | Correct: the request is urgent, an open periodic sweep is superseded, the completion is audited `file_links.revoked` |
+| ADR-74 (deployed 12–16 November) | No periodic request has ever existed — interval `0` | Correct: served as urgent, audited `file_links.revoked`. This was production until 16 November |
+| ADR-74 (deployed 12–16 November) | A periodic request has existed | Tokens are removed and the request completes, **but** the sweep is recorded as periodic: no `file_links.revoked`; `file_links.reconciled` only if a token was found, otherwise no audit event; an open periodic sweep is not superseded. **Never occurred in production: the interval has always been `0`** |
+| Stage 1 (`main`; deployed since 16 November) | Any | Correct: the request is urgent, an open periodic sweep is superseded, the completion is audited `file_links.revoked`. Proven on the emulator only — it cannot occur at interval `0` |
 
-So: **no deploy is needed while the interval is `0`; the all-Functions deploy
-(step 3 of the DC46-C order above) must be done and verified before any
-non-zero interval.** It is not a defect in `main`; it is two builds of one
-library running side by side. Nothing is lost and no link survives because
-of it — the damage would be to the audit evidence of a revocation.
+So: **no deploy was needed while the interval is `0`; the callable deploy
+(step 3 of the DC46-C order above) had to be done and verified before any
+non-zero interval — and it has been.** It was not a defect in `main`; it was
+two builds of one library running side by side. Nothing was lost and no link
+survived because of it — the damage would have been to the audit evidence of
+a revocation. What remains before activation is listed in step 4 of that
+order.
 
 ### Future — policy C, the planning heartbeat (create WITH activation)
 

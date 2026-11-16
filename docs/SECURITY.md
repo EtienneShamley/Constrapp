@@ -3288,14 +3288,30 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       for billing itself is confirmed: a budget and its recipients remain
       unverified administrator actions. An independent external monitor
       remains future reliability work.
-    - *The callables and the worker are different builds.* The eight
-      callables run the ADR-74 build; the worker runs Stage 1. That is
-      correct only while the interval is `0`. Once a periodic request has
-      existed, a deactivation through the old callables is still swept and
-      completed, but it is audited as a periodic sweep — no
-      `file_links.revoked`, and no event at all when no token is found
-      (`tests/functions/team.callableCompat.test.js`, group 6). The
-      all-Functions deploy must precede any non-zero interval.
+    - *The callables and the worker were different builds from 13 to
+      16 November 2026; since 16 November 2026 they run the same source.*
+      Until then the eight callables ran the ADR-74 build beside the Stage 1
+      worker, which was correct only while the interval is `0`: once a
+      periodic request has existed, a deactivation through the old callables
+      is still swept and completed, but it is audited as a periodic sweep —
+      no `file_links.revoked`, and no event at all when no token is found
+      (`tests/functions/team.callableCompat.test.js`, group 6). The interval
+      was `0` throughout, so this never occurred in production. **On
+      16 November 2026 the eight callables were redeployed from `main`**
+      (callables only; the worker was not redeployed — DEPLOYMENT.md →
+      *DC46-C* → *Callable release record*). Verified read-only afterwards:
+      the deployed source is identical to `main` and writes the urgent
+      request priority; each callable still refuses a request without an
+      App Check token (HTTP 401); the secret binding, runtime accounts and
+      invoker bindings are unchanged; no IAM grant was added. **Not
+      verified in production:** any membership-changing call on the new
+      revisions, and the priority behaviour itself, which cannot occur at
+      interval `0`. Sign-in and company authorisation are enforced in the
+      callables' own code (they bypass Security Rules); that code is
+      unchanged and was confirmed by source comparison and one successful
+      administrator `listTeam` call, not by probing each refusal in
+      production. A controlled deactivation on the development tenant is
+      required before any non-zero interval (TESTING.md §55).
     - *Still open after Stage 1:* document visibility reduction (Stage 2),
       external-member removal (Stage 3), measurement at volume (Stage 4),
       and the unproven cause of the tokens that reappeared in production.

@@ -192,9 +192,12 @@ listing this collection group.
 
 **ADR-75, Stage 1 — worker deployed 13 November 2026; periodic reconciliation
 NOT ACTIVATED.** Additional Admin-only fields and one new document; none has a
-rules block, so every browser read and write is denied by default. The
-callables still run the ADR-74 build, so a marker they write carries no
-`priority` and is served as `urgent`.
+rules block, so every browser read and write is denied by default. Until
+16 November 2026 the callables ran the ADR-74 build, so a marker they wrote
+carried no `priority` and was served as `urgent`; since the callable deploy
+of that day they write `priority: urgent` and `requestPriority: urgent`
+themselves (DEPLOYMENT.md → *DC46-C* → *Callable release record*). A marker
+or state without the field is still read as `urgent`.
 - On the state: `requestPriority` (`urgent` | `periodic`), `queuedAt` (when the
   outstanding work was first queued), `overdueSince` (set once when the company
   has gone two intervals without a successful sweep; cleared by the next one).
