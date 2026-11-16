@@ -6,11 +6,11 @@ history. It is an index and a checkpoint, **not** a second copy of the
 documentation: where this file and a source document disagree, the source
 document wins and this file must be corrected.
 
-**Last updated:** 17 November 2026. **Git checkpoint:** `main` at `f31251b`
-(*Merge Constrap context continuity system*). This revision was prepared on
-the uncommitted branch `chore/dc46-c-monitoring-closeout`; once that branch
-is merged, the checkpoint is the merge commit and this line must be
-refreshed.
+**Last updated:** 17 November 2026. **Git checkpoint:** `main` at `44446a0`
+(*Merge DC46-C monitoring production closeout*). This revision was prepared
+on the uncommitted branch `docs/dc46-c-callable-production-closeout`; once
+that branch is merged, the checkpoint is the merge commit and this line must
+be refreshed.
 
 **This file is a point-in-time snapshot.** It does not replace checking the
 current Git state or verifying production. Maintenance is mandatory —
@@ -32,30 +32,33 @@ current Git state or verifying production. Maintenance is mandatory —
 
 | Item | State |
 |---|---|
-| **Current milestone** | DC46 security (Deferred Control 46 — Storage download links after a membership ends), part C. Stage 1 is production-accepted; monitoring Policies A and B are created in production (16 November 2026) |
-| **Latest Git checkpoint** | **VERIFIED:** branch `main`, HEAD `f31251b12f916db6bb92c64b97d43d39ec2be0a5` (`f31251b` *Merge Constrap context continuity system*), equal to `origin/main`, working tree clean apart from the documentation branch that carries this file. **REPORTED:** Azure CI green on `main` (architect brief, 16 November 2026) — not checked when this file was written. Preceding commits: `468e5bb` (context continuity), `5615239` (monitoring readiness merge), `aab1f2f` (Stage 1 closeout merge) |
-| **Production** | **REPORTED:** live at `https://app.constrap.com` on Firebase project `constrapp-69b5d`. Last code deployment: the DC46-C Stage 1 **worker-only** deploy on 13 November 2026, accepted 16 November 2026. Nothing has been deployed since. **Last production change:** on 16 November 2026 the Product Owner created two Cloud Monitoring alert policies and two email notification channels — **VERIFIED** by a read-only read of the Monitoring API and the audit log at 18:42 UTC that day. No Function, Rule, IAM binding or Scheduler job changed |
+| **Current milestone** | DC46 security (Deferred Control 46 — Storage download links after a membership ends), part C. Stage 1 is production-accepted; monitoring Policies A and B are created in production (16 November 2026); **the eight callables were redeployed from `main` and production-accepted (16 November 2026) — callable deployment COMPLETE** |
+| **Latest Git checkpoint** | **VERIFIED:** branch `main`, HEAD `44446a01c4ab48d10f02cb0b8e16fe590d1f685b` (`44446a0` *Merge DC46-C monitoring production closeout*), equal to `origin/main`, working tree clean apart from the documentation branch that carries this file (`docs/dc46-c-callable-production-closeout`, uncommitted). The eight callables were deployed from this commit. **REPORTED:** Azure CI green on `main` (architect brief, 17 November 2026) — not checked when this file was written. Preceding commits: `3bcf671` (monitoring acceptance record), `f31251b` (context continuity merge), `5615239` (monitoring readiness merge), `aab1f2f` (Stage 1 closeout merge) |
+| **Production** | **REPORTED:** live at `https://app.constrap.com` on Firebase project `constrapp-69b5d`. **Last code deployment and last production change:** on 16 November 2026, about 20:20 UTC, the Product Owner deployed the **eight team callables only** from `main` `44446a0` (new revisions `-00003-*`). **VERIFIED** by read-only inspection at 20:22–20:25 UTC: all eight ACTIVE with 100 % of traffic, deployed source identical to `main`, configuration and the secret binding unchanged, HTTP 401 without App Check on all eight, one `listTeam` 200 on the new revision; the worker (`-00002-had`), Scheduler, monitoring policies, IAM, Rules and Hosting unchanged; interval still `0`. **REPORTED:** the Team page rendered correctly (Product Owner screenshot). **Not tested:** any membership-changing call on the new revisions. Earlier the same day: Policies A and B and two notification channels created (VERIFIED 18:42 UTC) |
 | **Deferred Control 46** | **OPEN** |
 
 **Active risks (detail in section I):** billing continuity unconfirmed ·
 monitoring is detection inside the same project and has never fired on a
-real failure · periodic reconciliation is off · the eight callables run an
-older build than the worker · Firestore rules source is 3,076 bytes under its
-approved size budget.
+real failure · periodic reconciliation is off · no membership-changing call
+has been tested on the new callable revisions · Firestore rules source is
+3,076 bytes under its approved size budget.
 
-**Exact next development action:** billing continuity verification by the
-billing-account administrator, then architect review of the all-Functions
-(callable) deployment (section J). Neither is a coding task, and each cloud
-step still needs explicit authorisation. Before it: Git integration of the
-`chore/dc46-c-monitoring-closeout` branch, once the architect approves it.
+**Exact next development action:** a **controlled membership-deactivation
+regression on the development tenant** through the new callable revisions
+([TESTING.md](TESTING.md) §55), and billing continuity verification by the
+billing-account administrator (section J). Both come before any preparation
+to activate periodic reconciliation. Neither is a coding task, and each
+cloud step still needs explicit authorisation. Before them: Git integration
+of the `docs/dc46-c-callable-production-closeout` branch, once the architect
+approves it.
 
 **Awaiting authorisation — none of these is approved yet:**
 
 | Action | State |
 |---|---|
-| Billing continuity confirmation by the billing account owner | NOT DONE — administrator action |
-| All-Functions deploy (`firebase deploy --only functions`) | BLOCKED on architect review and explicit authorisation |
-| Activate periodic reconciliation (non-zero interval) | BLOCKED on the all-Functions deploy, a monitoring decision, **and a separate approval** |
+| Billing continuity confirmation by the billing account owner (ownership, a second administrator, a budget and its notifications) | NOT DONE — administrator action. Billing reading as enabled is not this confirmation |
+| Controlled deactivation regression on the development tenant, on the new callable revisions | NOT RUN — needs explicit authorisation; part of the next acceptance gate |
+| Activate periodic reconciliation (non-zero interval), with monitoring Policy C | BLOCKED on the deactivation regression, billing continuity, a monitoring decision, **and a separate approval**. (The callable deploy it also depended on is DONE) |
 | DC46-C Stages 2, 3, 4 | PROPOSED in ADR-75; not started |
 
 ---
@@ -111,8 +114,8 @@ AGENT.md  CLAUDE.md  PRODUCT.md  ROADMAP.md  README.md  azure-pipelines.yml
 | Region (Functions, Scheduler) | `australia-southeast1` | VERIFIED in repository documents |
 | Production origin | `https://app.constrap.com` (the `web.app` / `firebaseapp.com` origins also serve) | REPORTED live 11 November 2026 |
 | Hosting | Firebase Hosting, deployed by hand | REPORTED |
-| Callables | `listTeam`, `createInvitation`, `resendInvitation`, `revokeInvitation`, `previewInvitation`, `acceptInvitation`, `changeMemberRole`, `deactivateMember` — App Check enforced | REPORTED live; running the ADR-74 build |
-| Worker | Cloud Run service `processfilelinkrevocations`, revision `-00002-had`, concurrency 1, own service account | REPORTED (read-only production check, 13–16 November 2026) |
+| Callables | `listTeam`, `createInvitation`, `resendInvitation`, `revokeInvitation`, `previewInvitation`, `acceptInvitation`, `changeMemberRole`, `deactivateMember` — App Check enforced | **VERIFIED** by read-only production check, 16 November 2026: revisions `-00003-*`, the same source as `main` `44446a0` |
+| Worker | Cloud Run service `processfilelinkrevocations`, revision `-00002-had`, concurrency 1, own service account | VERIFIED by read-only production check, 16 November 2026 (not redeployed with the callables) |
 | Scheduler | `firebase-schedule-processFileLinkRevocations-australia-southeast1`, every minute | REPORTED |
 | Monitoring | Alert Policies A and B; email channels `DC46 - Product Owner` and `DC46 - Billing Administrator` (addresses held only in Cloud Monitoring) | VERIFIED by read-only production check, 16 November 2026 |
 | Invitation email | Resend, from the Functions only; key in Secret Manager | REPORTED |
@@ -255,6 +258,7 @@ records, most of them "confirmed by the Product Owner". Dates are as recorded.
 | **DC46-A** | Authenticated Storage reads; the app mints no download URL | ADR-73 | LIVE, 11 November 2026 |
 | **DC46-B** | Scheduled worker removes legacy download tokens after a membership change | ADR-74 | LIVE and accepted, 12 November 2026 |
 | **DC46-C Stage 1** | Updated worker (fair scheduling, recovery rules, concurrency 1). Membership-triggered revocation accepted through it | ADR-75 | Worker DEPLOYED 13 November; ACCEPTED 16 November 2026. **Periodic reconciliation NOT ACTIVATED** |
+| **DC46-C callable deployment** | The eight team callables redeployed from `main` `44446a0`, callables only (revisions `-00003-*`), so they write the ADR-75 request priority. The worker was not redeployed | ADR-75 (implementation status) | DEPLOYED and ACCEPTED 16 November 2026; verified read-only. **No membership-changing call tested on the new revisions** |
 | **DC46-C monitoring** | Alert Policies A and B and two email notification channels on the worker. Detection only — not a control and not an external monitor | ADR-75 (implementation status) | CREATED 16 November 2026 and verified read-only; test delivery REPORTED by both recipients; neither failure condition has fired |
 
 **Planned, partial or not built — do not present as complete:**
@@ -298,7 +302,7 @@ ARCHITECTURE.md; the `backend/` statement in AGENT.md; the ADR-75 title).
 Sources: [SECURITY.md](SECURITY.md) → *Deferred Controls* item 46;
 [DEPLOYMENT.md](DEPLOYMENT.md) → *DC46-B*, *DC46-C*, *DC46-C monitoring
 readiness*; [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) → ADR-73, ADR-74,
-ADR-75; [TESTING.md](TESTING.md) §52–§54; [ops/monitoring/README.md](../ops/monitoring/README.md).
+ADR-75; [TESTING.md](TESTING.md) §52–§55; [ops/monitoring/README.md](../ops/monitoring/README.md).
 
 | Item | State |
 |---|---|
@@ -312,7 +316,9 @@ ADR-75; [TESTING.md](TESTING.md) §52–§54; [ops/monitoring/README.md](../ops/
 | Delivery test | Temporary policy created 18:26:30 UTC, incident opened 18:29:30, policy deleted 18:37:51, incident closed 18:38:51 — VERIFIED. **Both recipients received the email — REPORTED** by the Product Owner; no cloud record of email arrival exists. No temporary resource remains |
 | What monitoring has not shown | Neither failure condition has fired or been triggered in production. No guarantee for a deleted service; billing-suspension behaviour unverified; same project; no external monitor |
 | Policy C (planning heartbeat) | Specified only; to be created with activation |
-| All-Functions deployment | **OUTSTANDING, not authorised.** The eight callables run the ADR-74 build (12 November revisions) beside the Stage 1 worker. Correct only while the interval is 0 (test-proven) |
+| Callable deployment | **COMPLETE — 16 November 2026, about 20:20 UTC.** Exactly the eight team callables, from `main` `44446a0`; the worker was not redeployed (a recorded departure from the `--only functions` first written). Revisions: `listteam-00003-qon`, `createinvitation-00003-pup`, `resendinvitation-00003-nem`, `revokeinvitation-00003-wag`, `previewinvitation-00003-juq`, `acceptinvitation-00003-giw`, `changememberrole-00003-meb`, `deactivatemember-00003-qey`. Build hash `afc3ba3a…` (before: `53bb71de…`). The CLI version used was not recorded |
+| Callable verification | **VERIFIED** read-only, 20:22–20:25 UTC: ACTIVE, 100 % traffic; deployed source identical to `main`, including `requestPriority: urgent`; runtime, limits, runtime account and `EMAIL_API_KEY` version `1` unchanged; HTTP 401 without App Check on all eight; no IAM change; worker, Scheduler, Policies A and B, Rules and Hosting unchanged; no reconciliation started. `listTeam` returned 200 on the new revision at 20:22:51 UTC. **REPORTED:** Team page screenshot from the Product Owner — two active administrators, the earlier test member still deactivated, no pending invitation, no error. The screenshot is not proof of that exact request |
+| Membership-changing calls on the new revisions | **NOT TESTED in production.** Covered by emulator suites and the identical-source check only. A controlled deactivation on the development tenant is required before activation — [TESTING.md](TESTING.md) §55 |
 | Billing continuity verification | **OUTSTANDING** — administrator action, not confirmed |
 | Stage 2 (visibility-reduction lock, Rules) | PROPOSED, not started |
 | Stage 3 (external-member removal through the app) | PROPOSED, not started |
@@ -366,7 +372,7 @@ approval. Stages 2, 4, 8 and 11 have no scope recorded in the repository.
 | **Billing continuity** | The project lost billing for about 17 hours on 12–13 November 2026 and the worker did not run. That the project now sits on a permanent paid account, who owns it, a second administrator, a budget and who receives billing notices are all **unconfirmed**. The billing administrator receiving a DC46 monitoring email is not evidence of any of them | DEPLOYMENT.md → *Billing interruption*, *Billing continuity* |
 | **Monitoring is unproven against a real failure** | Policies A and B exist (16 November 2026), but neither has fired on its real condition; only the email path was exercised, and receipt is reported, not observed. Policy B depends on the worker writing a matching error line | DEPLOYMENT.md → *DC46-C monitoring readiness* → *Monitoring release record* |
 | **Periodic reconciliation disabled** | Tokens on new uploads, and tokens created outside the app, live until the next membership change or operator run | SECURITY.md item 46 |
-| **Callable deployment dependency** | The callables must be redeployed from `main` and verified before any non-zero interval, or revocations are mis-audited | DEPLOYMENT.md → *Dependency on the all-Functions deploy* |
+| **New callable revisions not exercised by a membership change** | The redeploy is done and verified by configuration, source and refusal probes, but no invitation, role change or deactivation has run on the `-00003-*` revisions in production. A controlled deactivation on the development tenant must pass before any non-zero interval. Rolling the callables back to the ADR-74 build is safe only while the interval is 0 | DEPLOYMENT.md → *Callable release record*; TESTING.md §55 |
 | **Visibility-based revocation** | Reducing a document from `project` to `internal` triggers no revocation; an external member keeps a copied link until the next sweep (Stage 2) | SECURITY.md item 46 |
 | **External-role removal** | Subcontractor and client members are removed out of band; the operator must run the revocation script afterwards (Stage 3) | SECURITY.md item 46 |
 | **Storage-token limitations** | Revocation is not immediate; an active member can still obtain a link by a direct SDK call; token behaviour relied on is undocumented by Firebase; tokens reappeared once from an unproven cause; scale is unmeasured (largest sweep: five objects) | SECURITY.md item 46; ADR-74 |
@@ -382,28 +388,37 @@ approval. Stages 2, 4, 8 and 11 have no scope recorded in the repository.
 
 **Done on 16 November 2026:** notification channels, Policies A and B, the
 delivery test and its clean-up ([DEPLOYMENT.md](DEPLOYMENT.md) → *DC46-C
-monitoring readiness* → *Monitoring release record*).
+monitoring readiness* → *Monitoring release record*); then the architect's
+review, the deploy of the eight callables at interval `0`, and the read-only
+verification of their configuration and health
+([DEPLOYMENT.md](DEPLOYMENT.md) → *DC46-C* → *Callable release record*).
 
-**Next, in this order. Each cloud step needs explicit authorisation.**
+**Next. Each cloud step needs explicit authorisation. Steps 1 and 2 are
+independent of each other; both come before step 3.**
 
-1. **Verify billing continuity** — the billing-account administrator
-   confirms a permanent paid account, who owns it, a second billing
-   administrator, a budget and its configuration, and who receives billing
+1. **Controlled membership-deactivation regression on the development
+   tenant** — through the new `deactivateMember` revision, confirmed in the
+   request log, the audit trail (`file_links.revocation_requested`, then
+   `file_links.revoked`) and the worker log; record the old URL's 403 and
+   in-app access this time ([TESTING.md](TESTING.md) §55). Product Owner
+   action with read-only verification; not yet authorised or run. This is
+   the outstanding validation of the callable deploy.
+2. **Verify billing continuity** — the billing-account administrator
+   confirms a permanent paid account, who owns it, a second (backup) billing
+   administrator, a budget with its notifications, and who receives billing
    notices (DEPLOYMENT.md → *Billing continuity*). Administrator action; not
-   yet done.
-2. **Review the updated callable deployment** — architect review of the
-   all-Functions deploy that brings the eight callables to the same source
-   as `main` (DEPLOYMENT.md → *Dependency on the all-Functions deploy*).
-3. **Deploy the eight callables with reconciliation still disabled**
-   (interval `0`) — only after a separate approval.
-4. **Verify callable configuration and health** after that deploy.
-5. **Prepare controlled reconciliation activation** — preparation only.
+   yet done. **A paid account, if confirmed, does not complete this item:**
+   ownership, backup administration and budget notifications are separate
+   controls.
+3. **Prepare controlled reconciliation activation** — preparation only.
    Activating a non-zero interval needs its own approval and is blocked
-   until steps 3 and 4 are done and verified; Policy C is created with it.
+   until steps 1 and 2 are done and verified. Monitoring Policy C (the
+   planning heartbeat, ADR-75) is created with activation, not before.
 
-DC46-C Stages 2, 3 and 4 remain outstanding. The international
-infrastructure assessment follows the completion of DC46 security
-(section H).
+Still outstanding beyond that: DC46-C Stages 2, 3 and 4 (ADR-75); an
+independent external reliability monitor, which belongs to L3 — Production
+Reliability, and has no scope recorded. The international infrastructure
+assessment follows the completion of DC46 security (section H).
 
 After each production step: record what happened in DEPLOYMENT.md, then
 update this handover.

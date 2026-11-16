@@ -8033,8 +8033,10 @@ tenant only, test files only, after explicit authorisation.
       with a count and no token value.
 6. - [ ] While a periodic sweep is queued, deactivate a test member: that
       revocation completes first **and is audited `file_links.revoked`**.
-      *Requires the all-Functions deploy first — with the ADR-74 callables
-      this audit event is not written (§54, group 6).*
+      *Required the callable deploy first — with the ADR-74 callables this
+      audit event was not written (§54, group 6). That deploy was done on
+      16 November 2026 (§55); run §55's outstanding deactivation check
+      before this step.*
 7. - [ ] A company with no tokens is swept without an audit event.
 8. - [ ] Set the approved interval and redeploy. Regression: §51 and §52.
 
@@ -8066,10 +8068,16 @@ the real `deactivateMember` handler.
 | 3. Periodic sweep open | The periodic sweep is superseded once and never completed; the urgent sweep starts from the first page after the deactivation (a token re-minted behind the old checkpoint is removed); two deactivations supersede it once; a deactivation landing inside a running periodic sweep is not covered by it — the member stays *pending* until a second, urgent sweep completes |
 | 4. Concurrency | Two deactivations and the planner at once: distinct consecutive sequences, one marker, urgent wins, nothing lost, nothing completed early; a deactivation racing the worker's own transactions; three deactivations at once |
 | 5. Interval `0` | The DC46-B path exactly: request, sweep, `file_links.revoked`, status; no cursor read, no periodic field, no reconciliation event; idle runs write and log nothing |
-| 6. **Deployment skew (characterisation)** | The documents the ADR-74 callable build writes, served by the Stage 1 worker. Interval `0`: correct. After a periodic request has existed: swept and completed, but recorded as periodic — no `file_links.revoked`, no audit event when no token is found, and an open periodic sweep is not superseded. This is why the all-Functions deploy precedes activation (DEPLOYMENT.md → *DC46-C monitoring readiness*) |
+| 6. **Deployment skew (characterisation)** | The documents the ADR-74 callable build writes, served by the Stage 1 worker. Interval `0`: correct. After a periodic request has existed: swept and completed, but recorded as periodic — no `file_links.revoked`, no audit event when no token is found, and an open periodic sweep is not superseded. This is why the callable deploy had to precede activation (DEPLOYMENT.md → *DC46-C monitoring readiness*) |
 
 Group 6 describes two builds side by side, not desired behaviour. If the
-worker is ever made tolerant of the old documents, rewrite it.
+worker is ever made tolerant of the old documents, rewrite it. **Since
+16 November 2026 production no longer runs that pairing** — the eight
+callables were redeployed from `main` (§55). Group 6 now characterises a
+past deployment, and what a rollback of the callables to the ADR-74 build
+would bring back; the test file's header comment still calls the ADR-74
+build "the build deployed on 12 November 2026", which is accurate as
+history.
 
 `tests/unit/monitoringPolicies.test.js` keeps the three files in
 `ops/monitoring/` honest: no recipient, channel or address committed; each
@@ -8135,3 +8143,83 @@ testable at all:** what Cloud Monitoring does during a billing suspension.
 Policy A is not claimed to detect one, nor the deletion of the worker
 service (Google documents that a deleted or shut-down resource raises no
 absence alert).
+
+## 55. DC46-C — Eight-callable deployment (16 November 2026) — DEPLOYED and PRODUCTION-ACCEPTED; no membership-changing call tested on the new revisions; periodic reconciliation NOT ACTIVATED
+
+Release record: DEPLOYMENT.md → *DC46-C* → *Callable release record*. A
+deploy of the eight team callables only, from `main` `44446a0`; the worker
+was not redeployed. No code changed for it. Deferred Control 46 stays OPEN.
+
+**Automated — release gates, run on `main` `44446a0` before the deploy
+(16 November 2026).** From `frontend/`; the emulator suites need Java 21+.
+
+| Gate | Command | Result |
+|---|---|---|
+| Functions lint | `npm run functions:lint` | clean |
+| Functions, pure | `npm run functions:test` | 3 files, 70 tests |
+| Functions, emulator | `npm run test:functions` | 7 files, 148 tests — includes the 14 in `team.callableCompat.test.js` (§54) |
+| Rules | `npm run test:rules` | 35 files, 2,204 tests |
+| Frontend lint | `npm run lint` | clean |
+| Frontend unit | `npm run test:unit` | 81 files, 4,438 tests |
+| Production build | `npm run build` | succeeded |
+| Whitespace | `git diff --check` | clean; working tree clean afterwards |
+
+The deploy's own predeploy hook runs the Functions lint and pure tests
+again; its output on the day was not recorded.
+
+**Production verification (16 November 2026, UTC).** **Cloud** = read-only
+inspection; **Reported** = stated by the Product Owner.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Eight new revisions, ACTIVE, 100 % traffic | `listteam-00003-qon`, `createinvitation-00003-pup`, `resendinvitation-00003-nem`, `revokeinvitation-00003-wag`, `previewinvitation-00003-juq`, `acceptinvitation-00003-giw`, `changememberrole-00003-meb`, `deactivatemember-00003-qey` | Cloud |
+| Build | Hash `afc3ba3a…` on all eight (before: `53bb71de…`); the `deactivateMember` source archive identical to `main` | Cloud |
+| Configuration | `nodejs22`, 30 s, 256 Mi, max instances 5, concurrency 80, default compute account, `EMAIL_API_KEY` version `1` — unchanged; `FILE_LINK_RECONCILE_INTERVAL_HOURS=0` added to each | Cloud |
+| No App Check token, no sign-in | HTTP 401 `UNAUTHENTICATED` from each of the eight, 20:24:14–20:24:17, on the new revisions | Cloud |
+| Invoker IAM, secret accessors | unchanged; no IAM change in the audit log | Cloud |
+| Worker and Scheduler | `processfilelinkrevocations-00002-had`, concurrency 1, max instances 1, interval `0`; job enabled, every minute; 60 of 60 attempts returned 200 in the preceding hour | Cloud |
+| No reconciliation | no reconciliation log line; queue count 0; no cursor document | Cloud |
+| Monitoring | policies A and B enabled, both channels attached; no open incident; no temporary policy | Cloud |
+| Hosting, Rules | no release since 12 November and 3 November | Cloud |
+| `listTeam` on the new revision | `OPTIONS` 204 and `POST` 200 on `listteam-00003-qon` at 20:22:51 | Cloud |
+| Team page in the live app | Rendered: two active administrators, the previously deactivated test member still deactivated, no pending invitation, no visual or loading error (screenshot supplied) | Reported |
+
+The screenshot and the 20:22:51 log entry are separate evidence. The
+screenshot is not proof of that exact request, and the log entry does not
+name the caller.
+
+**Limits of this validation.**
+
+- **No membership-changing call has been made on the new revisions in
+  production.** Six of the eight callables, and `previewInvitation` with a
+  valid App Check token, have answered nothing but the 401 probe there.
+- Sign-in and company authorisation are evidenced by the deployed source
+  being identical to the tested source and by one successful administrator
+  call — not by exercising each refusal in production. A scripted
+  production test is still not available (§53).
+- Nothing about the request priority can be observed at interval `0`.
+
+**Outstanding — part of the next acceptance gate, before any non-zero
+interval.** Development tenant only, test files only, on explicit
+authorisation. §53's warnings about a false pass apply: start from an ACTIVE
+member, and confirm every step in the backend, not from a report alone.
+
+1. - [ ] Invite and accept a test member (`createInvitation`,
+      `previewInvitation`, `acceptInvitation` each 200 on a `-00003-*`
+      revision).
+2. - [ ] Obtain a legacy download URL for a test file; it opens.
+3. - [ ] Deactivate the test member: `deactivateMember` 200 on
+      `deactivatemember-00003-qey`; the audit trail holds `member.deactivated`
+      and `file_links.revocation_requested` from one transaction.
+4. - [ ] The company's revocation state and queue marker carry
+      `requestPriority: urgent` / `priority: urgent` (read-only lookup before
+      the sweep completes, or the state document afterwards).
+5. - [ ] The worker logs `file-links: worker run` on
+      `processfilelinkrevocations-00002-had`; the audit trail holds
+      `file_links.revoked`, source `worker`; queue count 0.
+6. - [ ] The old URL returns **403**; an authorised user still opens the file
+      in the app. *(Not recorded on 16 November for the previous build —
+      record both this time.)*
+7. - [ ] `changeMemberRole`, `resendInvitation` and `revokeInvitation` each
+      answer on a `-00003-*` revision if the run includes them; otherwise
+      state that they were not exercised.
