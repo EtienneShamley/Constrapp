@@ -2086,12 +2086,133 @@ success. Without it every Storage request is refused. Production already has
 the grant; any NEW project or a CI rules deploy must add it explicitly and
 allow tens of minutes for it to take effect.
 
-## DC46-C — Periodic token reconciliation, Stage 1 (ADR-75) — IMPLEMENTED, NOT DEPLOYED (12 November 2026)
+## DC46-C — Periodic token reconciliation, Stage 1 (ADR-75) — WORKER DEPLOYED 13 November 2026; revocation PRODUCTION-ACCEPTED 16 November 2026; periodic reconciliation NOT ACTIVATED
 
-On `security/dc46-c-periodic-reconciliation`. **No deploy has been made and
-none is authorised. Periodic reconciliation ships switched OFF.** Functions
-only: no Rules publish, no Hosting deploy, no IAM change, no new function,
-Scheduler job or service account. Deferred Control 46 stays OPEN.
+Merged to `main` (`38ab578`). **The updated worker is deployed and periodic
+reconciliation is switched OFF (`FILE_LINK_RECONCILE_INTERVAL_HOURS=0`); no
+non-zero interval is authorised.** Functions only: no Rules publish, no
+Hosting deploy, no IAM change, no new function, Scheduler job or service
+account. Deferred Control 46 stays OPEN.
+
+| Status | What it covers |
+|---|---|
+| **IMPLEMENTED** | The Stage 1 periodic reconciliation framework |
+| **DEPLOYED** | The updated scheduled worker (step 2 below). The eight callables are **not** redeployed (step 3 is outstanding) |
+| **PRODUCTION-ACCEPTED** | The existing membership-triggered revocation through the updated worker |
+| **NOT ACTIVATED** | Periodic reconciliation (step 4) |
+| **NOT COMPLETED** | Stages 2–4 and Deferred Control 46 |
+
+### Production release record — 13–16 November 2026
+
+Project `constrapp-69b5d`, region `australia-southeast1`. Times are UTC. The
+release followed a billing interruption (next section); production was
+checked read-only before the deploy.
+
+**Before the deploy (read-only, 13 November).** Worker revision
+`processfilelinkrevocations-00001-cep`: concurrency **80**, max instances 1,
+timeout 300 s, runtime account `file-link-worker@constrapp-69b5d`. Scheduler
+job `firebase-schedule-processFileLinkRevocations-australia-southeast1`:
+enabled, every minute, attempt deadline 300 s, no retry, OIDC identity the
+worker account. Billing enabled; the required APIs enabled; queue empty.
+
+**Deploy (Product Owner, about 06:43).**
+`firebase deploy --only functions:team:processFileLinkRevocations --project constrapp-69b5d`
+— step 2 below, worker only.
+
+| Check after the deploy | Result |
+|---|---|
+| Revision | `processfilelinkrevocations-00002-had`, Ready, 100% traffic. `-00001-cep` is retained |
+| Concurrency · max instances · timeout | **1** · 1 · 300 s |
+| Runtime account | unchanged (`file-link-worker@constrapp-69b5d`) |
+| `FILE_LINK_REVOCATION_ENABLED` · `FILE_LINK_RECONCILE_INTERVAL_HOURS` | `true` · `0` |
+| The eight callables | unchanged, on the revisions they had before; all Ready |
+| Rules · IAM | no change. The worker account still holds `roles/datastore.user` (project), the `fileLinkCleaner` role on the one bucket and `run.invoker` on its own service, where it is the only member |
+| Scheduler job | still one job, enabled, every minute, 300 s deadline, same OIDC account |
+| Scheduled runs | 13 consecutive attempts inspected (06:44–06:56), all HTTP 200 on the new revision; no minute missed across the deploy. From the deploy to 16 November 02:41 every recorded attempt returned 200 |
+| Idle behaviour | no worker log line, no log line about reconciliation, no `system/fileLinkReconciliation` document (direct lookup: not found), queue count 0 |
+| Warnings or errors | none in the project's logs |
+
+**Scheduler target — changed form.** The deploy rewrote the job's target from
+`https://australia-southeast1-constrapp-69b5d.cloudfunctions.net/processFileLinkRevocations`
+to the same service's Cloud Run address (`https://processfilelinkrevocations-….a.run.app/`),
+and the OIDC audience to match. Both addresses are listed on the one service;
+the job, the service and the identity are the same, and every authenticated
+call since has succeeded. Why the CLI chose the other form on an update was
+not traced. Recorded so that a later comparison does not read it as drift;
+there is no evidence of any security effect.
+
+**Acceptance — 16 November (development tenant; TESTING.md §53).** One
+controlled deactivation through the deployed `deactivateMember`:
+
+| Time | Event (backend evidence: request logs, worker log, audit trail) |
+|---|---|
+| 03:01:44 | Invitation created (`createInvitation` 200) |
+| 03:02:03 | Auth account re-enabled by the invitation |
+| 03:02:31 | Invitation accepted (`acceptInvitation` 200) |
+| 03:06:44 | `deactivateMember` HTTP 200 |
+| 03:06:45 | `member.deactivated` and `file_links.revocation_requested` (one transaction, sequence 3) |
+| 03:07:02 | Worker sweep complete on `processfilelinkrevocations-00002-had`; `file_links.revoked`, source `worker` |
+
+Counters: 1 company, 1 urgent request, 0 periodic; **5 objects scanned, 1
+page, 1 token removed, 0 failed**; complete; queue markers afterwards 0.
+Scheduler enabled, every minute, recent attempts all 200. Configuration as in
+the table above.
+
+The Product Owner reported that the manual test passed (a working legacy URL
+before the deactivation; the deactivation; the revocation). **Not separately
+recorded for this run:** the old URL's HTTP status after the sweep, and that
+an authorised user could still open the file in the app. Both were verified
+in the DC46-B acceptance of 12 November; for 16 November the removal is
+evidenced by the worker's counters only. An earlier reported pass could not
+be found in the logs and is not part of this record (TESTING.md §53).
+
+**Outstanding after this release.** Step 3 (all Functions) — until then the
+callables run the ADR-74 build beside the Stage 1 worker, a pairing that the
+acceptance above exercised. Step 4 (activation) — not authorised. Monitoring
+— next section.
+
+### Billing interruption — 12–13 November 2026
+
+**Reported by the Product Owner, not visible in the logs:** the project was
+moved from the Blaze plan to Spark after a linked Google Cloud free trial
+ended, and a cofounder restored Blaze.
+
+**Observed in production (read-only, 13 November):**
+
+- The last scheduled attempt before the gap started at 12 November 10:10:03.
+  At 10:13:41 Cloud Run logged *Billing disabled. Shutting down instance.*
+  for the worker.
+- **No attempt was recorded from 12 November 10:10 to 13 November 03:15 —
+  about 17 hours, roughly 1,020 one-minute runs.** They were missed, not
+  failed: Cloud Scheduler made none, so there is no failed run in any log.
+- The worker and its Scheduler job both show an update at 13 November
+  03:14:48, with the revision unchanged; the first attempt followed at
+  03:15:04. The cause of that update was not confirmed.
+- From then on every run returned HTTP 200. No worker sweep was logged
+  during recovery, and a count-only query found no queue marker.
+- Billing reads as enabled; Functions, Run, Scheduler, Build, Artifact
+  Registry, Secret Manager, Firestore and Storage APIs are enabled; the
+  worker account, its roles and the bucket binding were intact.
+
+**Not established — do not round up.** Whether the callables, Hosting,
+Firestore or Storage were available to users during the gap. No callable
+request at all was logged between 12 November 07:00 and 16 November 02:27,
+so the logs show neither a failure nor a success. A deactivation needs the
+callable; had one succeeded during the gap its request would have waited
+until 13 November 03:15. None is evidenced.
+
+**No recovery action was needed** beyond restoring billing. Nothing was
+redeployed for it.
+
+**Open operational risks — nothing below exists yet; each is a cloud change
+needing its own approval:**
+
+| Risk | State |
+|---|---|
+| Billing-account continuity | The project must sit on a paid account that cannot lapse with a trial. Confirmation by the account owner is not recorded here |
+| Billing alerts | A budget alert is called for in *Product Owner setup* above; whether one exists was not checked (billing settings were deliberately not read) |
+| Missing-run monitoring | None. A stopped worker produces no error. A log-absence alert on the Scheduler job's attempts would have caught this within minutes |
+| Incident detection and response | None written. The interruption was noticed by people, not by a signal; there is no runbook for "the worker has stopped" |
 
 **What changes on deploy.** The existing worker `processFileLinkRevocations`
 gains: periodic planning (off while the interval is `0`), urgent-before-routine
@@ -2112,24 +2233,30 @@ dotenv value, defaults included. All other parameters are unchanged.
 
 **Order — each step separately authorised.**
 
-1. **Read-only pre-check.** Record the worker's current concurrency and the
-   Scheduler job's attempt deadline (`gcloud run services describe` on the
-   worker's service and `gcloud scheduler jobs describe` on its job, both in
-   `australia-southeast1`; take the exact resource names from the console).
-   The library default concurrency is 80; the deployed value has never been
-   read.
-2. **Worker only, interval `0`** —
+1. **Read-only pre-check — DONE 13 November 2026.** Record the worker's
+   concurrency and the Scheduler job's attempt deadline
+   (`gcloud run services describe processfilelinkrevocations` and
+   `gcloud scheduler jobs describe firebase-schedule-processFileLinkRevocations-australia-southeast1`,
+   both in `australia-southeast1`). Read: concurrency 80, deadline 300 s.
+2. **Worker only, interval `0` — DONE 13 November 2026; accepted 16 November
+   (release record above)** —
    `firebase deploy --only functions:team:processFileLinkRevocations --project constrapp-69b5d`.
    Verify: one Scheduler job, still every minute; the service now shows
    concurrency 1 and max instances 1; same runtime account; runs succeed and
    are silent; no `system/fileLinkReconciliation` document; queue empty.
    TESTING.md §53 steps 2–3.
-3. **All Functions** — `firebase deploy --only functions`, so the callables
-   run the same library source as `main`. No behaviour change expected;
-   each still answers 401 without an App Check token.
-4. **Activation — only on explicit authorisation.** Edit the interval in
-   `.env.constrapp-69b5d`, redeploy the worker alone, run TESTING.md §53
-   steps 4–7 on the development tenant, then set the approved value.
+3. **All Functions — OUTSTANDING, not yet authorised** —
+   `firebase deploy --only functions --project constrapp-69b5d`, so the
+   callables run the same library source as `main`. No behaviour change
+   expected; each still answers 401 without an App Check token. The worker
+   should be skipped as unchanged; confirm its revision afterwards.
+4. **Activation — NOT ACTIVATED; only on explicit authorisation.** Before
+   it: step 3 done, and a decision on the monitoring gaps in *Billing
+   interruption* above (a periodic control that can stop silently is not a
+   bound). Then edit the interval in `.env.constrapp-69b5d`, redeploy the
+   worker alone, run TESTING.md §53 steps 4–7 on the development tenant,
+   then set the approved value (proposed: `24`). Expect the cursor document
+   to appear and a `reconciliation plan complete` line about hourly.
 
 **Rollback — none of these loses a queued request.**
 
@@ -2137,17 +2264,19 @@ dotenv value, defaults included. All other parameters are unchanged.
 |---|---|
 | Stop periodic reconciliation | Set the interval to `0`, redeploy the worker. Requests already queued are still swept once; no new ones are written. The cursor document is left in place and ignored |
 | Stop the worker entirely | `FILE_LINK_REVOCATION_ENABLED=false`, redeploy. Membership changes keep queuing |
-| Revert the code | Redeploy the ADR-74 revision of the worker (`main` `a70bd45`). It ignores the new fields, serves markers in path order and sweeps a queued periodic request as an ordinary one (audited `file_links.revoked`). Remove `concurrency` only by redeploying that revision |
+| Revert the code | Redeploy the ADR-74 worker from source (`main` `a70bd45`, the same worker-only command). It ignores the new fields, serves markers in path order and sweeps a queued periodic request as an ordinary one (audited `file_links.revoked`). Concurrency returns to 80; remove `concurrency` only this way. The earlier revision `processfilelinkrevocations-00001-cep` is still retained in Cloud Run, but moving traffic to it by hand has not been rehearsed and leaves the Firebase CLI's view out of step — redeploy instead |
 
 The Hosting rollback floor is unchanged (the ADR-73 build).
 
-**Measured versus unmeasured.** Measured: nothing in production. Automated
+**Measured versus unmeasured.** Measured in production: one
+membership-triggered sweep of five objects on the Stage 1 revision, and idle
+runs. Nothing about periodic reconciliation. Automated
 evidence is emulator-only (TESTING.md §53). The time budgets — 240 s run,
 195 s urgent phase when routine work waits, 45 s routine share, 60 s and 30 s
 slices, no page after 255 s — are design values inside the 300 s timeout, not
 observed latencies. Do not quote a revocation or reconciliation time.
 
-**Operational signals (Cloud Logging, once deployed).**
+**Operational signals (Cloud Logging).**
 
 | Log message | Level | Meaning |
 |---|---|---|
@@ -2161,7 +2290,8 @@ observed latencies. Do not quote a revocation or reconciliation time.
 | `file-links: reconciliation planning paused; periodic queue is full` | info | 200 periodic requests are queued; planning resumes when they drain |
 
 No alert policy exists yet; creating one is a cloud change proposed for
-Stage 4.
+Stage 4. **None of these signals fires when the worker is not running at
+all** — see *Billing interruption* above.
 
 ## Custom domain — app.constrap.com — CONNECTED (production; confirmed live on 11 November 2026)
 

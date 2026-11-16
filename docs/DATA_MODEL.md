@@ -190,9 +190,11 @@ revoked only when `completedSeq ≥ members/{uid}.fileLinkRevocationSeq`.
 Exists only while a request is outstanding; the scheduled worker finds work by
 listing this collection group.
 
-**ADR-75, Stage 1 — implemented, NOT DEPLOYED.** Additional Admin-only fields
-and one new document; none has a rules block, so every browser read and write
-is denied by default.
+**ADR-75, Stage 1 — worker deployed 13 November 2026; periodic reconciliation
+NOT ACTIVATED.** Additional Admin-only fields and one new document; none has a
+rules block, so every browser read and write is denied by default. The
+callables still run the ADR-74 build, so a marker they write carries no
+`priority` and is served as `urgent`.
 - On the state: `requestPriority` (`urgent` | `periodic`), `queuedAt` (when the
   outstanding work was first queued), `overdueSince` (set once when the company
   has gone two intervals without a successful sweep; cleared by the next one).
@@ -207,8 +209,10 @@ is denied by default.
   `passSeq`, `passStartedAt`, `cursor` (last company id examined), `examined`,
   `requested`, `overdue`, `invalid`, `oldestSweepStartedAt`, `lastPass`,
   `nextPassAt`, `intervalHours`, `updatedAt`. Never read or written while
-  `FILE_LINK_RECONCILE_INTERVAL_HOURS` is `0`. It is an optimisation only:
-  eligibility is decided from each company's own state.
+  `FILE_LINK_RECONCILE_INTERVAL_HOURS` is `0`. **It does not exist in
+  production** (checked 13 and 16 November 2026): the interval there is `0`,
+  and the worker creates it only on its first planning run. It is an
+  optimisation only: eligibility is decided from each company's own state.
 
 ## companies/{companyId}/costCodes/{costCodeId}
 
