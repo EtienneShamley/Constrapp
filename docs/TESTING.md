@@ -8032,6 +8032,76 @@ tenant only, test files only, after explicit authorisation.
       still opens in the app, and the audit trail has `file_links.reconciled`
       with a count and no token value.
 6. - [ ] While a periodic sweep is queued, deactivate a test member: that
-      revocation completes first.
+      revocation completes first **and is audited `file_links.revoked`**.
+      *Requires the all-Functions deploy first — with the ADR-74 callables
+      this audit event is not written (§54, group 6).*
 7. - [ ] A company with no tokens is swept without an audit event.
 8. - [ ] Set the approved interval and redeploy. Regression: §51 and §52.
+
+## 54. DC46-C — Callable compatibility and monitoring readiness (16 November 2026) — tests on the branch; monitoring PROPOSED, nothing created in the cloud
+
+Branch `ops/dc46-c-monitoring-readiness`. No production logic changed: two
+test files, two proposed alert-policy files and one temporary delivery-test
+policy file, documentation. Deferred Control
+46 stays OPEN; periodic reconciliation stays OFF.
+
+**Automated.** Run from `frontend/`; the emulator suites need Java 21+.
+
+| Suite | Command | Result, 16 November 2026 |
+|---|---|---|
+| Functions, pure | `npm run functions:test` | 3 files, 70 tests (unchanged) |
+| Functions, emulator | `npm run test:functions` | 7 files, 148 tests (14 in the new file) |
+| Frontend unit | `npm run test:unit` | 81 files, 4,438 tests (11 in the new file) |
+| Rules | `npm run test:rules` | 35 files, 2,204 tests (unchanged) |
+| Lint | `npm run lint`, `npm run functions:lint` | clean |
+
+`tests/functions/team.callableCompat.test.js` — the Firestore emulator, the
+fake bucket and an injected clock, as in §53. Membership requests go through
+the real `deactivateMember` handler.
+
+| Group | What is asserted |
+|---|---|
+| 1. Periodic request queued | A deactivation makes the state and the marker `urgent`, keeps the company's place in the queue, and ONE sweep covers both; audited `file_links.revoked`, never `file_links.reconciled`; with reconciliation on it is served in the urgent phase and not requested again |
+| 2. Periodic sweep completed earlier | The stale `periodic` priority is overridden; the sweep is urgent and is audited `file_links.revoked` even when it finds no token; a role reduction and an operator request behave the same |
+| 3. Periodic sweep open | The periodic sweep is superseded once and never completed; the urgent sweep starts from the first page after the deactivation (a token re-minted behind the old checkpoint is removed); two deactivations supersede it once; a deactivation landing inside a running periodic sweep is not covered by it — the member stays *pending* until a second, urgent sweep completes |
+| 4. Concurrency | Two deactivations and the planner at once: distinct consecutive sequences, one marker, urgent wins, nothing lost, nothing completed early; a deactivation racing the worker's own transactions; three deactivations at once |
+| 5. Interval `0` | The DC46-B path exactly: request, sweep, `file_links.revoked`, status; no cursor read, no periodic field, no reconciliation event; idle runs write and log nothing |
+| 6. **Deployment skew (characterisation)** | The documents the ADR-74 callable build writes, served by the Stage 1 worker. Interval `0`: correct. After a periodic request has existed: swept and completed, but recorded as periodic — no `file_links.revoked`, no audit event when no token is found, and an open periodic sweep is not superseded. This is why the all-Functions deploy precedes activation (DEPLOYMENT.md → *DC46-C monitoring readiness*) |
+
+Group 6 describes two builds side by side, not desired behaviour. If the
+worker is ever made tolerant of the old documents, rewrite it.
+
+`tests/unit/monitoringPolicies.test.js` keeps the three files in
+`ops/monitoring/` honest: no recipient, channel or address committed; each
+policy scoped to the one worker service and region; policy A summed across
+revisions with a 15-minute absence; policy B limited to container output,
+rate-limited, with no log content extracted; policy B's runbook names every
+error line the worker can write; the temporary delivery test watches policy
+A's exact series, fires on healthy traffic and says it is a test.
+
+The files were also checked field by field against the Cloud Monitoring
+API's published schema (every field and enumerated value exists). That check
+was run by hand on 16 November 2026 and is not part of the suite.
+
+**⚠️ What these tests do NOT prove.** Nothing about Cloud Monitoring: the
+policy files are checked as text. The filters were replayed read-only against
+production on 16 November 2026 (DEPLOYMENT.md), but **no policy has been
+created, no notification has been sent and no alert has fired.** The
+emulator tests use a fake bucket; nothing here ran against real Cloud Storage
+or a deployed callable.
+
+**Manual — NOT RUN, NOT AUTHORISED.** After the policies are created
+(separate authorisation): the verification checklist and the delivery test
+in DEPLOYMENT.md → *DC46-C monitoring readiness*. Google provides no test
+function for an email channel, so delivery is proven by one temporary
+policy that fires on healthy traffic and is deleted in the same sitting;
+record each recipient, the arrival time and the incident id, then confirm
+the policy list holds only policies A and B. Nothing in it stops, pauses or
+breaks the production worker.
+
+**Not testable in production, and unverified until tested elsewhere:**
+policy A firing on a real absence; policy B firing on a real error. **Not
+testable at all:** what Cloud Monitoring does during a billing suspension.
+Policy A is not claimed to detect one, nor the deletion of the worker
+service (Google documents that a deleted or shut-down resource raises no
+absence alert).

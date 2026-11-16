@@ -2168,8 +2168,10 @@ be found in the logs and is not part of this record (TESTING.md §53).
 
 **Outstanding after this release.** Step 3 (all Functions) — until then the
 callables run the ADR-74 build beside the Stage 1 worker, a pairing that the
-acceptance above exercised. Step 4 (activation) — not authorised. Monitoring
-— next section.
+acceptance above exercised **and that is correct only while the interval is
+`0`** (*DC46-C monitoring readiness* → *Dependency on the all-Functions
+deploy*). Step 4 (activation) — not authorised. Monitoring — PROPOSED, not
+created (*DC46-C monitoring readiness*).
 
 ### Billing interruption — 12–13 November 2026
 
@@ -2211,7 +2213,7 @@ needing its own approval:**
 |---|---|
 | Billing-account continuity | The project must sit on a paid account that cannot lapse with a trial. Confirmation by the account owner is not recorded here |
 | Billing alerts | A budget alert is called for in *Product Owner setup* above; whether one exists was not checked (billing settings were deliberately not read) |
-| Missing-run monitoring | None. A stopped worker produces no error. A log-absence alert on the Scheduler job's attempts would have caught this within minutes |
+| Missing-run monitoring | None exists. A stopped worker produces no error. **PROPOSED, not created:** policy A in *DC46-C monitoring readiness*. Replayed over this outage its query shows the 17-hour gap in the data; **whether it would have sent a notification while billing was disabled is unknown** |
 | Incident detection and response | None written. The interruption was noticed by people, not by a signal; there is no runbook for "the worker has stopped" |
 
 **What changes on deploy.** The existing worker `processFileLinkRevocations`
@@ -2247,9 +2249,13 @@ dotenv value, defaults included. All other parameters are unchanged.
    TESTING.md §53 steps 2–3.
 3. **All Functions — OUTSTANDING, not yet authorised** —
    `firebase deploy --only functions --project constrapp-69b5d`, so the
-   callables run the same library source as `main`. No behaviour change
-   expected; each still answers 401 without an App Check token. The worker
-   should be skipped as unchanged; confirm its revision afterwards.
+   callables run the same library source as `main`. **Not needed while the
+   interval is `0`; required before step 4** — the ADR-74 callable build
+   does not write the request priority, which matters once a periodic
+   request has existed (*DC46-C monitoring readiness* → *Dependency on the
+   all-Functions deploy*). Each callable must still answer 401 without an
+   App Check token. The worker should be skipped as unchanged; confirm its
+   revision afterwards.
 4. **Activation — NOT ACTIVATED; only on explicit authorisation.** Before
    it: step 3 done, and a decision on the monitoring gaps in *Billing
    interruption* above (a periodic control that can stop silently is not a
@@ -2289,9 +2295,360 @@ observed latencies. Do not quote a revocation or reconciliation time.
 | `file-links: FILE_LINK_RECONCILE_INTERVAL_HOURS is set but…` | error, and the run fails | The interval is invalid; reconciliation is not running |
 | `file-links: reconciliation planning paused; periodic queue is full` | info | 200 periodic requests are queued; planning resumes when they drain |
 
-No alert policy exists yet; creating one is a cloud change proposed for
-Stage 4. **None of these signals fires when the worker is not running at
-all** — see *Billing interruption* above.
+No alert policy exists yet. Two are prepared and PROPOSED in the next
+section; creating them is a cloud change needing its own authorisation.
+**None of these signals fires when the worker is not running at all** — see
+*Billing interruption* above.
+
+## DC46-C monitoring readiness — PROPOSED (prepared 16 November 2026); NOTHING BELOW EXISTS IN THE CLOUD
+
+Prepared on `ops/dc46-c-monitoring-readiness`. **No alert policy, notification
+channel, log-based metric or budget was created; no Function was deployed;
+periodic reconciliation stays OFF.** Each cloud step below needs its own
+authorisation. Deferred Control 46 stays OPEN.
+
+| Status | Item |
+|---|---|
+| **PREPARED, NOT CREATED** | Alert policies A and B (`ops/monitoring/*.policy.json`) |
+| **PREPARED, NOT CREATED** | Two email notification channels (recipients are not in Git) |
+| **PREPARED, NOT CREATED** | A temporary delivery-test policy (`ops/monitoring/dc46-delivery-test.temporary-policy.json`), deleted straight after use |
+| **NOT VERIFIED — administrator action** | Billing continuity (below) |
+| **SPECIFIED ONLY** | Policy C, the planning heartbeat — created with activation, not before |
+| **NOT AUTHORISED** | All-Functions deploy; activation of a non-zero interval |
+
+Production inventory read on 16 November 2026 (Monitoring and Logging APIs):
+0 alert policies, 0 notification channels, 0 log-based metrics, 0 uptime
+checks.
+
+### Policy A — the worker has stopped
+
+`ops/monitoring/dc46-worker-no-successful-run.policy.json`. A metric-absence
+condition: **no 2xx request to the Cloud Run service
+`processfilelinkrevocations` for 15 minutes.**
+
+| Setting | Value | How it was verified (read-only, 16 November 2026) |
+|---|---|---|
+| Metric | `run.googleapis.com/request_count` | Descriptor read from the project: DELTA, INT64, GA, sample period 60 s, ingest delay 120 s; labels `response_code`, `response_code_class`, `route` |
+| Resource type | `cloud_run_revision` | Listed on the descriptor; the worker's live series carries it |
+| Service | `resource.labels.service_name="processfilelinkrevocations"`, `location="australia-southeast1"` | The live series' own labels. A 2nd-gen function's Cloud Run service name is the function name in lower case |
+| Success only | `metric.labels.response_code_class="2xx"` | The live series reads `response_code: 200`, `response_code_class: 2xx`. Unauthenticated probes of the service were answered 403 on 12 November and are not counted |
+| Aggregation | 60 s `ALIGN_DELTA`, then `REDUCE_SUM` grouped by `service_name` only | The same query through `projects.timeSeries.list` returns ONE series with one point a minute. Grouping removes `revision_name`: across the 13 November deploy (`-00001-cep` → `-00002-had`) the summed series has no missing minute, so a deploy does not look like an absence |
+| Absence | `duration: 900s`, trigger count 1 | API rule: minimum 120 s, whole minutes. Replayed over 12–13 November the query shows **one gap, 10:18 → 03:16, 16.97 hours** — the billing interruption |
+| Auto-close | 7 days | The default |
+
+**Limitations — policy A is a detection aid inside the project, not a
+guaranteed external availability monitor.** Each point below is from Google's
+documentation unless marked otherwise.
+
+| Limitation | What it means here |
+|---|---|
+| **An initial data point is required** | "The monitored subsystem must write at least one data point after you create or modify the alerting policy." Until the worker has reported once after creation — and again after every later edit of the policy — the condition cannot be met. The worker reports each minute, so the blind period is minutes; it is not zero |
+| **Metric reporting delay** | `request_count` is sampled every 60 s and is not visible for up to 120 s. Delayed data is treated as missing, so a Google-side delay longer than the window can open a false incident, and a long delay can put the condition in an unknown state. Detection is therefore about 17 to 20 minutes after the last success (15 minutes of absence, the alignment minute, the delay) — **an estimate, not measured** |
+| **A terminated or deleted service is NOT reliably detected** | Google: metrics of TERMINATED or DELETED resources "are not considered for metric-absence policies", and no alert is generated "if the monitored resource is deleted or shut down". If the function or its Cloud Run service is deleted, **assume policy A stays silent**. A paused or deleted Scheduler job leaves the service in place, so the absence should be seen — expected from the documentation, not tested |
+| **Project-level billing suspension — UNKNOWN** | On 12 November Cloud Run logged *Billing disabled. Shutting down instance.* Whether Cloud Monitoring then treats the service as shut down (no alert, per the row above), and whether it evaluates policies or sends email at all for a project without billing, is **not documented and not tested**. Replaying the query shows only that the data stopped. **Do not rely on policy A to report a billing interruption** |
+| **An ignored incident goes quiet** | An open absence incident closes once no data has arrived for the auto-close period plus 24 hours — about eight days here. Nothing re-notifies after that until data returns and stops again |
+| **It measures answers, not work** | A run that returns 200 counts as healthy. `FILE_LINK_REVOCATION_ENABLED=false` returns 200 with an info line and is not detected. Requests that never reach the container (unauthenticated, or refused at the instance limit) are not counted by this metric at all |
+| **Same project, same provider** | The policy, its data and its email all depend on Google Cloud and on this project. A check hosted elsewhere would be needed for independence; none is proposed |
+
+**Why 15 minutes, and why successes.** With `concurrency: 1` a sweep longer
+than a minute is expected to make the overlapping ticks fail (unmeasured,
+TESTING.md §53), so failures are not a clean signal. A run ends inside 300 s,
+so 15 minutes without one success is three worst-case runs. Nothing in the
+documentation requires a different threshold: the API minimum is 120 s and
+the maximum 23.5 hours. **The 15-minute threshold stands.**
+
+### Policy B — the worker logged an error
+
+`ops/monitoring/dc46-worker-error-log.policy.json`. A log-match condition on
+one service's container output:
+
+```
+resource.type="cloud_run_revision"
+AND resource.labels.service_name="processfilelinkrevocations"
+AND resource.labels.location="australia-southeast1"
+AND severity>=ERROR
+AND (log_id("run.googleapis.com/stderr") OR log_id("run.googleapis.com/stdout"))
+```
+
+| Setting | Value | Why |
+|---|---|---|
+| Scope | The one service, container output only | The eight callables and every other resource are excluded. The platform request log is excluded on purpose: refused overlapping ticks and unauthenticated probes are recorded there |
+| Label extractors | None | Nothing from a log entry is copied into a notification. The notification carries the policy's own text and a link |
+| Rate limit | One notification an hour (`notificationRateLimit.period: 3600s`) | The field is required by the API for a log-match policy. Documented minimum 5 minutes; a maximum was not found in the documentation, so the value is confirmed only when the policy is created (an invalid value is refused; nothing is created). A stuck company retries at most hourly, so a persistent fault notifies about hourly. Google also caps a log-match policy at 20 a day |
+| Auto-close | 1 day | Documented minimum 30 minutes, default 7 days |
+| Conditions | One | A log-match policy can hold only one condition |
+
+Verified read-only: the filter is accepted by Cloud Logging; over the 30 days
+retained it matches **no entry**; at `severity>=INFO` the same filter returns
+the three `file-links: worker run` lines of 12 and 16 November, so the
+service and log names are right. The lines it will match are every
+`file-links:` message logged at error level (table in *Operational signals*
+above, and the policy's own runbook text) plus an uncaught exception.
+
+**Not caught by B:** a run that dies without writing a line (timeout, out of
+memory, instance killed). If that persists, policy A fires. Warn-level lines
+(the first two incomplete sweeps of a company; routine work skipped for one
+run) are deliberately below the threshold.
+
+### Notification channels — recipients stay outside Git
+
+Two **email** channels: the Product Owner, and an authorised billing
+administrator. The addresses are entered at creation time and live only in
+Cloud Monitoring. No policy file names a channel;
+`tests/unit/monitoringPolicies.test.js` fails if one ever does.
+
+1. Console → Monitoring → Alerting → *Edit notification channels* → Email →
+   *Add new*, once per recipient. Use the display names
+   `DC46 — Product Owner` and `DC46 — Billing administrator`. (The
+   `gcloud … monitoring channels` commands are beta-only; the console needs
+   no extra component.) An email channel needs no verification code.
+2. Read the two channel resource names — they are identifiers, not addresses:
+   `curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" "https://monitoring.googleapis.com/v3/projects/constrapp-69b5d/notificationChannels?fields=notificationChannels(name,displayName,type,enabled)"`
+3. Keep them in the shell only:
+   `export DC46_CHANNELS="projects/constrapp-69b5d/notificationChannels/<id1>,projects/constrapp-69b5d/notificationChannels/<id2>"`
+
+### Creation procedure — NOT AUTHORISED; for review
+
+From the repository root, after step 3 above:
+
+```
+gcloud monitoring policies create --project constrapp-69b5d \
+  --policy-from-file=ops/monitoring/dc46-worker-no-successful-run.policy.json \
+  --notification-channels="$DC46_CHANNELS"
+gcloud monitoring policies create --project constrapp-69b5d \
+  --policy-from-file=ops/monitoring/dc46-worker-error-log.policy.json \
+  --notification-channels="$DC46_CHANNELS"
+```
+
+No IAM, Rules, Functions, Hosting or Scheduler change. The worker is not
+touched and cannot tell that it is being watched.
+
+### Verification checklist — none of it stops, pauses or breaks the worker
+
+1. - [ ] `npm run test:unit` passes (`monitoringPolicies.test.js`).
+2. - [ ] `gcloud monitoring policies list --project constrapp-69b5d` shows
+      policies A and B enabled, each with the two channels, and the filters
+      exactly as in the files.
+3. - [ ] Policy A's condition chart shows one point a minute and no open
+      incident after ten minutes.
+4. - [ ] The delivery test below, including its clean-up.
+5. - [ ] Scheduler attempts for the whole period are still one a minute, all
+      200, and the worker revision is unchanged.
+
+### Delivery test — a temporary positive-traffic policy (NOT AUTHORISED; needs its own approval)
+
+**Google provides no test for an email channel.** Its documentation: Cloud
+Monitoring "doesn't support a test option" for these channels; a channel is
+verified "by creating an alerting policy and configuring the condition to be
+met." (A *Send test notification* button exists for Slack and Pub/Sub
+channels and *Test connection* for webhooks — not for email. An email
+channel also has no verification code.) So one deliberate, harmless incident
+is the supported way, and the only way that touches nothing in production.
+
+| | |
+|---|---|
+| **File** | `ops/monitoring/dc46-delivery-test.temporary-policy.json` |
+| **Scope** | One threshold condition on policy A's exact filter and aggregation: *2xx requests to `processfilelinkrevocations` above 0 for 1 minute*. It is true because the worker is healthy. It reads a metric; it calls nothing, changes nothing and cannot affect the worker, Scheduler, Firestore or Storage |
+| **What it creates** | One alert policy and ONE incident, titled `TEST - DC46 delivery check - delete after use`, severity warning, whose email says it is a test and asks only for a reply |
+| **Approval** | A production cloud change. Run only with explicit authorisation, at a time both recipients are expecting it |
+| **Lifetime** | Minutes. Delete it in the same sitting; never leave it overnight |
+
+1. Create — after the two channels exist and `DC46_CHANNELS` is set:
+   `gcloud monitoring policies create --project constrapp-69b5d --policy-from-file=ops/monitoring/dc46-delivery-test.temporary-policy.json --notification-channels="$DC46_CHANNELS"`
+   Note the policy name it prints (`projects/constrapp-69b5d/alertPolicies/<id>`).
+2. Wait for the email — expect a few minutes (one minute of data, the
+   reporting delay, delivery).
+3. **Delivery evidence — record for each recipient:** who, the time the
+   email arrived, and the incident id shown in it. A recipient who has
+   received nothing after 30 minutes is a failed test: check the address on
+   that channel and the spam folder, then Logs Explorer for notification
+   delivery errors, before repeating.
+4. Delete: `gcloud monitoring policies delete projects/constrapp-69b5d/alertPolicies/<id> --project constrapp-69b5d`
+5. **Clean-up verification:** `gcloud monitoring policies list --project constrapp-69b5d --format='value(displayName)'`
+   lists exactly the two DC46 policies and no `TEST` entry; the console's
+   Alerting page shows no open incident for the deleted policy (close it by
+   hand if it is still listed); Scheduler attempts were one a minute and all
+   200 throughout.
+
+*Proves:* both channels deliver, the recipients can read and act on the
+email, and the filter and aggregation select the live series. *Does not
+prove:* that an absence opens an incident, or that policy B matches.
+
+**Limits of this validation — stated, not rounded up.**
+
+| Not tested in production | Why | Alternative |
+|---|---|---|
+| Policy A firing on a real absence | It needs the worker to stop for 15 minutes | Evidence: the replay over the 12–13 November outage shows the data gap. End-to-end: in a non-production Firebase project, deploy the worker, create policy A from the same file, wait for data, pause THAT project's Scheduler job, expect the email in about 20 minutes, resume it |
+| Policy B firing | It needs an error-level line from the worker | The delivery path is proven by the delivery test and the filter by the read-only replay. End-to-end in the same non-production project, with an invalid interval value there |
+| Monitoring during a billing interruption | Cannot be simulated safely | See *Billing continuity* |
+
+### Alert response runbook
+
+**Policy A — no successful run.** Deactivated members' old links keep working
+while the worker is stopped; requests queue and are not lost.
+
+1. `gcloud billing projects describe constrapp-69b5d` — if `billingEnabled`
+   is false, go to *Billing-incident response* below.
+2. `gcloud scheduler jobs describe firebase-schedule-processFileLinkRevocations-australia-southeast1 --location australia-southeast1 --project constrapp-69b5d`
+   — `state` must be `ENABLED` with a recent `lastAttemptTime`.
+3. Logs Explorer, `resource.type="cloud_scheduler_job"`: no entries means
+   Scheduler is not calling; error entries mean the worker refuses or fails.
+4. `gcloud run services describe processfilelinkrevocations --region australia-southeast1 --project constrapp-69b5d`
+   — latest revision Ready, 100 % of traffic, the worker account unchanged.
+5. Look for a deploy, an IAM change or a paused job in the last hour.
+6. After recovery: runs return 200 each minute; the queue count returns to 0;
+   every `member.deactivated` audit event in the gap is followed by a
+   `file_links.revoked`. Record the gap and its cause in this file.
+
+**Policy B — error logged.** The notification does not contain the line. Open
+the logs with the filter above and use the table in the policy text
+(`ops/monitoring/dc46-worker-error-log.policy.json`) — one row per message,
+with the action. For a company that stays incomplete, read
+`companies/{id}/system/fileLinkRevocation` (`lastPass`,
+`consecutiveIncomplete`, `nextAttemptAt`). Never paste a download URL or a
+token anywhere.
+
+**False alarms to expect.** A: a regional Cloud Run or Cloud Scheduler
+incident. B: a single transient Storage or Firestore failure that used up its
+retries. Neither needs a code change; both need the recovery check.
+
+### Billing continuity — administrator actions, none done here
+
+The operator account used for these inspections cannot read the billing
+account, its budgets or its administrators (permission denied), and the
+Budgets API is not enabled on the project. So the following are **unknown**,
+not confirmed:
+
+| Action (billing account owner) | State |
+|---|---|
+| Confirm the project is on a permanent, paid billing account — not a free-trial account | Not confirmed. Google's documentation: a free-trial account that is not upgraded is closed, its projects' resources are stopped, and after a 30-day grace period they are permanently deleted |
+| Confirm who owns the billing account and its payment profile | Not recorded |
+| Add a second authorised billing administrator | Not confirmed |
+| Verify a budget with alert thresholds exists for this project (the L1 set-up suggests A$20 a month at 50 / 90 / 100 %) | Not confirmed |
+| Add the two DC46 email channels to that budget's notifications (a budget accepts up to five Monitoring email channels) | Not done |
+| Decide the alert path for a complete billing interruption (below) | Open decision |
+
+**Cloud Monitoring is not independent of billing.** Policies A and B live in
+the same project the interruption stops. Replaying policy A's query shows the
+data did stop on 12 November, but whether Cloud Monitoring still evaluates
+policies and sends email for a project whose billing is disabled is **not
+stated in Google's documentation and was not tested**. Worse, Google states
+that a metric-absence condition raises no alert when the monitored resource
+is "deleted or shut down", and Cloud Run logged a shutdown on 12 November.
+**Policy A must not be described as detecting billing interruptions.** It
+may; nothing shows that it does.
+
+**A budget alert is not an interruption alert either.** It reports spend
+against a threshold; it does not stop spend, and it says nothing when an
+account lapses for another reason, as on 12 November.
+
+What is independent of the project: Google's own notices to the billing
+account's administrators and payment contacts. That is why a second
+administrator matters more than any policy here. If the owners want a
+signal that needs nobody to read billing mail, the remaining option is a
+check hosted outside this project and its billing account; none is designed
+or proposed in this task.
+
+### Billing-incident response
+
+1. Confirm: `gcloud billing projects describe constrapp-69b5d` shows
+   `billingEnabled: false`, or the console shows the project on Spark.
+2. The billing administrator restores a paid account for the project. Google
+   states services may take up to 24 hours to restart and some may need a
+   manual restart; on 13 November the Scheduler job resumed within minutes.
+3. Verify, read-only: the Scheduler job is `ENABLED` and attempts have
+   resumed; the worker answers 200 each minute on the expected revision; the
+   eight callables are Ready; the worker account still holds its three
+   grants; the queue count returns to 0.
+4. Find what waited: every `member.deactivated` or role reduction audited
+   during the gap must be followed by a `file_links.revoked` after it. For
+   the gap itself, old links of those members worked.
+5. Do not redeploy unless a check in step 3 fails. Record the times, the
+   cause and the checks under *Billing interruption* above.
+
+### Dependency on the all-Functions deploy — proven by test, NOT AUTHORISED
+
+The eight callables run the ADR-74 build (deployed 12 November); the worker
+runs Stage 1. `tests/functions/team.callableCompat.test.js` pins both sides:
+
+| Callable build | Company state | Result |
+|---|---|---|
+| ADR-74 (deployed) | No periodic request has ever existed — interval `0` | Correct: served as urgent, audited `file_links.revoked`. This is production today |
+| ADR-74 (deployed) | A periodic request has existed | Tokens are removed and the request completes, **but** the sweep is recorded as periodic: no `file_links.revoked`; `file_links.reconciled` only if a token was found, otherwise no audit event; an open periodic sweep is not superseded |
+| Stage 1 (`main`) | Any | Correct: the request is urgent, an open periodic sweep is superseded, the completion is audited `file_links.revoked` |
+
+So: **no deploy is needed while the interval is `0`; the all-Functions deploy
+(step 3 of the DC46-C order above) must be done and verified before any
+non-zero interval.** It is not a defect in `main`; it is two builds of one
+library running side by side. Nothing is lost and no link survives because
+of it — the damage would be to the audit evidence of a revocation.
+
+### Future — policy C, the planning heartbeat (create WITH activation)
+
+Not prepared as a file, because its metric cannot exist before activation.
+
+- A log-based counter metric on
+  `resource.labels.service_name="processfilelinkrevocations" AND jsonPayload.message:"file-links: reconciliation plan complete"`.
+- A metric-absence policy on that counter, 3 hours, the same two channels.
+  The line is written about hourly while reconciliation is on.
+- It can fire falsely only when planning is paused by 200 queued periodic
+  requests, which needs far more companies than exist.
+- The overdue signal needs nothing new: `reconciliation overdue` is an
+  error-level line and is matched by policy B.
+
+### Cost — published prices and estimates, kept apart
+
+**Published by Google** (Google Cloud Observability pricing page, read 16
+November 2026):
+
+| Item | Published price |
+|---|---|
+| Alerting, before 1 September 2027 | Not charged. Charging starts "no sooner than September 1, 2027" |
+| Alerting, from that date | US$0.35 a month for each metric reference in an alerting policy, plus US$0.50 per million points returned by a metric alerting condition. No free allotment is listed |
+| Log-match policies | Return no points. Google's pricing example prices 100 log-based policies at about US$3.50 a month — the same US$0.35 each |
+| Google system metrics such as `run.googleapis.com/request_count` | Not charged for ingestion |
+
+**Estimates — ours, not Google's, and not a commitment:**
+
+| Item | Estimate | Assumption |
+|---|---|---|
+| Policy A, from September 2027 | About US$0.35 plus a few cents a month | One metric reference; one aggregated series evaluated about every 30 seconds is roughly 86,400 points a month |
+| Policy B, from September 2027 | About US$0.35 a month | One policy, no points |
+| The delivery test | Effectively nothing | It exists for minutes |
+| Policy C and its log-based counter | Not estimated | A user-defined log-based metric is billed as a custom metric; the volume is about one point an hour. Price it when policy C is prepared |
+| Email channels, the logs the worker already writes | No added charge expected | — |
+
+Prices, dates and exemptions can change before 2027, and an existing
+commitment contract can alter them. **Re-read the pricing page before
+creation and again before September 2027; no monthly figure here is a
+promise.**
+
+### Rollback of the monitoring itself
+
+Disable a policy (`gcloud monitoring policies update <policy name> --no-enabled --project constrapp-69b5d`)
+or delete it (`gcloud monitoring policies delete <policy name> --project constrapp-69b5d`);
+delete the channels in the console. No effect on the worker, the callables,
+Rules or data. A policy that is too noisy is edited from the file and
+re-created, never tuned by hand in the console alone.
+
+All three policy files were checked field by field against the Cloud
+Monitoring API's published schema (discovery revision 20261109): every field
+and enumerated value exists. That is a schema check, not a creation — the
+API has no dry run, so value ranges are finally confirmed only on create.
+
+Sources (Google Cloud documentation, read through search results and the
+API's published schema on 16 November 2026 — re-read before creation): [metric-absence policies](https://docs.cloud.google.com/monitoring/alerts/metric-absence),
+[behaviour of metric-based policies](https://docs.cloud.google.com/monitoring/alerts/concepts-indepth),
+[`projects.alertPolicies`](https://docs.cloud.google.com/monitoring/api/ref_v3/rest/v3/projects.alertPolicies),
+[log-based alerting policies](https://docs.cloud.google.com/logging/docs/alerting/log-based-alerts),
+[Monitoring quotas and limits](https://docs.cloud.google.com/monitoring/quotas),
+[notification channels, including *Test a notification channel*](https://docs.cloud.google.com/monitoring/support/notification-options),
+[Cloud Run metrics](https://docs.cloud.google.com/monitoring/api/metrics_gcp_p_z),
+[pricing examples](https://cloud.google.com/stackdriver/observability-pricing-examples),
+[Observability pricing](https://cloud.google.com/products/observability/pricing),
+[budget alert recipients](https://docs.cloud.google.com/billing/docs/how-to/budgets-notification-recipients),
+[billing for a project](https://docs.cloud.google.com/billing/docs/how-to/modify-project),
+[free trial](https://docs.cloud.google.com/free/docs/free-cloud-features).
 
 ## Custom domain — app.constrap.com — CONNECTED (production; confirmed live on 11 November 2026)
 

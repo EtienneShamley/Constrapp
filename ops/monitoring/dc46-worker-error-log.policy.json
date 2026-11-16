@@ -1,0 +1,28 @@
+{
+  "displayName": "DC46 file-link worker: error logged",
+  "combiner": "OR",
+  "enabled": true,
+  "severity": "ERROR",
+  "userLabels": {
+    "control": "dc46",
+    "component": "file-link-worker",
+    "policy": "b-error-log"
+  },
+  "conditions": [
+    {
+      "displayName": "ERROR written by the processfilelinkrevocations container",
+      "conditionMatchedLog": {
+        "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"processfilelinkrevocations\" AND resource.labels.location=\"australia-southeast1\" AND severity>=ERROR AND (log_id(\"run.googleapis.com/stderr\") OR log_id(\"run.googleapis.com/stdout\"))"
+      }
+    }
+  ],
+  "alertStrategy": {
+    "notificationRateLimit": { "period": "3600s" },
+    "autoClose": "86400s"
+  },
+  "documentation": {
+    "mimeType": "text/markdown",
+    "subject": "DC46 file-link worker logged an error",
+    "content": "## What this means\n\nThe worker `processFileLinkRevocations` wrote a log line at ERROR level. This notification is sent at most once an hour, so more errors may have followed; it does not contain the log line. Open Logs Explorer with:\n\n`resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"processfilelinkrevocations\" AND severity>=ERROR`\n\n## Read the message, then act\n\n| Log message contains | Meaning | Action |\n|---|---|---|\n| `worker run failed` | The run threw. | Read the stack in the entry. If it repeats every minute, policy A will also fire. |\n| `FILE_LINK_RECONCILE_INTERVAL_HOURS is set but` | The interval value is invalid. Revocation still runs; reconciliation is off; every run fails. | Correct the value in `functions/.env.constrapp-69b5d` and redeploy the worker (authorised deploy). |\n| `sweep interrupted; will resume` | A Storage listing or a Firestore call failed. The checkpoint is kept. | One line is usually transient. Five in a row close the sweep as incomplete. |\n| `sweep incomplete; old links may still work` | Third or later incomplete sweep for a company. Retries back off, up to one hour apart. | Read `companies/{id}/system/fileLinkRevocation` (`lastPass`, `consecutiveIncomplete`, `nextAttemptAt`). Old links for that company may still work until a sweep completes. |\n| `reconciliation overdue` | A company has gone two intervals without a successful sweep. | Find the company from its `overdueSince` field and treat as an incomplete sweep. |\n| `reconciliation cursor unreadable` / `could not be read` / `planning failed` | Planning restarted or will retry. No company is skipped. | Check that it does not repeat. |\n| `refusing an invalid company id` | A queue document sits under an invalid company id. | Investigate who wrote it; the worker ignores it. |\n\nNever paste a download URL or a token into a ticket or chat.\n\nFull runbook: `docs/DEPLOYMENT.md`, section *DC46-C monitoring readiness*."
+  }
+}

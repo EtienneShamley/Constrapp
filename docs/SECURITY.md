@@ -3267,6 +3267,23 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       it is stopped waits; nothing fails, so nothing alerts. No queued
       request was found afterwards, but no alert exists for a missing run or
       for billing. Revocation is only as timely as the worker is alive.
+      Two alert policies and two notification channels are **PREPARED and
+      PROPOSED, not created** (DEPLOYMENT.md → *DC46-C monitoring
+      readiness*). They would be detection, not a control: they enforce
+      nothing and are not an external availability monitor. By Google's
+      documentation a metric-absence policy needs a data point after it is
+      created, treats late data as missing, and raises no alert when the
+      monitored service is deleted or shut down. They sit in the same
+      project a billing interruption stops; whether they notify then is
+      unknown, and they must not be described as detecting one.
+    - *The callables and the worker are different builds.* The eight
+      callables run the ADR-74 build; the worker runs Stage 1. That is
+      correct only while the interval is `0`. Once a periodic request has
+      existed, a deactivation through the old callables is still swept and
+      completed, but it is audited as a periodic sweep — no
+      `file_links.revoked`, and no event at all when no token is found
+      (`tests/functions/team.callableCompat.test.js`, group 6). The
+      all-Functions deploy must precede any non-zero interval.
     - *Still open after Stage 1:* document visibility reduction (Stage 2),
       external-member removal (Stage 3), measurement at volume (Stage 4),
       and the unproven cause of the tokens that reappeared in production.
