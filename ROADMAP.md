@@ -234,6 +234,46 @@ must land before Constrapp can claim tax compliance in those markets.
 
 ---
 
+## Strategic Development Sequence (agreed 16 November 2026)
+
+The agreed order of the next strategic stages, by architect direction and
+Product Owner agreement. **This is strategic intent. It authorises no
+implementation, overrides no ADR, and lifts no anti-goal.** Every stage still
+needs its own architectural assessment, its own ADR where it introduces a
+pattern, and a separate implementation approval; every production step needs
+its own release authorisation. It sits above *Development Order* below, which
+remains the lifecycle-ordered record of what each module has shipped and what
+remains. The current operational checkpoint is kept in
+[docs/CHATGPT_HANDOVER.md](docs/CHATGPT_HANDOVER.md).
+
+Production statuses in this table are those already recorded elsewhere in this
+file and in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md); the table adds none.
+
+| # | Stage | Completed (as recorded) | Current status | Outstanding prerequisites | Planning | Implementation approval |
+|---|---|---|---|---|---|---|
+| 1 | **Complete DC46 security** | Part A (ADR-73) and part B (ADR-74) live; part C Stage 1 (ADR-75) worker deployed 13 November 2026 and revocation production-accepted 16 November 2026 | **In progress.** Periodic reconciliation NOT ACTIVATED (interval `0`); monitoring PREPARED, not created; Deferred Control 46 OPEN | Notification channels and alert policies A/B; billing continuity confirmation; the all-Functions deploy; then activation; Stages 2–4. Stage 2 is a Rules change and the ruleset is 3,076 bytes under its budget | ADR-75 (Stage 1 implemented; Stages 2–4 proposed) | Each cloud step and each stage separately authorised — see *Also tracked* → DC46 |
+| 2 | **International infrastructure assessment** | Nothing | Not started | Stage 1 | No scope recorded in this repository | An assessment only. Any resulting change needs its own ADR and approval |
+| 3 | **L2 — Commercial Reports and Final Account** | Nothing built for this stage. The figures it would report (margin, forecast, cash flow, approved budget versions) are derived today | Not started. Reports is a hidden placeholder screen | Assessment not done. See *Development Order* item 8 | Scope is item 8's one paragraph; no ADR | Not approved |
+| 4 | **L3 — Production Reliability** | Nothing under this name | Not started | Scope not recorded. Documented gaps a reliability stage would have to consider: no deploy stage in CI, manual Rules publishing, general App Check enforcement not enabled, no incident runbook beyond DC46 (DEPLOYMENT.md) | No scope, no ADR | Not approved |
+| 5 | **L4 — BOQ-to-Approved-Budget integration** | BOQ foundation (ADR-32 Part 1); Approved Budget Versions (ADR-70) and Controlled Budget Adjustments (ADR-71) | Not started. The BOQ feeds no financial figure today | Estimating is not built; the BOQ → Budget transfer is deferred "with an idempotence design" (*Development Order* item 4b); it must write through the ADR-70/71 approved-version model, never onto Budget Lines directly | No ADR | Not approved |
+| 6 | **L5 — Accounting integrations, Xero first** | Nothing | Not started | **Product-market-fit validation** and a **separately approved integration strategy** (*Growth (later)*; *Anti-Goals*). A provider integration also needs server-side secrets and a trusted-backend ADR (ENGINEERING_STANDARDS.md §6) | No scope, no ADR | Not approved |
+| 7 | **Constrap IQ and AI capabilities** | Nothing. PULSE™, SHIELD™ and Quant™ shipped as deterministic, non-AI foundations | Not started. IQ™ has no screen | The AI Feature Placeholder Rule (AGENT.md) stays in force until an approved strategy lifts it; AI providers are server-side only (ENGINEERING_STANDARDS.md §6) | *Development Order* item 9; no ADR | Not approved |
+| 8 | **Advanced construction modules** | Nothing under this name | Not started | Scope not recorded. *Development Order* items 9–10 list the remaining module work; every field module must state its commercial input or output | No scope, no ADR | Not approved |
+| 9 | **SaaS commercialisation** | Nothing. Team invitations exist (L1, ADR-72); company creation is operator-only | Not started | Billing and subscriptions and self-serve company signup are not built (*Growth (later)*); payment providers are server-side only | No scope, no ADR | Not approved |
+| 10 | **Mobile and field experience** | Responsive, touch-ready web layout | Not started | PWA packaging and native apps are *Growth (later)* / *Future*; native packages stay out of this repository (AGENT.md) | No scope, no ADR | Not approved |
+| 11 | **Final production audit** | Nothing | Not started | All preceding stages | No scope recorded | Not approved |
+
+**L5, stated exactly:** Xero is the preferred first accounting integration,
+subject to product-market-fit validation and a separately approved integration
+strategy. Until both exist, accounting integrations remain an anti-goal
+(*Broad enterprise integrations before product-market fit*) and no integration
+code, dependency or credential is to be added.
+
+The *Anti-Goals* below apply to every stage. A stage's place in this sequence
+does not make an anti-goal acceptable.
+
+---
+
 ## Development Order
 
 The sequence closes the commercial-control loop first (the back half of the lifecycle is already in the schema), then completes the preconstruction side (the front half), then layers intelligence and commercially linked field features. Each item integrates through the cost-code spine.
@@ -244,8 +284,8 @@ approved-only read-time derivation, and a **Commitment Exposure** figure kept
 separate from Committed. **M3-B1 (ADR-62) — LIVE:** approved PO-linked
 supplier variations are APPLIED to the PO's commitment and mature inside
 Remaining Committed through the one ADR-55 formula; Commitment Exposure =
-Remaining Committed + unapplied. **M3-B2 (ADR-63) — implemented, not yet
-deployed:** positive NEW-SCOPE lines become committed, claimable commitment
+Remaining Committed + unapplied. **M3-B2 (ADR-63) — LIVE in production (confirmed by the
+Product Owner; DEPLOYMENT.md):** positive NEW-SCOPE lines become committed, claimable commitment
 lines in their own right once the variation's new scope is committed (a second
 rules-stamped pair), are claimed cumulatively and invoiced from the approved
 claim with a per-line `variationId` + `variationLineIndex` identity (the header
@@ -411,7 +451,7 @@ forecast/cash-flow delay derivation itself (dependencies shipped in Programme
 - Budget burn bar and variance indicators; project edit
 - ~~User management (invite, assign role, assign company)~~ **L1 — Trusted Backend & Team Management (ADR-72) — LIVE IN PRODUCTION; deployment and live acceptance confirmed by the Product Owner on 11 November 2026** (Functions first, then Hosting; no Rules publish; DEPLOYMENT.md → *L1 production release record*, TESTING.md §49). Eight Callable Cloud Functions (`frontend/functions/`) for invitations, acceptance, roles and deactivation; Company Settings → Team; `/accept-invite`; a membership gate; operator bootstrap and reconciliation scripts. Internal roles only; no public tenant sign-up; no rules change. **Remaining:** custom claims, MFA, an audit-log viewer, external (subcontractor/client) onboarding after project-level scoping (DC20), closing Storage download-URL exposure (DC46 — still open: part A, authenticated SDK downloads with no download URL minted by the app, is **LIVE** as ADR-73 — Hosting deployed and production-tested, confirmed by the Product Owner on 11 November 2026, Android Chrome not yet tested; part B, durable background removal of existing download tokens after a deactivation or access-reducing role change, with a Team-page status and an operator clean-up script, is **implemented on `security/dc46-b-token-revocation` as ADR-74 and NOT YET DEPLOYED**; still to decide after part B: a periodic sweep for newly uploaded files and coverage of document visibility reduction), and **general App Check enforcement for Firestore, Storage and Authentication** (deferred: only the callables enforce App Check; console enforcement stays OFF until a monitoring window has been reviewed — none completed yet). The frontend production dependency audit findings (pre-existing on `main`) are tracked here for a separate dependency-update task.
 - **Brand: Constrap (chore/constrap-branding) — LIVE IN PRODUCTION at `https://app.constrap.com` (confirmed live on 11 November 2026; the initial brand deployment date is not recorded).** Customer-facing name changed from "Constrapp" to **Constrap** (app title, wordmarks, module names, UI copy, invitation email, current product docs). Internal identifiers and historical entries in this roadmap keep the old spelling (AGENT.md → Brand Name). `app.constrap.com` is connected, `constrap.com` is verified in Resend and the L1 parameters are set (DEPLOYMENT.md → *Custom domain — app.constrap.com*). The full TESTING.md §50 checklist has not been recorded as run.
-- **DC46 — Storage download links after a membership ends. Part A (ADR-73, authenticated reads) LIVE since 11 November 2026; part B (ADR-74, token revocation by a scheduled worker) LIVE IN PRODUCTION — deployed and accepted by the Product Owner on 12 November 2026** (worker first, then Functions, then Hosting; no Rules publish; DEPLOYMENT.md → *DC46-B* → *Production release record*, TESTING.md §52). **Deferred Control 46 stays OPEN.** **Part C (ADR-75) — Stage 1, periodic reconciliation and fair scheduling in the existing worker: IMPLEMENTED on `main`; the updated worker DEPLOYED on 13 November 2026 (worker only); the existing membership-triggered revocation PRODUCTION-ACCEPTED through it on 16 November 2026 (backend evidence, architect approval); periodic reconciliation NOT ACTIVATED (`FILE_LINK_RECONCILE_INTERVAL_HOURS=0`)** (DEPLOYMENT.md → *DC46-C* → *Production release record*, TESTING.md §53). **Outstanding, each separately authorised:** the all-Functions deploy that brings the callables to the same source; activation of a non-zero interval; Stage 2 (visibility-reduction lock, Rules); Stage 3 (external-member removal through the app); Stage 4 (performance validation at volume, alerting, closure wording). A billing interruption stopped the worker for about 17 hours on 12–13 November 2026; billing continuity and missing-run monitoring are open operational risks (DEPLOYMENT.md → *Billing interruption*). **Monitoring readiness (16 November 2026): two alert policies and two notification channels PREPARED and PROPOSED, not created; billing continuity not confirmed; the all-Functions deploy is now a tested precondition of activation** (DEPLOYMENT.md → *DC46-C monitoring readiness*, TESTING.md §54). **Following milestone (architect direction, 16 November 2026): an international infrastructure assessment — not started; no scope is recorded in this repository yet.** Also tracked under part C — tokens re-created outside the app, operator-only external-role removal, and the stale revocation status on a re-invited member (SECURITY.md → Deferred Control 46).
+- **DC46 — Storage download links after a membership ends. Part A (ADR-73, authenticated reads) LIVE since 11 November 2026; part B (ADR-74, token revocation by a scheduled worker) LIVE IN PRODUCTION — deployed and accepted by the Product Owner on 12 November 2026** (worker first, then Functions, then Hosting; no Rules publish; DEPLOYMENT.md → *DC46-B* → *Production release record*, TESTING.md §52). **Deferred Control 46 stays OPEN.** **Part C (ADR-75) — Stage 1, periodic reconciliation and fair scheduling in the existing worker: IMPLEMENTED on `main`; the updated worker DEPLOYED on 13 November 2026 (worker only); the existing membership-triggered revocation PRODUCTION-ACCEPTED through it on 16 November 2026 (backend evidence, architect approval); periodic reconciliation NOT ACTIVATED (`FILE_LINK_RECONCILE_INTERVAL_HOURS=0`)** (DEPLOYMENT.md → *DC46-C* → *Production release record*, TESTING.md §53). **Outstanding, each separately authorised:** the all-Functions deploy that brings the callables to the same source; activation of a non-zero interval; Stage 2 (visibility-reduction lock, Rules); Stage 3 (external-member removal through the app); Stage 4 (performance validation at volume, alerting, closure wording). A billing interruption stopped the worker for about 17 hours on 12–13 November 2026; billing continuity and missing-run monitoring are open operational risks (DEPLOYMENT.md → *Billing interruption*). **Monitoring readiness (16 November 2026): two alert policies and two notification channels PREPARED and PROPOSED, not created; billing continuity not confirmed; the all-Functions deploy is now a tested precondition of activation** (DEPLOYMENT.md → *DC46-C monitoring readiness*, TESTING.md §54). **Following milestone (architect direction, 16 November 2026): an international infrastructure assessment — not started; no scope is recorded in this repository yet (see *Strategic Development Sequence*).** Also tracked under part C — tokens re-created outside the app, operator-only external-role removal, and the stale revocation status on a re-invited member (SECURITY.md → Deferred Control 46).
 - Subcontractors module — linked to contacts and cost codes
 
 ## Anti-Goals (out of scope without an approved strategy change)
@@ -430,7 +470,7 @@ Field features are prioritised only when they feed or evidence a commercial outc
 ## Growth (later)
 
 - Billing & subscriptions — Stripe integration, plan management in-app
-- Accounting integrations — Xero, MYOB, QuickBooks (via `externalRefs`) — after product-market fit
+- Accounting integrations — Xero, MYOB, QuickBooks (via `externalRefs`) — after product-market fit (Xero is the preferred first integration — *Strategic Development Sequence* stage 6, L5)
 - Client portal — limited external access for project owners
 - PWA packaging and mobile-optimised layouts
 

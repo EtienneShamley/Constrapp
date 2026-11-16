@@ -48,11 +48,11 @@ modules** (screens exist, no functionality) are listed in the module-status tabl
 | Routing | React Router 7 (`react-router-dom`) | `BrowserRouter` |
 | State | React Context + hooks | No Redux/Zustand |
 | Charts | Recharts 3 | Cash Flow chart only. The Dashboard uses **plain SVG** (no chart library): the Budget, cost & revenue bars and the programme status donut (ADR-45) — its original charts were fabricated data and were removed |
-| Backend | Firebase JS SDK 12 — Auth, Firestore, Storage, Functions, App Check | **Client SDK for all project/financial data**; since ADR-72 a narrow **trusted backend** — eight Callable Cloud Functions (2nd gen, Node.js 22, Admin SDK 14, firebase-functions 7) in `frontend/functions/` for team management only, plus one scheduled worker for legacy download-token revocation (ADR-74, not yet deployed) |
+| Backend | Firebase JS SDK 12 — Auth, Firestore, Storage, Functions, App Check | **Client SDK for all project/financial data**; since ADR-72 a narrow **trusted backend** — eight Callable Cloud Functions (2nd gen, Node.js 22, Admin SDK 14, firebase-functions 7) in `frontend/functions/` for team management only, plus one scheduled worker for legacy download-token revocation (ADR-74, live since 12 November 2026) |
 | Lint | ESLint 10 (flat config) | `npm run lint` = `eslint . --max-warnings 0`. Standing policy **0 errors / 0 warnings**, blocking in CI (ADR-41) |
-| Rules tests | Vitest 4 + `@firebase/rules-unit-testing` + `firebase-tools` 13 (emulator) | `npm run test:rules` — **dev-only**. Requires JDK 17 |
+| Rules tests | Vitest 4 + `@firebase/rules-unit-testing` + `firebase-tools` 15 (emulator) | `npm run test:rules` — **dev-only**. Requires JDK 21+ |
 | Unit tests | Vitest 4 (Node, no emulator) | `npm run test:unit` — pure `lib/` domain logic plus a few structural source tests (`tests/unit/`); separate config (`vitest.config.js`). **No jsdom, no testing-library** |
-| CI | Azure Pipelines (`azure-pipelines.yml`) | `npm ci → lint → test:unit → test:rules → build`, all blocking. No deploy stage |
+| CI | Azure Pipelines (`azure-pipelines.yml`) | `npm ci` (frontend and Functions) → lint → Functions lint → `test:unit` → Functions pure tests → Functions dependency audit (gating) → frontend audit (report only) → `test:rules` → transitional-rules check → `test:functions` → build. No deploy stage |
 
 ## Client-SDK Data Access + One Narrow Trusted Backend (ADR-72)
 

@@ -42,8 +42,9 @@ particular:
 - **A new collection or field is not done until its rules block is written and a
   security-review pass is complete.** Rule changes need a manual publish and a review
   against [docs/SECURITY.md](docs/SECURITY.md).
-- The `backend/` directory is a **reserved, intentionally empty placeholder** — it
-  contains no code; do not treat it as an existing backend.
+- **There is no root `backend/` directory.** Earlier versions of this guide
+  described a reserved empty placeholder; it does not exist in the repository.
+  The only trusted backend is `frontend/functions/` (ADR-72, ADR-74).
 
 ## Stack
 
@@ -785,6 +786,71 @@ Before starting any task, an agent must:
 5. Read the relevant page component and its hooks before editing either
 6. Check `frontend/firestore.rules` before adding any new collection or field
 7. Confirm the task falls within current scope — if not, flag it rather than build it
+
+## Development Continuity — ChatGPT Handover (mandatory)
+
+[docs/CHATGPT_HANDOVER.md](docs/CHATGPT_HANDOVER.md) is the **mandatory
+operational handover** for ChatGPT development continuity: the one file a new
+architect conversation needs to resume work. It is a point-in-time snapshot and
+an index into this documentation, never a replacement for it or for checking
+production.
+
+**At each significant milestone closeout** (and after a production deployment,
+a significant architecture decision or a roadmap change), the documentation
+closeout must:
+
+- Refresh the current checkpoint and the *Last updated* date.
+- Record the verified Git state (branch, HEAD) and the Azure CI status.
+- Update deployment and acceptance status.
+- Update the current milestone and the exact next action.
+- Record open risks and dependencies.
+- Synchronise its references with [ROADMAP.md](ROADMAP.md).
+- Include the handover in the documentation review, like any other changed
+  document.
+
+**Rules for what it may say:**
+
+- Do not update a production status solely because implementation tests or CI
+  passed. Live means a release record exists; accepted means acceptance
+  evidence is recorded.
+- Keep its evidence classes — VERIFIED / REPORTED / PROPOSED / BLOCKED /
+  NOT STARTED. Do not turn REPORTED evidence into VERIFIED without stating what
+  was checked and how.
+- Keep it concise. Reference ADRs and source documents; do not duplicate them.
+- No credentials, tokens, personal account details or customer records.
+
+**Every implementation report must state whether the handover needs
+updating** — *yes* (and what), or *no* — alongside the other mandatory report
+items.
+
+## Collaboration Protocol (working convention)
+
+How this project is run. These are **agreed working conventions**, not
+technical facts verified in Git, and they change by Product Owner decision —
+not by ADR.
+
+| Role | Responsibilities |
+|---|---|
+| **Product Owner** | Owns product decisions. Authorises changes and releases. Executes Git integration (commit, merge, push) and deployment. Confirms production acceptance |
+| **ChatGPT** | Lead Software Architect, Senior Software Engineer, Technical Product Architect and Development Supervisor. Reviews Claude reports and approves gates |
+| **Claude Code** | Implementation engineer. Performs repository inspections, implements approved changes, runs tests and reports results. Does not deploy or commit without approval |
+
+- **Gates.** Architectural assessment → explicit authorisation → implementation
+  → mandatory report → architect review → Git integration → Azure CI →
+  deployment authorisation → production acceptance → documentation closeout.
+  Each stage and each production step is authorised separately. The mandatory
+  implementation report and the release gates are preserved for every task.
+- **Prompts.** The architect issues detailed, copyable plain-text prompts that
+  carry the full task context, constraints and report list.
+- **Model and session.** The Claude model is chosen for the task's complexity
+  from the models available at the time; no specific model is an engineering
+  requirement. Where practical, one Claude session continues through
+  assessment, implementation, corrections and release verification, and a
+  fresh session starts at a completed milestone boundary. Model and session
+  instructions are given outside the implementation prompt.
+- These conventions add to, and never relax, the Inspection Workflow above,
+  the Git Workflow below and
+  [docs/ENGINEERING_STANDARDS.md](docs/ENGINEERING_STANDARDS.md).
 
 ## Web-First / Mobile-Ready Philosophy
 
