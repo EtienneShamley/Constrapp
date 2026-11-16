@@ -2178,8 +2178,10 @@ be found in the logs and is not part of this record (TESTING.md §53).
 callables run the ADR-74 build beside the Stage 1 worker, a pairing that the
 acceptance above exercised **and that is correct only while the interval is
 `0`** (*DC46-C monitoring readiness* → *Dependency on the all-Functions
-deploy*). Step 4 (activation) — not authorised. Monitoring — PROPOSED, not
-created (*DC46-C monitoring readiness*).
+deploy*). Step 4 (activation) — not authorised. Monitoring — alert policies
+A and B and two notification channels were created on 16 November 2026,
+after this release (*DC46-C monitoring readiness* → *Monitoring release
+record*).
 
 ### Billing interruption — 12–13 November 2026
 
@@ -2214,15 +2216,16 @@ until 13 November 03:15. None is evidenced.
 **No recovery action was needed** beyond restoring billing. Nothing was
 redeployed for it.
 
-**Open operational risks — nothing below exists yet; each is a cloud change
+**Open operational risks — states corrected on 17 November 2026 after the
+monitoring release; each item still open is a cloud or administrator action
 needing its own approval:**
 
 | Risk | State |
 |---|---|
 | Billing-account continuity | The project must sit on a paid account that cannot lapse with a trial. Confirmation by the account owner is not recorded here |
 | Billing alerts | A budget alert is called for in *Product Owner setup* above; whether one exists was not checked (billing settings were deliberately not read) |
-| Missing-run monitoring | None exists. A stopped worker produces no error. **PROPOSED, not created:** policy A in *DC46-C monitoring readiness*. Replayed over this outage its query shows the 17-hour gap in the data; **whether it would have sent a notification while billing was disabled is unknown** |
-| Incident detection and response | None written. The interruption was noticed by people, not by a signal; there is no runbook for "the worker has stopped" |
+| Missing-run monitoring | None existed during this outage. **Created 16 November 2026:** policy A (*DC46-C monitoring readiness* → *Monitoring release record*). A stopped worker still produces no error; policy A watches for the missing successes and has never fired on a real absence. Replayed over this outage its query shows the 17-hour gap in the data; **whether it would have sent a notification while billing was disabled is unknown** |
+| Incident detection and response | This interruption was noticed by people, not by a signal. A runbook now exists (*DC46-C monitoring readiness* → *Alert response runbook* and *Billing-incident response*); it has not been exercised on a real incident |
 
 **What changes on deploy.** The existing worker `processFileLinkRevocations`
 gains: periodic planning (off while the interval is `0`), urgent-before-routine
@@ -2303,30 +2306,121 @@ observed latencies. Do not quote a revocation or reconciliation time.
 | `file-links: FILE_LINK_RECONCILE_INTERVAL_HOURS is set but…` | error, and the run fails | The interval is invalid; reconciliation is not running |
 | `file-links: reconciliation planning paused; periodic queue is full` | info | 200 periodic requests are queued; planning resumes when they drain |
 
-No alert policy exists yet. Two are prepared and PROPOSED in the next
-section; creating them is a cloud change needing its own authorisation.
-**None of these signals fires when the worker is not running at all** — see
-*Billing interruption* above.
+Alert policies A and B were created on 16 November 2026 (next section).
+Policy B notifies on the error-level lines above; nothing notifies on the
+info or warn lines. **None of these signals fires when the worker is not
+running at all** — policy A watches for that, within the limits stated in the
+next section; see also *Billing interruption* above.
 
-## DC46-C monitoring readiness — PROPOSED (prepared 16 November 2026); NOTHING BELOW EXISTS IN THE CLOUD
+## DC46-C monitoring readiness — POLICIES A AND B CREATED IN PRODUCTION 16 November 2026 (verified read-only; test delivery reported by both recipients; neither failure condition has fired; billing continuity NOT CONFIRMED)
 
-Prepared on `ops/dc46-c-monitoring-readiness`. **No alert policy, notification
-channel, log-based metric or budget was created; no Function was deployed;
-periodic reconciliation stays OFF.** Each cloud step below needs its own
-authorisation. Deferred Control 46 stays OPEN.
+Prepared on `ops/dc46-c-monitoring-readiness` (merged, `5615239`) and created
+in production by the Product Owner on 16 November 2026. **Two alert policies
+and two email notification channels exist. No log-based metric, uptime check
+or budget was created; no Function was deployed; no Rule, IAM binding or
+Scheduler job was changed; periodic reconciliation stays OFF.** The policies
+are detection, not a control: they revoke nothing and do not replace the
+worker. Any further cloud step below needs its own authorisation. Deferred
+Control 46 stays OPEN.
 
 | Status | Item |
 |---|---|
-| **PREPARED, NOT CREATED** | Alert policies A and B (`ops/monitoring/*.policy.json`) |
-| **PREPARED, NOT CREATED** | Two email notification channels (recipients are not in Git) |
-| **PREPARED, NOT CREATED** | A temporary delivery-test policy (`ops/monitoring/dc46-delivery-test.temporary-policy.json`), deleted straight after use |
+| **CREATED — verified read-only** | Alert policies A and B (`ops/monitoring/*.policy.json`): enabled, identical to the committed files, both channels attached |
+| **CREATED — verified read-only** | Two email notification channels, `DC46 - Product Owner` and `DC46 - Billing Administrator` (recipients are not in Git) |
+| **RUN AND REMOVED** | The temporary delivery-test policy (`ops/monitoring/dc46-delivery-test.temporary-policy.json`): created, fired once, deleted; its incident is closed. No temporary production resource remains |
+| **REPORTED by the Product Owner** | Both recipients received the test notification. Not observed: Google exposes no per-recipient delivery record that was found |
+| **NOT TESTED in production** | Policy A on a real absence; policy B on a real error line; anything during a billing suspension |
 | **NOT VERIFIED — administrator action** | Billing continuity (below) |
 | **SPECIFIED ONLY** | Policy C, the planning heartbeat — created with activation, not before |
 | **NOT AUTHORISED** | All-Functions deploy; activation of a non-zero interval |
 
-Production inventory read on 16 November 2026 (Monitoring and Logging APIs):
-0 alert policies, 0 notification channels, 0 log-based metrics, 0 uptime
-checks.
+### Monitoring release record — 16 November 2026
+
+Project `constrapp-69b5d`; watched service `processfilelinkrevocations`,
+`australia-southeast1`. All times UTC, 16 November 2026. **Cloud** means read
+from the Cloud Monitoring API, the Admin Activity audit log or Cloud Logging
+during read-only inspections; **Reported** means stated by the Product Owner
+and not independently observed.
+
+| Time (UTC) | Event | Evidence |
+|---|---|---|
+| about 09:30 | Preflight inventory: 0 alert policies, 0 notification channels, 0 log-based metrics, 0 uptime checks | Cloud |
+| 17:20:55 | Channel `DC46 - Product Owner` created (email, enabled) | Cloud |
+| 17:23:06 | Channel `DC46 - Billing Administrator` created (email, enabled) | Cloud |
+| 18:23:12 | Policy A created — `DC46 file-link worker: no successful run for 15 minutes` (`alertPolicies/15284677036198995887`) | Cloud |
+| 18:24:26 | Policy B created — `DC46 file-link worker: error logged` (`alertPolicies/11943159347055161843`) | Cloud |
+| 18:26:30 | Temporary policy `TEST - DC46 delivery check - delete after use` created, with both channels attached | Cloud (audit log) |
+| 18:29:30 | The test condition was met and the test incident opened | Cloud |
+| not recorded | The Product Owner received the test email | Reported |
+| not recorded | The billing administrator received the test email | Reported, through the Product Owner (recorded in the architect's closeout brief of 17 November 2026) |
+| 18:37:51 | Temporary policy deleted | Cloud (audit log) |
+| 18:38:51 | Test incident closed | Cloud |
+| 18:42 | Read-back (below) | Cloud |
+
+**Read-back at 18:42 UTC (read-only).**
+
+- **Inventory:** exactly two alert policies and two notification channels;
+  still no log-based metric or uptime check. No policy with `TEST` in its
+  name. One incident in total — the test incident, state `CLOSED`.
+- **Policies A and B:** both enabled and not edited since creation. For each,
+  the conditions, alert strategy, severity, labels and documentation text
+  read from the API are identical to the committed file. Each references
+  both channels.
+- **Policy A:** filter on `run.googleapis.com/request_count`, 2xx only, the
+  one service and region; 60 s `ALIGN_DELTA`, `REDUCE_SUM` grouped by service
+  name; absence `900s`, trigger count 1; auto-close 7 days. The series showed
+  one point a minute since creation, so the initial-data-point requirement
+  was met; no incident open.
+- **Policy B:** the scoped log filter as in the file, no label extractors,
+  `notificationRateLimit.period: 3600s`, auto-close 1 day. **The API accepted
+  the one-hour rate limit**, which the documentation had left unconfirmed.
+- **Channels:** both of type email, both enabled, holding two distinct
+  addresses. The addresses were not printed and are not recorded anywhere in
+  this repository. An email channel shows no verification status.
+- **Worker unchanged:** revision `processfilelinkrevocations-00002-had`,
+  Ready, 100 % of traffic, concurrency 1, max instances 1, the same worker
+  account, `FILE_LINK_REVOCATION_ENABLED=true`,
+  `FILE_LINK_RECONCILE_INTERVAL_HOURS=0`. Scheduler job `ENABLED`, every
+  minute, last updated 13 November; 60 attempts in the preceding hour, all
+  200. No error-level worker line in the preceding 26 hours. Billing reads
+  as enabled.
+- **Nothing else changed:** the Admin Activity audit log for the preceding
+  30 hours holds only Cloud Monitoring calls — two channel creations, three
+  policy creations, one policy deletion, and two
+  `ProvisionPublisherServiceAccount` calls made by Monitoring during channel
+  set-up. No `SetIamPolicy`, no deploy, no Scheduler change, no Rules
+  release. The eight callables are on their 12 November revisions; the
+  Firestore ruleset release is dated 3 November.
+
+**Delivery evidence — what is and is not shown.** The cloud shows that one
+incident opened on a policy that carried both channels; it does not show
+that an email arrived. Receipt by both recipients is **Reported** by the
+Product Owner. Not recorded for either recipient: the arrival time and the
+incident id shown in the email, which the delivery-test procedure asks for.
+
+**Departures from the prepared procedure.**
+
+- The channel display names use a hyphen and a capital *Administrator*
+  (`DC46 - Billing Administrator`), not the em-dash form proposed below.
+- The procedure deletes the test policy after both recipients confirm. The
+  policy was deleted at 18:37:51; the billing administrator's receipt was
+  recorded afterwards, in the closeout brief of 17 November 2026. The
+  read-only verification at 18:42 had it as unverified.
+
+**What the deployed monitoring does not do — do not round up.**
+
+| Limitation | Statement |
+|---|---|
+| Terminated or deleted resources | Policy A does not guarantee detection. Google documents that metrics of terminated or deleted resources are not considered for metric-absence policies. If the function or its Cloud Run service is deleted, assume silence |
+| Billing suspension | Unverified. Whether Cloud Monitoring evaluates policies or sends email for a project without billing is not documented and was not tested. Policy A must not be described as detecting a billing interruption |
+| Policy B depends on matching log lines | It notifies only when the worker's container writes a line at error level that matches the filter. A run that dies without writing one is not seen by B |
+| Neither failure condition was triggered | No absence and no error line was deliberately produced in production. Policy A has never opened an incident; policy B has never matched. Only the email path was exercised, by a policy that fires on healthy traffic |
+| Same project | Both policies, their data and their notifications depend on `constrapp-69b5d` and on Google Cloud |
+| No external monitor | An independent availability monitor hosted outside this project and its billing account does not exist. It remains future reliability work; none is designed or scoped |
+
+The sections below are the specification, the procedure as prepared, the
+runbook and the open billing actions. Where a step has now been done, its
+heading says so.
 
 ### Policy A — the worker has stopped
 
@@ -2356,7 +2450,7 @@ documentation unless marked otherwise.
 | **Project-level billing suspension — UNKNOWN** | On 12 November Cloud Run logged *Billing disabled. Shutting down instance.* Whether Cloud Monitoring then treats the service as shut down (no alert, per the row above), and whether it evaluates policies or sends email at all for a project without billing, is **not documented and not tested**. Replaying the query shows only that the data stopped. **Do not rely on policy A to report a billing interruption** |
 | **An ignored incident goes quiet** | An open absence incident closes once no data has arrived for the auto-close period plus 24 hours — about eight days here. Nothing re-notifies after that until data returns and stops again |
 | **It measures answers, not work** | A run that returns 200 counts as healthy. `FILE_LINK_REVOCATION_ENABLED=false` returns 200 with an info line and is not detected. Requests that never reach the container (unauthenticated, or refused at the instance limit) are not counted by this metric at all |
-| **Same project, same provider** | The policy, its data and its email all depend on Google Cloud and on this project. A check hosted elsewhere would be needed for independence; none is proposed |
+| **Same project, same provider** | The policy, its data and its email all depend on Google Cloud and on this project. A check hosted elsewhere would be needed for independence; none is proposed. It remains future reliability work |
 
 **Why 15 minutes, and why successes.** With `concurrency: 1` a sweep longer
 than a minute is expected to make the overlapping ticks fail (unmeasured,
@@ -2382,7 +2476,7 @@ AND (log_id("run.googleapis.com/stderr") OR log_id("run.googleapis.com/stdout"))
 |---|---|---|
 | Scope | The one service, container output only | The eight callables and every other resource are excluded. The platform request log is excluded on purpose: refused overlapping ticks and unauthenticated probes are recorded there |
 | Label extractors | None | Nothing from a log entry is copied into a notification. The notification carries the policy's own text and a link |
-| Rate limit | One notification an hour (`notificationRateLimit.period: 3600s`) | The field is required by the API for a log-match policy. Documented minimum 5 minutes; a maximum was not found in the documentation, so the value is confirmed only when the policy is created (an invalid value is refused; nothing is created). A stuck company retries at most hourly, so a persistent fault notifies about hourly. Google also caps a log-match policy at 20 a day |
+| Rate limit | One notification an hour (`notificationRateLimit.period: 3600s`) | The field is required by the API for a log-match policy. Documented minimum 5 minutes; a maximum was not found in the documentation; the API accepted `3600s` when the policy was created on 16 November 2026. A stuck company retries at most hourly, so a persistent fault notifies about hourly. Google also caps a log-match policy at 20 a day |
 | Auto-close | 1 day | Documented minimum 30 minutes, default 7 days |
 | Conditions | One | A log-match policy can hold only one condition |
 
@@ -2405,6 +2499,10 @@ administrator. The addresses are entered at creation time and live only in
 Cloud Monitoring. No policy file names a channel;
 `tests/unit/monitoringPolicies.test.js` fails if one ever does.
 
+**Created 16 November 2026** as `DC46 - Product Owner` and
+`DC46 - Billing Administrator`. The display names in step 1 were the
+proposal. The steps are kept for re-creation.
+
 1. Console → Monitoring → Alerting → *Edit notification channels* → Email →
    *Add new*, once per recipient. Use the display names
    `DC46 — Product Owner` and `DC46 — Billing administrator`. (The
@@ -2415,8 +2513,9 @@ Cloud Monitoring. No policy file names a channel;
 3. Keep them in the shell only:
    `export DC46_CHANNELS="projects/constrapp-69b5d/notificationChannels/<id1>,projects/constrapp-69b5d/notificationChannels/<id2>"`
 
-### Creation procedure — NOT AUTHORISED; for review
+### Creation procedure — DONE 16 November 2026 (kept for re-creation; a re-run needs its own authorisation)
 
+Both policies exist; running these commands again would create duplicates.
 From the repository root, after step 3 above:
 
 ```
@@ -2433,6 +2532,14 @@ touched and cannot tell that it is being watched.
 
 ### Verification checklist — none of it stops, pauses or breaks the worker
 
+**State on 16 November 2026 (*Monitoring release record* above).** Item 1:
+passed before creation (11 tests); the files have not changed since. Items 2
+and 5: verified read-only at 18:42 UTC, item 5 for the preceding hour. Item
+3: read through the API about 19 minutes after creation — one point a
+minute, no open incident — not on the console chart. Item 4: run and cleaned
+up; receipt is reported, and the arrival times and incident id were not
+recorded. The boxes are left unticked for a future re-creation.
+
 1. - [ ] `npm run test:unit` passes (`monitoringPolicies.test.js`).
 2. - [ ] `gcloud monitoring policies list --project constrapp-69b5d` shows
       policies A and B enabled, each with the two channels, and the filters
@@ -2443,7 +2550,12 @@ touched and cannot tell that it is being watched.
 5. - [ ] Scheduler attempts for the whole period are still one a minute, all
       200, and the worker revision is unchanged.
 
-### Delivery test — a temporary positive-traffic policy (NOT AUTHORISED; needs its own approval)
+### Delivery test — a temporary positive-traffic policy (RUN 16 November 2026 and removed; a repeat needs its own approval)
+
+**Result.** Created 18:26:30 UTC with both channels; incident opened
+18:29:30; policy deleted 18:37:51; incident closed 18:38:51. Both recipients'
+receipt is reported by the Product Owner. Detail and evidence classes:
+*Monitoring release record* above. The procedure is kept for a repeat.
 
 **Google provides no test for an email channel.** Its documentation: Cloud
 Monitoring "doesn't support a test option" for these channels; a channel is
@@ -2487,7 +2599,7 @@ prove:* that an absence opens an incident, or that policy B matches.
 | Not tested in production | Why | Alternative |
 |---|---|---|
 | Policy A firing on a real absence | It needs the worker to stop for 15 minutes | Evidence: the replay over the 12–13 November outage shows the data gap. End-to-end: in a non-production Firebase project, deploy the worker, create policy A from the same file, wait for data, pause THAT project's Scheduler job, expect the email in about 20 minutes, resume it |
-| Policy B firing | It needs an error-level line from the worker | The delivery path is proven by the delivery test and the filter by the read-only replay. End-to-end in the same non-production project, with an invalid interval value there |
+| Policy B firing | It needs an error-level line from the worker | The delivery path was exercised by the delivery test (receipt reported, not observed) and the filter by the read-only replay. End-to-end in the same non-production project, with an invalid interval value there |
 | Monitoring during a billing interruption | Cannot be simulated safely | See *Billing continuity* |
 
 ### Alert response runbook
@@ -2533,8 +2645,17 @@ not confirmed:
 | Confirm who owns the billing account and its payment profile | Not recorded |
 | Add a second authorised billing administrator | Not confirmed |
 | Verify a budget with alert thresholds exists for this project (the L1 set-up suggests A$20 a month at 50 / 90 / 100 %) | Not confirmed |
-| Add the two DC46 email channels to that budget's notifications (a budget accepts up to five Monitoring email channels) | Not done |
+| Add the two DC46 email channels to that budget's notifications (a budget accepts up to five Monitoring email channels) | Not done. The channels now exist (16 November 2026); attaching them to a budget is a billing-account action |
+| Confirm who receives Google's billing notices and any budget alerts | Not confirmed |
 | Decide the alert path for a complete billing interruption (below) | Open decision |
+
+**State on 17 November 2026: every row above is still open.** The read-only
+preflight of 16 November found billing enabled and the project linked to a
+billing account that the operator account cannot read; nothing more is
+known. **Receipt of the DC46 test email by the billing administrator shows
+only that one Cloud Monitoring email channel delivers. It is not evidence
+that a budget exists, that billing alerts are configured, or of who
+administers the billing account.**
 
 **Cloud Monitoring is not independent of billing.** Policies A and B live in
 the same project the interruption stops. Replaying policy A's query shows the
@@ -2555,7 +2676,8 @@ account's administrators and payment contacts. That is why a second
 administrator matters more than any policy here. If the owners want a
 signal that needs nobody to read billing mail, the remaining option is a
 check hosted outside this project and its billing account; none is designed
-or proposed in this task.
+or proposed. An independent external availability monitor remains future
+reliability work.
 
 ### Billing-incident response
 
@@ -2635,7 +2757,9 @@ promise.**
 
 Disable a policy (`gcloud monitoring policies update <policy name> --no-enabled --project constrapp-69b5d`)
 or delete it (`gcloud monitoring policies delete <policy name> --project constrapp-69b5d`);
-delete the channels in the console. No effect on the worker, the callables,
+delete the channels in the console. The policy names are in the *Monitoring
+release record* above. Each is a production cloud change needing its own
+authorisation. No effect on the worker, the callables,
 Rules or data. A policy that is too noisy is edited from the file and
 re-created, never tuned by hand in the console alone.
 
@@ -2643,6 +2767,7 @@ All three policy files were checked field by field against the Cloud
 Monitoring API's published schema (discovery revision 20261109): every field
 and enumerated value exists. That is a schema check, not a creation — the
 API has no dry run, so value ranges are finally confirmed only on create.
+On 16 November 2026 the API accepted all three files as written.
 
 Sources (Google Cloud documentation, read through search results and the
 API's published schema on 16 November 2026 — re-read before creation): [metric-absence policies](https://docs.cloud.google.com/monitoring/alerts/metric-absence),
