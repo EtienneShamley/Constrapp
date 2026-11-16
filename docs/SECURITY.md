@@ -3261,21 +3261,33 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       companies, slices, pre-emption, the recovery rules. The only thing run
       against real Cloud Storage on this revision is one membership-triggered
       sweep of a five-object tenant.
-    - *The worker can stop without anyone being told.* On 12–13 November
-      2026 the project lost billing and the worker did not run for about 17
-      hours (DEPLOYMENT.md → *Billing interruption*). A request queued while
-      it is stopped waits; nothing fails, so nothing alerts. No queued
-      request was found afterwards, but no alert exists for a missing run or
-      for billing. Revocation is only as timely as the worker is alive.
-      Two alert policies and two notification channels are **PREPARED and
-      PROPOSED, not created** (DEPLOYMENT.md → *DC46-C monitoring
-      readiness*). They would be detection, not a control: they enforce
-      nothing and are not an external availability monitor. By Google's
+    - *The worker can stop, and detecting that is partial.* On 12–13
+      November 2026 the project lost billing and the worker did not run for
+      about 17 hours (DEPLOYMENT.md → *Billing interruption*). A request
+      queued while it is stopped waits; nothing fails. No queued request was
+      found afterwards, and no alert existed then. Revocation is only as
+      timely as the worker is alive.
+      **Since 16 November 2026 two Cloud Monitoring alert policies exist in
+      production** — A, no successful worker run for 15 minutes; B, an
+      error-level line written by the worker — each notifying two email
+      channels (DEPLOYMENT.md → *DC46-C monitoring readiness* → *Monitoring
+      release record*). Verified read-only: both are enabled and identical
+      to the files in `ops/monitoring/`. That one test notification reached
+      both recipients is reported by the Product Owner, not observed.
+      **Neither failure condition has fired or been deliberately triggered
+      in production.**
+      They are detection, not a control: they enforce nothing, revoke
+      nothing, do not replace the worker or shorten the life of a link, and
+      are not an external availability monitor. By Google's
       documentation a metric-absence policy needs a data point after it is
       created, treats late data as missing, and raises no alert when the
-      monitored service is deleted or shut down. They sit in the same
+      monitored service is deleted or shut down. Policy B sees only an
+      error-level line the worker manages to write. They sit in the same
       project a billing interruption stops; whether they notify then is
-      unknown, and they must not be described as detecting one.
+      unknown, and they must not be described as detecting one. No alert
+      for billing itself is confirmed: a budget and its recipients remain
+      unverified administrator actions. An independent external monitor
+      remains future reliability work.
     - *The callables and the worker are different builds.* The eight
       callables run the ADR-74 build; the worker runs Stage 1. That is
       correct only while the interval is `0`. Once a periodic request has

@@ -170,8 +170,8 @@ deployment is still future work (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
 frontend/         The entire application (Vite root); firestore.rules and
                   storage.rules live here
 docs/             Detailed documentation + design-reference assets
-ops/monitoring/   PROPOSED Cloud Monitoring alert policies (not created; applied
-                  by hand once authorised — docs/DEPLOYMENT.md)
+ops/monitoring/   Cloud Monitoring alert policy files (A and B created in
+                  production 16 Nov 2026, by hand — docs/DEPLOYMENT.md)
 AGENT.md          Conventions and guardrails for contributors and AI agents
 CLAUDE.md         Task routing for AI agents
 PRODUCT.md        Product overview and module status

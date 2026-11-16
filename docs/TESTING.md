@@ -8038,9 +8038,9 @@ tenant only, test files only, after explicit authorisation.
 7. - [ ] A company with no tokens is swept without an audit event.
 8. - [ ] Set the approved interval and redeploy. Regression: §51 and §52.
 
-## 54. DC46-C — Callable compatibility and monitoring readiness (16 November 2026) — tests on the branch; monitoring PROPOSED, nothing created in the cloud
+## 54. DC46-C — Callable compatibility and monitoring readiness (16 November 2026) — tests merged; alert policies A and B CREATED in production 16 November 2026; delivery test run and removed
 
-Branch `ops/dc46-c-monitoring-readiness`. No production logic changed: two
+Branch `ops/dc46-c-monitoring-readiness` (merged, `5615239`). No production logic changed: two
 test files, two proposed alert-policy files and one temporary delivery-test
 policy file, documentation. Deferred Control
 46 stays OPEN; periodic reconciliation stays OFF.
@@ -8085,19 +8085,49 @@ was run by hand on 16 November 2026 and is not part of the suite.
 
 **⚠️ What these tests do NOT prove.** Nothing about Cloud Monitoring: the
 policy files are checked as text. The filters were replayed read-only against
-production on 16 November 2026 (DEPLOYMENT.md), but **no policy has been
-created, no notification has been sent and no alert has fired.** The
+production on 16 November 2026 (DEPLOYMENT.md), but **the suite creates no
+policy, sends no notification and fires no alert.** What was done in
+production is the manual acceptance below. The
 emulator tests use a fake bucket; nothing here ran against real Cloud Storage
 or a deployed callable.
 
-**Manual — NOT RUN, NOT AUTHORISED.** After the policies are created
-(separate authorisation): the verification checklist and the delivery test
-in DEPLOYMENT.md → *DC46-C monitoring readiness*. Google provides no test
-function for an email channel, so delivery is proven by one temporary
-policy that fires on healthy traffic and is deleted in the same sitting;
-record each recipient, the arrival time and the incident id, then confirm
-the policy list holds only policies A and B. Nothing in it stops, pauses or
-breaks the production worker.
+**Production monitoring acceptance — 16 November 2026 (run by the Product
+Owner; verified read-only).** The verification checklist and the delivery
+test in DEPLOYMENT.md → *DC46-C monitoring readiness*. Google provides no
+test function for an email channel, so delivery was exercised by one
+temporary policy that fires on healthy traffic. Times are UTC. *Cloud* means
+read from the Monitoring API, the audit log or Cloud Logging; *Reported*
+means stated by the Product Owner and not independently observed. Nothing in
+it stopped, paused or broke the production worker.
+
+| Step | Result | Evidence |
+|---|---|---|
+| Two email channels created | `DC46 - Product Owner` 17:20:55; `DC46 - Billing Administrator` 17:23:06; both enabled, two distinct addresses | Cloud |
+| Policies A and B created | A 18:23:12; B 18:24:26; both enabled, identical to the committed files, each with both channels | Cloud |
+| API accepted the values | Including policy B's one-hour rate limit | Cloud |
+| Policy A receives data | One point a minute since creation; no open incident | Cloud |
+| Temporary policy created | 18:26:30, with both channels | Cloud |
+| Test condition met, incident opened | 18:29:30 | Cloud |
+| Product Owner received the email | Yes | Reported |
+| Billing administrator received the email | Yes | Reported, through the Product Owner |
+| Temporary policy deleted | 18:37:51 | Cloud |
+| Test incident closed | 18:38:51 | Cloud |
+| Clean-up | Exactly two policies remain, none named `TEST`; one incident in total, closed | Cloud |
+| Worker and Scheduler throughout | Revision unchanged, interval `0`, job enabled, 60 of 60 attempts returned 200 in the preceding hour; no Functions, Rules or IAM change in the audit log | Cloud |
+
+**Limits of this validation.**
+
+- Email arrival is reported, not observed: no per-recipient delivery record
+  was found. The arrival times and the incident id shown in the email were
+  not recorded.
+- The delivery test shows that the channels deliver and that the filter and
+  aggregation select the live series. It does not show that an absence opens
+  an incident or that policy B matches.
+- **Neither permanent failure condition was deliberately triggered in
+  production.** Policy A has never opened an incident; policy B has never
+  matched a line.
+- The billing administrator's receipt says nothing about billing alerts, a
+  budget or the billing account; billing continuity is still unconfirmed.
 
 **Not testable in production, and unverified until tested elsewhere:**
 policy A firing on a real absence; policy B firing on a real error. **Not
