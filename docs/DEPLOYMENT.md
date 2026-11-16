@@ -1205,6 +1205,14 @@ regardless. Existing acknowledgement documents need no migration.
 ### GST boundary hotfix release order — `fix/gst-boundary-pins` — RULES FIRST, then Hosting; no transitional stage
 
 **Status: IMPLEMENTED — NOT YET DEPLOYED (Rules AND Hosting; TWO steps).**
+**⚠️ Status to be verified (documentation review, 16 November 2026).** The
+hotfix is merged to `main` (`ea2eea8`), and no release record for it exists
+in this file. Later sections record releases of rulesets that contain it
+(SHIELD 2A, ADR-69, SHIELD 2B1, SHIELD 2B2) as live, which suggests the line
+above is stale — but that is an inference, not a record, and it says nothing
+about the Hosting step. Left unchanged until the Product Owner confirms both
+steps (published ruleset contains the shared `gstPinned()` on both pins;
+TESTING.md §44).
 Two findings from the SHIELD commercial-integrity inspection of 3 November
 2026 (PROJECT_DECISIONS.md → *ADR-40 / ADR-57 Correction: GST Boundary
 Hotfix*):

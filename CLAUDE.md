@@ -50,3 +50,4 @@ Before working in this repository, read in order:
 | Tokens, components, UI conventions | [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md) |
 | Architectural decision records | [docs/PROJECT_DECISIONS.md](docs/PROJECT_DECISIONS.md) |
 | Build, env vars, rules publishing | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
+| ChatGPT handover & current checkpoint | [docs/CHATGPT_HANDOVER.md](docs/CHATGPT_HANDOVER.md) |
