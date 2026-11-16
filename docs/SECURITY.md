@@ -3221,11 +3221,25 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     sweep at volume and decide the external-role removal procedure. Not
     claimed as closed anywhere.
 
-    **Part C — ADR-75. Stage 1 is IMPLEMENTED on
-    `security/dc46-c-periodic-reconciliation` and NOT DEPLOYED (12 November
-    2026). Nothing in production has changed, so every statement above still
+    **Part C — ADR-75. Stage 1 is IMPLEMENTED; the updated worker was
+    DEPLOYED on 13 November 2026 (worker only); the existing
+    membership-triggered revocation was PRODUCTION-ACCEPTED through it on
+    16 November 2026; periodic reconciliation is NOT ACTIVATED
+    (`FILE_LINK_RECONCILE_INTERVAL_HOURS=0`). With the interval at `0` the
+    worker adds no protection beyond part B, so every limitation above still
     describes production, and this control stays OPEN.**
-    - *What Stage 1 adds, once deployed AND switched on:* the same worker
+    - *What is live today:* the Stage 1 worker revision, with one request at
+      a time (`concurrency: 1`; the earlier revision allowed 80, kept safe by
+      the per-company lease). Membership-triggered revocation (part B) is
+      operational through it: on 16 November 2026 a deactivation through the
+      deployed callable was swept by this revision — 5 objects scanned, 1
+      token removed, 0 failed, queue back to 0 (TESTING.md §53). That run's
+      old-URL refusal and in-app access were not separately recorded; both
+      were verified for part B on 12 November.
+    - *What is NOT live:* any periodic sweep. No planning has run in
+      production and the cursor document does not exist there. Do not
+      describe tokens as periodically reconciled.
+    - *What Stage 1 adds, once switched on:* the same worker
       also sweeps each company on a timer — when its last successful sweep
       started at least `FILE_LINK_RECONCILE_INTERVAL_HOURS` ago — so a token
       on a new upload, or one created by any other means, is removed without
@@ -3238,12 +3252,21 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       planning, queue and sweep time, and longer while a sweep is incomplete
       or the worker is paused. An active member can obtain a new link the
       moment after a sweep. Never describe it as "revoked within 24 hours".
-    - *Enforced by the trusted backend (when deployed):* tenant-confined
+    - *Enforced by the trusted backend (deployed):* tenant-confined
       sweeps, urgent-before-routine order, completion only with zero
       failures. *Enforced by Firestore Rules (default deny):* no browser can
       read or write the planning cursor, the state or the queue.
-    - *Proven only in the emulator with a fake bucket:* everything about
-      Stage 1. Nothing about it has run against real Cloud Storage.
+    - *Proven only in the emulator with a fake bucket:* everything specific
+      to Stage 1 — planning, the cursor, priorities between several
+      companies, slices, pre-emption, the recovery rules. The only thing run
+      against real Cloud Storage on this revision is one membership-triggered
+      sweep of a five-object tenant.
+    - *The worker can stop without anyone being told.* On 12–13 November
+      2026 the project lost billing and the worker did not run for about 17
+      hours (DEPLOYMENT.md → *Billing interruption*). A request queued while
+      it is stopped waits; nothing fails, so nothing alerts. No queued
+      request was found afterwards, but no alert exists for a missing run or
+      for billing. Revocation is only as timely as the worker is alive.
     - *Still open after Stage 1:* document visibility reduction (Stage 2),
       external-member removal (Stage 3), measurement at volume (Stage 4),
       and the unproven cause of the tokens that reappeared in production.

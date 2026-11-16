@@ -7913,12 +7913,68 @@ PDFs, token values never printed (SHA-256 fingerprints).
        the operator): no row reads *pending* or *delayed*.
 16. - [ ] Regression: §51 steps 1–7 and 12 (including **Android Chrome**).
 
-## 53. DC46-C — Periodic token reconciliation, Stage 1 (ADR-75) — IMPLEMENTED, NOT DEPLOYED (12 November 2026)
+## 53. DC46-C — Periodic token reconciliation, Stage 1 (ADR-75) — WORKER DEPLOYED 13 November 2026; revocation PRODUCTION-ACCEPTED 16 November 2026; periodic reconciliation NOT ACTIVATED
 
-On `security/dc46-c-periodic-reconciliation`. **Nothing in this section has
-been run in production, and periodic reconciliation is OFF by default**
+On `main` (`38ab578`). **Manual steps 1–3 below have been run in production;
+steps 4–8 have not, and periodic reconciliation is OFF**
 (`FILE_LINK_RECONCILE_INTERVAL_HOURS=0`). Switching it on needs its own
 authorisation (DEPLOYMENT.md → *DC46-C*). Deferred Control 46 stays OPEN.
+
+**Production acceptance record — 13–16 November 2026 (`constrapp-69b5d`).**
+What was accepted is the existing membership-triggered revocation (§52)
+running through the Stage 1 worker — not periodic reconciliation, which has
+never run in production. The only company was the Product Owner's development
+tenant (count-only check: one company document, one company prefix in the
+bucket). Deployment and infrastructure checks: DEPLOYMENT.md → *DC46-C* →
+*Production release record*. Times are UTC.
+
+| Step below | Result in production |
+|---|---|
+| 1 — record concurrency and attempt deadline before the deploy | **Done, 13 November.** Concurrency 80, attempt deadline 300 s, on `processfilelinkrevocations-00001-cep` |
+| 2 — worker deployed with the interval `0`; ten quiet minutes | **Passed, 13 November.** Revision `processfilelinkrevocations-00002-had`, concurrency 1, max instances 1; 13 consecutive scheduled runs HTTP 200 and silent; no `system/fileLinkReconciliation` document; queue count 0 |
+| 3 — deactivate a test member: *pending* → *revoked* as in §52 | **Passed on backend evidence, 16 November** — table below. The on-screen *pending* → *revoked* change, the old URL's status afterwards and in-app access were **not separately recorded** for this run |
+| 4–8 — activation, periodic sweep, urgent-before-periodic, approved interval | **Not run. Not authorised** |
+
+Step 3, 16 November — what each party established:
+
+| Time | Backend-confirmed (request logs, worker log, audit trail — read-only) |
+|---|---|
+| 03:01:44 | `createInvitation` 200; audit `invite.created` |
+| 03:02:03 | audit `member.auth_reenabled` (auth account re-enabled by the invitation) |
+| 03:02:31 | `acceptInvitation` 200; audit `invite.accepted` |
+| 03:06:44 | `deactivateMember` HTTP 200 |
+| 03:06:45 | audit `member.deactivated` and `file_links.revocation_requested` (source `callable`, same timestamp, **sequence 3**), then `member.auth_synced` |
+| 03:07:02 | worker log `file-links: worker run` on `processfilelinkrevocations-00002-had`: 1 company, urgent 1, periodic 0, action `complete`; audit `file_links.revoked` (source `worker`) |
+
+Counters, identical in the worker log and the audit event: **5 scanned, 1
+page, 1 token removed, 0 failed**. Queue markers afterwards: 0 (count-only
+query). No warning, error, incomplete sweep or retry in the logs. Scheduler
+enabled, every minute, recent attempts all 200. No token value or URL in any
+log line or audit field read.
+
+| Product Owner reported (not independently observed) | Corroboration |
+|---|---|
+| The controlled Project Manager test member was reactivated | Consistent with the invitation events above. The member's identity and role were not read by the verifier |
+| A legacy download URL for a disposable PDF returned HTTP 200 before the deactivation | Not observable from the backend. Consistent with the sweep finding exactly one token |
+| The member was deactivated through Constrap | Confirmed (`deactivateMember` 200, `member.deactivated`) |
+| The test passed | Confirmed for the request, the sweep and its completion |
+| The old URL returned 403 afterwards · an authorised user could still open the file | **No result was reported or recorded for 16 November.** Both were verified in §52 on 12 November. Do not quote them for this run |
+
+**An earlier reported pass is not evidence.** Before this run a manual test
+was reported as passed, but the logs for that period held only two `listTeam`
+requests (16 November 02:27) — no `deactivateMember` call and no worker
+sweep. It is not part of this record. Two things can produce a false pass
+and should be ruled out in any future run: a member deactivated earlier
+already reads *Old file links: revoked*, and deactivating an
+already-deactivated member returns success without queuing anything
+(`lib/members.js`). Start from an ACTIVE member and confirm the
+`deactivateMember` request and the `worker run` line in the logs.
+
+**A scripted production test is not available.** The callables enforce App
+Check, whose token comes from reCAPTCHA Enterprise in a real browser; no
+debug token is registered for this purpose and no test credential exists.
+The acceptance above therefore used the real application, with the backend
+evidence read afterwards.
 
 **Automated (must pass first).** Run from `frontend/`; the emulator suites
 need Java 21+.
@@ -7951,12 +8007,14 @@ bucket's listing advances the clock by a fixed cost; nothing sleeps.
 **⚠️ What these tests do NOT prove.** They use a fake bucket and an injected
 clock. Not measured or verified anywhere: how long a real page takes; whether
 the 60 s / 30 s slices and the 45 s routine share suit real workloads; which
-error Cloud Storage returns for a stale page token (none is assumed); `concurrency: 1` on the
-deployed function; Cloud Scheduler's behaviour when an overlapping tick is
-refused. No latency figure may be quoted from this section.
+error Cloud Storage returns for a stale page token (none is assumed); Cloud
+Scheduler's behaviour when an overlapping tick is refused. (`concurrency: 1`
+on the deployed function was confirmed on 13 November 2026.) No latency
+figure may be quoted from this section.
 
-**Manual, in production — NOT RUN, NOT AUTHORISED.** To be run on the
-development tenant only, with test files only, after explicit authorisation.
+**Manual, in production.** Steps 1–3: run — see the acceptance record at the
+head of this section. **Steps 4–8: NOT RUN, NOT AUTHORISED.** Development
+tenant only, test files only, after explicit authorisation.
 
 1. - [ ] Read-only: record the deployed worker's concurrency and the
       Scheduler job's attempt deadline before the deploy.
@@ -7964,6 +8022,8 @@ development tenant only, with test files only, after explicit authorisation.
       succeeds and logs nothing; no `system/fileLinkReconciliation` document
       exists; the queue is empty.
 3. - [ ] Deactivate a test member: *pending* → *revoked* exactly as in §52.
+      *(Accepted on backend evidence; record the old URL's 403 and in-app
+      access explicitly the next time this step is run.)*
 4. - [ ] With authorisation, set a short interval and redeploy the worker.
       Within about an hour a `file-links: reconciliation plan complete` log
       line appears and the cursor document exists.
