@@ -8326,3 +8326,68 @@ Each step on explicit authorisation; commands in DEPLOYMENT.md → *DC46-C* →
 6. - [ ] Heartbeats about hourly for 3 h; policy C metric has points; no
       policy C incident; pass 2 onwards report `overdue: 0`.
 7. - [ ] A second periodic sweep 2–3 h after the first, no overdue.
+
+## 57. DC46-C — Stages 2 and 3: visibility-reduction lock and external-member removal (18 November 2026) — IMPLEMENTED; NOT DEPLOYED
+
+Branch `feature/dc46-visibility-external-removal` (uncommitted at the time of
+writing). ADR-75 decisions 12, 14 and 15. Nothing is deployed; production is
+unchanged. Deferred Control 46 stays OPEN. Runbook: DEPLOYMENT.md → *DC46-C
+Stages 2 and 3 — release runbook*.
+
+**Automated — Rules emulator** (`tests/rules/projectDocuments.rules.test.js`,
+60 numbered cases; suite 35 files / 2,213 tests):
+
+- 29 (rewritten) — every internal role still edits name, category, version,
+  date and notes with visibility unchanged.
+- 51 (rewritten) — the former documented gap is closed: the flip is refused
+  and the subcontractor still reads the document.
+- 52–53 — `project → internal` refused for `company_admin`,
+  `project_manager` and `qs`, alone or riding with another edit.
+- 54–56 — `internal → project` allowed for each internal role; an internal
+  document stays editable; a project document keeps every other edit.
+- 57–58 — creation as `internal`, replacement uploaded as `internal`,
+  supersede and withdraw on both visibilities; neither transition can carry
+  a reduction.
+- 59–60 — external roles, `super_admin` and another company's admin can
+  change visibility in neither direction, in either tenant path.
+
+**Automated — Functions.** Pure (`functions/test`, 3 files / 72): the static
+pin that no executable line under `functions/src` or `functions/scripts`
+mentions `visibility`. Emulator (`tests/functions/team.handlers.test.js`;
+suite 8 files / 165): a Company Admin deactivates a subcontractor and a
+client — membership cleared, Auth disabled, urgent request and marker
+written, audit events consistent; `super_admin` refused with nothing
+written; non-admin and external callers refused; another company's member
+`not-found` in both directions and nothing written under the other company;
+idempotent repeat (no second request or audit event); Auth failure leaves
+access removed and `authSyncPending`, a repeat completes it; `listTeam`
+before and after; role changes and invitations still refuse external roles;
+re-acceptance clears the two member fields while the state document, the
+queue marker and every earlier audit event are unchanged; a later
+deactivation stamps a fresh sequence.
+
+**Automated — frontend unit** (81 files / 4,443): `canDeactivateMember` and
+`isExternalRole` (`tests/unit/team.test.js`); `canEditMember` unchanged.
+
+Lint clean in both packages; production build clean; `git diff --check`
+clean; `rules:transitional:check` up to date.
+
+**Not repeated:** the accepted deactivation of ordinary internal roles
+(§55), the worker, and periodic reconciliation (§56).
+
+**Manual — production, after each release step, each separately approved:**
+
+1. - [ ] *After Rules (step 1).* On the development tenant, as an internal
+      role, a direct SDK `updateDoc` setting `visibility: 'internal'` on a
+      disposable `project` test document is refused with a permission
+      error; the document is unchanged. Uploading, replacing and
+      withdrawing a document from the app still work.
+2. - [ ] *After callables (step 2).* Eight new revisions, worker revision
+      unchanged, interval still `2`, 401 without App Check (read-only).
+3. - [ ] *After Hosting (step 3).* A disposable operator-provisioned
+      subcontractor on the development tenant shows *Deactivate* and no
+      *Change role*; deactivating it succeeds. Confirm on the backend, not
+      from the UI alone: the `deactivatemember` request, the
+      `member.deactivated` and `file_links.revocation_requested` events, and
+      the worker's `file-links: worker run` line completing the urgent sweep.
+4. - [ ] A `super_admin` row, if one exists, offers neither action.

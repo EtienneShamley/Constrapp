@@ -351,16 +351,18 @@ describe('CREATE — writer matrix and shape', () => {
 describe('UPDATE — metadata edit', () => {
   beforeEach(async () => { await seedDocument('doc1') })
 
-  it('29. an internal role edits name, category, visibility, version, date and notes', async () => {
-    await assertSucceeds(updateDoc(docRef(ctx(USERS.qs), 'doc1'), {
-      name: 'Structural Specification (reissued)',
-      category: 'contract',
-      visibility: 'internal',
-      versionLabel: 'Rev 3',
-      documentDate: '2026-09-01',
-      notes: 'Superseded pending signature',
-      ...stamps(USERS.qs),
-    }))
+  it('29. an internal role edits name, category, version, date and notes — visibility unchanged', async () => {
+    for (const user of [USERS.admin, USERS.pm, USERS.qs]) {
+      await assertSucceeds(updateDoc(docRef(ctx(user), 'doc1'), {
+        name: 'Structural Specification (reissued)',
+        category: 'contract',
+        visibility: 'project',
+        versionLabel: 'Rev 3',
+        documentDate: '2026-09-01',
+        notes: 'Superseded pending signature',
+        ...stamps(user),
+      }))
+    }
   })
 
   it('30. subcontractor, client and super_admin cannot edit', async () => {
@@ -478,6 +480,92 @@ describe('UPDATE — withdrawal', () => {
 
 // ── DELETE ───────────────────────────────────────────────────────────────────
 
+// ── ADR-75 Stage 2 — the visibility-reduction lock ───────────────────────────
+//
+// `project -> internal` removes access from external members, and nothing in
+// the app observes it, so no token clean-up would be queued. Rules refuse it
+// for every client; a correction is an operator task until a trusted
+// server-side workflow exists (ADR-75 decision 13).
+describe('UPDATE — visibility-reduction lock (ADR-75 Stage 2)', () => {
+  const INTERNAL = () => [USERS.admin, USERS.pm, USERS.qs]
+
+  it('52. project -> internal is REFUSED for every internal role', async () => {
+    await seedDocument('doc1', { visibility: 'project' })
+    for (const user of INTERNAL()) {
+      await assertFails(updateDoc(docRef(ctx(user), 'doc1'), { visibility: 'internal', ...stamps(user) }))
+    }
+  })
+
+  it('53. the reduction cannot ride along with another metadata edit', async () => {
+    await seedDocument('doc1', { visibility: 'project' })
+    await assertFails(updateDoc(docRef(ctx(USERS.admin), 'doc1'), {
+      name: 'Renamed', notes: 'tidy-up', visibility: 'internal', ...stamps(USERS.admin),
+    }))
+  })
+
+  it('54. internal -> project is still allowed for every internal role', async () => {
+    for (const [i, user] of INTERNAL().entries()) {
+      await seedDocument(`up${i}`, { visibility: 'internal' })
+      await assertSucceeds(updateDoc(docRef(ctx(user), `up${i}`), { visibility: 'project', ...stamps(user) }))
+      await assertSucceeds(getDoc(docRef(ctx(USERS.sub), `up${i}`)))
+    }
+  })
+
+  it('55. an internal document stays editable and stays internal', async () => {
+    await seedDocument('doc1', { visibility: 'internal' })
+    for (const user of INTERNAL()) {
+      await assertSucceeds(updateDoc(docRef(ctx(user), 'doc1'), {
+        name: `Head Contract (${user.role})`, visibility: 'internal', notes: 'checked', ...stamps(user),
+      }))
+    }
+    await assertFails(getDoc(docRef(ctx(USERS.sub), 'doc1')))
+  })
+
+  it('56. a project document keeps every other metadata edit', async () => {
+    await seedDocument('doc1', { visibility: 'project' })
+    await assertSucceeds(updateDoc(docRef(ctx(USERS.pm), 'doc1'), {
+      name: 'Spec (final)', category: 'report', versionLabel: 'Rev 9', documentDate: null, notes: 'n', ...stamps(USERS.pm),
+    }))
+  })
+
+  it('57. creation as internal, and a replacement uploaded as internal, are untouched', async () => {
+    await seedDocument('old', { visibility: 'project' })
+    await assertSucceeds(setDoc(docRef(ctx(USERS.qs), 'new'), documentPayload(USERS.qs, 'new', { visibility: 'internal' })))
+    await assertSucceeds(updateDoc(docRef(ctx(USERS.qs), 'old'), supersedeWrite(USERS.qs, 'new')))
+  })
+
+  it('58. supersede and withdraw work on both visibilities and cannot carry a reduction', async () => {
+    await seedDocument('p1', { visibility: 'project' })
+    await seedDocument('p2', { visibility: 'project' })
+    await seedDocument('i1', { visibility: 'internal' })
+    await assertFails(updateDoc(docRef(ctx(USERS.pm), 'p1'), supersedeWrite(USERS.pm, 'p2', { visibility: 'internal' })))
+    await assertFails(updateDoc(docRef(ctx(USERS.pm), 'p1'), withdrawWrite(USERS.pm, 'Wrong file', { visibility: 'internal' })))
+    await assertSucceeds(updateDoc(docRef(ctx(USERS.pm), 'p1'), supersedeWrite(USERS.pm, 'p2')))
+    await assertSucceeds(updateDoc(docRef(ctx(USERS.pm), 'p1'), withdrawWrite(USERS.pm)))
+    await assertSucceeds(updateDoc(docRef(ctx(USERS.pm), 'i1'), withdrawWrite(USERS.pm)))
+  })
+
+  it('59. external roles and super_admin can change visibility in neither direction', async () => {
+    await seedDocument('p1', { visibility: 'project' })
+    await seedDocument('i1', { visibility: 'internal' })
+    for (const user of [USERS.sub, USERS.client, USERS.sup]) {
+      await assertFails(updateDoc(docRef(ctx(user), 'p1'), { visibility: 'internal', ...stamps(user) }))
+      await assertFails(updateDoc(docRef(ctx(user), 'i1'), { visibility: 'project', ...stamps(user) }))
+    }
+  })
+
+  it('60. another company\'s admin can change visibility in neither direction, in either tenant path', async () => {
+    await seedDocument('p1', { visibility: 'project' })
+    await seedDocument('i1', { visibility: 'internal' })
+    await assertFails(updateDoc(docRef(ctx(USERS.other), 'p1'), { visibility: 'internal', ...stamps(USERS.other) }))
+    await assertFails(updateDoc(docRef(ctx(USERS.other), 'i1'), { visibility: 'project', ...stamps(USERS.other) }))
+    // The lock is the same rule in the other tenant.
+    await seedDocument('b1', { visibility: 'project' }, COMPANY_B)
+    await assertFails(updateDoc(docRef(ctx(USERS.other), 'b1', COMPANY_B), { visibility: 'internal', ...stamps(USERS.other) }))
+    await assertFails(updateDoc(docRef(ctx(USERS.admin), 'b1', COMPANY_B), { name: 'x', ...stamps(USERS.admin) }))
+  })
+})
+
 describe('DELETE — blocked for everyone', () => {
   beforeEach(async () => { await seedDocument('doc1') })
 
@@ -507,13 +595,13 @@ describe('DOCUMENTED GAPS — enforced by the client only', () => {
       documentPayload(USERS.qs, 'doc1', { fileSize: 20971520 })))
   })
 
-  it('51. visibility can be flipped to internal AFTER the file was already readable', async () => {
-    // A project document a subcontractor has already read can be made internal
-    // later. That removes FUTURE access; it cannot un-read what was read, and it
-    // cannot revoke a download URL already generated.
+  it('51. CLOSED BY ADR-75 — a client can no longer flip a readable document to internal', async () => {
+    // Before ADR-75 an internal role could make a `project` document `internal`
+    // after a subcontractor had read it — an access reduction nothing observed,
+    // so no download-link clean-up was ever queued for it. Rules now refuse it.
     await seedDocument('doc1', { visibility: 'project' })
     await assertSucceeds(getDoc(docRef(ctx(USERS.sub), 'doc1')))
-    await assertSucceeds(updateDoc(docRef(ctx(USERS.qs), 'doc1'), { visibility: 'internal', ...stamps(USERS.qs) }))
-    await assertFails(getDoc(docRef(ctx(USERS.sub), 'doc1')))
+    await assertFails(updateDoc(docRef(ctx(USERS.qs), 'doc1'), { visibility: 'internal', ...stamps(USERS.qs) }))
+    await assertSucceeds(getDoc(docRef(ctx(USERS.sub), 'doc1')))
   })
 })

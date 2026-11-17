@@ -3489,6 +3489,8 @@ service cloud.firestore {
                       resource.data.status == 'active'
                       && changedKeys().hasOnly(['name', 'category', 'visibility', 'versionLabel', 'documentDate', 'notes', 'updatedAt', 'updatedBy'])
                       && metadataShape()
+                      // ADR-75: no client may reduce visibility (project -> internal).
+                      && (resource.data.visibility == 'internal' || request.resource.data.visibility == 'project')
                     )
                     ||
                     // (b) ACTIVE -> SUPERSEDED, linking forward to the record

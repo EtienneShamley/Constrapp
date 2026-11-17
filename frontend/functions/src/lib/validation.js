@@ -11,9 +11,14 @@ export const INTERNAL_ROLES = ['company_admin', 'project_manager', 'qs']
 export const isInternalRole = (r) => INTERNAL_ROLES.includes(r)
 
 // The three roles the operator may provision out of band. They appear in
-// listTeam as "managed by operator" and are never assignable or deactivatable
+// listTeam as "managed by operator" and are never assignable or invitable
 // through the callables (ADR-72 scope control).
 export const OPERATOR_ROLES = ['super_admin', 'subcontractor', 'client']
+
+// ADR-75 Stage 3 narrows ONE part of that scope: a Company Admin may
+// DEACTIVATE a subcontractor or client. super_admin remains operator-only.
+// Removal only — provisioning an external member is still an operator task.
+export const isDeactivatableRole = (r) => r !== 'super_admin'
 
 export const EMAIL_MAX = 254
 export const NAME_MAX = 80
