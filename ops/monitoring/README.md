@@ -2,7 +2,8 @@
 
 **Status: policies A and B are CREATED in production (`constrapp-69b5d`,
 16 November 2026). The temporary delivery-test policy was created, used and
-deleted the same day; it does not exist in the cloud.** Any further change
+deleted the same day; it does not exist in the cloud. Policy C and its
+log-based metric are PREPARED (17 November 2026) and NOT CREATED.** Any further change
 to these resources is a production cloud change that needs its own
 authorisation. Deferred Control 46 stays OPEN: these policies detect, they
 revoke nothing.
@@ -11,6 +12,8 @@ revoke nothing.
 |---|---|---|---|
 | `dc46-worker-no-successful-run.policy.json` | A — the worker has stopped | No 2xx request to the Cloud Run service `processfilelinkrevocations` (`australia-southeast1`) for 15 minutes | **Permanent — created 16 November 2026, enabled** |
 | `dc46-worker-error-log.policy.json` | B — the worker logged an error | Any `ERROR` line written by that service's container; at most one notification an hour | **Permanent — created 16 November 2026, enabled** |
+| `dc46-planning-heartbeat.metric.json` | Log-based counter `dc46_reconciliation_plan_complete` | Counts the worker's `file-links: reconciliation plan complete` info line (one per planning pass, about hourly while reconciliation is on) | **PREPARED, NOT CREATED** — create before policy C |
+| `dc46-planning-heartbeat-absent.policy.json` | C — planning has stopped | No count on that metric for 3 hours, summed across revisions | **PREPARED, NOT CREATED** — create before activation; disable on rollback to interval `0` |
 | `dc46-delivery-test.temporary-policy.json` | Temporary delivery test | Fires because the worker IS healthy. Created to exercise email delivery, then deleted | **Removed — created and deleted 16 November 2026. Kept here only so the test can be repeated under a new approval** |
 
 A read-only check on 16 November 2026 found policies A and B identical to
@@ -25,6 +28,17 @@ written. They hold **no recipient**: notification channels are created
 outside Git and passed on the command line.
 `frontend/tests/unit/monitoringPolicies.test.js` fails if an address or a
 channel name is ever committed here.
+
+## Policy C
+
+Created with `gcloud logging metrics create … --config-from-file` and then
+`gcloud monitoring policies create … --policy-from-file`, both on separate
+authorisation (commands in the deployment document). It is safe to create
+at interval `0`: an absence condition stays dormant until its first data
+point. It **will** fire about 3 hours after reconciliation is switched off,
+so the rollback disables it. Like policy A it raises nothing for a deleted
+service and is not claimed to detect a billing interruption; it has never
+existed, let alone fired.
 
 ## What policy A is not
 
@@ -46,6 +60,8 @@ interruption.
 
 ## What has and has not been shown
 
+- Policy C exists only as files. Its filter is pinned to the exact line the
+  worker writes; its behaviour in Cloud Monitoring is untested.
 - Policy B notifies only when the worker writes a matching error-level line.
   A run that dies without writing one is left to policy A.
 - **Neither policy has fired on its real condition.** No absence and no
@@ -70,4 +86,6 @@ estimates are in the deployment document and are not a commitment.
 
 Specification, the release record, the creation and delivery-test
 procedures, the response runbook, billing continuity and rollback are in
-[docs/DEPLOYMENT.md](../../docs/DEPLOYMENT.md) → *DC46-C monitoring readiness*.
+[docs/DEPLOYMENT.md](../../docs/DEPLOYMENT.md) → *DC46-C monitoring readiness*
+(policy C: its *Policy C* section; activation: *DC46-C* → *Activation
+runbook*).

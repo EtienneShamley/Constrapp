@@ -3227,7 +3227,9 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     16 November 2026; periodic reconciliation is NOT ACTIVATED
     (`FILE_LINK_RECONCILE_INTERVAL_HOURS=0`). With the interval at `0` the
     worker adds no protection beyond part B, so every limitation above still
-    describes production, and this control stays OPEN.**
+    describes production, and this control stays OPEN.** Activation is
+    PREPARED, not performed (17 November 2026): the architect selected an
+    initial interval of **2 hours** and rejected 1 hour (below).
     - *What is live today:* the Stage 1 worker revision, with one request at
       a time (`concurrency: 1`; the earlier revision allowed 80, kept safe by
       the per-company lease). Membership-triggered revocation (part B) is
@@ -3235,7 +3237,12 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       deployed callable was swept by this revision — 5 objects scanned, 1
       token removed, 0 failed, queue back to 0 (TESTING.md §53). That run's
       old-URL refusal and in-app access were not separately recorded; both
-      were verified for part B on 12 November.
+      were verified for part B on 12 November. **A second controlled
+      deactivation, through the redeployed callables, PASSED on 16 November
+      2026 at 23:12–23:13 UTC** — urgent sequence 4, swept by the same
+      worker revision: 5 objects scanned, 1 token removed, 0 failed, queue 0;
+      the old URL returned HTTP 403 and the PDF still opened in the app for
+      an authorised user (both REPORTED by the Product Owner; TESTING.md §55).
     - *What is NOT live:* any periodic sweep. No planning has run in
       production and the cursor document does not exist there. Do not
       describe tokens as periodically reconciled.
@@ -3303,15 +3310,36 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       the deployed source is identical to `main` and writes the urgent
       request priority; each callable still refuses a request without an
       App Check token (HTTP 401); the secret binding, runtime accounts and
-      invoker bindings are unchanged; no IAM grant was added. **Not
-      verified in production:** any membership-changing call on the new
-      revisions, and the priority behaviour itself, which cannot occur at
-      interval `0`. Sign-in and company authorisation are enforced in the
+      invoker bindings are unchanged; no IAM grant was added. **Verified in
+      production on 16 November 2026:** a re-invitation (`createInvitation`,
+      `previewInvitation`, `acceptInvitation`) and a deactivation
+      (`deactivateMember`), each HTTP 200 on a `-00003-*` revision, with the
+      urgent request priority written (TESTING.md §55). **Not verified in
+      production:** the priority behaviour itself (overriding a periodic
+      request, pre-emption), which cannot occur at interval `0`; nor
+      `changeMemberRole`, `resendInvitation` or `revokeInvitation` on the
+      new revisions. Sign-in and company authorisation are enforced in the
       callables' own code (they bypass Security Rules); that code is
       unchanged and was confirmed by source comparison and one successful
       administrator `listTeam` call, not by probing each refusal in
-      production. A controlled deactivation on the development tenant is
-      required before any non-zero interval (TESTING.md §55).
+      production. The controlled deactivation required before any non-zero
+      interval has passed (TESTING.md §55).
+    - *Activation readiness — PREPARED, NOT ACTIVATED (17 November 2026).*
+      Initial interval **2 hours**. Planning runs once an hour and a newly
+      planned company is swept on the following invocation, so with 2 hours
+      each company is swept about every 2 to 3 hours (simulated on the real
+      code over whole days: gaps of 121–183 minutes, never reaching the
+      4-hour overdue bound — TESTING.md §56). A token's life without a
+      membership change is therefore about 3 hours plus queue and sweep time
+      — a bound, not a guarantee, and longer whenever a sweep is incomplete
+      or the worker is stopped. **1 hour was rejected:** equal to the
+      planning period, it makes sub-second Scheduler jitter decide between a
+      ~1-hour and a ~2-hour gap and raises false overdue alerts (reproduced
+      in the same suite). Monitoring policy C (planning heartbeat) is
+      PREPARED as files and NOT CREATED. Billing administration (owner,
+      backup administrator, budget notifications) remains unconfirmed.
+      Switching the interval on still needs its own authorisation
+      (DEPLOYMENT.md → *DC46-C* → *Activation runbook*).
     - *Still open after Stage 1:* document visibility reduction (Stage 2),
       external-member removal (Stage 3), measurement at volume (Stage 4),
       and the unproven cause of the tokens that reappeared in production.
@@ -3838,7 +3866,9 @@ number uniqueness, `raisedByName` truthfulness, and reference-label accuracy.
 `changeMemberRole`, `deactivateMember`. No Express, no HTTP router, no
 event triggers, no new database. Source: `frontend/functions/src`.
 
-**One scheduled worker (ADR-74 — LIVE in production since 12 November 2026).**
+**One scheduled worker (ADR-74 — LIVE in production since 12 November 2026;
+running the ADR-75 Stage 1 build since 13 November 2026, `concurrency: 1`,
+periodic reconciliation disabled).**
 `processFileLinkRevocations` runs every minute, one instance, same region, no
 secret and no caller: it acts only on revocation requests that the membership
 transactions (or the operator script) wrote. It is the only code that touches
@@ -3956,10 +3986,15 @@ does not do, measured in the emulator:
   Firestore reject the current token. That is harmless here only because every
   rule also requires the membership document.
 - **Storage download URLs are NOT revoked at once** — see Deferred Control
-  46. ADR-73 (live) stops the app minting new ones. ADR-74 (implemented, NOT
-  YET DEPLOYED) removes the existing tokens in the background after a
-  deactivation and reports when that has finished; until it is deployed and
-  the first clean-up has run, existing tokens remain.
+  46. ADR-73 (live) stops the app minting new ones. ADR-74 (live since
+  12 November 2026) removes the existing tokens in the background after a
+  deactivation and reports when that has finished; until that sweep has
+  completed, existing tokens keep working. The worker runs the ADR-75
+  Stage 1 build (deployed 13 November 2026) and the eight callables the
+  ADR-75 build (deployed 16 November 2026); a full deactivation regression
+  through them passed on 16 November 2026 (TESTING.md §55). Periodic
+  reconciliation remains disabled (interval `0`) and Deferred Control 46
+  remains OPEN.
 
 **App Check.** Every callable is deployed with `enforceAppCheck: true`; the
 web app uses reCAPTCHA Enterprise (`VITE_FIREBASE_APPCHECK_SITE_KEY`, public).

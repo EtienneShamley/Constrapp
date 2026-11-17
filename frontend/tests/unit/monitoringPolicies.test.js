@@ -3,12 +3,15 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
-// ── DC46-C monitoring readiness — the PROPOSED alert policy files ────────────
+// ── DC46-C monitoring — the committed alert policy and metric files ──────────
 //
 // ops/monitoring/*.policy.json are applied by hand with
-// `gcloud monitoring policies create --policy-from-file` once authorised
-// (docs/DEPLOYMENT.md → DC46-C monitoring readiness). Nothing in CI creates
-// them. This suite only keeps the committed files honest:
+// `gcloud monitoring policies create --policy-from-file`, and the one
+// *.metric.json with `gcloud logging metrics create --config-from-file`, each
+// only once authorised (docs/DEPLOYMENT.md → DC46-C monitoring readiness).
+// Policies A and B were created in production on 16 November 2026; policy C
+// and its metric are PREPARED, not created. Nothing in CI creates any of them.
+// This suite only keeps the committed files honest:
 //   · no recipient, channel or address is ever committed
 //   · each policy stays scoped to the ONE worker service
 //   · the settings that were verified against production stay as verified
@@ -21,14 +24,18 @@ const files = readdirSync(dir).filter(f => f.endsWith('.policy.json')).sort()
 // used once and deleted, and must never be mistaken for a standing policy.
 const TEMPORARY = 'dc46-delivery-test.temporary-policy.json'
 const allFiles = [...files, TEMPORARY]
+const METRIC = 'dc46-planning-heartbeat.metric.json'
+const POLICY_C = 'dc46-planning-heartbeat-absent.policy.json'
+const here = path.dirname(fileURLToPath(import.meta.url))
+const workerSource = () => readFileSync(path.resolve(here, '../../functions/src/lib/fileLinkRevocation.js'), 'utf8')
 
 const SERVICE = 'resource.labels.service_name="processfilelinkrevocations"'
 const REGION = 'resource.labels.location="australia-southeast1"'
 
 describe('ops/monitoring policy files', () => {
-  it('are exactly the two standing policies and the one temporary delivery test', () => {
-    expect(files).toEqual(['dc46-worker-error-log.policy.json', 'dc46-worker-no-successful-run.policy.json'])
-    expect(readdirSync(dir).filter(f => f.endsWith('.json')).sort()).toEqual([TEMPORARY, ...files])
+  it('are exactly the three standing policies, the heartbeat metric and the one temporary delivery test', () => {
+    expect(files).toEqual([POLICY_C, 'dc46-worker-error-log.policy.json', 'dc46-worker-no-successful-run.policy.json'])
+    expect(readdirSync(dir).filter(f => f.endsWith('.json')).sort()).toEqual([TEMPORARY, METRIC, ...files].sort())
   })
 
   it.each(allFiles)('%s carries no recipient: no channel, no email address, no server-assigned name', (name) => {
@@ -107,7 +114,7 @@ describe('ops/monitoring policy files', () => {
   it('policy B\'s runbook names every ERROR line the worker can write', () => {
     const doc = read('dc46-worker-error-log.policy.json').documentation.content
     const src = ['../../functions/src/lib/fileLinkRevocation.js', '../../functions/src/index.js']
-      .map(p => readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), p), 'utf8')).join('\n')
+      .map(p => readFileSync(path.resolve(here, p), 'utf8')).join('\n')
     const messages = [...src.matchAll(/(?:log\?\.error\?\.|logger\.error)\(\s*[`']file-links: ([^`'${]+)/g)].map(m => m[1])
     expect(messages.length).toBeGreaterThanOrEqual(7)
     const known = [
@@ -116,5 +123,53 @@ describe('ops/monitoring policy files', () => {
     ]
     for (const k of known) expect(doc).toContain(k)
     for (const m of messages) expect(known.some(k => m.includes(k) || k.includes(m.trim()))).toBe(true)
+  })
+
+  // ── Policy C (ADR-75): the planning heartbeat — PREPARED, not created ──────
+  const HEARTBEAT = 'file-links: reconciliation plan complete'
+
+  it('the heartbeat metric counts EXACTLY the line the worker writes at the end of a planning pass, from that one container', () => {
+    const m = read(METRIC)
+    expect(m.name).toBe('dc46_reconciliation_plan_complete')
+    // The source still writes this message, at info level, once per finished pass.
+    const src = workerSource()
+    expect(src).toContain(`log?.info?.('${HEARTBEAT}', { passSeq: cur.passSeq, ...counts`)
+    expect(src.split(`'${HEARTBEAT}'`)).toHaveLength(2)
+    // The filter matches the message EXACTLY (it carries no stack, unlike an
+    // error line) in the container's stdout — where the worker's info lines
+    // were found in production — and nothing else.
+    expect(m.filter).toBe(`resource.type="cloud_run_revision" AND ${SERVICE} AND ${REGION} AND log_id("run.googleapis.com/stdout") AND jsonPayload.message="${HEARTBEAT}"`)
+    // A plain counter: nothing copied out of the entry, no bucket scoping.
+    expect(m.metricDescriptor).toEqual({ metricKind: 'DELTA', valueType: 'INT64', unit: '1', displayName: expect.any(String) })
+    expect(m.labelExtractors).toBeUndefined()
+    expect(m.valueExtractor).toBeUndefined()
+    expect(m.bucketName).toBeUndefined()
+    expect(m.disabled).toBeUndefined()
+    const text = readFileSync(path.join(dir, METRIC), 'utf8')
+    expect(text).not.toMatch(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}/)
+  })
+
+  it('policy C: absence of that metric, summed across revisions, for 3 hours — three planning periods', () => {
+    const policy = read(POLICY_C)
+    const c = policy.conditions[0].conditionAbsent
+    expect(c.filter).toBe(`metric.type="logging.googleapis.com/user/${read(METRIC).name}" AND resource.type="cloud_run_revision" AND ${SERVICE} AND ${REGION}`)
+    expect(c.duration).toBe('10800s')
+    expect(c.trigger).toEqual({ count: 1 })
+    // Same reasoning as policy A: a deploy starts a new per-revision series.
+    expect(c.aggregations).toEqual(read('dc46-worker-no-successful-run.policy.json').conditions[0].conditionAbsent.aggregations)
+    // Planning runs once an hour; 3 hours tolerates two late passes.
+    const plan = workerSource().match(/export const PLAN_EVERY_MS = (\d+) \* (\d+) \* (\d+)\n/)
+    expect(plan).not.toBe(null)
+    const planMs = plan.slice(1).reduce((a, b) => a * Number(b), 1)
+    expect(planMs).toBe(60 * 60 * 1000)
+    expect(Number(c.duration.replace('s', '')) * 1000).toBe(3 * planMs)
+    // Revocation may still be running: an error, not critical like policy A.
+    expect(policy.severity).toBe('ERROR')
+    expect(policy.alertStrategy).toEqual({ autoClose: '604800s' })
+    expect(policy.userLabels.policy).toBe('c-planning-heartbeat')
+    // The runbook says when it is expected, and that rollback disables it.
+    expect(policy.documentation.content).toContain('This policy must be DISABLED as part of that rollback')
+    expect(policy.documentation.content).toContain('planning paused; periodic queue is full')
+    expect(policy.documentation.content).toContain(HEARTBEAT)
   })
 })

@@ -2094,7 +2094,7 @@ success. Without it every Storage request is refused. Production already has
 the grant; any NEW project or a CI rules deploy must add it explicitly and
 allow tens of minutes for it to take effect.
 
-## DC46-C — Periodic token reconciliation, Stage 1 (ADR-75) — WORKER DEPLOYED 13 November 2026; revocation PRODUCTION-ACCEPTED 16 November 2026; EIGHT CALLABLES REDEPLOYED AND ACCEPTED 16 November 2026; periodic reconciliation NOT ACTIVATED
+## DC46-C — Periodic token reconciliation, Stage 1 (ADR-75) — WORKER DEPLOYED 13 November 2026; revocation PRODUCTION-ACCEPTED 16 November 2026; EIGHT CALLABLES REDEPLOYED AND ACCEPTED 16 November 2026; deactivation regression PASSED 16 November 2026; activation PREPARED for a 2-hour interval 17 November 2026; periodic reconciliation NOT ACTIVATED
 
 Merged to `main` (`38ab578`). **The updated worker is deployed, the eight
 callables now run the same source (redeployed 16 November 2026 — *Callable
@@ -2108,8 +2108,8 @@ change, no new function, Scheduler job or service account. Deferred Control
 |---|---|
 | **IMPLEMENTED** | The Stage 1 periodic reconciliation framework |
 | **DEPLOYED** | The updated scheduled worker (step 2 below, 13 November 2026) and the eight callables (step 3 below, 16 November 2026 — callables only; the worker was not redeployed) |
-| **PRODUCTION-ACCEPTED** | The existing membership-triggered revocation through the updated worker (16 November, with the previous callable build). The eight-callable deploy itself (16 November, architect decision) — on configuration, source, refusal probes and one read-only `listTeam` call; **no membership-changing call has run on the new revisions** |
-| **NOT ACTIVATED** | Periodic reconciliation (step 4) |
+| **PRODUCTION-ACCEPTED** | The existing membership-triggered revocation through the updated worker (16 November, with the previous callable build). The eight-callable deploy itself (16 November, architect decision) — on configuration, source, refusal probes and one read-only `listTeam` call. **The deactivation regression through the new revisions — PASSED 16 November 2026, 23:12–23:13 UTC** (*Deactivation regression record* below) |
+| **PREPARED, NOT ACTIVATED** | Periodic reconciliation (step 4) at an initial interval of **2 hours** — architect decision 17 November 2026; 1 hour rejected. Runbook below (*Activation runbook*); production still `0` |
 | **NOT COMPLETED** | Stages 2–4 and Deferred Control 46 |
 
 ### Production release record — 13–16 November 2026
@@ -2263,15 +2263,11 @@ response to that exact request, and the log does not identify the caller.
 
 **Not tested — do not round up.**
 
-- **No membership-changing call has run on the new revisions in production**
-  (`createInvitation`, `resendInvitation`, `revokeInvitation`,
-  `acceptInvitation`, `changeMemberRole`, `deactivateMember`), nor
-  `previewInvitation` with a valid App Check token. Their behaviour rests on
-  the unchanged handler code, the identical-source comparison and the
-  emulator suites (TESTING.md §54–§55). **A controlled deactivation on the
-  development tenant — request, `file_links.revocation_requested`, worker
-  sweep, `file_links.revoked` — is part of the next acceptance gate and must
-  pass before any non-zero interval** (TESTING.md §55).
+- *(At the deploy.)* No membership-changing call had run on the new
+  revisions in production. **Closed later the same day:** the controlled
+  deactivation regression PASSED (next section). `changeMemberRole`,
+  `resendInvitation` and `revokeInvitation` remain unexercised on the new
+  revisions in production.
 - Sign-in and company authorisation were verified in the deployed **source**
   and by one successful administrator call, not by probing each refusal path
   in production; production callables cannot be scripted past App Check.
@@ -2294,6 +2290,30 @@ Cloud Run, but moving traffic to them by hand has not been rehearsed and
 leaves the Firebase CLI's view out of step — redeploy instead. No data needs
 reverting: the new fields are additive and the ADR-74 code ignores them.
 `TEAM_MANAGEMENT_ENABLED=false` plus a redeploy remains the kill switch.
+
+### Deactivation regression record — 16 November 2026 (PASSED)
+
+The acceptance gate that had to pass before any non-zero interval. Product
+Owner, development tenant, test member and disposable test PDF only, on
+explicit authorisation; verified read-only in the backend (request logs,
+worker log, audit trail, company state, object version counters — never a
+token value). Times UTC. Step-by-step record: TESTING.md §55. **Do not
+repeat it for activation.**
+
+| Time | Evidence | Source |
+|---|---|---|
+| 22:58:30 – 22:59:15 | Test member re-invited and accepted: `createInvitation`, `previewInvitation`, `acceptInvitation`, each HTTP 200 on a `-00003-*` revision | Cloud |
+| 23:09 | A legacy URL to the test PDF opened | Reported |
+| 23:12:48 | `deactivateMember` HTTP 200 on `deactivatemember-00003-qey` | Cloud |
+| 23:12:49 | `member.deactivated` + `file_links.revocation_requested` (one transaction), then `member.auth_synced`; state: sequence 3 → **4**, `requestPriority: urgent`, `queuedAt` | Cloud |
+| 23:13:02 | `processfilelinkrevocations-00002-had`: sequence 4 **complete — 5 scanned, 1 page, 1 token removed, 0 failed**; `file_links.revoked` (source `worker`); queue **0** | Cloud |
+| afterwards | Old URL **HTTP 403**; the PDF still opens in the app for an authorised user | Reported |
+| afterwards | Both administrators active; test member deactivated; no cursor document; no periodic reconciliation; interval `0` | Cloud |
+
+Read again at 23:51: state 4 / 4, queue 0, the test PDF's metageneration
+unchanged since the sweep (no token re-created by the 403 check or the
+in-app open). **Not shown:** pre-emption of a periodic sweep (impossible at
+interval `0`; emulator evidence only).
 
 ### Billing interruption — 12–13 November 2026
 
@@ -2352,7 +2372,7 @@ record* above).
 | Parameter | Value | Meaning |
 |---|---|---|
 | `FILE_LINK_RECONCILE_INTERVAL_HOURS` | `0` (committed) | Off. No planning, no cursor read or write, no periodic request |
-| | `1`–`168` | A company is swept again once its last successful sweep started that many hours ago. Proposed: `24` |
+| | `1`–`168` | A company is swept again once its last successful sweep started that many hours ago. **Selected for activation: `2`** (architect, 17 November 2026; first proposed `24`). **`1` is valid but rejected** — see *Activation runbook* → *Why 2 hours, not 1* |
 | | anything else | **Invalid.** The predeploy tests fail (`functions/test/fileLinks.test.js` → *DEPLOY GUARD*). If it reached production anyway, the worker would still do its revocation work, keep reconciliation off, and fail every run with an error naming the setting |
 
 The line must be present: a non-interactive deploy refuses a parameter with no
@@ -2382,19 +2402,17 @@ dotenv value, defaults included. All other parameters are unchanged.
    which matters once a periodic request has existed (*DC46-C monitoring
    readiness* → *Dependency on the all-Functions deploy*). Verified: each
    callable answers 401 without an App Check token; the worker's revision is
-   unchanged. **Not yet done:** a membership-changing call on the new
-   revisions (step 4's precondition below).
-4. **Activation — NOT ACTIVATED; only on explicit authorisation.** Before
-   it: step 3 done (it is); **a controlled deactivation on the development
-   tenant through the new `deactivateMember` revision, confirmed in the
-   request log, the audit trail and the worker log (TESTING.md §55)**;
-   billing continuity (*Billing continuity* below); and a decision on the
-   monitoring gaps in *Billing
-   interruption* above (a periodic control that can stop silently is not a
-   bound). Then edit the interval in `.env.constrapp-69b5d`, redeploy the
-   worker alone, run TESTING.md §53 steps 4–7 on the development tenant,
-   then set the approved value (proposed: `24`). Expect the cursor document
-   to appear and a `reconciliation plan complete` line about hourly.
+   unchanged. The deactivation regression on the new revisions **PASSED**
+   later the same day (*Deactivation regression record* above).
+4. **Activation — PREPARED for `2` (17 November 2026); NOT ACTIVATED; only
+   on explicit authorisation.** Done: step 3; the deactivation regression
+   (above); policies A and B. Still open: billing administration (*Billing
+   continuity* below); policy C creation; the reviewed activation commit;
+   the activation authorisation itself. **One deploy at the selected value**
+   replaces the "short interval, then the approved value" sequence first
+   written here — the first planning pass sweeps every due company within
+   about two minutes whatever the interval, so nothing is gained by a short
+   one. Procedure: *Activation runbook* below; acceptance: TESTING.md §56.
 
 **Rollback — none of these loses a queued request.**
 
@@ -2433,6 +2451,304 @@ info or warn lines. **None of these signals fires when the worker is not
 running at all** — policy A watches for that, within the limits stated in the
 next section; see also *Billing interruption* above.
 
+### Activation runbook — 2-hour interval (PREPARED 17 November 2026; NOT EXECUTED)
+
+**Nothing below has been run.** Each step that changes production needs
+explicit authorisation. Commands assume the repository root unless a step
+says `frontend/`. Times UTC. Acceptance checklist: TESTING.md §56.
+
+#### Why 2 hours, not 1
+
+Planning runs **once an hour** (`PLAN_EVERY_MS`), and a company planned in
+one invocation is swept on the **next** (each invocation reads its queue
+before it plans). So a sweep starts about a minute after the pass that
+requested it, and the company becomes due again a little after a later
+pass. With **2 hours** each company is swept about every 2 or 3 hours
+(simulated on the real code: 121–183 minutes, never near the 4-hour overdue
+bound; with an injected failure, 213 minutes). With **1 hour** — equal to
+the planning period — sub-second Scheduler jitter decides between a ~1-hour
+and a ~2-hour gap, and a gap just over 2 hours is a **false overdue**: an
+audit event, an error line and a policy B email with nothing wrong
+(reproduced by the same suite, TESTING.md §56). A token's life without a
+membership change at `2` is therefore about **3 hours plus queue and sweep
+time** — a bound, never a guarantee, longer whenever a sweep is incomplete
+or the worker is stopped.
+
+#### What changes, and what does not
+
+- **Changes:** one environment value on the worker service
+  `processfilelinkrevocations`, through a worker-only deploy. The Functions
+  source is unchanged since Stage 1 (`1702216`), so the new revision differs
+  from `-00002-had` only in `FILE_LINK_RECONCILE_INTERVAL_HOURS`.
+- **Unchanged:** the eight callables (not deployed — they do not read the
+  value), the Scheduler job, IAM, Rules, Hosting, data.
+- **Cost:** about 1,440 more Firestore reads a day (one cursor read per
+  invocation while the interval is above `0`), about 24 planning passes, a
+  sweep of the one company every 2–3 hours (1 Storage list call each, one
+  update per token found). ADR-75 → cost table.
+
+#### A. Preconditions (record each)
+
+1. Billing administration confirmed by the billing-account administrator:
+   owner, a backup administrator, a budget and its notification recipients
+   (*Billing continuity* below). A paid account alone is not this.
+2. Policy C metric and policy created and verified (*DC46-C monitoring
+   readiness* → *Policy C*).
+3. Both alert recipients told: **one** policy B email ("reconciliation
+   overdue") is expected within minutes of activation — *First-pass overdue*
+   below.
+4. The rollback checkpoint captured and verified (C2 below) and written
+   into the release record.
+5. Explicit activation authorisation.
+
+#### B. The reviewed activation commit (branch → PR → review → merge)
+
+Exactly two files, nothing else:
+
+| File | Change |
+|---|---|
+| `frontend/functions/.env.constrapp-69b5d` | `FILE_LINK_RECONCILE_INTERVAL_HOURS=0` → `FILE_LINK_RECONCILE_INTERVAL_HOURS=2`; the comment above it records the authorisation |
+| `frontend/functions/test/fileLinks.test.js` | *DEPLOY GUARD*: `toContain('FILE_LINK_RECONCILE_INTERVAL_HOURS=0')` → `toContain('FILE_LINK_RECONCILE_INTERVAL_HOURS=2')`, with its comment |
+
+`frontend/functions/.env.constrapp-rules-test` stays `0`. Without the second
+change the deploy's own predeploy test refuses the first.
+
+```
+git switch main && git pull --ff-only
+git switch -c release/dc46-c-activate-2h
+# edit the two files
+git diff --stat            # exactly the two files above
+git diff --check
+npm --prefix frontend/functions run lint && npm --prefix frontend/functions test
+```
+
+#### C. CI validation
+
+Azure Pipelines green on the pull request and again on `main` after the
+merge. Record the merged activation commit:
+
+```
+git switch main && git pull --ff-only
+export ACTIVATION_SHA=$(git rev-parse HEAD)        # the commit to be deployed
+git log -1 --format='%H %s' "$ACTIVATION_SHA"
+```
+
+#### C2. Capture and verify the rollback checkpoint (before any deploy)
+
+The rollback source is chosen **explicitly**, by its full SHA, and written
+into the release record **before** the activation deploy. Never derive it at
+rollback time from `HEAD^1`, a branch name or "the previous commit": a
+squash, a fast-forward or later commits on `main` all change what those
+point at.
+
+**The rollback checkpoint** is the last known-good production source with
+interval `0`: a commit on `main` whose `frontend/functions` tree is identical
+to the activation commit's in every file except the two the activation
+changes — so a rollback deploy changes only the interval. Normally that is
+the `main` commit the activation branch was cut from (at the time of
+writing, `c64c3e932404dcd9f39cebd9bc1be1b3d20a75d5`, which also carries this
+runbook once merged — re-confirm, never assume).
+
+```
+export ROLLBACK_SHA=<full 40-character SHA>        # recorded in the release record
+git cat-file -e "$ROLLBACK_SHA^{commit}" && echo exists
+git merge-base --is-ancestor "$ROLLBACK_SHA" "$ACTIVATION_SHA" && echo ancestor-of-activation
+# 1. Production configuration in that commit reads 0, and its deploy guard expects 0
+git show "$ROLLBACK_SHA":frontend/functions/.env.constrapp-69b5d | grep -x 'FILE_LINK_RECONCILE_INTERVAL_HOURS=0'
+git show "$ROLLBACK_SHA":frontend/functions/test/fileLinks.test.js | grep -F "toContain('FILE_LINK_RECONCILE_INTERVAL_HOURS=0')"
+# 2. Against the activation commit, ONLY the two activation files differ under frontend/functions …
+git diff --name-only "$ROLLBACK_SHA" "$ACTIVATION_SHA" -- frontend/functions
+#    expected exactly: frontend/functions/.env.constrapp-69b5d
+#                      frontend/functions/test/fileLinks.test.js
+# 3. … and in the env file only the interval line
+git diff -U0 "$ROLLBACK_SHA" "$ACTIVATION_SHA" -- frontend/functions/.env.constrapp-69b5d | grep '^[-+][A-Z]'
+#    expected exactly: -FILE_LINK_RECONCILE_INTERVAL_HOURS=0
+#                      +FILE_LINK_RECONCILE_INTERVAL_HOURS=2
+# 4. The checkpoint's environment matches what production runs NOW (interval 0)
+git show "$ROLLBACK_SHA":frontend/functions/.env.constrapp-69b5d | grep -E '^[A-Z_]+=' | sort
+gcloud run services describe processfilelinkrevocations --region australia-southeast1 --project constrapp-69b5d \
+  --format='value(spec.template.spec.containers[0].env)'
+#    every key in the file has the same value on the serving revision
+#    (dotenv quotes are not part of a value: EMAIL_FROM="Constrap <…>" is served unquoted)
+#    (STORAGE_BUCKET empty; the platform adds FIREBASE_CONFIG, GCLOUD_PROJECT, FUNCTION_*, …)
+```
+
+Any unexpected output: **stop** — do not activate until a valid checkpoint is
+recorded. Record in the release record: `ROLLBACK_SHA`, `ACTIVATION_SHA`, the
+serving worker revision before the deploy (`-00002-had` at the time of
+writing), and the outputs of checks 1–4.
+
+#### D. Final checks, then the worker-only deploy
+
+Read-only, immediately before:
+
+```
+git status --short --branch                         # clean, equal to origin/main
+grep '^FILE_LINK_RECONCILE_INTERVAL_HOURS=' frontend/functions/.env.constrapp-69b5d   # =2
+firebase --version                                  # record it
+gcloud billing projects describe constrapp-69b5d --format='value(billingEnabled)'     # True
+gcloud run services describe processfilelinkrevocations --region australia-southeast1 --project constrapp-69b5d \
+  --format='value(status.latestReadyRevisionName,spec.template.spec.containerConcurrency)'   # -00002-had  1
+gcloud scheduler jobs describe firebase-schedule-processFileLinkRevocations-australia-southeast1 \
+  --location australia-southeast1 --project constrapp-69b5d --format='value(state,schedule)'  # ENABLED  every 1 minutes
+gcloud monitoring policies list --project constrapp-69b5d --format='value(displayName,enabled)'  # A, B and C, all True
+gcloud logging metrics describe dc46_reconciliation_plan_complete --project constrapp-69b5d
+```
+
+and the queue count is `0` (the count-only aggregation used in the
+deactivation preflight). Note the last successful sweep's start
+(`completedPassStartedAt` on `companies/{id}/system/fileLinkRevocation`) —
+it decides whether the first-pass overdue email comes.
+
+The deploy, from `frontend/`, interactively (not `--non-interactive`):
+
+```
+firebase deploy --only functions:team:processFileLinkRevocations --project constrapp-69b5d
+```
+
+The predeploy hook runs the Functions lint and pure tests, including the
+DEPLOY GUARD. **Never `--only functions`**: that would also roll the eight
+callables.
+
+Immediately after (read-only): a new revision `processfilelinkrevocations-00003-*`
+Ready with 100 % of traffic; `FILE_LINK_RECONCILE_INTERVAL_HOURS=2`,
+`FILE_LINK_REVOCATION_ENABLED=true`; concurrency 1, max instances 1, 300 s,
+runtime account `file-link-worker@`; the eight callables still on their
+`-00003-*` revisions; Scheduler unchanged; request log 200 each minute.
+
+#### E. First periodic sweep (expected within about three minutes)
+
+```
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="processfilelinkrevocations" AND jsonPayload.message:"file-links:"' \
+  --project constrapp-69b5d --freshness=30m --format='value(timestamp,severity,jsonPayload.message)'
+```
+
+| Invocation | Expected |
+|---|---|
+| First after the deploy | `file-links: reconciliation plan complete` — `passSeq: 1`, `examined: 1`, `requested: 1`; the cursor document `system/fileLinkReconciliation` now exists |
+| The same minute | **Expected once:** `file-links: reconciliation overdue…` (ERROR, `companies: 1`) if the last successful sweep started more than 4 hours earlier — see *First-pass overdue* |
+| The next | `file-links: worker run` with `periodic: 1`, action `complete` |
+| State document after it | `completedSeq` one higher; `requestReason: periodic`; `lastPass.priority: periodic`, `complete: true`, `failed: 0`; no `overdueSince`; queue count 0 |
+| Audit | `file_links.reconciliation_overdue` (the expected one, if it fired); `file_links.reconciled` only if a token was found; no `file_links.revoked` |
+
+With the optional planted token (TESTING.md §56 step 3): `removed: 1`, the
+object's metageneration one higher, the old URL **403**, the PDF still opens
+in the app. Read version counters only — never the token.
+
+#### First-pass overdue — expected once, and how to tell it from a failure
+
+The first planning pass measures each company from its last successful
+sweep. Production's last one (the deactivation regression) started
+**16 November 2026 23:13:02 UTC**. Activating more than **4 hours** (two
+intervals) after the last successful sweep — certain after 17 November
+03:13 UTC unless another membership change sweeps the tenant — makes pass 1
+count the company overdue: one ERROR line, one
+`file_links.reconciliation_overdue` audit event, `overdueSince` set, and
+**one policy B email** (rate-limited to one an hour). It is cleared by the
+periodic sweep one minute later. Simulated: TESTING.md §56, *First pass at
+activation*.
+
+| Expected (initial) | A real failure |
+|---|---|
+| Only in the invocation that logs `passSeq: 1` | In any pass with `passSeq` 2 or more |
+| The audit's `lastSuccessfulSweepStartedAt` is BEFORE the deploy | It is AFTER the deploy |
+| `consecutiveIncomplete: 0` in the audit | Above 0; `sweep incomplete` or `sweep interrupted` lines nearby |
+| `overdueSince` gone after the next invocation; pass 2 reports `overdue: 0` | `overdueSince` stays; error lines repeat each hour |
+
+If the initial one appears, note its time in the release record and
+acknowledge the policy B incident; nothing else is needed.
+
+#### F. Planning heartbeat and the second sweep
+
+Over the first 3 hours (read-only):
+
+- `reconciliation plan complete` about every 60–61 minutes, `passSeq`
+  rising by one, `overdue: 0` from pass 2.
+- The policy C metric has points:
+  ```
+  curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+    "https://monitoring.googleapis.com/v3/projects/constrapp-69b5d/timeSeries?filter=metric.type%3D%22logging.googleapis.com%2Fuser%2Fdc46_reconciliation_plan_complete%22&interval.startTime=<start>&interval.endTime=<end>"
+  ```
+- No open policy C incident (`projects/constrapp-69b5d/alerts`, as used for
+  the delivery test).
+- A **second** periodic sweep 2–3 hours after the first: `completedSeq` up
+  by one, `completedPassStartedAt` advanced by 121–183 minutes, no overdue.
+
+Record the result as the activation release record, then update
+TESTING.md §56, ADR-75, SECURITY.md item 46, ROADMAP.md and the handover.
+
+#### G. Rollback to interval 0 (the callables are not touched)
+
+Rollback uses **only** the `ROLLBACK_SHA` recorded and verified in C2 — never
+`HEAD^1` or whatever `main` holds at the time. It deploys from an isolated
+worktree so the normal working copy and `main` are untouched.
+
+1. **Re-verify the checkpoint** (read-only) — C2 checks 1–3 again, with the
+   recorded `ROLLBACK_SHA` and `ACTIVATION_SHA`. If `main` has gained any
+   change under `frontend/functions` since the activation, check 2 must
+   still list only the two activation files **between the checkpoint and the
+   source now in production**; if it does not, do not roll back from the
+   checkpoint — prepare a reviewed commit that sets the interval and its pin
+   back to `0` on top of current `main` and deploy that instead.
+2. **Isolated worktree at exactly that commit:**
+   ```
+   git worktree add --detach ../constrapp-rollback "$ROLLBACK_SHA"
+   git -C ../constrapp-rollback rev-parse HEAD                 # must equal $ROLLBACK_SHA
+   git -C ../constrapp-rollback status --short                 # must be empty
+   grep -x 'FILE_LINK_RECONCILE_INTERVAL_HOURS=0' ../constrapp-rollback/frontend/functions/.env.constrapp-69b5d
+   npm --prefix ../constrapp-rollback/frontend/functions ci
+   ```
+3. **Redeploy the worker only**, from the worktree's `frontend/`,
+   interactively:
+   ```
+   cd ../constrapp-rollback/frontend
+   firebase deploy --only functions:team:processFileLinkRevocations --project constrapp-69b5d
+   ```
+   The predeploy DEPLOY GUARD in that tree expects `0`, so a wrong
+   checkpoint is refused. Never `--only functions`.
+4. **Verify** (read-only): a new worker revision, Ready, 100 % of traffic,
+   `FILE_LINK_RECONCILE_INTERVAL_HOURS=0`, every other environment value as
+   in C2 check 4, concurrency 1; the eight callables still on their
+   `-00003-*` revisions; runs return 200; no `reconciliation plan complete`
+   after the new revision; the queue drains to 0.
+5. **Disable policy C** — without heartbeats it would fire about 3 hours
+   later:
+   ```
+   gcloud monitoring policies list --project constrapp-69b5d \
+     --filter='displayName="DC46 file-link worker: reconciliation planning stopped for 3 hours"' --format='value(name)'
+   gcloud monitoring policies update <that name> --no-enabled --project constrapp-69b5d
+   ```
+6. **Clean up:** `cd -` back to the repository, then
+   `git worktree remove ../constrapp-rollback`.
+7. **Reconcile `main` with production** through the normal reviewed change
+   process: a branch reverting the activation commit (the two files back to
+   `0`), pull request, architect review, Azure CI green, merge. Until it is
+   merged, `main` says `2` while production runs `0` — record that gap and
+   its end in the release record, and do not deploy the worker from `main`
+   in between.
+
+- The eight callables keep their `-00003-*` revisions throughout. **Never
+  roll them back to the ADR-74 build once a periodic request has existed**
+  (*Dependency on the all-Functions deploy*).
+- Nothing is lost: a periodic request already queued is swept once; the
+  cursor document stays and is ignored at `0`; membership revocation is
+  unaffected.
+- Faster, unrehearsed alternatives — changing the variable with
+  `gcloud run services update`, or moving traffic to the previous revision —
+  put the service out of step with the Firebase CLI. Emergency use only,
+  then redeploy as above.
+
+#### H. Incident response after activation
+
+| Signal | Meaning | Action |
+|---|---|---|
+| Policy A | Worker not running | As before (*Alert response runbook*); periodic and urgent work both wait |
+| Policy B — `reconciliation overdue` on pass 2+ | A company two intervals without a successful sweep | Read its state (`lastPass`, `consecutiveIncomplete`, `nextAttemptAt`); treat as an incomplete sweep |
+| Policy B — `sweep incomplete` / `interrupted` | Storage or Firestore failures | As before; five consecutive failures close the sweep and back off |
+| Policy C | Planning stopped while the worker may still run | Its runbook: interval, planning errors, cursor |
+| Tokens keep reappearing on the same objects | Something mints them between sweeps | Record object names and times only (never values); compare with console use; the cause is unproven |
+| Any doubt about the periodic path | — | Roll back (G). Membership revocation continues |
+
 ## DC46-C monitoring readiness — POLICIES A AND B CREATED IN PRODUCTION 16 November 2026 (verified read-only; test delivery reported by both recipients; neither failure condition has fired; billing continuity NOT CONFIRMED; the callable deploy it depended on is DONE)
 
 Prepared on `ops/dc46-c-monitoring-readiness` (merged, `5615239`) and created
@@ -2455,7 +2771,7 @@ Control 46 stays OPEN.
 | **REPORTED by the Product Owner** | Both recipients received the test notification. Not observed: Google exposes no per-recipient delivery record that was found |
 | **NOT TESTED in production** | Policy A on a real absence; policy B on a real error line; anything during a billing suspension |
 | **NOT VERIFIED — administrator action** | Billing continuity (below) |
-| **SPECIFIED ONLY** | Policy C, the planning heartbeat — created with activation, not before |
+| **PREPARED, NOT CREATED (17 November 2026)** | Policy C, the planning heartbeat, and its log-based metric — `ops/monitoring/dc46-planning-heartbeat.metric.json` and `dc46-planning-heartbeat-absent.policy.json` (*Policy C* below). To be created before activation |
 | **DONE 16 November 2026** | The callable deploy (the eight callables only; *DC46-C* → *Callable release record*) |
 | **NOT AUTHORISED** | Activation of a non-zero interval |
 
@@ -2767,7 +3083,7 @@ not confirmed:
 
 | Action (billing account owner) | State |
 |---|---|
-| Confirm the project is on a permanent, paid billing account — not a free-trial account | Not confirmed. Google's documentation: a free-trial account that is not upgraded is closed, its projects' resources are stopped, and after a 30-day grace period they are permanently deleted |
+| Confirm the project is on a permanent, paid billing account — not a free-trial account | **REPORTED by the Product Owner (17 November 2026):** paid billing confirmed. Read-only: `billingEnabled: True` (16 November 23:51 UTC); the account itself is not readable by the operator account. Google's documentation: a free-trial account that is not upgraded is closed, its projects' resources are stopped, and after a 30-day grace period they are permanently deleted |
 | Confirm who owns the billing account and its payment profile | Not recorded |
 | Add a second authorised billing administrator | Not confirmed |
 | Verify a budget with alert thresholds exists for this project (the L1 set-up suggests A$20 a month at 50 / 90 / 100 %) | Not confirmed |
@@ -2775,7 +3091,10 @@ not confirmed:
 | Confirm who receives Google's billing notices and any budget alerts | Not confirmed |
 | Decide the alert path for a complete billing interruption (below) | Open decision |
 
-**State on 17 November 2026: every row above is still open.** The read-only
+**State on 17 November 2026: paid billing is Product Owner-reported (row 1);
+every other row is still open, and owner, backup administrator and budget
+notifications remain preconditions of activation (*DC46-C* → *Activation
+runbook* → A).** The read-only
 preflight of 16 November found billing enabled and the project linked to a
 billing account that the operator account cannot read; nothing more is
 known. **Receipt of the DC46 test email by the billing administrator shows
@@ -2849,18 +3168,86 @@ survived because of it — the damage would have been to the audit evidence of
 a revocation. What remains before activation is listed in step 4 of that
 order.
 
-### Future — policy C, the planning heartbeat (create WITH activation)
+### Policy C — the planning heartbeat (PREPARED 17 November 2026; NOT CREATED)
 
-Not prepared as a file, because its metric cannot exist before activation.
+**Files:** `ops/monitoring/dc46-planning-heartbeat.metric.json` (a
+log-based counter) and `ops/monitoring/dc46-planning-heartbeat-absent.policy.json`
+(the alert). Pinned by `frontend/tests/unit/monitoringPolicies.test.js`. No
+recipient is committed. **Neither exists in the cloud.** Creating them is a
+production change needing its own authorisation.
 
-- A log-based counter metric on
-  `resource.labels.service_name="processfilelinkrevocations" AND jsonPayload.message:"file-links: reconciliation plan complete"`.
-- A metric-absence policy on that counter, 3 hours, the same two channels.
-  The line is written about hourly while reconciliation is on.
-- It can fire falsely only when planning is paused by 200 queued periodic
-  requests, which needs far more companies than exist.
-- The overdue signal needs nothing new: `reconciliation overdue` is an
-  error-level line and is matched by policy B.
+**What it detects.** Planning has stopped while reconciliation is on: no
+`file-links: reconciliation plan complete` line for **3 hours** (three
+planning periods). Policy A cannot see this (the worker still returns 200)
+and policy B cannot (no error is written when planning is simply skipped or
+paused). Severity ERROR, not CRITICAL: membership-triggered revocation may
+still be running.
+
+| Part | Setting |
+|---|---|
+| Metric | `logging.googleapis.com/user/dc46_reconciliation_plan_complete`, DELTA INT64 counter, nothing extracted |
+| Metric filter | `resource.type="cloud_run_revision"`, service `processfilelinkrevocations`, location `australia-southeast1`, `log_id("run.googleapis.com/stdout")`, `jsonPayload.message="file-links: reconciliation plan complete"` (exact match) |
+| Condition | Metric absence, 60 s `ALIGN_DELTA`, `REDUCE_SUM` grouped by `service_name` only (as policy A, so a deploy's new revision series is not a gap), duration 10,800 s |
+| Channels | The same two: `DC46 - Product Owner`, `DC46 - Billing Administrator` |
+| Auto-close | 7 days |
+
+**Does the filter match what the worker writes?** Yes, by evidence:
+`planReconciliation` writes `log?.info?.('file-links: reconciliation plan complete', {…})`
+exactly once per finished pass (pinned against the source). Production
+worker info lines are written by the same logger to
+`run.googleapis.com/stdout`, with the text in `jsonPayload.message` and the
+fields alongside — read on a real `file-links: worker run` entry on
+16 November 2026. An info line carries no stack, so an exact match is safe
+(policy B uses `:` only because error lines do). The project's `_Default`
+sink has no exclusion filter (read 17 November 2026).
+
+**Will it work reliably with the existing telemetry?**
+
+- The heartbeat already exists; no code change is needed. In the 2-hour
+  simulation passes were 60–61 minutes apart (TESTING.md §56) — about a
+  third of the window.
+- A log-based metric counts only entries written **after** it is created:
+  create the metric first, then the policy.
+- By Google's documentation an absence condition needs a data point after
+  it is created or edited, and treats late data as missing. Created at
+  interval `0` it is therefore **dormant, not firing**, and arms itself on
+  the first heartbeat after activation — this is why it can and should be
+  created **before** activation (correcting the earlier "create with
+  activation" note: the metric can exist before any line matches it).
+- **Expected firing:** after a rollback to `0` (so rollback disables it);
+  while planning is paused by 200 queued periodic requests (far beyond
+  today's scale); if a pass cannot finish within 3 hours (planning has
+  15 s per invocation — a scale limit, not reachable with one company).
+- **Not covered:** a deleted service (Google: no alert); a billing
+  suspension (unknown — same project); a pass that finishes but plans
+  wrongly (the overdue line and policy B cover that).
+
+**Create — on authorisation, before activation:**
+
+```
+gcloud logging metrics create dc46_reconciliation_plan_complete --project constrapp-69b5d \
+  --config-from-file=ops/monitoring/dc46-planning-heartbeat.metric.json
+gcloud monitoring policies create --project constrapp-69b5d \
+  --policy-from-file=ops/monitoring/dc46-planning-heartbeat-absent.policy.json \
+  --notification-channels="$DC46_CHANNELS"
+```
+
+`$DC46_CHANNELS` is set exactly as for policies A and B (*Monitoring release
+record* → creation procedure).
+
+**Verify safely (read-only):** `gcloud logging metrics describe
+dc46_reconciliation_plan_complete --project constrapp-69b5d` matches the
+file; `gcloud monitoring policies list --project constrapp-69b5d
+--format=json` shows policy C enabled, identical to the file, with both
+channels; no incident opens while the interval is `0`. After activation:
+points about hourly (*Activation runbook* → F). Firing on its real condition
+is not tested in production — as for policy A, that would mean stopping
+planning; a rollback rehearsal would show it, and is not proposed.
+
+**Disable during rollback:** `gcloud monitoring policies update <policy C
+name> --no-enabled --project constrapp-69b5d` (*Activation runbook* → G).
+Delete only on a separate decision; the metric can stay (it costs nothing
+without matching lines).
 
 ### Cost — published prices and estimates, kept apart
 
@@ -2881,7 +3268,7 @@ November 2026):
 | Policy A, from September 2027 | About US$0.35 plus a few cents a month | One metric reference; one aggregated series evaluated about every 30 seconds is roughly 86,400 points a month |
 | Policy B, from September 2027 | About US$0.35 a month | One policy, no points |
 | The delivery test | Effectively nothing | It exists for minutes |
-| Policy C and its log-based counter | Not estimated | A user-defined log-based metric is billed as a custom metric; the volume is about one point an hour. Price it when policy C is prepared |
+| Policy C and its log-based counter | Not priced; expected to be small | One policy (the same US$0.35 a month per metric reference from September 2027); the counter is a user-defined log-based metric, billed as a custom metric, at about 24 points a day. Re-read the pricing page before creation |
 | Email channels, the logs the worker already writes | No added charge expected | — |
 
 Prices, dates and exemptions can change before 2027, and an existing

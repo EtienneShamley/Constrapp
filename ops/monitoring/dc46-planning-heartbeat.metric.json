@@ -1,0 +1,11 @@
+{
+  "name": "dc46_reconciliation_plan_complete",
+  "description": "DC46-C (ADR-75) planning heartbeat: one count per finished reconciliation planning pass of the processfilelinkrevocations worker, about hourly while FILE_LINK_RECONCILE_INTERVAL_HOURS is above 0. Read by alert policy C. Counts only; extracts nothing from the log entry.",
+  "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"processfilelinkrevocations\" AND resource.labels.location=\"australia-southeast1\" AND log_id(\"run.googleapis.com/stdout\") AND jsonPayload.message=\"file-links: reconciliation plan complete\"",
+  "metricDescriptor": {
+    "metricKind": "DELTA",
+    "valueType": "INT64",
+    "unit": "1",
+    "displayName": "DC46 reconciliation planning passes completed"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "displayName": "DC46 file-link worker: reconciliation planning stopped for 3 hours",
+  "combiner": "OR",
+  "enabled": true,
+  "severity": "ERROR",
+  "userLabels": {
+    "control": "dc46",
+    "component": "file-link-worker",
+    "policy": "c-planning-heartbeat"
+  },
+  "conditions": [
+    {
+      "displayName": "No reconciliation planning pass completed by processfilelinkrevocations for 3 hours",
+      "conditionAbsent": {
+        "filter": "metric.type=\"logging.googleapis.com/user/dc46_reconciliation_plan_complete\" AND resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"processfilelinkrevocations\" AND resource.labels.location=\"australia-southeast1\"",
+        "aggregations": [
+          {
+            "alignmentPeriod": "60s",
+            "perSeriesAligner": "ALIGN_DELTA",
+            "crossSeriesReducer": "REDUCE_SUM",
+            "groupByFields": ["resource.labels.service_name"]
+          }
+        ],
+        "duration": "10800s",
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "alertStrategy": {
+    "autoClose": "604800s"
+  },
+  "documentation": {
+    "mimeType": "text/markdown",
+    "subject": "DC46 reconciliation planning has not completed a pass for 3 hours",
+    "content": "## What this means\n\nWhile periodic reconciliation is switched on (`FILE_LINK_RECONCILE_INTERVAL_HOURS` above 0), the worker `processFileLinkRevocations` finishes a planning pass about once an hour and writes the info line `file-links: reconciliation plan complete`. None has been counted for 3 hours.\n\n**Security effect:** no company is being newly scheduled for a periodic sweep, so download tokens created since (uploads, the Firebase console, `getDownloadURL`) are not being removed on schedule. Membership-triggered revocation may still be running: check policy A.\n\n## Is this expected?\n\n- **Reconciliation was switched off** (interval set back to `0`): expected. This policy must be DISABLED as part of that rollback.\n- It cannot fire until at least one heartbeat has been counted after it was created or last edited.\n- **Planning is paused** because 200 periodic requests are queued (`reconciliation planning paused; periodic queue is full`): expected only at a scale far beyond today's.\n\n## Check, in this order\n\n1. **Policy A.** If it is also open, the worker is not running at all: follow policy A first (billing, Scheduler, worker).\n2. **The interval.** `gcloud run services describe processfilelinkrevocations --region australia-southeast1 --project constrapp-69b5d` must show `FILE_LINK_RECONCILE_INTERVAL_HOURS` above 0 on the serving revision.\n3. **The worker's logs** for `file-links:` lines: `planning failed`, `cursor unreadable`, `could not be read`, `urgent work used the whole run`, `planning paused`, `cursor changed underneath this run`.\n4. **The cursor** `system/fileLinkReconciliation` (Admin read only): `passStartedAt`, `cursor`, `lastPass.completedAt`, `nextPassAt`.\n\nNever paste a download URL or a token into a ticket or chat.\n\nFull runbook: `docs/DEPLOYMENT.md`, section *DC46-C monitoring readiness*, *Policy C*."
+  }
+}
