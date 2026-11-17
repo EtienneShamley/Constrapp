@@ -365,7 +365,7 @@ describe('ADR-75: the reconciliation interval', () => {
     }
   })
 
-  it('DEPLOY GUARD: every project env file sets the interval exactly once, to a valid value — and production is 0', () => {
+  it('DEPLOY GUARD: every project env file sets the interval exactly once, to a valid value — and production is 2', () => {
     // firebase.json runs this suite as a predeploy step. The CLI itself does
     // not range-check a dotenv value, so this test is what refuses a deploy
     // with an unusable interval.
@@ -382,9 +382,11 @@ describe('ADR-75: the reconciliation interval', () => {
       const setting = reconcileSetting(lines[0].slice('FILE_LINK_RECONCILE_INTERVAL_HOURS='.length))
       expect(setting.valid, `${f}: ${lines[0]}`).toBe(true)
     }
-    // ⚠️ Periodic reconciliation is NOT authorised in production. Changing this
-    // line is the deliberate, reviewed act of switching it on (DEPLOYMENT.md → DC46-C).
-    expect(readFileSync(`${dir}.env.constrapp-69b5d`, 'utf8').split('\n')).toContain('FILE_LINK_RECONCILE_INTERVAL_HOURS=0')
+    // ⚠️ Production runs periodic reconciliation at the REVIEWED interval of 2
+    // hours (ADR-75 activation; DEPLOYMENT.md → DC46-C → Activation runbook).
+    // Any other value must fail this predeploy guard: changing this line is the
+    // deliberate, reviewed act of changing the interval or switching it off.
+    expect(readFileSync(`${dir}.env.constrapp-69b5d`, 'utf8').split('\n')).toContain('FILE_LINK_RECONCILE_INTERVAL_HOURS=2')
   })
 
   it('the scheduled function runs through runScheduledWorker with the RAW setting', () => {
