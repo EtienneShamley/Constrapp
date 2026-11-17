@@ -3343,6 +3343,26 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     - *Still open after Stage 1:* document visibility reduction (Stage 2),
       external-member removal (Stage 3), measurement at volume (Stage 4),
       and the unproven cause of the tokens that reappeared in production.
+    - *Stages 2 and 3 — IMPLEMENTED, NOT DEPLOYED (18 November 2026; branch
+      `feature/dc46-visibility-external-removal`).* Until each is released
+      the two gaps above remain exactly as described.
+      **Stage 2, once the Rules are published — rules-enforced:** no client
+      in any role can change a general document from `project` to
+      `internal` (`firestore.rules` 242,127 bytes; 2,873 under budget).
+      **Not enforced:** an Admin SDK or Firebase console edit bypasses
+      Rules, queues no revocation, and is covered only by the periodic
+      sweep. A visibility correction is an **operator task** until a
+      trusted server-side workflow exists (ADR-75 decision 13, not built);
+      withdrawing a document does not remove external read access.
+      **Stage 3, once the callables are deployed — enforced by the trusted
+      backend:** a Company Admin can deactivate a `subcontractor` or
+      `client` of their own company through `deactivateMember`; membership,
+      the urgent revocation request and the audit event commit in one
+      transaction; `super_admin` is still refused; role changes and
+      invitations still refuse external roles. The Team page's *Deactivate*
+      button on those rows is **UX only**. Revocation of copied links is
+      still a background clean-up, never immediate. (ADR-75 → *Stages 2 and
+      3 — as implemented*; TESTING.md §57.)
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this

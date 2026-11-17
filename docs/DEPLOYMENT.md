@@ -2749,6 +2749,81 @@ worktree so the normal working copy and `main` are untouched.
 | Tokens keep reappearing on the same objects | Something mints them between sweeps | Record object names and times only (never values); compare with console use; the cause is unproven |
 | Any doubt about the periodic path | — | Roll back (G). Membership revocation continues |
 
+## DC46-C Stages 2 and 3 — release runbook (PREPARED 18 November 2026; NOT DEPLOYED)
+
+Source: branch `feature/dc46-visibility-external-removal` (ADR-75 → *Stages 2
+and 3 — as implemented*). Nothing below has been run. Each step needs its
+own authorisation, after architect review, Git integration and a green CI
+run on `main`. **The worker is never redeployed and
+`FILE_LINK_RECONCILE_INTERVAL_HOURS` stays `2`** — no step touches
+`.env.constrapp-69b5d`, IAM, Scheduler or monitoring.
+
+Record before step 1 (read-only): the commit being released (`RELEASE_SHA`),
+the commit currently live for Functions and Hosting (`2b3ba9a` unless
+something has been released since), and the published Firestore ruleset
+(identical to `main` `2b3ba9a`'s `firestore.rules`, 241,924 bytes, last
+published 3 November 2026 — verified read-only 17 November 2026).
+
+**Step 1 — Firestore Rules only.**
+
+```
+cd frontend
+npm run rules:transitional:check
+firebase deploy --only firestore:rules --project constrapp-69b5d
+```
+
+The FINAL file through the normal `firebase.json` — the transitional copy is
+regenerated for consistency only and is not published. Verify the published
+source reads **242,127 bytes**. *Compatibility:* the live Hosting bundle
+never writes `visibility` on an update (`updateDocument` has no caller), so
+no screen changes; the live callables do not touch project documents.
+*Rollback:* from a worktree at `2b3ba9a`, the same command republishes the
+previous ruleset. Safe at any time — it only re-opens the client reduction.
+
+**Step 2 — the eight team callables only.**
+
+```
+firebase deploy --only functions:team:listTeam,functions:team:createInvitation,functions:team:resendInvitation,functions:team:revokeInvitation,functions:team:previewInvitation,functions:team:acceptInvitation,functions:team:changeMemberRole,functions:team:deactivateMember --project constrapp-69b5d
+```
+
+Never `--only functions` (that would redeploy the worker). The predeploy
+hook runs lint and the pure suite, including the DEPLOY GUARD that requires
+the production interval to read `2`. *Compatibility:* with the previous
+Hosting bundle still live, no external row offers *Deactivate*, so the
+widened guard is simply unused; acceptance clearing two presentation fields
+needs no client change; the Rules of step 1 are unrelated to the callables.
+Verify read-only: eight new revisions ACTIVE at 100 %, the worker revision
+unchanged (`processfilelinkrevocations-00003-ceg`), HTTP 401 without App
+Check, configuration and secret binding unchanged. *Rollback:* the same
+command from a worktree at `2b3ba9a`. A removal already completed stays
+completed; it is reversed by operator re-provisioning.
+
+**Step 3 — Hosting only.**
+
+```
+npm run build
+firebase deploy --only hosting --project constrapp-69b5d
+```
+
+*Compatibility:* requires step 2 — deployed first, the button would appear
+and the old callable would answer `unsupported-target` (a friendly refusal,
+nothing written). *Rollback:* redeploy the previous build from a worktree at
+`2b3ba9a`; roll Hosting back **before** the callables if both are reverted.
+The Hosting rollback floor (the ADR-73 build) is unchanged.
+
+**Minimal production acceptance** — TESTING.md §57, production checks.
+Stage 3 needs a disposable external test member, which only an operator can
+provision; that provisioning is a production data change and needs its own
+approval.
+
+**Operator procedure — correcting a document's visibility.** No app path can
+reduce visibility after step 1. An authorised operator sets `visibility` to
+`internal` on the document (console or Admin SDK), then runs
+`functions/scripts/revoke-file-links.mjs` for that company so links copied
+while the document was `project` do not wait for the next periodic sweep.
+Record who asked, who acted and when. Withdrawing the document is not a
+substitute: withdrawal does not change who can read the file.
+
 ## DC46-C monitoring readiness — POLICIES A AND B CREATED IN PRODUCTION 16 November 2026 (verified read-only; test delivery reported by both recipients; neither failure condition has fired; billing continuity NOT CONFIRMED; the callable deploy it depended on is DONE)
 
 Prepared on `ops/dc46-c-monitoring-readiness` (merged, `5615239`) and created

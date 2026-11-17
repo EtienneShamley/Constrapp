@@ -10,7 +10,7 @@ import { useProfile } from '../../hooks/useProfile'
 import { useTeam } from '../../hooks/useTeam'
 import { formatRole, formatIsoDate } from '../../lib/formatters'
 import {
-  TEAM_ROLES, canManageTeam, canEditMember, inviteStatusBadge, deliveryBadge, memberStatusBadge, fileLinkNote,
+  TEAM_ROLES, canManageTeam, canEditMember, canDeactivateMember, isExternalRole, inviteStatusBadge, deliveryBadge, memberStatusBadge, fileLinkNote,
   teamErrorMessage, INVITE_STATUS, MEMBER_STATUS,
 } from '../../lib/team'
 
@@ -221,10 +221,10 @@ export default function TeamSettings() {
                             <td className={tdCls}>{m.lastSignInAt ? formatIsoDate(m.lastSignInAt) : '—'}</td>
                             <td className={`${tdCls} text-right whitespace-nowrap`}>
                               {canEditMember(m) && (
-                                <>
-                                  <Btn sm variant="ghost" onClick={() => openDialog({ type: 'role', member: m })}>Change role</Btn>
-                                  <Btn sm variant="ghost" className="ml-2 text-brand-red" onClick={() => openDialog({ type: 'deactivate', member: m })}>Deactivate</Btn>
-                                </>
+                                <Btn sm variant="ghost" onClick={() => openDialog({ type: 'role', member: m })}>Change role</Btn>
+                              )}
+                              {canDeactivateMember(m) && (
+                                <Btn sm variant="ghost" className="ml-2 text-brand-red" onClick={() => openDialog({ type: 'deactivate', member: m })}>Deactivate</Btn>
                               )}
                             </td>
                           </tr>
@@ -248,9 +248,11 @@ export default function TeamSettings() {
                           </div>
                           <Badge label={status.label} variant={status.variant} sm />
                         </div>
-                        {canEditMember(m) && (
+                        {canDeactivateMember(m) && (
                           <div className="flex gap-2 mt-3">
-                            <Btn sm variant="ghost" onClick={() => openDialog({ type: 'role', member: m })}>Change role</Btn>
+                            {canEditMember(m) && (
+                              <Btn sm variant="ghost" onClick={() => openDialog({ type: 'role', member: m })}>Change role</Btn>
+                            )}
                             <Btn sm variant="ghost" className="text-brand-red" onClick={() => openDialog({ type: 'deactivate', member: m })}>Deactivate</Btn>
                           </div>
                         )}
@@ -401,7 +403,9 @@ export default function TeamSettings() {
             <li>Their sign-in is disabled and their sessions are revoked.</li>
             <li>File links they may have copied earlier are revoked by a background clean-up, not straight away. This page shows when it has finished.</li>
             <li>Their history, approvals and audit records are kept.</li>
-            <li>You can invite them again later; they keep the same account.</li>
+            {isExternalRole(dialog.member.role)
+              ? <li>They cannot be invited back from this page — adding a subcontractor or client again is done by the operator.</li>
+              : <li>You can invite them again later; they keep the same account.</li>}
           </ul>
           {dialog.member.role === 'company_admin' && (
             <p className="text-[11px] text-brand-amber m-0 mb-2">A company must keep at least one active Company Admin; this is refused if they are the last one.</p>

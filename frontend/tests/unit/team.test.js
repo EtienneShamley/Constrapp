@@ -3,7 +3,7 @@ import {
   TEAM_ROLES, TEAM_ROLE_VALUES, isTeamRole, canManageTeam,
   parseInviteFragment, isInviteCredential, readPendingInvite, storePendingInvite, clearPendingInvite, PENDING_INVITE_KEY,
   acceptStepFor, ACCEPT_STEP, passwordProblem, PASSWORD_MIN,
-  membershipGate, GATE, inviteStatusBadge, deliveryBadge, memberStatusBadge, canEditMember, fileLinkNote, FILE_LINK_STATUS,
+  membershipGate, GATE, inviteStatusBadge, deliveryBadge, memberStatusBadge, canEditMember, canDeactivateMember, isExternalRole, fileLinkNote, FILE_LINK_STATUS,
   teamErrorMessage, teamErrorCode, authErrorMessage,
 } from '../../src/lib/team.js'
 
@@ -108,6 +108,33 @@ describe('presentation', () => {
     expect(canEditMember({ ...base, managed: 'operator', role: 'client' })).toBe(false)
     expect(canEditMember({ ...base, status: 'deactivated' })).toBe(false)
     expect(canEditMember(null)).toBe(false)
+  })
+
+  // ADR-75 Stage 3: deactivation reaches external members; role editing does not.
+  it('canDeactivateMember — team rows as before, plus active subcontractor and client rows', () => {
+    const team = { status: 'active', managed: 'team', isSelf: false, role: 'qs' }
+    for (const role of ['company_admin', 'project_manager', 'qs']) {
+      expect(canDeactivateMember({ ...team, role })).toBe(true)
+    }
+    expect(canDeactivateMember({ ...team, isSelf: true })).toBe(false)
+    expect(canDeactivateMember({ ...team, status: 'deactivated' })).toBe(false)
+
+    for (const role of ['subcontractor', 'client']) {
+      const ext = { status: 'active', managed: 'operator', isSelf: false, role }
+      expect(isExternalRole(role)).toBe(true)
+      expect(canDeactivateMember(ext)).toBe(true)
+      expect(canEditMember(ext)).toBe(false)                       // Change role stays unavailable
+      expect(canDeactivateMember({ ...ext, isSelf: true })).toBe(false)
+      expect(canDeactivateMember({ ...ext, status: 'deactivated' })).toBe(false)
+    }
+
+    // super_admin and anything unrecognised stay operator-only.
+    for (const role of ['super_admin', 'owner', null, undefined, '']) {
+      expect(isExternalRole(role)).toBe(false)
+      expect(canDeactivateMember({ status: 'active', managed: 'operator', isSelf: false, role })).toBe(false)
+    }
+    expect(canDeactivateMember(null)).toBe(false)
+    expect(canDeactivateMember(undefined)).toBe(false)
   })
 })
 

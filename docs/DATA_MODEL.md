@@ -2062,7 +2062,7 @@ unlike drawings). Reads depend on `visibility`.
 |---|---|---|
 | `name` | string | Required, non-whitespace |
 | `category` | string | `specification` \| `contract` \| `subcontract` \| `report` \| `certificate` \| `safety` \| `schedule` \| `manual` \| `correspondence` \| `other` |
-| `visibility` | string | `project` (every provisioned company member) \| `internal` (company_admin/project_manager/qs). Defaults to `project` |
+| `visibility` | string | `project` (every provisioned company member) \| `internal` (company_admin/project_manager/qs). Defaults to `project`. **ADR-75 Stage 2 (implemented, not deployed):** Rules refuse a client change from `project` to `internal`; `internal → project` is unchanged; a reduction is an operator task |
 | `versionLabel` | string | Free text ("Rev 2", "Issue C") — **not** a revision spine |
 | `documentDate` | string \| null | `'YYYY-MM-DD'` or null; plenty of documents are undated |
 | `status` | string | `active` \| `superseded` \| `withdrawn`. Withdrawn is terminal |

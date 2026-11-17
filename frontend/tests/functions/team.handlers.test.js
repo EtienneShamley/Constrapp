@@ -467,8 +467,8 @@ describe('deactivateMember', () => {
     await seedUser({ uid: 'u_admin2', email: 'admin2@acme.test', role: 'company_admin', companyId: COMPANY_A })
     await H.deactivateMember(req('u_admin2', { uid: 'u_admin' }))
     await expectTeamError(H.deactivateMember(req('u_admin', { uid: 'u_admin2' })), CODE.MEMBERSHIP_INACTIVE)
-    await seedUser({ uid: 'u_sub', email: 'sub@acme.test', role: 'subcontractor', companyId: COMPANY_A })
-    await expectTeamError(H.deactivateMember(req('u_admin2', { uid: 'u_sub' })), CODE.UNSUPPORTED_TARGET)
+    await seedUser({ uid: 'u_super', email: 'super@acme.test', role: 'super_admin', companyId: COMPANY_A })
+    await expectTeamError(H.deactivateMember(req('u_admin2', { uid: 'u_super' })), CODE.UNSUPPORTED_TARGET)
     await expectTeamError(H.deactivateMember(req('u_admin2', { uid: 'ghost' })), CODE.NOT_FOUND)
     expect((await userDoc('u_admin2')).role).toBe('company_admin')
   })
@@ -520,6 +520,205 @@ describe('deactivateMember', () => {
     const team = await H.listTeam(req('u_admin'))
     expect(team.members.filter(m => m.uid === 'u_qs')).toHaveLength(1)
     expect(team.members.find(m => m.uid === 'u_qs').status).toBe('active')
+  })
+})
+
+// ── ADR-75 Stage 3 — external members are removed through the same callable ──
+//
+// Removal only. Everything below runs the UNCHANGED deactivation path: company
+// lock, one transaction for membership + urgent revocation request + audit,
+// then Auth. The only source change is which roles the guard refuses.
+describe('deactivateMember — external members (ADR-75 Stage 3)', () => {
+  const memberDoc = (companyId, uid) => A.db.collection('companies').doc(companyId).collection('members').doc(uid).get().then(s => (s.exists ? s.data() : null))
+  const stateDoc = (companyId) => A.db.collection('companies').doc(companyId).collection('system').doc('fileLinkRevocation').get().then(s => (s.exists ? s.data() : null))
+  const markerDoc = (companyId) => A.db.collection('companies').doc(companyId).collection('fileLinkRevocationQueue').doc('pending').get().then(s => (s.exists ? s.data() : null))
+  const seedExternals = async () => {
+    await seedUser({ uid: 'u_sub', email: 'sub@acme.test', role: 'subcontractor', companyId: COMPANY_A, name: 'Sam Sub' })
+    await seedUser({ uid: 'u_client', email: 'client@acme.test', role: 'client', companyId: COMPANY_A, name: 'Cleo Client' })
+  }
+
+  it('a Company Admin deactivates a subcontractor and a client: membership, urgent request and audit commit together', async () => {
+    await seedExternals()
+    let seq = 0
+    for (const [uid, role] of [['u_sub', 'subcontractor'], ['u_client', 'client']]) {
+      seq += 1
+      const res = await H.deactivateMember(req('u_admin', { uid }))
+      expect(res).toEqual({ uid, status: 'deactivated', changed: true, authSynced: true, fileLinks: 'pending' })
+      // Rules read users/{uid} on every request: no company, no role → no access.
+      expect(await userDoc(uid)).toMatchObject({
+        companyId: null, role: null, status: 'deactivated', formerCompanyId: COMPANY_A, formerRole: role,
+        deactivatedBy: 'u_admin', authSyncPending: false,
+      })
+      expect((await A.auth.getUser(uid)).disabled).toBe(true)
+      const m = await memberDoc(COMPANY_A, uid)
+      expect(m).toMatchObject({ status: 'deactivated', role, deactivatedBy: 'u_admin', authSyncPending: false, fileLinkRevocationSeq: seq })
+      expect(m.fileAccessReducedAt).toBeTruthy()
+      // The urgent request is the ADR-74 one, unchanged.
+      expect(await stateDoc(COMPANY_A)).toMatchObject({ requestSeq: seq, requestReason: 'member.deactivated', requestPriority: 'urgent', requestedBy: 'u_admin', completedSeq: 0 })
+      expect(await markerDoc(COMPANY_A)).toMatchObject({ companyId: COMPANY_A, requestSeq: seq, priority: 'urgent' })
+    }
+    const events = await audits(COMPANY_A)
+    expect(events.map(e => e.type)).toEqual([
+      'file_links.revocation_requested', 'file_links.revocation_requested',
+      'member.auth_synced', 'member.auth_synced', 'member.deactivated', 'member.deactivated',
+    ])
+    const deact = events.filter(e => e.type === 'member.deactivated')
+    expect(deact.map(e => e.targetUid).sort()).toEqual(['u_client', 'u_sub'])
+    for (const e of deact) {
+      expect(e.actorUid).toBe('u_admin')
+      expect(['subcontractor', 'client']).toContain(e.before.role)
+      expect(e.after).toMatchObject({ role: null, companyId: null, status: 'deactivated' })
+    }
+    const requested = events.filter(e => e.type === 'file_links.revocation_requested')
+    expect(requested.map(e => e.after.seq).sort()).toEqual([1, 2])
+    expect(requested.every(e => e.actorUid === 'u_admin' && e.after.reason === 'member.deactivated')).toBe(true)
+  })
+
+  it('super_admin is still refused, and nothing at all is written', async () => {
+    await seedUser({ uid: 'u_super', email: 'super@acme.test', role: 'super_admin', companyId: COMPANY_A })
+    await expectTeamError(H.deactivateMember(req('u_admin', { uid: 'u_super' })), CODE.UNSUPPORTED_TARGET)
+    expect(await userDoc('u_super')).toMatchObject({ role: 'super_admin', companyId: COMPANY_A })
+    expect((await A.auth.getUser('u_super')).disabled).toBe(false)
+    expect(await stateDoc(COMPANY_A)).toBeNull()
+    expect(await markerDoc(COMPANY_A)).toBeNull()
+    expect(await audits(COMPANY_A)).toEqual([])
+  })
+
+  it('only an active company_admin may remove an external member', async () => {
+    await seedExternals()
+    for (const caller of ['u_pm', 'u_qs']) await expectTeamError(H.deactivateMember(req(caller, { uid: 'u_sub' })), CODE.NOT_ADMIN)
+    // An external member cannot remove another, nor themself.
+    await expectTeamError(H.deactivateMember(req('u_client', { uid: 'u_sub' })), CODE.NOT_ADMIN)
+    await expectTeamError(H.deactivateMember(req('u_sub', { uid: 'u_sub' })), CODE.NOT_ADMIN)
+    expect(await userDoc('u_sub')).toMatchObject({ role: 'subcontractor', companyId: COMPANY_A })
+    expect(await markerDoc(COMPANY_A)).toBeNull()
+  })
+
+  it('another company\'s external member is not-found, and neither company is touched by the other', async () => {
+    await seedExternals()
+    await seedCompanyB()
+    await seedUser({ uid: 'u_subB', email: 'sub@other.test', role: 'subcontractor', companyId: COMPANY_B })
+    await expectTeamError(H.deactivateMember(req('u_admin', { uid: 'u_subB' })), CODE.NOT_FOUND)
+    await expectTeamError(H.deactivateMember(req('u_adminB', { uid: 'u_sub' })), CODE.NOT_FOUND)
+    expect(await userDoc('u_subB')).toMatchObject({ role: 'subcontractor', companyId: COMPANY_B })
+    expect(await userDoc('u_sub')).toMatchObject({ role: 'subcontractor', companyId: COMPANY_A })
+    expect((await A.auth.getUser('u_subB')).disabled).toBe(false)
+    for (const c of [COMPANY_A, COMPANY_B]) {
+      expect(await stateDoc(c)).toBeNull()
+      expect(await markerDoc(c)).toBeNull()
+      expect(await audits(c)).toEqual([])
+    }
+    // A real removal in A writes nothing under B.
+    await H.deactivateMember(req('u_admin', { uid: 'u_sub' }))
+    expect(await stateDoc(COMPANY_B)).toBeNull()
+    expect(await markerDoc(COMPANY_B)).toBeNull()
+    expect(await audits(COMPANY_B)).toEqual([])
+    expect(await memberDoc(COMPANY_B, 'u_sub')).toBeNull()
+    expect(await userDoc('u_subB')).toMatchObject({ role: 'subcontractor', companyId: COMPANY_B })
+  })
+
+  it('a repeat call is idempotent: no second request, no second audit event', async () => {
+    await seedExternals()
+    await H.deactivateMember(req('u_admin', { uid: 'u_client' }))
+    const before = await audits(COMPANY_A)
+    expect(await H.deactivateMember(req('u_admin', { uid: 'u_client' }))).toEqual({ uid: 'u_client', status: 'deactivated', changed: false, authSynced: true, fileLinks: null })
+    expect((await stateDoc(COMPANY_A)).requestSeq).toBe(1)
+    expect((await memberDoc(COMPANY_A, 'u_client')).fileLinkRevocationSeq).toBe(1)
+    expect((await audits(COMPANY_A)).map(e => e.type)).toEqual(before.map(e => e.type))
+  })
+
+  it('a failed Auth step leaves the external member without access and pending; a repeat completes it', async () => {
+    await seedExternals()
+    let failOnce = true
+    const flakyAuth = new Proxy(A.auth, {
+      get(target, prop) {
+        if (prop === 'updateUser' && failOnce) return async () => { failOnce = false; throw new Error('simulated Auth outage') }
+        const v = target[prop]
+        return typeof v === 'function' ? v.bind(target) : v
+      },
+    })
+    await fresh({ auth: flakyAuth })
+    expect(await H.deactivateMember(req('u_admin', { uid: 'u_sub' }))).toMatchObject({ changed: true, authSynced: false, fileLinks: 'pending' })
+    // Firestore is already committed — Rules deny — and the request is queued.
+    expect(await userDoc('u_sub')).toMatchObject({ companyId: null, role: null, authSyncPending: true })
+    expect(await markerDoc(COMPANY_A)).toMatchObject({ requestSeq: 1, priority: 'urgent' })
+    expect((await A.auth.getUser('u_sub')).disabled).toBe(false)
+    expect(await H.deactivateMember(req('u_admin', { uid: 'u_sub' }))).toMatchObject({ changed: false, authSynced: true })
+    expect((await userDoc('u_sub')).authSyncPending).toBe(false)
+    expect((await A.auth.getUser('u_sub')).disabled).toBe(true)
+    expect((await stateDoc(COMPANY_A)).requestSeq).toBe(1)
+    expect((await audits(COMPANY_A)).map(e => e.type)).toEqual(['file_links.revocation_requested', 'member.auth_synced', 'member.deactivated'])
+  })
+
+  it('listTeam still marks an active external member operator-managed, and shows the removal afterwards', async () => {
+    await seedExternals()
+    const row = (team, uid) => team.members.find(m => m.uid === uid)
+    expect(row(await H.listTeam(req('u_admin')), 'u_sub')).toMatchObject({ status: 'active', role: 'subcontractor', managed: 'operator' })
+    await H.deactivateMember(req('u_admin', { uid: 'u_sub' }))
+    const after = row(await H.listTeam(req('u_admin')), 'u_sub')
+    expect(after).toMatchObject({ status: 'deactivated', role: 'subcontractor', authDisabled: true })
+    expect(after.fileLinks).toMatchObject({ status: 'pending' })
+  })
+
+  it('removal only: role changes and invitations still refuse external roles', async () => {
+    await seedExternals()
+    for (const [uid, role] of [['u_sub', 'subcontractor'], ['u_client', 'client']]) {
+      // The guard refuses the target; the schema refuses an external role even as the EXPECTED one.
+      await expectTeamError(H.changeMemberRole(req('u_admin', { uid, role: 'qs', expectedRole: 'qs' })), CODE.UNSUPPORTED_TARGET)
+      await expectTeamError(H.changeMemberRole(req('u_admin', { uid, role: 'qs', expectedRole: role })), CODE.INVALID_ARGUMENT)
+      await expectTeamError(H.changeMemberRole(req('u_admin', { uid: 'u_pm', role, expectedRole: 'project_manager' })), CODE.INVALID_ROLE)
+      await expectTeamError(H.createInvitation(req('u_admin', { email: 'x@acme.test', role })), CODE.INVALID_ROLE)
+      expect((await userDoc(uid)).role).toBe(role)
+    }
+    expect((await userDoc('u_pm')).role).toBe('project_manager')
+  })
+})
+
+// ── ADR-75 decision 15 — a re-accepted invitation resets the row's label ─────
+describe('acceptInvitation — stale file-link fields (ADR-75 decision 15)', () => {
+  const memberDoc = (uid) => A.db.collection('companies').doc(COMPANY_A).collection('members').doc(uid).get().then(s => s.data())
+  const stateDoc = () => A.db.collection('companies').doc(COMPANY_A).collection('system').doc('fileLinkRevocation').get().then(s => s.data())
+  const markerDoc = () => A.db.collection('companies').doc(COMPANY_A).collection('fileLinkRevocationQueue').doc('pending').get().then(s => (s.exists ? s.data() : null))
+
+  it('clears the two member fields and nothing else: the request, the queue and the audit trail survive', async () => {
+    await H.deactivateMember(req('u_admin', { uid: 'u_qs' }))
+    const gone = await memberDoc('u_qs')
+    expect(gone.fileLinkRevocationSeq).toBe(1)
+    expect(gone.fileAccessReducedAt).toBeTruthy()
+    const stateBefore = await stateDoc()
+    const markerBefore = await markerDoc()
+
+    const r = await invite('qs@acme.test', 'qs')
+    expect((await H.previewInvitation(req(null, r.cred))).accountState).toBe('reactivated')
+    await H.acceptInvitation(req('u_qs', r.cred))
+
+    const back = await memberDoc('u_qs')
+    expect(back).toMatchObject({ status: 'active', role: 'qs', deactivatedAt: null })
+    expect('fileLinkRevocationSeq' in back).toBe(false)
+    expect('fileAccessReducedAt' in back).toBe(false)
+    // The row no longer carries a label for the ended episode.
+    expect((await H.listTeam(req('u_admin'))).members.find(m => m.uid === 'u_qs')).toMatchObject({ status: 'active', fileLinks: null })
+    // Evidence: the outstanding request and its queue marker are untouched…
+    expect(await stateDoc()).toEqual(stateBefore)
+    expect(await markerDoc()).toEqual(markerBefore)
+    // …and so is every audit event of the earlier removal.
+    const events = await audits(COMPANY_A)
+    expect(events.map(e => e.type)).toEqual([
+      'file_links.revocation_requested', 'invite.accepted', 'invite.created',
+      'member.auth_reenabled', 'member.auth_synced', 'member.deactivated',
+    ])
+    expect(events.find(e => e.type === 'file_links.revocation_requested')).toMatchObject({ targetUid: 'u_qs', actorUid: 'u_admin', after: { seq: 1, reason: 'member.deactivated' } })
+    expect(events.find(e => e.type === 'member.deactivated')).toMatchObject({ targetUid: 'u_qs', before: { role: 'qs' } })
+  })
+
+  it('a later deactivation of the same member stamps a fresh sequence', async () => {
+    await H.deactivateMember(req('u_admin', { uid: 'u_qs' }))
+    const r = await invite('qs@acme.test', 'qs')
+    await H.previewInvitation(req(null, r.cred))
+    await H.acceptInvitation(req('u_qs', r.cred))
+    await H.deactivateMember(req('u_admin', { uid: 'u_qs' }))
+    expect((await memberDoc('u_qs')).fileLinkRevocationSeq).toBe(2)
+    expect((await stateDoc()).requestSeq).toBe(2)
   })
 })
 

@@ -115,3 +115,28 @@ describe('callable surface', () => {
     catch (e) { expect(isTeamError(e, CODE.INVALID_ARGUMENT)).toBe(true) }
   })
 })
+
+// ADR-75 decision 12: Firestore Rules refuse a client `project -> internal`
+// change, but Rules do not bind the Admin SDK. Until the one trusted
+// visibility-reduction function of decision 13 exists, NOTHING in this package
+// may write a document's `visibility` — in code, comments aside. When that
+// function is built, this pin is narrowed to allow that one file, in the same
+// reviewed change.
+describe('no trusted code writes document visibility (ADR-75 Stage 2)', () => {
+  const ROOT = fileURLToPath(new URL('../', import.meta.url))
+  const walk = (dir) => readdirSync(join(ROOT, dir), { withFileTypes: true }).flatMap(e =>
+    e.isDirectory() ? walk(join(dir, e.name)) : /\.(m?js)$/.test(e.name) ? [join(dir, e.name)] : [])
+  const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1')
+
+  it('the word does not appear in any executable line under src/ or scripts/', () => {
+    const files = [...walk('src'), ...walk('scripts')]
+    expect(files.length).toBeGreaterThan(15)
+    const offenders = files.filter(f => /visibility/i.test(stripComments(readFileSync(join(ROOT, f), 'utf8'))))
+    expect(offenders).toEqual([])
+  })
+
+  it('the comment stripper keeps code and strings', () => {
+    expect(stripComments("a // visibility\nb = { visibility: 'internal' } // x")).toBe("a \nb = { visibility: 'internal' } ")
+    expect(stripComments("const u = 'https://x/visibility'")).toMatch(/visibility/)
+  })
+})

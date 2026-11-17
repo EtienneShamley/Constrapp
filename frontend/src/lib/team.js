@@ -181,6 +181,17 @@ export const fileLinkNote = (member) => {
 export const canEditMember = (member) =>
   !!member && member.status === MEMBER_STATUS.ACTIVE && member.managed === 'team' && !member.isSelf && isTeamRole(member.role)
 
+// ADR-75 Stage 3. Deactivation reaches further than editing: a Company Admin
+// may REMOVE a subcontractor or client, but never change their role (so this
+// is a separate predicate, not a wider `canEditMember`). super_admin and any
+// unknown role stay operator-only. UX only — the `deactivateMember` callable
+// decides, and refuses with `unsupported-target`.
+export const EXTERNAL_ROLE_VALUES = ['subcontractor', 'client']
+export const isExternalRole = (role) => EXTERNAL_ROLE_VALUES.includes(role)
+export const canDeactivateMember = (member) =>
+  canEditMember(member)
+  || (!!member && member.status === MEMBER_STATUS.ACTIVE && !member.isSelf && isExternalRole(member.role))
+
 // ── Errors ───────────────────────────────────────────────────────────────────
 //
 // A callable rejection carries `details.code` (functions/src/lib/errors.js).

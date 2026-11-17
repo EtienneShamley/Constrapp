@@ -3,7 +3,7 @@ import { CODE, fail } from './errors.js'
 import { AUDIT, auditInTx, auditNow } from './audit.js'
 import { withCompanyLock, countActiveAdmins, membersCollection, usersCollection } from './companyLock.js'
 import { userRef } from './authz.js'
-import { OPERATOR_ROLES } from './validation.js'
+import { OPERATOR_ROLES, isDeactivatableRole } from './validation.js'
 import { MEMBER_STATUS, isActiveMemberOf, isDeactivated, toIso } from './membershipState.js'
 import { REASON, stateRef as fileLinkStateRef, requestRevocationInTx, reducesFileAccess, fileLinkRow } from './fileLinkRevocation.js'
 
@@ -152,7 +152,10 @@ export async function deactivateMember(deps, { companyId, actor, uid, requestId 
       if (deactivatedHere) return { changed: false, authSyncPending: profile.authSyncPending === true, email: profile.email ?? null }
       fail(CODE.NOT_FOUND)
     }
-    if (OPERATOR_ROLES.includes(profile.role)) fail(CODE.UNSUPPORTED_TARGET)
+    // ADR-75 Stage 3: a Company Admin may REMOVE a subcontractor or client
+    // (deactivation only — role changes and invitations still refuse external
+    // roles). super_admin stays operator-only.
+    if (!isDeactivatableRole(profile.role)) fail(CODE.UNSUPPORTED_TARGET)
     if (profile.role === 'company_admin') {
       const admins = await countActiveAdmins(tx, db, companyId)
       if (admins <= 1) fail(CODE.LAST_ADMIN)

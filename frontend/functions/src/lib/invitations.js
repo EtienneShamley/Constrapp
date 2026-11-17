@@ -395,6 +395,13 @@ export async function acceptInvitation(deps, { cred, callerUid, name = '', reque
       email: inv.email, name: finalName, role: current.role, status: MEMBER_STATUS.ACTIVE,
       joinedAt: ts, invitedBy: current.createdBy ?? null, inviteId: cred.inviteId,
       deactivatedAt: null, deactivatedBy: null, authSyncPending: false, updatedAt: ts,
+      // ADR-75 decision 15: these two describe the PREVIOUS membership's
+      // file-link clean-up. Left in place, a re-invited member's row would
+      // read "old links revoked" for an episode that has ended. Presentation
+      // only — the revocation request, its sweep and every audit event
+      // (`file_links.revocation_requested` carries the uid and the sequence)
+      // are untouched, and the company-wide sweep still runs to completion.
+      fileLinkRevocationSeq: FieldValue.delete(), fileAccessReducedAt: FieldValue.delete(),
     }, { merge: true })
 
     tx.update(found.ref, {
