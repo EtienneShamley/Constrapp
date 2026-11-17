@@ -8013,7 +8013,10 @@ on the deployed function was confirmed on 13 November 2026.) No latency
 figure may be quoted from this section.
 
 **Manual, in production.** Steps 1–3: run — see the acceptance record at the
-head of this section. **Steps 4–8: NOT RUN, NOT AUTHORISED.** Development
+head of this section. **Steps 4–8: NOT RUN, NOT AUTHORISED — and superseded
+for activation by §56** (one deploy at the selected 2-hour interval instead
+of a short interval followed by the approved one; step 6 is not run in
+production — emulator evidence only). Development
 tenant only, test files only, after explicit authorisation.
 
 1. - [ ] Read-only: record the deployed worker's concurrency and the
@@ -8144,7 +8147,7 @@ Policy A is not claimed to detect one, nor the deletion of the worker
 service (Google documents that a deleted or shut-down resource raises no
 absence alert).
 
-## 55. DC46-C — Eight-callable deployment (16 November 2026) — DEPLOYED and PRODUCTION-ACCEPTED; no membership-changing call tested on the new revisions; periodic reconciliation NOT ACTIVATED
+## 55. DC46-C — Eight-callable deployment (16 November 2026) — DEPLOYED and PRODUCTION-ACCEPTED; deactivation regression on the new revisions PASSED 16 November 2026; periodic reconciliation NOT ACTIVATED
 
 Release record: DEPLOYMENT.md → *DC46-C* → *Callable release record*. A
 deploy of the eight team callables only, from `main` `44446a0`; the worker
@@ -8190,36 +8193,136 @@ name the caller.
 
 **Limits of this validation.**
 
-- **No membership-changing call has been made on the new revisions in
-  production.** Six of the eight callables, and `previewInvitation` with a
-  valid App Check token, have answered nothing but the 401 probe there.
+- *(At the deploy.)* No membership-changing call had been made on the new
+  revisions in production. **Superseded the same day:** the deactivation
+  regression below exercised `createInvitation`, `previewInvitation`,
+  `acceptInvitation` and `deactivateMember`.
 - Sign-in and company authorisation are evidenced by the deployed source
   being identical to the tested source and by one successful administrator
   call — not by exercising each refusal in production. A scripted
   production test is still not available (§53).
 - Nothing about the request priority can be observed at interval `0`.
 
-**Outstanding — part of the next acceptance gate, before any non-zero
-interval.** Development tenant only, test files only, on explicit
-authorisation. §53's warnings about a false pass apply: start from an ACTIVE
-member, and confirm every step in the backend, not from a report alone.
+**Production deactivation regression — PASSED, 16 November 2026
+(22:58–23:13 UTC).** Run once by the Product Owner on the development
+tenant, on explicit authorisation, from the previously deactivated test
+member (re-invited first, so the run started from an ACTIVE member). Each
+step confirmed in the backend, not from a report alone. **Do not repeat it
+for activation.** **Cloud** = read-only inspection (request logs, worker
+log, Firestore, Storage object versions — never a token value);
+**Reported** = stated by the Product Owner.
 
-1. - [ ] Invite and accept a test member (`createInvitation`,
-      `previewInvitation`, `acceptInvitation` each 200 on a `-00003-*`
-      revision).
-2. - [ ] Obtain a legacy download URL for a test file; it opens.
-3. - [ ] Deactivate the test member: `deactivateMember` 200 on
-      `deactivatemember-00003-qey`; the audit trail holds `member.deactivated`
-      and `file_links.revocation_requested` from one transaction.
-4. - [ ] The company's revocation state and queue marker carry
-      `requestPriority: urgent` / `priority: urgent` (read-only lookup before
-      the sweep completes, or the state document afterwards).
-5. - [ ] The worker logs `file-links: worker run` on
-      `processfilelinkrevocations-00002-had`; the audit trail holds
-      `file_links.revoked`, source `worker`; queue count 0.
-6. - [ ] The old URL returns **403**; an authorised user still opens the file
-      in the app. *(Not recorded on 16 November for the previous build —
-      record both this time.)*
-7. - [ ] `changeMemberRole`, `resendInvitation` and `revokeInvitation` each
-      answer on a `-00003-*` revision if the run includes them; otherwise
-      state that they were not exercised.
+1. - [x] Re-invite and accept: `createInvitation` 22:58:30, `previewInvitation`
+      22:58:50, `acceptInvitation` 22:59:15 — each HTTP 200 on a `-00003-*`
+      revision; audit `invite.created`, `member.auth_reenabled`,
+      `invite.accepted`. The member was then an active project manager with
+      sign-in enabled; four invitations, all accepted. *(Cloud)*
+2. - [x] A legacy download URL for the disposable test PDF opened before the
+      deactivation. *(Reported, 23:09; the object's version counters were
+      unchanged since 03:07:57 — Cloud)*
+3. - [x] `deactivateMember` HTTP 200 on `deactivatemember-00003-qey` at
+      23:12:48. Audit, one transaction at 23:12:49.398: `member.deactivated`
+      and `file_links.revocation_requested`; then `member.auth_synced` at
+      23:12:49.550. The request's trace id equals the audit `requestId`.
+      *(Cloud)*
+4. - [x] Company state: request sequence 3 → **4**, `requestPriority: urgent`,
+      `queuedAt` written — fields the ADR-74 callable build never wrote, so
+      the new build served the request. *(Cloud)*
+5. - [x] Worker `processfilelinkrevocations-00002-had`, 23:13:02:
+      `file-links: worker run`, sequence 4 **complete — 5 objects scanned,
+      1 page, 1 token removed, 0 failed**; audit `file_links.revoked`, source
+      `worker`, 23:13:02.460; the test PDF's metageneration 5 → 6 at
+      23:13:02.373; queue count **0**; no cursor document (interval `0`; no
+      periodic reconciliation occurred). *(Cloud)*
+6. - [x] The old URL returned **HTTP 403**, and an authorised user still
+      opened the PDF in the app. *(Reported — both recorded this time)*
+7. - [x] Both company administrators remain active; the test member is
+      deactivated. *(Cloud)* — `changeMemberRole`, `resendInvitation` and
+      `revokeInvitation` were **not exercised** on the new revisions.
+
+**Afterwards (read-only, 16 November 23:51 UTC):** state 4 / 4, queue 0, no
+cursor document, interval `0`; the test PDF still at metageneration 6, last
+updated 23:13:02.373 — so no token was re-created by the 403 check or the
+in-app open (inferred from version counters; no token value was read).
+
+**What this does not show.** The request-priority behaviour against a
+periodic request (pre-emption) — impossible at interval `0`; emulator
+evidence only (§53 group D, §54, §56). The cause of the two earlier token
+re-creations (§53, DEPLOYMENT.md → *DC46-C*).
+
+## 56. DC46-C — Activation readiness, 2-hour interval (17 November 2026) — PREPARED; NOT ACTIVATED; policy C PREPARED, NOT CREATED
+
+Branch `feature/dc46-c-activation-readiness` (uncommitted at the time of
+writing). Architect decision, 17 November 2026: prepare an initial interval
+of **2 hours**; **1 hour rejected**. Production keeps
+`FILE_LINK_RECONCILE_INTERVAL_HOURS=0`. No source under `functions/src`
+changed. Deferred Control 46 stays OPEN. Runbook: DEPLOYMENT.md → *DC46-C* →
+*Activation runbook*.
+
+**Automated — scheduling over whole days.**
+`tests/functions/team.reconciliationSchedule.test.js` (7 tests, Firestore
+emulator). It calls `runScheduledWorker` — the scheduled function's own body
+— once a simulated minute with the RAW interval text (`"2"`), so planning,
+eligibility, cursor, queue, leases, checkpoints, slices, pre-emption, retry
+and overdue are the production code. Simulated, and only these: Scheduler
+ticks starting 0–5 s after each minute (seeded jitter; production showed
+about 2.0–2.6 s); an invocation due while the previous one still runs is
+refused, as `concurrency: 1` does; every clock read advances 1–15 ms; the
+ADR-74 fake bucket, optionally with a fixed cost per page. A seeded generator
+makes every run identical.
+
+| Test | Hours | What is asserted |
+|---|---|---|
+| Initial planning and steady state | 30 | The first invocation plans; due companies are swept on the NEXT invocation; a company swept 30 min before activation waits for its own clock. Every later gap between successful sweeps is ≥ 2 h and ≤ 3 h 3 min; gaps on both sides of the hourly planning boundary occur (observed 121–182 min); planning passes 60–61 min apart, numbered without a gap; no error line, no overdue audit, no `overdueSince`; empty sweeps write no audit; a removal writes exactly one `file_links.reconciled`; a token planted at hour 10 is gone within 3 h 3 min |
+| Second jitter seed | 24 | The same gap and heartbeat bounds — no seed-specific pass |
+| Urgent priority | 26 | A 60-object company needs several invocations per sweep (yields against the 45 s routine share); an urgent request arriving mid-sweep pre-empts it on the next invocation, is served first, completes, is audited `file_links.revoked` with its sequence; the abandoned periodic sweep is never recorded; the next periodic sweep is ≥ 2 h after the urgent one; one overlapping tick refused and nothing lost; no overdue |
+| Retry and incomplete | 26 | A token whose removal fails for 20 min after the first failed sweep: incomplete sweeps with backoff, audited, the eligibility clock never moved, then recovery (token gone, counters reset); two consecutive listing failures resumed, not escalated; longest gap 213 min — still no overdue |
+| A real overdue is still detected | 24 | Removal failing for 6 h: exactly one `file_links.reconciliation_overdue` audit (`intervalHours: 2`), error lines, cleared by the next success — the "no false overdue" results are not vacuous |
+| First pass at activation | 24 | A company last swept 5 h earlier is reported overdue ONCE, by pass 1 only, in the first invocation; swept on the next invocation; never again. A company swept 1 h earlier is not reported |
+| Why 1 hour was rejected (characterisation) | 24 | At interval `"1"` the same code gives gaps of 61 and 120–122 min on jitter alone, and false overdue audits and error lines with nothing failing |
+
+**Automated — policy C configuration.** `tests/unit/monitoringPolicies.test.js`
+(15 tests, 11 before: two new, two new per-file cases for policy C, the file-list test changed): the metric filter matches EXACTLY the info line
+`file-links: reconciliation plan complete` that `planReconciliation` writes
+once per finished pass (pinned against the source, which writes it once),
+scoped to the worker's stdout in `australia-southeast1`; a plain DELTA INT64
+counter with nothing extracted; policy C is an absence of that metric summed
+across revisions for 10,800 s — three planning periods, the period read from
+the source; severity ERROR; no recipient committed; its runbook names the
+rollback disable.
+
+**Results on this branch (17 November 2026).** Functions pure 3 files / 70;
+Functions emulator 8 files / 155 (7 new); monitoring unit file 15; Functions
+lint clean; ESLint clean on the two changed test files.
+
+**⚠️ What these tests do NOT prove.** Real page latency; real Scheduler
+jitter beyond the simulated 0–5 s; Cloud Logging ingestion or Cloud
+Monitoring evaluation (policy C has never existed); behaviour during a
+billing suspension. No latency figure may be quoted from this section.
+
+**Manual, in production — NOT RUN, NOT AUTHORISED.** Development tenant only.
+Each step on explicit authorisation; commands in DEPLOYMENT.md → *DC46-C* →
+*Activation runbook*.
+
+1. - [ ] Preconditions recorded: billing owner and backup administrator
+      confirmed; the activation commit merged with CI green; the rollback
+      checkpoint SHA captured and verified (DEPLOYMENT.md → *Activation
+      runbook* → C2) and written into the release record; both alert
+      recipients told to expect one first-pass overdue email.
+2. - [ ] Policy C metric and policy created, verified identical to the files,
+      both channels attached; no incident while the interval is `0`.
+3. - [ ] *(Optional, separately authorised.)* A token planted on the
+      disposable test PDF from the Firebase console before the deploy; record
+      the object's metageneration before and after merely VIEWING it (tests
+      the console hypothesis); never copy a token value into any record.
+4. - [ ] Worker-only deploy at `2`; new revision serving, interval `2`,
+      concurrency 1; the eight callables still on `-00003-*`.
+5. - [ ] First invocation: `reconciliation plan complete` (pass 1, requested
+      1) and — expected — one `reconciliation overdue` error line in the
+      same minute; next invocation: a periodic sweep completes
+      (`lastPass.priority: periodic`), `overdueSince` cleared, queue 0,
+      cursor document present. With step 3: `file_links.reconciled`, the old
+      URL 403, the PDF still opens in the app.
+6. - [ ] Heartbeats about hourly for 3 h; policy C metric has points; no
+      policy C incident; pass 2 onwards report `overdue: 0`.
+7. - [ ] A second periodic sweep 2–3 h after the first, no overdue.
