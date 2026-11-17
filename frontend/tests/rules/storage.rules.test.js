@@ -25,6 +25,9 @@ import { ref as modularRef, getBytes } from 'firebase/storage'
 //   · a general document is readable by a non-internal role only once its
 //     Firestore metadata EXISTS and says `visibility: 'project'` — so the
 //     upload window (Storage first, Firestore second) fails CLOSED
+//   · (ADR-75 addendum, DC46) ...and only while that metadata says
+//     `status: 'active'`: a superseded or withdrawn document's bytes are
+//     denied to non-internal roles, while internal roles keep the history
 //   · objects are CREATE-ONLY: no overwrite, no update, no delete, ever
 //   · content-type, object-name and size rules, including zero-byte rejection
 //   · everything outside the two approved path shapes is denied
@@ -113,13 +116,13 @@ async function seedObject(path, contentType = PDF) {
 }
 
 // Seeds the Firestore metadata a document object's read rule depends on.
-async function seedDocumentMetadata(documentId, visibility = 'project', companyId = COMPANY_A) {
+async function seedDocumentMetadata(documentId, visibility = 'project', companyId = COMPANY_A, status = 'active') {
   await testEnv.withSecurityRulesDisabled(async (c) => {
     const db = c.firestore()
     await setDoc(doc(db, `companies/${companyId}/projects/${PROJECT_A}/documents`, documentId), {
       name: 'Seeded', category: 'specification', visibility,
-      versionLabel: '', documentDate: null, status: 'active',
-      supersededByDocumentId: null, notes: '',
+      versionLabel: '', documentDate: null, status,
+      supersededByDocumentId: status === 'superseded' ? 'replacement' : null, notes: '',
       fileName: 'seed.pdf', fileExt: 'pdf', fileSize: 1024, contentType: PDF,
       storagePath: documentPath({ companyId, documentId }),
       withdrawnAt: null, withdrawnBy: null, withdrawReason: '',
@@ -589,5 +592,105 @@ describe('AUTHENTICATED BYTE READS — the path every view and download now uses
       getBytes(modularRef(storageOf(USERS.admin)._delegate, drawingPath()), 52428800),
     )
     if (capped.byteLength !== SMALL.byteLength) throw new Error(`expected ${SMALL.byteLength} bytes, got ${capped.byteLength}`)
+  })
+})
+
+// ── DOCUMENT FILES — external byte access follows STATUS (ADR-75 addendum) ───
+//
+// The rules-checked read only. A download-token URL is served without rules
+// and is NOT covered by anything here (Deferred Control 46 — still OPEN).
+describe('DOCUMENT FILES — a non-internal role reads the bytes of ACTIVE project documents only', () => {
+  const EXTERNAL = () => [USERS.sub, USERS.client, USERS.sup]
+  const INTERNAL = () => [USERS.admin, USERS.pm, USERS.qs]
+  const pathOf = (documentId, companyId = COMPANY_A) => documentPath({ companyId, documentId })
+
+  beforeEach(async () => {
+    for (const status of ['active', 'superseded', 'withdrawn']) {
+      await seedObject(pathOf(status))
+      await seedDocumentMetadata(status, 'project', COMPANY_A, status)
+    }
+  })
+
+  it('58. an ACTIVE project document: bytes and metadata allowed to subcontractor, client and super_admin', async () => {
+    for (const user of EXTERNAL()) {
+      await assertSucceeds(readBytes(user, pathOf('active')))
+      await assertSucceeds(read(user, pathOf('active')))
+    }
+  })
+
+  it('59. a WITHDRAWN project document: bytes and metadata DENIED to them', async () => {
+    for (const user of EXTERNAL()) {
+      await assertFails(readBytes(user, pathOf('withdrawn')))
+      await assertFails(read(user, pathOf('withdrawn')))
+    }
+  })
+
+  it('60. a SUPERSEDED project document: bytes and metadata DENIED to them', async () => {
+    for (const user of EXTERNAL()) {
+      await assertFails(readBytes(user, pathOf('superseded')))
+      await assertFails(read(user, pathOf('superseded')))
+    }
+  })
+
+  it('61. INTERNAL HISTORY IS PRESERVED — internal roles read active, superseded and withdrawn bytes', async () => {
+    for (const user of INTERNAL()) {
+      for (const status of ['active', 'superseded', 'withdrawn']) await assertSucceeds(readBytes(user, pathOf(status)))
+    }
+  })
+
+  it('62. internal roles also read a withdrawn INTERNAL document; external roles do not', async () => {
+    await seedObject(pathOf('secret'))
+    await seedDocumentMetadata('secret', 'internal', COMPANY_A, 'withdrawn')
+    for (const user of INTERNAL()) await assertSucceeds(readBytes(user, pathOf('secret')))
+    for (const user of EXTERNAL()) await assertFails(readBytes(user, pathOf('secret')))
+  })
+
+  it('63. withdrawing removes a subcontractor’s byte access at the next read', async () => {
+    await assertSucceeds(readBytes(USERS.sub, pathOf('active')))
+    await seedDocumentMetadata('active', 'project', COMPANY_A, 'withdrawn')
+    await assertFails(readBytes(USERS.sub, pathOf('active')))
+    await assertSucceeds(readBytes(USERS.qs, pathOf('active')))
+  })
+
+  it('64. superseding removes a client’s byte access at the next read', async () => {
+    await assertSucceeds(readBytes(USERS.client, pathOf('active')))
+    await seedDocumentMetadata('active', 'project', COMPANY_A, 'superseded')
+    await assertFails(readBytes(USERS.client, pathOf('active')))
+    await assertSucceeds(readBytes(USERS.pm, pathOf('active')))
+  })
+
+  it('65. MISSING METADATA FAILS CLOSED for external roles; the uploader’s roles still read', async () => {
+    await seedObject(pathOf('inflight'))
+    for (const user of EXTERNAL()) await assertFails(readBytes(user, pathOf('inflight')))
+    for (const user of INTERNAL()) await assertSucceeds(readBytes(user, pathOf('inflight')))
+  })
+
+  it('66. METADATA WITHOUT A STATUS FAILS CLOSED for external roles', async () => {
+    await seedObject(pathOf('nostatus'))
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(doc(c.firestore(), `companies/${COMPANY_A}/projects/${PROJECT_A}/documents`, 'nostatus'), { visibility: 'project' })
+    })
+    for (const user of EXTERNAL()) await assertFails(readBytes(user, pathOf('nostatus')))
+    await assertSucceeds(readBytes(USERS.admin, pathOf('nostatus')))
+  })
+
+  it('67. CROSS-TENANT — another company is denied every status, and Company A is denied Company B’s active document', async () => {
+    for (const status of ['active', 'superseded', 'withdrawn']) await assertFails(readBytes(USERS.other, pathOf(status)))
+    await seedObject(pathOf('bdoc', COMPANY_B))
+    await seedDocumentMetadata('bdoc', 'project', COMPANY_B)
+    for (const user of [USERS.admin, USERS.sub, USERS.client]) await assertFails(readBytes(user, pathOf('bdoc', COMPANY_B)))
+    await assertSucceeds(readBytes(USERS.other, pathOf('bdoc', COMPANY_B)))
+  })
+
+  it('68. an unauthenticated caller is denied every status', async () => {
+    const anon = testEnv.unauthenticatedContext().storage()
+    for (const status of ['active', 'superseded', 'withdrawn']) {
+      await assertFails(getBytes(modularRef(anon._delegate, pathOf(status))))
+    }
+  })
+
+  it('69. DRAWINGS ARE UNCHANGED — every member still reads a drawing file', async () => {
+    await seedObject(drawingPath())
+    for (const user of [...INTERNAL(), ...EXTERNAL()]) await assertSucceeds(readBytes(user, drawingPath()))
   })
 })

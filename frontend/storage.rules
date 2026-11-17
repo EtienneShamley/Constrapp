@@ -122,14 +122,21 @@ service firebase.storage {
 
     // ── General project documents ────────────────────────────────────────────
     //
-    // READ is gated on the Firestore metadata's `visibility`:
-    //   · internal roles (company_admin / project_manager / qs) read everything;
+    // READ is gated on the Firestore metadata's `visibility` AND `status`:
+    //   · internal roles (company_admin / project_manager / qs) read everything,
+    //     including superseded and withdrawn files — the register's history;
     //   · everyone else reads an object only once its metadata document EXISTS
-    //     and says `visibility == 'project'`.
+    //     and says `visibility == 'project'` AND `status == 'active'`. A
+    //     superseded or withdrawn document is invalidated: its bytes are denied
+    //     to non-internal roles at the next read (ADR-75 addendum, DC46).
     //
     // The existence check is what closes the upload window: between the Storage
     // write and the Firestore write there is no metadata, so a non-internal
     // caller is denied. Fails closed.
+    //
+    // ⚠️ This governs the rules-checked read only. A download-token URL copied
+    // while the document was active is served WITHOUT rules and keeps working
+    // until the periodic sweep removes the token (ADR-74 / ADR-75).
     //
     // WRITE: company_admin / project_manager / qs. 25 MB ceiling.
     match /companies/{companyId}/projects/{projectId}/documents/{documentId}/{fileName} {
@@ -141,7 +148,8 @@ service firebase.storage {
                  && (
                       hasRole(['company_admin', 'project_manager', 'qs'])
                       || (firestore.exists(metadataRef())
-                          && firestore.get(metadataRef()).data.visibility == 'project')
+                          && firestore.get(metadataRef()).data.visibility == 'project'
+                          && firestore.get(metadataRef()).data.status == 'active')
                     );
 
       allow create: if memberOf(companyId)

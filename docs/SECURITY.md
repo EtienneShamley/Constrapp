@@ -1689,8 +1689,12 @@ tests, run by `npm run test:rules` alongside the Firestore suites):
 - **non-zero size** — a zero-byte upload is rejected
 - **create-only immutability** — `update` and `delete` are denied on every path,
   so an object can be written once and never overwritten, re-pointed or removed
-- **document visibility** — a non-internal role may read a document object only
-  once its Firestore metadata **exists** and says `visibility: 'project'`
+- **document visibility and status** — a non-internal role may read a document
+  object only once its Firestore metadata **exists** and says
+  `visibility: 'project'`; and, **once the ADR-75 external-access correction
+  is published (IMPLEMENTED, NOT DEPLOYED)**, only while it also says
+  `status: 'active'` — superseded and withdrawn files stay readable to
+  internal roles only
 - **catch-all deny** — every other location in the bucket, including a drawing
   object nested one folder too deep, is denied
 - reads grant `get` only, never `list`: nothing in the app enumerates Storage
@@ -3363,6 +3367,26 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       button on those rows is **UX only**. Revocation of copied links is
       still a background clean-up, never immediate. (ADR-75 → *Stages 2 and
       3 — as implemented*; TESTING.md §57.)
+    - *External document access follows status — IMPLEMENTED, NOT DEPLOYED
+      (18 November 2026; branch `fix/dc46-external-document-access`).*
+      Until the Rules are published, a `subcontractor`, `client` or
+      `super_admin` can still read and open a superseded or withdrawn
+      `project` document. **Once both rules files are published —
+      rules-enforced:** a non-internal role reads a general document's
+      metadata and bytes only while it is `visibility: 'project'` and
+      `status: 'active'`; internal roles keep the full history; missing
+      metadata, or metadata without a status, fails closed. Withdrawing a
+      document then DOES remove external rules-checked access.
+      **Not enforced:** a download-token URL copied while the document was
+      active keeps working until the periodic sweep removes the token
+      (about 3 hours at the 2-hour interval — a bound, not a guarantee);
+      Admin SDK and console writes bypass Rules; drawings are unchanged
+      (every member reads every revision). The hook's two query filters and
+      the hidden *Show withdrawn* toggle are **UX / query requirements
+      only**. Not yet exercised on a real external member. (ADR-75 →
+      *External document access follows status*; TESTING.md §58.)
+    - *Stage 4 volume measurement is deferred* to a threshold-triggered
+      follow-up (ADR-75, same addendum). Deferred Control 46 stays OPEN.
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this

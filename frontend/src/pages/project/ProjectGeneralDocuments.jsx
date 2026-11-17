@@ -108,7 +108,7 @@ export default function ProjectGeneralDocuments() {
 
       {!seesInternalDocuments && (
         <p className="text-[12px] text-brand-muted mb-3">
-          You are seeing documents shared with the project. Internal documents are not listed.
+          You are seeing current documents shared with the project. Internal, superseded and withdrawn documents are not listed.
         </p>
       )}
 
@@ -129,14 +129,18 @@ export default function ProjectGeneralDocuments() {
             <option key={c} value={c}>{formatDocumentCategory(c)}</option>
           ))}
         </select>
-        <label className="flex items-center gap-2 min-h-[44px] text-[12.5px] text-brand-muted cursor-pointer">
-          <input
-            type="checkbox"
-            checked={includeWithdrawn}
-            onChange={e => setIncludeWithdrawn(e.target.checked)}
-          />
-          Show withdrawn
-        </label>
+        {/* History is internal: a non-internal role is served active documents
+            only (rules-enforced), so the toggle would reveal nothing. */}
+        {seesInternalDocuments && (
+          <label className="flex items-center gap-2 min-h-[44px] text-[12.5px] text-brand-muted cursor-pointer">
+            <input
+              type="checkbox"
+              checked={includeWithdrawn}
+              onChange={e => setIncludeWithdrawn(e.target.checked)}
+            />
+            Show withdrawn
+          </label>
+        )}
       </div>
 
       {openError && <p className="text-[12px] text-brand-red mb-2" role="alert">{openError}</p>}

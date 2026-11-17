@@ -19,7 +19,9 @@ import {
 //      while `project` documents are readable by EVERY provisioned member;
 //   2. RULES ARE NOT FILTERS — an unfiltered collection query from a
 //      non-internal role FAILS ENTIRELY once one internal document exists,
-//      which is why the hook must add `where('visibility','==','project')`;
+//      which is why the hook must add `where('visibility','==','project')`
+//      and, since the ADR-75 addendum, `where('status','==','active')`: a
+//      non-internal role reads ACTIVE project documents only (tests 61–73);
 //   3. the file identity (path, name, size, type) is immutable after creation.
 //
 // SAFETY: refuses to run unless FIRESTORE_EMULATOR_HOST is set.
@@ -216,8 +218,8 @@ describe('LIST QUERIES — rules are not filters', () => {
     await assertFails(getDocs(docsCol(ctx(USERS.client))))
   })
 
-  it('9. the same query WITH the visibility filter succeeds — this is why the hook adds it', async () => {
-    const q = query(docsCol(ctx(USERS.sub)), where('visibility', '==', 'project'))
+  it('9. the same query WITH the visibility AND status filters succeeds — this is why the hook adds them (ADR-75 addendum)', async () => {
+    const q = query(docsCol(ctx(USERS.sub)), where('visibility', '==', 'project'), where('status', '==', 'active'))
     const snap = await assertSucceeds(getDocs(q))
     expect(snap.docs.map(d => d.id)).toEqual(['projectDoc'])
   })
@@ -603,5 +605,111 @@ describe('DOCUMENTED GAPS — enforced by the client only', () => {
     await assertSucceeds(getDoc(docRef(ctx(USERS.sub), 'doc1')))
     await assertFails(updateDoc(docRef(ctx(USERS.qs), 'doc1'), { visibility: 'internal', ...stamps(USERS.qs) }))
     await assertSucceeds(getDoc(docRef(ctx(USERS.sub), 'doc1')))
+  })
+})
+
+// ── EXTERNAL ACCESS FOLLOWS STATUS (ADR-75 addendum, DC46) ───────────────────
+//
+// A non-internal role reads a document only while it is `visibility: 'project'`
+// AND `status: 'active'`. Superseded and withdrawn documents are invalidated:
+// internal roles keep them as history, everyone else loses them at once.
+describe('READS — a non-internal role reads ACTIVE project documents only', () => {
+  const EXTERNAL = () => [USERS.sub, USERS.client, USERS.sup]
+  const INTERNAL = () => [USERS.admin, USERS.pm, USERS.qs]
+
+  beforeEach(async () => {
+    await seedDocument('active', { visibility: 'project' })
+    await seedDocument('superseded', { visibility: 'project', status: 'superseded', supersededByDocumentId: 'active' })
+    await seedDocument('withdrawn', {
+      visibility: 'project', status: 'withdrawn', withdrawReason: 'Issued in error',
+      withdrawnBy: USERS.admin.uid, withdrawnAt: Timestamp.now(),
+    })
+  })
+
+  it('61. subcontractor, client and super_admin read an ACTIVE project document', async () => {
+    for (const user of EXTERNAL()) await assertSucceeds(getDoc(docRef(ctx(user), 'active')))
+  })
+
+  it('62. they are DENIED a SUPERSEDED project document', async () => {
+    for (const user of EXTERNAL()) await assertFails(getDoc(docRef(ctx(user), 'superseded')))
+  })
+
+  it('63. they are DENIED a WITHDRAWN project document', async () => {
+    for (const user of EXTERNAL()) await assertFails(getDoc(docRef(ctx(user), 'withdrawn')))
+  })
+
+  it('64. INTERNAL HISTORY IS PRESERVED — internal roles read superseded and withdrawn documents, project or internal', async () => {
+    await seedDocument('internalWithdrawn', {
+      visibility: 'internal', status: 'withdrawn', withdrawReason: 'Recalled',
+      withdrawnBy: USERS.admin.uid, withdrawnAt: Timestamp.now(),
+    })
+    for (const user of INTERNAL()) {
+      for (const id of ['active', 'superseded', 'withdrawn', 'internalWithdrawn']) {
+        await assertSucceeds(getDoc(docRef(ctx(user), id)))
+      }
+      const snap = await assertSucceeds(getDocs(docsCol(ctx(user))))
+      expect(snap.size).toBe(4)
+    }
+  })
+
+  it('65. THE HOOK’S EXTERNAL QUERY — visibility AND status filters — succeeds and returns only the active document', async () => {
+    for (const user of EXTERNAL()) {
+      const q = query(docsCol(ctx(user)), where('visibility', '==', 'project'), where('status', '==', 'active'))
+      const snap = await assertSucceeds(getDocs(q))
+      expect(snap.docs.map(d => d.id)).toEqual(['active'])
+    }
+  })
+
+  it('66. THE PREVIOUS BUNDLE’S QUERY — visibility filter alone — now FAILS ENTIRELY (fail-closed between the two releases)', async () => {
+    for (const user of EXTERNAL()) {
+      await assertFails(getDocs(query(docsCol(ctx(user)), where('visibility', '==', 'project'))))
+    }
+  })
+
+  it('67. a status filter alone is not enough — visibility must be constrained too', async () => {
+    await seedDocument('internalActive', { visibility: 'internal' })
+    await assertFails(getDocs(query(docsCol(ctx(USERS.sub)), where('status', '==', 'active'))))
+  })
+
+  it('68. a non-internal role cannot query FOR superseded or withdrawn documents', async () => {
+    for (const status of ['superseded', 'withdrawn']) {
+      const q = query(docsCol(ctx(USERS.sub)), where('visibility', '==', 'project'), where('status', '==', status))
+      await assertFails(getDocs(q))
+    }
+  })
+
+  it('69. CROSS-TENANT — another company is denied every status, by get and by the filtered query', async () => {
+    for (const id of ['active', 'superseded', 'withdrawn']) {
+      await assertFails(getDoc(docRef(ctx(USERS.other), id)))
+    }
+    await assertFails(getDocs(query(docsCol(ctx(USERS.other)), where('visibility', '==', 'project'), where('status', '==', 'active'))))
+  })
+
+  it('70. an unauthenticated caller is denied every status', async () => {
+    const anon = testEnv.unauthenticatedContext().firestore()
+    for (const id of ['active', 'superseded', 'withdrawn']) await assertFails(getDoc(docRef(anon, id)))
+  })
+
+  it('71. LIFECYCLE — a real WITHDRAW by an internal role removes external access at the next read; the writer still reads it', async () => {
+    await assertSucceeds(getDoc(docRef(ctx(USERS.sub), 'active')))
+    await assertSucceeds(updateDoc(docRef(ctx(USERS.qs), 'active'), withdrawWrite(USERS.qs)))
+    await assertFails(getDoc(docRef(ctx(USERS.sub), 'active')))
+    await assertFails(getDoc(docRef(ctx(USERS.client), 'active')))
+    await assertSucceeds(getDoc(docRef(ctx(USERS.qs), 'active')))
+  })
+
+  it('72. LIFECYCLE — a real REPLACEMENT: the old record is denied to external roles, the new active one is readable', async () => {
+    await assertSucceeds(setDoc(docRef(ctx(USERS.pm), 'replacement'), documentPayload(USERS.pm, 'replacement')))
+    await assertSucceeds(updateDoc(docRef(ctx(USERS.pm), 'active'), supersedeWrite(USERS.pm, 'replacement')))
+    await assertFails(getDoc(docRef(ctx(USERS.sub), 'active')))
+    await assertSucceeds(getDoc(docRef(ctx(USERS.sub), 'replacement')))
+    await assertSucceeds(getDoc(docRef(ctx(USERS.pm), 'active')))
+    // superseded → withdrawn is still available to the register's writers
+    await assertSucceeds(updateDoc(docRef(ctx(USERS.admin), 'active'), withdrawWrite(USERS.admin)))
+  })
+
+  it('73. the Stage 2 lock is unchanged — an active project document still cannot be made internal, and stays readable', async () => {
+    await assertFails(updateDoc(docRef(ctx(USERS.admin), 'active'), { visibility: 'internal', ...stamps(USERS.admin) }))
+    await assertSucceeds(getDoc(docRef(ctx(USERS.sub), 'active')))
   })
 })

@@ -8391,3 +8391,82 @@ clean; `rules:transitional:check` up to date.
       `member.deactivated` and `file_links.revocation_requested` events, and
       the worker's `file-links: worker run` line completing the urgent sweep.
 4. - [ ] A `super_admin` row, if one exists, offers neither action.
+
+## 58. DC46 — External document access follows status (18 November 2026) — IMPLEMENTED; NOT DEPLOYED
+
+Branch `fix/dc46-external-document-access` (uncommitted at the time of
+writing). ADR-75 → *External document access follows status*. Nothing is
+deployed; production is unchanged. Deferred Control 46 stays OPEN. Runbook:
+DEPLOYMENT.md → *DC46 — external document access correction*.
+
+**Automated — Rules emulator** (suite 35 files / 2,238 tests; 25 new).
+
+`tests/rules/projectDocuments.rules.test.js` (cases numbered to 73):
+
+- 9 (rewritten) — the non-internal list query succeeds with the visibility
+  AND status filters.
+- 61–63 — `subcontractor`, `client` and `super_admin` read an active project
+  document; a superseded one and a withdrawn one are denied.
+- 64 — internal history preserved: `company_admin`, `project_manager` and
+  `qs` get every status, project or internal, and list the whole collection.
+- 65–68 — query compatibility: both filters succeed and return only the
+  active document; the previous bundle's visibility-only query is refused
+  (the fail-closed intermediate state); a status filter alone is refused
+  once an internal document exists; a query for superseded or withdrawn
+  documents is refused.
+- 69–70 — another company and an unauthenticated caller are denied every
+  status, by `get` and by the filtered query.
+- 71–72 — lifecycle through real client writes: a withdrawal, and a
+  replacement with supersession, remove external access at the next read
+  while the writer keeps it; the replacement is readable; superseded →
+  withdrawn still works.
+- 73 — the Stage 2 lock is unchanged.
+
+`tests/rules/storage.rules.test.js` (cases numbered to 69):
+
+- 58–60 — bytes and object metadata of an active project document allowed
+  to the three non-internal roles; withdrawn and superseded denied.
+- 61–62 — internal roles read active, superseded and withdrawn bytes,
+  including a withdrawn internal document.
+- 63–64 — withdrawing or superseding removes byte access at the next read.
+- 65–66 — missing metadata, and metadata with no `status`, fail closed for
+  non-internal roles; internal roles still read.
+- 67–68 — cross-tenant denial in both directions; unauthenticated denial.
+- 69 — drawings unchanged: every member reads a drawing file.
+
+**Automated — unit** (82 files / 4,452 tests; 9 new):
+`tests/unit/documentsExternalAccess.test.js` pins, by source structure, the
+hook's two-filter query for non-internal roles, the unfiltered internal
+query, the absence of any `orderBy` or range filter (no composite index),
+the gated *Show withdrawn* toggle, and the read branch in `firestore.rules`,
+the transitional copy and `storage.rules`.
+
+**Also run:** `npm run lint` (clean), `npm run build` (clean),
+`npm run rules:transitional:check` (up to date), `git diff --check` (clean).
+Functions suites not run — no Functions file changed.
+
+**Index check (production, read-only, 17 November 2026 21:40 UTC).** The
+two-equality structured query was accepted on all seven production projects
+with no missing-index error; the database has no single-field index
+exemption.
+
+**What the emulator does not prove.** Nothing about download-token URLs —
+they are served without rules.
+
+**Production checks — NOT RUN (need a disposable external test member,
+separately authorised).**
+
+- [ ] Before step 1: the published rulesets match `main` before this change.
+- [ ] After step 1: both published rulesets are byte-identical to the
+      released commit (242,163 and 9,271 bytes).
+- [ ] After step 2, as an internal user: the Documents tab lists active,
+      superseded and (with *Show withdrawn*) withdrawn documents; Open works
+      on each; Upload, Replace and Withdraw work.
+- [ ] As the external test member: only active project documents are
+      listed; no *Show withdrawn* toggle; Open works on an active document.
+- [ ] An internal user withdraws a project document the external member
+      could see: it leaves the external list without a reload, and stays in
+      the internal list.
+- [ ] Remove the external member from the Team page (Stage 3 acceptance,
+      TESTING.md §57) and confirm the `deactivatemember` request and the
+      worker's sweep in the logs.

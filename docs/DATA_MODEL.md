@@ -2083,6 +2083,14 @@ for a subcontractor or client. `hooks/useProjectDocuments.jsx` subscribes with
 not a security control. Ordering is applied client-side, so no composite index
 is needed.
 
+**External access follows `status` (ADR-75 addendum — IMPLEMENTED, NOT
+DEPLOYED, 18 November 2026).** A non-internal role reads a document, and its
+file, only while it is `visibility: 'project'` **and** `status: 'active'`;
+superseded and withdrawn records remain readable to internal roles only. The
+hook therefore adds `where('status','==','active')` for non-internal roles —
+again a query requirement; two equality filters use the automatic single-field
+indexes, so there is still no composite index. No field was added or changed.
+
 ## Cash Flow — what is and is not persisted
 
 `cashFlowLines` above is the **only** Cash Flow collection. Everything else the
