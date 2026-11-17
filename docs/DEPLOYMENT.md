@@ -2822,7 +2822,71 @@ reduce visibility after step 1. An authorised operator sets `visibility` to
 `functions/scripts/revoke-file-links.mjs` for that company so links copied
 while the document was `project` do not wait for the next periodic sweep.
 Record who asked, who acted and when. Withdrawing the document is not a
-substitute: withdrawal does not change who can read the file.
+substitute **until the external document access correction below is
+released**: before it, withdrawal does not change who can read the file;
+after it, withdrawal removes external rules-checked access but still leaves
+any copied link working until the next sweep.
+
+## DC46 — external document access correction (PREPARED 18 November 2026; NOT DEPLOYED)
+
+Source: branch `fix/dc46-external-document-access` (ADR-75 → *External
+document access follows status*). Nothing below has been run. Each step needs
+its own authorisation, after architect review, Git integration and a green CI
+run on `main`. **No Functions deployment.** The worker, the eight callables,
+`.env.constrapp-69b5d` (`FILE_LINK_RECONCILE_INTERVAL_HOURS=2`), IAM,
+Scheduler and monitoring are not touched. All commands run from `frontend/`.
+
+**Before step 1.** Confirm the published Firestore ruleset is still
+byte-identical to `main` before this change (242,127 bytes) and the Storage
+ruleset to 8,674 bytes (*Verifying which rules are published*); run
+`npm run test:unit`, `npm run test:rules`, `npm run lint`, `npm run build`
+and `npm run rules:transitional:check` on the commit being released.
+
+**Step 1 — Firestore Rules and Storage Rules, together.**
+
+```
+firebase deploy --only firestore:rules,storage --project constrapp-69b5d
+```
+
+This publishes the FINAL `firestore.rules` (242,163 bytes) — not the
+transitional file — and `storage.rules` (9,271 bytes). Verify both published
+rulesets byte-for-byte afterwards.
+
+*Compatibility with the bundle then live:* internal roles are unaffected in
+every workflow (their read branch and their unfiltered query are unchanged;
+no write rule changed). A non-internal user on the previous bundle gets
+"Documents are unavailable" on the Documents tab, because that bundle's query
+filters on visibility only and the new rule refuses it — **fail-closed**, and
+it ends with step 2. Production had no non-internal user when this was
+prepared (count-only read, 17 November 2026 21:20 UTC); re-check before
+publishing. *Rollback (independent):* from a worktree at the pre-change
+commit (`5fb96da`), run the same command. The new bundle keeps working
+against the old rules (its narrower query satisfies them).
+
+**Step 2 — Hosting only.**
+
+```
+npm run build
+firebase deploy --only hosting --project constrapp-69b5d
+```
+
+*Compatibility:* the new bundle works against either ruleset. *Rollback
+(independent):* redeploy the previous build from a worktree at `5fb96da`
+(`firebase hosting:rollback` is not a CLI command; the console's release
+history can also restore the previous release). Rolling Hosting back while
+the new rules stay published returns non-internal users to the fail-closed
+"unavailable" state — roll the rules back first if both are being reverted.
+The Hosting rollback floor (the ADR-73 build) is unchanged.
+
+**What this release does not do.** It revokes no link: a download-token URL
+copied while a document was active works until the periodic sweep removes
+the token. It does not bind the Admin SDK or the console. It does not change
+drawings.
+
+**Minimal production acceptance** — TESTING.md §58, production checks. They
+need a disposable external test member, whose provisioning is a production
+data change with its own approval; until then the rule is emulator-proven
+only.
 
 ## DC46-C monitoring readiness — POLICIES A AND B CREATED IN PRODUCTION 16 November 2026 (verified read-only; test delivery reported by both recipients; neither failure condition has fired; billing continuity NOT CONFIRMED; the callable deploy it depended on is DONE)
 

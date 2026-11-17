@@ -21,18 +21,22 @@ import { documentStoragePath, storageExtension, originalFileName } from '../lib/
 // a replacement is a NEW record and the old one is superseded with a forward
 // link, so both files are preserved.
 //
-// ⚠️ THE VISIBILITY FILTER IS A QUERY REQUIREMENT, NOT A SECURITY CONTROL.
+// ⚠️ THE TWO FILTERS ARE A QUERY REQUIREMENT, NOT A SECURITY CONTROL.
 // Firestore rules are not filters: they are evaluated against every document a
-// query returns, and one `internal` document in the result set fails the WHOLE
-// query. A subcontractor or client therefore MUST subscribe with
-// `where('visibility','==','project')` — without it they would see not "the
-// project documents" but an error. The rules are what actually protect internal
-// documents; this filter is what makes the allowed query answerable.
+// query could return, and one document the caller may not read fails the WHOLE
+// query. A non-internal role (subcontractor, client) may read a document only
+// when it is `visibility: 'project'` AND `status: 'active'` (ADR-75 addendum,
+// DC46), so it MUST subscribe with both `where` clauses — without them it
+// would see not "the project documents" but an error. The rules are what
+// actually protect internal, superseded and withdrawn documents; the filters
+// are what make the allowed query answerable.
+//
+// Internal roles subscribe to the whole register, history included.
 //
 // Ordering is applied client-side (lib/projectDocuments.js → sortDocuments).
-// Combining the equality filter with a server-side `orderBy` on a different
-// field would demand a composite index; sorting here keeps one ordering for both
-// audiences and needs no index at all.
+// Two EQUALITY filters are answered from the automatic single-field indexes
+// (no composite index); adding a server-side `orderBy` on a different field
+// would demand one. Sorting here keeps one ordering for both audiences.
 export function useProjectDocuments(projectId) {
   const { user }    = useAuth()
   const { company } = useCompany()
@@ -50,7 +54,11 @@ export function useProjectDocuments(projectId) {
     const ref = collection(db, 'companies', companyId, 'projects', projectId, 'documents')
     const q = seesInternal
       ? query(ref)
-      : query(ref, where('visibility', '==', DOCUMENT_VISIBILITY.PROJECT))
+      : query(
+          ref,
+          where('visibility', '==', DOCUMENT_VISIBILITY.PROJECT),
+          where('status', '==', DOCUMENT_STATUS.ACTIVE),
+        )
 
     const unsubscribe = onSnapshot(
       q,

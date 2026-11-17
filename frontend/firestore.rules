@@ -3463,7 +3463,7 @@ service cloud.firestore {
       }
 
       allow read: if internalMember()
-                  || (sameCompany(companyId) && resource.data.visibility == 'project');
+                  || (sameCompany(companyId) && resource.data.visibility == 'project' && resource.data.status == 'active');
 
       allow create: if internalMember()
                   && metadataShape()

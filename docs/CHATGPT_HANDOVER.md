@@ -7,17 +7,19 @@ documentation: where this file and a source document disagree, the source
 document wins and this file must be corrected.
 
 **Last updated:** 18 November 2026 (NZ). **Git checkpoint:** `main` at
-`2b3ba9a` (*Merge DC46-C reconciliation activation configuration*). This
-revision was prepared on the uncommitted branch
-`feature/dc46-visibility-external-removal`; once that branch is merged, the
+`5fb96da` (*Merge DC46 visibility and external member controls*), equal to
+`origin/main`. This revision was prepared on the uncommitted branch
+`fix/dc46-external-document-access`; once that branch is merged, the
 checkpoint is the merge commit and this line must be refreshed.
 
 **Known lag in this file and its sources.** Periodic reconciliation was
-activated at a 2-hour interval on 17 November 2026 (19:16 UTC). Section A
-and the rows marked *(refreshed 18 November)* say so; the detailed rows of
-section G, parts of sections I and J, and about forty places in the source
-documents still describe it as prepared or disabled. They are corrected in
-the consolidated DC46 closeout, which is not yet authorised.
+activated at a 2-hour interval on 17 November 2026 (19:16 UTC), and DC46-C
+Stages 2 and 3 were merged (`5fb96da`) and deployed on 17 November 2026
+(Rules 20:47, the eight callables 20:49, Hosting 20:49 UTC). Section A says
+so; the detailed rows of section G, parts of sections I and J, and many
+places in the source documents still describe reconciliation as prepared or
+disabled and Stages 2 and 3 as not deployed. They are corrected in the
+consolidated DC46 closeout, which is not yet authorised.
 
 **This file is a point-in-time snapshot.** It does not replace checking the
 current Git state or verifying production. Maintenance is mandatory —
@@ -39,36 +41,43 @@ current Git state or verifying production. Maintenance is mandatory —
 
 | Item | State |
 |---|---|
-| **Current milestone** | DC46 security (Deferred Control 46 — Storage download links after a membership ends), part C. Stage 1 is live: **periodic reconciliation ACTIVE at a 2-hour interval since 17 November 2026 19:16 UTC**; monitoring Policies A, B and C enabled. **Stages 2 and 3 (visibility-reduction lock; external-member removal) are IMPLEMENTED on `feature/dc46-visibility-external-removal`, uncommitted, NOT DEPLOYED, awaiting architect review.** Stage 4 not started |
-| **Latest Git checkpoint** | **VERIFIED:** branch `main`, HEAD `2b3ba9a2875a1c66f5ef4105bbeebbd912a3288b` (`2b3ba9a` *Merge DC46-C reconciliation activation configuration*), equal to `origin/main` after a fetch on 18 November 2026 (NZ); working tree clean apart from the branch that carries this file. Azure CI status on `main`: not checked when this file was written. Preceding commits: `c1a45ee` (activation commit, `0` → `2`), `a2544a1` (activation readiness merge — the recorded rollback checkpoint for the worker), `7aa471e`, `c64c3e9` |
-| **Production** | **REPORTED:** live at `https://app.constrap.com` on Firebase project `constrapp-69b5d`. **Last code deployment:** the worker alone, 17 November 2026 19:16 UTC, from `main` `2b3ba9a` (activation at interval `2`). **VERIFIED** read-only, 17 November 19:29 UTC: worker `processfilelinkrevocations-00003-ceg`, concurrency 1, `FILE_LINK_RECONCILE_INTERVAL_HOURS=2`; Scheduler enabled, every run since activation 200; billing reads enabled; first planning pass 19:17:02 (one expected overdue line → one Policy B incident, open, auto-closing); first periodic sweep 19:18:02 complete (5 scanned, 0 removed, 0 failed); Policies A, B and C enabled; published Firestore and Storage rulesets byte-identical to `main`; 0 `subcontractor`, `client` or `super_admin` users (count-only). **NOT YET OBSERVED when this was written:** the second heartbeat and the second periodic sweep — steady state is unconfirmed until a read-only recheck. Nothing from the Stage 2/3 branch is deployed |
+| **Current milestone** | DC46 security (Deferred Control 46 — Storage download links after a membership ends), part C. **Periodic reconciliation LIVE at a 2-hour interval since 17 November 2026 19:16 UTC**; monitoring Policies A, B and C enabled. **Stages 2 and 3 (visibility-reduction lock; external-member removal) merged and DEPLOYED 17 November 2026 UTC.** **Final security correction — external members read only `project` + `active` documents — IMPLEMENTED on `fix/dc46-external-document-access`, uncommitted, NOT DEPLOYED, awaiting architect review.** Stage 4 volume measurement DEFERRED to a threshold-triggered follow-up (architect decision) |
+| **Latest Git checkpoint** | **VERIFIED:** branch `main`, HEAD `5fb96da989fc2394dc208fcf354029aeb1d759ea` (`5fb96da` *Merge DC46 visibility and external member controls*), equal to `origin/main` (remote read 18 November 2026 NZ); working tree clean apart from the branch that carries this file. Azure CI status on `main`: not checked when this file was written. Preceding commits: `5d0f3c2` (Stages 2 and 3), `2b3ba9a` (activation merge), `c1a45ee` (activation commit, `0` → `2`), `a2544a1` (activation readiness — the recorded rollback checkpoint for the worker) |
+| **Production** | **REPORTED:** live at `https://app.constrap.com` on Firebase project `constrapp-69b5d`. **VERIFIED** read-only, 17 November 2026 21:17–21:40 UTC: published Firestore ruleset (released 20:47:22 UTC) and Storage ruleset byte-identical to `main` `5fb96da` (242,127 and 8,674 bytes); the eight callables on revisions `-00004-*` (deployed 20:49 UTC; **no request received since** — Stage 3 code and the new Team page have not been exercised in production); Hosting release 20:49:46 UTC; worker `processfilelinkrevocations-00003-ceg`, concurrency 1, `FILE_LINK_RECONCILE_INTERVAL_HOURS=2`; Scheduler enabled, every run since activation 200; billing reads enabled; Policies A, B and C enabled; planning heartbeats 19:17, 20:17 and 21:17 UTC (overdue 1, 0, 0 — the first is the expected activation line); first periodic sweep 19:18:02 complete (5 scanned, 0 removed, 0 failed); no object changed since 16 November 23:13 UTC; 1 company, 3 users, 0 `subcontractor`, `client` or `super_admin` users (count-only). **NOT YET OBSERVED when this was written (21:40 UTC):** the second periodic sweep, predicted about 22:18 UTC — steady state is unconfirmed until a read-only recheck. Nothing from the correction branch is deployed |
 | **Deferred Control 46** | **OPEN** |
 
-**Active risks (detail in section I):** billing administration unconfirmed
-(paid billing is Product Owner-reported) · monitoring is detection inside
-the same project and has never fired on a real failure · reconciliation
-steady state not yet observed past the first sweep · Stages 2 and 3 are
-source only — both gaps stay open in production until released · Firestore
-rules source would be 2,873 bytes under its approved budget after Stage 2.
+**Active risks (detail in section I):** until the correction is released, a
+non-internal member can still read and open superseded and withdrawn
+`project` documents (no such user exists in production today) · external-member
+production acceptance is unverified (Stage 3 and the correction) · a
+download-token URL copied earlier keeps working until a sweep removes the
+token · Admin SDK and console writes bypass Rules · the cause of the token
+re-creations of 12 and 16 November is unattributed · billing administration
+unconfirmed (paid billing is Product Owner-reported) · monitoring is
+detection inside the same project and has never fired on a real failure ·
+reconciliation steady state not yet observed past the first sweep · Firestore
+rules source would be 2,837 bytes under its approved budget after the
+correction.
 
 **Exact next development action:** architect review of
-`feature/dc46-visibility-external-removal` (ADR-75 → *Stages 2 and 3 — as
-implemented*; TESTING.md §57), then Git integration as two logical commits
-and Azure CI. **Next release gate:** authorisation of step 1 of the release
-runbook (Firestore Rules only), then the eight callables, then Hosting —
-each separately authorised (section J).
+`fix/dc46-external-document-access` (ADR-75 → *External document access
+follows status*; TESTING.md §58), then Git integration and Azure CI.
+**Next release gate:** authorisation of step 1 of the release runbook
+(Firestore Rules and Storage Rules together), then Hosting — each separately
+authorised (DEPLOYMENT.md → *DC46 — external document access correction*).
+No Functions deployment.
 
 **Awaiting authorisation — none of these is approved yet:**
 
 | Action | State |
 |---|---|
-| Git integration of `feature/dc46-visibility-external-removal` | Awaiting architect review. Two logical commits (Stage 2; Stage 3 with the re-invitation fix) |
-| Release step 1 — Firestore Rules only (Stage 2) | PREPARED (DEPLOYMENT.md → *DC46-C Stages 2 and 3 — release runbook*). NOT DEPLOYED |
-| Release step 2 — the eight team callables only (Stage 3) | PREPARED. NOT DEPLOYED. The worker is not redeployed; the interval stays `2` |
-| Release step 3 — Hosting only (Team page) | PREPARED. NOT DEPLOYED |
-| Read-only steady-state recheck of periodic reconciliation | NOT DONE — second heartbeat and second sweep |
+| Git integration of `fix/dc46-external-document-access` | Awaiting architect review |
+| Release step 1 — Firestore Rules and Storage Rules | PREPARED. NOT DEPLOYED |
+| Release step 2 — Hosting only (Documents page and hook) | PREPARED. NOT DEPLOYED |
+| Production acceptance with a disposable external test member (Stage 3 removal, TESTING.md §57; the correction, §58) | NOT DONE — provisioning the member is a production data change needing its own approval |
+| Read-only steady-state recheck of periodic reconciliation | NOT DONE — second sweep predicted about 17 November 2026 22:18 UTC |
 | Billing administration by the billing account owner (ownership, a second administrator, a budget and its notifications) | NOT DONE — administrator action. **Paid billing is REPORTED by the Product Owner (17 November 2026);** that does not complete this item |
-| DC46-C Stage 4 (measurement at volume, orphan-prefix check, closure wording) | PROPOSED in ADR-75; not started |
+| DC46-C Stage 4 — measurement at volume | **DEFERRED** to a threshold-triggered follow-up (a company near 50,000 objects, about 500 companies, or `yielded` / `deferred` / overdue in the worker's logs). The orphan-prefix check was made once, read-only, 17 November 2026: one prefix, one company. Closure wording still to be agreed |
 | Consolidated DC46 documentation closeout | NOT AUTHORISED |
 
 ---
