@@ -161,8 +161,8 @@ Controls now in place:
 
 ## Authentication & Membership — Implemented
 
-> **ADR-72 (L1 — Trusted Backend & Team Management) — IMPLEMENTED, NOT YET
-> DEPLOYED.** Membership is now issued, changed and removed by eight 2nd-gen
+> **ADR-72 (L1 — Trusted Backend & Team Management) — LIVE IN PRODUCTION
+> since 11 November 2026.** Membership is now issued, changed and removed by eight 2nd-gen
 > Callable Cloud Functions (`frontend/functions/`) using the Admin SDK — never
 > by the browser. `users/{uid}` stays the ONE authoritative membership
 > document and stays **client-read-only**; no rules changed. Company Admins
@@ -170,8 +170,10 @@ Controls now in place:
 > `client` and `super_admin` remain operator-provisioned. New companies come
 > only from the operator bootstrap script — there is no public tenant
 > registration. Full model: *Team management — trusted backend (ADR-72)*
-> below. Until the Functions and Hosting are deployed, everything in the
-> bullets below still describes production.
+> below. Since ADR-75 Stage 3 (live 17 November 2026) a Company Admin may
+> also DEACTIVATE a `subcontractor` or `client`; provisioning them is still
+> an operator task. Where a bullet below describes the pre-L1 model, the
+> ADR-72 section governs.
 
 - Firebase Auth **email/password** sign-in only. The Create Account and Forgot
   **Password reset is implemented** — `pages/ForgotPassword.jsx` calls
@@ -3140,11 +3142,53 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     `frontend/tests/unit/budgetApprovalActions.test.js`.
 
 46. **Storage download URLs outlive a membership (ADR-72) — a
-    PRE-EXTERNAL-LAUNCH requirement. STILL OPEN. Part A (ADR-73) is LIVE;
-    part B (ADR-74) is LIVE since 12 November 2026.** A Firebase
-    download URL carries the object's download token and is served WITHOUT
-    Storage Rules, so a member who copied one keeps file access after
+    PRE-EXTERNAL-LAUNCH requirement. CLOSED 18 November 2026, with the
+    accepted risks listed below (ADR-75 → *DC46 closure record*). Part A
+    (ADR-73) LIVE since 11 November 2026; part B (ADR-74) LIVE since
+    12 November 2026; part C (ADR-75) LIVE — periodic reconciliation at a
+    2-hour interval since 17 November 2026, Stages 2 and 3 and the external
+    document access correction since 17 November 2026 (UTC); final
+    external-member acceptance PASSED in production 18 November 2026.** A
+    Firebase download URL carries the object's download token and is served
+    WITHOUT Storage Rules, so a member who copied one keeps file access after
     deactivation until the token is removed.
+
+    **What "closed" means — and does not.** The control as scoped is in
+    place and production-accepted: the app does not deliberately expose
+    token-based download URLs (it never requests one), although a Firebase
+    Storage upload can still create download-token metadata on the object,
+    which the reconciliation worker removes; a
+    deactivation or internal-to-external role change queues an urgent sweep
+    in the same transaction; every company is swept again about every 2 to 3
+    hours; no client can reduce a document's visibility; a Company Admin can
+    remove an external member; non-internal roles read only `project` +
+    `active` documents. **It does not mean copied links die instantly.**
+    The ACCEPTED RISKS, none of them eliminated:
+    1. *A copied download-token URL survives until a sweep removes the
+       token.* After a deactivation that is the urgent sweep (observed:
+       under 20 seconds on a nine-object tenant); after a withdrawal,
+       supersession or console change it is the next periodic sweep (about
+       3 hours at the 2-hour interval; observed once at 91 minutes). The
+       two-hour interval is NOT a strict revocation deadline: when a sweep
+       actually completes depends on scheduling, worker health and backlog,
+       and it lengthens whenever a sweep is incomplete or the worker is
+       stopped.
+    2. *Console and Admin SDK writes bypass Security Rules* — including a
+       visibility reduction, which then queues no revocation.
+    3. *The token re-creations seen on 12 and 16 November 2026 are
+       unattributed* (no Data Access audit logs). None has been seen since;
+       periodic reconciliation is the compensating control.
+    4. *Drawings keep their existing access model:* every company member
+       reads every drawing revision, withdrawn ones included.
+    5. *Monitoring and the worker share one cloud project* (and its
+       billing): a project-level outage can silence both. Detection only.
+    6. *Firestore Rules have limited size headroom* — 242,163 of the
+       245,000-byte budget (2,837 left).
+    Token removal also still rests on observed, undocumented Firebase
+    behaviour (ADR-74 evidence). Follow-ups are tracked outside DC46
+    (ROADMAP.md → *DC46 follow-ups*). The paragraphs below are the record
+    of how the control was built; where one describes an earlier state it
+    is dated.
 
     **Part A — LIVE since 11 November 2026 (ADR-73).** The app no longer
     mints a download URL anywhere: `hooks/useStorageUpload.jsx` reads through
@@ -3225,16 +3269,18 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     sweep at volume and decide the external-role removal procedure. Not
     claimed as closed anywhere.
 
-    **Part C — ADR-75. Stage 1 is IMPLEMENTED; the updated worker was
-    DEPLOYED on 13 November 2026 (worker only); the existing
-    membership-triggered revocation was PRODUCTION-ACCEPTED through it on
-    16 November 2026; periodic reconciliation is NOT ACTIVATED
-    (`FILE_LINK_RECONCILE_INTERVAL_HOURS=0`). With the interval at `0` the
-    worker adds no protection beyond part B, so every limitation above still
-    describes production, and this control stays OPEN.** Activation is
-    PREPARED, not performed (17 November 2026): the architect selected an
-    initial interval of **2 hours** and rejected 1 hour (below).
-    - *What is live today:* the Stage 1 worker revision, with one request at
+    **Part C — ADR-75. LIVE. The Stage 1 worker was deployed on 13 November
+    2026 (worker only); membership-triggered revocation was
+    PRODUCTION-ACCEPTED through it on 16 November 2026; periodic
+    reconciliation was ACTIVATED on 17 November 2026 19:16 UTC at
+    `FILE_LINK_RECONCILE_INTERVAL_HOURS=2` (worker revision
+    `processfilelinkrevocations-00003-ceg`).** The architect selected an
+    initial interval of **2 hours** and rejected 1 hour (below). Steady
+    state observed: periodic sweeps at 19:18 and 22:19 UTC on 17 November
+    and 00:21 UTC on 18 November, every one complete with zero failures;
+    the third removed the four tokens created by that day's test uploads.
+    - *What was live after Stage 1 (16 November 2026, before activation):*
+      the Stage 1 worker revision, with one request at
       a time (`concurrency: 1`; the earlier revision allowed 80, kept safe by
       the per-company lease). Membership-triggered revocation (part B) is
       operational through it: on 16 November 2026 a deactivation through the
@@ -3328,8 +3374,8 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       administrator `listTeam` call, not by probing each refusal in
       production. The controlled deactivation required before any non-zero
       interval has passed (TESTING.md §55).
-    - *Activation readiness — PREPARED, NOT ACTIVATED (17 November 2026).*
-      Initial interval **2 hours**. Planning runs once an hour and a newly
+    - *Activation — PERFORMED 17 November 2026 19:16 UTC (prepared the same
+      day).* Initial interval **2 hours**. Planning runs once an hour and a newly
       planned company is swept on the following invocation, so with 2 hours
       each company is swept about every 2 to 3 hours (simulated on the real
       code over whole days: gaps of 121–183 minutes, never reaching the
@@ -3339,18 +3385,20 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       or the worker is stopped. **1 hour was rejected:** equal to the
       planning period, it makes sub-second Scheduler jitter decide between a
       ~1-hour and a ~2-hour gap and raises false overdue alerts (reproduced
-      in the same suite). Monitoring policy C (planning heartbeat) is
-      PREPARED as files and NOT CREATED. Billing administration (owner,
-      backup administrator, budget notifications) remains unconfirmed.
-      Switching the interval on still needs its own authorisation
-      (DEPLOYMENT.md → *DC46-C* → *Activation runbook*).
-    - *Still open after Stage 1:* document visibility reduction (Stage 2),
-      external-member removal (Stage 3), measurement at volume (Stage 4),
-      and the unproven cause of the tokens that reappeared in production.
-    - *Stages 2 and 3 — IMPLEMENTED, NOT DEPLOYED (18 November 2026; branch
-      `feature/dc46-visibility-external-removal`).* Until each is released
-      the two gaps above remain exactly as described.
-      **Stage 2, once the Rules are published — rules-enforced:** no client
+      in the same suite). Monitoring policy C (planning heartbeat) was
+      CREATED on 17 November 2026 before activation and is enabled. Billing
+      administration (owner, backup administrator, budget notifications)
+      remains unconfirmed — a follow-up outside DC46.
+      (DEPLOYMENT.md → *DC46-C* → *Activation runbook*.)
+    - *Open after Stage 1, and how each ended:* document visibility
+      reduction (Stage 2 — live); external-member removal (Stage 3 — live);
+      measurement at volume (Stage 4 — deferred to a threshold-triggered
+      follow-up); the unproven cause of the tokens that reappeared in
+      production (accepted risk 3).
+    - *Stages 2 and 3 — LIVE since 17 November 2026 (Rules 20:47 UTC, the
+      eight callables 20:49 UTC on revisions `-00004-*`, Hosting 20:49 UTC;
+      `main` `5fb96da`).*
+      **Stage 2 — rules-enforced:** no client
       in any role can change a general document from `project` to
       `internal` (`firestore.rules` 242,127 bytes; 2,873 under budget).
       **Not enforced:** an Admin SDK or Firebase console edit bypasses
@@ -3358,35 +3406,42 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       sweep. A visibility correction is an **operator task** until a
       trusted server-side workflow exists (ADR-75 decision 13, not built);
       withdrawing a document does not remove external read access.
-      **Stage 3, once the callables are deployed — enforced by the trusted
-      backend:** a Company Admin can deactivate a `subcontractor` or
+      **Stage 3 — enforced by the trusted backend:** a Company Admin can deactivate a `subcontractor` or
       `client` of their own company through `deactivateMember`; membership,
       the urgent revocation request and the audit event commit in one
       transaction; `super_admin` is still refused; role changes and
       invitations still refuse external roles. The Team page's *Deactivate*
       button on those rows is **UX only**. Revocation of copied links is
-      still a background clean-up, never immediate. (ADR-75 → *Stages 2 and
-      3 — as implemented*; TESTING.md §57.)
-    - *External document access follows status — IMPLEMENTED, NOT DEPLOYED
-      (18 November 2026; branch `fix/dc46-external-document-access`).*
-      Until the Rules are published, a `subcontractor`, `client` or
-      `super_admin` can still read and open a superseded or withdrawn
-      `project` document. **Once both rules files are published —
-      rules-enforced:** a non-internal role reads a general document's
+      still a background clean-up, never immediate. Production-accepted on
+      a disposable subcontractor on 18 November 2026. (ADR-75 → *Stages 2
+      and 3 — as implemented*; TESTING.md §57.)
+    - *External document access follows status — LIVE since 17 November
+      2026 22:15 UTC (both rules files 22:14 UTC, Hosting 22:15 UTC; `main`
+      `0225b03`).* **Rules-enforced:** a non-internal role reads a general document's
       metadata and bytes only while it is `visibility: 'project'` and
       `status: 'active'`; internal roles keep the full history; missing
       metadata, or metadata without a status, fails closed. Withdrawing a
-      document then DOES remove external rules-checked access.
+      document DOES remove external rules-checked access.
       **Not enforced:** a download-token URL copied while the document was
       active keeps working until the periodic sweep removes the token
       (about 3 hours at the 2-hour interval — a bound, not a guarantee);
       Admin SDK and console writes bypass Rules; drawings are unchanged
       (every member reads every revision). The hook's two query filters and
       the hidden *Show withdrawn* toggle are **UX / query requirements
-      only**. Not yet exercised on a real external member. (ADR-75 →
-      *External document access follows status*; TESTING.md §58.)
+      only**. Production-accepted on a disposable subcontractor on
+      18 November 2026: active documents listed and opened; withdrawn,
+      superseded and internal documents refused for metadata, bytes and
+      queries (HTTP 403). (ADR-75 → *External document access follows
+      status*; TESTING.md §58 and §59.)
     - *Stage 4 volume measurement is deferred* to a threshold-triggered
-      follow-up (ADR-75, same addendum). Deferred Control 46 stays OPEN.
+      follow-up (ADR-75, same addendum).
+    - *Final acceptance and closure — 18 November 2026.* One disposable
+      operator-provisioned subcontractor in the test company: access
+      matrix, Stage 2 lock, Team-page removal, Auth disablement, urgent
+      revocation and sweep all verified from the backend; the identity is
+      deactivated and its test documents withdrawn. Evidence: TESTING.md
+      §59; ADR-75 → *DC46 closure record*. **Deferred Control 46 is
+      CLOSED with the accepted risks above.**
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
@@ -4036,9 +4091,14 @@ does not do, measured in the emulator:
   completed, existing tokens keep working. The worker runs the ADR-75
   Stage 1 build (deployed 13 November 2026) and the eight callables the
   ADR-75 build (deployed 16 November 2026); a full deactivation regression
-  through them passed on 16 November 2026 (TESTING.md §55). Periodic
-  reconciliation remains disabled (interval `0`) and Deferred Control 46
-  remains OPEN.
+  through them passed on 16 November 2026 (TESTING.md §55), and the eight
+  callables were redeployed with ADR-75 Stage 3 on 17 November 2026
+  (revisions `-00004-*`). Periodic reconciliation has run at a 2-hour
+  interval since 17 November 2026, so a token also dies at the next
+  periodic sweep (typically about 3 hours; not a strict deadline — it
+  depends on scheduling, worker health and backlog). Deferred
+  Control 46 was CLOSED on 18 November 2026 with documented accepted
+  risks.
 
 **App Check.** Every callable is deployed with `enforceAppCheck: true`; the
 web app uses reCAPTCHA Enterprise (`VITE_FIREBASE_APPCHECK_SITE_KEY`, public).

@@ -7743,6 +7743,8 @@ leave them unticked until they are.
 
 ## 51. DC46-A — Authenticated Storage downloads (ADR-73) — LIVE IN PRODUCTION (11 November 2026)
 
+> **Status at DC46 closeout (18 November 2026).** Deferred Control 46 was CLOSED on 18 November 2026 with accepted risks (§59). Statements below that it "stays OPEN", or that reconciliation is off, are the record as written at the time.
+
 **Recorded by the Product Owner, 11 November 2026:** drawing viewer — pass;
 General Documents — pass; Quant PDF and image viewing — pass; iPhone Safari —
 pass; deactivated member denied new Open / Download requests — pass.
@@ -7803,6 +7805,8 @@ passes — step 9 is expected to show that.
        closes, and a retry after reconnecting works.
 
 ## 52. DC46-B — Legacy download-token revocation (ADR-74) — LIVE IN PRODUCTION (deployed and accepted, 12 November 2026)
+
+> **Status at DC46 closeout (18 November 2026).** Deferred Control 46 was CLOSED on 18 November 2026 with accepted risks (§59). Statements below that it "stays OPEN", or that reconciliation is off, are the record as written at the time.
 
 **Production acceptance record — 12 November 2026 (`constrapp-69b5d`).**
 Constrap had not launched; the only company was the Product Owner's
@@ -7913,7 +7917,9 @@ PDFs, token values never printed (SHA-256 fingerprints).
        the operator): no row reads *pending* or *delayed*.
 16. - [ ] Regression: §51 steps 1–7 and 12 (including **Android Chrome**).
 
-## 53. DC46-C — Periodic token reconciliation, Stage 1 (ADR-75) — WORKER DEPLOYED 13 November 2026; revocation PRODUCTION-ACCEPTED 16 November 2026; periodic reconciliation NOT ACTIVATED
+## 53. DC46-C — Periodic token reconciliation, Stage 1 (ADR-75) — WORKER DEPLOYED 13 November 2026; revocation PRODUCTION-ACCEPTED 16 November 2026; periodic reconciliation ACTIVATED 17 November 2026 (2-hour interval)
+
+> **Status at DC46 closeout (18 November 2026).** Periodic reconciliation has been ACTIVE at a 2-hour interval since 17 November 2026 19:16 UTC (§56, §59). The text below is the record as written at the time.
 
 On `main` (`38ab578`). **Manual steps 1–3 below have been run in production;
 steps 4–8 have not, and periodic reconciliation is OFF**
@@ -8045,6 +8051,8 @@ tenant only, test files only, after explicit authorisation.
 
 ## 54. DC46-C — Callable compatibility and monitoring readiness (16 November 2026) — tests merged; alert policies A and B CREATED in production 16 November 2026; delivery test run and removed
 
+> **Status at DC46 closeout (18 November 2026).** Deferred Control 46 was CLOSED on 18 November 2026 with accepted risks (§59). Statements below that it "stays OPEN", or that reconciliation is off, are the record as written at the time.
+
 Branch `ops/dc46-c-monitoring-readiness` (merged, `5615239`). No production logic changed: two
 test files, two proposed alert-policy files and one temporary delivery-test
 policy file, documentation. Deferred Control
@@ -8147,7 +8155,9 @@ Policy A is not claimed to detect one, nor the deletion of the worker
 service (Google documents that a deleted or shut-down resource raises no
 absence alert).
 
-## 55. DC46-C — Eight-callable deployment (16 November 2026) — DEPLOYED and PRODUCTION-ACCEPTED; deactivation regression on the new revisions PASSED 16 November 2026; periodic reconciliation NOT ACTIVATED
+## 55. DC46-C — Eight-callable deployment (16 November 2026) — DEPLOYED and PRODUCTION-ACCEPTED; deactivation regression on the new revisions PASSED 16 November 2026
+
+> **Status at DC46 closeout (18 November 2026).** The callables described here (`-00003-*`) were replaced by `-00004-*` on 17 November 2026 (§57); periodic reconciliation was activated on 17 November 2026 (§56). The text below is the record as written at the time.
 
 Release record: DEPLOYMENT.md → *DC46-C* → *Callable release record*. A
 deploy of the eight team callables only, from `main` `44446a0`; the worker
@@ -8250,7 +8260,9 @@ periodic request (pre-emption) — impossible at interval `0`; emulator
 evidence only (§53 group D, §54, §56). The cause of the two earlier token
 re-creations (§53, DEPLOYMENT.md → *DC46-C*).
 
-## 56. DC46-C — Activation readiness, 2-hour interval (17 November 2026) — PREPARED; NOT ACTIVATED; policy C PREPARED, NOT CREATED
+## 56. DC46-C — Activation, 2-hour interval (17 November 2026) — PERFORMED 17 November 2026 19:16 UTC; policy C CREATED and enabled; steady state OBSERVED
+
+> **Status at DC46 closeout (18 November 2026).** Policy C was created on 17 November 2026 before activation; the worker was deployed alone at interval `2` at 19:16 UTC (`processfilelinkrevocations-00003-ceg`, `main` `2b3ba9a`). Observed read-only: heartbeats hourly from 19:17 (overdue 1 on the first pass, as predicted, then 0); periodic sweeps 19:18:02 (5 scanned, 0 removed), 22:19:02 (5, 0; 181 minutes later) and 18 November 00:21:02 (9, 4 removed), all complete with zero failures. The checklist items below that were written as outstanding are covered by that evidence and §59. The text below is the record as written at the time.
 
 Branch `feature/dc46-c-activation-readiness` (uncommitted at the time of
 writing). Architect decision, 17 November 2026: prepare an initial interval
@@ -8327,7 +8339,9 @@ Each step on explicit authorisation; commands in DEPLOYMENT.md → *DC46-C* →
       policy C incident; pass 2 onwards report `overdue: 0`.
 7. - [ ] A second periodic sweep 2–3 h after the first, no overdue.
 
-## 57. DC46-C — Stages 2 and 3: visibility-reduction lock and external-member removal (18 November 2026) — IMPLEMENTED; NOT DEPLOYED
+## 57. DC46-C — Stages 2 and 3: visibility-reduction lock and external-member removal (18 November 2026) — LIVE since 17 November 2026 UTC; PRODUCTION-ACCEPTED 18 November 2026
+
+> **Status at DC46 closeout (18 November 2026).** Merged as `main` `5fb96da`; Rules released 17 November 2026 20:47 UTC, the eight callables 20:49 (`-00004-*`), Hosting 20:49. Production checks 1–3 were run on 18 November 2026 and PASSED (§59); check 4 does not apply — production has no `super_admin` row. The text below is the record as written at the time.
 
 Branch `feature/dc46-visibility-external-removal` (uncommitted at the time of
 writing). ADR-75 decisions 12, 14 and 15. Nothing is deployed; production is
@@ -8377,22 +8391,24 @@ clean; `rules:transitional:check` up to date.
 
 **Manual — production, after each release step, each separately approved:**
 
-1. - [ ] *After Rules (step 1).* On the development tenant, as an internal
+1. - [x] *After Rules (step 1).* On the development tenant, as an internal
       role, a direct SDK `updateDoc` setting `visibility: 'internal'` on a
       disposable `project` test document is refused with a permission
       error; the document is unchanged. Uploading, replacing and
       withdrawing a document from the app still work.
-2. - [ ] *After callables (step 2).* Eight new revisions, worker revision
+2. - [x] *After callables (step 2).* Eight new revisions, worker revision
       unchanged, interval still `2`, 401 without App Check (read-only).
-3. - [ ] *After Hosting (step 3).* A disposable operator-provisioned
+3. - [x] *After Hosting (step 3).* A disposable operator-provisioned
       subcontractor on the development tenant shows *Deactivate* and no
       *Change role*; deactivating it succeeds. Confirm on the backend, not
       from the UI alone: the `deactivatemember` request, the
       `member.deactivated` and `file_links.revocation_requested` events, and
       the worker's `file-links: worker run` line completing the urgent sweep.
-4. - [ ] A `super_admin` row, if one exists, offers neither action.
+4. - [ ] A `super_admin` row, if one exists, offers neither action. *(Not applicable on 18 November 2026: production has no `super_admin`.)*
 
-## 58. DC46 — External document access follows status (18 November 2026) — IMPLEMENTED; NOT DEPLOYED
+## 58. DC46 — External document access follows status (18 November 2026) — LIVE since 17 November 2026 22:15 UTC; PRODUCTION-ACCEPTED 18 November 2026
+
+> **Status at DC46 closeout (18 November 2026).** Merged as `main` `0225b03`; both rules files released 17 November 2026 22:14 UTC, Hosting 22:15, each verified byte-identical to `main`. The production checks at the foot of this section were run on 18 November 2026 and PASSED (§59). The text below is the record as written at the time.
 
 Branch `fix/dc46-external-document-access` (uncommitted at the time of
 writing). ADR-75 → *External document access follows status*. Nothing is
@@ -8453,20 +8469,92 @@ exemption.
 **What the emulator does not prove.** Nothing about download-token URLs —
 they are served without rules.
 
-**Production checks — NOT RUN (need a disposable external test member,
-separately authorised).**
+**Production checks — RUN 18 November 2026, all PASSED (§59).**
 
-- [ ] Before step 1: the published rulesets match `main` before this change.
-- [ ] After step 1: both published rulesets are byte-identical to the
+- [x] Before step 1: the published rulesets match `main` before this change.
+- [x] After step 1: both published rulesets are byte-identical to the
       released commit (242,163 and 9,271 bytes).
-- [ ] After step 2, as an internal user: the Documents tab lists active,
+- [x] After step 2, as an internal user: the Documents tab lists active,
       superseded and (with *Show withdrawn*) withdrawn documents; Open works
       on each; Upload, Replace and Withdraw work.
-- [ ] As the external test member: only active project documents are
+- [x] As the external test member: only active project documents are
       listed; no *Show withdrawn* toggle; Open works on an active document.
-- [ ] An internal user withdraws a project document the external member
+- [x] An internal user withdraws a project document the external member
       could see: it leaves the external list without a reload, and stays in
       the internal list.
-- [ ] Remove the external member from the Team page (Stage 3 acceptance,
+- [x] Remove the external member from the Team page (Stage 3 acceptance,
       TESTING.md §57) and confirm the `deactivatemember` request and the
       worker's sweep in the logs.
+
+## 59. DC46 — Final external-member acceptance in production (18 November 2026) — PASSED; Deferred Control 46 CLOSED with accepted risks
+
+One controlled exercise, authorised by the Product Owner, on the production
+test company (*Apex Builders*, the only company) and one test project
+(*Gold Coast apartments*). Release under test: `main` `0225b03`. Record:
+ADR-75 → *DC46 closure record*. Nothing here is repeated from §55; no
+internal member was deactivated. All times UTC.
+
+**Preconditions verified read-only (17 November 22:31).** `main` =
+`origin/main` = `0225b03`, clean; both published rulesets byte-identical to
+`main`; Hosting release `b70a1504ff327671`; callables `-00004-*`; worker
+`-00003-ceg`, interval `2`; Scheduler enabled; policies A, B and C enabled;
+no WARNING or ERROR since the expected activation line.
+
+**Test identity.** One subcontractor, UID `q1IctaF2YhdRTdaY0GdpdetKc3U2`,
+provisioned by the operator at 22:48:42 on 17 November: a Firebase Auth
+account with no password and `users/{uid}` (`name`, `email`, `role:
+'subcontractor'`, `companyId`, `avatarInitials`, `createdAt` — the shape of
+the existing operator-provisioned profiles). Membership is company-wide; the
+Product Owner confirmed beforehand that everything such a member can read in
+the company is test data. The Product Owner set the password and signed in
+both sessions personally; no credential, reset link or code was recorded.
+The earlier test member's account was not touched.
+
+**Fixtures.** Uploaded through the app as a Company Admin (22:49–22:50),
+four disposable one-page PDFs: *DC46 Test - Active* (`project`), *DC46 Test -
+Superseded* then replaced by *DC46 Test - Replacement* (`project`), *DC46
+Test - Internal* (`internal`); plus the existing withdrawn *Test Method
+Statement*.
+
+| # | Check | Expected | Actual | Result | Time |
+|---|---|---|---|---|---|
+| A1 | External: Documents list | Only active `project` documents | *Active* and *Replacement* only | PASS | 18 Nov 02:09 |
+| A2 | External: open an active document | Opens | Opened from a `blob:` URL, no error | PASS | 02:09 |
+| A3 | External: *Show withdrawn* | Absent | Absent; notice names what is not listed | PASS | 02:09 |
+| A4 | External: rules-checked metadata read, own session | 200 active; denied otherwise | active 200, replacement 200; superseded 403, withdrawn 403, internal 403 | PASS | 02:10:22 |
+| A5 | External: rules-checked byte read (Storage) | 200 active; denied otherwise | active 200 (634 B), replacement 200 (622 B); superseded 403, withdrawn 403, internal 403 | PASS | 02:10:22 |
+| A6 | External: queries | Two-filter query only | two filters 200 (2 rows); visibility-only 403; withdrawn 403; superseded 403; internal 403 | PASS | 02:10:22 |
+| A7 | External: an internal-only collection (contacts) | Denied | 403 | PASS | 02:10:22 |
+| B1 | Internal: history | Everything readable | all five documents and files 200; unfiltered list 200, 5 rows; page lists all five with *Show withdrawn* | PASS | 02:10:48 |
+| B2 | Internal: workflows | Upload, Replace, Withdraw work | all three performed on the fixtures | PASS | 17 Nov 22:49 – 18 Nov 02:12 |
+| C1 | Stage 2 lock (Company Admin, client write) | Control edit accepted; `project → internal` refused | notes-only edit 200; visibility write 403 `PERMISSION_DENIED`; document unchanged | PASS | 02:10:48 |
+| A8 | Live withdrawal of *Replacement* | Leaves the external list without a reload | Gone from the open external page | PASS | 02:11:09 |
+| D1 | Team page, subcontractor row | *Deactivate*; no *Change role* | As expected ("Managed by operator") | PASS | 02:11:21 |
+| D2 | `deactivateMember` | HTTP 200 on a `-00004` revision | 200 on `deactivatemember-00004-kom`, request id `03738f7a8ae4…` | PASS | 02:11:42 |
+| D3 | Membership | Inactive | `users/{uid}`: `status: 'deactivated'`, role and company cleared, former role `subcontractor`; `members/{uid}`: deactivated, revocation sequence 8 | PASS | 02:11:43 |
+| D4 | Audit | Three events, one request id | `member.deactivated`, `file_links.revocation_requested` (seq 8, `member.deactivated`), `member.auth_synced` | PASS | 02:11:43 |
+| D5 | Firebase Auth | Disabled; sessions revoked | disabled; refresh tokens revoked 02:11:44; `authSyncPending: false` | PASS | 02:11:44 |
+| D6 | External session | Ends | The open page returned to the sign-in screen | PASS | 02:11:54 |
+| D7 | Worker | Urgent sweep completes | `file-links: worker run`, urgent 1: complete, seq 8, 9 scanned, 0 removed, 0 failed | PASS | 02:12:02 |
+| D8 | Queue and lease | None left | queue 0; no lease; no open sweep; `completedSeq` 8 = `requestSeq` 8 | PASS | 02:12:58 |
+| E1 | Cross-tenant | Denied | Emulator suite on the deployed, byte-identical rules (Firestore 5, 11, 69; Storage 39, 53, 67); production has one company | PASS (emulator) | — |
+
+**Tokens.** The four uploads each created a download token (as every upload
+does). The periodic sweep of 18 November 00:21:02 removed all four (9
+scanned, 4 removed, 0 failed; `file_links.reconciled`), 91 minutes after the
+uploads and with no membership change. The urgent sweep at 02:12:02 found
+none on any of the nine objects, and no object has changed since. The
+authenticated opens during the acceptance did not create a token.
+
+**Cleanup (verified 02:13).** Test identity deactivated, Auth disabled;
+membership and audit records kept. All four disposable documents withdrawn
+with the reason *DC46 acceptance test - disposable document* (the superseded
+one by a rules-checked client write — the page has no *Withdraw* on a
+superseded row). No pending invitation. Worker, interval, Scheduler,
+policies and billing unchanged; no error logged.
+
+**Not covered.** A `client` or `super_admin` identity; a second production
+tenant; Android Chrome. The emailed password-reset link for the
+operator-created account failed for a reason not established (a
+server-generated reset code for the same account verified as valid); it is
+not part of the control and is noted in the closure record.
