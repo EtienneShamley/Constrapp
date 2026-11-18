@@ -3570,6 +3570,168 @@ URL, Resend invitation email, acceptance, Quant™ PDF and Authentication
 regressions; the tab title *Constrap* was also observed on the live origin).
 Steps 1–6 above are complete for production.
 
+## L2-A Commercial Report — release (IMPLEMENTED — NOT DEPLOYED, 18 November 2026)
+
+**Status:** implemented on `feature/l2a-commercial-report` (uncommitted), awaiting
+architect review. **Not deployed. Not production-verified.**
+
+**What ships:** Hosting only. The project **Reports** tab becomes a read-only
+Commercial Report (`frontend/src/pages/project/ProjectReports.jsx`, composed by
+`src/lib/commercialReport.js`), with CSV export (`src/lib/csv.js`,
+`src/lib/commercialReportCsv.js`) and a print / Save-as-PDF layout (print rules
+in `src/index.css`, scoped to `body:has(.commercial-report)`).
+
+**What does NOT change:** Firestore Rules, Storage Rules, Functions, indexes,
+collections, data. No migration. The report reads only collections the
+financial roles can already read under the live rules (budget lines, approved
+budget pointer / header / snapshot / adjustments, purchase orders, progress
+claims, supplier invoices and credit notes, variations, forecast lines,
+commercial baseline, supplier payments, retention releases, client invoices and
+receipts, cost codes) and writes nothing.
+
+**Release order (after Git integration and Azure CI on `main`, each step
+separately authorised):**
+
+1. `cd frontend && npm ci && npm run lint && npm run test:unit && npm run build`
+2. `firebase deploy --only hosting --project constrapp-69b5d`
+3. Acceptance: TESTING.md §60.
+
+**Rollback:** redeploy the previous build, or use the Firebase Console's Hosting
+release history (*Rollback* on the previous release). There is no
+`firebase hosting:rollback` command. Nothing else needs reverting.
+
+## Firestore recovery protection — PENDING (NOT ENABLED; pre-customer operational requirement)
+
+**Status:** PREPARED ONLY. Nothing below has been run. It is a separate
+operational change and needs explicit Product Owner authorisation. Required
+before commercial customer onboarding (international infrastructure assessment,
+architect-approved 18 November 2026).
+
+**Current state (read-only check, 18 November 2026):** database `(default)`,
+Native mode, `australia-southeast1`; `pointInTimeRecoveryEnablement:
+POINT_IN_TIME_RECOVERY_DISABLED`; `deleteProtectionState:
+DELETE_PROTECTION_DISABLED`; **no backup schedule**; no Firestore backups; the
+only copy is a manual export in `gs://constrapp-69b5d-firestore-backups/`
+dated 20 September 2026. Storage bucket `constrapp-69b5d.firebasestorage.app`:
+soft delete ENABLED, 7 days (`retentionDurationSeconds: 604800`, effective
+18 August 2026); object versioning not enabled.
+
+Sources (official, read 18 November 2026; the `cloud.google.com` docs now
+redirect to `docs.cloud.google.com`): Firestore PITR
+<https://cloud.google.com/firestore/native/docs/pitr> and
+<https://cloud.google.com/firestore/native/docs/use-pitr>; backups
+<https://cloud.google.com/firestore/native/docs/backups>; manage databases /
+delete protection <https://cloud.google.com/firestore/native/docs/manage-databases>;
+gcloud references `firestore databases update|restore|clone`; pricing
+<https://firebase.google.com/docs/firestore/pricing>; Cloud Storage soft delete
+<https://cloud.google.com/storage/docs/soft-delete> and
+<https://cloud.google.com/storage/docs/use-soft-deleted-objects>.
+
+### Permissions
+
+The operator needs `roles/datastore.owner` on the project (covers
+`datastore.databases.update`, `.export`, `.clone`, backups and backup
+schedules). Narrower alternatives: `roles/datastore.backupSchedulesAdmin`,
+`roles/datastore.backupsAdmin`, `roles/datastore.restoreAdmin`. Billing must be
+enabled. **No IAM change is proposed** — use an existing owner account.
+
+### 1. Seven-day point-in-time recovery
+
+```
+gcloud firestore databases update --database='(default)' --enable-pitr --project=constrapp-69b5d
+```
+
+- Retention becomes 7 days (one version per minute; microsecond reads only in
+  the last hour). Without PITR the window is 1 hour.
+- **The 7-day window builds up from the moment of enabling**: `earliestVersionTime`
+  starts about 1 hour before enablement and reaches now − 7 days after a week.
+- Recovery paths: export at a past whole minute
+  (`gcloud firestore export gs://constrapp-69b5d-firestore-backups/pitr-<stamp> --snapshot-time=<RFC3339 whole minute> --project=constrapp-69b5d`),
+  or clone into a NEW database
+  (`gcloud firestore databases clone --source-database='projects/constrapp-69b5d/databases/(default)' --snapshot-time=<…> --destination-database=<new-id>`;
+  launch stage not confirmed from the docs), or server-side reads at a past
+  `readTime` (Admin SDK / REST — not the web SDK).
+- Disable (rollback): `--no-enable-pitr`.
+
+### 2. Daily backups retained 14 days
+
+```
+gcloud firestore backups schedules create --database='(default)' --recurrence=daily --retention=14d --project=constrapp-69b5d
+```
+
+- One daily and one weekly schedule per database; the time of day cannot be
+  chosen; retention can be updated later, recurrence cannot (maximum 14 weeks).
+  The `14d` value follows the documented duration format (the docs' example is
+  `14w`) — confirm the command is accepted.
+- Backups live in the database's location (`australia-southeast1`) and survive
+  deletion of the database or the schedule. A deleted backup cannot be recovered.
+- Verify: `gcloud firestore backups schedules list --database='(default)' --project=constrapp-69b5d`;
+  after the first run, `gcloud firestore backups list --location=australia-southeast1 --project=constrapp-69b5d`.
+- Backups include data and index configuration; **they do not include Security
+  Rules or TTL policies.**
+
+### 3. Database deletion protection
+
+```
+gcloud firestore databases update --database='(default)' --delete-protection --project=constrapp-69b5d
+```
+
+Disable only deliberately with `--no-delete-protection`.
+
+### Verification of 1–3
+
+```
+gcloud firestore databases describe --database='(default)' --project=constrapp-69b5d \
+  --format='yaml(pointInTimeRecoveryEnablement,earliestVersionTime,versionRetentionPeriod,deleteProtectionState)'
+```
+
+Expect `POINT_IN_TIME_RECOVERY_ENABLED`, `versionRetentionPeriod: 604800s`,
+`DELETE_PROTECTION_ENABLED`, and one daily schedule with 14-day retention.
+
+### 4. Non-production restoration verification (after the first backup exists)
+
+A restore always creates a **new** database id in the same location; it never
+overwrites `(default)`. The app only addresses `(default)`, so the restored
+database is not used by the app.
+
+1. `gcloud firestore databases restore --source-backup=projects/constrapp-69b5d/locations/australia-southeast1/backups/<BACKUP_ID> --destination-database=restore-verify-<yyyymmdd> --project=constrapp-69b5d`
+2. Immediately set deny-all Security Rules on the restored database in the
+   Firebase Console (rules are per database and are **not** restored; the
+   default a gcloud restore receives is not confirmed from the docs).
+3. Compare counts with production using owner-credentialed count aggregations
+   (REST `runAggregationQuery`, the accepted read-only method), e.g. `companies`,
+   `users`, and a project's `purchaseOrders` and `supplierInvoices`. Do not
+   open the app against it.
+4. Delete it the same session: `gcloud firestore databases delete --database=restore-verify-<yyyymmdd> --project=constrapp-69b5d`
+   (never pass `(default)`; the verification database must not have delete
+   protection).
+5. Record the backup id, times, counts and outcome here.
+
+### Cloud Storage recovery protection — no change proposed
+
+Soft delete is already on (7 days): deleted **or overwritten** objects can be
+listed with `gcloud storage ls gs://constrapp-69b5d.firebasestorage.app/** --soft-deleted`
+and restored with `gcloud storage restore gs://constrapp-69b5d.firebasestorage.app/<object>#<generation>`
+(needs `storage.objects.restore` / `roles/storage.admin`). Object versioning is
+not proposed: the app writes each document or drawing revision to a new path
+keyed by its new record id (`useProjectDocuments`, `useDrawingRevisions`), and
+versioning would bill every noncurrent copy. Storage objects are not part of a
+Firestore backup — a full point-in-time recovery of documents needs both.
+
+### Cost
+
+- PITR: billed per GiB-month of database size (daily measurement, monthly
+  average × PITR unit price); no free tier; up to one day billed if disabled
+  within a day; PITR reads/exports are billed as document reads.
+- Backups: storage per GiB-month for the retained period; a restore is billed
+  per GiB of backup size.
+- Soft delete: soft-deleted objects bill as storage until the 7 days end.
+- **Sydney unit prices were not confirmed** (the pricing page's region
+  selector or the Cloud Billing SKU catalogue gives them). At the current size
+  (one company, about 9,400 reads a week) the cost is expected to be small, but
+  the database size has not been measured — read it in the console *Usage* page
+  before enabling.
+
 ## Publishing Firestore Rules — Manual Process
 
 The rules source of truth is `frontend/firestore.rules`, but **there is no CLI

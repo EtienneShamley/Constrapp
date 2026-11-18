@@ -7,10 +7,11 @@ documentation: where this file and a source document disagree, the source
 document wins and this file must be corrected.
 
 **Last updated:** 18 November 2026 (NZ). **Git checkpoint:** `main` at
-`0225b03` (*Merge DC46 external document access correction*), equal to
-`origin/main`. This revision was prepared on the uncommitted documentation
-branch `chore/dc46-final-closeout`; once that branch is merged, the
-checkpoint is the merge commit and this line must be refreshed.
+`84c9fb3` (*Merge DC46 final security closeout*), equal to `origin/main`
+(fetched 18 November 2026). This revision was prepared on the uncommitted
+feature branch `feature/l2a-commercial-report` (L2-A Commercial Report —
+IMPLEMENTED, NOT DEPLOYED); once that branch is merged, the checkpoint is the
+merge commit and this line must be refreshed.
 
 **DC46 is closed.** Deferred Control 46 was CLOSED on 18 November 2026 with
 documented accepted risks, after final external-member acceptance in
@@ -39,8 +40,8 @@ current Git state or verifying production. Maintenance is mandatory —
 
 | Item | State |
 |---|---|
-| **Current milestone** | **DC46 security — COMPLETE.** Deferred Control 46 (Storage download links after a membership ends) CLOSED 18 November 2026 with accepted risks. Next milestone in the strategic sequence: the international infrastructure assessment — NOT STARTED, no scope recorded |
-| **Latest Git checkpoint** | **VERIFIED:** branch `main`, HEAD `0225b0376ec6a0b3bc132f9858c31fb1d4368bc5` (`0225b03` *Merge DC46 external document access correction*), equal to `origin/main` (fetched 17 November 2026 22:16 UTC); working tree clean apart from the documentation branch that carries this file. Azure CI on `main`: REPORTED green by the Product Owner before deployment. Preceding commits: `011954a` (external document access correction), `5fb96da` (Stages 2 and 3 merge), `2b3ba9a` (activation merge), `a2544a1` (worker rollback checkpoint) |
+| **Current milestone** | **L2-A Commercial Report — IMPLEMENTED — NOT DEPLOYED** on `feature/l2a-commercial-report` (uncommitted), awaiting architect review (ROADMAP.md stage 3; TESTING.md §60; DEPLOYMENT.md → *L2-A Commercial Report — release*). The **international infrastructure assessment is DONE** (architect-approved 18 November 2026): keep Sydney; no Firestore migration; Australian GST unchanged; international tax deferred to its own milestone; **Firestore recovery protection PENDING** (not enabled). DC46 CLOSED 18 November 2026 |
+| **Latest Git checkpoint** | **VERIFIED:** branch `main`, HEAD `84c9fb354e2d7b795e8f22f3bcd706d6bc2289e9` (`84c9fb3` *Merge DC46 final security closeout*), equal to `origin/main` (fetched 18 November 2026); working tree clean before `feature/l2a-commercial-report` was branched from it. Azure CI on `main`: REPORTED green by the Product Owner. Preceding commits: `7ad9003` (DC46 docs closeout), `0225b03` (external document access correction merge), `011954a`, `5fb96da`, `2b3ba9a`, `a2544a1` (worker rollback checkpoint) |
 | **Production** | **REPORTED:** live at `https://app.constrap.com` on Firebase project `constrapp-69b5d`. **VERIFIED** read-only, 17 November 2026 22:16–22:22 UTC and again 18 November 02:13 UTC: Firestore ruleset `12278725…` (242,163 bytes) and Storage ruleset `8b8edc14…` (9,271 bytes) byte-identical to `main`; Hosting version `b70a1504ff327671`, build files byte-identical to `main` on both origins; eight callables on `-00004-*`; worker `processfilelinkrevocations-00003-ceg`, concurrency 1, `FILE_LINK_RECONCILE_INTERVAL_HOURS=2`; Scheduler enabled, every run since activation 200; Policies A, B and C enabled; billing reads enabled; no WARNING or ERROR since 17 November 19:17 UTC; no IAM change since 16 November. 1 company; 2 active Company Admins; 2 deactivated test members; 0 active external users |
 | **Deferred Control 46** | **CLOSED — 18 November 2026, with accepted risks; production acceptance approved by the architect** (SECURITY.md item 46; ADR-75 → *DC46 closure record*; TESTING.md §59) |
 
@@ -53,20 +54,22 @@ unattributed · every member reads every drawing revision · monitoring
 shares the worker's cloud project · Firestore Rules have 2,837 bytes of
 headroom.
 
-**Exact next development action:** architect review of the documentation
-branch `chore/dc46-final-closeout`, then Git integration (Product Owner).
-No code, Rules, Functions or Hosting change is pending. **Next release
-gate:** none.
+**Exact next development action:** architect review of
+`feature/l2a-commercial-report` (L2-A Commercial Report), then Git integration
+(Product Owner), then a Hosting-only release on a separate authorisation. No
+Rules or Functions change is pending. **Next release gate:** L2-A Hosting
+release. **Pre-customer gate:** Firestore recovery protection (PENDING).
 
 **Awaiting authorisation — none of these is approved yet:**
 
 | Action | State |
 |---|---|
-| Git integration of `chore/dc46-final-closeout` (documentation only) | Awaiting architect review |
+| Git integration of `feature/l2a-commercial-report` (L2-A Commercial Report; Hosting only) | Awaiting architect review — IMPLEMENTED, NOT DEPLOYED |
+| **Firestore recovery protection** — 7-day PITR, daily backups kept 14 days, delete protection, a non-production restore check (DEPLOYMENT.md → *Firestore recovery protection — PENDING*) | NOT ENABLED — read-only check 18 November 2026: PITR disabled, no backup schedule, delete protection disabled, last copy a manual export of 20 September 2026. **Required before commercial customer onboarding**; Product Owner authorisation needed |
 | Billing administration by the billing account owner (ownership, a second administrator, a budget and its notifications) | NOT DONE — administrator action; a follow-up outside DC46. **Paid billing is REPORTED by the Product Owner (17 November 2026);** that does not complete this item |
 | Other DC46 follow-ups (Storage Data Access audit logs; Rules size reduction; load testing at agreed triggers; drawing-revision visibility policy; faster token revocation) | NOT STARTED, none approved — ROADMAP.md → *DC46 follow-ups* |
 | Minor documentation debt — three source comments still read "Deferred Control 46 — still OPEN" | Not blocking (architect, 18 November 2026); fix with the next code change in those files |
-| International infrastructure assessment | NOT STARTED — no scope recorded |
+| International tax compliance | Deferred to a dedicated future milestone (architect decision, 18 November 2026); GST stays the flat Australian 10% |
 
 ---
 
@@ -280,7 +283,8 @@ records, most of them "confirmed by the Product Owner". Dates are as recorded.
 | Independent external availability monitor | Not built; future reliability work, no scope recorded |
 | GST boundary hotfix (`fix/gst-boundary-pins`) | Merged; production state unconfirmed — see the verification list below |
 | Estimating; BOQ → Approved Budget transfer | Not built |
-| Final Account; commercial reports | Not built (Reports is a hidden placeholder) |
+| Commercial reports | **L2-A project Commercial Report IMPLEMENTED — NOT DEPLOYED** (`feature/l2a-commercial-report`); portfolio reporting (L2-C) and saved report history not built |
+| Final Account | Not built (L2-B; needs an ADR and Rules capacity recovery) |
 | Constrap IQ; any AI capability | Not built; placeholder rule applies |
 | Accounting integrations; billing and subscriptions; client portal | Not built |
 | Photos; mobile / PWA packaging | Placeholder / not built |
@@ -351,8 +355,8 @@ risks as eliminated.
 Sequence*. Read it there; the list below is only the order.
 
 1. Complete DC46 security — **DONE** (Deferred Control 46 closed 18 November 2026; section G).
-2. International infrastructure assessment — NOT STARTED.
-3. L2 — Commercial Reports and Final Account — NOT STARTED.
+2. International infrastructure assessment — **DONE** (18 November 2026; Firestore recovery protection PENDING).
+3. L2 — Commercial Reports and Final Account — **L2-A IMPLEMENTED, NOT DEPLOYED**; L2-B Final Account NOT STARTED.
 4. L3 — Production Reliability — NOT STARTED.
 5. L4 — BOQ-to-Approved-Budget integration — NOT STARTED.
 6. L5 — Accounting integrations, Xero first — NOT STARTED.
@@ -389,7 +393,8 @@ approval. Stages 2, 4, 8 and 11 have no scope recorded in the repository.
 | **External members** | Removal by a Company Admin is live and production-accepted. Provisioning is still an operator task (an Auth account plus `users/{uid}`); there is no script for it. Membership is company-wide — an external member reads every drawing revision in the company, withdrawn ones included (accepted risk) | SECURITY.md item 46; TESTING.md §59 |
 | **Storage-token limitations** | Revocation is not immediate; an active member can still obtain a link by a direct SDK call; token behaviour relied on is undocumented by Firebase; tokens reappeared twice in November from an unattributed cause (none since); scale is unmeasured (largest sweep: nine objects) — load testing is a triggered follow-up | SECURITY.md item 46; ADR-74; ADR-75 |
 | **Monitoring's own limits** | Policy A cannot be relied on for a billing suspension or a deleted service; both policies live in the project they watch. An independent external availability monitor remains future reliability work | DEPLOYMENT.md → *Policy A* limitations |
-| **International region / latency** | All backend resources are in `australia-southeast1`; suitability for other markets is not assessed. Tax remains Australian GST only | ROADMAP.md → *Strategic Development Sequence* stage 2; AGENT.md |
+| **International region / latency** | All backend resources are in `australia-southeast1`. Assessed 18 November 2026: retained (architect decision). Measured from New Zealand only (Firestore request about 100–115 ms after TLS); no Caribbean, North American or European measurement exists — validate with a pilot customer session. Tax remains Australian GST only; international tax deferred | ROADMAP.md → *Strategic Development Sequence* stage 2; AGENT.md |
+| **Firestore recovery** | PITR disabled, no scheduled backups, delete protection disabled; one manual export (20 September 2026). Procedure prepared, not run | DEPLOYMENT.md → *Firestore recovery protection — PENDING* |
 | **Rules capacity** | Live: 242,163 of 245,000 bytes — 2,837 bytes of headroom. The next substantial Rules change needs capacity recovered first | SECURITY.md → *Ruleset source-size limit* |
 | **Client-enforced controls** | Several lifecycle, uniqueness and cumulative-cap controls remain client-only | SECURITY.md → *Deferred Controls* |
 | **General App Check enforcement** | Not enabled on Firestore, Storage or Auth | DEPLOYMENT.md → *Deferred: general App Check enforcement* |
@@ -405,16 +410,22 @@ with policy C; Stages 2 and 3; the external document access correction;
 the final external-member acceptance in production; the DC46 documentation
 closeout (this branch).
 
+**Done, 18 November 2026:** the DC46 documentation closeout (merged as
+`84c9fb3`); the international infrastructure assessment (read-only,
+architect-approved); the L2-A Commercial Report implementation (branch,
+uncommitted).
+
 **Next. Each step needs explicit authorisation.**
 
-1. **Architect review and Git integration** of `chore/dc46-final-closeout`
-   (documentation only), then refresh this file's checkpoint line.
-2. **Billing administration** — owner, a backup administrator, a budget and
+1. **Architect review and Git integration** of `feature/l2a-commercial-report`,
+   then refresh this file's checkpoint line.
+2. **L2-A Hosting release** and the TESTING.md §60 acceptance.
+3. **Firestore recovery protection** — run DEPLOYMENT.md → *Firestore recovery
+   protection — PENDING* (before commercial customer onboarding).
+4. **Billing administration** — owner, a backup administrator, a budget and
    its notifications (DEPLOYMENT.md → *Billing continuity*). Still open.
-3. **Choose the next milestone.** The strategic sequence names the
-   international infrastructure assessment (section H); it has no scope
-   recorded. The other DC46 follow-ups (ROADMAP.md → *DC46 follow-ups*) are
-   not scheduled.
+5. **Next L2 slice** — L2-B Final Account assessment (needs Rules capacity
+   recovery first).
 
 Still outstanding beyond that: an independent external reliability
 monitor, which belongs to L3 — Production Reliability, and has no scope

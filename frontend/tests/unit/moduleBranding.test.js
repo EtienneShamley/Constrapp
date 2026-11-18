@@ -92,13 +92,14 @@ describe('navigation — PULSE tab, no unbuilt module surfaces', () => {
   // ADR-51: Quant joined as the fourth, immediately after SHIELD (16 → 17 tabs).
   // ADR-64: GANTT™ is the EXISTING `timeline` tab relabelled with a mark — no
   // new tab, no new route, still 17 tabs.
-  it('PULSE, SHIELD, Quant and GANTT are the only tabs with a mark, and there are still 17 tabs', () => {
+  it('PULSE, SHIELD, Quant and GANTT are the only tabs with a mark, and there are 18 tabs', () => {
     expect(PROJECT_TABS[2]).toEqual({ to: 'shield', label: 'SHIELD', mark: 'shield' })
     expect(PROJECT_TABS[3]).toEqual({ to: 'quant', label: 'Quant', mark: 'quant' })
     expect(PROJECT_TABS.find(t => t.to === 'timeline')).toEqual({ to: 'timeline', label: 'GANTT', mark: 'gantt' })
     expect(PROJECT_TABS.filter(t => t.mark).map(t => t.to)).toEqual(['pulse', 'shield', 'quant', 'timeline'])
     expect(PROJECT_TABS.filter(t => t.to === 'timeline' || t.to === 'gantt')).toHaveLength(1)
-    expect(PROJECT_TABS).toHaveLength(17)
+    // L2-A: Reports (no mark) joined after Commercial (17 → 18 tabs).
+    expect(PROJECT_TABS).toHaveLength(18)
   })
 
   it('no IQ project tab, and no sidebar module entry for any module', () => {

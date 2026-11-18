@@ -12,8 +12,9 @@ import { fileURLToPath } from 'node:url'
 //      narrow width. Four tables had this; the rest of the app already wraps.
 //      Same defect and same guard shape as documentsResponsive.test.js.
 //
-//   2. Navigation that offers an unbuilt placeholder. Photos and Reports are
-//      real routes with real placeholder pages, deliberately kept — but a beta
+//   2. Navigation that offers an unbuilt placeholder. Photos is a real route
+//      with a real placeholder page, deliberately kept (Reports shipped as the
+//      L2-A Commercial Report, so it is a tab again) — but a beta
 //      user must not be handed a tab or sidebar item that leads to "Coming
 //      Soon". PULSE™ (ADR-47) and SHIELD™ (ADR-50) are now live project
 //      tabs; their top-level routes stay hidden pointers.
@@ -97,15 +98,14 @@ describe('project tabs offer no placeholder module', () => {
     expect(projectTabs).not.toMatch(/to:\s*'photos'/)
   })
 
-  it('Reports is not a tab', () => {
-    expect(projectTabs).not.toMatch(/to:\s*'reports'/)
-  })
+  // Reports shipped as the L2-A Commercial Report and is a tab again (it is
+  // in the shipped list below); only Photos remains a hidden placeholder.
 
   // The tabs that must survive — so hiding two never quietly becomes hiding six.
   it('every shipped project module is still a tab', () => {
     for (const to of [
       'overview', 'pulse', 'shield', 'quant', 'boq', 'tenders', 'budget', 'cost-codes', 'purchase-orders',
-      'progress-claims', 'invoices', 'forecasting', 'variations', 'commercial',
+      'progress-claims', 'invoices', 'forecasting', 'variations', 'commercial', 'reports',
       'documents', 'timeline', 'rfis',
     ]) {
       expect(projectTabs).toMatch(new RegExp(`to:\\s*'${to}'`))

@@ -26,7 +26,7 @@ export default function ProjectDetailLayout() {
 
   return (
     <div className="max-w-[1280px]">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+      <div data-print-hide className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
         <div>
           <h1 className="text-xl font-semibold text-brand-text">{project.name}</h1>
           <p className="text-sm text-brand-muted mt-0.5">
@@ -44,7 +44,7 @@ export default function ProjectDetailLayout() {
         <Badge label={project.status} />
       </div>
 
-      <nav className="flex flex-wrap gap-1 border-b border-brand-border mb-5">
+      <nav data-print-hide className="flex flex-wrap gap-1 border-b border-brand-border mb-5">
         {PROJECT_TABS.map(({ to, label, mark }) => (
           <NavLink
             key={to}

@@ -8558,3 +8558,47 @@ tenant; Android Chrome. The emailed password-reset link for the
 operator-created account failed for a reason not established (a
 server-generated reset code for the same account verified as valid); it is
 not part of the control and is noted in the closure record.
+
+## 60. L2-A — Commercial Report (18 November 2026) — IMPLEMENTED — NOT DEPLOYED; automated tests PASS; manual acceptance NOT RUN
+
+**Scope.** The project **Reports** tab (`/projects/:id/reports`): a read-only,
+live Commercial Report for one project in one currency, CSV export and a
+print / Save-as-PDF layout. Hosting only — no Rules, Functions or data change
+(DEPLOYMENT.md → *L2-A Commercial Report — release*).
+
+**Automated evidence (18 November 2026, `feature/l2a-commercial-report`).**
+`tests/unit/commercialReport.test.js` — 70 tests: every headline figure equals
+the Dashboard snapshot; cost-code totals equal the headline figures; hand-
+derived pins; approved-version vs working budget; claims (submitted / under
+review) never in Actual; Committed is remaining open commitment; cash is
+recorded cash only; approved vs pending variations; failed, missing-state and
+loading sources (never zero); genuine zeros on an empty project; "not set"
+contract; currency carried, never converted; deterministic order; CSV quoting,
+CRLF, formula-injection guard (`= + - @`, full-width forms, leading
+whitespace, control, zero-width, bidi and BOM characters, leading TAB / CR);
+export content and filename; role-gate, route, read-only and print-CSS
+structure. `betaSurfaces.test.js` and `moduleBranding.test.js` updated for the
+new tab (18 tabs). Unit suite: 83 files, 4,521 tests, all pass. ESLint clean.
+Production build succeeds.
+
+**Manual acceptance (Product Owner, after the Hosting release).** Use a test
+project with at least one budget line, a sent PO, a submitted and an approved
+claim, a posted supplier invoice, a pending and an approved client variation,
+a posted receipt and a posted payment.
+
+| # | Step | Expected |
+|---|---|---|
+| R1 | Company Admin, PM or QS opens a project → **Reports** | Report renders: project name, currency, budget source, "Generated …" with the not-a-cut-off wording |
+| R2 | Compare the summary with the Dashboard snapshot and the Forecast tab for the same project | Approved Budget, Committed, Actual, Forecast Final Cost, Variance, Gross Profit and Margin identical |
+| R3 | Compare the cost-code table with the Forecast tab | Same rows, same Actual / Committed / CTC / FFC per code; Claimed equals the Budget tab's Claimed |
+| R4 | Pending client variation | Shown under *Pending*; not in the Current Contract Sum |
+| R5 | Cash | Cash received / paid equal the Cash Flow tab's actual totals; invoices outstanding are not shown as cash |
+| R6 | Subcontractor or client account opens the Reports URL | "Reports are restricted"; no financial data; no permission errors in the console |
+| R7 | **Export CSV** | File `constrap-commercial-report-<project>-<date>.csv`; opens in Excel / Numbers / Google Sheets with numbers as numbers; no cell evaluates as a formula |
+| R8 | **Print / Save as PDF** (Chrome, Safari, Edge) | Landscape A4; no sidebar, top bar, tabs or buttons; light background; no clipped figures; table header repeats on each page |
+| R9 | Narrow window / phone | Table scrolls horizontally inside its card; nothing overlaps |
+| R10 | Disconnect the network mid-load (DevTools offline) | Figures show "—" while loading, never 0; export and print disabled until loaded |
+
+**Not covered by automated tests.** Rendered DOM, real browser print output,
+spreadsheet application behaviour, and the production rules path (the report
+adds no read the financial roles did not already make on other tabs).
