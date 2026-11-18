@@ -57,9 +57,9 @@ export const LINE_PAIRS = [
   {
     name: 'variations approve — the scope pair',
     final:
-      "                              && appliedStamped(request.resource.data) && scopeStamped(request.resource.data))) // ADR-63 FINAL: BOTH pairs are REQUIRED on a PO-linked approve",
+      "                      && appliedStamped(request.resource.data) && scopeStamped(request.resource.data))) // ADR-63 FINAL: BOTH pairs are REQUIRED on a PO-linked approve",
     transitional:
-      "                              && appliedStamped(request.resource.data) && (scopeAbsent(request.resource.data) || scopeStamped(request.resource.data)))) // ADR-63 TRANSITIONAL (STAGE 1): the scope pair is OPTIONAL while the M3-B1 bundle is served",
+      "                      && appliedStamped(request.resource.data) && (scopeAbsent(request.resource.data) || scopeStamped(request.resource.data)))) // ADR-63 TRANSITIONAL (STAGE 1): the scope pair is OPTIONAL while the M3-B1 bundle is served",
   },
   {
     name: 'progressClaims exactKeys — variationLineCount',
@@ -76,18 +76,18 @@ export const LINE_PAIRS = [
   {
     name: 'activities update — the revision contract',
     final:
-      "                  && revisionIncremented() // ADR-65 FINAL: revision +1 is REQUIRED on every activity update",
+      "          && revisionIncremented() // ADR-65 FINAL: revision +1 is REQUIRED on every activity update",
     transitional:
-      "                  && (request.resource.data.revision == resource.data.revision || revisionIncremented()) // ADR-65 TRANSITIONAL (STAGE 1): an UNCHANGED revision is still accepted while the 1A1 bundle is served",
+      "          && (request.resource.data.revision == resource.data.revision || revisionIncremented()) // ADR-65 TRANSITIONAL (STAGE 1): an UNCHANGED revision is still accepted while the 1A1 bundle is served",
   },
   // ADR-68 (SHIELD 2A): the FINAL file requires the invoice link keys to be
   // present and null once a claim is approved; the pre-2A bundle writes none.
   {
     name: 'progressClaims approve — the invoice link keys',
     final:
-      "                      && linkUnlinked(request.resource.data) // ADR-68 FINAL: the invoice link keys are REQUIRED (null) on approve",
+      "              && linkUnlinked(request.resource.data) // ADR-68 FINAL: the invoice link keys are REQUIRED (null) on approve",
     transitional:
-      "                      && (!('supplierInvoiceId' in request.resource.data) || linkUnlinked(request.resource.data)) // ADR-68 TRANSITIONAL (STAGE 1): the invoice link keys are OPTIONAL on approve while the pre-2A bundle is served",
+      "              && (!('supplierInvoiceId' in request.resource.data) || linkUnlinked(request.resource.data)) // ADR-68 TRANSITIONAL (STAGE 1): the invoice link keys are OPTIONAL on approve while the pre-2A bundle is served",
   },
 ]
 

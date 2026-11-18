@@ -3570,6 +3570,38 @@ URL, Resend invitation email, acceptance, Quant™ PDF and Authentication
 regressions; the tab title *Constrap* was also observed on the live origin).
 Steps 1–6 above are complete for production.
 
+## L2-B Stage A — Rules capacity recovery 3 — ADR-76 — RULES ONLY (IMPLEMENTED — NOT DEPLOYED, 19 November 2026)
+
+**Status:** implemented on `chore/l2b-rules-capacity` (uncommitted), awaiting
+architect review. **Not published.** One FINAL Rules publish; no Hosting, no
+Functions, no transitional stage, no index, no migration.
+
+A leading-whitespace-only re-indent of `frontend/firestore.rules`: **242,163 →
+229,115 bytes** (−13,048), the regenerated transitional file **242,843 →
+229,795**. Every line is byte-identical after its leading spaces, so the
+published controls are exactly those of the ruleset it replaces. **Do not
+publish the transitional ruleset**; it is regenerated only so it stays
+derivable from the FINAL file.
+
+*Preconditions.* Azure CI green on the merge; from `frontend/`:
+`npm run rules:transitional:check` clean; `wc -c firestore.rules` reads
+**229,115**; `node scripts/verify-rules-whitespace-only.mjs --base 2d5787c`
+prints `EQUIVALENT` for both files and exits 0. **The live ruleset must be the
+242,163-byte file of `main` `2d5787c`** (confirm in the Console first: if an
+older ruleset is live, this publish also publishes every control added since).
+
+*Step 1 (the only step; a separate approved action, never run by an
+implementation task).* From `frontend/`:
+`firebase deploy --only firestore:rules --project constrapp-69b5d`.
+
+*Verify.* The Console shows a new ruleset of 229,115 bytes; then the TESTING.md
+§61 production smoke checks (a financial-role read and one ordinary write on an
+existing register; a non-financial read still refused).
+
+*Rollback.* Republish the previous ruleset from the Console's Rules history (or
+`firestore.rules` at `2d5787c`). The two files enforce the same controls, so a
+rollback changes nothing a user can observe and no data needs repair.
+
 ## L2-A Commercial Report — release (IMPLEMENTED — NOT DEPLOYED, 18 November 2026)
 
 **Status:** implemented on `feature/l2a-commercial-report` (uncommitted), awaiting

@@ -154,6 +154,17 @@ Controls now in place:
   active header the version branch probes); every evaluation ran clean of
   the 1000-expression ceiling in the emulator
   (`tests/rules/budgetAdjustments.rules.test.js`, 67 cases).
+- **Rules capacity recovery 3 (ADR-76, 19 November 2026, IMPLEMENTED — NOT
+  DEPLOYED; Rules-only).** A leading-whitespace-only re-indent made ahead of
+  L2-B Final Account: every non-blank line indented 16 or more spaces loses
+  exactly 8. FINAL `firestore.rules` **242,163 → 229,115 bytes** (−13,048;
+  **15,885 under the budget**), regenerated transitional file **242,843 →
+  229,795**. Every line is byte-identical after its leading spaces, comments
+  included (`frontend/scripts/verify-rules-whitespace-only.mjs --base 2d5787c`,
+  TESTING.md §61), so permissions are unchanged by construction; the emulator
+  suite passed unchanged. Until it is published the LIVE ruleset is still the
+  242,163-byte file. Evaluation cost (the 1000-expression ceiling, access
+  calls) is unchanged.
 - **Size compliance is not deployment proof.** The emulator suite proves the
   repo file; the size test proves it can be published; only the console shows
   what is live — see [DEPLOYMENT.md](DEPLOYMENT.md) → *Verifying which rules
