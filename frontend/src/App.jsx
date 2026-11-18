@@ -49,6 +49,7 @@ import ProjectPulse from './pages/project/ProjectPulse'
 import ProjectShield from './pages/project/ProjectShield'
 import ProjectQuant from './pages/project/ProjectQuant'
 import ProjectPlaceholder from './pages/project/ProjectPlaceholder'
+import ProjectReports from './pages/project/ProjectReports'
 
 export default function App() {
   return (
@@ -162,14 +163,13 @@ export default function App() {
                           pinned to drawing revisions / documents. Financially
                           inert — it writes no financial document. */}
                       <Route path="rfis" element={<ProjectRfis />} />
-                      <Route path="reports" element={
-                        <ProjectPlaceholder
-                          icon="📊"
-                          title="Reports"
-                          description="PDF and CSV exports for this project's financial and progress reports."
-                          badge="Coming in Sprint 3"
-                        />
-                      } />
+                      {/* L2-A Commercial Report: a READ-ONLY, live,
+                          one-project report composed from the existing
+                          financial selectors, with CSV export and a
+                          print / Save-as-PDF layout. Financial roles only
+                          (UX gate; Firestore rules are the boundary). Writes
+                          nothing and stores no snapshot. */}
+                      <Route path="reports" element={<ProjectReports />} />
                     </Route>
 
                     <Route path="contacts"       element={<Contacts />} />

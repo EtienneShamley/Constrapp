@@ -21,7 +21,7 @@ export default function CurrencySetupBanner() {
   const isAdmin = profile?.role === 'company_admin'
 
   return (
-    <div className="mb-4 rounded-xl border border-brand-amber/40 bg-brand-amber/10 px-4 py-3">
+    <div data-print-hide className="mb-4 rounded-xl border border-brand-amber/40 bg-brand-amber/10 px-4 py-3">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5">
         <p className="m-0 text-[12.5px] text-brand-text">
           <span className="font-bold">Company currency not set.</span>{' '}

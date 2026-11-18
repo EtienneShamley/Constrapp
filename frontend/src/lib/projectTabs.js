@@ -1,9 +1,10 @@
-// ⚠️ Photos and Reports are DELIBERATELY ABSENT.
+// ⚠️ Photos is DELIBERATELY ABSENT.
 //
-// Both are unimplemented placeholder screens. Their routes and
-// `ProjectPlaceholder` pages remain in App.jsx — typing the URL still renders
-// them — but a private-beta user must not be offered a tab that leads nowhere.
-// Re-add the entry here when the module ships; do not delete the route.
+// It is an unimplemented placeholder screen. Its route and `ProjectPlaceholder`
+// page remain in App.jsx — typing the URL still renders it — but a
+// private-beta user must not be offered a tab that leads nowhere. Re-add the
+// entry here when the module ships; do not delete the route. (Reports shipped
+// as the L2-A Commercial Report and is a tab again.)
 export const PROJECT_TABS = [
   { to: 'overview',         label: 'Overview' },
   // PULSE™ 1A (ADR-47): deterministic project health indicators over the
@@ -32,6 +33,9 @@ export const PROJECT_TABS = [
   { to: 'forecasting',      label: 'Forecast' },
   { to: 'variations',       label: 'Variations' },
   { to: 'commercial',       label: 'Commercial' },
+  // L2-A Commercial Report: read-only, one project, financial roles (the page
+  // shows a restricted notice to other roles and opens no financial read).
+  { to: 'reports',          label: 'Reports' },
   { to: 'documents',        label: 'Documents' },
   // Constrapp GANTT™ (ADR-64): the ADR-29 project programme — activities,
   // milestones, the activity table and the Gantt chart — under its module

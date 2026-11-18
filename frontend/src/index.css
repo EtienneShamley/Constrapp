@@ -67,3 +67,66 @@ body {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.3; }
 }
+
+/* ── L2-A Commercial Report — print / Save as PDF ─────────────────────────────
+   Every rule is scoped to `body:has(.commercial-report)`, so printing any other
+   page is unchanged. The app chrome (sidebar, top bar, project header and tabs,
+   banners) is hidden; the scroll containers are released so the whole report
+   flows across pages; the dark theme tokens are swapped for a light, ink-
+   friendly palette (browsers drop backgrounds by default, so light-on-dark
+   text would otherwise print invisibly). No figure is clipped: tables are
+   un-scrolled and wrap cost-code names, and amounts never wrap. */
+@media print {
+  /* A NAMED page, used only by the report — other pages keep the browser's
+     default page setup. Where named pages are unsupported the report prints
+     portrait; headers then wrap rather than clip (below). */
+  @page commercial-report { size: A4 landscape; margin: 12mm; }
+  .commercial-report { page: commercial-report; }
+
+  :root:has(.commercial-report) {
+    --color-brand-bg:        #FFFFFF;
+    --color-brand-sidebar:   #FFFFFF;
+    --color-brand-surface:   #FFFFFF;
+    --color-brand-card:      #FFFFFF;
+    --color-brand-card-hov:  #FFFFFF;
+    --color-brand-border:    #C9D2DC;
+    --color-brand-accent:    #00745F;
+    --color-brand-amber:     #8A5300;
+    --color-brand-red:       #B91C1C;
+    --color-brand-blue:      #1D4ED8;
+    --color-brand-purple:    #6D28D9;
+    --color-brand-text:      #0B1629;
+    --color-brand-muted:     #4A5A6A;
+    --color-brand-text-soft: #2C3E50;
+  }
+
+  body:has(.commercial-report) { background: #FFFFFF !important; color: #0B1629 !important; }
+
+  body:has(.commercial-report) [data-app-shell] {
+    display: block !important; height: auto !important; overflow: visible !important;
+  }
+  body:has(.commercial-report) [data-app-shell] > :not([data-app-content]),
+  body:has(.commercial-report) [data-app-content] > :not([data-app-main]),
+  body:has(.commercial-report) [data-print-hide],
+  .commercial-report .report-controls { display: none !important; }
+  body:has(.commercial-report) [data-app-content],
+  body:has(.commercial-report) [data-app-main] {
+    display: block !important; overflow: visible !important; padding: 0 !important;
+  }
+
+  .commercial-report { gap: 10px !important; font-size: 10.5pt; }
+  .commercial-report .report-header,
+  .commercial-report .report-card { box-shadow: none !important; border-color: #C9D2DC !important; overflow: visible !important; }
+  .commercial-report .report-figure,
+  .commercial-report .report-table tr { break-inside: avoid; page-break-inside: avoid; }
+  .commercial-report h2 { break-after: avoid; page-break-after: avoid; }
+  .commercial-report .report-table-wrap { overflow: visible !important; }
+  .commercial-report .report-table { font-size: 9pt; }
+  .commercial-report .report-table thead { display: table-header-group; }
+  .commercial-report .report-table tfoot { display: table-row-group; }
+  .commercial-report .report-table th,
+  .commercial-report .report-table td { padding: 4px 6px !important; }
+  .commercial-report .report-table thead th { white-space: normal !important; }
+  .commercial-report .report-table tbody th { min-width: 0 !important; }
+  .commercial-report * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}

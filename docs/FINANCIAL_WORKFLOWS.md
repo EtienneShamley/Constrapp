@@ -2321,6 +2321,36 @@ manual/probability-weighted revenue forecast override. (Client Invoices and
 Accounts Receivable have since shipped — see the Client Invoice Lifecycle above.
 They report invoiced value alongside margin and do **not** feed it.)
 
+### Commercial Report (L2-A) — IMPLEMENTED, NOT DEPLOYED
+
+A read-only, live report for **one project in one currency** (Reports tab;
+`lib/commercialReport.js`). It introduces **no formula**: every figure is an
+existing selector's output, and availability follows `lib/projectSnapshot.js`
+(failed source → *Unavailable*, loading → "—", never zero; a missing contract
+value → *Not set*).
+
+| Report figure | Source (unchanged) |
+|---|---|
+| Original Contract Value | `computeMargin().originalContractValue` (commercial baseline) |
+| Current Contract Sum = Forecast Revenue | `projectSnapshot().currentContractSum` (Original Contract Value + approved client variations) |
+| Approved Budget | `projectSnapshot().approvedBudget` over `resolveBudgetSource` (approved version + approved adjustments, ADR-70/71; the working register only while no version is approved, labelled *Working budget (not approved)*) |
+| Committed (remaining open) | `projectSnapshot().remainingCommitted` (ADR-55 remaining open commitment — not cost incurred) |
+| Claimed (awaiting certification) | Σ `claimedPendingByCostCode` (submitted / under-review claim lines; never Actual) |
+| Actual Cost | `projectSnapshot().actual` (certified claims + posted invoices − posted credits) |
+| Cost to Complete | `forecastRollups().costToComplete` (remaining committed + uncommitted CTC) |
+| Forecast Final Cost | `projectSnapshot().forecastFinalCost` |
+| Variance to Budget | `projectSnapshot().varianceToBudget` (approved budget − FFC, including cost codes with no budget line) |
+| Forecast Gross Profit, Forecast Margin % | `projectSnapshot().margin` (`computeMargin`; margin % is *Not calculable* when revenue ≤ 0) |
+| Approved / pending client and supplier variations; applied / unapplied split | `computeMargin()` outputs — pending is shown separately and counted in no figure |
+| Cash received / paid / net | `totalActualCashIn(cashInRows)`, `totalActualCashOut(cashOutRows)`, `actualNetCash` — posted records, gross |
+| Client invoices outstanding | `receivablesSummary().remaining` (gross; not cash) |
+| Supplier invoices unpaid | `projectSnapshot().remainingPayable` (gross; not cash) |
+| Cost-code rows | `projectForecastRows` over the same budget source, plus Claimed per code; a code with only an uncertified claim gets a row with zeros elsewhere |
+
+Cost-code totals equal the headline figures by construction (tested). The
+generation time is when the view was opened or last exported / printed — not
+an accounting cut-off; nothing is stored.
+
 ### Final Account *(planned)*
 
 The closing reconciliation: approved budget + approved variations vs actual cost,
