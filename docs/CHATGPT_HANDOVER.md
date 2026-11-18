@@ -7,19 +7,17 @@ documentation: where this file and a source document disagree, the source
 document wins and this file must be corrected.
 
 **Last updated:** 18 November 2026 (NZ). **Git checkpoint:** `main` at
-`5fb96da` (*Merge DC46 visibility and external member controls*), equal to
-`origin/main`. This revision was prepared on the uncommitted branch
-`fix/dc46-external-document-access`; once that branch is merged, the
+`0225b03` (*Merge DC46 external document access correction*), equal to
+`origin/main`. This revision was prepared on the uncommitted documentation
+branch `chore/dc46-final-closeout`; once that branch is merged, the
 checkpoint is the merge commit and this line must be refreshed.
 
-**Known lag in this file and its sources.** Periodic reconciliation was
-activated at a 2-hour interval on 17 November 2026 (19:16 UTC), and DC46-C
-Stages 2 and 3 were merged (`5fb96da`) and deployed on 17 November 2026
-(Rules 20:47, the eight callables 20:49, Hosting 20:49 UTC). Section A says
-so; the detailed rows of section G, parts of sections I and J, and many
-places in the source documents still describe reconciliation as prepared or
-disabled and Stages 2 and 3 as not deployed. They are corrected in the
-consolidated DC46 closeout, which is not yet authorised.
+**DC46 is closed.** Deferred Control 46 was CLOSED on 18 November 2026 with
+documented accepted risks, after final external-member acceptance in
+production. The consolidated documentation closeout was done on the branch
+above. Historical release records in the source documents keep the wording
+of their own dates (older revision names, "not activated" in a dated
+record); each DC46 section now opens with its current status.
 
 **This file is a point-in-time snapshot.** It does not replace checking the
 current Git state or verifying production. Maintenance is mandatory —
@@ -41,44 +39,34 @@ current Git state or verifying production. Maintenance is mandatory —
 
 | Item | State |
 |---|---|
-| **Current milestone** | DC46 security (Deferred Control 46 — Storage download links after a membership ends), part C. **Periodic reconciliation LIVE at a 2-hour interval since 17 November 2026 19:16 UTC**; monitoring Policies A, B and C enabled. **Stages 2 and 3 (visibility-reduction lock; external-member removal) merged and DEPLOYED 17 November 2026 UTC.** **Final security correction — external members read only `project` + `active` documents — IMPLEMENTED on `fix/dc46-external-document-access`, uncommitted, NOT DEPLOYED, awaiting architect review.** Stage 4 volume measurement DEFERRED to a threshold-triggered follow-up (architect decision) |
-| **Latest Git checkpoint** | **VERIFIED:** branch `main`, HEAD `5fb96da989fc2394dc208fcf354029aeb1d759ea` (`5fb96da` *Merge DC46 visibility and external member controls*), equal to `origin/main` (remote read 18 November 2026 NZ); working tree clean apart from the branch that carries this file. Azure CI status on `main`: not checked when this file was written. Preceding commits: `5d0f3c2` (Stages 2 and 3), `2b3ba9a` (activation merge), `c1a45ee` (activation commit, `0` → `2`), `a2544a1` (activation readiness — the recorded rollback checkpoint for the worker) |
-| **Production** | **REPORTED:** live at `https://app.constrap.com` on Firebase project `constrapp-69b5d`. **VERIFIED** read-only, 17 November 2026 21:17–21:40 UTC: published Firestore ruleset (released 20:47:22 UTC) and Storage ruleset byte-identical to `main` `5fb96da` (242,127 and 8,674 bytes); the eight callables on revisions `-00004-*` (deployed 20:49 UTC; **no request received since** — Stage 3 code and the new Team page have not been exercised in production); Hosting release 20:49:46 UTC; worker `processfilelinkrevocations-00003-ceg`, concurrency 1, `FILE_LINK_RECONCILE_INTERVAL_HOURS=2`; Scheduler enabled, every run since activation 200; billing reads enabled; Policies A, B and C enabled; planning heartbeats 19:17, 20:17 and 21:17 UTC (overdue 1, 0, 0 — the first is the expected activation line); first periodic sweep 19:18:02 complete (5 scanned, 0 removed, 0 failed); no object changed since 16 November 23:13 UTC; 1 company, 3 users, 0 `subcontractor`, `client` or `super_admin` users (count-only). **NOT YET OBSERVED when this was written (21:40 UTC):** the second periodic sweep, predicted about 22:18 UTC — steady state is unconfirmed until a read-only recheck. Nothing from the correction branch is deployed |
-| **Deferred Control 46** | **OPEN** |
+| **Current milestone** | **DC46 security — COMPLETE.** Deferred Control 46 (Storage download links after a membership ends) CLOSED 18 November 2026 with accepted risks. Next milestone in the strategic sequence: the international infrastructure assessment — NOT STARTED, no scope recorded |
+| **Latest Git checkpoint** | **VERIFIED:** branch `main`, HEAD `0225b0376ec6a0b3bc132f9858c31fb1d4368bc5` (`0225b03` *Merge DC46 external document access correction*), equal to `origin/main` (fetched 17 November 2026 22:16 UTC); working tree clean apart from the documentation branch that carries this file. Azure CI on `main`: REPORTED green by the Product Owner before deployment. Preceding commits: `011954a` (external document access correction), `5fb96da` (Stages 2 and 3 merge), `2b3ba9a` (activation merge), `a2544a1` (worker rollback checkpoint) |
+| **Production** | **REPORTED:** live at `https://app.constrap.com` on Firebase project `constrapp-69b5d`. **VERIFIED** read-only, 17 November 2026 22:16–22:22 UTC and again 18 November 02:13 UTC: Firestore ruleset `12278725…` (242,163 bytes) and Storage ruleset `8b8edc14…` (9,271 bytes) byte-identical to `main`; Hosting version `b70a1504ff327671`, build files byte-identical to `main` on both origins; eight callables on `-00004-*`; worker `processfilelinkrevocations-00003-ceg`, concurrency 1, `FILE_LINK_RECONCILE_INTERVAL_HOURS=2`; Scheduler enabled, every run since activation 200; Policies A, B and C enabled; billing reads enabled; no WARNING or ERROR since 17 November 19:17 UTC; no IAM change since 16 November. 1 company; 2 active Company Admins; 2 deactivated test members; 0 active external users |
+| **Deferred Control 46** | **CLOSED — 18 November 2026, with accepted risks; production acceptance approved by the architect** (SECURITY.md item 46; ADR-75 → *DC46 closure record*; TESTING.md §59) |
 
-**Active risks (detail in section I):** until the correction is released, a
-non-internal member can still read and open superseded and withdrawn
-`project` documents (no such user exists in production today) · external-member
-production acceptance is unverified (Stage 3 and the correction) · a
-download-token URL copied earlier keeps working until a sweep removes the
-token · Admin SDK and console writes bypass Rules · the cause of the token
-re-creations of 12 and 16 November is unattributed · billing administration
-unconfirmed (paid billing is Product Owner-reported) · monitoring is
-detection inside the same project and has never fired on a real failure ·
-reconciliation steady state not yet observed past the first sweep · Firestore
-rules source would be 2,837 bytes under its approved budget after the
-correction.
+**Accepted risks (not eliminated — detail in section I):** copied download
+links live until a sweep removes the token (the two-hour reconciliation
+interval is not a strict revocation deadline — completion depends on
+scheduling, worker health and backlog) · console and
+Admin SDK writes bypass Rules · the November token re-creations are
+unattributed · every member reads every drawing revision · monitoring
+shares the worker's cloud project · Firestore Rules have 2,837 bytes of
+headroom.
 
-**Exact next development action:** architect review of
-`fix/dc46-external-document-access` (ADR-75 → *External document access
-follows status*; TESTING.md §58), then Git integration and Azure CI.
-**Next release gate:** authorisation of step 1 of the release runbook
-(Firestore Rules and Storage Rules together), then Hosting — each separately
-authorised (DEPLOYMENT.md → *DC46 — external document access correction*).
-No Functions deployment.
+**Exact next development action:** architect review of the documentation
+branch `chore/dc46-final-closeout`, then Git integration (Product Owner).
+No code, Rules, Functions or Hosting change is pending. **Next release
+gate:** none.
 
 **Awaiting authorisation — none of these is approved yet:**
 
 | Action | State |
 |---|---|
-| Git integration of `fix/dc46-external-document-access` | Awaiting architect review |
-| Release step 1 — Firestore Rules and Storage Rules | PREPARED. NOT DEPLOYED |
-| Release step 2 — Hosting only (Documents page and hook) | PREPARED. NOT DEPLOYED |
-| Production acceptance with a disposable external test member (Stage 3 removal, TESTING.md §57; the correction, §58) | NOT DONE — provisioning the member is a production data change needing its own approval |
-| Read-only steady-state recheck of periodic reconciliation | NOT DONE — second sweep predicted about 17 November 2026 22:18 UTC |
-| Billing administration by the billing account owner (ownership, a second administrator, a budget and its notifications) | NOT DONE — administrator action. **Paid billing is REPORTED by the Product Owner (17 November 2026);** that does not complete this item |
-| DC46-C Stage 4 — measurement at volume | **DEFERRED** to a threshold-triggered follow-up (a company near 50,000 objects, about 500 companies, or `yielded` / `deferred` / overdue in the worker's logs). The orphan-prefix check was made once, read-only, 17 November 2026: one prefix, one company. Closure wording still to be agreed |
-| Consolidated DC46 documentation closeout | NOT AUTHORISED |
+| Git integration of `chore/dc46-final-closeout` (documentation only) | Awaiting architect review |
+| Billing administration by the billing account owner (ownership, a second administrator, a budget and its notifications) | NOT DONE — administrator action; a follow-up outside DC46. **Paid billing is REPORTED by the Product Owner (17 November 2026);** that does not complete this item |
+| Other DC46 follow-ups (Storage Data Access audit logs; Rules size reduction; load testing at agreed triggers; drawing-revision visibility policy; faster token revocation) | NOT STARTED, none approved — ROADMAP.md → *DC46 follow-ups* |
+| Minor documentation debt — three source comments still read "Deferred Control 46 — still OPEN" | Not blocking (architect, 18 November 2026); fix with the next code change in those files |
+| International infrastructure assessment | NOT STARTED — no scope recorded |
 
 ---
 
@@ -133,10 +121,10 @@ AGENT.md  CLAUDE.md  PRODUCT.md  ROADMAP.md  README.md  azure-pipelines.yml
 | Region (Functions, Scheduler) | `australia-southeast1` | VERIFIED in repository documents |
 | Production origin | `https://app.constrap.com` (the `web.app` / `firebaseapp.com` origins also serve) | REPORTED live 11 November 2026 |
 | Hosting | Firebase Hosting, deployed by hand | REPORTED |
-| Callables | `listTeam`, `createInvitation`, `resendInvitation`, `revokeInvitation`, `previewInvitation`, `acceptInvitation`, `changeMemberRole`, `deactivateMember` — App Check enforced | **VERIFIED** by read-only production check, 16 November 2026: revisions `-00003-*`, the same source as `main` `44446a0` |
-| Worker | Cloud Run service `processfilelinkrevocations`, revision `-00002-had`, concurrency 1, own service account | VERIFIED by read-only production check, 16 November 2026 (not redeployed with the callables) |
-| Scheduler | `firebase-schedule-processFileLinkRevocations-australia-southeast1`, every minute | REPORTED |
-| Monitoring | Alert Policies A and B; email channels `DC46 - Product Owner` and `DC46 - Billing Administrator` (addresses held only in Cloud Monitoring). Policy C and its log-based metric: files only, NOT CREATED | VERIFIED by read-only production check, 16 November 2026 (re-read 23:51 UTC: two policies, no log-based metric) |
+| Callables | `listTeam`, `createInvitation`, `resendInvitation`, `revokeInvitation`, `previewInvitation`, `acceptInvitation`, `changeMemberRole`, `deactivateMember` — App Check enforced | **VERIFIED** by read-only production check, 17–18 November 2026: revisions `-00004-*` (deployed 17 November 2026 20:49 UTC, source of `main` `5fb96da`; functions source unchanged in `0225b03`) |
+| Worker | Cloud Run service `processfilelinkrevocations`, revision `-00003-ceg`, concurrency 1, own service account, `FILE_LINK_RECONCILE_INTERVAL_HOURS=2` | VERIFIED by read-only production check, 18 November 2026 |
+| Scheduler | `firebase-schedule-processFileLinkRevocations-australia-southeast1`, every minute, enabled | VERIFIED by read-only production check, 18 November 2026 |
+| Monitoring | Alert Policies A, B and C; log-based metric `dc46_reconciliation_plan_complete`; email channels `DC46 - Product Owner` and `DC46 - Billing Administrator` (addresses held only in Cloud Monitoring) | VERIFIED by read-only production check, 18 November 2026 (three policies, all enabled, two channels each) |
 | Invitation email | Resend, from the Functions only; key in Secret Manager | REPORTED |
 | Emulator project | `constrapp-rules-test` (tests only, never a real project) | VERIFIED |
 | `.firebaserc` | None. Every deploy names `--project` explicitly | VERIFIED |
@@ -244,7 +232,7 @@ Summaries only. The linked source is authoritative.
 | **Multi-tenant isolation** | Every document except `users/{uid}` lives under `companies/{companyId}/…`. Rules read `users/{uid}` and compare `companyId` to the path. The membership document is client-read-only | [ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md) §1; [SECURITY.md](SECURITY.md) → *Authentication & Membership* |
 | **Where security is enforced** | Firestore and Storage Security Rules are the trust boundary for all client-SDK data. The team-management Functions bypass rules and authorise every call themselves. Client-side role and lifecycle checks are UX only. Never call a client-only control "enforced" | [SECURITY.md](SECURITY.md); [ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md) §6–§7 |
 | **Trusted backend is narrow** | `frontend/functions/` does team membership and download-token clean-up only. No financial write, general API or new trigger without a new ADR | [ARCHITECTURE.md](ARCHITECTURE.md) → *Client-SDK Data Access + One Narrow Trusted Backend*; ADR-72, ADR-74 |
-| **Rules capacity** | The Firestore ruleset must stay under the approved 245,000-byte budget (hard limit 262,144). Current FINAL file: 241,924 bytes | [SECURITY.md](SECURITY.md) → *Ruleset source-size limit*; ADR-60, ADR-69 |
+| **Rules capacity** | The Firestore ruleset must stay under the approved 245,000-byte budget (hard limit 262,144). Current FINAL file: 242,163 bytes (2,837 of headroom) | [SECURITY.md](SECURITY.md) → *Ruleset source-size limit*; ADR-60, ADR-69 |
 | **Financial correctness** | Committed, Claimed, Actual, Invoiced, forecast, margin and cash figures are derived at read time. Nothing writes a financial rollup onto a Budget Line. All money through `roundMoney`; canonical amounts ex-GST. A failed or loading source shows *Unavailable*, never zero | [AGENT.md](../AGENT.md) → *Financial Invariants*; [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md); ADR-41, ADR-44, ADR-55 |
 | **Approved Budget** | An immutable approved version plus approved adjustments; never a silent fallback to working lines | ADR-70, ADR-71 |
 | **Per-project currency** | One currency per project; a label, never a conversion. No FX. Format only through `formatCurrency`. GST stays a flat Australian 10% — currency is not tax | [AGENT.md](../AGENT.md) → *Financial Invariants*; ADR-21 |
@@ -276,18 +264,20 @@ records, most of them "confirmed by the Product Owner". Dates are as recorded.
 | **L1 Team Management** | Invitations, acceptance, role changes, deactivation through the trusted backend; Constrap brand and custom domain | ADR-72 | LIVE and accepted, 11 November 2026 |
 | **DC46-A** | Authenticated Storage reads; the app mints no download URL | ADR-73 | LIVE, 11 November 2026 |
 | **DC46-B** | Scheduled worker removes legacy download tokens after a membership change | ADR-74 | LIVE and accepted, 12 November 2026 |
-| **DC46-C Stage 1** | Updated worker (fair scheduling, recovery rules, concurrency 1). Membership-triggered revocation accepted through it | ADR-75 | Worker DEPLOYED 13 November; ACCEPTED 16 November 2026. **Periodic reconciliation NOT ACTIVATED** |
-| **DC46-C callable deployment** | The eight team callables redeployed from `main` `44446a0`, callables only (revisions `-00003-*`), so they write the ADR-75 request priority. The worker was not redeployed | ADR-75 (implementation status) | DEPLOYED and ACCEPTED 16 November 2026; verified read-only. **Deactivation regression through the new revisions PASSED 16 November 2026** (TESTING.md §55) |
-| **DC46-C monitoring** | Alert Policies A and B and two email notification channels on the worker. Detection only — not a control and not an external monitor | ADR-75 (implementation status) | CREATED 16 November 2026 and verified read-only; test delivery REPORTED by both recipients; neither failure condition has fired |
+| **DC46-C Stage 1** | Updated worker (fair scheduling, recovery rules, concurrency 1) and periodic reconciliation | ADR-75 | Worker DEPLOYED 13 November; ACCEPTED 16 November 2026. **Periodic reconciliation ACTIVE at a 2-hour interval since 17 November 2026 19:16 UTC**; three periodic sweeps observed, all complete |
+| **DC46-C callable deployment** | The eight team callables redeployed from `main` `44446a0`, callables only (revisions `-00003-*`, since replaced by `-00004-*` on 17 November 2026), so they write the ADR-75 request priority. The worker was not redeployed | ADR-75 (implementation status) | DEPLOYED and ACCEPTED 16 November 2026; verified read-only. **Deactivation regression through the new revisions PASSED 16 November 2026** (TESTING.md §55) |
+| **DC46-C monitoring** | Alert Policies A, B and C and two email notification channels on the worker. Detection only — not a control and not an external monitor | ADR-75 (implementation status) | A and B CREATED 16 November, C 17 November 2026; verified read-only; test delivery REPORTED by both recipients; no failure condition has fired on a real failure |
+| **DC46-C Stages 2 and 3** | No client can change a document from `project` to `internal`; a Company Admin can remove a subcontractor or client | ADR-75 | LIVE 17 November 2026 (`main` `5fb96da`; callables `-00004-*`); production-accepted 18 November 2026 |
+| **DC46 external document access** | Non-internal roles read only `project` + `active` documents (Firestore and Storage Rules, hook, page) | ADR-75 | LIVE 17 November 2026 22:15 UTC (`main` `0225b03`); production-accepted 18 November 2026 |
+| **DC46 closure** | Final external-member acceptance on a disposable subcontractor; documentation closeout | ADR-75 → *DC46 closure record*; TESTING.md §59 | **Deferred Control 46 CLOSED 18 November 2026 with accepted risks** |
 
 **Planned, partial or not built — do not present as complete:**
 
 | Item | State |
 |---|---|
-| DC46-C periodic reconciliation | Implemented, switched off in production; activation PREPARED for a 2-hour interval (17 November 2026), not performed |
-| DC46-C monitoring (Policies A/B, channels) | CREATED in production 16 November 2026 — detection only; neither failure condition has fired. Policy C is PREPARED as files, not created |
+| DC46 follow-ups (billing administration, Storage audit logs, Rules size, load testing at triggers, drawing visibility, faster revocation) | NOT STARTED, none approved — ROADMAP.md → *DC46 follow-ups* |
+| DC46-C Stage 4 measurement at volume | DEFERRED to a threshold-triggered follow-up (about 500 companies, about 50,000 objects in one company, or routine deferral/overdue lines) |
 | Independent external availability monitor | Not built; future reliability work, no scope recorded |
-| DC46-C Stages 2–4 | PROPOSED in ADR-75, not started |
 | GST boundary hotfix (`fix/gst-boundary-pins`) | Merged; production state unconfirmed — see the verification list below |
 | Estimating; BOQ → Approved Budget transfer | Not built |
 | Final Account; commercial reports | Not built (Reports is a hidden placeholder) |
@@ -316,44 +306,42 @@ ARCHITECTURE.md; the `backend/` statement in AGENT.md; the ADR-75 title).
 
 ---
 
-## G. Current DC46 state
+## G. DC46 final state — CLOSED 18 November 2026
 
 Sources: [SECURITY.md](SECURITY.md) → *Deferred Controls* item 46;
-[DEPLOYMENT.md](DEPLOYMENT.md) → *DC46-B*, *DC46-C*, *DC46-C monitoring
-readiness*; [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) → ADR-73, ADR-74,
-ADR-75; [TESTING.md](TESTING.md) §52–§57; [ops/monitoring/README.md](../ops/monitoring/README.md).
+[PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) → ADR-73, ADR-74, ADR-75
+(*DC46 closure record*); [DEPLOYMENT.md](DEPLOYMENT.md) → *DC46 — production
+closure record*; [TESTING.md](TESTING.md) §52–§59;
+[ops/monitoring/README.md](../ops/monitoring/README.md). Times UTC.
 
 | Item | State |
 |---|---|
-| ADR-74 (DC46-B, token revocation by a scheduled worker) | LIVE and accepted, 12 November 2026 — REPORTED |
-| ADR-75 (DC46-C) Stage 1 | Merged (`38ab578`). Worker deployed 13 November; revocation production-accepted 16 November 2026 on backend evidence — REPORTED |
-| Worker and Scheduler | The existing worker and its one Scheduler job, every minute. No new function, job or service account was added by Stage 1 |
-| Periodic reconciliation | *(refreshed 18 November)* **ACTIVE at 2 hours since 17 November 2026 19:16 UTC** (`FILE_LINK_RECONCILE_INTERVAL_HOURS=2`, worker `-00003-ceg`, `main` `2b3ba9a`) — VERIFIED read-only at 19:29 UTC: first pass and first sweep complete; steady state beyond that not yet observed. 1 hour remains rejected. With 2 h each company is swept about every 2–3 hours (simulated on the real code, TESTING.md §56). Rollback checkpoint for the worker: `a2544a1` |
-| Activation | *(refreshed 18 November)* Readiness merged (`a2544a1`); activation commit `c1a45ee` merged as `2b3ba9a` — VERIFIED in Git. Performed as one worker-only deploy, 17 November 2026 19:16 UTC (see *Periodic reconciliation*). Rollback: redeploy the worker alone from an isolated worktree at `a2544a1` (interval `0`), disable policy C, then a reviewed revert on `main`; the callables are never touched. Runbook: DEPLOYMENT.md → *DC46-C* → *Activation runbook* (its status wording is stale until the closeout) |
-| Monitoring readiness | Merged to `main` (`5615239`) — VERIFIED. Contains policy files, tests, runbook and procedure |
-| Production Policies A and B | **CREATED 16 November 2026 by the Product Owner.** A: no successful worker run for 15 minutes. B: worker error logged. **VERIFIED** read-only at 18:42 UTC: exactly two policies, both enabled, identical to the committed files, each with both channels; 0 log-based metrics |
-| Notification channels | `DC46 - Product Owner`, `DC46 - Billing Administrator` — email, enabled — VERIFIED. Addresses are not in the repository |
-| Delivery test | Temporary policy created 18:26:30 UTC, incident opened 18:29:30, policy deleted 18:37:51, incident closed 18:38:51 — VERIFIED. **Both recipients received the email — REPORTED** by the Product Owner; no cloud record of email arrival exists. No temporary resource remains |
-| What monitoring has not shown | Neither failure condition has fired or been triggered in production. No guarantee for a deleted service; billing-suspension behaviour unverified; same project; no external monitor |
-| Policy C (planning heartbeat) | *(refreshed 18 November)* **CREATED and enabled** — VERIFIED read-only 17 November 2026 19:29 UTC (*DC46 file-link worker: reconciliation planning stopped for 3 hours*); files `ops/monitoring/dc46-planning-heartbeat.metric.json` + `dc46-planning-heartbeat-absent.policy.json`. First heartbeat point 19:17 UTC. Never fired on its real condition |
-| Callable deployment | **COMPLETE — 16 November 2026, about 20:20 UTC.** Exactly the eight team callables, from `main` `44446a0`; the worker was not redeployed (a recorded departure from the `--only functions` first written). Revisions: `listteam-00003-qon`, `createinvitation-00003-pup`, `resendinvitation-00003-nem`, `revokeinvitation-00003-wag`, `previewinvitation-00003-juq`, `acceptinvitation-00003-giw`, `changememberrole-00003-meb`, `deactivatemember-00003-qey`. Build hash `afc3ba3a…` (before: `53bb71de…`). The CLI version used was not recorded |
-| Callable verification | **VERIFIED** read-only, 20:22–20:25 UTC: ACTIVE, 100 % traffic; deployed source identical to `main`, including `requestPriority: urgent`; runtime, limits, runtime account and `EMAIL_API_KEY` version `1` unchanged; HTTP 401 without App Check on all eight; no IAM change; worker, Scheduler, Policies A and B, Rules and Hosting unchanged; no reconciliation started. `listTeam` returned 200 on the new revision at 20:22:51 UTC. **REPORTED:** Team page screenshot from the Product Owner — two active administrators, the earlier test member still deactivated, no pending invitation, no error. The screenshot is not proof of that exact request |
-| Membership-changing calls on the new revisions | **Deactivation regression PASSED, 16 November 2026** — re-invitation 22:58–22:59 and `deactivateMember` 200 at 23:12:48 on `-00003-*` (VERIFIED in logs and audit); urgent sequence 4; worker `-00002-had` complete at 23:13:02 — 5 scanned, 1 token removed, 0 failed; queue 0; old URL 403 and in-app PDF access REPORTED by the Product Owner; both administrators unaffected — [TESTING.md](TESTING.md) §55. Not exercised: `changeMemberRole`, `resendInvitation`, `revokeInvitation` |
-| Billing continuity verification | Paid billing **REPORTED** by the Product Owner (17 November 2026); ownership, backup administrator and budget notifications **OUTSTANDING** — administrator action |
-| Stage 2 (visibility-reduction lock, Rules) | **IMPLEMENTED, NOT DEPLOYED** (18 November 2026, uncommitted branch). One Rules condition: no client can change a document from `project` to `internal`; `firestore.rules` 241,924 → 242,127 bytes. No callable built — a correction is an operator task. Rules 35 files / 2,213 tests |
-| Stage 3 (external-member removal through the app) | **IMPLEMENTED, NOT DEPLOYED** (same branch). `deactivateMember` accepts `subcontractor` and `client` targets and still refuses `super_admin`; role changes and invitations unchanged; re-acceptance clears the two stale file-link fields; Team page offers *Deactivate* only on those rows. Functions emulator 8 / 165. Never exercised on a real external member — production has none |
-| Stage 4 (measurement at volume, closure wording) | PROPOSED, not started. Outstanding: the throughput harness in a dedicated non-Firebase bucket (needs Product Owner authorisation); confirmation of the slice and cap values; the one-off orphan-prefix check; residuals written into SECURITY.md; closure wording. Policy C is already created |
-| **Deferred Control 46** | **OPEN** |
+| ADR-73 (DC46-A) | The app does not deliberately expose token-based download URLs (it never requests one); every read is rules-checked. Firebase Storage uploads can still create download-token metadata, which the reconciliation worker removes. LIVE 11 November 2026 |
+| ADR-74 (DC46-B) | Scheduled worker removes download tokens after a deactivation or an internal-to-external role change; request queued in the membership transaction. LIVE 12 November 2026 |
+| ADR-75 Stage 1 — periodic reconciliation | **ACTIVE at 2 hours since 17 November 2026 19:16** (worker `-00003-ceg`, `main` `2b3ba9a`). VERIFIED: hourly heartbeats; periodic sweeps 17 November 19:18:02 (5 scanned, 0 removed), 22:19:02 (5, 0) and 18 November 00:21:02 (9, 4 removed), all complete, zero failures. Rollback checkpoint for the worker: `a2544a1` (disable policy C) |
+| ADR-75 Stage 2 — visibility lock | LIVE 17 November 2026 20:47 (Rules). VERIFIED in production 18 November: a notes-only edit accepted, `project → internal` refused (403) |
+| ADR-75 Stage 3 — external-member removal | LIVE 17 November 2026 20:49 (callables `-00004-*`, Hosting). VERIFIED in production 18 November: `deactivateMember` 200 on `deactivatemember-00004-kom`; three audit events under one request id; Auth disabled, refresh tokens revoked; urgent sweep complete 20 seconds later (9 scanned, 0 removed, 0 failed); queue 0 |
+| External document access follows status | LIVE 17 November 2026 22:15 (`main` `0225b03`; both rules files and Hosting). VERIFIED in production 18 November with the test subcontractor's own session: active documents 200; superseded, withdrawn and internal 403 for metadata, bytes and queries |
+| ADR-75 Stage 4 | Volume measurement DEFERRED to a threshold-triggered follow-up. Orphan-prefix check done once (one prefix, one company). Closure wording agreed in the closure record |
+| Monitoring | Policies A, B and C enabled, two email channels each. Detection only. No failure condition has fired on a real failure; incident state is not readable through the available API |
+| Test identity | Disposable subcontractor `q1IctaF2YhdRTdaY0GdpdetKc3U2`, operator-provisioned 17 November 22:48, deactivated 18 November 02:11; Auth disabled; membership and audit records kept; its four test documents withdrawn |
+| Not covered by the acceptance | A `client` or `super_admin` identity; a second production tenant; Android Chrome |
+| **Deferred Control 46** | **CLOSED with accepted risks** |
 
-**Wording rules.** Monitoring is live as detection only — never describe it
-as a control, as an external or guaranteed availability monitor, or as
-proven against a real failure. Never describe Policy C as existing — it is
-prepared as files only. Never describe the 2-hour interval as active, or as
-a guarantee: once active, a token lives about 3 hours plus queue and sweep
-time without a membership change. Never say
-tokens are "periodically reconciled" or "revoked within 24 hours". Revocation
-is not immediate — membership removal is. Policy A must not be described as
-detecting a billing interruption.
+**Wording rules.** "Closed" means the scoped control is live and accepted —
+never that copied links die instantly. Never say the app "creates no
+tokens": it does not deliberately expose token-based download URLs, but
+uploads can create download-token metadata that the worker later removes.
+Never describe the 2-hour interval as immediate revocation, a guarantee or
+a strict revocation deadline — completion depends on scheduling, worker
+health and backlog: a token lives until the next
+successful sweep of its company (about 3 hours plus queue and sweep time
+without a membership change; longer if a sweep is incomplete or the worker
+is stopped). Membership removal is immediate; link revocation is a
+background clean-up. Monitoring is detection only — never a control, an
+external monitor, or proven against a real failure; Policy A must not be
+described as detecting a billing interruption. Never describe the accepted
+risks as eliminated.
 
 ---
 
@@ -362,7 +350,7 @@ detecting a billing interruption.
 **Source of truth:** [ROADMAP.md](../ROADMAP.md) → *Strategic Development
 Sequence*. Read it there; the list below is only the order.
 
-1. Complete DC46 security — **IN PROGRESS** (sections G and J).
+1. Complete DC46 security — **DONE** (Deferred Control 46 closed 18 November 2026; section G).
 2. International infrastructure assessment — NOT STARTED.
 3. L2 — Commercial Reports and Final Account — NOT STARTED.
 4. L3 — Production Reliability — NOT STARTED.
@@ -392,17 +380,17 @@ approval. Stages 2, 4, 8 and 11 have no scope recorded in the repository.
 
 | Risk | State | Source |
 |---|---|---|
-| **Billing continuity** | The project lost billing for about 17 hours on 12–13 November 2026 and the worker did not run. A permanent paid account is now **REPORTED** by the Product Owner (17 November 2026); who owns it, a second administrator, a budget and who receives billing notices are all **unconfirmed**, and remain preconditions of activation. The billing administrator receiving a DC46 monitoring email is not evidence of any of them | DEPLOYMENT.md → *Billing interruption*, *Billing continuity* |
-| **Monitoring is unproven against a real failure** | Policies A and B exist (16 November 2026), but neither has fired on its real condition; only the email path was exercised, and receipt is reported, not observed. Policy B depends on the worker writing a matching error line | DEPLOYMENT.md → *DC46-C monitoring readiness* → *Monitoring release record* |
-| **Reconciliation steady state** *(refreshed 18 November)* | Active at 2 hours since 17 November 2026; only the first pass and first sweep had been observed when this file was written. One Policy B incident from the expected first-pass overdue line was open and auto-closing | ADR-75 → *Activation readiness*; TESTING.md §56 |
-| **Activation behaviour** | The first planning pass will report the tenant overdue once (its last sweep is older than two intervals) — one expected policy B email, cleared a minute later; how to tell it from a real failure is in the runbook. Rolling the callables back to the ADR-74 build is unsafe once any periodic request has existed. Policy C must be disabled on rollback | DEPLOYMENT.md → *DC46-C* → *Activation runbook* |
+| **Billing continuity** | The project lost billing for about 17 hours on 12–13 November 2026 and the worker did not run. A permanent paid account is **REPORTED** by the Product Owner (17 November 2026); who owns it, a second administrator, a budget and who receives billing notices are all **unconfirmed** — a follow-up outside DC46 | DEPLOYMENT.md → *Billing interruption*, *Billing continuity*; ROADMAP.md → *DC46 follow-ups* |
+| **Monitoring is unproven against a real failure** | Policies A, B and C exist, but none has fired on its real condition; only the email path was exercised, and receipt is reported, not observed. Policy B depends on the worker writing a matching error line. Monitoring and the worker share one project (accepted risk) | DEPLOYMENT.md → *DC46-C monitoring readiness* → *Monitoring release record* |
+| **Reconciliation** | Active at 2 hours since 17 November 2026; three periodic sweeps observed, all complete. The two-hour interval is not a strict revocation deadline: completion depends on scheduling, worker health and backlog, and an incomplete sweep or a stopped worker lengthens it | ADR-75 → *DC46 closure record*; TESTING.md §56, §59 |
+| **Rollback of reconciliation** | Rolling the callables back to the ADR-74 build is unsafe once any periodic request has existed. Policy C must be disabled if the interval is rolled back to `0` | DEPLOYMENT.md → *DC46-C* → *Activation runbook* |
 | **Interval choice** | 1 hour is valid in code but rejected: it collides with the hourly planning period and raises false overdue alerts. A later change of interval must stay at 2 or more | ADR-75 → *Activation readiness*; TESTING.md §56 |
-| **Visibility-based revocation** | Until Stage 2's Rules are published, a direct SDK write can still reduce a document from `project` to `internal` with no revocation; a copied link then lives until the next periodic sweep (about 3 hours). After release, a correction needs an operator, and a console or Admin SDK edit still bypasses Rules | SECURITY.md item 46; DEPLOYMENT.md → *DC46-C Stages 2 and 3* |
-| **External-role removal** | Until Stage 3 is released, subcontractor and client members can only be removed out of band, with the revocation script run afterwards. Production has no such member today; Stage 3 must be live before the first is provisioned | SECURITY.md item 46 |
-| **Storage-token limitations** | Revocation is not immediate; an active member can still obtain a link by a direct SDK call; token behaviour relied on is undocumented by Firebase; tokens reappeared once from an unproven cause; scale is unmeasured (largest sweep: five objects) | SECURITY.md item 46; ADR-74 |
+| **Visibility and status changes** | No client can reduce visibility; a correction needs an operator. A console or Admin SDK edit bypasses Rules and queues no revocation. After a withdrawal, supersession or console change a copied link lives until the next periodic sweep (accepted risk) | SECURITY.md item 46; DEPLOYMENT.md → *Operator procedure — correcting a document's visibility* |
+| **External members** | Removal by a Company Admin is live and production-accepted. Provisioning is still an operator task (an Auth account plus `users/{uid}`); there is no script for it. Membership is company-wide — an external member reads every drawing revision in the company, withdrawn ones included (accepted risk) | SECURITY.md item 46; TESTING.md §59 |
+| **Storage-token limitations** | Revocation is not immediate; an active member can still obtain a link by a direct SDK call; token behaviour relied on is undocumented by Firebase; tokens reappeared twice in November from an unattributed cause (none since); scale is unmeasured (largest sweep: nine objects) — load testing is a triggered follow-up | SECURITY.md item 46; ADR-74; ADR-75 |
 | **Monitoring's own limits** | Policy A cannot be relied on for a billing suspension or a deleted service; both policies live in the project they watch. An independent external availability monitor remains future reliability work | DEPLOYMENT.md → *Policy A* limitations |
 | **International region / latency** | All backend resources are in `australia-southeast1`; suitability for other markets is not assessed. Tax remains Australian GST only | ROADMAP.md → *Strategic Development Sequence* stage 2; AGENT.md |
-| **Rules capacity** | Live: 241,924 of 245,000 bytes. With Stage 2: 242,127 — 2,873 bytes of headroom, no recovery needed for it. The next substantial Rules change will need capacity recovered first | SECURITY.md → *Ruleset source-size limit* |
+| **Rules capacity** | Live: 242,163 of 245,000 bytes — 2,837 bytes of headroom. The next substantial Rules change needs capacity recovered first | SECURITY.md → *Ruleset source-size limit* |
 | **Client-enforced controls** | Several lifecycle, uniqueness and cumulative-cap controls remain client-only | SECURITY.md → *Deferred Controls* |
 | **General App Check enforcement** | Not enabled on Firestore, Storage or Auth | DEPLOYMENT.md → *Deferred: general App Check enforcement* |
 
@@ -410,52 +398,27 @@ approval. Stages 2, 4, 8 and 11 have no scope recorded in the repository.
 
 ## J. Exact next action
 
-**Done on 16 November 2026:** notification channels, Policies A and B, the
-delivery test and its clean-up ([DEPLOYMENT.md](DEPLOYMENT.md) → *DC46-C
-monitoring readiness* → *Monitoring release record*); then the architect's
-review, the deploy of the eight callables at interval `0`, and the read-only
-verification of their configuration and health
-([DEPLOYMENT.md](DEPLOYMENT.md) → *DC46-C* → *Callable release record*).
-
-**Also done:** the controlled deactivation regression on the development
-tenant through the new callables, 16 November 2026 22:58–23:13 UTC —
-PASSED ([TESTING.md](TESTING.md) §55; DEPLOYMENT.md → *Deactivation
-regression record*). **Prepared on 17 November 2026** and since merged:
-activation for a 2-hour interval — scheduling regression over simulated
-days, policy C files and tests, runbook and rollback (TESTING.md §56).
-
-**Done since (17 November 2026):** the activation-readiness branch merged
-(`a2544a1`), policy C created, the activation commit merged (`2b3ba9a`) and
-the worker deployed alone at interval `2` (19:16 UTC) — first pass and first
-sweep VERIFIED read-only; items 1 and 3–5 of the earlier list are complete.
-**Implemented on 18 November 2026 (uncommitted, awaiting review):** DC46-C
-Stages 2 and 3 on `feature/dc46-visibility-external-removal`.
+**Done, 16–18 November 2026 (records in DEPLOYMENT.md and TESTING.md
+§54–§59):** monitoring policies A and B; the eight-callable deploy and the
+deactivation regression; activation of periodic reconciliation at 2 hours
+with policy C; Stages 2 and 3; the external document access correction;
+the final external-member acceptance in production; the DC46 documentation
+closeout (this branch).
 
 **Next. Each step needs explicit authorisation.**
 
-1. **Architect review and Git integration** of
-   `feature/dc46-visibility-external-removal` — two logical commits — then
-   Azure CI on `main`.
-2. **Read-only steady-state recheck** of periodic reconciliation (hourly
-   heartbeats, a second sweep 2–3 hours after the first, `overdue: 0`, the
-   Policy B incident closed) — TESTING.md §56 items 6–7.
-3. **Release step 1 — Firestore Rules only**, then TESTING.md §57 check 1.
-4. **Release step 2 — the eight team callables only** (never the worker),
-   then §57 check 2.
-5. **Release step 3 — Hosting only**, then §57 checks 3–4. Check 3 needs an
-   operator-provisioned disposable external member — its own approval.
-6. **Stage 4**, then the **consolidated DC46 closeout** (activation
-   evidence, Stages 2–4, ADR-75, ROADMAP.md, this file, and the stale
-   "disabled" wording).
-7. **Billing administration** — owner, a backup administrator, a budget and
+1. **Architect review and Git integration** of `chore/dc46-final-closeout`
+   (documentation only), then refresh this file's checkpoint line.
+2. **Billing administration** — owner, a backup administrator, a budget and
    its notifications (DEPLOYMENT.md → *Billing continuity*). Still open.
+3. **Choose the next milestone.** The strategic sequence names the
+   international infrastructure assessment (section H); it has no scope
+   recorded. The other DC46 follow-ups (ROADMAP.md → *DC46 follow-ups*) are
+   not scheduled.
 
-Runbook: DEPLOYMENT.md → *DC46-C Stages 2 and 3 — release runbook*.
-
-Still outstanding beyond that: an
-independent external reliability monitor, which belongs to L3 — Production
-Reliability, and has no scope recorded. The international infrastructure
-assessment follows the completion of DC46 security (section H).
+Still outstanding beyond that: an independent external reliability
+monitor, which belongs to L3 — Production Reliability, and has no scope
+recorded.
 
 After each production step: record what happened in DEPLOYMENT.md, then
 update this handover.

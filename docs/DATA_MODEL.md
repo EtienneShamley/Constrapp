@@ -2062,7 +2062,7 @@ unlike drawings). Reads depend on `visibility`.
 |---|---|---|
 | `name` | string | Required, non-whitespace |
 | `category` | string | `specification` \| `contract` \| `subcontract` \| `report` \| `certificate` \| `safety` \| `schedule` \| `manual` \| `correspondence` \| `other` |
-| `visibility` | string | `project` (every provisioned company member) \| `internal` (company_admin/project_manager/qs). Defaults to `project`. **ADR-75 Stage 2 (implemented, not deployed):** Rules refuse a client change from `project` to `internal`; `internal → project` is unchanged; a reduction is an operator task |
+| `visibility` | string | `project` (every provisioned company member) \| `internal` (company_admin/project_manager/qs). Defaults to `project`. **ADR-75 Stage 2 (live since 17 November 2026):** Rules refuse a client change from `project` to `internal`; `internal → project` is unchanged; a reduction is an operator task |
 | `versionLabel` | string | Free text ("Rev 2", "Issue C") — **not** a revision spine |
 | `documentDate` | string \| null | `'YYYY-MM-DD'` or null; plenty of documents are undated |
 | `status` | string | `active` \| `superseded` \| `withdrawn`. Withdrawn is terminal |
@@ -2083,8 +2083,8 @@ for a subcontractor or client. `hooks/useProjectDocuments.jsx` subscribes with
 not a security control. Ordering is applied client-side, so no composite index
 is needed.
 
-**External access follows `status` (ADR-75 addendum — IMPLEMENTED, NOT
-DEPLOYED, 18 November 2026).** A non-internal role reads a document, and its
+**External access follows `status` (ADR-75 addendum — LIVE since
+17 November 2026 22:15 UTC).** A non-internal role reads a document, and its
 file, only while it is `visibility: 'project'` **and** `status: 'active'`;
 superseded and withdrawn records remain readable to internal roles only. The
 hook therefore adds `where('status','==','active')` for non-internal roles —

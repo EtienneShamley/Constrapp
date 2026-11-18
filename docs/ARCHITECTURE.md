@@ -48,7 +48,7 @@ modules** (screens exist, no functionality) are listed in the module-status tabl
 | Routing | React Router 7 (`react-router-dom`) | `BrowserRouter` |
 | State | React Context + hooks | No Redux/Zustand |
 | Charts | Recharts 3 | Cash Flow chart only. The Dashboard uses **plain SVG** (no chart library): the Budget, cost & revenue bars and the programme status donut (ADR-45) — its original charts were fabricated data and were removed |
-| Backend | Firebase JS SDK 12 — Auth, Firestore, Storage, Functions, App Check | **Client SDK for all project/financial data**; since ADR-72 a narrow **trusted backend** — eight Callable Cloud Functions (2nd gen, Node.js 22, Admin SDK 14, firebase-functions 7) in `frontend/functions/` for team management only, plus one scheduled worker for legacy download-token revocation (ADR-74, live since 12 November 2026) |
+| Backend | Firebase JS SDK 12 — Auth, Firestore, Storage, Functions, App Check | **Client SDK for all project/financial data**; since ADR-72 a narrow **trusted backend** — eight Callable Cloud Functions (2nd gen, Node.js 22, Admin SDK 14, firebase-functions 7) in `frontend/functions/` for team management only, plus one scheduled worker for legacy download-token revocation (ADR-74, live since 12 November 2026; periodic reconciliation every 2 hours per company, ADR-75, live since 17 November 2026) |
 | Lint | ESLint 10 (flat config) | `npm run lint` = `eslint . --max-warnings 0`. Standing policy **0 errors / 0 warnings**, blocking in CI (ADR-41) |
 | Rules tests | Vitest 4 + `@firebase/rules-unit-testing` + `firebase-tools` 15 (emulator) | `npm run test:rules` — **dev-only**. Requires JDK 21+ |
 | Unit tests | Vitest 4 (Node, no emulator) | `npm run test:unit` — pure `lib/` domain logic plus a few structural source tests (`tests/unit/`); separate config (`vitest.config.js`). **No jsdom, no testing-library** |
@@ -75,7 +75,9 @@ callable. There is no Express, no HTTP router, no event trigger and no other
 database. **One scheduled worker (ADR-74, live since 12 November 2026)**,
 `processFileLinkRevocations`, runs every minute and removes legacy Firebase
 download tokens from the Storage objects of companies whose membership
-transactions queued a request (`lib/fileLinkRevocation.js`,
+transactions queued a request and, since ADR-75 (live 17 November 2026), of
+every company about every 2 to 3 hours — not a strict deadline
+(`lib/fileLinkRevocation.js`,
 `lib/fileLinkTokens.js`); it holds no financial logic. Operator scripts (`functions/scripts/`) bootstrap a company
 and reconcile membership with the operator's own credentials.
 

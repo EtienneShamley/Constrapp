@@ -3,17 +3,18 @@
 **Status: policies A and B are CREATED in production (`constrapp-69b5d`,
 16 November 2026). The temporary delivery-test policy was created, used and
 deleted the same day; it does not exist in the cloud. Policy C and its
-log-based metric are PREPARED (17 November 2026) and NOT CREATED.** Any further change
+log-based metric were CREATED on 17 November 2026 and are enabled.** Any further change
 to these resources is a production cloud change that needs its own
-authorisation. Deferred Control 46 stays OPEN: these policies detect, they
-revoke nothing.
+authorisation. Deferred Control 46 was CLOSED on 18 November 2026 with
+accepted risks (docs/SECURITY.md item 46); these policies detect, they
+revoke nothing, and they live in the same cloud project as the worker.
 
 | File | Policy | Condition | Cloud state |
 |---|---|---|---|
 | `dc46-worker-no-successful-run.policy.json` | A — the worker has stopped | No 2xx request to the Cloud Run service `processfilelinkrevocations` (`australia-southeast1`) for 15 minutes | **Permanent — created 16 November 2026, enabled** |
 | `dc46-worker-error-log.policy.json` | B — the worker logged an error | Any `ERROR` line written by that service's container; at most one notification an hour | **Permanent — created 16 November 2026, enabled** |
-| `dc46-planning-heartbeat.metric.json` | Log-based counter `dc46_reconciliation_plan_complete` | Counts the worker's `file-links: reconciliation plan complete` info line (one per planning pass, about hourly while reconciliation is on) | **PREPARED, NOT CREATED** — create before policy C |
-| `dc46-planning-heartbeat-absent.policy.json` | C — planning has stopped | No count on that metric for 3 hours, summed across revisions | **PREPARED, NOT CREATED** — create before activation; disable on rollback to interval `0` |
+| `dc46-planning-heartbeat.metric.json` | Log-based counter `dc46_reconciliation_plan_complete` | Counts the worker's `file-links: reconciliation plan complete` info line (one per planning pass, about hourly while reconciliation is on) | **Permanent — created 17 November 2026** |
+| `dc46-planning-heartbeat-absent.policy.json` | C — planning has stopped | No count on that metric for 3 hours, summed across revisions | **Permanent — created 17 November 2026, enabled** — disable on rollback to interval `0` |
 | `dc46-delivery-test.temporary-policy.json` | Temporary delivery test | Fires because the worker IS healthy. Created to exercise email delivery, then deleted | **Removed — created and deleted 16 November 2026. Kept here only so the test can be repeated under a new approval** |
 
 A read-only check on 16 November 2026 found policies A and B identical to
