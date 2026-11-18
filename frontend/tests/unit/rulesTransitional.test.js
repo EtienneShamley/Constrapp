@@ -120,7 +120,7 @@ describe('firestore.transitional.rules is exactly what the generator produces fr
       const branch = block.slice(block.indexOf('(c) APPROVE'), block.indexOf('(d) REJECT'))
       expect(branch).toContain('&& poCommitted()')
       expect(branch).toContain('&& appliedStamped(request.resource.data)')
-      expect(branch).toContain("resource.data.poId == null\n                          ? (appliedAbsent(request.resource.data) && scopeAbsent(request.resource.data))")
+      expect(branch).toContain("resource.data.poId == null\n                  ? (appliedAbsent(request.resource.data) && scopeAbsent(request.resource.data))")
     }
   })
 

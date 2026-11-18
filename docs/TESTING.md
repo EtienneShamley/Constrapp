@@ -8602,3 +8602,43 @@ a posted receipt and a posted payment.
 **Not covered by automated tests.** Rendered DOM, real browser print output,
 spreadsheet application behaviour, and the production rules path (the report
 adds no read the financial roles did not already make on other tabs).
+
+## 61. L2-B Stage A — Firestore Rules Capacity Recovery 3 (ADR-76, 19 November 2026) — IMPLEMENTED — NOT DEPLOYED; automated checks PASS; production smoke checks NOT RUN
+
+**What changed.** Leading spaces in `frontend/firestore.rules` only: every
+non-blank line indented 16 or more spaces loses exactly 8 (1,631 of 4,122
+lines). **242,163 → 229,115 bytes** (−13,048; 15,885 under the 245,000 budget).
+The transitional file was regenerated (`242,843 → 229,795`). No executable
+token, comment, permission, data shape or client code changed.
+
+**Automated:** lint 0 / 0; unit **83 files / 4,521 tests** (two pins that embed
+a continuation indent updated by the same 8 spaces; the transitional test still
+finds exactly four marked pairs); rules **35 files / 2,238 tests**, run against the
+re-indented file with no rules test changed; `npm run rules:transitional:check`
+clean; `git diff --check` clean; `git diff -w` empty for both rules files.
+
+**The equivalence proof (run from `frontend/`; reproducible from the repository
+alone).**
+
+```bash
+node scripts/verify-rules-whitespace-only.mjs --base 2d5787c
+```
+
+Expected: `frontend/firestore.rules: EQUIVALENT — 4122 lines identical after
+their leading spaces (1631 re-indented)` and `frontend/firestore.transitional.rules:
+EQUIVALENT — 4127 lines …`, exit 0. The script requires equal line counts and
+compares each line byte-for-byte after its leading spaces (comments, inline
+comments and string literals included); a tab, a changed blank line, a deeper
+indent or any other difference exits 1 and names the line. Negative control
+verified: a copy with one `allow delete: if false;` changed to `if true;` fails
+with *content after the leading whitespace differs*.
+
+**Production smoke checks after the Rules publish (NOT RUN — nothing is
+published).**
+
+| # | Check | Expected |
+|---|---|---|
+| W1 | Console → Firestore → Rules | The new ruleset is 229,115 bytes |
+| W2 | Financial role opens Budget, Purchase Orders and the Commercial Report | Figures load as before; nothing reads *Unavailable* |
+| W3 | Financial role saves one ordinary edit (for example a forecast line note) | Accepted |
+| W4 | A deactivated or non-financial account opens a financial tab | Still refused |

@@ -403,7 +403,7 @@ describe('runLinkExistingInvoice — reconcile a claim with no current link to O
       expect(read(rel), rel).not.toMatch(/confirmNoInvoice|markUninvoiced|attestUninvoiced|initialiseLink/)
     }
     // The only claim write that sets the three keys to null is the UNLINK, and it requires a stored string id.
-    expect(read('../firestore.rules')).toContain("&& resource.data.get('supplierInvoiceId', null) is string\n                      && linkUnlinked(request.resource.data)")
+    expect(read('../firestore.rules')).toContain("&& resource.data.get('supplierInvoiceId', null) is string\n              && linkUnlinked(request.resource.data)")
     // existingInvoiceLinkError is the only eligibility test and it requires an invoice.
     expect(existingInvoiceLinkError(legacyClaim, null)).toMatch(/no longer exists/)
   })

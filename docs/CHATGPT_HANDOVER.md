@@ -6,12 +6,12 @@ history. It is an index and a checkpoint, **not** a second copy of the
 documentation: where this file and a source document disagree, the source
 document wins and this file must be corrected.
 
-**Last updated:** 18 November 2026 (NZ). **Git checkpoint:** `main` at
-`84c9fb3` (*Merge DC46 final security closeout*), equal to `origin/main`
-(fetched 18 November 2026). This revision was prepared on the uncommitted
-feature branch `feature/l2a-commercial-report` (L2-A Commercial Report —
-IMPLEMENTED, NOT DEPLOYED); once that branch is merged, the checkpoint is the
-merge commit and this line must be refreshed.
+**Last updated:** 19 November 2026 (NZ). **Git checkpoint:** `main` at
+`2d5787c` (*Merge L2-A commercial reporting*), equal to `origin/main`
+(checked with `git ls-remote`, 19 November 2026). This revision was prepared
+on the uncommitted branch `chore/l2b-rules-capacity` (L2-B Stage A — Rules
+capacity recovery 3, ADR-76 — IMPLEMENTED, NOT DEPLOYED); once that branch is
+merged, the checkpoint is the merge commit and this line must be refreshed.
 
 **DC46 is closed.** Deferred Control 46 was CLOSED on 18 November 2026 with
 documented accepted risks, after final external-member acceptance in
@@ -40,8 +40,8 @@ current Git state or verifying production. Maintenance is mandatory —
 
 | Item | State |
 |---|---|
-| **Current milestone** | **L2-A Commercial Report — IMPLEMENTED — NOT DEPLOYED** on `feature/l2a-commercial-report` (uncommitted), awaiting architect review (ROADMAP.md stage 3; TESTING.md §60; DEPLOYMENT.md → *L2-A Commercial Report — release*). The **international infrastructure assessment is DONE** (architect-approved 18 November 2026): keep Sydney; no Firestore migration; Australian GST unchanged; international tax deferred to its own milestone; **Firestore recovery protection PENDING** (not enabled). DC46 CLOSED 18 November 2026 |
-| **Latest Git checkpoint** | **VERIFIED:** branch `main`, HEAD `84c9fb354e2d7b795e8f22f3bcd706d6bc2289e9` (`84c9fb3` *Merge DC46 final security closeout*), equal to `origin/main` (fetched 18 November 2026); working tree clean before `feature/l2a-commercial-report` was branched from it. Azure CI on `main`: REPORTED green by the Product Owner. Preceding commits: `7ad9003` (DC46 docs closeout), `0225b03` (external document access correction merge), `011954a`, `5fb96da`, `2b3ba9a`, `a2544a1` (worker rollback checkpoint) |
+| **Current milestone** | **L2-B Final Account.** Architecture assessment delivered and accepted as the basis for Stage B (19 November 2026). **Stage A — Rules capacity recovery 3 (ADR-76) IMPLEMENTED — NOT DEPLOYED** on `chore/l2b-rules-capacity` (uncommitted), awaiting architect review (TESTING.md §61; DEPLOYMENT.md → *L2-B Stage A*). **Stage B NOT IMPLEMENTED**; its approval trust boundary (trusted callable finalisation) is PROPOSED, awaiting the architect. **L2-A Commercial Report: LIVE and production-accepted — REPORTED** by the Lead Architect (19 November 2026). International infrastructure assessment DONE. **Firestore recovery protection ENABLED — REPORTED** (PITR, daily backups, delete protection); the first READY backup and the non-production restore test are PENDING. DC46 CLOSED 18 November 2026 |
+| **Latest Git checkpoint** | **VERIFIED:** branch `main`, HEAD `2d5787c00442c101fbf4ca11d9daab8d4b3caacf` (`2d5787c` *Merge L2-A commercial reporting*), equal to `origin/main` (`git ls-remote`, 19 November 2026); working tree clean before `chore/l2b-rules-capacity` was branched from it. Earlier checkpoint: `84c9fb3` (*Merge DC46 final security closeout*). Azure CI on `main`: REPORTED green by the Product Owner. Preceding commits: `7ad9003` (DC46 docs closeout), `0225b03` (external document access correction merge), `011954a`, `5fb96da`, `2b3ba9a`, `a2544a1` (worker rollback checkpoint) |
 | **Production** | **REPORTED:** live at `https://app.constrap.com` on Firebase project `constrapp-69b5d`. **VERIFIED** read-only, 17 November 2026 22:16–22:22 UTC and again 18 November 02:13 UTC: Firestore ruleset `12278725…` (242,163 bytes) and Storage ruleset `8b8edc14…` (9,271 bytes) byte-identical to `main`; Hosting version `b70a1504ff327671`, build files byte-identical to `main` on both origins; eight callables on `-00004-*`; worker `processfilelinkrevocations-00003-ceg`, concurrency 1, `FILE_LINK_RECONCILE_INTERVAL_HOURS=2`; Scheduler enabled, every run since activation 200; Policies A, B and C enabled; billing reads enabled; no WARNING or ERROR since 17 November 19:17 UTC; no IAM change since 16 November. 1 company; 2 active Company Admins; 2 deactivated test members; 0 active external users |
 | **Deferred Control 46** | **CLOSED — 18 November 2026, with accepted risks; production acceptance approved by the architect** (SECURITY.md item 46; ADR-75 → *DC46 closure record*; TESTING.md §59) |
 
@@ -51,21 +51,24 @@ interval is not a strict revocation deadline — completion depends on
 scheduling, worker health and backlog) · console and
 Admin SDK writes bypass Rules · the November token re-creations are
 unattributed · every member reads every drawing revision · monitoring
-shares the worker's cloud project · Firestore Rules have 2,837 bytes of
-headroom.
+shares the worker's cloud project · the LIVE Firestore Rules have 2,837
+bytes of headroom (15,885 once ADR-76 is published).
 
 **Exact next development action:** architect review of
-`feature/l2a-commercial-report` (L2-A Commercial Report), then Git integration
-(Product Owner), then a Hosting-only release on a separate authorisation. No
-Rules or Functions change is pending. **Next release gate:** L2-A Hosting
-release. **Pre-customer gate:** Firestore recovery protection (PENDING).
+`chore/l2b-rules-capacity` (L2-B Stage A), then Git integration (Product
+Owner), then a Rules-only publish on a separate authorisation. In parallel the
+architect decides the Stage B approval trust boundary (ADR-76 → *Stage B
+approval trust boundary*). **Next release gate:** the Stage A Rules publish.
+**Pre-customer gate:** the first READY Firestore backup and the
+non-production restore test (PENDING).
 
 **Awaiting authorisation — none of these is approved yet:**
 
 | Action | State |
 |---|---|
-| Git integration of `feature/l2a-commercial-report` (L2-A Commercial Report; Hosting only) | Awaiting architect review — IMPLEMENTED, NOT DEPLOYED |
-| **Firestore recovery protection** — 7-day PITR, daily backups kept 14 days, delete protection, a non-production restore check (DEPLOYMENT.md → *Firestore recovery protection — PENDING*) | NOT ENABLED — read-only check 18 November 2026: PITR disabled, no backup schedule, delete protection disabled, last copy a manual export of 20 September 2026. **Required before commercial customer onboarding**; Product Owner authorisation needed |
+| Git integration of `chore/l2b-rules-capacity` (L2-B Stage A; Rules only, no Hosting) and its Rules publish | Awaiting architect review — IMPLEMENTED, NOT DEPLOYED |
+| L2-B Stage B — Final Account (data model, Rules block, UI) and the trusted finalisation callable | NOT IMPLEMENTED. Callable finalisation is PROPOSED; it needs an ADR that changes the ADR-72 "no financial logic in Functions" boundary |
+| **Firestore recovery protection** — PITR, daily backups, delete protection, a non-production restore check (DEPLOYMENT.md → *Firestore recovery protection*) | **ENABLED — REPORTED** by the Lead Architect (19 November 2026); not re-read from production in this revision. **Still PENDING:** the first READY scheduled backup and the non-production restore test — required before commercial customer onboarding |
 | Billing administration by the billing account owner (ownership, a second administrator, a budget and its notifications) | NOT DONE — administrator action; a follow-up outside DC46. **Paid billing is REPORTED by the Product Owner (17 November 2026);** that does not complete this item |
 | Other DC46 follow-ups (Storage Data Access audit logs; Rules size reduction; load testing at agreed triggers; drawing-revision visibility policy; faster token revocation) | NOT STARTED, none approved — ROADMAP.md → *DC46 follow-ups* |
 | Minor documentation debt — three source comments still read "Deferred Control 46 — still OPEN" | Not blocking (architect, 18 November 2026); fix with the next code change in those files |
@@ -234,8 +237,8 @@ Summaries only. The linked source is authoritative.
 |---|---|---|
 | **Multi-tenant isolation** | Every document except `users/{uid}` lives under `companies/{companyId}/…`. Rules read `users/{uid}` and compare `companyId` to the path. The membership document is client-read-only | [ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md) §1; [SECURITY.md](SECURITY.md) → *Authentication & Membership* |
 | **Where security is enforced** | Firestore and Storage Security Rules are the trust boundary for all client-SDK data. The team-management Functions bypass rules and authorise every call themselves. Client-side role and lifecycle checks are UX only. Never call a client-only control "enforced" | [SECURITY.md](SECURITY.md); [ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md) §6–§7 |
-| **Trusted backend is narrow** | `frontend/functions/` does team membership and download-token clean-up only. No financial write, general API or new trigger without a new ADR | [ARCHITECTURE.md](ARCHITECTURE.md) → *Client-SDK Data Access + One Narrow Trusted Backend*; ADR-72, ADR-74 |
-| **Rules capacity** | The Firestore ruleset must stay under the approved 245,000-byte budget (hard limit 262,144). Current FINAL file: 242,163 bytes (2,837 of headroom) | [SECURITY.md](SECURITY.md) → *Ruleset source-size limit*; ADR-60, ADR-69 |
+| **Trusted backend is narrow** | `frontend/functions/` does team membership and download-token clean-up only. No financial write, general API or new trigger without a new ADR (a Final Account finalisation callable is PROPOSED for L2-B Stage B and would need exactly that ADR) | [ARCHITECTURE.md](ARCHITECTURE.md) → *Client-SDK Data Access + One Narrow Trusted Backend*; ADR-72, ADR-74 |
+| **Rules capacity** | The Firestore ruleset must stay under the approved 245,000-byte budget (hard limit 262,144). LIVE file: 242,163 bytes (2,837 of headroom). On `chore/l2b-rules-capacity` (ADR-76, NOT DEPLOYED): 229,115 bytes (15,885 of headroom) | [SECURITY.md](SECURITY.md) → *Ruleset source-size limit*; ADR-60, ADR-69 |
 | **Financial correctness** | Committed, Claimed, Actual, Invoiced, forecast, margin and cash figures are derived at read time. Nothing writes a financial rollup onto a Budget Line. All money through `roundMoney`; canonical amounts ex-GST. A failed or loading source shows *Unavailable*, never zero | [AGENT.md](../AGENT.md) → *Financial Invariants*; [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md); ADR-41, ADR-44, ADR-55 |
 | **Approved Budget** | An immutable approved version plus approved adjustments; never a silent fallback to working lines | ADR-70, ADR-71 |
 | **Per-project currency** | One currency per project; a label, never a conversion. No FX. Format only through `formatCurrency`. GST stays a flat Australian 10% — currency is not tax | [AGENT.md](../AGENT.md) → *Financial Invariants*; ADR-21 |
@@ -246,7 +249,7 @@ Summaries only. The linked source is authoritative.
 | **Production safety** | Nothing reaches production without a named authorisation. Release order per item is documented and followed. No secret in the frontend bundle or in Git. Proposed work is never described as live | [DEPLOYMENT.md](DEPLOYMENT.md); [SECURITY.md](SECURITY.md) → *Secrets & the Vite bundle* |
 
 All decision records: [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) (ADR-0a to
-ADR-75).
+ADR-76).
 
 ---
 
@@ -283,8 +286,8 @@ records, most of them "confirmed by the Product Owner". Dates are as recorded.
 | Independent external availability monitor | Not built; future reliability work, no scope recorded |
 | GST boundary hotfix (`fix/gst-boundary-pins`) | Merged; production state unconfirmed — see the verification list below |
 | Estimating; BOQ → Approved Budget transfer | Not built |
-| Commercial reports | **L2-A project Commercial Report IMPLEMENTED — NOT DEPLOYED** (`feature/l2a-commercial-report`); portfolio reporting (L2-C) and saved report history not built |
-| Final Account | Not built (L2-B; needs an ADR and Rules capacity recovery) |
+| Commercial reports | L2-A project Commercial Report LIVE and production-accepted (REPORTED, 19 November 2026); portfolio reporting (L2-C) and saved report history not built |
+| Final Account | Not built. L2-B assessment accepted; Stage A (Rules capacity, ADR-76) IMPLEMENTED — NOT DEPLOYED; Stage B NOT IMPLEMENTED |
 | Constrap IQ; any AI capability | Not built; placeholder rule applies |
 | Accounting integrations; billing and subscriptions; client portal | Not built |
 | Photos; mobile / PWA packaging | Placeholder / not built |
@@ -356,7 +359,7 @@ Sequence*. Read it there; the list below is only the order.
 
 1. Complete DC46 security — **DONE** (Deferred Control 46 closed 18 November 2026; section G).
 2. International infrastructure assessment — **DONE** (18 November 2026; Firestore recovery protection PENDING).
-3. L2 — Commercial Reports and Final Account — **L2-A IMPLEMENTED, NOT DEPLOYED**; L2-B Final Account NOT STARTED.
+3. L2 — Commercial Reports and Final Account — **L2-A LIVE and accepted (REPORTED)**; L2-B: Stage A IMPLEMENTED, NOT DEPLOYED; Stage B NOT IMPLEMENTED.
 4. L3 — Production Reliability — NOT STARTED.
 5. L4 — BOQ-to-Approved-Budget integration — NOT STARTED.
 6. L5 — Accounting integrations, Xero first — NOT STARTED.
@@ -394,8 +397,8 @@ approval. Stages 2, 4, 8 and 11 have no scope recorded in the repository.
 | **Storage-token limitations** | Revocation is not immediate; an active member can still obtain a link by a direct SDK call; token behaviour relied on is undocumented by Firebase; tokens reappeared twice in November from an unattributed cause (none since); scale is unmeasured (largest sweep: nine objects) — load testing is a triggered follow-up | SECURITY.md item 46; ADR-74; ADR-75 |
 | **Monitoring's own limits** | Policy A cannot be relied on for a billing suspension or a deleted service; both policies live in the project they watch. An independent external availability monitor remains future reliability work | DEPLOYMENT.md → *Policy A* limitations |
 | **International region / latency** | All backend resources are in `australia-southeast1`. Assessed 18 November 2026: retained (architect decision). Measured from New Zealand only (Firestore request about 100–115 ms after TLS); no Caribbean, North American or European measurement exists — validate with a pilot customer session. Tax remains Australian GST only; international tax deferred | ROADMAP.md → *Strategic Development Sequence* stage 2; AGENT.md |
-| **Firestore recovery** | PITR disabled, no scheduled backups, delete protection disabled; one manual export (20 September 2026). Procedure prepared, not run | DEPLOYMENT.md → *Firestore recovery protection — PENDING* |
-| **Rules capacity** | Live: 242,163 of 245,000 bytes — 2,837 bytes of headroom. The next substantial Rules change needs capacity recovered first | SECURITY.md → *Ruleset source-size limit* |
+| **Firestore recovery** | PITR, daily backups and delete protection ENABLED (REPORTED 19 November 2026). The first READY backup and a non-production restore test are not yet recorded, so recovery is unproven | DEPLOYMENT.md → *Firestore recovery protection* |
+| **Rules capacity** | Live: 242,163 of 245,000 bytes — 2,837 bytes of headroom. ADR-76 (NOT DEPLOYED) recovers 13,048 by re-indenting only; the Final Account Rules block must fit in what remains | SECURITY.md → *Ruleset source-size limit*; ADR-76 |
 | **Client-enforced controls** | Several lifecycle, uniqueness and cumulative-cap controls remain client-only | SECURITY.md → *Deferred Controls* |
 | **General App Check enforcement** | Not enabled on Firestore, Storage or Auth | DEPLOYMENT.md → *Deferred: general App Check enforcement* |
 
@@ -415,17 +418,23 @@ closeout (this branch).
 architect-approved); the L2-A Commercial Report implementation (branch,
 uncommitted).
 
+**Done, 19 November 2026:** the L2-B Final Account architecture assessment
+(read-only, accepted as the basis for Stage B); the L2-B Stage A
+implementation (ADR-76, branch, uncommitted); the Stage B trusted-approval
+feasibility check (recorded in ADR-76). L2-A release and acceptance and the
+enabling of Firestore recovery protection are REPORTED by the Lead Architect.
+
 **Next. Each step needs explicit authorisation.**
 
-1. **Architect review and Git integration** of `feature/l2a-commercial-report`,
+1. **Architect review and Git integration** of `chore/l2b-rules-capacity`,
    then refresh this file's checkpoint line.
-2. **L2-A Hosting release** and the TESTING.md §60 acceptance.
-3. **Firestore recovery protection** — run DEPLOYMENT.md → *Firestore recovery
-   protection — PENDING* (before commercial customer onboarding).
-4. **Billing administration** — owner, a backup administrator, a budget and
+2. **Stage A Rules publish** (Rules only) and the TESTING.md §61 checks.
+3. **Architect decision on the Stage B approval trust boundary**, then the
+   Stage B brief (its own ADR).
+4. **Firestore recovery** — record the first READY scheduled backup and run
+   the non-production restore test (before commercial customer onboarding).
+5. **Billing administration** — owner, a backup administrator, a budget and
    its notifications (DEPLOYMENT.md → *Billing continuity*). Still open.
-5. **Next L2 slice** — L2-B Final Account assessment (needs Rules capacity
-   recovery first).
 
 Still outstanding beyond that: an independent external reliability
 monitor, which belongs to L3 — Production Reliability, and has no scope
