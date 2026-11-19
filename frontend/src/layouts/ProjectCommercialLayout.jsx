@@ -30,6 +30,9 @@ const SUB_TABS = [
   { to: 'supplier-payments', label: 'Supplier Payments', end: false },
   { to: 'cash-flow',         label: 'Cash Flow',         end: false },
   { to: 'retention',         label: 'Retention',         end: false },
+  // L2-B (ADR-77): the last stage of the commercial lifecycle. A sub-tab, not
+  // a new project tab — same audience, same subject.
+  { to: 'final-account',     label: 'Final Account',     end: false },
 ]
 
 export default function ProjectCommercialLayout() {
@@ -40,7 +43,9 @@ export default function ProjectCommercialLayout() {
       {/* Five sub-tabs: below sm: a horizontally-scrolling strip (no wrapping,
           full labels, links never shrink); from sm: up, normal wrapping. Touch
           targets stay ≥44px in both modes. */}
-      <nav className="flex gap-1.5 mb-4 overflow-x-auto sm:overflow-x-visible sm:flex-wrap">
+      {/* data-print-hide: an approved Final Account prints without the sub-nav
+          (the L2-A print rules hide it only while a printable report is shown). */}
+      <nav data-print-hide className="flex gap-1.5 mb-4 overflow-x-auto sm:overflow-x-visible sm:flex-wrap">
         {SUB_TABS.map(({ to, label, end }) => (
           <NavLink
             key={label}

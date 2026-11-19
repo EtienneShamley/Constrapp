@@ -631,6 +631,53 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Final Accounts — L2-B (ADR-77). ONE document per revision; the id IS the
+    // revision number, so numbering is gapless and a revision opens only once
+    // its predecessor is terminal (one open draft). draft → withdrawn here;
+    // draft → APPROVED is written ONLY by the approveFinalAccount callable
+    // (Admin SDK), which recomputes every figure — NO client can approve, and a
+    // draft's figures are untrusted until it does. Never deleted. DC47.
+    match /companies/{companyId}/projects/{projectId}/finalAccounts/{faId} {
+      function draftValid(d) {
+        let k = ['number', 'status', 'revision', 'reason', 'reference', 'currency', 'figures', 'rows', 'rowCount', 'sources', 'openItemsAcknowledged', 'preparedByName', 'approvedAt', 'approvedBy', 'approvedByName', 'approvedByRole', 'selfApproved', 'sourcesReadAt', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'];
+        return d.keys().hasOnly(k) && d.keys().hasAll(k)
+            && d.number is int && d.number >= 1 && d.number <= 9999 && faId == string(d.number)
+            && (d.number == 1 || get(/databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/finalAccounts/$(string(d.number - 1))).data.status in ['approved', 'withdrawn'])
+            && d.status == 'draft' && d.revision == 1
+            && d.reason is string && d.reason.trim().size() > 0 && d.reason.size() <= 500
+            && d.reference is string && d.reference.size() <= 200
+            && d.currency == resolvedCurrency(companyId, projectId)
+            && d.figures is map && d.figures.size() <= 40
+            && d.rows is list && d.rows.size() <= 1000 && d.rowCount == d.rows.size()
+            && d.sources is map && d.sources.size() <= 10
+            && d.openItemsAcknowledged == true
+            && d.preparedByName is string && d.preparedByName.size() <= 200
+            && d.approvedAt == null && d.approvedBy == null && d.approvedByName == null
+            && d.approvedByRole == null && d.selfApproved == null && d.sourcesReadAt == null
+            && d.withdrawnAt == null && d.withdrawnBy == null && d.withdrawReason == ''
+            && d.createdBy == request.auth.uid && d.createdAt == request.time;
+      }
+
+      allow read: if financialMember(companyId);
+
+      allow create: if financialMember(companyId) && draftValid(request.resource.data) && updateStamped();
+
+      // WITHDRAW — the only client update: a DRAFT, by an approver or its
+      // preparer, with a reason; nothing captured moves (changedKeys).
+      allow update: if (budgetApprover(companyId) || (financialMember(companyId) && resource.data.createdBy == request.auth.uid))
+          && resource.data.status == 'draft'
+          && request.resource.data.status == 'withdrawn'
+          && changedKeys().hasOnly(['status', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'revision', 'updatedAt', 'updatedBy'])
+          && request.resource.data.withdrawnBy == request.auth.uid
+          && request.resource.data.withdrawnAt == request.time
+          && request.resource.data.withdrawReason is string
+          && request.resource.data.withdrawReason.trim().size() > 0
+          && request.resource.data.withdrawReason.size() <= 500
+          && updateStamped() && revisionIncremented();
+
+      allow delete: if false;
+    }
+
     // BOQ items — the project's measured Bill of Quantities: description,
     // quantity, unit, cost code (mandatory spine, frozen name snapshot), and —
     // once priced — a rate with a DERIVED amount (ADR-32 Part 1).

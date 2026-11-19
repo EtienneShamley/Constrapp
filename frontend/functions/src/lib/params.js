@@ -66,6 +66,15 @@ export const FILE_LINK_WORKER_SERVICE_ACCOUNT = defineString('FILE_LINK_WORKER_S
   input: { text: { validationRegex: WORKER_SA_PATTERN, validationErrorMessage: 'Must be file-link-worker@<this projectId>.iam.gserviceaccount.com' } },
 })
 
+// ADR-77 — feature flag for the ONE financial callable. `false` + a redeploy of
+// that function makes it answer `final-account-disabled` before any read;
+// drafts, withdrawal and every approved record are unaffected.
+// The default is FALSE — fail closed: a project whose `.env.<projectId>` does
+// not state the flag cannot approve. Every project file sets it EXPLICITLY
+// (a non-interactive deploy refuses a parameter with no dotenv value anyway),
+// and functions/test/finalAccount.test.js pins that.
+export const FINAL_ACCOUNT_APPROVAL_ENABLED = defineBoolean('FINAL_ACCOUNT_APPROVAL_ENABLED', { default: false })
+
 // One region, matching the Firestore location (docs/DEPLOYMENT.md → Functions).
 export const REGION = 'australia-southeast1'
 

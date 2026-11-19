@@ -42,6 +42,7 @@ import ProjectDrawings from './pages/project/ProjectDrawings'
 import ProjectDrawingDetail from './pages/project/ProjectDrawingDetail'
 import ProjectGeneralDocuments from './pages/project/ProjectGeneralDocuments'
 import ProjectRetention from './pages/project/ProjectRetention'
+import ProjectFinalAccount from './pages/project/ProjectFinalAccount'
 import ProjectTenders from './pages/project/ProjectTenders'
 import ProjectTimeline from './pages/project/ProjectTimeline'
 import ProjectRfis from './pages/project/ProjectRfis'
@@ -114,6 +115,10 @@ export default function App() {
                         <Route path="supplier-payments" element={<ProjectSupplierPayments />} />
                         <Route path="cash-flow" element={<ProjectCashFlow />} />
                         <Route path="retention" element={<ProjectRetention />} />
+                        {/* L2-B Final Account (ADR-77): drafts and withdrawal
+                            through Rules; approval only through the trusted
+                            approveFinalAccount callable. */}
+                        <Route path="final-account" element={<ProjectFinalAccount />} />
                       </Route>
                       {/* Documents is the project's DOCUMENT CONTROL workspace:
                           the Drawings register (index) with a route per drawing,

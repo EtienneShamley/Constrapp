@@ -15,6 +15,8 @@
     "test:team": "node scripts/team-dev.mjs",
     "rules:transitional": "node scripts/build-transitional-rules.mjs",
     "rules:transitional:check": "node scripts/build-transitional-rules.mjs --check",
+    "functions:calc": "node scripts/build-final-account-bundle.mjs",
+    "functions:calc:check": "node scripts/build-final-account-bundle.mjs --check",
     "test:unit": "vitest run --config vitest.config.js",
     "test:rules": "firebase emulators:exec --only firestore,storage --project constrapp-rules-test \"vitest run --config vitest.rules.config.js\"",
     "test:functions": "firebase emulators:exec --only auth,firestore,functions --project constrapp-rules-test \"vitest run --config vitest.functions.config.js\"",
@@ -42,6 +44,7 @@
     "eslint-plugin-react-refresh": "^0.5.2",
     "firebase-tools": "^15.34.2",
     "globals": "^17.6.0",
+    "rolldown": "1.0.3",
     "vite": "^8.0.12",
     "vitest": "^4.1.10"
   },

@@ -2,10 +2,11 @@ import { onCall } from 'firebase-functions/https'
 import { onSchedule } from 'firebase-functions/scheduler'
 import * as logger from 'firebase-functions/logger'
 import { getDb, getAdminAuth, getBucket } from './lib/firebaseAdmin.js'
-import { EMAIL_API_KEY, REGION, FILE_LINK_WORKER_SERVICE_ACCOUNT, readConfig, readFileLinkConfig } from './lib/params.js'
+import { EMAIL_API_KEY, REGION, FILE_LINK_WORKER_SERVICE_ACCOUNT, FINAL_ACCOUNT_APPROVAL_ENABLED, readConfig, readFileLinkConfig } from './lib/params.js'
 import { runScheduledWorker } from './lib/fileLinkRevocation.js'
 import { selectEmailAdapter } from './lib/email.js'
 import { createTeamHandlers, HANDLER_NAMES } from './team/handlers.js'
+import { createFinalAccountHandlers } from './finalAccount/handlers.js'
 
 // ── Constrapp trusted backend — team management (ADR-72) ─────────────────────
 //
@@ -75,6 +76,44 @@ export const deactivateMember = wrap('deactivateMember')
 // The exported names ARE the handler names; functions/test/handlers.test.js
 // pins both lists against each other so a rename cannot silently drop one.
 export const EXPORTED_CALLABLES = HANDLER_NAMES
+
+// ── Final Account approval (ADR-77) — ONE financial callable ─────────────────
+//
+// The narrowly scoped exception to "no financial logic in Functions": the
+// approval of a Final Account revision recomputes every figure from records it
+// reads itself (finalAccount/approve.js). Same region and App Check
+// enforcement as the team callables; NO secret is bound (it sends no email);
+// more memory and time, because it reads a whole project's registers in one
+// transaction. Authorisation is in the handler: an active company_admin or
+// project_manager of the project's company.
+export const FINAL_ACCOUNT_CALL_OPTIONS = {
+  region: REGION,
+  enforceAppCheck: true,
+  maxInstances: 5,
+  memory: '512MiB',
+  timeoutSeconds: 120,
+}
+
+let finalAccountHandlers = null
+
+export const approveFinalAccount = onCall(FINAL_ACCOUNT_CALL_OPTIONS, async (request) => {
+  finalAccountHandlers ??= createFinalAccountHandlers({
+    db: getDb(),
+    now: () => new Date(),
+    log: logger,
+    config: () => ({ enabled: FINAL_ACCOUNT_APPROVAL_ENABLED.value() }),
+  })
+  try {
+    return await finalAccountHandlers.approveFinalAccount(request)
+  } catch (err) {
+    if (err?.details?.code) {
+      logger.info('final account call refused', { code: err.details.code, uid: request.auth?.uid ?? null })
+    } else {
+      logger.error('final account call failed', { uid: request.auth?.uid ?? null, message: err?.message, stack: err?.stack })
+    }
+    throw err
+  }
+})
 
 // ── Scheduled worker: legacy file-link revocation (ADR-74, DC46-B) ───────────
 //

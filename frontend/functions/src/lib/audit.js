@@ -30,6 +30,8 @@ export const AUDIT = {
   // and a routine sweep that found nothing, write no event.
   FILE_LINKS_RECONCILED:              'file_links.reconciled',
   FILE_LINKS_RECONCILIATION_OVERDUE:  'file_links.reconciliation_overdue',
+  // ADR-77 — one event per approved Final Account revision, in its transaction.
+  FINAL_ACCOUNT_APPROVED:             'final_account.approved',
 }
 
 export const auditCollection = (db, companyId) =>

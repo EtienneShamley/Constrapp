@@ -3570,11 +3570,95 @@ URL, Resend invitation email, acceptance, Quant™ PDF and Authentication
 regressions; the tab title *Constrap* was also observed on the live origin).
 Steps 1–6 above are complete for production.
 
-## L2-B Stage A — Rules capacity recovery 3 — ADR-76 — RULES ONLY (IMPLEMENTED — NOT DEPLOYED, 19 November 2026)
+## L2-B Stage B — Final Account release order — ADR-77 — RULES, then ONE callable, then HOSTING (IMPLEMENTED — NOT DEPLOYED, 19 November 2026)
 
-**Status:** implemented on `chore/l2b-rules-capacity` (uncommitted), awaiting
-architect review. **Not published.** One FINAL Rules publish; no Hosting, no
-Functions, no transitional stage, no index, no migration.
+**Status:** implemented on `feature/l2b-final-account` (uncommitted), awaiting
+architect review. **Nothing is deployed. No deployment is authorised.** Three
+steps, each a separate approved action, in this order. No index, no migration,
+no transitional Rules publish, no new secret, no IAM change, no new service
+account (the callable runs as the default runtime identity, like the eight
+team callables).
+
+**Why this order.** Each step is compatible with the production state before
+it. (1) The Rules add one collection no deployed client reads or writes —
+publishing them changes nothing a user can see. (2) The callable is unreachable
+from the deployed bundle and refuses everything until a draft exists, which
+needs the new Hosting bundle. (3) Hosting last: the page appears only when
+both of its dependencies are live. The reverse order would show a Final
+Account tab whose reads are denied (*Unavailable*) or whose approval fails.
+
+*Preconditions.* Azure CI green on the merge. From `frontend/`:
+`npm run rules:transitional:check` and `npm run functions:calc:check` clean;
+`wc -c firestore.rules` reads **232,460**. The live ruleset is the 229,115-byte
+file of `main` `28e5c9f` (confirm in the Console). Record the current
+Hosting version id and Rules ruleset id for rollback.
+
+**STEP 1 — Firestore Rules.** From `frontend/`:
+`firebase deploy --only firestore:rules --project constrapp-69b5d`
+*Verify:* the Console shows a 232,460-byte ruleset; an existing financial tab
+still loads and saves (every other block is byte-identical to the live
+file). *Compatibility:* additive; the deployed app is unaffected.
+*Rollback:* republish the 229,115-byte ruleset. Safe at any time before step
+3; after step 3 it makes the Final Account tab read *Unavailable* and nothing
+else.
+
+**STEP 2 — the ONE new callable.** From `frontend/`:
+`firebase deploy --only functions:team:approveFinalAccount --project constrapp-69b5d`
+**The `team:` codebase prefix is REQUIRED.** This repository's Functions
+codebase is named `team`; firebase-tools 15.34.2 reads the unqualified
+`functions:approveFinalAccount` as *codebase `default`*, which matches NO
+function (checked against the CLI's own `getEndpointFilters` /
+`endpointMatchesFilter` with the ten exported names: the qualified form
+matches exactly `approveFinalAccount`, the unqualified form matches nothing).
+Confirm the CLI's plan lists exactly ONE function — a create of
+`approveFinalAccount` — before accepting it.
+`functions/.env.constrapp-69b5d` already carries
+`FINAL_ACCOUNT_APPROVAL_ENABLED=true`; a non-interactive deploy refuses a
+parameter with no dotenv value, and the code default is `false` (fail closed).
+**Never `--only functions`** — that would redeploy the eight team callables
+and the DC46 reconciliation worker. The predeploy chain runs the Functions
+lint and pure tests (which include the generated-calculation checks).
+*Verify (read-only):* `gcloud run services list` shows a NEW service
+`approvefinalaccount` at revision `-00001-*`, the eight team services still on
+`-00004-*` and `processfilelinkrevocations` still on `-00003-ceg`; the new
+service requires App Check (an unauthenticated curl is refused 401).
+*Compatibility:* nothing calls it yet; the eight team callables and the
+worker are not in the deploy plan and keep their revisions and environment.
+*Rollback:* set
+`FINAL_ACCOUNT_APPROVAL_ENABLED=false` in `functions/.env.constrapp-69b5d` and
+redeploy that one function (same `--only functions:team:approveFinalAccount`) (it then answers `final-account-disabled` before
+any read), or delete the function
+(`firebase functions:delete approveFinalAccount --region australia-southeast1 --project constrapp-69b5d`).
+Drafts, withdrawal and every approved revision are unaffected either way.
+
+**STEP 3 — Hosting.** From `frontend/`: `npm run build`, then
+`firebase deploy --only hosting --project constrapp-69b5d`
+*Verify:* TESTING.md §62 production acceptance (NOT RUN). *Rollback:* in the
+Firebase console, Hosting → release history → roll back to the recorded
+previous version (there is no `firebase hosting:rollback` CLI command). The
+tab disappears; the Rules, the callable and any Final Account documents
+already written stay in place and are harmless — nothing else reads them.
+
+**What a rollback does NOT undo.** An approved revision is permanent data. No
+step removes it and nothing in the application depends on it; if one must be
+disregarded, approve a correcting revision (or leave it — it moves no figure).
+
+**Not part of this release.** The team callables, the reconciliation worker,
+Storage Rules, App Check enforcement settings, IAM, billing, indexes.
+
+## L2-B Stage A — Rules capacity recovery 3 — ADR-76 — RULES ONLY (LIVE since 18 November 2026 21:57 UTC)
+
+**Status: LIVE.** Merged to `main` as `28e5c9f`; Azure CI green and the Rules
+publish REPORTED by the Product Owner. **VERIFIED read-only on 19 November
+2026:** the live `cloud.firestore` release (ruleset `05c78d00…`, created
+18 November 2026 21:57:07 UTC) is 229,115 bytes and byte-identical to
+`frontend/firestore.rules` on `main`; the Storage ruleset is still
+`8b8edc14…` (9,271 bytes, identical to `main`); the eight callables are still
+on `-00004-*` and the worker on `-00003-ceg`; the latest Hosting release
+(`e38715de08e664b5`, 18 November 05:29 UTC) predates the publish. The
+TESTING.md §61 browser smoke checks are not recorded. One FINAL Rules publish;
+no Hosting, no Functions, no transitional stage, no index, no migration. The
+procedure below is kept as the record of what was run.
 
 A leading-whitespace-only re-indent of `frontend/firestore.rules`: **242,163 →
 229,115 bytes** (−13,048), the regenerated transitional file **242,843 →
@@ -3602,9 +3686,17 @@ existing register; a non-financial read still refused).
 `firestore.rules` at `2d5787c`). The two files enforce the same controls, so a
 rollback changes nothing a user can observe and no data needs repair.
 
-## L2-A Commercial Report — release (IMPLEMENTED — NOT DEPLOYED, 18 November 2026)
+## L2-A Commercial Report — release (LIVE and Product Owner accepted; implemented 18 November 2026)
 
-**Status:** implemented on `feature/l2a-commercial-report` (uncommitted), awaiting
+**Current status (19 November 2026): LIVE and accepted.** Merged to `main` as
+`2d5787c`; Hosting deployed (release `e38715de08e664b5`, 18 November 2026
+05:29 UTC) and accepted in the browser by the Product Owner — REPORTED by the
+Product Owner and the Lead Architect; the Hosting release time was read from
+production on 19 November 2026, its files were not compared with `main`. The
+rest of this section is the release record as written BEFORE that deployment
+and is kept unchanged.
+
+**Status when written (18 November 2026):** implemented on `feature/l2a-commercial-report` (uncommitted), awaiting
 architect review. **Not deployed. Not production-verified.**
 
 **What ships:** Hosting only. The project **Reports** tab becomes a read-only
@@ -3632,9 +3724,11 @@ separately authorised):**
 release history (*Rollback* on the previous release). There is no
 `firebase hosting:rollback` command. Nothing else needs reverting.
 
-## Firestore recovery protection — PENDING (NOT ENABLED; pre-customer operational requirement)
+## Firestore recovery protection — ENABLED 18 November 2026; first READY backup UNVERIFIED; restore test PENDING
 
-**Status:** PREPARED ONLY. Nothing below has been run. It is a separate
+**Current status (19 November 2026).** **ENABLED 18 November 2026 20:27 UTC; VERIFIED read-only 19 November 2026:** point-in-time recovery enabled (7-day window), a daily backup schedule with 14-day retention (`86b478d6…`), database delete protection enabled. **No backup existed yet at that check, so the first READY backup is UNVERIFIED, and the non-production restore test is PENDING** — both are still required before commercial customer onboarding. Read with `gcloud firestore databases describe`, `gcloud firestore backups schedules list` and `gcloud firestore backups list` (read-only). The rest of this section is the procedure as prepared BEFORE it was run and is kept unchanged.
+
+**Status when written (18 November 2026):** PREPARED ONLY. Nothing below has been run. It is a separate
 operational change and needs explicit Product Owner authorisation. Required
 before commercial customer onboarding (international infrastructure assessment,
 architect-approved 18 November 2026).
