@@ -20,7 +20,7 @@ Preconstruction → Procurement → Delivery → Cost Control → Forecasting �
 | **Cost Control** | Supplier invoices, actual cost, payments/credit notes | **Supplier Invoices**, **Supplier Payments**, **Supplier Credit Notes** *(implemented)*; Retention Release *(future)* |
 | **Revenue Control** | Client invoices issued against the contract sum and approved client variations; receivables, and the cash received to settle them | **Client Invoices / Accounts Receivable**, **Client Receipts** *(implemented — foundation)* |
 | **Forecasting** | Forecast cost to complete and project margin *(implemented — foundation)*; cash flow | **Forecast Cost to Complete**, **Project Margin**, **Cash Flow** (actual + forecast, with visualisation) *(implemented — foundation)*; Cash Flow date filtering *(planned)* |
-| **Final Account** | Reconcile budget + variations + actual into final margin; commercial reporting | Commercial Report (L2-A, live); Final Account (L2-B, ADR-77 — implemented, not deployed) |
+| **Final Account** | Reconcile budget + variations + actual into final margin; commercial reporting | Commercial Report (L2-A, live); Final Account (L2-B, ADR-77 — deployed; production acceptance pending) |
 
 **Cost Codes are the spine** across all six phases: a cost code links a BOQ line
 to an estimate, an award to a budget line, a budget line to a PO, and a PO to its
@@ -78,7 +78,7 @@ download tokens from the Storage objects of companies whose membership
 transactions queued a request and, since ADR-75 (live 17 November 2026), of
 every company about every 2 to 3 hours — not a strict deadline
 (`lib/fileLinkRevocation.js`,
-`lib/fileLinkTokens.js`); it holds no financial logic. **ADR-77 (IMPLEMENTED — NOT DEPLOYED) adds ONE financial
+`lib/fileLinkTokens.js`); it holds no financial logic. **ADR-77 (deployed; production acceptance pending) adds ONE financial
 callable, `approveFinalAccount`** (`functions/src/finalAccount/`): it approves a Final Account revision by
 re-reading the project's registers in one transaction and recomputing every figure with
 `functions/src/generated/finalAccountCalc.js` — a generated bundle of the browser's own

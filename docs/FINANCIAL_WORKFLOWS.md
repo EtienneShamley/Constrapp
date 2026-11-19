@@ -2351,7 +2351,7 @@ Cost-code totals equal the headline figures by construction (tested). The
 generation time is when the view was opened or last exported / printed — not
 an accounting cut-off; nothing is stored.
 
-### Final Account (ADR-77, L2-B — IMPLEMENTED, NOT DEPLOYED)
+### Final Account (ADR-77, L2-B — DEPLOYED — PRODUCTION ACCEPTANCE PENDING)
 
 The closing statement of a project: an internally approved, FROZEN record of
 its contract, cost and outstanding balances. It is the last stage of the
@@ -2401,10 +2401,29 @@ source read · contract value set · an approved budget version · no draft or
 submitted client or supplier variation · no approved supplier variation
 outside cost · no draft, submitted or under-review claim · no approved claim
 awaiting its invoice · no unposted supplier invoice · no draft client invoice,
-receipt, payment, credit note or retention release · cost to complete zero on
-every cost code. A purchase order under-run leaves Remaining Committed open
+receipt, payment, credit note or retention release · **no issued client
+invoice with more receipt allocated to it than its gross value** (whole-cent
+comparison; corrected by the user on the Client Receipts tab, never
+reallocated automatically) · cost to complete zero on every cost code. A purchase order under-run leaves Remaining Committed open
 (a closed PO does not release it, ADR-55): it is closed out with a negative
 supplier variation applied to the line (ADR-62), never by editing the PO.
+
+**Why an over-allocated invoice blocks.** *Client invoices outstanding* is the
+sum of the POSITIVE balances of issued invoices; an over-allocated invoice's
+negative balance is never netted against it (it would hide genuine arrears).
+So with an over-allocation, outstanding exceeds invoiced − received by the
+over-allocated amount and the receivables position does not reconcile. That
+is an allocation error to correct, not a balance to acknowledge.
+
+**Live view wording.** Until cost to complete is zero the cost and profit
+figures are forecasts; the live position labels them *Forecast final cost*,
+*Forecast gross profit* and *Forecast margin*, and *Adjusted contract sum*.
+A DRAFT (and a withdrawn draft) is labelled *Proposed final contract sum*,
+*Proposed final cost*, *Proposed final gross profit* and *Proposed final
+margin*. **Only an APPROVED revision uses the *Final …* labels.** A supplier
+variation is described by what it does to forecast cost: approved value
+counts in forecast final cost only once it is applied to its purchase order
+or committed as new scope; approved-but-unapplied value is outside it.
 
 **Outstanding balances are acknowledged, not blockers.** Remaining to invoice,
 client invoices outstanding, supplier invoices unpaid, retention held and

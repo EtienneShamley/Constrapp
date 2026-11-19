@@ -46,6 +46,7 @@ const VARIANTS = {
     p.budgetAdjustments = [{ id: 'adj1', type: 'increase', costCodeId: 'cc1', costCodeName: '03-100 — Concrete', fromCostCodeId: null, fromCostCodeName: '',
       amount: 250, currency: 'AUD', baseApprovalId: 'ba1', baseVersion: 1, sequence: 1, status: 'approved' }]
   },
+  overAllocatedInvoice: p => p.clientReceipts.push({ id: 'cr2', receiptNumber: 'CR-0002', status: 'posted', clientId: 'c1', receiptDate: '2026-10-20', amount: 2200.01, allocatedTotal: 2200.01, unallocatedAmount: 0, allocations: [{ clientInvoiceId: 'ci1', allocatedAmount: 2200.01 }] }),
   empty: p => { for (const k of ['purchaseOrders', 'supplierInvoices', 'supplierPayments', 'clientInvoices', 'clientReceipts', 'variations']) p[k] = [] },
 }
 
@@ -107,6 +108,8 @@ describe('server and client calculations are equal', () => {
     const ready = Object.keys(VARIANTS).filter(n => client.computeFinalAccount(args(mutate(VARIANTS[n]), client.settledSourceStates())).ready)
     expect(ready).toEqual(expect.arrayContaining(['ready', 'adjustedBudget']))
     expect(Object.keys(VARIANTS).length - ready.length).toBeGreaterThanOrEqual(9)
+    // The over-allocation rule is in the SERVER's copy: the callable enforces it independently.
+    expect(server.blockerCodes(server.computeFinalAccount(args(mutate(VARIANTS.overAllocatedInvoice), server.settledSourceStates())))).toEqual(['overAllocatedInvoices'])
   })
 
   it('failed and loading sources are judged identically', () => {

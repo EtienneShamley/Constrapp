@@ -279,6 +279,7 @@ describe('readiness is judged from the records the server reads', () => {
     ['a cost to complete entered on the forecast', 'costToComplete', async () => base().collection('forecastLines').doc('cc1').set({ costCodeId: 'cc1', uncommittedCostToComplete: 100 })],
     ['the approved budget pointer removed', 'budget', async () => base().collection('approvedBudget').doc('current').delete()],
     ['the contract value removed', 'contract', async () => base().collection('commercial').doc('baseline').delete()],
+    ['a receipt over-allocating an issued client invoice by one cent', 'overAllocatedInvoices', async () => base().collection('clientReceipts').doc('r8').set({ status: 'posted', receiptDate: '2026-10-20', amount: 2200.01, allocatedTotal: 2200.01, unallocatedAmount: 0, allocations: [{ clientInvoiceId: 'ci1', invoiceNumber: 'CI-0001', allocatedAmount: 2200.01 }], createdAt: A.Timestamp.now() })],
     ['a draft client receipt', 'draftReceipts', async () => base().collection('clientReceipts').doc('r9').set({ status: 'draft', amount: 5, allocations: [], createdAt: A.Timestamp.now() })],
   ]
   it.each(cases)('%s → final-account-not-ready naming "%s"; nothing is approved', async (_label, blocker, change) => {
@@ -288,6 +289,14 @@ describe('readiness is judged from the records the server reads', () => {
     expect(err.details.blockers).toContain(blocker)
     expect((await faDoc(1)).status).toBe('draft')
     expect(await audits()).toHaveLength(0)
+  })
+
+  it('an invoice paid EXACTLY in full is not over-allocated: the server approves a draft prepared on those records', async () => {
+    const paid = (p) => p.clientReceipts.push({ id: 'cr2', receiptNumber: 'CR-0002', status: 'posted', clientId: 'c1', clientName: 'Owner Pty Ltd', receiptDate: '2026-10-20', amount: 2200, allocatedTotal: 2200, unallocatedAmount: 0, allocations: [{ clientInvoiceId: 'ci1', invoiceNumber: 'CI-0001', allocatedAmount: 2200 }] })
+    const data = await seedProject(paid)
+    await seedDraft(data)
+    expect((await call('u_pm', ok())).status).toBe('approved')
+    expect((await faDoc(1)).figures.receivablesOutstanding).toBe(0)
   })
 
   it('records that are still ready but DIFFERENT from the draft are refused as changed (the approver reviewed other figures)', async () => {

@@ -1,5 +1,5 @@
 import { formatCurrency } from '../../../lib/formatters'
-import { figureText } from '../../../lib/finalAccountDisplay'
+import { figureText, figurePresentation, FIGURE_VIEW } from '../../../lib/finalAccountDisplay'
 import {
   FINAL_ACCOUNT_FIGURES, FIGURE_GROUP, FIGURE_GROUP_LABELS,
 } from '../../../lib/finalAccount'
@@ -21,7 +21,10 @@ const GROUP_ORDER = [FIGURE_GROUP.CONTRACT, FIGURE_GROUP.COST, FIGURE_GROUP.RESU
 const thCls = 'px-3 py-2.5 text-right text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px] whitespace-nowrap'
 const tdCls = 'px-3 py-2.5 text-right text-[12.5px] text-brand-text tabular-nums whitespace-nowrap'
 
-export function FinalAccountFigures({ figures, currencyCode, differences = null, comparisonLabel = 'Current records', pending = false, idPrefix = 'fa' }) {
+// `view` decides the WORDING only (lib/finalAccountDisplay.js): a stored
+// revision keeps the finalised labels; the live position is labelled as a
+// forecast and never as "final".
+export function FinalAccountFigures({ figures, currencyCode, differences = null, comparisonLabel = 'Current records', pending = false, idPrefix = 'fa', view = FIGURE_VIEW.REVISION }) {
   const changed = new Map((differences?.figures ?? []).map(d => [d.key, d]))
   return (
     <div className="flex flex-col gap-5">
@@ -39,10 +42,11 @@ export function FinalAccountFigures({ figures, currencyCode, differences = null,
                 const missing = !pending && (value === null || value === undefined) && !def.nullable
                 const negative = typeof value === 'number' && value < 0
                 const diff = changed.get(def.key)
+                const text = figurePresentation(def, view)
                 return (
                   <div key={def.key} className="report-figure min-w-0 border-b border-brand-border pb-2">
                     <dt className="text-[11px] font-bold uppercase tracking-[0.4px] text-brand-muted">
-                      {def.label}
+                      {text.label}
                       {def.open && <span className="ml-2 normal-case tracking-normal font-semibold text-brand-amber">Outstanding balance</span>}
                     </dt>
                     <dd className={`m-0 mt-0.5 text-[17px] font-bold tabular-nums ${missing ? 'text-brand-amber' : negative ? 'text-brand-red' : 'text-brand-text'}`}>
@@ -53,7 +57,7 @@ export function FinalAccountFigures({ figures, currencyCode, differences = null,
                         {comparisonLabel}: {figureText(diff.live, def.basis, currencyCode, { nullable: def.nullable })}
                       </dd>
                     )}
-                    <dd className="m-0 mt-0.5 text-[11px] text-brand-muted">{def.note}</dd>
+                    <dd className="m-0 mt-0.5 text-[11px] text-brand-muted">{text.note}</dd>
                   </div>
                 )
               })}

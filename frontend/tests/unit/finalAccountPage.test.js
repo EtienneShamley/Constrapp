@@ -79,6 +79,10 @@ describe('ProjectFinalAccount renders every state', () => {
     expect(html).toMatch(/<button class="[^"]*">Prepare Final Account<\/button>/)
     expect(html).toContain('Current position — not a Final Account')
     expect(html).toContain('$12,000.00')
+    // The live position is a forecast: none of its figures is labelled "final".
+    for (const label of ['Adjusted contract sum', 'Forecast final cost', 'Forecast gross profit', 'Forecast margin']) expect(html).toContain(label)
+    for (const label of ['Final adjusted contract sum', 'Final cost<', 'Final gross profit', 'Final margin']) expect(html).not.toContain(label)
+    expect(html).toContain('nothing in this section is final')
     expect(html).not.toContain('commercial-report')          // nothing printable
     expect(html).not.toContain('Export CSV')
   })
@@ -91,6 +95,46 @@ describe('ProjectFinalAccount renders every state', () => {
     expect(html).toContain('Close out remaining commitment')
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Prepare Final Account<\/button>/)
     expect(html).toContain('A draft can be prepared once every requirement below is met.')
+  })
+
+  it('an over-allocated client invoice: the requirement is Not met, the invoice is named, Prepare is disabled; an existing draft cannot be approved', () => {
+    const over = (p) => p.clientReceipts.push({ id: 'cr2', receiptNumber: 'CR-0002', status: 'posted', clientId: 'c1', receiptDate: '2026-10-20', amount: 2700, allocatedTotal: 2700, unallocatedAmount: 0, allocations: [{ clientInvoiceId: 'ci1', allocatedAmount: 2700 }] })
+    use(over)
+    let html = render()
+    expect(html).toContain('No over-allocated issued client invoices')
+    expect(html).toContain('1 over-allocated: CI-0001')
+    expect(html).toContain('Nothing is reallocated automatically.')
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Prepare Final Account<\/button>/)
+    S.accounts = [revision(1, 'draft')]
+    html = render()
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Approve<\/button>/)
+    expect(html).toContain('The current records do not meet the readiness requirements.')
+  })
+
+  it('a WITHDRAWN draft is never presented as a Final Account: it is not auto-selected, not printable, and stays in the history', () => {
+    // (Its own view opens from the history's View button and uses the DRAFT
+    // labels — revisionView, unit-tested; clicking is not exercised here.)
+    S.accounts = [revision(1, 'withdrawn')]
+    const html = render()
+    expect(html).not.toContain('<article')
+    expect(html).toContain('No Final Account has been prepared for this project.')
+    expect(html).toContain('Withdrawn')
+    expect(html).toContain('Prepare revision 2')
+    expect(html).not.toContain('commercial-report')
+    expect(html).not.toContain('Export CSV')
+    expect(html).not.toMatch(/>Final (adjusted contract sum|cost|gross profit|margin)</)
+  })
+
+  it('an approved-but-unapplied supplier variation: the requirement is worded in forecast-cost terms, never "Final cost"', () => {
+    use(p => p.variations.push({ id: 'va', variationType: 'supplier', status: 'approved', approvedSubtotal: 5000, lineItems: [{ costCodeId: 'cc1', approvedAmount: 5000 }] }))
+    const html = render()
+    expect(html).toContain('Every approved supplier variation is inside forecast final cost')
+    expect(html).toContain('Not met')
+    expect(html).toContain('its value is outside forecast final cost')
+    expect(html).toContain('$5,000.00')                         // the total approved value is still shown
+    expect(html).toContain('Any approved value not yet applied is outside it and blocks approval')
+    expect(html).not.toContain('inside Final cost')
+    expect(html).not.toContain('already inside')
   })
 
   it('loading: figures are —, never zero, and nothing can be prepared', () => {
@@ -114,7 +158,9 @@ describe('ProjectFinalAccount renders every state', () => {
     S.accounts = [revision(1, 'draft')]
     const html = render()
     expect(html).toContain('Draft revision 1 is awaiting approval. No revision is approved yet.')
-    expect(html).toContain('DRAFT — not approved.')
+    expect(html).toContain('DRAFT — not approved. Every figure below is proposed.')
+    for (const label of ['Proposed final contract sum', 'Proposed final cost', 'Proposed final gross profit', 'Proposed final margin']) expect(html).toContain(label)
+    expect(html).not.toMatch(/>Final (adjusted contract sum|cost|gross profit|margin)</)
     expect(html).toMatch(/<button class="[^"]*">Approve<\/button>/)
     expect(html).toContain('Withdraw draft')
     expect(html).not.toContain('Export CSV')
@@ -155,6 +201,14 @@ describe('ProjectFinalAccount renders every state', () => {
     expect(html).toContain('Pat PM')
     expect(html).toContain('Records read')
     expect(html).toContain('The current project records agree with this approved revision.')
+    // The approved revision (the printable article) keeps the finalised labels;
+    // the live section below it, outside the article, is labelled as a forecast.
+    const article = html.slice(html.indexOf('<article'), html.indexOf('</article>'))
+    for (const label of ['Final adjusted contract sum', 'Final cost', 'Final gross profit', 'Final margin']) expect(article).toContain(label)
+    expect(article).not.toContain('Forecast')
+    const below = html.slice(html.indexOf('</article>'))
+    expect(below).toContain('Forecast final cost')
+    expect(below).not.toContain('Final gross profit')
     expect(html).toContain('Prepare revision 2')
     expect(html).not.toMatch(/>Approve<\/button>/)
     expect(html).not.toContain('Withdraw draft')

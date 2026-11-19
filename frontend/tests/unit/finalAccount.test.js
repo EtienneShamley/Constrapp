@@ -12,7 +12,7 @@ import {
   canPrepareFinalAccount, canApproveFinalAccount, canWithdrawFinalAccount,
 } from '../../src/lib/finalAccount'
 import { finalAccountCsv, finalAccountFilename } from '../../src/lib/finalAccountCsv'
-import { figureText } from '../../src/lib/finalAccountDisplay'
+import { figureText, figurePresentation, FIGURE_VIEW, revisionView, readinessPresentation } from '../../src/lib/finalAccountDisplay'
 import {
   runFinalAccountApprove, runFinalAccountPrepare, runFinalAccountWithdraw, finalAccountCallableErrorKind, FINAL_ACCOUNT_ERROR,
   FINAL_ACCOUNT_ERROR_MESSAGES, APPROVE_CALL_TIMEOUT_MS,
@@ -151,6 +151,7 @@ describe('the readiness gate', () => {
     [BLOCKER.DRAFT_CREDIT_NOTES, p => p.supplierCreditNotes.push({ id: 'cn', status: 'draft', supplierInvoiceId: 'inv1', lineItems: [], subtotal: 1, gstTotal: 0.1, grossTotal: 1.1 })],
     [BLOCKER.DRAFT_RELEASES, p => p.retentionReleases.push({ id: 'rr', status: 'draft', supplierInvoiceId: 'inv1', amount: 10 })],
     [BLOCKER.COST_TO_COMPLETE, p => p.forecastLines.push({ id: 'cc1', costCodeId: 'cc1', uncommittedCostToComplete: 100 })],
+    [BLOCKER.OVER_ALLOCATED, p => p.clientReceipts.push({ id: 'cr2', receiptNumber: 'CR-0002', status: 'posted', clientId: 'c1', clientName: 'Owner Pty Ltd', receiptDate: '2026-10-20', amount: 2700, allocatedTotal: 2700, unallocatedAmount: 0, allocations: [{ clientInvoiceId: 'ci1', invoiceNumber: 'CI-0001', allocatedAmount: 2700 }] })],
   ]
 
   it.each(cases)('%s blocks, names itself, and yields ready: false', (code, fn) => {
@@ -192,6 +193,71 @@ describe('the readiness gate', () => {
       p.progressClaims.push({ id: 'cl2', status: 'approved', poId: 'po2', lineItems: [{ costCodeId: 'cc1', poLineIndex: 0, approvedThisPeriod: 40, claimedThisPeriod: 40 }] })
     }))
     expect(blockerCodes(r)).toContain(BLOCKER.CLAIMS_AWAITING)
+  })
+
+  // ── Over-allocated client invoices (production finding, 20 November 2026) ──
+  const receipt = (id, invoiceId, amount, status = 'posted') => ({
+    id, receiptNumber: id, status, clientId: 'c1', clientName: 'Owner Pty Ltd', receiptDate: '2026-10-20',
+    amount, allocatedTotal: amount, unallocatedAmount: 0, allocations: [{ clientInvoiceId: invoiceId, allocatedAmount: amount }],
+  })
+
+  it('an over-allocated issued invoice BLOCKS, is named, and is compared in whole cents', () => {
+    // ci1 is 9,900.00 gross with 7,700.00 allocated: 2,200.00 remains.
+    const exact = compute(mutate(p => p.clientReceipts.push(receipt('cr2', 'ci1', 2200))))
+    expect(blockerCodes(exact)).not.toContain(BLOCKER.OVER_ALLOCATED)
+    expect(exact.partialFigures.receivablesOutstanding).toBe(0)
+    expect(exact.ready).toBe(true)                      // fully paid is not over-allocated
+
+    const oneCent = compute(mutate(p => p.clientReceipts.push(receipt('cr2', 'ci1', 2200.01))))
+    expect(blockerCodes(oneCent)).toEqual([BLOCKER.OVER_ALLOCATED])
+    expect(oneCent.blockers[0].detail).toBe('1 over-allocated: CI-0001')
+    expect(oneCent.ready).toBe(false)
+
+    const subCent = compute(mutate(p => p.clientReceipts.push(receipt('cr2', 'ci1', 2200.004))))
+    expect(blockerCodes(subCent)).not.toContain(BLOCKER.OVER_ALLOCATED)   // float noise below a cent is not an over-allocation
+  })
+
+  it('only POSTED receipts and ISSUED invoices count: a draft or void receipt, or a void invoice, does not block', () => {
+    for (const status of ['draft', 'void']) {
+      const r = compute(mutate(p => p.clientReceipts.push(receipt('cr2', 'ci1', 5000, status))))
+      expect(blockerCodes(r), status).not.toContain(BLOCKER.OVER_ALLOCATED)
+    }
+    const voided = compute(mutate(p => { p.clientReceipts.push(receipt('cr2', 'ci1', 5000)); p.clientInvoices[0].status = 'void' }))
+    expect(blockerCodes(voided)).not.toContain(BLOCKER.OVER_ALLOCATED)
+  })
+
+  it('ORDINARY outstanding balances stay non-blocking: an unpaid or part-paid invoice and unallocated cash do not block', () => {
+    const r = compute(mutate(p => {
+      p.clientInvoices.push({ id: 'ci2', invoiceNumber: 'CI-0002', status: 'issued', clientId: 'c1', subtotal: 1000, gstTotal: 100, grossTotal: 1100, lineItems: [] })
+      p.clientReceipts.push({ ...receipt('cr2', 'ci2', 100), amount: 600, unallocatedAmount: 500 })
+    }))
+    expect(blockerCodes(r)).not.toContain(BLOCKER.OVER_ALLOCATED)
+    expect(r.partialFigures.receivablesOutstanding).toBe(2200 + 1000)
+    expect(r.partialFigures.unallocatedReceipts).toBe(500)
+  })
+
+  it('the production case (Gold Coast apartments, 20 November 2026): six issued invoices, CI-0012 over-allocated by 500.00', () => {
+    const invoice = (n, subtotal) => ({ id: `ci${n}`, invoiceNumber: `CI-${n}`, status: 'issued', clientId: 'c1', subtotal, gstTotal: subtotal / 10, grossTotal: subtotal * 1.1, lineItems: [] })
+    const r = compute(mutate(p => {
+      p.clientInvoices = [invoice('0001', 150000), invoice('0012', 20000), invoice('0013', 11000), invoice('0014', 50000), invoice('0015', 25000), invoice('0016', 50000)]
+      p.clientReceipts = [receipt('r1', 'ci0001', 165000), receipt('r2', 'ci0012', 22500), receipt('r3', 'ci0013', 11000), receipt('r4', 'ci0014', 20000), receipt('r5', 'ci0015', 27500),
+        { ...receipt('r6', 'none', 1000), allocatedTotal: 0, unallocatedAmount: 1000, allocations: [] }]
+    }))
+    const f = r.partialFigures
+    expect([f.invoicedToClientGross, f.receivedAgainstInvoices, f.receivablesOutstanding, f.unallocatedReceipts, f.cashReceived]).toEqual([336600, 246000, 91100, 1000, 247000])
+    // Outstanding is the sum of POSITIVE balances; the −500.00 on CI-0012 is not netted, and it blocks.
+    expect(f.invoicedToClientGross - f.receivedAgainstInvoices).toBe(90600)
+    expect(r.blockers.find(b => b.code === BLOCKER.OVER_ALLOCATED).detail).toBe('1 over-allocated: CI-0012')
+  })
+
+  it('more than five over-allocated invoices are counted in full and listed in part', () => {
+    const r = compute(mutate(p => {
+      for (let i = 2; i <= 8; i += 1) {
+        p.clientInvoices.push({ id: `ci${i}`, invoiceNumber: `CI-000${i}`, status: 'issued', clientId: 'c1', subtotal: 100, gstTotal: 10, grossTotal: 110, lineItems: [] })
+        p.clientReceipts.push(receipt(`cr${i}`, `ci${i}`, 120))
+      }
+    }))
+    expect(r.blockers.find(b => b.code === BLOCKER.OVER_ALLOCATED).detail).toMatch(/^7 over-allocated: .*, …$/)
   })
 
   it('a FAILED source blocks on SOURCES alone, names the source and never yields a figure set', () => {
@@ -508,6 +574,15 @@ describe('CSV export', () => {
     expect(csv).toContain('"\'\t=1+1"')
   })
 
+  it('the CSV carries the finalised labels and the corrected notes (an approved revision is never labelled a forecast)', () => {
+    const csv = finalAccountCsv(stored())
+    for (const label of ['"Final adjusted contract sum"', '"Final cost"', '"Final gross profit"', '"Final margin"']) expect(csv).toContain(label)
+    expect(csv).not.toContain('Forecast')
+    expect(csv).not.toContain('Gross approved value')
+    expect(csv).toContain('Total approved value, ex-GST')
+    expect(csv).toContain('positive balances of issued invoices')
+  })
+
   it('a superseded revision says so; a self-approval is recorded; a null margin is "NOT CALCULABLE", a zero stays a zero', () => {
     const s = stored({ selfApproved: true })
     s.figures = { ...s.figures, finalMarginPct: null }
@@ -541,6 +616,86 @@ describe('presentation', () => {
     expect(html).toContain('$10,000.00')
     expect(html).toContain('Current records: $10,500.00')
     expect(html).toMatch(/<h3 id="fa-contract"/)
+  })
+
+  it('the LIVE view is labelled as a forecast — nothing on it is called "final"; a stored revision keeps the finalised labels', () => {
+    const live = renderToStaticMarkup(h(FinalAccountFigures, { figures: EXPECTED_FIGURES, currencyCode: 'AUD', view: FIGURE_VIEW.LIVE }))
+    for (const label of ['Adjusted contract sum', 'Forecast final cost', 'Forecast gross profit', 'Forecast margin']) expect(live).toContain(label)
+    expect(live).not.toMatch(/\bFinal\b/)
+    expect(live.replace(/[Ff]orecast final cost/g, '')).not.toMatch(/final/i)
+    const stored = renderToStaticMarkup(h(FinalAccountFigures, { figures: EXPECTED_FIGURES, currencyCode: 'AUD' }))
+    for (const label of ['Final adjusted contract sum', 'Final cost', 'Final gross profit', 'Final margin']) expect(stored).toContain(label)
+    expect(stored).not.toContain('Forecast')
+    // Same figures, same values, same keys — only the wording differs.
+    expect(live).toContain('$12,000.00')
+    expect(stored).toContain('$12,000.00')
+  })
+
+  it('a DRAFT is labelled as proposed — never "Final …" — and only an APPROVED revision gets the finalised labels', () => {
+    const draft = renderToStaticMarkup(h(FinalAccountFigures, { figures: EXPECTED_FIGURES, currencyCode: 'AUD', view: FIGURE_VIEW.DRAFT }))
+    for (const label of ['Proposed final contract sum', 'Proposed final cost', 'Proposed final gross profit', 'Proposed final margin']) expect(draft).toContain(label)
+    expect(draft).not.toMatch(/>Final /)
+    expect(draft).not.toContain('Forecast')
+    expect(draft).toContain('Not final until approved')
+    expect(draft).toContain('Not confirmed until approval')
+    expect(draft).toContain('$6,000.00')                       // the same stored values
+    expect(revisionView({ status: 'approved' })).toBe(FIGURE_VIEW.REVISION)
+    for (const status of ['draft', 'withdrawn', undefined]) expect(revisionView({ status }), String(status)).toBe(FIGURE_VIEW.DRAFT)
+    expect(revisionView(null)).toBe(FIGURE_VIEW.DRAFT)         // unknown is never shown as final
+    const relabelled = FINAL_ACCOUNT_FIGURES.filter(d => figurePresentation(d, FIGURE_VIEW.DRAFT).label !== d.label).map(d => d.key)
+    expect(relabelled).toEqual(['finalContractSum', 'finalCost', 'finalProfit', 'finalMarginPct'])
+    // No "final" label reaches a view that is not an approved revision.
+    for (const view of [FIGURE_VIEW.LIVE, FIGURE_VIEW.DRAFT]) {
+      for (const d of FINAL_ACCOUNT_FIGURES) expect(figurePresentation(d, view).label, `${view}/${d.key}`).not.toMatch(/^Final /)
+    }
+  })
+
+  it('the unapplied-variation requirement is worded in forecast-cost terms and distinguishes approved, applied and unapplied', () => {
+    const check = READINESS_CHECKS.find(c => c.code === BLOCKER.UNAPPLIED_VARIATIONS)
+    const text = readinessPresentation(check)
+    expect(text.label).toBe('Every approved supplier variation is inside forecast final cost')
+    expect(text.fix).toMatch(/approved supplier variation counts in forecast final cost only once it is applied to its purchase order or committed as new scope/)
+    expect(text.fix).toMatch(/not yet applied, so its value is outside forecast final cost/)
+    expect(`${text.label} ${text.fix}`).not.toMatch(/Final cost|\bgross\b/)
+    // Every other requirement keeps its own wording; none of the SHOWN texts says "Final cost".
+    for (const c of READINESS_CHECKS) {
+      const shown = readinessPresentation(c)
+      expect(`${shown.label} ${shown.fix}`, c.code).not.toMatch(/Final cost/)
+      if (c.code !== BLOCKER.UNAPPLIED_VARIATIONS) expect(shown).toEqual({ label: c.label, fix: c.fix })
+    }
+  })
+
+  it('every figure has a label and a note in both views, and only wording differs between them', () => {
+    for (const def of FINAL_ACCOUNT_FIGURES) {
+      for (const view of Object.values(FIGURE_VIEW)) {
+        const t = figurePresentation(def, view)
+        expect(t.label.length, def.key).toBeGreaterThan(3)
+        expect(t.note.length, def.key).toBeGreaterThan(3)
+      }
+    }
+    const relabelled = FINAL_ACCOUNT_FIGURES.filter(d => figurePresentation(d, FIGURE_VIEW.LIVE).label !== figurePresentation(d, FIGURE_VIEW.REVISION).label).map(d => d.key)
+    expect(relabelled).toEqual(['finalContractSum', 'finalCost', 'finalProfit', 'finalMarginPct'])
+    expect(figurePresentation(FINAL_ACCOUNT_FIGURES[0])).toEqual({ label: 'Original contract sum', note: 'From the Commercial baseline' })
+  })
+
+  it('the supplier variation note says what is and is not inside cost, and never says "gross"', () => {
+    const def = FINAL_ACCOUNT_FIGURES.find(d => d.key === 'approvedSupplierVariations')
+    const live = figurePresentation(def, FIGURE_VIEW.LIVE).note
+    expect(live).toMatch(/Total approved value, ex-GST/)
+    expect(live).toMatch(/applied to a purchase order or committed as new scope is inside forecast final cost/)
+    expect(live).toMatch(/not yet applied is outside it and blocks approval/)
+    const revision = figurePresentation(def, FIGURE_VIEW.REVISION).note
+    expect(revision).toMatch(/all of it is inside final cost/)
+    for (const note of [live, revision]) { expect(note).not.toMatch(/gross/i); expect(note).not.toMatch(/already inside/) }
+  })
+
+  it('"Client invoices outstanding" explains that it is positive balances and is not reduced by an over-allocated invoice', () => {
+    const def = FINAL_ACCOUNT_FIGURES.find(d => d.key === 'receivablesOutstanding')
+    for (const view of Object.values(FIGURE_VIEW)) {
+      const note = figurePresentation(def, view).note
+      expect(note).toMatch(/positive balances of issued invoices/)
+      expect(note).toMatch(/over-allocated invoice does not reduce it/)
+    }
   })
 
   it('a missing figure renders Unavailable — never $0.00', () => {

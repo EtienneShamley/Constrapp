@@ -2,6 +2,7 @@ import { csvRows, csvMoney, filenameSlug } from './csv'
 import {
   FINAL_ACCOUNT_STATUS, FINAL_ACCOUNT_FIGURES, FIGURE_BASIS, FIGURE_GROUP_LABELS, FINAL_ACCOUNT_DISCLAIMER,
 } from './finalAccount'
+import { figurePresentation, FIGURE_VIEW } from './finalAccountDisplay'
 
 // ── Final Account → CSV (pure; APPROVED revisions only) ──────────────────────
 //
@@ -54,13 +55,13 @@ export function finalAccountCsv(account, { projectName = '', superseded = false 
     ['Amounts', `${ccy}. Ex-GST and gross figures are listed separately and are never added together. GST is the Australian 10% model only.`],
     [],
     ['Section', 'Figure', 'Value', 'Unit', 'Basis', 'Notes'],
-    ...FINAL_ACCOUNT_FIGURES.map(def => [
+    ...FINAL_ACCOUNT_FIGURES.map(def => ({ def, text: figurePresentation(def, FIGURE_VIEW.REVISION) })).map(({ def, text }) => [
       FIGURE_GROUP_LABELS[def.group],
-      def.label,
+      text.label,
       amount(f[def.key]),
       def.basis === FIGURE_BASIS.PERCENT ? '%' : ccy,
       BASIS_LABEL[def.basis],
-      [def.open ? 'OUTSTANDING BALANCE — acknowledged at approval' : '', def.note].filter(Boolean).join('; '),
+      [def.open ? 'OUTSTANDING BALANCE — acknowledged at approval' : '', text.note].filter(Boolean).join('; '),
     ]),
     [],
     ['Cost code breakdown (ex-GST)'],
