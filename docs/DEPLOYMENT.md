@@ -3570,9 +3570,17 @@ URL, Resend invitation email, acceptance, Quant™ PDF and Authentication
 regressions; the tab title *Constrap* was also observed on the live origin).
 Steps 1–6 above are complete for production.
 
-## L2-B Stage B — Final Account release order — ADR-77 — RULES, then ONE callable, then HOSTING (IMPLEMENTED — NOT DEPLOYED, 19 November 2026)
+## L2-B Stage B — Final Account release order — ADR-77 — RULES, then ONE callable, then HOSTING (DEPLOYED — PRODUCTION ACCEPTANCE PENDING)
 
-**Status:** implemented on `feature/l2b-final-account` (uncommitted), awaiting
+**Current status (20 November 2026): DEPLOYED — PRODUCTION ACCEPTANCE PENDING.** All three steps are
+REPORTED by the Product Owner and the Lead Architect, 20 November 2026: Firestore Rules, the `approveFinalAccount` callable and Hosting deployed; Azure CI green on `main` `c4b93e5`. They were not re-read from production when this line was written, and
+the TESTING.md §62 acceptance (F1–F17) is NOT complete: the Product Owner has
+confirmed navigation, rendering, the readiness checklist and the disabled
+*Prepare* on a not-ready project; no revision has been prepared or approved in
+production. The rest of this section is the release order as written BEFORE
+the deployment and is kept unchanged.
+
+**Status when written (19 November 2026):** implemented on `feature/l2b-final-account` (uncommitted), awaiting
 architect review. **Nothing is deployed. No deployment is authorised.** Three
 steps, each a separate approved action, in this order. No index, no migration,
 no transitional Rules publish, no new secret, no IAM change, no new service
@@ -3645,6 +3653,41 @@ disregarded, approve a correcting revision (or leave it — it moves no figure).
 
 **Not part of this release.** The team callables, the reconciliation worker,
 Storage Rules, App Check enforcement settings, IAM, billing, indexes.
+
+## L2-B reconciliation correction — ONE callable, then HOSTING (IMPLEMENTED — NOT DEPLOYED, 20 November 2026)
+
+**Status:** implemented on `fix/l2b-final-account-reconciliation` (uncommitted),
+awaiting architect review. No Rules change, no index, no migration, no new
+parameter.
+
+**A Functions redeploy IS required** — of `approveFinalAccount` only. The new
+readiness requirement (*No over-allocated issued client invoices*) is in the
+shared calculation, so the generated server bundle changed; until the
+callable is redeployed the server does not enforce it.
+
+1. **Callable first:**
+   `firebase deploy --only functions:team:approveFinalAccount --project constrapp-69b5d`
+   (confirm the plan lists exactly ONE function, an update). With the old
+   Hosting bundle still live, a draft prepared on over-allocated records is
+   refused at approval (`final-account-not-ready`, blocker
+   `overAllocatedInvoices`).
+2. **Hosting second:** `npm run build`, then
+   `firebase deploy --only hosting --project constrapp-69b5d`. The checklist
+   then shows the requirement, the forecast labels on the live position, the
+   proposed labels on a draft, and the corrected variation wording.
+
+The reverse order would leave a window in which the page blocks preparation
+but the server would still approve an existing draft. *Rollback:* Hosting to
+the previous release in the console; the callable by redeploying the previous
+`main` — each independently; no data is written by either step.
+
+*Acceptance (NOT RUN):* on *Gold Coast apartments* the checklist shows *No
+over-allocated issued client invoices — Not met — 1 over-allocated: CI-0012*;
+the live figures read *Adjusted contract sum*, *Forecast final cost*,
+*Forecast gross profit*, *Forecast margin*; the supplier-variation note no
+longer says "already inside". After the receipt against CI-0012 is corrected
+by the user, the requirement reads Met and outstanding equals invoiced −
+received.
 
 ## L2-B Stage A — Rules capacity recovery 3 — ADR-76 — RULES ONLY (LIVE since 18 November 2026 21:57 UTC)
 

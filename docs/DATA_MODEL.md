@@ -2228,7 +2228,7 @@ project with no tender collections loads normally.
 
 ## …/projects/{projectId}/finalAccounts/{number}
 
-**Final Account revisions (ADR-77, L2-B — IMPLEMENTED, NOT DEPLOYED).** ONE
+**Final Account revisions (ADR-77, L2-B — DEPLOYED — PRODUCTION ACCEPTANCE PENDING).** ONE
 document per revision; **the document id is the revision number** (`"1"`,
 `"2"`, …). Revision n can be created only when revision n − 1 exists and is
 terminal, so numbering is gapless and at most one draft is open. There is no
@@ -2293,7 +2293,7 @@ exactly as budget lines, PO lines, claim lines, and invoice lines already do.
 | ~~**"Raise PO from Award"**~~ | **Implemented** as the ADR-61 source triple on `purchaseOrders` + the back-link on `tenderPackages` (M3-A — live since 29 October 2026): one guarded transaction creates a DRAFT PO from the awarded bid and links the two atomically; no awarded-vs-committed netting is inferred | Each PO line carries the bid line's `costCodeId` |
 | **Budget Adjustments** | Internal budget transfers/revisions (no external counterparty) — **a distinct future document type, not a variation** | Reallocate budget by cost code |
 | **Forecast period snapshots** | Immutable monthly cost-to-complete snapshots + prior-period comparison (the *current* per-cost-code forecast inputs are **implemented** above as `forecastLines`) | Aggregated by cost code |
-| ~~**Final account records**~~ | **Implemented** as `finalAccounts/{number}` (ADR-77, L2-B — implemented, not deployed): see above | One row per cost code (`costCodeId` + name snapshot) |
+| ~~**Final account records**~~ | **Implemented** as `finalAccounts/{number}` (ADR-77, L2-B — deployed; production acceptance pending): see above | One row per cost code (`costCodeId` + name snapshot) |
 
 No collection paths or field lists are committed here; adding any of these requires
 a design assessment, a hook, and (where a new collection is introduced) a manual

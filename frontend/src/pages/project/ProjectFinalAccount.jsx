@@ -30,6 +30,7 @@ import {
 } from '../../lib/finalAccount'
 import { finalAccountCsv, finalAccountFilename } from '../../lib/finalAccountCsv'
 import { saveBlob } from '../../lib/fileBlob'
+import { FIGURE_VIEW, revisionView, readinessPresentation } from '../../lib/finalAccountDisplay'
 import { FinalAccountFigures, FinalAccountRows } from './finalAccount/FinalAccountSnapshot'
 import { PrepareFinalAccountModal, ApproveFinalAccountModal, WithdrawFinalAccountModal } from './finalAccount/FinalAccountDialogs'
 
@@ -76,7 +77,7 @@ const CHECK_TEXT = { ok: 'Met', blocked: 'Not met', pending: 'Checking', unknown
 const CHECK_CLS = { ok: 'text-brand-accent', blocked: 'text-brand-red', pending: 'text-brand-muted', unknown: 'text-brand-muted' }
 
 function ReadinessChecklist({ computation }) {
-  const checks = readinessChecklist(computation)
+  const checks = readinessChecklist(computation).map(c => ({ ...c, ...readinessPresentation(c) }))
   return (
     <ul className="m-0 p-0 list-none flex flex-col">
       {checks.map(c => (
@@ -278,7 +279,12 @@ function FinalAccount({ project, projectId, currencyCode, role }) {
                 {isApproved && <p className="m-0 mt-1 text-[12px] font-semibold text-brand-text">{FINAL_ACCOUNT_DISCLAIMER}</p>}
                 {isDraft && (
                   <p className="m-0 mt-1 text-[12.5px] font-semibold text-brand-amber" role="status">
-                    DRAFT — not approved. These figures are a proposal and are not a Final Account until approved.
+                    DRAFT — not approved. Every figure below is proposed. Nothing here is final until a Company Admin or Project Manager approves it and the server has recalculated it.
+                  </p>
+                )}
+                {selected.status === FINAL_ACCOUNT_STATUS.WITHDRAWN && (
+                  <p className="m-0 mt-1 text-[12.5px] font-semibold text-brand-amber" role="status">
+                    WITHDRAWN draft — never approved. Its figures were a proposal and are kept as history only.
                   </p>
                 )}
                 {selected.superseded && (
@@ -331,6 +337,7 @@ function FinalAccount({ project, projectId, currencyCode, role }) {
               currencyCode={selected.currency}
               differences={selected.status === FINAL_ACCOUNT_STATUS.WITHDRAWN ? null : differences}
               idPrefix="fa-stored"
+              view={revisionView(selected)}
             />
           </Card>
 
@@ -363,7 +370,10 @@ function FinalAccount({ project, projectId, currencyCode, role }) {
             <h2 className="text-[13px] font-bold uppercase tracking-[0.4px] text-brand-muted m-0 mt-5 mb-3">
               Current position — not a Final Account
             </h2>
-            <FinalAccountFigures figures={live.partialFigures} currencyCode={currencyCode} pending={live.loading} idPrefix="fa-live" />
+            <p className="m-0 mb-3 text-[11.5px] text-brand-muted">
+              Live figures from the current records. Cost and profit here are forecasts until cost to complete is zero; nothing in this section is final.
+            </p>
+            <FinalAccountFigures figures={live.partialFigures} currencyCode={currencyCode} pending={live.loading} idPrefix="fa-live" view={FIGURE_VIEW.LIVE} />
           </Card>
         </div>
       )}

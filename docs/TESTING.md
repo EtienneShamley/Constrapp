@@ -8643,7 +8643,7 @@ published).**
 | W3 | Financial role saves one ordinary edit (for example a forecast line note) | Accepted |
 | W4 | A deactivated or non-financial account opens a financial tab | Still refused |
 
-## 62. L2-B Stage B — Final Account (ADR-77, 19 November 2026) — IMPLEMENTED — NOT DEPLOYED; automated tests PASS (emulators); production acceptance NOT RUN
+## 62. L2-B Stage B — Final Account (ADR-77, 19 November 2026) — DEPLOYED — PRODUCTION ACCEPTANCE PENDING; automated tests PASS (emulators); production acceptance PARTIAL (F1 and F2 confirmed by the Product Owner, 20 November 2026; F3–F17 NOT RUN)
 
 **What changed.** A `finalAccounts` collection (one Rules block), the
 `approveFinalAccount` callable, the generated server calculation, and a Final
@@ -8726,3 +8726,40 @@ npm run functions:calc:check && npm run rules:transitional:check
 browser, real print output, spreadsheet behaviour, App Check with a real
 reCAPTCHA Enterprise token, production transaction behaviour under load, and
 the production Rules path.
+
+### 62a. L2-B reconciliation correction (20 November 2026) — IMPLEMENTED — NOT DEPLOYED; automated tests PASS; production acceptance NOT RUN
+
+**Production reconciliation (read-only, 20 November 2026; test project *Gold
+Coast apartments*; invoice headers and receipt allocations only).** Six issued
+invoices, nine posted receipts, no document without `createdAt`, no allocation
+to a non-issued invoice, every receipt's allocations equal to its
+`allocatedTotal`.
+
+| Invoice | Gross | Allocated | Balance |
+|---|---|---|---|
+| CI-0001 | 165,000.00 | 165,000.00 | 0.00 |
+| CI-0012 | 22,000.00 | 22,500.00 | **−500.00** |
+| CI-0013 | 12,100.00 | 11,000.00 | 1,100.00 |
+| CI-0014 | 55,000.00 | 20,000.00 | 35,000.00 |
+| CI-0015 | 27,500.00 | 27,500.00 | 0.00 |
+| CI-0016 | 55,000.00 | 0.00 | 55,000.00 |
+| **Total** | **336,600.00** | **246,000.00** | positive 91,100.00 · over-allocated −500.00 · net 90,600.00 |
+
+Σ `subtotal` + Σ `gstTotal` = Σ `grossTotal` = 336,600.00 (no header
+inconsistency). Posted receipts: Σ amount 247,000.00 = 246,000.00 allocated +
+1,000.00 unallocated. Cause: ONE over-allocated invoice. Not a calculation
+defect.
+
+**Automated:** lint 0 / 0; unit **86 files / 4,659 tests** (`finalAccount.test.js`
+82, `finalAccountBundle.test.js` 31, `finalAccountPage.test.js` 17); Functions
+pure **4 files / 99 tests**; Final Account Functions emulator file **67 tests**;
+build clean; `functions:calc:check` and `rules:transitional:check` clean;
+`git diff --check` clean. Rules unchanged — the Rules suite was not re-run.
+New coverage: the blocker at one cent over, not at exact payment, not below a
+cent; posted / issued only; ordinary balances still non-blocking; the
+production figures reproduced with the blocker naming CI-0012; server bundle
+parity and independent enforcement by the callable (one cent over refused,
+exact payment approved); live versus revision labels in the component, the
+whole page and the CSV; the two corrected notes; draft views labelled
+*Proposed final …* and never *Final …*; the unapplied-variation requirement
+worded in forecast-cost terms.

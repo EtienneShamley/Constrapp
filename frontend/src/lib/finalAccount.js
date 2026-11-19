@@ -136,6 +136,7 @@ export const BLOCKER = {
   DRAFT_PAYMENTS:       'draftPayments',
   DRAFT_CREDIT_NOTES:   'draftCreditNotes',
   DRAFT_RELEASES:       'draftReleases',
+  OVER_ALLOCATED:       'overAllocatedInvoices',
   COST_TO_COMPLETE:     'costToComplete',
   FIGURES:              'figures',
   SIZE:                 'size',
@@ -157,6 +158,7 @@ export const READINESS_CHECKS = [
   { code: BLOCKER.DRAFT_PAYMENTS,       label: 'No draft supplier payments',               fix: 'Post or void each draft payment.' },
   { code: BLOCKER.DRAFT_CREDIT_NOTES,   label: 'No draft supplier credit notes',           fix: 'Post or void each draft credit note.' },
   { code: BLOCKER.DRAFT_RELEASES,       label: 'No draft retention releases',              fix: 'Post or void each draft retention release.' },
+  { code: BLOCKER.OVER_ALLOCATED,       label: 'No over-allocated issued client invoices', fix: 'An issued client invoice has more receipt allocated to it than its gross value. Correct the receipt allocation on the Client Receipts tab (void the receipt and re-enter it) so no invoice is over-allocated. Nothing is reallocated automatically.' },
   { code: BLOCKER.COST_TO_COMPLETE,     label: 'Cost to complete is zero',                 fix: 'Close out remaining commitment (a closing supplier variation on each under-run purchase order line) and set every uncommitted cost to complete to zero on the Forecast tab.' },
   { code: BLOCKER.FIGURES,              label: 'Every figure is a valid amount',           fix: 'A figure could not be calculated from the records. Check SHIELD for integrity findings.' },
   { code: BLOCKER.SIZE,                 label: 'Within the size of one record',            fix: 'This project has more cost codes than one Final Account record can hold.' },
@@ -273,6 +275,12 @@ export function computeFinalAccount({ project = null, currencyCode, sources = {}
     draftCreditNotes:    draftSupplierCreditNotes(supplierCreditNotes).length,
     draftReleases:       draftRetentionReleases(retentionReleases).length,
   }
+  // Issued client invoices whose posted receipt allocations EXCEED the invoice's
+  // gross value — the rows of the existing receivables selector, compared in
+  // whole cents. Such an invoice's negative balance is never netted into
+  // Client invoices outstanding (lib/clientReceipts.js), so the receivables
+  // position does not reconcile until the allocation is corrected.
+  const overAllocated = receivables.rows.filter(r => toCents(r.received) > toCents(r.grossTotal))
   const unapplied = pick(report.variations, 'unappliedSupplierVariations')
   const awaiting = roundMoney(totals.approvedClaimsAwaitingInvoice)
 
@@ -293,6 +301,10 @@ export function computeFinalAccount({ project = null, currencyCode, sources = {}
     if (counts.draftPayments > 0) block(BLOCKER.DRAFT_PAYMENTS, `${counts.draftPayments} draft`)
     if (counts.draftCreditNotes > 0) block(BLOCKER.DRAFT_CREDIT_NOTES, `${counts.draftCreditNotes} draft`)
     if (counts.draftReleases > 0) block(BLOCKER.DRAFT_RELEASES, `${counts.draftReleases} draft`)
+    if (overAllocated.length > 0) {
+      const names = overAllocated.slice(0, 5).map(r => r.invoiceNumber || r.id).join(', ')
+      block(BLOCKER.OVER_ALLOCATED, `${overAllocated.length} over-allocated: ${names}${overAllocated.length > 5 ? ', …' : ''}`)
+    }
     if (raw.costToComplete === null || toCents(raw.costToComplete) !== 0 || rowsOpen > 0
       || raw.finalCost === null || raw.actualCost === null || toCents(raw.finalCost) !== toCents(raw.actualCost)) block(BLOCKER.COST_TO_COMPLETE)
     if (!figuresValid) block(BLOCKER.FIGURES)

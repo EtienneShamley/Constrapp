@@ -3965,6 +3965,7 @@ const BLOCKER = {
 	DRAFT_PAYMENTS: "draftPayments",
 	DRAFT_CREDIT_NOTES: "draftCreditNotes",
 	DRAFT_RELEASES: "draftReleases",
+	OVER_ALLOCATED: "overAllocatedInvoices",
 	COST_TO_COMPLETE: "costToComplete",
 	FIGURES: "figures",
 	SIZE: "size"
@@ -4039,6 +4040,11 @@ const READINESS_CHECKS = [
 		code: BLOCKER.DRAFT_RELEASES,
 		label: "No draft retention releases",
 		fix: "Post or void each draft retention release."
+	},
+	{
+		code: BLOCKER.OVER_ALLOCATED,
+		label: "No over-allocated issued client invoices",
+		fix: "An issued client invoice has more receipt allocated to it than its gross value. Correct the receipt allocation on the Client Receipts tab (void the receipt and re-enter it) so no invoice is over-allocated. Nothing is reallocated automatically."
 	},
 	{
 		code: BLOCKER.COST_TO_COMPLETE,
@@ -4157,6 +4163,7 @@ function computeFinalAccount({ project = null, currencyCode, sources = {}, sourc
 		draftCreditNotes: draftSupplierCreditNotes(supplierCreditNotes).length,
 		draftReleases: draftRetentionReleases(retentionReleases).length
 	};
+	const overAllocated = receivables.rows.filter((r) => toCents$1(r.received) > toCents$1(r.grossTotal));
 	const unapplied = pick(report.variations, "unappliedSupplierVariations");
 	const awaiting = roundMoney(totals.approvedClaimsAwaitingInvoice);
 	const blockers = [];
@@ -4179,6 +4186,10 @@ function computeFinalAccount({ project = null, currencyCode, sources = {}, sourc
 		if (counts.draftPayments > 0) block(BLOCKER.DRAFT_PAYMENTS, `${counts.draftPayments} draft`);
 		if (counts.draftCreditNotes > 0) block(BLOCKER.DRAFT_CREDIT_NOTES, `${counts.draftCreditNotes} draft`);
 		if (counts.draftReleases > 0) block(BLOCKER.DRAFT_RELEASES, `${counts.draftReleases} draft`);
+		if (overAllocated.length > 0) {
+			const names = overAllocated.slice(0, 5).map((r) => r.invoiceNumber || r.id).join(", ");
+			block(BLOCKER.OVER_ALLOCATED, `${overAllocated.length} over-allocated: ${names}${overAllocated.length > 5 ? ", …" : ""}`);
+		}
 		if (raw.costToComplete === null || toCents$1(raw.costToComplete) !== 0 || rowsOpen > 0 || raw.finalCost === null || raw.actualCost === null || toCents$1(raw.finalCost) !== toCents$1(raw.actualCost)) block(BLOCKER.COST_TO_COMPLETE);
 		if (!figuresValid) block(BLOCKER.FIGURES);
 		if (rows.length > FINAL_ACCOUNT_LIMITS.ROWS) block(BLOCKER.SIZE, `${rows.length} cost codes`);

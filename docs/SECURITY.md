@@ -165,7 +165,7 @@ Controls now in place:
   TESTING.md §61), so permissions are unchanged by construction; the emulator
   suite passed unchanged. Evaluation cost (the 1000-expression ceiling, access
   calls) is unchanged.
-- **L2-B Final Account (ADR-77, 19 November 2026, IMPLEMENTED — NOT DEPLOYED).**
+- **L2-B Final Account (ADR-77, 19 November 2026 — DEPLOYED — PRODUCTION ACCEPTANCE PENDING; the 232,460-byte ruleset is REPORTED published, not re-read from production in this revision).**
   One new block, `finalAccounts`: FINAL `firestore.rules` **229,115 → 232,460
   bytes** (+3,345; **12,540 under the budget**), regenerated transitional file
   **233,140** (no new marked line). The block is small because approval is not
@@ -3464,7 +3464,7 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       CLOSED with the accepted risks above.**
 
 47. **Final Account — what a draft, the callable and the Admin SDK can and
-    cannot guarantee (ADR-77, L2-B — IMPLEMENTED, NOT DEPLOYED).**
+    cannot guarantee (ADR-77, L2-B — DEPLOYED — PRODUCTION ACCEPTANCE PENDING).**
     *Rules-enforced:* tenancy and financial roles on every read and write;
     the revision contract (document id == `number`, the predecessor must
     exist and be terminal, so one open draft and gapless numbering); the
