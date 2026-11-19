@@ -8559,7 +8559,7 @@ operator-created account failed for a reason not established (a
 server-generated reset code for the same account verified as valid); it is
 not part of the control and is noted in the closure record.
 
-## 60. L2-A — Commercial Report (18 November 2026) — IMPLEMENTED — NOT DEPLOYED; automated tests PASS; manual acceptance NOT RUN
+## 60. L2-A — Commercial Report (18 November 2026) — LIVE and Product Owner accepted (REPORTED 19 November 2026; no per-step acceptance record is held here); automated tests PASS
 
 **Scope.** The project **Reports** tab (`/projects/:id/reports`): a read-only,
 live Commercial Report for one project in one currency, CSV export and a
@@ -8603,7 +8603,7 @@ a posted receipt and a posted payment.
 spreadsheet application behaviour, and the production rules path (the report
 adds no read the financial roles did not already make on other tabs).
 
-## 61. L2-B Stage A — Firestore Rules Capacity Recovery 3 (ADR-76, 19 November 2026) — IMPLEMENTED — NOT DEPLOYED; automated checks PASS; production smoke checks NOT RUN
+## 61. L2-B Stage A — Firestore Rules Capacity Recovery 3 (ADR-76, 19 November 2026) — LIVE since 18 November 2026 21:57 UTC; automated checks PASS; live ruleset VERIFIED byte-identical to `main` (read-only, 19 November 2026); browser smoke checks W2–W4 NOT RECORDED
 
 **What changed.** Leading spaces in `frontend/firestore.rules` only: every
 non-blank line indented 16 or more spaces loses exactly 8 (1,631 of 4,122
@@ -8642,3 +8642,87 @@ published).**
 | W2 | Financial role opens Budget, Purchase Orders and the Commercial Report | Figures load as before; nothing reads *Unavailable* |
 | W3 | Financial role saves one ordinary edit (for example a forecast line note) | Accepted |
 | W4 | A deactivated or non-financial account opens a financial tab | Still refused |
+
+## 62. L2-B Stage B — Final Account (ADR-77, 19 November 2026) — IMPLEMENTED — NOT DEPLOYED; automated tests PASS (emulators); production acceptance NOT RUN
+
+**What changed.** A `finalAccounts` collection (one Rules block), the
+`approveFinalAccount` callable, the generated server calculation, and a Final
+Account sub-tab under Commercial. No existing selector, hook or figure changed.
+
+**Automated (all against local emulators — nothing here is production-verified):**
+lint 0 / 0 (frontend and Functions); unit **86 files / 4,642 tests**; Functions pure
+**4 files / 99 tests**; Rules **36 files / 2,319 tests** (Rules unchanged since
+that run); Functions emulator **9 files / 230 tests**; `npm run rules:transitional:check` and
+`npm run functions:calc:check` clean; `firestore.rules` 232,460 bytes; build
+clean; `git diff --check` clean.
+
+| Suite | File | Tests | Covers |
+|---|---|---|---|
+| Unit | `tests/unit/finalAccount.test.js` | 69 | Figures equal the Commercial Report and their own selectors; contract / invoiced / received / outstanding distinct; ex-GST and gross never combined; every readiness blocker; failed and loading sources; working and unreconciled budgets; commitment close-out by an applied negative variation; draft payload and size; drift (later invoice, edited contract value, re-approved budget, cent boundary, unreadable live records); history and supersession; roles; client actions send no amount; CSV (approved only, formula injection, disclaimer, superseded, self-approval); display states; dialogs; page wiring, permission gate, print reuse |
+| Unit | `tests/unit/finalAccountBundle.test.js` | 30 | Generated bundle FRESH (byte-identical on rebuild, deterministic), SELF-CONTAINED (no import, no browser / Firebase reference, no build-machine path), EQUAL to the source module across 15 project variants and failed / loading sources; the callable's source surface; the Rules block has no client path to `approved` |
+| Unit | `tests/unit/finalAccountPage.test.js` | 14 | The whole page rendered with stubbed hooks in every state: restricted role, nothing prepared, not ready, loading, a failed register, draft (approver / qs / stale), approved, approved with drift, live records unreadable, history with superseded and withdrawn revisions, self-approval, revision read failed |
+| Functions pure | `functions/test/finalAccount.test.js` | 27 | Gate order (kill switch, authentication, validation — with no database); the request schema; approver membership; the shipped calculation; **release safety** — the flag defaults to off in code and is stated in every project env file, no existing production parameter changed, the export name and codebase the deploy filter targets, bounded reads, only ABORTED typed as busy |
+| Rules | `tests/rules/finalAccounts.rules.test.js` | 81 | Reads by role and tenant; draft creation through the app action and 24 forged shapes; 1,000 rows accepted as one document, 1,001 refused; revision numbering; two concurrent prepares land one draft; **no role can approve by any write shape**; draft figures cannot be edited; withdrawal rights and 9 refused shapes; approved and withdrawn immutable; delete denied; no other document written |
+| Functions emulator | `tests/functions/finalAccount.approve.test.js` | 65 | Who may approve; cross-tenant NOT FOUND; request validation; server figures replace the draft's; 10 forged drafts refused; readiness from the server's own read (7 cases); adjustments folded; lifecycle guards; correction as revision 2 leaves revision 1 byte-identical; idempotent replay; two approvers at once; double submit; forced ABORTED retried once; non-retryable failure writes nothing; **contention on all five attempts → typed busy; a deadline error left untyped and safely retried; a failed read at three different points approves nothing; a register over the document bound refused by name and accepted exactly at the bound**; **three source-write races and a withdraw race**; a 1,000-row / 2,200-document approval in one transaction; the deployed wrapper over HTTP (App Check, ID token) |
+
+**Concurrency evidence (emulator).** A competing write was started after the
+approval transaction had read its sources and before it wrote: (1) an update
+to `commercial/baseline`, (2) a new submitted variation inserted into the
+queried `variations` register, (3) a new posted supplier invoice inserted into
+`supplierInvoices`. Observed in two consecutive runs, every case: the approval
+succeeded on its first attempt, and the competing write's commit time was
+strictly later than the approved revision's update time — the write waited
+for the transaction. The tests accept either serializable history (retry and
+refuse, or approve then write) and fail on the one that must never happen: an
+approval that succeeded although an unaccounted write had already committed.
+The emulator's locking may be coarser than production's; production relies on
+Firestore's documented serializable isolation and pessimistic locking for
+server SDKs on a Standard-edition database, and that has NOT been exercised
+in production.
+
+**Bundle portability.** `rolldown` is an explicit dev dependency at `1.0.3`
+(the version Vite pins). A clean `npm ci` from the lockfile in an empty
+directory installed one copy and `functions:calc:check` reported the committed
+bundle up to date; the same check passed with the WebAssembly binding forced
+(`NAPI_RS_FORCE_WASI=1`) in place of the native macOS one — two different
+compiled bindings, identical bytes. The `linux-x64-gnu` binding is in the
+lockfile at `1.0.3`. **It was NOT run on Linux** (no container runtime on the
+development machine): the first Azure CI run on the branch is that proof, and
+the freshness test fails loudly there if the output differs.
+
+**Reproduce (from `frontend/`; Java 21+).**
+
+```bash
+npm run test:unit
+npm run functions:test
+npm run test:rules
+npm run test:functions
+npm run functions:calc:check && npm run rules:transitional:check
+```
+
+**Production acceptance after the three-step release (NOT RUN — nothing is deployed).**
+
+| # | Step | Expected |
+|---|---|---|
+| F1 | Company Admin opens a project → Commercial → Final Account | The sub-tab is present; "No Final Account has been prepared"; the readiness checklist lists every requirement with Met / Not met; the current position shows figures, never 0 for a figure that failed to load |
+| F2 | On a project that is NOT ready (an open claim, a draft invoice, or a forecast cost to complete) | The requirement reads Not met with its fix; *Prepare* is disabled |
+| F3 | On a ready project, *Prepare Final Account* without ticking the acknowledgement | Refused with a message; nothing is written |
+| F4 | Prepare with a basis and the acknowledgement | Draft revision 1 appears, marked DRAFT — not approved; no Export or Print button |
+| F5 | As QS, open the draft | No *Approve* button; "Approval is by a Company Admin or Project Manager" |
+| F6 | As a second user, try to prepare another draft | Refused: a draft is already open |
+| F7 | Edit the contract value on the Commercial tab, then return to the draft | *Approve* is disabled: the current records differ from this draft |
+| F8 | Withdraw the draft with a reason; prepare revision 2; approve it as Project Manager | Revision 2 is Approved and Current; approver name, time and "Records read" time shown; revision 1 stays Withdrawn in the history |
+| F9 | Backend evidence for F8 | A `final account approval` log line on the `approvefinalaccount` service for that request; one `final_account.approved` audit event |
+| F10 | Approve a draft you prepared yourself | Permitted; the revision shows "self-approval" |
+| F11 | Post a new supplier invoice after approval; reopen the Final Account | An alert names the changed figures and shows the current value beside each; the approved figures are unchanged |
+| F12 | Prepare and approve revision 3 | Revision 3 is Current; revision 2 is Superseded and its figures are unchanged |
+| F13 | *Export CSV* on an approved revision | Opens in a spreadsheet; revision, currency, approver, date and the disclaimer present; ex-GST and gross in separate rows; a cost code beginning with `=` shows as text |
+| F14 | *Print / Save as PDF* on an approved revision | Landscape A4; no sidebar, tabs, sub-tabs, checklist or history; light background; the disclaimer present |
+| F15 | With browser developer tools, attempt `updateDoc(finalAccounts/N, { status: 'approved' })` as a Company Admin | Refused: permission denied |
+| F16 | A deactivated or non-financial account opens the URL | "Final Account is restricted"; no figure |
+| F17 | 375 px, 768 px and 1280 px widths | No overlap; the cost-code table scrolls inside its card; touch targets at least 44 px |
+
+**Not covered by automated tests.** Rendered DOM and focus behaviour in a real
+browser, real print output, spreadsheet behaviour, App Check with a real
+reCAPTCHA Enterprise token, production transaction behaviour under load, and
+the production Rules path.

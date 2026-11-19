@@ -154,17 +154,26 @@ Controls now in place:
   active header the version branch probes); every evaluation ran clean of
   the 1000-expression ceiling in the emulator
   (`tests/rules/budgetAdjustments.rules.test.js`, 67 cases).
-- **Rules capacity recovery 3 (ADR-76, 19 November 2026, IMPLEMENTED — NOT
-  DEPLOYED; Rules-only).** A leading-whitespace-only re-indent made ahead of
+- **Rules capacity recovery 3 (ADR-76, 19 November 2026, LIVE — published
+  18 November 2026 21:57 UTC and verified read-only on 19 November 2026: the
+  live ruleset is 229,115 bytes, byte-identical to `main`; Rules-only).** A leading-whitespace-only re-indent made ahead of
   L2-B Final Account: every non-blank line indented 16 or more spaces loses
   exactly 8. FINAL `firestore.rules` **242,163 → 229,115 bytes** (−13,048;
   **15,885 under the budget**), regenerated transitional file **242,843 →
   229,795**. Every line is byte-identical after its leading spaces, comments
   included (`frontend/scripts/verify-rules-whitespace-only.mjs --base 2d5787c`,
   TESTING.md §61), so permissions are unchanged by construction; the emulator
-  suite passed unchanged. Until it is published the LIVE ruleset is still the
-  242,163-byte file. Evaluation cost (the 1000-expression ceiling, access
+  suite passed unchanged. Evaluation cost (the 1000-expression ceiling, access
   calls) is unchanged.
+- **L2-B Final Account (ADR-77, 19 November 2026, IMPLEMENTED — NOT DEPLOYED).**
+  One new block, `finalAccounts`: FINAL `firestore.rules` **229,115 → 232,460
+  bytes** (+3,345; **12,540 under the budget**), regenerated transitional file
+  **233,140** (no new marked line). The block is small because approval is not
+  a Rules transition at all: no client can write `status: 'approved'`; the
+  trusted `approveFinalAccount` callable does. Create reads four documents
+  (membership, project, company, the predecessor revision). The 1,000-row,
+  170-character-name draft was written through the rules in the emulator as
+  one document.
 - **Size compliance is not deployment proof.** The emulator suite proves the
   repo file; the size test proves it can be published; only the console shows
   what is live — see [DEPLOYMENT.md](DEPLOYMENT.md) → *Verifying which rules
@@ -3453,6 +3462,64 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
       deactivated and its test documents withdrawn. Evidence: TESTING.md
       §59; ADR-75 → *DC46 closure record*. **Deferred Control 46 is
       CLOSED with the accepted risks above.**
+
+47. **Final Account — what a draft, the callable and the Admin SDK can and
+    cannot guarantee (ADR-77, L2-B — IMPLEMENTED, NOT DEPLOYED).**
+    *Rules-enforced:* tenancy and financial roles on every read and write;
+    the revision contract (document id == `number`, the predecessor must
+    exist and be terminal, so one open draft and gapless numbering); the
+    draft shape — exact keys, basis and reference lengths, the project's
+    currency, `figures` a map, `rows` a list of at most 1,000 with a matching
+    `rowCount`, the acknowledgement, every approval field null, caller and
+    server-time stamps; withdrawal from DRAFT only, by an approver or the
+    preparer, with a reason and nothing captured changed; **no update of any
+    kind to an approved or withdrawn revision; no delete; and no client path
+    to `status: 'approved'` for any role** (`tests/rules/finalAccounts.rules.test.js`).
+    *Enforced by the trusted callable, which bypasses Rules and authorises
+    itself:* the caller is authenticated, an ACTIVE member whose role is
+    `company_admin` or `project_manager`; the company is taken from their
+    `users/{uid}`, never from the request; App Check; a request of
+    identifiers only (any other key refused); the readiness gate on records
+    the callable reads itself; agreement of the reviewed draft with its own
+    figures to the cent; the stored figures, rows, provenance, approver,
+    role, self-approval flag and server time; one audit event in the same
+    transaction (`tests/functions/finalAccount.approve.test.js`).
+    *NOT enforced, stated plainly:*
+    (a) **a DRAFT's figures are whatever its author wrote** — Rules check
+    shape and size, not value. A direct-SDK financial-role user can store a
+    draft with invented figures. It cannot be approved (the callable refuses
+    a draft that disagrees with its own computation) and nothing reads a
+    draft as authoritative; the page marks it DRAFT and compares it with the
+    live records.
+    (b) `preparedByName` is client-supplied display text; the rules-pinned
+    identity is `createdBy`. `approvedByName` is written by the callable from
+    the membership document.
+    (c) **Self-approval is permitted** (recorded as `selfApproved` and in the
+    audit event); creator ≠ approver segregation remains ADR-14.
+    (d) The acknowledgement of outstanding balances proves a box was ticked
+    and a flag sent, not that the balances were understood.
+    (e) **The Admin SDK and the Firebase console bypass Rules** and can change
+    any document, an approved revision included — true of every collection;
+    an approved Final Account is immutable to every client, not to an
+    operator.
+    (f) **Later source changes are not prevented.** Registers stay writable
+    after an approval; the page reports the difference between the frozen
+    revision and the live records and never recalculates the revision.
+    (g) Consistency under concurrent writes rests on Firestore's
+    serializable read-write transactions with pessimistic locking for server
+    SDKs. It is proven against the EMULATOR (competing writes committed
+    strictly after the approval in every run); it has not been exercised in
+    production.
+    (h) A call that returns no typed answer (timeout, dropped connection,
+    internal error) has an UNCERTAIN outcome; the client says so and a retry
+    is idempotent. Only an aborted transaction is reported as certainly not
+    approved. A register above 5,000 documents is refused, not truncated.
+    (i) Readiness is the conditions in `lib/finalAccount.js`; a commercial
+    fact Constrap does not model (client retention, liquidated damages, a
+    disputed claim held outside the app) is invisible to it.
+    An internal approval is **not** a client agreement, a contractual
+    certificate, a tax document or proof of payment, and no surface says
+    otherwise.
 
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this

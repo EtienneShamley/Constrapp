@@ -41,6 +41,15 @@ export const CODE = {
   EMAIL_NOT_CONFIGURED:     'email-not-configured',
   APP_URL_NOT_CONFIGURED:   'app-url-not-configured',
   DISABLED:                 'team-management-disabled',
+  // ADR-77 — approveFinalAccount.
+  NOT_APPROVER:             'not-approver',
+  FINAL_ACCOUNT_DISABLED:   'final-account-disabled',
+  FINAL_ACCOUNT_NOT_DRAFT:  'final-account-not-draft',
+  FINAL_ACCOUNT_STALE:      'final-account-stale',
+  FINAL_ACCOUNT_NOT_READY:  'final-account-not-ready',
+  FINAL_ACCOUNT_CHANGED:    'final-account-figures-changed',
+  FINAL_ACCOUNT_TOO_LARGE:  'final-account-too-large',
+  FINAL_ACCOUNT_BUSY:       'final-account-busy',
 }
 
 const GRPC = {
@@ -70,6 +79,14 @@ const GRPC = {
   [CODE.EMAIL_NOT_CONFIGURED]:    'failed-precondition',
   [CODE.APP_URL_NOT_CONFIGURED]:  'failed-precondition',
   [CODE.DISABLED]:                'unavailable',
+  [CODE.NOT_APPROVER]:            'permission-denied',
+  [CODE.FINAL_ACCOUNT_DISABLED]:  'unavailable',
+  [CODE.FINAL_ACCOUNT_NOT_DRAFT]: 'failed-precondition',
+  [CODE.FINAL_ACCOUNT_STALE]:     'aborted',
+  [CODE.FINAL_ACCOUNT_NOT_READY]: 'failed-precondition',
+  [CODE.FINAL_ACCOUNT_CHANGED]:   'failed-precondition',
+  [CODE.FINAL_ACCOUNT_TOO_LARGE]: 'failed-precondition',
+  [CODE.FINAL_ACCOUNT_BUSY]:      'aborted',
 }
 
 const MESSAGE = {
@@ -99,6 +116,14 @@ const MESSAGE = {
   [CODE.EMAIL_NOT_CONFIGURED]:    'Email delivery is not configured.',
   [CODE.APP_URL_NOT_CONFIGURED]:  'The application URL is not configured.',
   [CODE.DISABLED]:                'Team management is temporarily unavailable.',
+  [CODE.NOT_APPROVER]:            'Only a Company Admin or Project Manager can approve a Final Account.',
+  [CODE.FINAL_ACCOUNT_DISABLED]:  'Final Account approval is temporarily unavailable.',
+  [CODE.FINAL_ACCOUNT_NOT_DRAFT]: 'This Final Account revision is no longer a draft.',
+  [CODE.FINAL_ACCOUNT_STALE]:     'This draft changed since you opened it. Reload and review it again.',
+  [CODE.FINAL_ACCOUNT_NOT_READY]: 'The project records do not meet the Final Account readiness requirements.',
+  [CODE.FINAL_ACCOUNT_CHANGED]:   'The project records have changed since this draft was prepared. Withdraw it and prepare a new draft.',
+  [CODE.FINAL_ACCOUNT_TOO_LARGE]: 'This project holds more records than a Final Account approval can read in one step.',
+  [CODE.FINAL_ACCOUNT_BUSY]:      'The project records were being changed while this approval ran. Nothing was approved. Try again.',
 }
 
 export class TeamError extends HttpsError {

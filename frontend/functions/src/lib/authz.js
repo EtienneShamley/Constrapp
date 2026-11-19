@@ -33,6 +33,17 @@ export async function requireCompanyAdmin(db, request) {
   return { uid, companyId: profile.companyId, profile }
 }
 
+// ADR-77 — the profile checks of requireCompanyAdmin for a caller who must hold
+// one of `roles`. PURE over an already-read profile, so the approval
+// transaction can apply it to the copy it read INSIDE the transaction.
+export function assertActiveRole(profile, roles, deniedCode) {
+  if (!profile) fail(CODE.NO_MEMBERSHIP)
+  if (isDeactivated(profile)) fail(CODE.MEMBERSHIP_INACTIVE)
+  if (!isActiveMember(profile)) fail(CODE.NO_MEMBERSHIP)
+  if (!roles.includes(profile.role)) fail(deniedCode)
+  return profile
+}
+
 export function requireEnabled(config) {
   if (config?.enabled === false) fail(CODE.DISABLED)
 }

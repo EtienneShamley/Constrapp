@@ -25,7 +25,7 @@ Before working in this repository, read in order:
 ## Rules of Engagement
 
 - **Inspect before editing.** Read the actual files (pages, hooks, `frontend/firestore.rules`) before changing them; never assume structure or behaviour.
-- **Preserve existing architecture.** Hooks-only Firestore access, client-SDK access for all project and financial data (the ONLY trusted backend is the ADR-72 team-management Functions in `frontend/functions/` — no financial logic there), read-time financial derivation. Do not introduce new patterns without approval.
+- **Preserve existing architecture.** Hooks-only Firestore access, client-SDK access for all project and financial data (the ONLY trusted backend is the ADR-72 team-management Functions in `frontend/functions/` — no financial logic there, with ONE approved exception: the ADR-77 `approveFinalAccount` callable, which recomputes and finalises a Final Account revision, records one audit event, and performs no other financial write), read-time financial derivation. Do not introduce new patterns without approval.
 - **Design tasks stop for approval.** After proposing UI/UX or architectural designs, wait for explicit approval before implementing.
 - **Never commit automatically.** Only commit or push when explicitly asked.
 - **No unrelated changes.** Keep diffs scoped to the task; flag anything else instead of fixing it silently.

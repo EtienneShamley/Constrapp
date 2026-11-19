@@ -2321,7 +2321,7 @@ manual/probability-weighted revenue forecast override. (Client Invoices and
 Accounts Receivable have since shipped — see the Client Invoice Lifecycle above.
 They report invoiced value alongside margin and do **not** feed it.)
 
-### Commercial Report (L2-A) — IMPLEMENTED, NOT DEPLOYED
+### Commercial Report (L2-A) — LIVE and Product Owner accepted
 
 A read-only, live report for **one project in one currency** (Reports tab;
 `lib/commercialReport.js`). It introduces **no formula**: every figure is an
@@ -2351,11 +2351,76 @@ Cost-code totals equal the headline figures by construction (tested). The
 generation time is when the view was opened or last exported / printed — not
 an accounting cut-off; nothing is stored.
 
-### Final Account *(planned)*
+### Final Account (ADR-77, L2-B — IMPLEMENTED, NOT DEPLOYED)
 
-The closing reconciliation: approved budget + approved variations vs actual cost,
-resolving to the **final project margin**. Commercial reporting summarises margin,
-cost-to-complete, cash flow, and the final account.
+The closing statement of a project: an internally approved, FROZEN record of
+its contract, cost and outstanding balances. It is the last stage of the
+lifecycle and feeds nothing — no budget, forecast, margin, cash or dashboard
+figure reads it.
+
+**Not a new engine.** `lib/finalAccount.js → computeFinalAccount` composes the
+Commercial Report (`buildCommercialReport`) and five existing selectors. No
+formula was added or copied; the trusted backend runs the same module.
+
+| Figure | Basis | Source |
+|---|---|---|
+| Original contract sum | ex-GST | `commercial/baseline.originalContractValue` through `computeMargin` |
+| Approved client variations | ex-GST | `approvedClientVariationsTotal` — pending variations are never included and block approval |
+| Final adjusted contract sum | ex-GST | Current Contract Sum |
+| Invoiced to client | ex-GST and gross | `contractControl().issued` — issued invoices only |
+| Remaining to invoice | ex-GST, signed | `availableToInvoice` |
+| Approved budget | ex-GST | `resolveBudgetSource` — the active approved version + its approved adjustments; a working or unreconciled budget blocks |
+| Actual cost | ex-GST | Approved claims + posted supplier invoices − posted credit notes |
+| Cost to complete | ex-GST | Remaining Committed + uncommitted cost to complete — **must be zero** |
+| Final cost | ex-GST | Forecast Final Cost, which equals Actual once cost to complete is zero |
+| Final gross profit / margin | ex-GST / % | `computeMargin` — margin is null (not zero) when revenue is not positive |
+| Received against invoices | gross | `receivablesSummary().received` (posted receipt allocations) |
+| Client invoices outstanding | gross | `receivablesSummary().remaining` |
+| Cash received / cash paid | gross | Posted receipts / posted payments (`lib/cashFlow.js` totals) |
+| Supplier invoices unpaid | gross | `payablesSummary().remaining` |
+| Unallocated receipts / payments | gross | `receiptSummary` / `paymentSummary` |
+| Supplier retention still held | gross | `retentionSummary().retentionHeld` |
+
+**Distinctions that are kept.** Contract value is not invoiced value; an
+invoice is not a certificate and not cash; a claim is not a payment; committed
+is not incurred. There is **no "certified" revenue figure** (Constrap has no
+client certificate) and **no single "balance due"**: *Remaining to invoice* is
+ex-GST and *Client invoices outstanding* is gross, and adding them would
+invent GST on work not yet invoiced. Retention *paid* is not derivable and is
+not shown.
+
+**Lifecycle.** `draft → approved | withdrawn`, both terminal. A draft is a
+proposal built from the server's records. Approval is the trusted callable
+`approveFinalAccount`: it re-reads every register in one transaction,
+recomputes, applies the readiness gate, requires the reviewed draft to agree
+to the cent, and stores its own figures. A correction is a new revision; the
+earlier approved revision is kept unchanged and shown as superseded.
+
+**Readiness (all required, at preparation and again at approval).** Every
+source read · contract value set · an approved budget version · no draft or
+submitted client or supplier variation · no approved supplier variation
+outside cost · no draft, submitted or under-review claim · no approved claim
+awaiting its invoice · no unposted supplier invoice · no draft client invoice,
+receipt, payment, credit note or retention release · cost to complete zero on
+every cost code. A purchase order under-run leaves Remaining Committed open
+(a closed PO does not release it, ADR-55): it is closed out with a negative
+supplier variation applied to the line (ADR-62), never by editing the PO.
+
+**Outstanding balances are acknowledged, not blockers.** Remaining to invoice,
+client invoices outstanding, supplier invoices unpaid, retention held and
+unallocated receipts and payments are legitimate at final account. Each is
+listed with its amount — a genuine zero included — and acknowledged by the
+preparer and by the approver. None is treated as zero, settled or written off.
+
+**After approval.** The revision is never recalculated. Registers stay
+writable; the page compares the frozen figures with the live records in whole
+cents and names each difference beside the stored value. If the live records
+cannot be read it says so — never "no change".
+
+**Display states.** Loading "—"; a failed source "Unavailable" and a blocker;
+a settled zero a formatted zero; a margin that cannot be calculated "Not
+calculable". One project, one currency, no conversion; GST is the Australian
+10% model only.
 
 ## Future Integrations
 

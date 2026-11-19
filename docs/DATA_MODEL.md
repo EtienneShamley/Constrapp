@@ -2226,6 +2226,54 @@ creating one **locks the project currency in the same transaction** (ADR-21);
 voided bids are retained and remain lock evidence. **No migration** — a
 project with no tender collections loads normally.
 
+## …/projects/{projectId}/finalAccounts/{number}
+
+**Final Account revisions (ADR-77, L2-B — IMPLEMENTED, NOT DEPLOYED).** ONE
+document per revision; **the document id is the revision number** (`"1"`,
+`"2"`, …). Revision n can be created only when revision n − 1 exists and is
+terminal, so numbering is gapless and at most one draft is open. There is no
+pointer: the CURRENT Final Account is the highest-numbered `approved` revision,
+and an earlier approved revision is *superseded* as a read-time label only.
+
+| Field | Type | Notes |
+|---|---|---|
+| `number` | int ≥ 1 | Equals the document id (rules-enforced) |
+| `status` | `draft` \| `approved` \| `withdrawn` | Born `draft`. `withdrawn` by a client (Rules). **`approved` ONLY by the `approveFinalAccount` callable** — no client path exists. Both terminal |
+| `revision` | int | Concurrency counter: 1 at create, +1 on withdrawal or approval |
+| `reason` | string 1–500 | The basis for this revision (what it corrects, for n > 1) |
+| `reference` | string ≤ 200 | Optional free-text reference |
+| `currency` | ISO 4217 | The project's resolved currency (rules-pinned at create; re-checked by the callable) |
+| `figures` | map | 22 amounts — see below. A draft's are a PROPOSAL; an approved revision's are the callable's own computation |
+| `rows` | list ≤ 1,000 | Cost-code breakdown: `{ costCodeId, costCodeName, approvedBudget \| null, actualCost, variance \| null }`, ordered by name then id |
+| `rowCount` | int | `rows.length` |
+| `sources` | map | Provenance: `budgetApprovalId`, `budgetVersion`, `adjustmentCount`, `budgetCaption`, and `counts` — the number of documents in each of ten registers |
+| `openItemsAcknowledged` | `true` | The preparer acknowledged the outstanding balances |
+| `preparedByName` | string ≤ 200 | Display text supplied by the preparer's browser (not an identity — `createdBy` is) |
+| `approvedAt` / `approvedBy` | timestamp / uid \| null | Server time and the approver, written by the callable |
+| `approvedByName` / `approvedByRole` | string \| null | From the approver's membership document, written by the callable |
+| `selfApproved` | bool \| null | `true` when the approver also prepared the revision |
+| `sourcesReadAt` | timestamp \| null | The latest read time the approval transaction observed — the figures are the records as read then |
+| `withdrawnAt` / `withdrawnBy` / `withdrawReason` | timestamp / uid / string | Null / null / `''` until withdrawn |
+| `createdAt` / `createdBy` / `updatedAt` / `updatedBy` | | Caller + server time (rules-enforced on client writes) |
+
+**`figures` (all in the project currency; never mixed across bases).**
+*Ex-GST:* `originalContractValue`, `approvedClientVariations`,
+`finalContractSum`, `invoicedToClient`, `remainingToInvoice`, `approvedBudget`,
+`approvedSupplierVariations`, `actualCost`, `costToComplete` (0 on an approved
+revision), `finalCost`, `varianceToBudget`, `finalProfit`. *Percent:*
+`finalMarginPct` (null when revenue is not positive). *Gross (incl. GST):*
+`invoicedToClientGross`, `receivedAgainstInvoices`, `receivablesOutstanding`,
+`cashReceived`, `unallocatedReceipts`, `cashPaid`, `payablesOutstanding`,
+`unallocatedPayments`, `retentionHeld`. Each is the unchanged output of an
+existing selector (FINANCIAL_WORKFLOWS.md → *Final Account*).
+
+**Nothing reads this collection except the Final Account page.** It feeds no
+budget, forecast, margin, cash or dashboard figure, and writing it changes no
+other document. Reads: financial roles. Size: a 1,000-row revision with
+170-character names was stored as one document in the emulator; the capture
+refuses above an estimated 900,000 bytes (the Firestore limit is 1 MiB) and
+never truncates. No index, no counter, no migration.
+
 ## Planned Commercial Entities (not yet modelled)
 
 The schema above is **implemented**. The commercial lifecycle will introduce
@@ -2245,7 +2293,7 @@ exactly as budget lines, PO lines, claim lines, and invoice lines already do.
 | ~~**"Raise PO from Award"**~~ | **Implemented** as the ADR-61 source triple on `purchaseOrders` + the back-link on `tenderPackages` (M3-A — live since 29 October 2026): one guarded transaction creates a DRAFT PO from the awarded bid and links the two atomically; no awarded-vs-committed netting is inferred | Each PO line carries the bid line's `costCodeId` |
 | **Budget Adjustments** | Internal budget transfers/revisions (no external counterparty) — **a distinct future document type, not a variation** | Reallocate budget by cost code |
 | **Forecast period snapshots** | Immutable monthly cost-to-complete snapshots + prior-period comparison (the *current* per-cost-code forecast inputs are **implemented** above as `forecastLines`) | Aggregated by cost code |
-| **Final account records** | Closing budget-vs-actual reconciliation | Reconciled per cost code |
+| ~~**Final account records**~~ | **Implemented** as `finalAccounts/{number}` (ADR-77, L2-B — implemented, not deployed): see above | One row per cost code (`costCodeId` + name snapshot) |
 
 No collection paths or field lists are committed here; adding any of these requires
 a design assessment, a hook, and (where a new collection is introduced) a manual
