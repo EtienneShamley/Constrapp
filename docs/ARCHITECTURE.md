@@ -422,6 +422,10 @@ ProtectedRoute (redirects to /login when signed out)
    │      the entries are absent from lib/projectTabs.js for private beta, so
    │      the URL still renders but nothing offers it)
    ├─ /settings/company        Company country & base currency (company_admin writes)
+   ├─ /portfolio               Portfolio Report (L2-C, ADR-78 — implemented, not deployed):
+   │                            company-wide, grouped by project currency, financial roles
+   │                            only (sidebar entry role-filtered via lib/nav.js → navFor;
+   │                            the page gates itself and mounts no financial read otherwise)
    ├─ /contacts                Company-wide contact directory
    ├─ /subcontractors          Filtered contacts view
    ├─ /pulse                   PULSE™ pointer — route LIVE, sidebar entry HIDDEN; explains
@@ -519,3 +523,36 @@ validation and filtering. `hooks/useDrawings.jsx` owns drawing masters,
 `hooks/useDrawingRevisions.jsx` owns every write that moves a current-revision
 pointer (because each is one transaction spanning master and revisions), and
 `hooks/useProjectDocuments.jsx` owns the flat document register.
+
+## Portfolio Report (L2-C, ADR-78) — IMPLEMENTED — NOT DEPLOYED
+
+The only surface that shows money for more than one project. It is a narrow
+exception to ADR-42 Decision 2 for this page alone; the Dashboard is unchanged.
+
+| Piece | File | Role |
+|---|---|---|
+| Read plan (pure) | `lib/portfolioSources.js` | Which paths are read per project, the approved-budget reconstruction, failure handling, the three-project bound, cancellation. No SDK import — the reader is injected |
+| Loader hook | `hooks/usePortfolioReport.jsx` | Supplies the Firestore reader (`getDocsFromServer` / `getDocFromServer`) and keyed React state. **No persistent listener**, no write |
+| Model (pure) | `lib/portfolioReport.js` | One row per project from `buildCommercialReport`; grouping by currency; all-or-nothing subtotals in integer cents; aggregate margin; the five financial PULSE indicators; completeness |
+| Export (pure) | `lib/portfolioReportCsv.js` | The model → CSV through `lib/csv.js` |
+| Page | `pages/PortfolioReport.jsx`, `pages/portfolio/CurrencyGroup.jsx` | Role gate, controls, counts, one section per currency (subtotal panel, table from `lg` and in print, cards below) |
+
+**Why a one-shot loader and not the hooks.** The live hooks are one
+subscription each, per project. A portfolio of N projects would hold about
+15 × N listeners open (ADR-42's objection). The loader issues the same
+queries once — 13 reads per project with no approved budget, 15 with one
+approved version, 17 at most — three projects at a time, and stops. The page
+is therefore a point-in-time read: it says when the records were read and
+does not update until Refresh.
+
+**Why the loader duplicates the hooks' queries.** Reusing the hooks would
+mean subscribing. The duplication is held in one table
+(`PORTFOLIO_LIST_SOURCES`, `PORTFOLIO_DOC_SOURCES`) and
+`tests/unit/portfolioSources.test.js` reads every corresponding hook's source
+to assert the collection, ordering, filter and conditional reads still match.
+Change a hook's query and that test fails until the plan is changed with it.
+
+**Data flow.** `useProjects` (existing listener) → scope filter → project ids
+→ `usePortfolioReport` → raw documents per project → `portfolioRow` →
+`buildCommercialReport` + `evaluatePulse` → `buildPortfolioReport` → page /
+CSV / print. Nothing is written and nothing is stored.

@@ -1,5 +1,5 @@
 import { NavLink, Link } from 'react-router-dom'
-import { NAV } from '../lib/nav'
+import { navFor } from '../lib/nav'
 import { useAuth, getInitials, getDisplayName } from '../hooks/useAuth'
 import { useProfile } from '../hooks/useProfile'
 import { useCompany } from '../hooks/useCompany'
@@ -65,7 +65,7 @@ export default function Sidebar({ open, onClose }) {
 
         {/* Nav */}
         <nav className="flex-1 overflow-y-auto py-2 px-2">
-          {NAV.map(({ to, label, icon, end, pulse, shield }) => {
+          {navFor(profile?.role).map(({ to, label, icon, end, pulse, shield }) => {
             const activeAccent = pulse ? '#FF6B9D' : shield ? '#00D4FF' : '#00C9A7'
             const activeBg     = pulse ? 'rgba(255,107,157,0.1)' : shield ? 'rgba(0,212,255,0.1)' : 'rgba(0,201,167,0.08)'
 

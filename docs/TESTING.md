@@ -8727,7 +8727,7 @@ browser, real print output, spreadsheet behaviour, App Check with a real
 reCAPTCHA Enterprise token, production transaction behaviour under load, and
 the production Rules path.
 
-### 62a. L2-B reconciliation correction (20 November 2026) — IMPLEMENTED — NOT DEPLOYED; automated tests PASS; production acceptance NOT RUN
+### 62a. L2-B reconciliation correction (20 November 2026) — DEPLOYED (REPORTED by the Lead Architect, 20 November 2026; merged to `main` as `891043a`); automated tests PASS; negative-readiness and reconciliation acceptance PASSED with browser screenshots verified (REPORTED); positive approval, revision and export acceptance PENDING
 
 **Production reconciliation (read-only, 20 November 2026; test project *Gold
 Coast apartments*; invoice headers and receipt allocations only).** Six issued
@@ -8763,3 +8763,85 @@ exact payment approved); live versus revision labels in the component, the
 whole page and the CSV; the two corrected notes; draft views labelled
 *Proposed final …* and never *Final …*; the unapplied-variation requirement
 worded in forecast-cost terms.
+
+---
+
+## 63. L2-C — Portfolio Report (ADR-78, 20 November 2026) — IMPLEMENTED — NOT DEPLOYED; automated unit tests PASS; browser and production acceptance NOT RUN
+
+**What was run (20 November 2026, branch `feature/l2c-portfolio-reporting`,
+uncommitted).** `npm run lint` clean (0 errors / 0 warnings); `npm run build`
+clean; `npm run test:unit` **89 files / 4,809 tests pass** (86 / 4,659 before
+this change; +150: `portfolioSources.test.js` 52, `portfolioReport.test.js`
+60, `portfolioSurface.test.js` 38); `git diff --check` clean. **Not run:**
+the Rules and Functions suites (no rule, Function or code they cover
+changed), and any browser or production check.
+
+**What the automated tests prove.**
+
+| Area | Proven by | What |
+|---|---|---|
+| Selector parity | `portfolioReport.test.js` | Every row figure equals the L2-A report figure for the same records, and the independently stated fixture figures; the model imports no selector below `buildCommercialReport` |
+| Same-currency subtotals | same | Two-project sums to the cent; integer-cent addition (0.10 + 0.20 = 0.30; 1,000 × 0.01 = 10); a genuine zero is a valid figure |
+| Mixed currencies | same | One group per currency; no cross-currency sum anywhere in the model; only integer counts span currencies; the company base currency changes nothing; an inherited currency is marked |
+| Margin | same | Aggregate = `marginPercent(Σ profit, Σ contract)` (25.47%), not the average of project percentages; suppressed when incomplete; *Not calculable* on a non-positive contract sum |
+| Working vs approved | same | Working budget → *Not approved* with the working amount apart; budget / variance subtotals incomplete; a failed integrity check is Unavailable, never the working figure |
+| Loading / failed | same | Unread project → "—" everywhere and not exportable; a failed register → only its dependent figures Unavailable, the group subtotal incomplete with the affected count, coverage incomplete; a wholly failed project is Unavailable, not zero |
+| Adverse figures | same | Budget overrun and negative margin carried signed, with the matching PULSE findings |
+| PULSE | same | Exactly the five financial indicators; finding / no finding / not evaluated kept apart; a failed source is *not evaluated*; counts only |
+| CSV | same | Scope, currencies, time, read window, coverage; a currency on every line; `INCOMPLETE` subtotals (never the partial sum, never zero); `NOT APPROVED` + working column; formula-injection neutralised in project, status and company names; a loading or empty portfolio refused |
+| Query parity | `portfolioSources.test.js` | Each register's collection, `createdAt` ordering and document mapping match the live hook's source; document paths; the adjustments filter; the approved-budget conditionals |
+| Approved budget | same | Pointer only (working); version 1; version 2 with a separate original; adjustments present / absent; failed pointer, header, snapshot, adjustments and missing original each Unavailable; equal to the live composite object |
+| Loader | same | Whole registers; failures kept as `error: true` and never reject the project; 13 / 15 / 17 reads; at most three projects at once; no double read; cancelled and superseded runs report nothing; a StrictMode-cancelled loader issues no read |
+| No listener / no write | same | The hook contains no listener, uses server reads only, no collection-group query, limit, write, Function call or timer |
+| Access (UX) | `portfolioSurface.test.js` | Sidebar entry for the three financial roles only; the role gate precedes the view and only the view calls the loader; no page file imports Firebase |
+| Page structure | same | Controls; export / print disabled until settled; incomplete-coverage wording outside the print-hidden controls; table at `lg` and in print, cards below; accessible table markup; drill-down links; tokens only; the Dashboard imports nothing from the portfolio |
+
+**Company isolation and external-role denial are NOT re-proven here** — they
+are Rules behaviour, unchanged, covered by `tests/rules/externalRoles.rules.test.js`
+(get and list for every financial collection, other-company and
+collection-group denial). The unit tests above prove only that the page does
+not *issue* the reads for a non-financial role.
+
+### Manual acceptance — browser, before or at release (NOT RUN)
+
+Use a company with at least three projects, one of them Completed, one with
+a working budget only, and — if available — one in a second currency.
+
+| # | Step | Expected |
+|---|---|---|
+| P1 | Sign in as `company_admin`. Sidebar | A **Portfolio** entry between Projects and Contacts |
+| P2 | Open Portfolio | Rows show "—" then fill in project by project; the status line counts projects read; Export and Print are disabled until all have loaded |
+| P3 | Header | Company, "Open projects (N projects); M completed not included", the currencies, a generation time and a "Records read between … and …" window |
+| P4 | For three projects, open each project's **Reports** tab in another tab | Contract sum, approved budget, actual, committed, forecast final cost, variance, gross profit, margin, supplier invoices unpaid, client invoices outstanding and pending client variations match the portfolio row **to the cent** |
+| P5 | A project with a working budget only | Budget source "Working budget (not approved)"; Approved budget and Variance read **Not approved** with "Working budget …" beneath; that currency's Approved Budget and Variance subtotals read **Incomplete** with "n of m" |
+| P6 | A project with no contract value | Contract sum, gross profit and margin read **Not set**; the matching subtotals are Incomplete |
+| P7 | A currency whose projects are all complete and approved | Each subtotal equals the sum of its rows (check two by hand); the margin equals subtotal profit ÷ subtotal contract sum |
+| P8 | Two currencies (if available) | Two separate sections, each with its own subtotals; no figure anywhere combines them; "reported separately, never combined" in the header |
+| P9 | Tick **Include completed** | Completed projects appear and load; already-loaded rows do not reload (Network tab: no repeat requests for them) |
+| P10 | Expand a row's **Financial indicators** | Five indicators, each *Finding*, *No finding* or *Not evaluated*, with a link to the relevant project tab; no programme indicator |
+| P11 | Click a project name | The project's Reports tab opens |
+| P12 | **Refresh** | Rows return to "—" and reload; the read window changes |
+| P13 | **Export CSV**; open in a spreadsheet | Header block (scope, currencies, generated, records read, coverage); one PROJECT line per project and one SUBTOTAL line per currency, each with a Currency cell; incomplete subtotals read `INCOMPLETE`; numbers are numbers |
+| P14 | **Print / Save as PDF** | Landscape; no sidebar, top bar or buttons; scope, currencies, generation time, read window and any incomplete-coverage notice present; the table (not the cards) printed; nothing clipped |
+| P15 | Offline test: DevTools → Network → Offline, then **Refresh** | Every figure reads **Unavailable** (not 0, not "—" forever); "Financial coverage is incomplete"; subtotals Incomplete. Go back online and Refresh |
+| P16 | 375 px, 768 px and 1280 px widths | Cards below `lg`, table from `lg` scrolling inside its own container; controls wrap; touch targets ≥ 44 px; no horizontal page scroll |
+| P17 | Keyboard only | Checkbox, Refresh, Export, Print, each project link and each indicator disclosure reachable and operable; focus visible |
+| P18 | Sign in as `project_manager`, then `qs` | Same page, same figures |
+| P19 | **Negative path.** Sign in as a `subcontractor` (or `client`) test user | No Portfolio entry in the sidebar. Typing `/portfolio` shows "The Portfolio Report is restricted". Network tab: **no** Firestore request for budget lines, purchase orders, invoices or any other financial collection from this page |
+| P20 | Still as the external user, in the console attempt a direct read of a financial collection | Denied by **Firestore Rules** (`permission-denied`) — the rule, not the page, is the control |
+| P21 | Dashboard, as a financial role | Unchanged: counts only in the portfolio card, no financial column in the project register, one project in the snapshot |
+| P22 | Budget tab of any project, before and after visiting Portfolio | Figures unchanged — the page wrote nothing |
+
+### Production measurement — at release (NOT RUN; do not estimate)
+
+| # | Measure | Record |
+|---|---|---|
+| M1 | Largest real company: number of in-scope projects | N |
+| M2 | Time from opening Portfolio to "All N projects have been read" | seconds (and the read window shown in the header) |
+| M3 | Firestore requests issued by one load (Network tab), against 13–17 × N expected | count |
+| M4 | Firestore document reads for one load (Cloud Console → Firestore → Usage, before and after, at a quiet time) | reads |
+| M5 | Largest single response (Network tab, by size) | which register / snapshot, and its size |
+
+There is no pass threshold recorded yet: these are the first measurements.
+A load that is slow for a real company is a design-review trigger (ADR-78 →
+*Performance, stated plainly*), not grounds to add a stored aggregate.

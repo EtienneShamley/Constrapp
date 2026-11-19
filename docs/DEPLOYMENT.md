@@ -3654,11 +3654,14 @@ disregarded, approve a correcting revision (or leave it — it moves no figure).
 **Not part of this release.** The team callables, the reconciliation worker,
 Storage Rules, App Check enforcement settings, IAM, billing, indexes.
 
-## L2-B reconciliation correction — ONE callable, then HOSTING (IMPLEMENTED — NOT DEPLOYED, 20 November 2026)
+## L2-B reconciliation correction — ONE callable, then HOSTING (DEPLOYED — REPORTED by the Lead Architect, 20 November 2026; positive approval acceptance PENDING)
 
-**Status:** implemented on `fix/l2b-final-account-reconciliation` (uncommitted),
-awaiting architect review. No Rules change, no index, no migration, no new
-parameter.
+**Status:** merged to `main` as `891043a` (VERIFIED in Git, 20 November 2026)
+and REPORTED deployed by the Lead Architect the same day — negative-readiness
+and reconciliation acceptance passed, browser screenshots verified. Positive
+approval, revision and export acceptance (TESTING.md §62) is still PENDING.
+The steps below are kept as the record of that release. No Rules change, no
+index, no migration, no new parameter.
 
 **A Functions redeploy IS required** — of `approveFinalAccount` only. The new
 readiness requirement (*No over-allocated issued client invoices*) is in the
@@ -4213,3 +4216,40 @@ proves Storage (steps 7-9) actually landed.
   `VITE_FIREBASE_*` values
 - Cache-control headers for Hosting (the custom domain is planned — see
   *Custom domain — app.constrap.com*)
+
+---
+
+## L2-C Portfolio Report — HOSTING ONLY (ADR-78; IMPLEMENTED — NOT DEPLOYED, 20 November 2026)
+
+**Status:** implemented on `feature/l2c-portfolio-reporting` (uncommitted).
+Not integrated, not released. Release needs its own authorisation.
+
+**What ships.** Frontend only: one new route (`/portfolio`), one sidebar
+entry, new modules under `src/lib`, `src/hooks` and `src/pages`.
+
+**What does NOT ship — do not deploy any of these for L2-C:**
+Firestore Rules (unchanged, 232,460 bytes) · Storage Rules · any Cloud
+Function (the eight team callables, `approveFinalAccount` and the
+reconciliation worker must NOT be redeployed) · indexes · data migration.
+
+**Order.**
+
+1. Git integration by the Product Owner; Azure CI green on `main` (lint, unit
+   tests, build).
+2. From `frontend/`: `npm ci`, `npm run lint`, `npm run test:unit`,
+   `npm run build`.
+3. Note the current Hosting release id (Firebase Console → Hosting → release
+   history) — the rollback target.
+4. `firebase deploy --only hosting --project constrapp-69b5d`.
+5. Run TESTING.md §63 (P1–P22) and record the measurements M1–M5.
+
+**Rollback.** Firebase Console → Hosting → release history → roll back to the
+release noted in step 3 (there is no `firebase hosting:rollback` CLI
+command), or redeploy Hosting from the previous `main` commit. Nothing else
+needs reverting: the page writes nothing and no rule, Function or document
+changed.
+
+**Stop and report if:** a portfolio row disagrees with its project's Reports
+tab; any figure combines two currencies; a subtotal appears while a project
+in its group is Unavailable, Not set or Not approved; an external role's
+session issues a financial read from the page; or the Dashboard changes.
