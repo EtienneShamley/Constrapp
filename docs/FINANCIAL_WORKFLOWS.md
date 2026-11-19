@@ -2441,6 +2441,74 @@ a settled zero a formatted zero; a margin that cannot be calculated "Not
 calculable". One project, one currency, no conversion; GST is the Australian
 10% model only.
 
+### Portfolio Report (L2-C, ADR-78) — IMPLEMENTED — NOT DEPLOYED
+
+The company-wide view: one row per project, **grouped by the project's own
+currency** (`/portfolio`; `lib/portfolioReport.js`). It introduces **no
+project formula**. Each row's figures are read, by key, out of that project's
+Commercial Report model (`buildCommercialReport`), so a row and the project's
+Reports tab cannot disagree.
+
+| Portfolio column | Commercial Report figure | Basis |
+|---|---|---|
+| Current Contract Sum | `summary.currentContractSum` | ex-GST |
+| Approved Budget | `summary.approvedBudget` — **only when the budget source is an approved version** | ex-GST |
+| Actual Cost | `summary.actual` | ex-GST |
+| Remaining Committed | `summary.committed` | ex-GST |
+| Forecast Final Cost | `summary.forecastFinalCost` | ex-GST |
+| Variance to Approved Budget | `summary.varianceToBudget` — approved budget only | ex-GST, signed |
+| Forecast Gross Profit | `summary.forecastGrossProfit` | ex-GST, signed |
+| Forecast Margin | `summary.forecastMarginPct` | % |
+| Supplier Invoices Unpaid | `cash.remainingPayable` | gross |
+| Client Invoices Outstanding | `cash.receivablesOutstanding` | gross |
+| Pending Client Variations | `variations.pendingClientVariations` — exposure, in no revenue figure | ex-GST |
+
+**What the portfolio adds — and nothing else:**
+
+- **Grouping** by `resolveProjectCurrency`. Different currencies are never
+  added or converted; the company base currency is not a reporting currency.
+  A project with no stored currency inherits the company currency and is
+  marked as inherited.
+- **Subtotals within one currency**, added in integer cents
+  (`subtotalFor`). A subtotal is a number **only when every project in the
+  group has a valid figure**; otherwise it is *Incomplete* with the count of
+  affected projects. There is no partial sum.
+- **Group margin** = `marginPercent(Σ Forecast Gross Profit, Σ Current
+  Contract Sum)` — the existing formula over the two subtotals, never an
+  average of project percentages; suppressed unless both are complete; *Not
+  calculable* when the aggregate contract sum is not positive.
+
+**States a figure can be in — never blurred:**
+
+| State | Shown | Exported | In a subtotal? |
+|---|---|---|---|
+| Loading | — | (export refused) | No — subtotal is loading |
+| A source failed | Unavailable (sources named) | `UNAVAILABLE` | No — subtotal incomplete |
+| Genuine zero | 0 | `0.00` | Yes |
+| Contract value not set | Not set | `NOT SET` | No — subtotal incomplete |
+| Working budget (budget figures only) | Not approved (+ the working amount, labelled) | `NOT APPROVED` (+ its own working column) | No — subtotal incomplete |
+
+So a **working budget is never an Approved Budget**: the budget and variance
+subtotals of a currency exist only when every project in it has an approved
+version. Pending variations are not approved, claims are not cash, invoices
+are not payments and forecasts are not actuals — the page and the export
+carry each figure's definition.
+
+**Risk indicators.** The five financial Constrap PULSE™ indicators
+(`evaluatePulse`, unchanged): forecast over budget, forecast incomplete,
+negative gross profit, past-due supplier invoices, pending variation
+exposure. *Finding*, *No finding* and *Not evaluated* are separate outcomes;
+*Not evaluated* (missing, incomplete or failed inputs) is never a clear
+result. Programme indicators and acknowledgements are not evaluated here.
+
+**Not a snapshot.** Records are read once per visit, project by project, and
+the page states the window in which they were read. It is not live, not
+atomic across projects, not an accounting cut-off and not stored.
+
+**Not reported, because no authoritative source exists across projects:**
+cross-currency totals, trends or history, a portfolio cash-flow forecast,
+earned value, approved Final Account figures (L2-B acceptance still open).
+
 ## Future Integrations
 
 - **Supplier Payments** — *implemented; see the Supplier Payments section above.*

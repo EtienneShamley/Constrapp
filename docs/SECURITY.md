@@ -3986,6 +3986,49 @@ at that moment, not a certification — a loading, failed or empty source render
 ids and numbers; they never name a user (`users/{uid}` is client-read-only,
 ADR-27) and never assert wrongdoing.
 
+## Portfolio Report — no new collection, no new rule, no new read path (ADR-78, L2-C — IMPLEMENTED, NOT DEPLOYED)
+
+The Portfolio page reads, once per visit, the same documents a financial
+role already reads on each project's own tabs. It changes no rule and adds
+no data exposure.
+
+**Rules-enforced (unchanged — nothing was added for this page):**
+
+- every path it reads is under `companies/{companyId}/projects/{projectId}/…`
+  and is readable only by `financialMember(companyId)` — `company_admin`,
+  `project_manager`, `qs` of that company (variations and forecast lines use
+  the same three-role check inline). The eleven registers, the commercial
+  baseline, and the approved-budget pointer, header, snapshot and
+  adjustments are all covered by existing blocks;
+- another company's documents, an external role (`subcontractor`, `client`),
+  an unknown role, a role-less member and an anonymous caller are denied, for
+  `get` and `list`; collection-group queries are denied. Existing coverage:
+  `tests/rules/externalRoles.rules.test.js` and the per-collection suites. No
+  rules test was added because no rule changed.
+
+**Client-side only — UX, not a control:**
+
+- the page's role gate (it renders the loader only for financial roles, so an
+  external role issues no financial read from this page) and the sidebar's
+  role filter. This is enforced only in the client and can be bypassed by a
+  direct Firestore call — which the rules above then deny for a
+  non-financial role;
+- the scope filter (open / include completed), every completeness and
+  subtotal rule, and every label. They decide what is *shown*, not what can
+  be *read*.
+
+**No project-level access control exists.** Every financial role can read
+every project of its own company — on this page exactly as on every other.
+The page cannot hide a project from a financial role and does not claim to.
+
+**Reads are server reads.** The loader uses `getDocsFromServer` /
+`getDocFromServer`, so an unreachable server is a failed read (shown as
+*Unavailable*), never a cached empty register shown as zero. That is a
+data-integrity measure, not a security control.
+
+**No write, no Function, no stored aggregate.** Nothing on the page writes;
+there is no derived document a client could forge.
+
 ## RFIs — narrow reads, rules-enforced forward-only lifecycle, existence-verified references
 
 The `rfis` block (ADR-33) uses **one audience for reads and writes**:

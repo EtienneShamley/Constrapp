@@ -18,6 +18,7 @@ import TeamSettings   from './pages/settings/TeamSettings'
 import Dashboard      from './pages/Dashboard'
 import Projects       from './pages/Projects'
 import Contacts       from './pages/Contacts'
+import PortfolioReport from './pages/PortfolioReport'
 import CompanySettings from './pages/CompanySettings'
 import Subcontractors from './pages/Subcontractors'
 import Pulse          from './pages/Pulse'
@@ -177,6 +178,11 @@ export default function App() {
                       <Route path="reports" element={<ProjectReports />} />
                     </Route>
 
+                    {/* L2-C Portfolio Report (ADR-78): company-wide, grouped by
+                        currency, financial roles only (the page gates itself and
+                        mounts no financial read for anyone else). One-shot reads,
+                        no listener, no write. */}
+                    <Route path="portfolio"      element={<PortfolioReport />} />
                     <Route path="contacts"       element={<Contacts />} />
                     <Route path="settings/company" element={<CompanySettings />} />
                     {/* Team management (ADR-72): members, roles, invitations —
