@@ -3986,7 +3986,9 @@ at that moment, not a certification — a loading, failed or empty source render
 ids and numbers; they never name a user (`users/{uid}` is client-read-only,
 ADR-27) and never assert wrongdoing.
 
-## Portfolio Report — no new collection, no new rule, no new read path (ADR-78, L2-C — IMPLEMENTED, NOT DEPLOYED)
+## Portfolio Report — no new collection, no new rule, no new read path (ADR-78, L2-C — DEPLOYED; visual and export acceptance passed, security / parity / performance checks open)
+
+*Status (20 November 2026): deployed (merged to `main` as `93db6cc`). The external-role negative path (TESTING.md §63 P19–P20) is among the checks still open, so the statements below remain as designed and unit-tested, not production-accepted.*
 
 The Portfolio page reads, once per visit, the same documents a financial
 role already reads on each project's own tabs. It changes no rule and adds

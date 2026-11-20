@@ -7,11 +7,11 @@ documentation: where this file and a source document disagree, the source
 document wins and this file must be corrected.
 
 **Last updated:** 20 November 2026 (NZ). **Git checkpoint:** `main` at
-`891043a` (*Merge L2-B Final Account reconciliation fixes*), equal to
-`origin/main` (checked with `git fetch`, 20 November 2026). This revision was
-prepared on the uncommitted branch `feature/l2c-portfolio-reporting` (L2-C
-Portfolio Report, ADR-78 — IMPLEMENTED, NOT DEPLOYED); once that branch is
-merged, the checkpoint is the merge commit and this line must be refreshed.
+`93db6cc` (*Merge L2-C Portfolio Reporting*), equal to `origin/main` (checked
+with `git fetch`, 20 November 2026). This revision was prepared on the
+uncommitted branch `feature/gantt-core-completion` (GANTT core completion,
+ADR-79 — IMPLEMENTED, NOT DEPLOYED); once that branch is merged, the
+checkpoint is the merge commit and this line must be refreshed.
 
 **DC46 is closed.** Deferred Control 46 was CLOSED on 18 November 2026 with
 documented accepted risks, after final external-member acceptance in
@@ -39,9 +39,9 @@ current Git state or verifying production. Maintenance is mandatory —
 
 | Item | State |
 |---|---|
-| **Current milestone** | **L2-C Portfolio Reporting — IMPLEMENTED — NOT DEPLOYED** (ADR-78; branch `feature/l2c-portfolio-reporting`, uncommitted): a company-wide, currency-grouped Portfolio page for financial roles, composed from the L2-A Commercial Report model, with all-or-nothing subtotals inside one currency and a one-shot bounded loader; no Rules, Functions, index or write; unit tests pass, **no browser or production verification** (TESTING.md §63). It is a narrow exception to ADR-42 for that page only; the Dashboard is unchanged. **L2-B reconciliation correction (20 November 2026):** merged as `891043a` (VERIFIED) and REPORTED by the Lead Architect as deployed, with negative-readiness and reconciliation acceptance passed and browser screenshots verified; **positive approval, revision and export acceptance still PENDING — L2-B is NOT accepted.** The remainder of this cell was written before that release and describes the correction as not deployed: **L2-B Final Account — DEPLOYED — PRODUCTION ACCEPTANCE PENDING** (ADR-77). Rules, the `approveFinalAccount` callable and Hosting are REPORTED deployed with Azure CI green; the Product Owner has confirmed navigation, rendering, the readiness checklist and the disabled *Prepare*; the rest of TESTING.md §62 is NOT run and **L2-B is NOT accepted**. A **reconciliation correction** is IMPLEMENTED, NOT DEPLOYED on `fix/l2b-final-account-reconciliation` (uncommitted): a readiness requirement against over-allocated client invoices (enforced by the callable too), forecast labels on the live position, proposed labels on drafts, corrected supplier-variation wording (ADR-77 item 12; TESTING.md §62a). Stage A (ADR-76) LIVE. **L2-A Commercial Report LIVE and Product Owner accepted.** Firestore recovery protection ENABLED and verified 19 November 2026; the first READY backup is UNVERIFIED and the restore test is PENDING. DC46 CLOSED 18 November 2026 |
-| **Latest Git checkpoint** | **VERIFIED:** branch `main`, HEAD `891043a` (*Merge L2-B Final Account reconciliation fixes*; preceded by `24e65c1`, the correction itself), equal to `origin/main` (`git fetch`, 20 November 2026); working tree clean before `feature/l2c-portfolio-reporting` was branched from it. Before that: `c4b93e5` (*Merge L2-B Final Account*). Azure CI on `main`: REPORTED green. Preceding commits: `2047a0d` (Final Account), `28e5c9f` (Rules capacity merge), `02e973a`, `2d5787c` (L2-A merge), `84c9fb3` (DC46 closeout), `a2544a1` (worker rollback checkpoint) |
-| **Production** | **REPORTED:** live at `https://app.constrap.com` on Firebase project `constrapp-69b5d`. **VERIFIED** read-only, 19 November 2026: Firestore ruleset `05c78d00…` (**229,115 bytes**, created 18 November 2026 21:57 UTC) byte-identical to `main` `28e5c9f`; Storage ruleset `8b8edc14…` (9,271 bytes) byte-identical to `main`; eight callables on `-00004-*`; worker `processfilelinkrevocations-00003-ceg`; latest Hosting release `e38715de08e664b5` (18 November 05:29 UTC — REPORTED as the L2-A release; its files were not compared with `main` in this revision). **L2-B (20 November 2026): the Final Account Rules, the `approveFinalAccount` callable and Hosting are REPORTED deployed; they were not re-read from production in this revision.** The figures before this sentence are the 19 November reading, taken before that release. Earlier verification (17–18 November): concurrency 1, `FILE_LINK_RECONCILE_INTERVAL_HOURS=2`, Scheduler enabled, Policies A, B and C enabled, 1 company, 2 active Company Admins, 2 deactivated test members, 0 active external users |
+| **Current milestone** | **GANTT™ core completion — IMPLEMENTED — NOT DEPLOYED** (ADR-79; branch `feature/gantt-core-completion`, uncommitted; Hosting-only): a schedule attention filter built from the PULSE schedule selectors over the complete programme, programme *Export CSV* and *Print / Save as PDF* from one report model (the printed output is a table under the L2-A print standard; exporting writes nothing and issues no baseline), and the existing `updatedAt` / `updatedBy` stamps shown as *Last changed*. No Rules, Functions, collection, field, index, dependency or write. Unit 93 files / 4,964 pass; the Lead Architect's two corrections are incorporated (synchronous print mounting isolated in `hooks/usePrintMoment.jsx`; one baseline integrity check shared with PULSE, with a historical selection labelled); print layout and mounting were each checked in headless Chrome outside the app; **no browser session against the app and no production verification** (TESTING.md §64). **GANTT 1A1, 1A2, 1B and PULSE 1C: DEPLOYED — VERIFIED read-only 20 November 2026** (ADR-79 → *Production evidence*). **L2-C Portfolio Reporting — DEPLOYED** (ADR-78; merged as `93db6cc`, VERIFIED; live bundle = that build, VERIFIED): visual and export acceptance PASSED (REPORTED by the Lead Architect, 20 November 2026); **remaining security, parity and performance checks OPEN** (TESTING.md §63). *The rest of this cell was written before the L2-C release and describes it as not deployed:* a company-wide, currency-grouped Portfolio page for financial roles, composed from the L2-A Commercial Report model, with all-or-nothing subtotals inside one currency and a one-shot bounded loader; no Rules, Functions, index or write; unit tests pass, **no browser or production verification** (TESTING.md §63). It is a narrow exception to ADR-42 for that page only; the Dashboard is unchanged. **L2-B reconciliation correction (20 November 2026):** merged as `891043a` (VERIFIED) and REPORTED by the Lead Architect as deployed, with negative-readiness and reconciliation acceptance passed and browser screenshots verified; **positive approval, revision and export acceptance still PENDING — L2-B is NOT accepted.** The remainder of this cell was written before that release and describes the correction as not deployed: **L2-B Final Account — DEPLOYED — PRODUCTION ACCEPTANCE PENDING** (ADR-77). Rules, the `approveFinalAccount` callable and Hosting are REPORTED deployed with Azure CI green; the Product Owner has confirmed navigation, rendering, the readiness checklist and the disabled *Prepare*; the rest of TESTING.md §62 is NOT run and **L2-B is NOT accepted**. A **reconciliation correction** is IMPLEMENTED, NOT DEPLOYED on `fix/l2b-final-account-reconciliation` (uncommitted): a readiness requirement against over-allocated client invoices (enforced by the callable too), forecast labels on the live position, proposed labels on drafts, corrected supplier-variation wording (ADR-77 item 12; TESTING.md §62a). Stage A (ADR-76) LIVE. **L2-A Commercial Report LIVE and Product Owner accepted.** Firestore recovery protection ENABLED and verified 19 November 2026; the first READY backup is UNVERIFIED and the restore test is PENDING. DC46 CLOSED 18 November 2026 |
+| **Latest Git checkpoint** | **VERIFIED:** branch `main`, HEAD `93db6cc` (*Merge L2-C Portfolio Reporting*; preceded by `4ebdd4e`, the feature commit), equal to `origin/main` (`git fetch`, 20 November 2026); working tree clean before `feature/gantt-core-completion` was branched from it. Before that: `891043a` (*Merge L2-B Final Account reconciliation fixes*; preceded by `24e65c1`, the correction itself), `c4b93e5` (*Merge L2-B Final Account*). Azure CI on `main`: REPORTED green. Preceding commits: `2047a0d` (Final Account), `28e5c9f` (Rules capacity merge), `02e973a`, `2d5787c` (L2-A merge), `84c9fb3` (DC46 closeout), `a2544a1` (worker rollback checkpoint) |
+| **Production** | **REPORTED:** live at `https://app.constrap.com` on Firebase project `constrapp-69b5d`. **VERIFIED read-only, 20 November 2026 (latest reading):** Firestore ruleset `10c7596c…` (released 19 November 2026 04:23 UTC; **232,460 bytes**) byte-identical to `frontend/firestore.rules` on `main`; Hosting release `765058ff63073a4b` (19 November 2026 23:54 UTC) serves `index-Co3P5JIm.js`, the bundle a clean build of `main` `93db6cc` produces — so the live application is `main`, including GANTT 1A1 / 1A2 / 1B, PULSE 1C, L2-B and L2-C. Functions and Storage Rules were not re-read on 20 November. *Earlier reading, kept for the record —* **VERIFIED** read-only, 19 November 2026: Firestore ruleset `05c78d00…` (**229,115 bytes**, created 18 November 2026 21:57 UTC) byte-identical to `main` `28e5c9f`; Storage ruleset `8b8edc14…` (9,271 bytes) byte-identical to `main`; eight callables on `-00004-*`; worker `processfilelinkrevocations-00003-ceg`; latest Hosting release `e38715de08e664b5` (18 November 05:29 UTC — REPORTED as the L2-A release; its files were not compared with `main` in this revision). **L2-B (20 November 2026): the Final Account Rules, the `approveFinalAccount` callable and Hosting are REPORTED deployed; they were not re-read from production in this revision.** The figures before this sentence are the 19 November reading, taken before that release. Earlier verification (17–18 November): concurrency 1, `FILE_LINK_RECONCILE_INTERVAL_HOURS=2`, Scheduler enabled, Policies A, B and C enabled, 1 company, 2 active Company Admins, 2 deactivated test members, 0 active external users |
 | **Deferred Control 46** | **CLOSED — 18 November 2026, with accepted risks; production acceptance approved by the architect** (SECURITY.md item 46; ADR-75 → *DC46 closure record*; TESTING.md §59) |
 
 **Accepted risks (not eliminated — detail in section I):** copied download
@@ -54,14 +54,15 @@ shares the worker's cloud project · the Firestore Rules have 12,540 bytes of he
 with the Final Account block (REPORTED published).
 
 **Exact next development action:** architect review of
-`feature/l2c-portfolio-reporting` (L2-C, ADR-78), then Git integration
-(Product Owner), then its **Hosting-only** release on a separate
-authorisation and the TESTING.md §63 acceptance and measurements. In
-parallel, the remaining L2-B positive acceptance (TESTING.md §62 — approval,
-revisions, export). After L2-C: GANTT core completion, then L3, L4, L5 and
-commercial readiness; Constrap IQ / Quant AI, mobile / field and the final
-audit later (Lead Architect's sequencing, 20 November 2026). **Next release
-gate:** the L2-C Hosting deploy. **Pre-customer
+`feature/gantt-core-completion` (GANTT core completion, ADR-79), then Git
+integration (Product Owner), then its **Hosting-only** release on a separate
+authorisation and the TESTING.md §64 acceptance. Open in parallel and NOT
+blocking it: the remaining L2-C checks (TESTING.md §63 — security, parity,
+performance) and the L2-B positive acceptance (TESTING.md §62 — approval,
+revisions, export). After GANTT: **L3**, then L4, L5 and commercial
+readiness; Constrap IQ / Quant AI, mobile / field and the final audit later
+(Lead Architect's sequencing, 20 November 2026). **Next release gate:** the
+GANTT core completion Hosting deploy. **Pre-customer
 gate:** the first READY Firestore backup and the non-production restore test
 (PENDING).
 
@@ -69,8 +70,9 @@ gate:** the first READY Firestore backup and the non-production restore test
 
 | Action | State |
 |---|---|
-| Git integration of `feature/l2c-portfolio-reporting` (L2-C Portfolio Report, ADR-78) | Awaiting architect review — IMPLEMENTED, NOT DEPLOYED |
-| Hosting-only release of L2-C, then TESTING.md §63 (P1–P22, M1–M5) | NOT AUTHORISED. No Rules or Functions deploy belongs to L2-C |
+| Git integration of `feature/gantt-core-completion` (GANTT core completion, ADR-79) | Awaiting architect review — IMPLEMENTED, NOT DEPLOYED |
+| Hosting-only release of GANTT core completion, then TESTING.md §64 (G1–G11 + G8a, C1–C9, R1–R13 + R9a–R9b, L1–L7, A1–A3) | NOT AUTHORISED. No Rules or Functions deploy belongs to it |
+| L2-C Portfolio Report (ADR-78) | DONE — merged as `93db6cc` (VERIFIED) and deployed (live bundle VERIFIED 20 November 2026). Visual and export acceptance PASSED (REPORTED). **OPEN:** the security, parity and performance checks of TESTING.md §63 |
 | `fix/l2b-final-account-reconciliation` (over-allocation readiness requirement; live / draft wording) | DONE — merged as `891043a` (VERIFIED); REPORTED deployed 20 November 2026 |
 | L2-B positive production acceptance — approval, revisions, export (TESTING.md §62 F3–F17) | PENDING. The reconciliation correction's release is REPORTED done (20 November 2026). Written before that release: The team callables and the reconciliation worker must NOT be redeployed. On the test project the user must first correct the receipt over-allocating CI-0012 before a Final Account can be prepared |
 | **Firestore recovery** — the first READY scheduled backup, and a non-production restore test (DEPLOYMENT.md → *Firestore recovery protection*) | Protection itself is ENABLED and VERIFIED read-only (19 November 2026): PITR 7 days, daily backups retained 14 days, delete protection. **No backup existed yet at that check; the restore test has not been run.** Both required before commercial customer onboarding |
@@ -271,7 +273,8 @@ records, most of them "confirmed by the Product Owner". Dates are as recorded.
 | **PULSE** | 1A six commercial indicators; 1B acknowledgement; 1C three schedule indicators | ADR-47, ADR-49, ADR-67 | LIVE |
 | **SHIELD** | Foundation (five assurance checks); 2A claim-to-invoice pairing; 2B1 Approved Budget Versions; 2B2 Budget Adjustments | ADR-50, ADR-68, ADR-70, ADR-71 | LIVE |
 | **Quant** | 1A manual measurement; 1B BOQ link and explicit apply; 1C editing and summary; 1D deductions | ADR-51 to ADR-54 | LIVE (October 2026) |
-| **GANTT** | 1A1 programme tab; 1A2 dependencies; 1B approved baselines and variance | ADR-64 to ADR-66 | LIVE |
+| **GANTT** | 1A1 programme tab; 1A2 dependencies; 1B approved baselines and variance | ADR-64 to ADR-66 | LIVE — DEPLOYED, VERIFIED read-only 20 November 2026 (ADR-79 → *Production evidence*) |
+| **GANTT core completion** | Schedule attention filter; programme CSV and print; last-change visibility | ADR-79 | **IMPLEMENTED — NOT DEPLOYED** (branch `feature/gantt-core-completion`) |
 | **L1 Team Management** | Invitations, acceptance, role changes, deactivation through the trusted backend; Constrap brand and custom domain | ADR-72 | LIVE and accepted, 11 November 2026 |
 | **DC46-A** | Authenticated Storage reads; the app mints no download URL | ADR-73 | LIVE, 11 November 2026 |
 | **DC46-B** | Scheduled worker removes legacy download tokens after a membership change | ADR-74 | LIVE and accepted, 12 November 2026 |
@@ -293,7 +296,7 @@ records, most of them "confirmed by the Product Owner". Dates are as recorded.
 | Independent external availability monitor | Not built; future reliability work, no scope recorded |
 | GST boundary hotfix (`fix/gst-boundary-pins`) | Merged; production state unconfirmed — see the verification list below |
 | Estimating; BOQ → Approved Budget transfer | Not built |
-| Commercial reports | L2-A project Commercial Report LIVE and production-accepted (REPORTED, 19 November 2026). **L2-C Portfolio Report IMPLEMENTED — NOT DEPLOYED** (ADR-78). Not built: charts, trends, portfolio cash-flow forecast, programme indicators on the portfolio, saved report history |
+| Commercial reports | L2-A project Commercial Report LIVE and production-accepted (REPORTED, 19 November 2026). **L2-C Portfolio Report DEPLOYED** (ADR-78) — visual and export acceptance PASSED (REPORTED, 20 November 2026); security, parity and performance checks OPEN. Programme CSV / print: IMPLEMENTED — NOT DEPLOYED (ADR-79). Not built: charts, trends, portfolio cash-flow forecast, programme indicators on the portfolio, saved report history |
 | Final Account | **L2-B DEPLOYED — PRODUCTION ACCEPTANCE PENDING** (ADR-77): revisions, trusted approval, immutable snapshot, drift comparison, CSV / print. The reconciliation correction is REPORTED deployed (20 November 2026); positive approval acceptance pending. Not built: client signature or certificate, client retention, subcontract final accounts, creator ≠ approver segregation |
 | Constrap IQ; any AI capability | Not built; placeholder rule applies |
 | Accounting integrations; billing and subscriptions; client portal | Not built |
@@ -366,7 +369,7 @@ Sequence*. Read it there; the list below is only the order.
 
 1. Complete DC46 security — **DONE** (Deferred Control 46 closed 18 November 2026; section G).
 2. International infrastructure assessment — **DONE** (18 November 2026). Firestore recovery protection ENABLED 18 November 2026; first READY backup unverified; restore test pending.
-3. L2 — Commercial Reports and Final Account — **L2-A LIVE and accepted**; L2-B: Stage A LIVE; **Stage B DEPLOYED — PRODUCTION ACCEPTANCE PENDING** (reconciliation correction REPORTED deployed 20 November 2026; positive approval acceptance pending); **L2-C Portfolio Reporting IMPLEMENTED — NOT DEPLOYED** (ADR-78). GANTT core completion follows L2-C.
+3. L2 — Commercial Reports and Final Account — **L2-A LIVE and accepted**; L2-B: Stage A LIVE; **Stage B DEPLOYED — PRODUCTION ACCEPTANCE PENDING** (reconciliation correction REPORTED deployed 20 November 2026; positive approval acceptance pending); **L2-C Portfolio Reporting DEPLOYED** (ADR-78; visual and export acceptance PASSED — REPORTED; security, parity and performance checks OPEN). **GANTT core completion (ADR-79) IMPLEMENTED — NOT DEPLOYED**; L3 is next after GANTT.
 4. L3 — Production Reliability — NOT STARTED.
 5. L4 — BOQ-to-Approved-Budget integration — NOT STARTED.
 6. L5 — Accounting integrations, Xero first — NOT STARTED.
@@ -433,19 +436,25 @@ project's receivables (one over-allocated invoice, CI-0012, by 500.00 — no
 calculation defect); the reconciliation correction implemented, merged as
 `891043a` and REPORTED deployed, with negative-readiness and reconciliation
 acceptance passed; the L2-C read-only assessment and, after the Lead
-Architect's GO (ADR-78), the L2-C Portfolio Report implementation on
-`feature/l2c-portfolio-reporting` (uncommitted).
+Architect's GO (ADR-78), the L2-C Portfolio Report — merged as `93db6cc`
+and deployed, visual and export acceptance REPORTED passed; the GANTT core
+completion read-only assessment (production state of GANTT 1A1 / 1A2 / 1B
+and PULSE 1C VERIFIED) and, after the Lead Architect's GO (ADR-79), its
+implementation on `feature/gantt-core-completion` (uncommitted).
 
 **Next. Each step needs explicit authorisation.**
 
 1. **Architect review and Git integration** of
-   `feature/l2c-portfolio-reporting` (L2-C, ADR-78), then refresh this
-   file's checkpoint line.
-2. **Release it — Hosting only** (DEPLOYMENT.md → *L2-C Portfolio Report*).
-   No Rules, no Functions.
-3. **L2-C acceptance and measurement** — TESTING.md §63 P1–P22 and M1–M5.
-   Row-to-Reports-tab agreement (P4) and the external-role negative path
-   (P19–P20) are the two that matter most.
+   `feature/gantt-core-completion` (GANTT core completion, ADR-79), then
+   refresh this file's checkpoint line.
+2. **Release it — Hosting only** (DEPLOYMENT.md → *GANTT™ core completion*).
+   No Rules, no Functions. Then TESTING.md §64 — the PULSE-equality check
+   (G2), the hidden-predecessor check (G5) and the real print preview
+   (R1–R4, R9) are the ones that matter most.
+3. **Remaining L2-C checks** — TESTING.md §63: the security, parity and
+   performance items (row-to-Reports-tab agreement P4, the external-role
+   negative path P19–P20, measurements M1–M5). Visual and export acceptance
+   is REPORTED passed. Not a blocker for GANTT.
 4. **L2-B positive production acceptance** — TESTING.md §62 F3–F17, with
    backend evidence for the approval (F9). L2-B is not accepted until then.
 5. **Firestore recovery** — record the first READY scheduled backup and run

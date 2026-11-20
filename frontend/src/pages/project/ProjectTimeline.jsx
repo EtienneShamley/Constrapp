@@ -7,12 +7,14 @@ import { ModuleTile, BeatToggle } from '../../components/ModuleMark'
 import { MODULE_NAMES } from '../../lib/moduleBranding'
 import { useAuth } from '../../hooks/useAuth'
 import { useProfile } from '../../hooks/useProfile'
+import { useCompany } from '../../hooks/useCompany'
 import { useContacts } from '../../hooks/useContacts'
 import { useCostCodes } from '../../hooks/useCostCodes'
 import { useProjectActivities } from '../../hooks/useProjectActivities'
 import { useProgrammeBaselines } from '../../hooks/useProgrammeBaselines'
 import { useProgrammeBaselineSnapshot } from '../../hooks/useProgrammeBaselineSnapshot'
 import { useLocalToday } from '../../hooks/useLocalToday'
+import { usePrintMoment } from '../../hooks/usePrintMoment'
 import {
   ACTIVITY_STATUS, ACTIVITY_STATUS_ORDER, ACTIVITY_STATUS_LABELS,
   DUE_FILTER, DUE_FILTER_OPTIONS,
@@ -24,10 +26,20 @@ import { DEFAULT_GANTT_SCALE, isGanttScale } from '../../lib/timelineGantt'
 import { GANTT_GROUP, isGanttGroup, toggleGroupKey, collapseAllKeys } from '../../lib/ganttGrouping'
 import { dependencyStates, successorIndex, successorsOf } from '../../lib/ganttDependencies'
 import {
-  ACTIVE_CHOICE, selectedBaseline, approvedBaselines, snapshotEntryIndex, isSnapshotUsable,
+  ACTIVE_CHOICE, selectedBaseline, approvedBaselines, snapshotEntryIndex,
   baselineComparison, baselineSummary, baselineVersionLabel, varianceFor,
 } from '../../lib/ganttBaseline'
+import {
+  ATTENTION_FILTER, isAttentionFilter, buildProgrammeAttention, filterByAttention, attentionFilterLabel,
+} from '../../lib/programmeAttention'
+import {
+  baselineAvailability, programmeScope, buildProgrammeReport, isProgrammeReportExportable,
+} from '../../lib/programmeReport'
+import { programmeReportCsv, programmeReportFilename } from '../../lib/programmeReportCsv'
+import { saveBlob } from '../../lib/fileBlob'
 import TimelineGantt from './timeline/TimelineGantt'
+import AttentionFilter from './timeline/AttentionFilter'
+import ProgrammeReport from './timeline/ProgrammeReport'
 import ActivityTable from './timeline/ActivityTable'
 import ActivityCards from './timeline/ActivityCards'
 import ActivityEditorModal from './timeline/ActivityEditorModal'
@@ -62,6 +74,10 @@ import BaselineReviewModal from './timeline/BaselineReviewModal'
 //     forecast, margin or cash figure.
 //   · Nothing here writes a financial document, and nothing writes
 //     projects/{projectId}.progress.
+//   · The schedule-attention filter, the programme export and the printed
+//     Programme Report (ADR-79) are READ-ONLY views of the same records: the
+//     flags are the PULSE schedule definitions over the WHOLE programme, and
+//     exporting or printing writes nothing and issues no baseline.
 //   · Dependencies (ADR-65) are shown and never enforced by moving a date;
 //     there is no critical path and no automatic rescheduling — nothing moves
 //     on its own. Zoom, grouping, collapse, the baseline choice and whether
@@ -74,6 +90,14 @@ import BaselineReviewModal from './timeline/BaselineReviewModal'
 // a tab left open overnight does not keep showing yesterday's overdue state.
 
 const VIEW = { CHART: 'chart', LIST: 'list' }
+
+// The CSV is saved through lib/fileBlob.js → saveBlob, the app's ONE
+// object-URL path. A UTF-8 BOM lets spreadsheet applications detect the
+// encoding.
+function downloadCsv(text, filename) {
+  const blob = new Blob([String.fromCharCode(0xFEFF), text], { type: 'text/csv;charset=utf-8' })
+  saveBlob({ blob, fileName: filename })
+}
 
 const viewBtnCls = (active) =>
   `inline-flex min-h-[44px] items-center rounded-lg border px-3.5 text-[12px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-brand-accent ${
@@ -106,9 +130,10 @@ function GanttHeading({ canWrite, onAdd, addDisabled }) {
 }
 
 export default function ProjectTimeline() {
-  const { projectId } = useOutletContext()
+  const { project, projectId } = useOutletContext()
   const { user } = useAuth()
   const { profile } = useProfile()
+  const { company } = useCompany()
   const { contacts } = useContacts()
   const { costCodes } = useCostCodes()
   const {
@@ -127,6 +152,14 @@ export default function ProjectTimeline() {
   const [responsible, setResponsible] = useState('')
   const [hideClosed, setHideClosed]   = useState(false)
   const [due, setDue]           = useState(DUE_FILTER.ANY)
+  // ADR-79: the schedule-attention choice ('' | 'any' | one flag) — page
+  // state only, like every other filter here.
+  const [attentionFilter, setAttentionFilterState] = useState(ATTENTION_FILTER.OFF)
+  // ADR-79: the moment a print is in progress (the report is mounted only
+  // while this is set — synchronously, see usePrintMoment) and the last
+  // export failure.
+  const { printAt, print } = usePrintMoment()
+  const [exportError, setExportError] = useState(null)
   // Chart presentation state (ADR-64) — nothing here is stored.
   const [view, setView]         = useState(VIEW.CHART)
   const [scale, setScaleState]  = useState(DEFAULT_GANTT_SCALE)
@@ -160,7 +193,7 @@ export default function ProjectTimeline() {
 
   const ordered  = useMemo(() => sortActivities(activities), [activities])
   const summary  = useMemo(() => timelineSummary(ordered, now), [ordered, now])
-  const filtered = useMemo(
+  const matched = useMemo(
     () => filterActivities(ordered, { search, status, responsibleContactId: responsible, hideClosed, due }, now),
     [ordered, search, status, responsible, hideClosed, due, now],
   )
@@ -176,11 +209,23 @@ export default function ProjectTimeline() {
   const selectedHeader = useMemo(() => selectedBaseline(baselines, baselineChoice), [baselines, baselineChoice])
   const selectedBaselineId = selectedHeader?.id ?? null
   const { snapshot, snapshotLoading, snapshotError } = useProgrammeBaselineSnapshot(projectId, selectedBaselineId)
-  const baselineUsable = Boolean(selectedHeader) && isSnapshotUsable(snapshot)
+  const baselineLabel = selectedHeader ? baselineVersionLabel(baselines, selectedHeader) : ''
+  // ADR-79: ONE answer to "can the selected baseline be compared?" for the
+  // whole page — the chart outline, the list column, the summary, the
+  // attention flag and the report. It is PULSE's integrity check
+  // (lib/pulseSchedule.js → baselineSnapshotProblem) applied to the selected
+  // version, so an incomplete or mismatched snapshot yields NO variance
+  // anywhere, never a misleading one. `baselineShown` (the Hide baseline
+  // toggle) is not an input: it hides the outline and the column only.
+  const baselineInfo = useMemo(() => baselineAvailability({
+    headers: baselines, headersLoading: baselinesLoading, headersError: baselinesError,
+    header: selectedHeader, label: baselineLabel,
+    snapshot, snapshotLoading, snapshotError,
+  }), [baselines, baselinesLoading, baselinesError, selectedHeader, baselineLabel, snapshot, snapshotLoading, snapshotError])
+  const baselineUsable = baselineInfo.available
   const baselineById = useMemo(() => (baselineUsable ? snapshotEntryIndex(snapshot) : null), [baselineUsable, snapshot])
   const comparison = useMemo(() => (baselineUsable ? baselineComparison(ordered, snapshot) : null), [baselineUsable, ordered, snapshot])
   const baselineSummaryValue = useMemo(() => (baselineUsable ? baselineSummary(ordered, snapshot) : null), [baselineUsable, ordered, snapshot])
-  const baselineLabel = selectedHeader ? baselineVersionLabel(baselines, selectedHeader) : ''
   const baselineView = useMemo(() => ({
     shown: baselineShown && baselineUsable,
     label: baselineLabel,
@@ -188,16 +233,70 @@ export default function ProjectTimeline() {
     comparison,
   }), [baselineShown, baselineUsable, baselineLabel, baselineById, comparison])
   const approvedCount = approvedBaselines(baselines).length
+
+  // ADR-79: schedule attention. Built from the WHOLE programme (`ordered`,
+  // `depStates`) and the SELECTED baseline's comparison — never from the
+  // filtered list — so a predecessor hidden by a filter still blocks, and the
+  // counts do not move when another filter is applied. `filtered` is the ONE
+  // displayed set: the chart, the list, the cards, the CSV and the printed
+  // report all read it.
+  const attention = useMemo(() => buildProgrammeAttention({
+    activities: ordered, depStates, now,
+    baseline: { usable: baselineInfo.available, header: selectedHeader, comparison },
+  }), [ordered, depStates, now, baselineInfo.available, selectedHeader, comparison])
+  const filtered = useMemo(
+    () => filterByAttention(matched, attention, attentionFilter),
+    [matched, attention, attentionFilter],
+  )
+  const report = useMemo(() => buildProgrammeReport({
+    companyName: company?.name ?? '',
+    project, projectId,
+    activities: ordered, shown: filtered, depStates, attention,
+    baseline: baselineInfo, comparison,
+    scope: programmeScope({
+      search, status, hideClosed, due, attention: attentionFilter,
+      responsibleName: responsible ? (people.find(p => p.id === responsible)?.name ?? responsible) : '',
+      shown: filtered.length, total: ordered.length,
+    }),
+  }), [company, project, projectId, ordered, filtered, depStates, attention, baselineInfo, comparison,
+    search, status, hideClosed, due, attentionFilter, responsible, people])
+  const exportable = isProgrammeReportExportable(report)
   // The draft being reviewed, as it stands NOW in the listener (so a draft
   // approved or withdrawn elsewhere closes the dialog's stale copy).
   const reviewingHeader = reviewing ? (baselines.find(b => b.id === reviewing.id) ?? null) : null
   const { snapshot: reviewSnapshot, snapshotLoading: reviewSnapshotLoading, snapshotError: reviewSnapshotError } =
     useProgrammeBaselineSnapshot(projectId, reviewingHeader?.id ?? null)
 
-  const filtersActive = Boolean(search || status || responsible || hideClosed || due)
+  const filtersActive = Boolean(search || status || responsible || hideClosed || due || attentionFilter)
 
   function clearFilters() {
     setSearch(''); setStatus(''); setResponsible(''); setHideClosed(false); setDue(DUE_FILTER.ANY)
+    setAttentionFilterState(ATTENTION_FILTER.OFF)
+  }
+
+  const setAttentionFilter = (v) => { if (isAttentionFilter(v)) setAttentionFilterState(v) }
+
+  // ── Export and print (ADR-79) — READ-ONLY ────────────────────────────────
+  // Both serialise `report`, the model of what is displayed. Neither calls a
+  // hook write callback: exporting or printing a programme creates, approves
+  // or freezes nothing.
+  function handleExportCsv() {
+    setExportError(null)
+    try {
+      const at = new Date()
+      downloadCsv(programmeReportCsv(report, { generatedAt: at }), programmeReportFilename(report, at))
+    } catch {
+      setExportError('The CSV could not be generated. Wait for the programme and its baseline to finish loading and try again.')
+    }
+  }
+
+  // usePrintMoment mounts the report SYNCHRONOUSLY (flushSync) before
+  // window.print(), and again inside `beforeprint` for the browser's own
+  // Print command; `afterprint` removes it. The error reset is queued first
+  // and is flushed by the same synchronous render.
+  function handlePrint() {
+    setExportError(null)
+    print()
   }
 
   const setScale = (s) => { if (isGanttScale(s)) setScaleState(s) }
@@ -274,8 +373,15 @@ export default function ProjectTimeline() {
     )
   }
 
+  const printable = printAt && !activitiesError && !activitiesLoading && ordered.length > 0 && exportable
+
   return (
     <div>
+      {/* The printed Programme Report — mounted only while printing, never on
+          screen. Everything interactive below is hidden in that print. */}
+      {printable && <ProgrammeReport report={report} generatedAt={printAt} />}
+
+      <div data-print-hide>
       <div className="mb-4">
         <GanttHeading canWrite={canWrite} onAdd={() => setEditing('new')} addDisabled={activitiesError} />
       </div>
@@ -334,6 +440,7 @@ export default function ProjectTimeline() {
             snapshot={snapshot}
             snapshotLoading={snapshotLoading}
             snapshotError={snapshotError}
+            integrityText={baselineInfo.problem ? baselineInfo.text : ''}
             choice={baselineChoice}
             onChoice={setBaselineChoice}
             shown={baselineShown}
@@ -448,6 +555,14 @@ export default function ProjectTimeline() {
                   ? `Due soon: open activities with a planned finish from today to ${summary.dueSoonDays} days ahead — overdue work is not included.`
                   : 'Filters combine: each one narrows the list further. The chart and the list show the same filtered activities.'}
             </p>
+            <div className="mt-3 border-t border-brand-border pt-3">
+              <AttentionFilter
+                attention={attention}
+                value={attentionFilter}
+                onChange={setAttentionFilter}
+                baseline={baselineInfo}
+              />
+            </div>
             {filtersActive && (
               <p className="m-0 mt-1.5 text-[11.5px] text-brand-muted">
                 Showing {filtered.length} of {ordered.length} activities.{' '}
@@ -460,6 +575,20 @@ export default function ProjectTimeline() {
                 </button>
               </p>
             )}
+            {/* ── Export (ADR-79) — the displayed scope, read-only ──── */}
+            <div className="mt-3 flex flex-col gap-2 border-t border-brand-border pt-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="m-0 text-[11.5px] text-brand-muted">
+                <span className="font-semibold text-brand-text-soft">Export scope:</span> {report.scope.text}.{' '}
+                {exportable
+                  ? 'A copy of the current records — exporting or printing saves nothing and issues no baseline.'
+                  : 'Export and print are available once the baseline has finished loading.'}
+              </p>
+              <div className="flex shrink-0 flex-wrap gap-2">
+                <Btn variant="ghost" onClick={handleExportCsv} disabled={!exportable}>Export CSV</Btn>
+                <Btn variant="ghost" onClick={handlePrint} disabled={!exportable}>Print / Save as PDF</Btn>
+              </div>
+            </div>
+            {exportError && <p className="m-0 mt-2 text-[12px] text-brand-red" role="alert">{exportError}</p>}
           </Card>
 
           {/* Quick-action outcome — always in the DOM so screen readers announce it. */}
@@ -488,6 +617,9 @@ export default function ProjectTimeline() {
             <Card>
               <p className="m-0 text-[12.5px] text-brand-muted">
                 No activity matches these filters.
+                {attentionFilter && matched.length > 0
+                  ? ` ${matched.length} ${matched.length === 1 ? 'activity matches' : 'activities match'} the other filters, but none is flagged “${attentionFilterLabel(attentionFilter)}”.`
+                  : ''}
               </p>
             </Card>
           ) : (
@@ -627,6 +759,7 @@ export default function ProjectTimeline() {
       {editing && (
         <ActivityEditorModal
           activity={editing === 'new' ? null : editing}
+          currentUid={user?.uid ?? null}
           activities={ordered}
           contacts={contacts}
           costCodes={costCodes}
@@ -648,6 +781,7 @@ export default function ProjectTimeline() {
       {viewing && (
         <ActivityDetailModal
           activity={viewing}
+          currentUid={user?.uid ?? null}
           now={now}
           dependencyStates={depStates}
           successors={successorsOf(viewing.id, succIndex)}
@@ -680,6 +814,7 @@ export default function ProjectTimeline() {
           onClose={closeReview}
         />
       )}
+      </div>
     </div>
   )
 }
