@@ -979,7 +979,9 @@ management and cache-control headers. The custom domain is documented in
 
 ### Constrapp GANTT™ — Programme 1A1 (ADR-64) — Hosting-only release
 
-**Status: LIVE in production (confirmed by the Product Owner).** The release is the plain Hosting
+**Status: LIVE in production (confirmed by the Product Owner; DEPLOYED — VERIFIED 20 November 2026).**
+**Production evidence (read-only, 20 November 2026):** the live Firestore ruleset `10c7596c…` (released 19 November 2026 04:23 UTC) is byte-identical to `frontend/firestore.rules` on `main` (232,460 bytes) and the live Hosting release `765058ff63073a4b` (19 November 2026 23:54 UTC) serves the bundle a clean build of `main` `93db6cc` produces — PROJECT_DECISIONS.md → *ADR-79 → Production evidence*.
+The release is the plain Hosting
 procedure above and nothing else: **no Firestore Rules publish, no Storage
 Rules publish, no index, no migration** — `firestore.rules` is byte-identical
 (217,864 bytes) and the `activities` documents are untouched. Order: Azure CI
@@ -1011,7 +1013,9 @@ carries an unreleased rules-dependent change by accident.
 
 ### GANTT 1A2 release order — dependencies and the revision contract (ADR-65) — THREE STAGES, Firebase-CLI driven
 
-**Status: LIVE in production — all three stages released (confirmed by the Product Owner).** The 1A2
+**Status: LIVE in production — all three stages released (confirmed by the Product Owner; DEPLOYED — VERIFIED 20 November 2026).**
+**Production evidence (read-only, 20 November 2026):** the live Firestore ruleset `10c7596c…` (released 19 November 2026 04:23 UTC) is byte-identical to `frontend/firestore.rules` on `main` (232,460 bytes) and the live Hosting release `765058ff63073a4b` (19 November 2026 23:54 UTC) serves the bundle a clean build of `main` `93db6cc` produces — PROJECT_DECISIONS.md → *ADR-79 → Production evidence*. The published ruleset is the FINAL one (`revisionIncremented()`); `predecessorsValid` is in every ruleset created since 31 October 2026 10:40 UTC.
+The 1A2
 bundle writes two things the live ruleset refuses — the optional
 `predecessors` key (the live `hasOnly` rejects it) and `revision` + 1 on every
 activity update (the live `corePreserved` pins it) — while the FINAL 1A2
@@ -1075,8 +1079,10 @@ each a separate approved action; **none is run by an implementation task.**
 
 ### GANTT 1B release order — programme baselines (ADR-66) — RULES FIRST, then Hosting, Firebase-CLI driven
 
-**Status: LIVE IN PRODUCTION (confirmed by the Product Owner) (Rules AND Hosting; TWO steps, no
-transitional stage).** The 1B bundle writes two NEW collections
+**Status: LIVE IN PRODUCTION (confirmed by the Product Owner; DEPLOYED — VERIFIED 20 November 2026) (Rules AND Hosting; TWO steps, no
+transitional stage).**
+**Production evidence (read-only, 20 November 2026):** the live Firestore ruleset `10c7596c…` (released 19 November 2026 04:23 UTC) is byte-identical to `frontend/firestore.rules` on `main` (232,460 bytes) and the live Hosting release `765058ff63073a4b` (19 November 2026 23:54 UTC) serves the bundle a clean build of `main` `93db6cc` produces — PROJECT_DECISIONS.md → *ADR-79 → Production evidence*. The `programmeBaselines` blocks are in every ruleset created since 31 October 2026 15:22 UTC.
+The 1B bundle writes two NEW collections
 (`programmeBaselines`, `programmeBaselineSnapshots`) that the live ruleset
 denies by default, and changes nothing the live bundle writes: the
 `activities` block is byte-for-byte unchanged, no existing key moves, no
@@ -1138,8 +1144,10 @@ Revisit if a real programme shows baseline writes to be slow.
 
 ### PULSE 1C release order — schedule intelligence (ADR-67) — RULES FIRST, then Hosting, after GANTT 1B is live
 
-**Status: LIVE IN PRODUCTION (confirmed by the Product Owner) (Rules AND Hosting; TWO steps, no
-transitional stage; ONE prerequisite).** The 1C bundle writes acknowledgement
+**Status: LIVE IN PRODUCTION (confirmed by the Product Owner; DEPLOYED — VERIFIED 20 November 2026) (Rules AND Hosting; TWO steps, no
+transitional stage; ONE prerequisite).**
+**Production evidence (read-only, 20 November 2026):** the live Firestore ruleset `10c7596c…` (released 19 November 2026 04:23 UTC) is byte-identical to `frontend/firestore.rules` on `main` (232,460 bytes) and the live Hosting release `765058ff63073a4b` (19 November 2026 23:54 UTC) serves the bundle a clean build of `main` `93db6cc` produces — PROJECT_DECISIONS.md → *ADR-79 → Production evidence*.
+The 1C bundle writes acknowledgement
 documents for three NEW indicator ids (`blockedActivities`,
 `dependencyReview`, `baselineSlippage`) that the live `pulseAcknowledgements`
 allowlist refuses, and reads the two GANTT 1B collections
@@ -1240,7 +1248,10 @@ Hotfix*):
 
 *Preconditions.* Azure CI green on the merge (lint → unit → rules → build);
 `npm run rules:transitional:check` clean; `wc -c frontend/firestore.rules`
-reads **230,340** (budget 245,000). The repository records GANTT 1B and
+reads **230,340** (budget 245,000). *(Correction, 20 November 2026: the next
+sentence is the wording of 3 November 2026 and is no longer true — GANTT 1B
+and PULSE 1C are DEPLOYED and VERIFIED; see their sections above. The GST
+hotfix's own status note above is unchanged.)* The repository records GANTT 1B and
 PULSE 1C as NOT YET DEPLOYED: this ruleset contains both, so **confirm in the
 Console which ruleset is live before STEP 1** (publishing this file also
 publishes 1B / 1C rules if they are not yet live — rules-first is the correct
@@ -4219,10 +4230,16 @@ proves Storage (steps 7-9) actually landed.
 
 ---
 
-## L2-C Portfolio Report — HOSTING ONLY (ADR-78; IMPLEMENTED — NOT DEPLOYED, 20 November 2026)
+## L2-C Portfolio Report — HOSTING ONLY (ADR-78; DEPLOYED, 20 November 2026 — acceptance partly complete)
 
-**Status:** implemented on `feature/l2c-portfolio-reporting` (uncommitted).
-Not integrated, not released. Release needs its own authorisation.
+**Status: DEPLOYED.** Merged to `main` as `93db6cc` (VERIFIED in Git). The
+live Hosting release `765058ff63073a4b` (19 November 2026 23:54 UTC) serves
+the bundle a clean build of that commit produces (VERIFIED read-only, 20
+November 2026). Visual and export acceptance PASSED (REPORTED by the Lead
+Architect, 20 November 2026); the remaining security, parity and performance
+checks of TESTING.md §63 are OPEN. The release date and the Hosting release
+it replaced are not recorded in this file. *As first written:* implemented on
+`feature/l2c-portfolio-reporting`; release needs its own authorisation.
 
 **What ships.** Frontend only: one new route (`/portfolio`), one sidebar
 entry, new modules under `src/lib`, `src/hooks` and `src/pages`.
@@ -4253,3 +4270,71 @@ changed.
 tab; any figure combines two currencies; a subtotal appears while a project
 in its group is Unavailable, Not set or Not approved; an external role's
 session issues a financial read from the page; or the Dashboard changes.
+
+---
+
+## GANTT™ core completion — HOSTING ONLY (ADR-79; IMPLEMENTED — NOT DEPLOYED, 20 November 2026)
+
+**Status:** implemented on `feature/gantt-core-completion` (uncommitted).
+Not integrated, not released. Release needs its own authorisation.
+
+**What ships.** Frontend only: the schedule attention filter, *Export CSV*
+and *Print / Save as PDF* on the GANTT tab, and the *Last changed* row in
+the activity detail and editor. New modules under `src/lib` and
+`src/pages/project/timeline`; a print block in `src/index.css`.
+
+**What does NOT ship — do not deploy any of these for this release:**
+Firestore Rules (unchanged, 232,460 bytes) · Storage Rules · any Cloud
+Function (the eight team callables, `approveFinalAccount` and the
+reconciliation worker must NOT be redeployed) · indexes · data migration ·
+dependencies (`package.json` and the lockfile are unchanged).
+
+**Preconditions.** GANTT 1A1, 1A2, 1B and PULSE 1C are live (VERIFIED, 20
+November 2026 — their sections above), so this bundle depends on nothing
+unreleased. The live Hosting release at the time of writing is
+`765058ff63073a4b` (the build of `main` `93db6cc`); confirm that is still the
+latest release before deploying — it is the expected rollback target.
+
+**Order.**
+
+1. Git integration by the Product Owner; Azure CI green on `main` (lint, unit
+   tests, build).
+2. From `frontend/`: `npm ci`, `npm run lint`, `npm run test:unit`
+   (93 files / 4,964), `npm run build`.
+3. Note the current Hosting release id (Firebase Console → Hosting → release
+   history) — the rollback target.
+4. `firebase deploy --only hosting --project constrapp-69b5d`.
+5. Hard-reload `https://app.constrap.com`, open a project's GANTT tab and
+   run TESTING.md §64: attention filter G1–G11 and G8a, CSV C1–C9, print R1–R13 and R9a–R9b,
+   last change L1–L7, access A1–A3. Record the browser used for each print
+   check.
+
+**What to look at first in production.**
+
+- *Attention filter:* each count equals the matching PULSE schedule
+  indicator for the same project (active baseline selected); a blocked
+  successor stays listed when a search hides its predecessor.
+- *CSV:* opens in a spreadsheet with dates as `YYYY-MM-DD` and numeric
+  durations and variances; the scope line names the filters; no baseline
+  variance exists on a project with no approved baseline.
+- *Print:* the actual print preview from the running page — light, A4
+  landscape, table header repeated on every page, no clipped column, no app
+  chrome; the browser's own Print command gives the same report.
+- *Baseline:* changing the selected approved version changes the *Later than
+  baseline* count, the CSV and the printed header together; exporting or
+  printing leaves the baseline panel unchanged.
+- *Last change:* "by you" after your own save, "by another user" otherwise,
+  and never a name.
+
+**Rollback.** Firebase Console → Hosting → release history → roll back to the
+release noted in step 3 (there is no `firebase hosting:rollback` CLI
+command), or redeploy Hosting from the previous `main` commit. Nothing else
+needs reverting: this release writes nothing, and no rule, Function,
+document or stored shape changed, so the previous bundle works against the
+same data and Rules exactly as it does today.
+
+**Stop and report if:** an attention count disagrees with PULSE; the chart
+and the list show different activities under a filter; exporting or printing
+writes any document or creates a baseline; another tab's print output
+changes (the Reports tab and the Portfolio share the print rules); or an
+external role reaches the programme.

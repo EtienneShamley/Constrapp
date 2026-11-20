@@ -1,6 +1,7 @@
 import Badge from '../../../components/Badge'
 import Btn from '../../../components/Btn'
 import ActivityDialog from './ActivityDialog'
+import LastChanged from './LastChanged'
 import {
   ACTIVITY_STATUS, ACTIVITY_STATUS_LABELS, ACTIVITY_STATUS_BADGE,
   formatIsoDate, durationLabel, dueLabel, isOverdue,
@@ -34,8 +35,9 @@ function Row({ label, children }) {
 
 // ADR-66: `baselineVariance` is the activity's variance against the SELECTED
 // approved baseline (lib/ganttBaseline.js) and `baselineLabel` names that
-// version; both null when none is shown.
-export default function ActivityDetailModal({ activity, now, onClose, dependencyStates, successors = [], baselineVariance = null, baselineLabel = '' }) {
+// version; both null when none is shown. ADR-79: `currentUid` lets the "Last
+// changed" row say "by you" — it is the only identity this dialog knows.
+export default function ActivityDetailModal({ activity, currentUid = null, now, onClose, dependencyStates, successors = [], baselineVariance = null, baselineLabel = '' }) {
   const a = activity ?? {}
   const late = isOverdue(a, now)
   const comparison = planComparisonLabel(a)
@@ -132,6 +134,7 @@ export default function ActivityDetailModal({ activity, now, onClose, dependency
           {a.status === ACTIVITY_STATUS.CANCELLED && (
             <Row label="Cancelled">{a.cancelReason || '—'}</Row>
           )}
+          <Row label="Last changed"><LastChanged activity={a} currentUid={currentUid} /></Row>
         </div>
 
         <p className="m-0 mt-4 text-[11px] text-brand-muted">

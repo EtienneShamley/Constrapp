@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import Btn from '../../../components/Btn'
 import ActivityDialog from './ActivityDialog'
+import LastChanged from './LastChanged'
 import { todayIso } from '../../../lib/payments'
 import {
   ACTIVITY_STATUS, ACTIVITY_STATUS_ORDER, ACTIVITY_STATUS_LABELS,
@@ -82,6 +83,7 @@ export default function ActivityEditorModal({
   costCodes,       // active company cost codes
   projectId,
   dependencyStates, // read-time link states (for the review list) — optional
+  currentUid = null, // ADR-79: lets "Last changed" say "by you" — display only
   onSave,          // async (fields, base) => void — `base` is the version the save is guarded against
   onClose,
 }) {
@@ -632,6 +634,15 @@ export default function ActivityEditorModal({
               </div>
             )}
           </div>
+        )}
+
+        {/* ADR-79: the stamps of the version this form was opened from (or
+            reloaded to) — the same version the guarded save compares against. */}
+        {!creating && (
+          <p className="m-0 mt-4 text-[11.5px] text-brand-text-soft">
+            <span className="mr-1.5 text-[11px] font-bold uppercase tracking-[0.4px] text-brand-muted">Last changed</span>
+            <LastChanged activity={base} currentUid={currentUid} />
+          </p>
         )}
 
         <div className="flex justify-end gap-2 mt-5 pt-4 border-t border-brand-border">

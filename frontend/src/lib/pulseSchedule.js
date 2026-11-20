@@ -172,6 +172,23 @@ export const BASELINE_PROBLEM_TEXT = {
   [BASELINE_PROBLEM.COUNT_MISMATCH]: 'its snapshot and header disagree on the number of activities captured',
 }
 
+// THE canonical integrity check of ONE approved header against the ONE
+// snapshot document loaded for it, once both reads have settled: the problem,
+// or null when the pair can be compared. Used for the ACTIVE baseline below
+// (PULSE) and for the SELECTED baseline on the GANTT tab
+// (lib/programmeReport.js → baselineAvailability, ADR-79), so the two never
+// disagree about which baseline is fit to measure against.
+export function baselineSnapshotProblem(header, snapshot) {
+  if (!header) return null
+  if (!snapshot) return BASELINE_PROBLEM.NO_SNAPSHOT
+  if (typeof snapshot.id === 'string' && snapshot.id !== header.id) return BASELINE_PROBLEM.WRONG_VERSION
+  if (!isSnapshotUsable(snapshot)) return BASELINE_PROBLEM.MALFORMED
+  if (Number.isInteger(header.activityCount) && snapshot.activityCount !== header.activityCount) {
+    return BASELINE_PROBLEM.COUNT_MISMATCH
+  }
+  return null
+}
+
 // The ACTIVE approved baseline (latest approval — lib/ganttBaseline.js) and
 // whether the snapshot the page loaded for it can be compared. `snapshot` is
 // the one document the page subscribes to for that header's id, or null.
@@ -185,13 +202,8 @@ export function resolveActiveBaseline(headers, snapshot) {
     problem: null,
   }
   if (!header) return base
-  if (!snapshot) return { ...base, problem: BASELINE_PROBLEM.NO_SNAPSHOT }
-  if (typeof snapshot.id === 'string' && snapshot.id !== header.id) return { ...base, problem: BASELINE_PROBLEM.WRONG_VERSION }
-  if (!isSnapshotUsable(snapshot)) return { ...base, problem: BASELINE_PROBLEM.MALFORMED }
-  if (Number.isInteger(header.activityCount) && snapshot.activityCount !== header.activityCount) {
-    return { ...base, problem: BASELINE_PROBLEM.COUNT_MISMATCH }
-  }
-  return { ...base, usable: true }
+  const problem = baselineSnapshotProblem(header, snapshot)
+  return problem ? { ...base, problem } : { ...base, usable: true }
 }
 
 // The evidence identity of ONE slipped activity under ONE baseline version:

@@ -44,7 +44,7 @@ function Fact({ label, value, tone = 'text-brand-text', hint }) {
 
 export default function BaselinePanel({
   headers, loading, error,
-  snapshot, snapshotLoading, snapshotError,
+  snapshot, snapshotLoading, snapshotError, integrityText = '',
   choice, onChoice, shown, onToggleShown,
   summary, selectedHeader, canWrite, currentUid,
   onCapture, onReview,
@@ -147,8 +147,13 @@ export default function BaselinePanel({
       {selectedHeader && !snapshotError && snapshotLoading && (
         <p className="m-0 mt-3 text-[12px] text-brand-muted" role="status">Loading the baseline snapshot…</p>
       )}
-      {selectedHeader && !snapshotError && !snapshotLoading && snapshot && !summaryReady && (
-        <p className="m-0 mt-3 text-[12px] text-brand-amber">The selected baseline&apos;s snapshot is unreadable. No comparison is shown.</p>
+      {/* ADR-79: `integrityText` is the page's ONE integrity verdict (the
+          PULSE check applied to the selected version) — it also covers a
+          missing snapshot and a header / snapshot count mismatch. */}
+      {selectedHeader && !snapshotError && !snapshotLoading && !summaryReady && (integrityText || snapshot) && (
+        <p className="m-0 mt-3 text-[12px] text-brand-amber">
+          {integrityText || 'The selected baseline\u2019s snapshot is unreadable.'} No comparison is shown.
+        </p>
       )}
       {summaryReady && (
         <>

@@ -8766,7 +8766,16 @@ worded in forecast-cost terms.
 
 ---
 
-## 63. L2-C — Portfolio Report (ADR-78, 20 November 2026) — IMPLEMENTED — NOT DEPLOYED; automated unit tests PASS; browser and production acceptance NOT RUN
+## 63. L2-C — Portfolio Report (ADR-78, 20 November 2026) — DEPLOYED; visual and export acceptance PASSED (REPORTED); security, parity and performance checks OPEN
+
+**Status update (20 November 2026).** L2-C is merged to `main` as `93db6cc`
+and the live Hosting bundle is the build of that commit (VERIFIED read-only —
+PROJECT_DECISIONS.md → *ADR-79 → Production evidence*). The Lead Architect
+REPORTS that the visual and export acceptance passed. **Still open:** the
+security (external-role), parity (row = Reports tab) and performance
+(M1–M5) checks below — no result is recorded in this file for any P or M
+item, so which individual items the reported pass covers is not recorded
+here. The text below is the section as written before the release.
 
 **What was run (20 November 2026, branch `feature/l2c-portfolio-reporting`,
 uncommitted).** `npm run lint` clean (0 errors / 0 warnings); `npm run build`
@@ -8845,3 +8854,175 @@ a working budget only, and — if available — one in a second currency.
 There is no pass threshold recorded yet: these are the first measurements.
 A load that is slow for a real company is a design-review trigger (ADR-78 →
 *Performance, stated plainly*), not grounds to add a stored aggregate.
+
+---
+
+## 64. GANTT™ core completion — attention filter, programme export / print, last change (ADR-79, 20 November 2026) — IMPLEMENTED — NOT DEPLOYED; automated tests PASS; browser and production acceptance NOT RUN
+
+**What was run (20 November 2026, branch `feature/gantt-core-completion`,
+uncommitted).** From `frontend/`: `npm run lint` clean (0 errors / 0
+warnings); `npm run build` clean; `npm run test:unit` **93 files / 4,964
+tests pass** (89 / 4,809 before this change; +155: `programmeAttention.test.js`
+38, `programmeReport.test.js` 59, `activityLastChange.test.js` 21,
+`programmePrintAndBaseline.test.js` 37 — the architect corrections); the
+PULSE suites (`pulseSchedule.test.js`, `pulse.test.js`, `pulseAttention.test.js`)
+pass unmodified after the integrity check was extracted;
+`npm run rules:transitional:check` and `npm run functions:calc:check` up to
+date; `git diff --check` clean. **Rules (emulator, unchanged ruleset):**
+`activities.rules.test.js`, `programmeBaselines.rules.test.js` and
+`externalRoles.rules.test.js` — **3 files / 358 tests pass** — run only to
+confirm programme access is as before; `firestore.rules` is untouched
+(232,460 bytes). **Not run:** the rest of the Rules suite and the Functions
+suite (nothing they cover changed).
+
+**One print run, outside the application.** The printed report component was
+rendered to static markup with a 160-activity fixture, wrapped in the app
+shell's print markers, given the production stylesheet from `npm run build`
+and printed to PDF by headless Chrome. Result: A4 landscape, 16 pages, the
+table header repeated on each page, no row split, sidebar / top bar / project
+header / interactive page absent, no column clipped; the no-baseline, filtered
+variant printed on one page with no baseline column and the "outside this
+filtered scope" notice. With the named page removed the browser printed
+portrait and scaled to fit. **This is evidence about the stylesheet and the
+component, not about the running page** — the `beforeprint` mounting, the
+print dialog and other browsers are in the manual checks below.
+
+**Print mechanism run, outside the application (architect correction).** The
+real `hooks/usePrintMoment.jsx` and the real `ProgrammeReport.jsx`, in a
+temporary page (not in the repository) served by the Vite dev server and
+loaded in headless Chrome:
+
+| Step | Observed |
+|---|---|
+| Page loaded | Report not in the DOM |
+| Print button — DOM read at the instant `window.print()` is called | Report mounted; scope "Whole programme — 3 of 3 activities"; active baseline; 3 rows |
+| `afterprint` | Report removed |
+| `beforeprint` event — DOM read synchronously after the listeners return | Report mounted, same content |
+| `afterprint` | Report removed |
+| One click that changes the filter AND the selected baseline and prints | At `window.print()`: scope "Filtered programme — 1 of 3 activities (Attention: Blocked)", the historical baseline and its notice, 1 row — the pending changes, not the previous values |
+| `afterprint` | Report removed |
+| Chrome's own print pipeline (`--print-to-pdf`; nothing mounted beforehand) | The PDF contains the report with that filter and baseline; sidebar and interactive content absent |
+
+This establishes that the mounting is synchronous in Chrome's engine. It is
+not the GANTT page with live data, not the print dialog, and not Safari or
+Firefox.
+
+**What the automated tests prove.**
+
+| Area | Proven by | What |
+|---|---|---|
+| Print mounting and cleanup (source) | `programmePrintAndBaseline.test.js` | `flushSync` from `react-dom`; both mounting updates are inside it (button and `beforeprint`); `window.print()` is called after the flush; `afterprint` unmounts; listeners removed on unmount, registered once; no print library; the page holds no print state of its own; L2-A / L2-C / Final Account pages do not use the hook |
+| Filters and baseline in print | same | The printed model is the page's one memoised report over the displayed set, with every filter and the baseline among its inputs; a filter narrows the rows and is named; changing the selected version changes label, basis and variances together |
+| One integrity check | same | `baselineSnapshotProblem` equals `resolveActiveBaseline`'s verdict case by case; GANTT availability returns PULSE's problem and reason for the same pair; the count comparison exists once in the codebase; the page has one usability answer |
+| Invalid baseline suppression | same | Five bad pairs (count mismatch ×2, missing, wrong version, malformed): comparison null, flag `null`, no baseline date or variance on any row, nothing matches the filter; CSV `UNAVAILABLE` / `NOT EVALUATED` with the reason; PULSE refuses the same pair; the counter-example shows the incomplete snapshot WOULD have produced plausible figures; current-plan flags unaffected; a header without an integer count stays comparable |
+| Valid baseline = PULSE | same | Active version selected: the flag count and the flagged activities equal the PULSE indicator's |
+| Historical vs active | same | A valid historical version is still compared (2 later) while PULSE on the active one reports 1; `isActive`, the basis sentence, CSV `HISTORICAL` / `ACTIVE`; nothing claimed when the header list is unknown |
+| Hide baseline | same | `baselineShown` appears only in the visual view; absent from availability, attention and the report |
+| No mutation | same | Frozen activities, headers and snapshots (valid and invalid) unchanged; no baseline hook writes |
+| Overdue / blocked / conflict / review / later than baseline | `programmeAttention.test.js` | Each flag on a fixture built to isolate it; `daysLate` and `laterBy` values; a future start is never blocked; a missing or cancelled predecessor is *review*, never *conflict* |
+| Combined flags and counts | same | One activity with several flags, fixed order; `any` counts unique activities (6) while the flags total 9; the filtered list length equals its count for every filter value |
+| Cancelled / completed | same | Cancelled history carries no flag; work finished after its baseline is not flagged; cancelling a flagged activity clears its flags; a link problem on a closed successor is not counted |
+| No baseline selected | same | Four no-baseline shapes: count `null` (not zero), nothing matches the filter, the other four flags unchanged; a different selected version gives a different answer |
+| Hidden predecessors still block | same | A search showing only the successor still reports it blocked and in conflict; counts unchanged; the counter-example (states built from the filtered list) yields a DIFFERENT flag, proving why the page must not do it |
+| PULSE consistency | same | `evaluatePulse` and the index over the same records: overdue, blocked, link and activity counts for dependency review, and later-than-baseline are equal; the module imports the selectors and contains no date, status or graph logic |
+| Page wiring (source) | same | States and the index are built from `ordered`; chart, list and cards all receive `filtered`; the choice is validated page state cleared with the other filters; the disabled "not evaluated" choice |
+| Report rows | `programmeReport.test.js` | Activity and milestone rows; status labels; per-link dependency text with lag and state (full and compact forms); flags; unusable stored values become null |
+| Scope | same | Whole and filtered wording naming every filter; rows in displayed order; whole-programme counts on a filtered report; the outside-scope count and sentence; a predecessor outside the scope still named; empty programme and empty scope |
+| Baseline | same | Eight input cases → the five availability states, in precedence order, each with its explanation; label and approval day; signed variances (negative is not a flag); *added after* / *cancelled* with no day figure; no baseline → no variance, no date, no flag; a comparison without an available baseline is ignored; not exportable while loading |
+| CSV | same | Header block; counts as numbers; the documented headings; ISO dates quoted, numbers unquoted (incl. a negative and a zero variance); every missing value a marker, no empty cell; no-baseline and failed-baseline markers distinct; filtered scope and note; CRLF; refusal of a loading report or a missing time; file name |
+| Formula injection | same | Six hostile names (`=`, `+`, `-`, `@`, leading tab, leading spaces) in activity, responsible, cost code, company and project cells are quoted and apostrophe-prefixed; a hostile predecessor name cannot start the dependency cell; quotes, commas and line breaks survive; the serialiser uses `csvRows` only |
+| No data writes | same | Report and CSV built from deep-frozen records: nothing mutated, output deterministic; the three modules and the print component contain no Firebase, hook, storage or clock; the page's export / print handlers call no activity or baseline write and the page has no Firestore write; no export collection in hooks or Rules |
+| Print surface (source) | same | The report carries `.commercial-report` and the existing report classes; hidden on screen, shown in print; wrap not clip; no new colour or font; every new selector scoped to the report; a table with caption and header cells, never the chart; company, project, title, time, scope and baseline in the header; baseline column only when available; mounted only while printing; dialogs inside the hidden wrapper; CSV and print share one model |
+| Last changed | `activityLastChange.test.js` | Timestamp and plain `{seconds, nanoseconds}` shapes; thirteen non-instants → null (never "now"); you / another user / not recorded; no uid to compare → "another user", never the viewer; missing, pending (`updatedAt` null) and malformed metadata; no text contains a uid or a guessed date; the creator is not presented as the last author; no lookup, no audit collection, one listener; shown in the read-only detail (QS) and the editor; role flags unchanged |
+
+**What the automated tests do NOT prove.** Anything rendered in a browser:
+the filter chips and counts on a real programme, that the chart / list /
+cards actually update together, the downloaded file opening in a spreadsheet
+application, the print dialog output from the running page, focus and
+keyboard behaviour, and every role's real session. The checks below cover
+those. **None has been run.**
+
+### Manual acceptance — after the Hosting release (production, an existing test project; read-only except where stated)
+
+Use a project with: at least one overdue activity; a not-started activity
+whose start has arrived and whose predecessor is unfinished; an activity
+planned to start before its predecessor allows; a link to a cancelled
+activity; an approved baseline with at least one open activity whose planned
+finish is later than it. Create nothing new unless the project lacks a case.
+
+**Attention filter**
+
+| # | Check | Expected |
+|---|---|---|
+| G1 | Open GANTT as a project manager | A *Schedule attention* row of six choices with counts under the existing filters; nothing pressed; chart unchanged |
+| G2 | Compare each count with the PULSE tab of the same project | Overdue = *Programme activities overdue*; Blocked = *blocked by predecessors*; Dependency conflict + Dependency requires review activities = *dependencies need review* (activities); Later than baseline = *later than approved baseline* when the ACTIVE baseline is selected |
+| G3 | Press each flag in turn | Chart, List and (narrow window) cards show the same activities; "Showing n of N" equals the count; pressing again releases it |
+| G4 | Press *Needs attention* | The union; an activity with two flags appears once |
+| G5 | Search for the blocked successor only, then press *Blocked* | It is still listed and still labelled Blocked although its predecessor is not shown |
+| G6 | Tick *Hide completed & cancelled* and set Status = Not started | Counts in the attention row do not change |
+| G7 | Select a different approved baseline in the baseline panel | The *Later than baseline* count follows the selection; press *Hide baseline* — the count does not change |
+| G8 | A project with no approved baseline | *Later than baseline* is disabled and reads "not evaluated" with the reason — not 0 |
+| G8a | Select a historical approved baseline (a project with two) | The comparison is shown; an amber line under the chips says it is a historical baseline, names the active one and says the PULSE count can differ; the CSV has `Baseline basis: HISTORICAL` and the printed header carries the same sentence. Select the active one again: the line goes and the count equals PULSE |
+| G9 | *Clear filters* | Every filter, including the attention choice, is released |
+| G10 | Tab to the chips; Space / Enter | Each is reachable, shows focus, and announces its pressed state and count |
+| G11 | Leave the tab open across local midnight (or change the device date and refocus) | Overdue and blocked counts move with the day, as the chart does |
+
+**CSV**
+
+| # | Check | Expected |
+|---|---|---|
+| C1 | *Export CSV* with no filter | `constrap-programme-report-<project>-<date>.csv` downloads; nothing changes on the page; the Network tab shows no Firestore write |
+| C2 | Open it in Excel and in Google Sheets / Numbers | Header block (company, project, generated time, scope "Whole programme — N of N", baseline, counts, notes); one row per activity in programme order; accents and em dashes intact |
+| C3 | Dates and numbers | Dates read `YYYY-MM-DD`; Duration, Progress, Days overdue and the variances are numeric (sum / sort works); a later finish is positive, an earlier one negative |
+| C4 | Compare five rows with the List view | Every value matches; a milestone has Type Milestone and Duration 0 |
+| C5 | Missing values | Actual dates `NOT RECORDED`; no responsible `NOT ASSIGNED`; an activity added after the baseline `NOT IN BASELINE` / `NOT COMPARED` with the reason; no empty cell in the table |
+| C6 | Export with *Blocked* pressed | Scope line names the filter; only those rows; a Note says how many flagged activities are outside the scope; the counts are still the whole programme's |
+| C7 | Export on a project with no approved baseline | Baseline `NO APPROVED BASELINE`; every baseline cell says so; *Later than baseline* `NOT EVALUATED`; no variance of 0 anywhere |
+| C8 | Temporarily name a test activity `=1+1` (author role; rename back) | The cell shows the text `'=1+1`, not 2 |
+| C9 | Baselines after export | The baseline panel is unchanged: no new draft, no new approved version |
+
+**Print / Save as PDF**
+
+| # | Check | Expected |
+|---|---|---|
+| R1 | *Print / Save as PDF* (Chrome), preview | A light report: title block, attention counts, schedule table. No sidebar, top bar, project tabs, filters, chart or buttons |
+| R2 | Orientation and width | A4 landscape; every column visible; no text cut at the right edge |
+| R3 | A programme of 60+ activities | Several pages; the column headings repeat on each; no activity row is split across two pages |
+| R4 | Long activity name; an activity with three predecessors | Both wrap inside their cell; nothing overlaps |
+| R5 | Header content | Company, project, scope, baseline name and approval day, generation date and time with zone; "printing creates no baseline" |
+| R6 | With a filter pressed | The scope line names it; the amber notice states how many flagged activities are not listed |
+| R7 | No approved baseline | "No approved baseline" with the explanation; no baseline column; *Later than baseline* "Not evaluated" |
+| R8 | Cancel the dialog | The page is exactly as before; no report visible on screen; no leftover blank area |
+| R9 | Browser menu Print (Ctrl / Cmd + P) on the GANTT tab | The same report, not the dark interactive screen and **not a blank page** |
+| R9a | Change a filter, then immediately print (button, then menu) | The scope line and rows are the new filter's, never the previous one |
+| R9b | Print twice in a row; then print, cancel, and inspect the page (DevTools → Elements, search `programme-report`) | Each print is complete; after the dialog closes no report element remains in the DOM |
+| R10 | With the activity editor open, Ctrl / Cmd + P | The report prints; the dialog does not |
+| R11 | Safari and Firefox | Report prints readable; if portrait, choose Landscape — record what each browser does |
+| R12 | Print another tab (e.g. Budget) afterwards | Unchanged from before this release |
+| R13 | Reports tab and Portfolio print | Unchanged (they share the print rules) |
+
+**Last change**
+
+| # | Check | Expected |
+|---|---|---|
+| L1 | As a project manager, edit an activity you saved earlier | Above the buttons: *Last changed* date, time and zone "by you", with the "most recent saved change only" caption |
+| L2 | Open an activity last saved by a different user | "by another user" — no name, no email |
+| L3 | Save a change, reopen the editor | The time is the save just made |
+| L4 | As QS, open a bar | The read-only detail shows the same *Last changed* row; still no Save, no quick action |
+| L5 | A cancelled activity (any role) | The detail shows when it was last changed (the cancellation) |
+| L6 | *Add activity* | No *Last changed* line in the new-activity form |
+| L7 | Two sessions: open the editor in A, save the same activity in B, save in A | A is refused with *Reload latest* exactly as before; after reloading, *Last changed* shows B's save as "by another user" |
+
+**Access (unchanged behaviour — confirm)**
+
+| # | Check | Expected |
+|---|---|---|
+| A1 | QS | Filter, export and print work; no add / edit / cancel / capture controls |
+| A2 | Subcontractor and client | "Programme not available"; no export or print control; no programme read in the Network tab |
+| A3 | A user of another company | Cannot open the project |
+
+**Stop and report if:** a count differs from PULSE for the active baseline;
+the chart and the list show different activities; an export or print creates
+or changes any document; a baseline variance appears without an approved
+baseline; a name or email appears in *Last changed*; or any other tab prints
+differently than before.

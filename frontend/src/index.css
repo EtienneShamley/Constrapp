@@ -130,3 +130,32 @@ body {
   .commercial-report .report-table tbody th { min-width: 0 !important; }
   .commercial-report * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
+
+/* ── GANTT™ Programme Report (ADR-79) — print / Save as PDF ───────────────────
+   The printed programme is a schedule TABLE that exists only for printing: it
+   is mounted by the GANTT tab while a print is in progress and is never shown
+   on screen. It carries `.commercial-report` as well, so every rule above
+   (ink palette, hidden app chrome, A4 landscape, repeated table header, no
+   row split across pages) applies unchanged; the rules below only un-hide it
+   and let long activity names and dependency lists wrap instead of clipping.
+   Every selector names `.commercial-report`, so nothing here can reach a page
+   that is not a report. */
+.commercial-report.programme-report { display: none; }
+@media print {
+  .commercial-report.programme-report { display: flex !important; }
+  .commercial-report.programme-report .report-header,
+  .commercial-report.programme-report .report-card { padding: 8px 10px !important; }
+  .commercial-report.programme-report .report-table { table-layout: auto; width: 100%; }
+  .commercial-report.programme-report .report-table th,
+  .commercial-report.programme-report .report-table td {
+    vertical-align: top; font-size: 8pt !important; line-height: 1.3 !important; padding: 3px 5px !important;
+  }
+  .commercial-report.programme-report .report-table thead th { font-size: 7pt !important; }
+  .commercial-report.programme-report .report-table td span,
+  .commercial-report.programme-report .report-table th span { font-size: inherit; line-height: inherit; }
+  .commercial-report.programme-report .programme-report-name,
+  .commercial-report.programme-report .programme-report-wrap { white-space: normal !important; overflow-wrap: break-word; }
+  .commercial-report.programme-report .report-table tbody th.programme-report-name { min-width: 34mm !important; }
+  .commercial-report.programme-report .report-table td.programme-report-wrap { min-width: 30mm; }
+  .commercial-report.programme-report .report-footnote li { break-inside: avoid; page-break-inside: avoid; }
+}
