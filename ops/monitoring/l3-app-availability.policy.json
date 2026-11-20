@@ -1,0 +1,39 @@
+{
+  "displayName": "L3 app.constrap.com: HTTPS check failing from two or more locations for 10 minutes",
+  "combiner": "OR",
+  "enabled": true,
+  "severity": "CRITICAL",
+  "userLabels": {
+    "milestone": "l3",
+    "component": "hosting",
+    "policy": "app-availability"
+  },
+  "conditions": [
+    {
+      "displayName": "Uptime check on app.constrap.com failing from 2+ checker locations for 10 minutes",
+      "conditionThreshold": {
+        "filter": "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND resource.type=\"uptime_url\" AND resource.labels.host=\"app.constrap.com\"",
+        "aggregations": [
+          {
+            "alignmentPeriod": "1200s",
+            "perSeriesAligner": "ALIGN_NEXT_OLDER",
+            "crossSeriesReducer": "REDUCE_COUNT_FALSE",
+            "groupByFields": ["resource.labels.host"]
+          }
+        ],
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 1,
+        "duration": "600s",
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "alertStrategy": {
+    "autoClose": "86400s"
+  },
+  "documentation": {
+    "mimeType": "text/markdown",
+    "subject": "app.constrap.com is failing its public HTTPS check",
+    "content": "## What this means\n\nGoogle's uptime checkers request `https://app.constrap.com/` every 5 minutes from several locations. At least two locations have failed for 10 minutes. A check passes only with HTTP 200, a valid TLS certificate, a response within 10 seconds, and the application shell (`<div id=\"root\"></div>`) in the body.\n\n**Likely effect:** users cannot load Constrap, or see a certificate warning.\n\n**What a passing check does NOT prove:** that sign-in, Firestore, Storage or the Cloud Functions work. It requests one public static page.\n\n## Check, in this order\n\n1. **Is it real?** From your own machine: `curl -sS -o /dev/null -w '%{http_code} %{time_total}s\\n' https://app.constrap.com/` (expect `200`). Open the uptime check in Cloud Monitoring to see which locations fail and with what error.\n2. **Billing.** `gcloud billing projects describe constrapp-69b5d` must show `billingEnabled: true`.\n3. **Certificate.** `echo | openssl s_client -connect app.constrap.com:443 -servername app.constrap.com 2>/dev/null | openssl x509 -noout -enddate`. An expired or mismatched certificate points at the custom domain: Firebase Console, Hosting, custom domains.\n4. **DNS.** `dig +short app.constrap.com` must still resolve to Firebase Hosting. A change at the registrar or DNS host breaks the domain while `https://constrapp-69b5d.web.app/` keeps working: compare the two.\n5. **Recent release.** Firebase Console, Hosting, release history. If the failure started at a deploy and the default `web.app` origin fails too, roll back to the previous release in the console (Product Owner approval).\n6. **Google status.** https://status.firebase.google.com/ and https://status.cloud.google.com/ for a Hosting incident.\n\n## After recovery\n\nThe incident closes by itself once the check passes again. Record the start, end, cause and action in the incident log.\n\nRunbook: `ops/RUNBOOK.md`."
+  }
+}

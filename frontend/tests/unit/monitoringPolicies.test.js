@@ -3,7 +3,11 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
-// ── DC46-C monitoring — the committed alert policy and metric files ──────────
+// ── Monitoring — the committed alert policy, metric and uptime-check files ───
+//
+// L3 Stage 1 added three files (an uptime check, its alert policy and the
+// approveFinalAccount failure policy): PREPARED, not created. Their tests are
+// at the end of this file. The DC46 notes below are unchanged.
 //
 // ops/monitoring/*.policy.json are applied by hand with
 // `gcloud monitoring policies create --policy-from-file`, and the one
@@ -20,6 +24,10 @@ import path from 'node:path'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../ops/monitoring')
 const read = (name) => JSON.parse(readFileSync(path.join(dir, name), 'utf8'))
 const files = readdirSync(dir).filter(f => f.endsWith('.policy.json')).sort()
+// L3 Stage 1 — PREPARED, not created in production.
+const L3_UPTIME = 'l3-app-availability.uptime-check.json'
+const L3_UPTIME_POLICY = 'l3-app-availability.policy.json'
+const L3_CALLABLE_POLICY = 'l3-final-account-callable-failure.policy.json'
 // The delivery test is a separate kind of file on purpose: it is created,
 // used once and deleted, and must never be mistaken for a standing policy.
 const TEMPORARY = 'dc46-delivery-test.temporary-policy.json'
@@ -33,9 +41,12 @@ const SERVICE = 'resource.labels.service_name="processfilelinkrevocations"'
 const REGION = 'resource.labels.location="australia-southeast1"'
 
 describe('ops/monitoring policy files', () => {
-  it('are exactly the three standing policies, the heartbeat metric and the one temporary delivery test', () => {
-    expect(files).toEqual([POLICY_C, 'dc46-worker-error-log.policy.json', 'dc46-worker-no-successful-run.policy.json'])
-    expect(readdirSync(dir).filter(f => f.endsWith('.json')).sort()).toEqual([TEMPORARY, METRIC, ...files].sort())
+  it('are exactly the three standing DC46 policies, the two L3 policies, the heartbeat metric, the uptime check and the one temporary delivery test', () => {
+    expect(files).toEqual([
+      POLICY_C, 'dc46-worker-error-log.policy.json', 'dc46-worker-no-successful-run.policy.json',
+      L3_UPTIME_POLICY, L3_CALLABLE_POLICY,
+    ])
+    expect(readdirSync(dir).filter(f => f.endsWith('.json')).sort()).toEqual([TEMPORARY, METRIC, L3_UPTIME, ...files].sort())
   })
 
   it.each(allFiles)('%s carries no recipient: no channel, no email address, no server-assigned name', (name) => {
@@ -171,5 +182,99 @@ describe('ops/monitoring policy files', () => {
     expect(policy.documentation.content).toContain('This policy must be DISABLED as part of that rollback')
     expect(policy.documentation.content).toContain('planning paused; periodic queue is full')
     expect(policy.documentation.content).toContain(HEARTBEAT)
+  })
+})
+
+// ── L3 Stage 1 — availability check and Final Account callable failure ───────
+//
+// PREPARED, not created. These pin the files against the things they must
+// agree with in THIS repository: the page the check fetches, the function the
+// policy watches, and the error codes that must not raise an alert.
+describe('ops/monitoring L3 files', () => {
+  const root = path.resolve(here, '../../..')
+  const src = (p) => readFileSync(path.resolve(root, p), 'utf8')
+  const HOST = 'app.constrap.com'
+
+  it('the uptime check requests the production origin over verified HTTPS and holds no recipient or server-assigned name', () => {
+    const text = readFileSync(path.join(dir, L3_UPTIME), 'utf8')
+    const check = JSON.parse(text)
+    expect(check.name).toBeUndefined()
+    expect(text).not.toMatch(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}/)
+    expect(check.monitoredResource).toEqual({ type: 'uptime_url', labels: { project_id: 'constrapp-69b5d', host: HOST } })
+    expect(check.httpCheck).toEqual({
+      requestMethod: 'GET', useSsl: true, validateSsl: true, port: 443, path: '/',
+      acceptedResponseStatusCodes: [{ statusValue: 200 }],
+    })
+    // The only periods the API accepts are 60s, 300s, 600s and 900s; the
+    // timeout must be 1 to 60 seconds. No region list: every checker region.
+    expect(check.period).toBe('300s')
+    expect(check.timeout).toBe('10s')
+    expect(check.selectedRegions).toBeUndefined()
+    expect(check.checkerType).toBe('STATIC_IP_CHECKERS')
+    // The production origin is the one the app documents.
+    expect(src('docs/DEPLOYMENT.md')).toContain(`https://${HOST}`)
+  })
+
+  it('the uptime check\'s content match is text the built page really contains', () => {
+    const check = read(L3_UPTIME)
+    expect(check.contentMatchers).toEqual([{ matcher: 'CONTAINS_STRING', content: '<div id="root"></div>' }])
+    // Vite copies index.html into the build; Hosting rewrites every path to
+    // it. If the shell element ever changes, this check must change with it.
+    expect(src('frontend/index.html')).toContain(check.contentMatchers[0].content)
+  })
+
+  it('the availability policy alerts only on repeated failure: two or more locations, for two check periods', () => {
+    const policy = read(L3_UPTIME_POLICY)
+    const c = policy.conditions[0].conditionThreshold
+    // Tied to the check by host, because the check's id is assigned by the
+    // server when it is created and cannot be committed in advance.
+    expect(c.filter).toBe(`metric.type="monitoring.googleapis.com/uptime_check/check_passed" AND resource.type="uptime_url" AND resource.labels.host="${read(L3_UPTIME).monitoredResource.labels.host}"`)
+    expect(c.aggregations).toEqual([{
+      alignmentPeriod: '1200s', perSeriesAligner: 'ALIGN_NEXT_OLDER', crossSeriesReducer: 'REDUCE_COUNT_FALSE', groupByFields: ['resource.labels.host'],
+    }])
+    // More than one failing location, never a single checker's bad minute.
+    expect(c).toMatchObject({ comparison: 'COMPARISON_GT', thresholdValue: 1, trigger: { count: 1 } })
+    const period = Number(read(L3_UPTIME).period.replace('s', ''))
+    expect(Number(c.duration.replace('s', ''))).toBe(2 * period)
+    expect(policy.severity).toBe('CRITICAL')
+    // The limit of the check is stated to whoever receives the alert.
+    expect(policy.documentation.content).toContain('What a passing check does NOT prove')
+    expect(policy.documentation.content).toContain('ops/RUNBOOK.md')
+  })
+
+  it('the callable policy watches approveFinalAccount\'s own service, in its region, and nothing else', () => {
+    const policy = read(L3_CALLABLE_POLICY)
+    const c = policy.conditions[0].conditionThreshold
+    const index = src('frontend/functions/src/index.js')
+    // The Cloud Run service of a 2nd-gen function is its export name in lower case.
+    expect(index).toContain('export const approveFinalAccount = onCall(')
+    expect(c.filter).toBe(`metric.type="run.googleapis.com/request_count" AND resource.type="cloud_run_revision" AND resource.labels.service_name="${'approveFinalAccount'.toLowerCase()}" AND ${REGION} AND metric.labels.response_code_class="5xx"`)
+    expect(c.filter).not.toContain('processfilelinkrevocations')
+    // Summed across revisions, like policy A, so a deploy is not a new series.
+    expect(c.aggregations).toEqual(read('dc46-worker-no-successful-run.policy.json').conditions[0].conditionAbsent.aggregations)
+    // One server failure is enough: approvals are rare and each one matters.
+    expect(c).toMatchObject({ comparison: 'COMPARISON_GT', thresholdValue: 0, duration: '0s', trigger: { count: 1 } })
+    expect(policy.severity).toBe('ERROR')
+    expect(policy.alertStrategy).toEqual({ autoClose: '3600s' })
+  })
+
+  it('no EXPECTED Final Account refusal is a 5xx, except the deliberate off switch, which the runbook names', () => {
+    const errors = src('frontend/functions/src/lib/errors.js')
+    // gRPC codes firebase-functions answers with an HTTP 5xx status.
+    const SERVER = ['internal', 'unknown', 'unavailable', 'deadline-exceeded', 'data-loss', 'unimplemented']
+    const grpc = Object.fromEntries([...errors.matchAll(/\[CODE\.([A-Z_]+)\]:\s+'([a-z-]+)',/g)].map(m => [m[1], m[2]]))
+    const finalAccount = Object.entries(grpc).filter(([k]) => k === 'NOT_APPROVER' || k.startsWith('FINAL_ACCOUNT_'))
+    expect(finalAccount.length).toBe(8)
+    const fiveXx = finalAccount.filter(([, v]) => SERVER.includes(v)).map(([k]) => k)
+    expect(fiveXx).toEqual(['FINAL_ACCOUNT_DISABLED'])
+    const doc = read(L3_CALLABLE_POLICY).documentation.content
+    expect(doc).toContain('FINAL_ACCOUNT_APPROVAL_ENABLED')
+    expect(src('frontend/functions/src/lib/params.js')).toContain("defineBoolean('FINAL_ACCOUNT_APPROVAL_ENABLED'")
+    // The runbook quotes the one error line the function writes, and the audit event.
+    const index = src('frontend/functions/src/index.js')
+    expect(index).toContain("logger.error('final account call failed'")
+    expect(doc).toContain('final account call failed')
+    expect(errors + src('frontend/functions/src/lib/audit.js')).toContain("'final_account.approved'")
+    expect(doc).toContain('final_account.approved')
   })
 })

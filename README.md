@@ -172,6 +172,9 @@ frontend/         The entire application (Vite root); firestore.rules and
 docs/             Detailed documentation + design-reference assets
 ops/monitoring/   Cloud Monitoring alert policy files (A and B created in
                   production 16 Nov 2026, by hand — docs/DEPLOYMENT.md)
+ops/recovery/     Firestore restore verification procedure and its read-only
+                  count script (prepared, not run)
+ops/RUNBOOK.md    Production operations runbook (backups, alerts, incidents)
 AGENT.md          Conventions and guardrails for contributors and AI agents
 CLAUDE.md         Task routing for AI agents
 PRODUCT.md        Product overview and module status
