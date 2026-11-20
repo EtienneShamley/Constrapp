@@ -1,0 +1,34 @@
+{
+  "displayName": "L3 app.constrap.com HTTPS availability",
+  "monitoredResource": {
+    "type": "uptime_url",
+    "labels": {
+      "project_id": "constrapp-69b5d",
+      "host": "app.constrap.com"
+    }
+  },
+  "httpCheck": {
+    "requestMethod": "GET",
+    "useSsl": true,
+    "validateSsl": true,
+    "port": 443,
+    "path": "/",
+    "acceptedResponseStatusCodes": [
+      { "statusValue": 200 }
+    ]
+  },
+  "contentMatchers": [
+    {
+      "matcher": "CONTAINS_STRING",
+      "content": "<div id=\"root\"></div>"
+    }
+  ],
+  "period": "300s",
+  "timeout": "10s",
+  "checkerType": "STATIC_IP_CHECKERS",
+  "userLabels": {
+    "milestone": "l3",
+    "component": "hosting",
+    "check": "app-availability"
+  }
+}

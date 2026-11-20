@@ -1,4 +1,12 @@
-# ops/monitoring — Cloud Monitoring alert policies for the DC46 worker
+# ops/monitoring — Cloud Monitoring alert policies
+
+**L3 Stage 1 (21 November 2026): three files are PREPARED, NOT CREATED** — an
+uptime check on `app.constrap.com`, its alert policy, and an alert on server
+failures of `approveFinalAccount`. They are described in *L3 files* at the
+end of this document. Nothing about them exists in the cloud. The rest of
+this document is the DC46 worker monitoring, unchanged.
+
+## DC46 worker policies
 
 **Status: policies A and B are CREATED in production (`constrapp-69b5d`,
 16 November 2026). The temporary delivery-test policy was created, used and
@@ -90,3 +98,65 @@ procedures, the response runbook, billing continuity and rollback are in
 [docs/DEPLOYMENT.md](../../docs/DEPLOYMENT.md) → *DC46-C monitoring readiness*
 (policy C: its *Policy C* section; activation: *DC46-C* → *Activation
 runbook*).
+
+## L3 files — PREPARED 21 November 2026, NOT CREATED
+
+| File | What it is | Condition | Cloud state |
+|---|---|---|---|
+| `l3-app-availability.uptime-check.json` | Request body for `projects.uptimeCheckConfigs.create`: a public HTTPS check of `https://app.constrap.com/` | Every 5 minutes, from every checker region; passes on HTTP 200, a valid certificate, a reply within 10 seconds and `<div id="root"></div>` in the body | **Does not exist** |
+| `l3-app-availability.policy.json` | Alert on that check | Two or more checker locations failing, sustained for 10 minutes (two check periods). CRITICAL | **Does not exist** |
+| `l3-final-account-callable-failure.policy.json` | Alert on `approveFinalAccount` | Any HTTP 5xx from the Cloud Run service `approvefinalaccount` (`australia-southeast1`). 4xx refusals are not counted. ERROR | **Does not exist** |
+
+Same conventions as the DC46 files: request bodies checked against the
+Monitoring API's published schema, no recipient committed, channels passed
+on the command line, pinned by
+`frontend/tests/unit/monitoringPolicies.test.js`. Both alert filters were
+accepted by the live Monitoring API in a read-only `timeSeries.list` query
+on 21 November 2026 (no series yet: the check does not exist and the
+function has never returned a 5xx). **The API has no dry run for creating a
+policy or an uptime check, so the files are not proven until they are
+created.**
+
+### What the availability check is not
+
+- **HTTP 200 does not validate the application.** The check fetches one
+  public static page. Sign-in, Firestore, Storage and the Functions can all
+  be broken while it passes. Firebase Hosting also rewrites every path to
+  that page, so the status code alone says little; the body match is what
+  ties the check to a real build.
+- It is not independent. The check and its policy live in the project they
+  watch, exactly like policies A, B and C. What Cloud Monitoring does while
+  the project's billing is suspended is not documented and not tested.
+- The policy is tied to the check by host name, because a check's id is
+  assigned when it is created. A second uptime check on the same host would
+  be counted by the same policy.
+- A single failing location, or one failed round, raises nothing by design.
+  Expect a notification roughly 10 to 20 minutes after an outage begins (an
+  estimate; never observed).
+
+### What the callable alert is not
+
+- It sees only responses with a 5xx status. A handler that returned a
+  wrong answer with HTTP 200 is invisible to it.
+- One 5xx is expected and deliberate: `FINAL_ACCOUNT_DISABLED` answers 503
+  when `FINAL_ACCOUNT_APPROVAL_ENABLED` is off and a user tries to approve.
+  The notification's runbook says so. Every other documented refusal is 4xx.
+- The function had zero requests in the 14 days before these files were
+  written. The policy is silent until a first failure, and it has never
+  fired.
+- It does not watch the eight team callables. Their failures in the last
+  7 days were eight HTTP 401 probes and no 5xx; an alert there is not
+  justified yet.
+
+### Cost
+
+Uptime checks: 1 million executions a month are free per project (Google's
+pricing page, read 21 November 2026); this check runs about 52,000 a month
+if six locations are used (288 a day each). Alerting is not charged before
+1 September 2027 on the same page; after that, policies on uptime metrics
+are listed as not charged and the callable policy would cost about US$0.35
+a month plus a negligible per-point charge. Estimates, not a commitment.
+
+Creation commands, channel choice, verification and rollback:
+[docs/DEPLOYMENT.md](../../docs/DEPLOYMENT.md) → *L3 Stage 1*. Response
+runbook: [ops/RUNBOOK.md](../RUNBOOK.md).

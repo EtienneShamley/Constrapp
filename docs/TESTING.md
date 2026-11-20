@@ -8766,7 +8766,9 @@ worded in forecast-cost terms.
 
 ---
 
-## 63. L2-C — Portfolio Report (ADR-78, 20 November 2026) — DEPLOYED; visual and export acceptance PASSED (REPORTED); security, parity and performance checks OPEN
+## 63. L2-C — Portfolio Report (ADR-78, 20 November 2026) — DEPLOYED; visual, CSV and PDF acceptance confirmed (REPORTED); access, parity and performance checks OPEN
+
+**Status update (21 November 2026, NZ).** Visual, CSV and PDF acceptance is confirmed (REPORTED by the Lead Architect). Still OPEN: the external-role access checks, row-to-Reports-tab parity and the performance measurements below. Classified in the L3 assessment as a product acceptance item, not an L3 dependency.
 
 **Status update (20 November 2026).** L2-C is merged to `main` as `93db6cc`
 and the live Hosting bundle is the build of that commit (VERIFIED read-only —
@@ -8857,7 +8859,9 @@ A load that is slow for a real company is a design-review trigger (ADR-78 →
 
 ---
 
-## 64. GANTT™ core completion — attention filter, programme export / print, last change (ADR-79, 20 November 2026) — IMPLEMENTED — NOT DEPLOYED; automated tests PASS; browser and production acceptance NOT RUN
+## 64. GANTT™ core completion — attention filter, programme export / print, last change (ADR-79, 20 November 2026) — LIVE since 20 November 2026 08:52 UTC; Product Owner accepted (REPORTED; no per-step record held here); automated tests PASS
+
+**Status update (21 November 2026, NZ) — LIVE and Product Owner accepted.** Merged to `main` as `9ce433d` (*Merge GANTT core completion*; feature commit `8e60eb7`) — VERIFIED in Git. Released Hosting-only on 20 November 2026 08:52 UTC: the live bundle `index-Cz4wMhcy.js` is SHA-256-identical to a clean build of `main` `9ce433d` (VERIFIED read-only, 21 November 2026). The three additions — the Lead Architect's G1, G2 and G3 — are Product Owner accepted (REPORTED by the Lead Architect, 21 November 2026; no per-step acceptance record is held here). Certain baseline scenarios were not exercised in the browser and remain a separate product acceptance check. The steps below are kept as written; none is ticked here because no per-step result was supplied.
 
 **What was run (20 November 2026, branch `feature/gantt-core-completion`,
 uncommitted).** From `frontend/`: `npm run lint` clean (0 errors / 0
@@ -9026,3 +9030,76 @@ the chart and the list show different activities; an export or print creates
 or changes any document; a baseline variance appears without an approved
 baseline; a name or email appears in *Last changed*; or any other tab prints
 differently than before.
+
+## 65. L3 Stage 1 — recovery verification, availability check and Final Account failure alert (21 November 2026) — PREPARED; automated checks PASS; NOTHING CREATED and NO RESTORE RUN
+
+**What this stage is.** Operational files and documentation only
+(DEPLOYMENT.md → *L3 Stage 1*). No application code, Rules, Functions or
+dependency changed, so the full unit, Rules and Functions suites were not
+re-run; they are unaffected by construction and still run in CI.
+
+**What was run (21 November 2026, branch `chore/l3-recovery-monitoring`,
+uncommitted).** From `frontend/`:
+
+- `npx vitest run --config vitest.config.js tests/unit/monitoringPolicies.test.js tests/unit/recoveryEvidence.test.js`
+  — **2 files / 35 tests pass** (24 monitoring, of which 5 are new; 11 new
+  recovery-script tests).
+- `npx eslint tests/unit/monitoringPolicies.test.js tests/unit/recoveryEvidence.test.js --max-warnings 0` — clean.
+- `git diff --check` — clean.
+
+**What the tests pin.** The uptime check's body match is text
+`frontend/index.html` contains; the availability policy needs two or more
+failing locations for two check periods; the callable policy names the
+service of the `approveFinalAccount` export and its region; the only
+expected Final Account refusal that answers 5xx is the deliberate off
+switch, which the notification names; no recipient is committed; the count
+script sends only a count query and one document read, names every
+collection the Rules, the hooks and the Functions use, refuses a read time
+that is not a whole minute, and has no default database.
+
+**Read-only production checks (21 November 2026).**
+
+- Both alert filters accepted by the live Monitoring API (`timeSeries.list`).
+- The uptime metric `monitoring.googleapis.com/uptime_check/check_passed`
+  and the `uptime_url` resource labels (`project_id`, `host`) read from the
+  API.
+- Request-body field names and enum values checked against the Monitoring
+  v3 discovery document.
+- `gcloud` 593.0.0 help read for every command in the restore procedure;
+  every read-only command in it and in `ops/RUNBOOK.md` was executed.
+- The guard in the restore procedure refuses `(default)` in zsh and bash.
+- The count script run against `(default)` at the two whole minutes either
+  side of backup `f6e32570…`: 211 documents in 44 collection groups at
+  both, sample hash equal, zero writes in that minute.
+- The exact snapshot time is refused by the API (`not a whole minute`), as
+  the procedure states.
+
+**Not verified — cannot be without a production change.**
+
+- That the three monitoring files are accepted on creation (the API has no
+  dry run), and that either alert fires and notifies on its real condition.
+- Everything about the restore itself: its duration, the restored
+  database's default configuration, the Security Rules behaviour of a
+  restored database (documented by Google as deny-all for an id never used
+  before; the procedure checks it), and the count comparison on restored
+  data.
+
+### Operator acceptance — monitoring (after authorisation)
+
+- [ ] O1 — The uptime check exists and every location passes for 15 minutes.
+- [ ] O2 — Five policies listed, all enabled; the two new ones match their files and carry the intended channels.
+- [ ] O3 — No incident opened by creating them.
+- [ ] O4 — *Monitoring release record* written; status lines corrected.
+
+### Operator acceptance — restoration verification (after authorisation)
+
+- [ ] V1 — Step 0: one database, `(default)`, delete protection ENABLED; the guard prints OK.
+- [ ] V2 — Step 2: expected counts captured; the two minutes MATCH; no write in that minute.
+- [ ] V3 — Step 4: unauthenticated request to the temporary database returns 403; no public IAM member; no TTL policy or schedule on it.
+- [ ] V4 — Step 5: MATCH on every collection group and the sample hash.
+- [ ] V5 — Steps 7–8: temporary database deleted; `(default)` unchanged (same uid, protection, schedule, backups); application loads.
+- [ ] V6 — *Restoration verification record* written with no customer content.
+
+**Stop and report if:** the guard prints STOP; the unauthenticated request
+returns 200; any count differs; the delete names anything but the temporary
+database; or cleanup fails (ops/recovery/README.md → *If cleanup fails*).

@@ -1,0 +1,39 @@
+{
+  "displayName": "L3 approveFinalAccount: server failure (5xx)",
+  "combiner": "OR",
+  "enabled": true,
+  "severity": "ERROR",
+  "userLabels": {
+    "milestone": "l3",
+    "component": "final-account-callable",
+    "policy": "callable-server-failure"
+  },
+  "conditions": [
+    {
+      "displayName": "Any 5xx response from the approvefinalaccount service",
+      "conditionThreshold": {
+        "filter": "metric.type=\"run.googleapis.com/request_count\" AND resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"approvefinalaccount\" AND resource.labels.location=\"australia-southeast1\" AND metric.labels.response_code_class=\"5xx\"",
+        "aggregations": [
+          {
+            "alignmentPeriod": "60s",
+            "perSeriesAligner": "ALIGN_DELTA",
+            "crossSeriesReducer": "REDUCE_SUM",
+            "groupByFields": ["resource.labels.service_name"]
+          }
+        ],
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 0,
+        "duration": "0s",
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "alertStrategy": {
+    "autoClose": "3600s"
+  },
+  "documentation": {
+    "mimeType": "text/markdown",
+    "subject": "approveFinalAccount returned a server error",
+    "content": "## What this means\n\nThe Callable Function `approveFinalAccount` (Cloud Run service `approvefinalaccount`, `australia-southeast1`) answered at least one request with an HTTP 5xx status. It is the only trusted financial operation: it recomputes and approves one Final Account revision in a single transaction.\n\nRefused requests are NOT counted here. A missing sign-in or App Check token (401), a role or readiness refusal (403, 400) and a stale or busy draft (409) are 4xx responses and expected.\n\n**Effect on data:** an approval is one transaction, so a failed call approved nothing or approved the whole revision. The user was told the outcome is uncertain and asked to reload.\n\n## Read the log first\n\nLogs Explorer:\n\n`resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"approvefinalaccount\" AND (severity>=ERROR OR httpRequest.status>=500)`\n\n| What you find | Meaning | Action |\n|---|---|---|\n| `final account call failed` with a stack | The handler threw an unexpected error. | Read the message and stack. Check whether the revision was approved (next section). Report it as a defect. |\n| Status 503 and no error line, with `FINAL_ACCOUNT_APPROVAL_ENABLED` off | Approval is switched off on purpose; a user tried to approve. | Expected while the switch is off. No action beyond telling the user. |\n| Status 504, or a request of about 120 seconds | The call hit the function's time limit. | Check the project's record volume and Firestore status. Do not raise the limit without approval. |\n| Status 500 or 503 with a memory or instance message from Cloud Run | The container was terminated or could not start. | Check the revision is Ready: `gcloud run services describe approvefinalaccount --region australia-southeast1 --project constrapp-69b5d`. |\n\n## Was anything approved?\n\nAsk the user to reload Commercial, Final Account. The revision is either still a draft (nothing was written; they may try again) or approved (the call committed and only the reply was lost). An approval also writes one `final_account.approved` audit event. Never edit a Final Account revision in the console.\n\n## Escalate\n\nA repeated failure for the same project, or any sign of a partly written approval, goes to the Product Owner and the Lead Architect before anyone retries.\n\nThis notification is sent once per incident; the incident closes about an hour after the last failure. More failures may have followed the first.\n\nRunbook: `ops/RUNBOOK.md`."
+  }
+}

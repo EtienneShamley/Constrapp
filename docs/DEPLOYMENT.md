@@ -3781,7 +3781,22 @@ separately authorised):**
 release history (*Rollback* on the previous release). There is no
 `firebase hosting:rollback` command. Nothing else needs reverting.
 
-## Firestore recovery protection — ENABLED 18 November 2026; first READY backup UNVERIFIED; restore test PENDING
+## Firestore recovery protection — ENABLED 18 November 2026; two READY backups VERIFIED 21 November 2026; restoration verification PREPARED, NOT RUN
+
+**Current status (21 November 2026, NZ) — VERIFIED read-only.** Point-in-time recovery ENABLED (7 days; earliest version 18 November 2026 19:28 UTC), one daily backup schedule `86b478d6-9a91-49f8-9c55-ff4d183fed3f` with 14-day retention, delete protection ENABLED, database uid `c296a8a4-ff1a-4576-a13a-9ab628a3d430`. **Two scheduled backups exist and are READY:**
+
+| Backup id | Snapshot time (UTC) | Expires (UTC) | State |
+|---|---|---|---|
+| `d05840df-e4ff-489f-ace8-c123630775ef` | 19 November 2026 16:51:15 | 3 December 2026 16:51:15 | READY |
+| `f6e32570-aea9-480c-b5c0-d7aa9d33d9f4` | 20 November 2026 17:01:09 | 4 December 2026 17:01:09 | READY |
+
+The empty list on 19 November was timing: the first scheduled run came about 20 hours after the schedule was created. No TTL policy and no composite index exist on `(default)`. **No restore has been performed.** The restoration verification procedure is [ops/recovery/README.md](../ops/recovery/README.md) — it **replaces step 4 below**, which is kept as written. Routine backup checks: [ops/RUNBOOK.md](../ops/RUNBOOK.md) §1–§2. The verification is still required before commercial customer onboarding and needs its own Product Owner authorisation.
+
+### Restoration verification record
+
+NOT RUN. When the verification is authorised and run, record here: date and operator; backup id and snapshot time; temporary database id and uid; restore start and end; the configuration read in step 4 of the procedure; the HTTP status of the Security Rules check; counts, total and sample hash from both readings; MATCH or the mismatches; deletion time; final checks. Never a sample path, a document id or a field value.
+
+*Status as recorded on 19 November 2026, kept for the record:*
 
 **Current status (19 November 2026).** **ENABLED 18 November 2026 20:27 UTC; VERIFIED read-only 19 November 2026:** point-in-time recovery enabled (7-day window), a daily backup schedule with 14-day retention (`86b478d6…`), database delete protection enabled. **No backup existed yet at that check, so the first READY backup is UNVERIFIED, and the non-production restore test is PENDING** — both are still required before commercial customer onboarding. Read with `gcloud firestore databases describe`, `gcloud firestore backups schedules list` and `gcloud firestore backups list` (read-only). The rest of this section is the procedure as prepared BEFORE it was run and is kept unchanged.
 
@@ -4230,7 +4245,9 @@ proves Storage (steps 7-9) actually landed.
 
 ---
 
-## L2-C Portfolio Report — HOSTING ONLY (ADR-78; DEPLOYED, 20 November 2026 — acceptance partly complete)
+## L2-C Portfolio Report — HOSTING ONLY (ADR-78; DEPLOYED, 20 November 2026 — visual, CSV and PDF acceptance confirmed; access, parity and performance checks OPEN)
+
+**Status update (21 November 2026, NZ).** Visual, CSV and PDF acceptance is confirmed (REPORTED by the Lead Architect). The remaining access (external-role), parity and performance checks of TESTING.md §63 are still OPEN; they are a product acceptance item, not part of L3.
 
 **Status: DEPLOYED.** Merged to `main` as `93db6cc` (VERIFIED in Git). The
 live Hosting release `765058ff63073a4b` (19 November 2026 23:54 UTC) serves
@@ -4273,9 +4290,11 @@ session issues a financial read from the page; or the Dashboard changes.
 
 ---
 
-## GANTT™ core completion — HOSTING ONLY (ADR-79; IMPLEMENTED — NOT DEPLOYED, 20 November 2026)
+## GANTT™ core completion — HOSTING ONLY (ADR-79; LIVE since 20 November 2026 08:52 UTC — Product Owner accepted)
 
-**Status:** implemented on `feature/gantt-core-completion` (uncommitted).
+**Status update (21 November 2026, NZ) — LIVE and Product Owner accepted.** Merged to `main` as `9ce433d` (*Merge GANTT core completion*; feature commit `8e60eb7`) — VERIFIED in Git. Released Hosting-only on 20 November 2026 08:52 UTC: the live bundle `index-Cz4wMhcy.js` is SHA-256-identical to a clean build of `main` `9ce433d` (VERIFIED read-only, 21 November 2026). The three additions — the Lead Architect's G1, G2 and G3 — are Product Owner accepted (REPORTED by the Lead Architect, 21 November 2026; no per-step acceptance record is held here). Certain baseline scenarios were not exercised in the browser and remain a separate product acceptance check. The rest of this section is the release procedure as written before the release and is kept unchanged.
+
+**Status when written (20 November 2026):** implemented on `feature/gantt-core-completion` (uncommitted).
 Not integrated, not released. Release needs its own authorisation.
 
 **What ships.** Frontend only: the schedule attention filter, *Export CSV*
@@ -4338,3 +4357,107 @@ and the list show different activities under a filter; exporting or printing
 writes any document or creates a baseline; another tab's print output
 changes (the Reports tab and the Portfolio share the print rules); or an
 external role reaches the programme.
+
+## L3 Stage 1 — recovery verification, availability check and Final Account failure alert — PREPARED 21 November 2026; NOTHING CREATED, NOTHING RUN
+
+**Status.** Prepared on `chore/l3-recovery-monitoring` (uncommitted). This
+stage adds files and documentation only: no Hosting, Functions, Firestore
+Rules or Storage Rules change, no application code, no dependency. **No
+alert policy, uptime check or database was created, changed or deleted, and
+no restore was run.** Each production action below needs its own Product
+Owner authorisation.
+
+| Part | Where | Production state |
+|---|---|---|
+| Restoration verification procedure and its read-only count script | [ops/recovery/README.md](../ops/recovery/README.md), `ops/recovery/firestore-count-evidence.mjs` | NOT RUN. The script was run read-only against `(default)` on 21 November 2026 to capture the expected counts for backup `f6e32570…` (211 documents, 44 collection groups) |
+| Uptime check on `app.constrap.com` and its alert policy | `ops/monitoring/l3-app-availability.uptime-check.json`, `ops/monitoring/l3-app-availability.policy.json` | NOT CREATED |
+| Alert on `approveFinalAccount` server failures | `ops/monitoring/l3-final-account-callable-failure.policy.json` | NOT CREATED |
+| Operations runbook | [ops/RUNBOOK.md](../ops/RUNBOOK.md) | In force once merged |
+
+Specification, limits and cost of the three monitoring files:
+[ops/monitoring/README.md](../ops/monitoring/README.md) → *L3 files*.
+
+### Public response confirmed (read-only, 21 November 2026)
+
+`GET https://app.constrap.com/` → HTTP 200, `text/html`, about 0.2 s from
+the operator's machine; the body contains `<div id="root"></div>`; the
+certificate (Google Trust Services) is valid to 8 February 2027 and is
+renewed by Firebase Hosting; `http://` answers 301 to `https://`.
+
+### Creating the monitoring — NOT AUTHORISED YET
+
+Run from the repository root, signed in as a project owner. Order matters:
+the check first, then the policy that reads it.
+
+1. Read the existing channels (names and state only) and set the two
+   variables. The two channels are the project's only ones and are reused;
+   their display names keep the historical "DC46" prefix (renaming a
+   channel is a separate production change and is not proposed).
+
+   ```
+   export P=constrapp-69b5d
+   curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+     "https://monitoring.googleapis.com/v3/projects/$P/notificationChannels?fields=notificationChannels(name,displayName,type,enabled)"
+   export L3_CHANNEL_PO="projects/constrapp-69b5d/notificationChannels/<id of DC46 - Product Owner>"
+   export L3_CHANNELS_BOTH="$L3_CHANNEL_PO,projects/constrapp-69b5d/notificationChannels/<id of DC46 - Billing Administrator>"
+   ```
+
+   Recommended: availability to **both** channels (a billing lapse is one
+   of its causes); the Final Account failure to the **Product Owner**
+   channel only. The architect may choose both for each.
+
+2. Create the uptime check from its file (the Monitoring REST API;
+   `gcloud monitoring uptime create` takes flags, not a file):
+
+   ```
+   curl -s -X POST -H "Authorization: Bearer $(gcloud auth print-access-token)" -H "Content-Type: application/json" \
+     "https://monitoring.googleapis.com/v3/projects/$P/uptimeCheckConfigs" \
+     -d @ops/monitoring/l3-app-availability.uptime-check.json
+   gcloud monitoring uptime list-configs --project "$P"
+   ```
+
+   Record the returned `name`. Wait about 15 minutes, then confirm in
+   Cloud Monitoring → Uptime checks that every location passes. **If any
+   location fails on a healthy site, stop and report: do not create the
+   policy.**
+
+3. Create the two policies:
+
+   ```
+   gcloud monitoring policies create --project "$P" \
+     --policy-from-file=ops/monitoring/l3-app-availability.policy.json \
+     --notification-channels="$L3_CHANNELS_BOTH"
+   gcloud monitoring policies create --project "$P" \
+     --policy-from-file=ops/monitoring/l3-final-account-callable-failure.policy.json \
+     --notification-channels="$L3_CHANNEL_PO"
+   ```
+
+4. Verify read-only: `gcloud monitoring policies list --project "$P" --format='table(displayName,enabled,notificationChannels.len())'`
+   shows five enabled policies (A, B, C and the two new ones); compare each
+   new policy with its file. No incident should be open.
+
+5. Record the names, times and what was verified under *Monitoring release
+   record* below, and correct the status lines in this section,
+   `ops/monitoring/README.md`, `ops/RUNBOOK.md` and the handover.
+
+Neither new condition can be exercised without causing a real failure, so
+neither will have fired on its real condition. Email delivery through these
+channels was exercised on 16 November 2026 (*DC46-C monitoring readiness* →
+*Delivery test*); it is not repeated here.
+
+**Rollback.** `gcloud monitoring policies delete <policy name> --project "$P"`
+for either policy; `gcloud monitoring uptime delete <check id> --project "$P"`
+for the check (delete its policy first). Nothing else depends on them.
+
+### Monitoring release record
+
+NOT CREATED.
+
+### Operational incident log
+
+One dated entry per alert that opens and per manual finding, in the form
+set out in [ops/RUNBOOK.md](../ops/RUNBOOK.md) §7. Earlier incidents are
+recorded where they were written: *Billing interruption* (12–13 November
+2026) under DC46-C.
+
+No entries yet.
