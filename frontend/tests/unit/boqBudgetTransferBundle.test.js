@@ -165,21 +165,27 @@ describe('the browser surface', () => {
   const modal = read('src/pages/project/boq/BoqBudgetTransferModal.jsx')
   const hook = read('src/hooks/useBoqBudgetTransfer.jsx')
   const actions = read('src/lib/boqBudgetTransferActions.js')
+  const review = read('src/lib/boqTransferReview.js')
 
   it('the page and the dialog import no Firebase code; the call lives in the hook', () => {
-    for (const src of [page, modal, actions]) expect(src).not.toMatch(/from ['"]firebase/)
+    for (const src of [page, modal, actions, review]) expect(src).not.toMatch(/from ['"]firebase/)
     expect(hook).toContain("httpsCallable(functions, 'transferBoqToBudget'")
     expect(hook).not.toMatch(/firebase\/firestore/)
   })
   it('the request the browser builds carries no amount', () => {
     expect(actions).toContain('call({ projectId, reviewKey, setToZero: normaliseZeroChoices(setToZero) })')
-    expect(modal).toContain('{ reviewKey: proposal.reviewKey, setToZero: zeroChoices }')
+    // L4 correction: the dialog builds the request through the confirmation
+    // check, which returns only these two fields.
+    expect(modal).toContain('transferRequestToSend({ pending, reviewKey: proposal.reviewKey, zeroChoices, confirmedFor })')
+    expect(review).toContain('return { reviewKey, setToZero: normaliseZeroChoices(zeroChoices) }')
   })
   it('the dialog uses the shared write-outcome controller, requires confirmation, and starts with nothing set to zero', () => {
     expect(modal).toContain("useWriteAction('BOQ to budget transfer')")
-    expect(modal).toContain('<WriteFeedback write={write} />')
+    expect(modal).toContain('<WriteFeedback write={write} acknowledgeLabel={TRANSFER_UNCERTAIN_ACK_LABEL} />')
     expect(modal).toContain('useState(() => new Set())')
-    expect(modal).toMatch(/summary\.operationCount > 0 && confirmed/)
+    // Confirmation is bound to the exact request (L4 correction).
+    expect(modal).toContain('operationCount: summary.operationCount, confirmedFor, currentKey')
+    expect(review).toContain('return operationCount > 0 && isConfirmationCurrent(confirmedFor, currentKey)')
     expect(modal).toContain('disabled={!canSubmit}')
   })
   it('no browser hook writes a BOQ-sourced line', () => {
