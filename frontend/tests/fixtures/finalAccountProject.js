@@ -60,7 +60,11 @@ export const readyProject = () => ({
   variations: [
     { id: 'v1', variationNumber: 'CV-0001', variationType: 'client', status: 'approved', approvedSubtotal: 2000, lineItems: [] },
   ],
-  forecastLines: [],
+  // Every cost code is forecast: a saved 0 (ADR-43) — "reviewed, nothing left".
+  forecastLines: [
+    { id: 'cc1', costCodeId: 'cc1', costCodeName: '03-100 — Concrete', uncommittedCostToComplete: 0, notes: '' },
+    { id: 'cc2', costCodeId: 'cc2', costCodeName: '03-200 — Formwork', uncommittedCostToComplete: 0, notes: '' },
+  ],
   supplierPayments: [
     { id: 'pay1', paymentNumber: 'SP-0001', status: 'posted', supplierId: 'sup1', supplierName: 'Ace Concrete',
       paymentDate: '2026-10-02', amount: 5200, allocatedTotal: 5000, unallocatedAmount: 200,

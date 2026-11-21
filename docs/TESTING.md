@@ -8763,6 +8763,63 @@ exact payment approved); live versus revision labels in the component, the
 whole page and the CSV; the two corrected notes; draft views labelled
 *Proposed final …* and never *Final …*; the unapplied-variation requirement
 worded in forecast-cost terms.
+### 62b. C1-A production acceptance and the forecast-readiness correction (22 November 2026) — positive-path acceptance PASSED in production (Lead Architect); correction IMPLEMENTED on `fix/c1a-final-account-forecast-readiness`, automated tests PASS (emulators), NOT DEPLOYED, production retest PENDING
+
+**Production acceptance (22 November 2026; sandbox *C1-A Final Account
+Acceptance — TEST*, `oeqHCgEM3GsB9ZKtifZb`, Company Admin session).** F3, F4,
+F7, F8 (approved by a Company Admin — Project Manager approval NOT TESTED in
+the browser), F9, F10, F11, F12, F13 (formula protection exercised on the
+Reference field, no `=` cost code exists; not opened in a spreadsheet), F17:
+PASS. F14: print rules verified in the live page; the native print dialog and
+a PDF file NOT TESTED. F5, F6, F15, F16: NOT TESTED (no QS, second-user or
+restricted session; F15 excluded) — emulator coverage only. Revision 1
+withdrawn; revisions 2 and 3 approved; revision 2 byte-identical after a
+later posted invoice and after revision 3; audit events
+`9gXkKE81Y3sFZkNmPJ3o` and `GN3FfErV84h7mojSMp47`. The sandbox stays in
+production and contributes to the Portfolio totals; do not delete or modify it.
+
+**Defect found.** With two budgeted cost codes never forecast, *Cost to
+complete is zero* read Met and *Prepare* was enabled (observed before the
+zero forecasts were saved). Cause: the gate tested the cost-to-complete
+amount only; an unforecast code contributes zero.
+
+**Correction.** A new requirement, *Every cost code has a saved forecast*
+(`forecastIncomplete`), in `lib/finalAccount.js` — the one module the browser
+and the callable share (FINANCIAL_WORKFLOWS.md → *Forecast completeness*). No
+Rules change (`firestore.rules` 232,776 bytes, unchanged).
+
+**Automated (local emulators — not production-verified):** lint 0 / 0
+(frontend and Functions); unit **100 files / 5,190 tests** (5,174 before);
+Functions pure **5 / 130**; Functions emulator **10 files / 303 tests** (295
+before); Rules **36 / 2,336** (unchanged, re-run because the shared fixture
+changed); `functions:calc:check`, `functions:transfer-calc:check` and
+`rules:transitional:check` clean; build clean; `git diff --check` clean.
+
+| Suite | New coverage |
+|---|---|
+| `tests/unit/finalAccount.test.js` (+13) | No forecast on a budgeted code; no forecast line at all; explicit 0; a blank (null) line; a positive amount (cost to complete, not completeness); mixed coverage incl. an unbudgeted code with cost; more than five named; unreadable / loading sources; a forecast missing after the draft (figures agree, readiness refuses); no draft from incomplete records; an approved revision untouched; no second copy of the rule |
+| `tests/unit/finalAccountPage.test.js` (+2) | The requirement, the named codes and the fix rendered, *Prepare* disabled; *Approve* disabled on a draft whose forecast went missing |
+| `tests/unit/finalAccountBundle.test.js` (2 variants) | Server bundle equal to the source for unforecast and partly forecast projects |
+| `tests/functions/finalAccount.approve.test.js` (+8) | Refusal by name with no forecast line, with mixed coverage, with a forecast cleared or removed after the draft; a positive amount refused as cost to complete; explicit 0 approved; a clear racing the approval is serialised; an approved revision unchanged and replayed without a write |
+
+The shared *ready* fixture now carries a saved 0 on both cost codes.
+
+**Release (NOT DONE).** One callable, then Hosting: (1)
+`firebase deploy --only functions:team:approveFinalAccount` — the eight team
+callables, the worker and `transferBoqToBudget` are NOT redeployed; (2)
+Hosting. No Rules publish. Between the two steps the old browser bundle may
+show *Prepare* enabled for an incomplete forecast; the callable already
+refuses the approval.
+
+**Production retest after release (sandbox only; NOT RUN).**
+
+| # | Step | Expected |
+|---|---|---|
+| R1 | Open the sandbox Final Account (all forecasts are saved 0) | *Every cost code has a saved forecast* — Met; *Prepare revision 4* enabled |
+| R2 | On the Forecast tab clear the 0300 input and save; reopen Final Account | The requirement is Not met and names *0300 — Concrete*; *Prepare* disabled; *Cost to complete is zero* still Met |
+| R3 | Restore 0 on 0300; prepare revision 4; clear 0300 again; open the draft | *Approve* disabled: the current records do not meet the readiness requirements |
+| R4 | (Server proof, optional — needs a client that still sends the request) | `final-account-not-ready` with `forecastIncomplete`; emulator coverage otherwise |
+| R5 | Restore 0 on 0300; withdraw or approve revision 4 | Readiness all Met; revisions 2 and 3 unchanged (compare `updateTime`) |
 
 ---
 

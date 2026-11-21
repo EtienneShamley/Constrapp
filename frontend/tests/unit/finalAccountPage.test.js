@@ -97,6 +97,26 @@ describe('ProjectFinalAccount renders every state', () => {
     expect(html).toContain('A draft can be prepared once every requirement below is met.')
   })
 
+  it('a budgeted cost code with NO saved forecast: the requirement is Not met, the code is named with its fix, Prepare is disabled', () => {
+    use(p => { p.forecastLines = [] })
+    const html = render()
+    expect(html).toContain('Every cost code has a saved forecast')
+    expect(html).toContain('2 of 2 not forecast: 03-100 — Concrete, 03-200 — Formwork')
+    expect(html).toContain('Enter 0 where no further cost is expected')
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Prepare Final Account<\/button>/)
+    // Cost to complete itself is a genuine zero and still reads Met.
+    expect(html).toMatch(/Cost to complete is zero<span[^>]*>Met<\/span>/)
+  })
+
+  it('a forecast that goes missing after the draft: Approve is disabled although no figure differs', () => {
+    S.accounts = [revision(1, 'draft')]
+    use(p => { p.forecastLines[0].uncommittedCostToComplete = null })
+    const html = render()
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Approve<\/button>/)
+    expect(html).toContain('The current records do not meet the readiness requirements.')
+    expect(html).not.toContain('Current records:')
+  })
+
   it('an over-allocated client invoice: the requirement is Not met, the invoice is named, Prepare is disabled; an existing draft cannot be approved', () => {
     const over = (p) => p.clientReceipts.push({ id: 'cr2', receiptNumber: 'CR-0002', status: 'posted', clientId: 'c1', receiptDate: '2026-10-20', amount: 2700, allocatedTotal: 2700, unallocatedAmount: 0, allocations: [{ clientInvoiceId: 'ci1', allocatedAmount: 2700 }] })
     use(over)

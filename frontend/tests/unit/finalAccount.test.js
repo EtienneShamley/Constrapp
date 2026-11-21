@@ -317,6 +317,135 @@ describe('the readiness gate', () => {
   })
 })
 
+// ── 2a. Forecast completeness (C1-A correction; ADR-43 Decision 2, ADR-67 Decision 6) ──
+//
+// "Cost to complete is zero" cannot tell a reviewed 0 from a cost code nobody
+// forecast: an unforecast code contributes zero. Missing forecasts are their
+// own requirement, judged on the same rows the Forecast tab lists.
+
+describe('forecast completeness is a readiness requirement of its own', () => {
+  const noLine = (id) => (p) => { p.forecastLines = p.forecastLines.filter(f => f.id !== id) }
+
+  it('NO forecast on a budgeted cost code: not ready, the code is named, and the figures are untouched', () => {
+    const r = compute(mutate(noLine('cc1')))
+    expect(r.ready).toBe(false)
+    expect(blockerCodes(r)).toEqual([BLOCKER.FORECAST_INCOMPLETE])
+    expect(r.blockers[0].detail).toBe('1 of 2 not forecast: 03-100 — Concrete')
+    expect(r.unforecastCostCodes).toEqual([{ costCodeId: 'cc1', costCodeName: '03-100 — Concrete' }])
+    // The defect: cost to complete is still a clean zero — only the new requirement catches it.
+    expect(r.partialFigures.costToComplete).toBe(0)
+    expect(r.figures).toEqual(EXPECTED_FIGURES)
+    const row = readinessChecklist(r).find(c => c.code === BLOCKER.FORECAST_INCOMPLETE)
+    expect(row).toMatchObject({ state: 'blocked', label: 'Every cost code has a saved forecast' })
+    expect(row.fix).toContain('Forecast tab')
+    expect(row.fix).toContain('a saved 0 is a forecast')
+    expect(readinessChecklist(r).find(c => c.code === BLOCKER.COST_TO_COMPLETE).state).toBe('ok')
+  })
+
+  it('NO forecast line at all (the production reproduction): every budgeted code is named', () => {
+    const r = compute(mutate(p => { p.forecastLines = [] }))
+    expect(r.ready).toBe(false)
+    expect(blockerCodes(r)).toEqual([BLOCKER.FORECAST_INCOMPLETE])
+    expect(r.blockers[0].detail).toBe('2 of 2 not forecast: 03-100 — Concrete, 03-200 — Formwork')
+  })
+
+  it('an EXPLICIT forecast of 0 on every code is complete: ready, with the expected figures', () => {
+    const r = compute()
+    expect(r.blockers).toEqual([])
+    expect(r.ready).toBe(true)
+    expect(r.unforecastCostCodes).toEqual([])
+    expect(r.figures).toEqual(EXPECTED_FIGURES)
+  })
+
+  it('a line that exists but holds a blank (null) input is NOT a forecast', () => {
+    for (const blank of [null, undefined]) {
+      const r = compute(mutate(p => { p.forecastLines[1].uncommittedCostToComplete = blank }))
+      expect(blockerCodes(r)).toEqual([BLOCKER.FORECAST_INCOMPLETE])
+      expect(r.blockers[0].detail).toBe('1 of 2 not forecast: 03-200 — Formwork')
+    }
+  })
+
+  it('a POSITIVE cost to complete is forecast — it fails "cost to complete is zero", not completeness', () => {
+    const r = compute(mutate(p => { p.forecastLines[0].uncommittedCostToComplete = 100 }))
+    expect(blockerCodes(r)).toEqual([BLOCKER.COST_TO_COMPLETE])
+    expect(r.unforecastCostCodes).toEqual([])
+    expect(r.partialFigures.costToComplete).toBe(100)
+  })
+
+  it('MIXED coverage: a zero, a positive and two missing codes — both requirements fail and only the missing are named', () => {
+    const r = compute(mutate(p => {
+      p.costCodes.push({ id: 'cc3', code: '04-100', name: 'Masonry', isActive: true }, { id: 'cc4', code: '05-100', name: 'Steel', isActive: true })
+      p.forecastLines[0].uncommittedCostToComplete = 0          // cc1 — reviewed, nothing left
+      p.forecastLines[1].uncommittedCostToComplete = 250        // cc2 — cost still to come
+      // cc3 — cost incurred, never forecast (an unbudgeted code is in the union too)
+      p.supplierInvoices.push({ ...p.supplierInvoices[0], id: 'inv3', invoiceNumber: 'SI-0003', poId: null, source: 'direct_po',
+        lineItems: [{ costCodeId: 'cc3', costCodeName: '04-100 — Masonry', amount: 40, taxCode: 'gst', gstAmount: 4 }],
+        retention: 0, retentionGst: 0, retentionTotal: 0, subtotal: 40, gstTotal: 4, grossTotal: 44, net: 40, payableGst: 4, payableTotal: 44 })
+      // cc4 — a forecast line saved with a blank input
+      p.forecastLines.push({ id: 'cc4', costCodeId: 'cc4', costCodeName: '05-100 — Steel', uncommittedCostToComplete: null })
+    }))
+    expect(blockerCodes(r)).toEqual([BLOCKER.FORECAST_INCOMPLETE, BLOCKER.COST_TO_COMPLETE])
+    expect(r.unforecastCostCodes.map(c => c.costCodeId)).toEqual(['cc3', 'cc4'])
+    expect(r.blockers[0].detail).toBe('2 of 4 not forecast: 04-100 — Masonry, 05-100 — Steel')
+  })
+
+  it('more than five missing codes: five are named, the count is exact', () => {
+    const r = compute(mutate(p => {
+      p.forecastLines = []
+      for (let i = 3; i <= 8; i += 1) p.forecastLines.push({ id: `cc${i}`, costCodeId: `cc${i}`, costCodeName: `Z${i}`, uncommittedCostToComplete: null })
+    }))
+    expect(r.blockers[0].detail).toMatch(/^8 of 8 not forecast: /)
+    expect(r.blockers[0].detail.endsWith(', …')).toBe(true)
+    expect(r.blockers[0].detail.split(', ')).toHaveLength(6)
+  })
+
+  it('unreadable or loading sources never report a forecast as missing — they report the source', () => {
+    const states = settledSourceStates()
+    const failed = compute(mutate(p => { p.forecastLines = [] }), { ...states, forecastLines: { loading: false, error: true } })
+    expect(blockerCodes(failed)).toEqual([BLOCKER.SOURCES])
+    expect(failed.unforecastCostCodes).toEqual([])
+    const loading = compute(mutate(p => { p.forecastLines = [] }), { ...states, forecastLines: { loading: true, error: false } })
+    expect(blockerCodes(loading)).toEqual([BLOCKER.SOURCES])
+  })
+
+  it('a forecast that goes missing AFTER the draft: the figures still agree, so only readiness stops the approval', () => {
+    const c = compute()
+    const built = buildFinalAccountDraft({ computation: c, number: 1, input: { reason: 'Works complete', reference: '', acknowledged: true }, currencyCode: 'AUD', preparedByName: 'Quin QS' })
+    expect(built.ok).toBe(true)
+    const draft = { ...built.payload, status: 'draft', revision: 1 }
+    const later = compute(mutate(p => { p.forecastLines[0].uncommittedCostToComplete = null }))
+    expect(draftAgreesWith(draft, later)).toBe(true)                 // no figure moved …
+    expect(finalAccountDifferences(draft, later).changed).toBe(false)
+    expect(later.ready).toBe(false)                                  // … so the readiness gate is the guard
+    expect(blockerCodes(later)).toEqual([BLOCKER.FORECAST_INCOMPLETE])
+  })
+
+  it('a draft cannot be built from records with a missing forecast', () => {
+    const built = buildFinalAccountDraft({ computation: compute(mutate(p => { p.forecastLines = [] })), number: 1,
+      input: { reason: 'Works complete', reference: '', acknowledged: true }, currencyCode: 'AUD', preparedByName: 'Quin QS' })
+    expect(built.ok).toBe(false)
+  })
+
+  it('an APPROVED revision is untouched: it is compared, never re-gated, and its stored content does not change', () => {
+    const approved = stored()
+    const before = JSON.stringify(approved)
+    const later = compute(mutate(p => { p.forecastLines = [] }))
+    const diff = finalAccountDifferences(approved, later)
+    expect(diff.comparable).toBe(true)
+    expect(diff.changed).toBe(false)
+    expect(JSON.stringify(approved)).toBe(before)
+    expect(finalAccountHistory([approved]).current.number).toBe(1)
+  })
+
+  it('the page and the checklist carry no separate copy of the rule', () => {
+    const lib = stripComments(read('src/lib/finalAccount.js'))
+    expect(lib).toContain("import { projectForecastRows } from './margin'")
+    expect(lib).toMatch(/forecastRows\.filter\(r => r\.unforecasted\)/)
+    const page = stripComments(read('src/pages/project/ProjectFinalAccount.jsx'))
+    expect(page).not.toMatch(/unforecasted|uncommittedCostToComplete/)
+  })
+})
+
 // ── 3. Draft payload and size ────────────────────────────────────────────────
 
 describe('the draft payload', () => {

@@ -3966,6 +3966,7 @@ const BLOCKER = {
 	DRAFT_CREDIT_NOTES: "draftCreditNotes",
 	DRAFT_RELEASES: "draftReleases",
 	OVER_ALLOCATED: "overAllocatedInvoices",
+	FORECAST_INCOMPLETE: "forecastIncomplete",
 	COST_TO_COMPLETE: "costToComplete",
 	FIGURES: "figures",
 	SIZE: "size"
@@ -4047,6 +4048,11 @@ const READINESS_CHECKS = [
 		fix: "An issued client invoice has more receipt allocated to it than its gross value. Correct the receipt allocation on the Client Receipts tab (void the receipt and re-enter it) so no invoice is over-allocated. Nothing is reallocated automatically."
 	},
 	{
+		code: BLOCKER.FORECAST_INCOMPLETE,
+		label: "Every cost code has a saved forecast",
+		fix: "Save an Uncommitted Cost to Complete for each cost code named here on the Forecast tab. Enter 0 where no further cost is expected — a saved 0 is a forecast; a blank is not."
+	},
+	{
 		code: BLOCKER.COST_TO_COMPLETE,
 		label: "Cost to complete is zero",
 		fix: "Close out remaining commitment (a closing supplier variation on each under-run purchase order line) and set every uncommitted cost to complete to zero on the Forecast tab."
@@ -4095,7 +4101,7 @@ function computeFinalAccount({ project = null, currencyCode, sources = {}, sourc
 		currencyCode
 	});
 	const budgetApproved = budgetSource.kind === BUDGET_SOURCE.APPROVED;
-	const totals = projectForecastTotals({
+	const forecastRows = projectForecastRows({
 		costCodes,
 		budgetLines: budgetLinesFor(budgetSource),
 		purchaseOrders,
@@ -4105,6 +4111,11 @@ function computeFinalAccount({ project = null, currencyCode, sources = {}, sourc
 		variations,
 		forecastLines
 	});
+	const totals = forecastRollups(forecastRows);
+	const unforecast = forecastRows.filter((r) => r.unforecasted).map((r) => ({
+		costCodeId: String(r.costCodeId),
+		costCodeName: String(r.costCodeName ?? "")
+	})).sort((a, b) => a.costCodeName.localeCompare(b.costCodeName));
 	const finalContractSum = pick(report.summary, "currentContractSum");
 	const control = contractControl(clientInvoices, finalContractSum);
 	const receivables = receivablesSummary(clientInvoices, clientReceipts);
@@ -4190,6 +4201,10 @@ function computeFinalAccount({ project = null, currencyCode, sources = {}, sourc
 			const names = overAllocated.slice(0, 5).map((r) => r.invoiceNumber || r.id).join(", ");
 			block(BLOCKER.OVER_ALLOCATED, `${overAllocated.length} over-allocated: ${names}${overAllocated.length > 5 ? ", …" : ""}`);
 		}
+		if (unforecast.length > 0) {
+			const names = unforecast.slice(0, 5).map((r) => r.costCodeName || r.costCodeId).join(", ");
+			block(BLOCKER.FORECAST_INCOMPLETE, `${unforecast.length} of ${forecastRows.length} not forecast: ${names}${unforecast.length > 5 ? ", …" : ""}`);
+		}
 		if (raw.costToComplete === null || toCents$1(raw.costToComplete) !== 0 || rowsOpen > 0 || raw.finalCost === null || raw.actualCost === null || toCents$1(raw.finalCost) !== toCents$1(raw.actualCost)) block(BLOCKER.COST_TO_COMPLETE);
 		if (!figuresValid) block(BLOCKER.FIGURES);
 		if (rows.length > FINAL_ACCOUNT_LIMITS.ROWS) block(BLOCKER.SIZE, `${rows.length} cost codes`);
@@ -4210,6 +4225,7 @@ function computeFinalAccount({ project = null, currencyCode, sources = {}, sourc
 			counts: Object.fromEntries(FINAL_ACCOUNT_COUNTED_SOURCES.map((s) => [s, (sources[s] ?? []).length]))
 		},
 		blockers,
+		unforecastCostCodes: sourcesReady ? unforecast : [],
 		ready: blockers.length === 0,
 		openItems: figures ? openItemsOf(figures) : []
 	};
