@@ -75,6 +75,13 @@ export const FILE_LINK_WORKER_SERVICE_ACCOUNT = defineString('FILE_LINK_WORKER_S
 // and functions/test/finalAccount.test.js pins that.
 export const FINAL_ACCOUNT_APPROVAL_ENABLED = defineBoolean('FINAL_ACCOUNT_APPROVAL_ENABLED', { default: false })
 
+// ADR-81 (L4) — the transferBoqToBudget callable. `false` + a redeploy of
+// that function makes it answer `boq-transfer-disabled` before any read; BOQ
+// items, budget lines and every approved budget version are unaffected.
+// The default is FALSE — fail closed, exactly as the flag above — and every
+// project file states it explicitly (functions/test/boqBudget.test.js).
+export const BOQ_BUDGET_TRANSFER_ENABLED = defineBoolean('BOQ_BUDGET_TRANSFER_ENABLED', { default: false })
+
 // One region, matching the Firestore location (docs/DEPLOYMENT.md → Functions).
 export const REGION = 'australia-southeast1'
 

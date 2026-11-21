@@ -26,6 +26,9 @@ import { writeSelection } from '../../lib/quantSelection'
 import BoqItemEditorModal from './boq/BoqItemEditorModal'
 import BoqItemVoidModal from './boq/BoqItemVoidModal'
 import BoqQuantityApplyModal from './boq/BoqQuantityApplyModal'
+import BoqBudgetTransferModal from './boq/BoqBudgetTransferModal'
+import { useBoqBudgetTransfer } from '../../hooks/useBoqBudgetTransfer'
+import { canTransferBoqToBudget } from '../../lib/boqBudgetTransfer'
 
 // ── Bill of Quantities ───────────────────────────────────────────────────────
 //
@@ -34,7 +37,12 @@ import BoqQuantityApplyModal from './boq/BoqQuantityApplyModal'
 // (Budgeted, Committed, Actual, Invoiced, Forecast, Margin, and Cash Flow are
 // untouched); the only derived output is the read-time BOQ-vs-Approved-Budget
 // comparison on this page (lib/boq.js, ADR-32 Part 1). Estimating (margin /
-// overheads) and BOQ → Budget transfer are later branches.
+// overheads) is a later branch.
+//
+// L4 (ADR-81): "Transfer to budget" opens a review dialog whose ONLY effect is
+// a call to the trusted `transferBoqToBudget` callable. That writes WORKING
+// budget lines (one per cost code, server-computed); this page writes none,
+// and no approved budget version is changed by a transfer.
 //
 // Quant 1B (ADR-52): this page also reads the project's takeoff measurements,
 // takeoff pages and drawings so an active item with LINKED measurements offers
@@ -94,8 +102,9 @@ function SummaryCards({ totals, budgetTotal, budgetLoading, budgetUnavailable, b
         </div>
       </div>
       <p className="m-0 mt-3 text-[11px] text-brand-muted">
-        Ex-GST, derived at read time. The BOQ is measurement provenance only — it never changes the Approved
-        Budget or any committed, actual, forecast, margin, or cash-flow figure.
+        Ex-GST, derived at read time. The BOQ never changes the Approved Budget or any committed, actual, forecast,
+        margin, or cash-flow figure. Transfer to budget writes working budget lines only, which are approved
+        separately on the Budget tab.
       </p>
     </Card>
   )
@@ -194,6 +203,11 @@ export default function ProjectBoq() {
   const [voiding, setVoiding] = useState(null)      // item | null
   const [applying, setApplying] = useState(null)    // item id | null — resolved to the LIVE item on every render
   const [showVoided, setShowVoided] = useState(false)
+  // L4 (ADR-81): the transfer review dialog. The call is the hook's; the
+  // proposal is built in the dialog from the registers this page already holds.
+  const [transferring, setTransferring] = useState(false)
+  const { transferBoqToBudget } = useBoqBudgetTransfer(mid)
+  const canTransfer = canTransferBoqToBudget(profile?.role)
 
   // Active linked measurements per item — the "(n)" on the Quant action.
   const linkedCounts = useMemo(() => {
@@ -317,6 +331,11 @@ export default function ProjectBoq() {
         </div>
         <div className="flex items-center gap-2">
           {noCostCodes && <Btn variant="ghost" sm onClick={goToCostCodes}>Go to Cost Codes</Btn>}
+          {canTransfer && (
+            <Btn variant="ghost" sm onClick={() => setTransferring(true)} disabled={boqItemsLoading || boqItemsError}>
+              Transfer to budget
+            </Btn>
+          )}
           <Btn sm onClick={() => setEditing('new')} disabled={costCodesLoading || costCodesError || costCodes.length === 0}>
             + Add BOQ Item
           </Btn>
@@ -447,6 +466,20 @@ export default function ProjectBoq() {
           onClose={() => setApplying(null)}
           onApply={(item, change) => applyBoqQuantity(item, change)}
           onOpenInQuant={openInQuant}
+        />
+      )}
+      {transferring && (
+        <BoqBudgetTransferModal
+          boqItems={boqItems}
+          budgetLines={budgetLines}
+          costCodes={costCodes}
+          currencyCode={currencyCode}
+          sourcesLoading={boqItemsLoading || budgetLinesLoading || costCodesLoading}
+          sourcesError={boqItemsError || budgetLinesError || costCodesError}
+          budgetApproved={budgetApproved}
+          approvedCaption={approvedVersionCaption(budgetSource)}
+          onTransfer={transferBoqToBudget}
+          onClose={() => setTransferring(false)}
         />
       )}
     </div>

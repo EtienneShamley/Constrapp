@@ -2,11 +2,12 @@ import { onCall } from 'firebase-functions/https'
 import { onSchedule } from 'firebase-functions/scheduler'
 import * as logger from 'firebase-functions/logger'
 import { getDb, getAdminAuth, getBucket } from './lib/firebaseAdmin.js'
-import { EMAIL_API_KEY, REGION, FILE_LINK_WORKER_SERVICE_ACCOUNT, FINAL_ACCOUNT_APPROVAL_ENABLED, readConfig, readFileLinkConfig } from './lib/params.js'
+import { EMAIL_API_KEY, REGION, FILE_LINK_WORKER_SERVICE_ACCOUNT, FINAL_ACCOUNT_APPROVAL_ENABLED, BOQ_BUDGET_TRANSFER_ENABLED, readConfig, readFileLinkConfig } from './lib/params.js'
 import { runScheduledWorker } from './lib/fileLinkRevocation.js'
 import { selectEmailAdapter } from './lib/email.js'
 import { createTeamHandlers, HANDLER_NAMES } from './team/handlers.js'
 import { createFinalAccountHandlers } from './finalAccount/handlers.js'
+import { createBoqBudgetHandlers } from './boqBudget/handlers.js'
 
 // ── Constrapp trusted backend — team management (ADR-72) ─────────────────────
 //
@@ -110,6 +111,45 @@ export const approveFinalAccount = onCall(FINAL_ACCOUNT_CALL_OPTIONS, async (req
       logger.info('final account call refused', { code: err.details.code, uid: request.auth?.uid ?? null })
     } else {
       logger.error('final account call failed', { uid: request.auth?.uid ?? null, message: err?.message, stack: err?.stack })
+    }
+    throw err
+  }
+})
+
+// ── BOQ → working budget transfer (ADR-81) — the SECOND financial callable ───
+//
+// The second narrowly scoped exception to "no financial logic in Functions":
+// a priced BOQ becomes WORKING budget lines through a transaction that reads
+// the complete BOQ, budget-line and cost-code registers itself
+// (boqBudget/transfer.js). It never writes an approved budget version. Same
+// region and App Check enforcement; NO secret is bound; the Final Account's
+// memory and time, because it too reads whole registers in one transaction.
+// Authorisation is in the handler: an active company_admin, project_manager
+// or qs of the project's company.
+export const BOQ_TRANSFER_CALL_OPTIONS = {
+  region: REGION,
+  enforceAppCheck: true,
+  maxInstances: 5,
+  memory: '512MiB',
+  timeoutSeconds: 120,
+}
+
+let boqBudgetHandlers = null
+
+export const transferBoqToBudget = onCall(BOQ_TRANSFER_CALL_OPTIONS, async (request) => {
+  boqBudgetHandlers ??= createBoqBudgetHandlers({
+    db: getDb(),
+    now: () => new Date(),
+    log: logger,
+    config: () => ({ enabled: BOQ_BUDGET_TRANSFER_ENABLED.value() }),
+  })
+  try {
+    return await boqBudgetHandlers.transferBoqToBudget(request)
+  } catch (err) {
+    if (err?.details?.code) {
+      logger.info('boq transfer call refused', { code: err.details.code, uid: request.auth?.uid ?? null })
+    } else {
+      logger.error('boq transfer call failed', { uid: request.auth?.uid ?? null, message: err?.message, stack: err?.stack })
     }
     throw err
   }

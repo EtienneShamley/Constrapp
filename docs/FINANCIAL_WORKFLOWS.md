@@ -1599,7 +1599,7 @@ feature's design sprint (order: [ROADMAP.md](../ROADMAP.md)). Nothing below is a
 shipped guarantee; all commercial figures will follow the read-time-derivation and
 cost-code-spine invariants when built.
 
-### BOQ *(implemented — foundation)* and Estimating *(planned)*
+### BOQ *(implemented — foundation; transfer to budget: ADR-81)* and Estimating *(planned)*
 
 The **BOQ foundation is implemented** (ADR-32 Part 1): a per-project measured
 schedule at `…/projects/{id}/boqItems` — description, quantity, unit, a
@@ -1609,8 +1609,10 @@ rules-enforced). **`rate: null` means unpriced** — an unpriced item contribute
 nothing to any total and suppresses the budget variance; 0 is a price.
 Lifecycle `active → void` (terminal, reasoned), rules-enforced; delete blocked.
 
-**The BOQ feeds no financial figure.** It never writes onto Budget Lines and
-never enters Committed, Actual, Invoiced, Forecast, Margin, or Cash Flow. Its
+**The BOQ feeds no financial figure by itself.** No BOQ write touches a Budget
+Line, and the BOQ never enters Committed, Actual, Invoiced, Forecast, Margin,
+or Cash Flow. Since ADR-81 an explicit, reviewed *Transfer to budget* (below)
+is the only way BOQ totals become working budget lines. Its
 only derived output is the read-time **BOQ vs Approved Budget** comparison on
 the BOQ page (`lib/boq.js`): per cost code over the union of both sides,
 `variance = Budgeted − BOQ` (positive ⇒ BOQ under budget), with the variance
@@ -1618,9 +1620,61 @@ the BOQ page (`lib/boq.js`): per cost code over the union of both sides,
 any contributing item is unpriced.
 
 **Still planned (Estimating):** applying margin/overheads to produce an
-estimate, and the **BOQ → Budget transfer** into budget lines. The cost code
-remains the join from measurement all the way to budget. Manual quantity entry
-precedes any AI takeoff.
+estimate. The cost code remains the join from measurement all the way to
+budget. Manual quantity entry precedes any AI takeoff.
+
+### BOQ → working budget transfer (L4, ADR-81 — IMPLEMENTED, NOT DEPLOYED)
+
+The one hop that was missing. *Transfer to budget* on the BOQ tab turns each
+cost code's priced BOQ total into ONE **working** budget line. It does not
+approve anything.
+
+```
+boqItems (active, priced)
+  → per-cost-code total, whole cents          lib/boqBudgetTransfer.js
+  → review dialog (browser)                   reviewKey, set-to-zero choices
+  → transferBoqToBudget (trusted callable)    recomputes from its own reads
+  → budgetLines/boq-{costCodeId}              WORKING lines
+  → Prepare approval → Approve                existing SHIELD (ADR-70 / ADR-71)
+  → approvedBudget/current                    every report reads this
+```
+
+**Amounts.** A cost code's amount is Σ of its active items' stored `amount`
+(the Rules-pinned `quantity × rate`), added in integer cents. Ex-GST. No
+margin, overhead or contingency is applied — there is no estimating module.
+
+**Per cost code, exactly one of:**
+
+| State | When | Effect |
+|---|---|---|
+| Create | No budget line on the code | New line at the BOQ amount |
+| Refresh | A BOQ-sourced line that differs from the BOQ | `budgeted` set to the BOQ amount |
+| Unchanged | A BOQ-sourced line already equal | Nothing |
+| BOQ items void | Every transferred item on the code is now void | Nothing, unless *Set this line to zero* is ticked |
+| Blocked | An unpriced item (a zero rate is a price); an unusable item; a currency other than the project's; a missing or inactive cost code; a manual line on the code | Nothing; the reason is shown |
+
+A blocked code never stops the others. A manual line is never merged with,
+overwritten by, or doubled beside a BOQ line.
+
+**What a transfer moves:** working `budgeted` on the transferred codes, and
+therefore — only while NO version is approved — Budgeted, Remaining, Variance
+to Budget and the BOQ and tender comparisons, exactly as a manual budget edit
+does (ADR-39).
+
+**What it does not move:** the Approved Budget once a version exists (the
+transfer appears as a pending difference on the Budget tab until a new version
+is approved); Committed, Claimed, Actual, Invoiced; Forecast Final Cost;
+Margin; Cash Flow. It writes no PO, claim, invoice, variation, forecast line,
+approval, snapshot or adjustment.
+
+**Re-approval after a transfer** follows ADR-71 unchanged: a new version
+replaces the current adjusted approved budget and supersedes its approved
+adjustments, behind the existing acknowledgement.
+
+**Reconciliation at any time** is the read-time *BOQ vs Approved Budget* table
+on the BOQ tab and the transfer dialog itself; neither is stored. The line's
+`boqSource.latest` records what the last transfer wrote, and the Budget tab
+flags a line whose amount was changed by hand afterwards.
 
 ### Quant™ 1A — measurement provenance *(live in production — October 2026; ADR-51)*
 

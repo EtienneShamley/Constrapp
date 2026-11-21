@@ -39,9 +39,12 @@ export const CALC_BUNDLE_HEADER = [
   '',
 ].join('\n')
 
-export async function buildCalcBundle() {
+// One entry module → one self-contained ESM chunk under `header`. Shared with
+// scripts/build-boq-transfer-bundle.mjs (ADR-81) so both server copies are
+// produced the same way.
+export async function buildBundle(entry, header) {
   const bundle = await rolldown({
-    input: CALC_ENTRY,
+    input: entry,
     cwd: FRONTEND,
     platform: 'node',
     treeshake: true,
@@ -50,11 +53,13 @@ export async function buildCalcBundle() {
   try {
     const { output } = await bundle.generate({ format: 'esm', minify: false, sourcemap: false })
     if (output.length !== 1) throw new Error(`expected ONE output chunk, got ${output.length}`)
-    return CALC_BUNDLE_HEADER + output[0].code.replace(/\r\n/g, '\n')
+    return header + output[0].code.replace(/\r\n/g, '\n')
   } finally {
     await bundle.close()
   }
 }
+
+export const buildCalcBundle = () => buildBundle(CALC_ENTRY, CALC_BUNDLE_HEADER)
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   const built = await buildCalcBundle()
