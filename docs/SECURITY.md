@@ -3522,7 +3522,7 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     otherwise.
 
 48. **BOQ → working budget transfer — what Rules, the callable and the Admin
-    SDK can and cannot guarantee (ADR-81, L4 — IMPLEMENTED, NOT DEPLOYED).**
+    SDK can and cannot guarantee (ADR-81, L4 — LIVE, production-accepted 22 November 2026).**
     *Rules-enforced:* no client may create a budget line whose id starts
     `boq-` or that carries `boqSource`; no client may add, change or remove
     `boqSource` on any line (the existing update allow-list); reads and

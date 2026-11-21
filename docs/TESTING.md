@@ -9119,7 +9119,9 @@ that is not a whole minute, and has no default database.
 returns 200; any count differs; the delete names anything but the temporary
 database; or cleanup fails (ops/recovery/README.md → *If cleanup fails*).
 
-## 66. L3 Stage 2 — application error recovery (ADR-80, 21 November 2026) — IMPLEMENTED on `fix/l3-application-error-recovery` (uncommitted); automated tests PASS; NOT DEPLOYED; browser behaviour NOT VERIFIED
+## 66. L3 Stage 2 — application error recovery (ADR-80, 21 November 2026) — LIVE (released with the L4 Hosting deploy from `main` `a30699e`, which contains `b7f825f`; REPORTED, 22 November 2026); automated tests PASS; E1–E10 browser acceptance NOT RECORDED
+
+*As written on 21 November 2026:* IMPLEMENTED on `fix/l3-application-error-recovery` (uncommitted); automated tests PASS; NOT DEPLOYED; browser behaviour NOT VERIFIED.
 
 **What changed.** (1) The project route no longer says *Project not found.* when the projects read failed, was refused or has only been answered from the local cache. (2) A reusable write-outcome helper (`lib/writeOutcome.js`, `hooks/useWriteAction.jsx`, `components/WriteFeedback.jsx`, `components/UnconfirmedWrites.jsx`) applied to the three money registers: Client Invoices, Client Receipts and Supplier Payments (nine writes). No Rules, Functions, data-hook, formula or dependency change.
 
@@ -9160,7 +9162,9 @@ ESLint: clean. Production build: succeeds. `git diff --check`: clean. The Rules 
 
 **Remaining write sites (not changed).** 42 files with 58 hand-rolled `setSaving(true)` states (pinned in `writeOutcome.test.js`), plus `setBusy` in Team Settings, Accept Invite and the PULSE acknowledgement panel. They behave as before: a plain write made offline leaves the dialog on *Saving…*, and raw SDK text can appear. Suggested order for a later rollout: Supplier Invoices, Purchase Orders, Progress Claims and Variations (create and edit); Retention Releases and Cash Flow lines; Budget and Forecast; then documents, RFIs, programme and settings. Dialogs built on the `*Actions.js` modules already map errors but still wait without limit.
 
-## 67. L4 — BOQ → working budget transfer (ADR-81, 21 November 2026) — DEPLOYED (`main` `a30699e`; REPORTED by the Lead Architect); production browser acceptance 22 November 2026: 13 of 16 PASS, T16 partly exercised, T9 and T14 NOT TESTED in production; acceptance UX correction IMPLEMENTED on `fix/l4-transfer-acceptance` (uncommitted), NOT DEPLOYED
+## 67. L4 — BOQ → working budget transfer (ADR-81, 21 November 2026) — CLOSED: LIVE and production-accepted (REPORTED by the Lead Architect, 22 November 2026); acceptance UX correction LIVE and PASSED; browser gaps T9, T14, the Quant step of T16 and a real disconnection remain (emulator coverage retained)
+
+*As written before closure:* DEPLOYED (`main` `a30699e`; REPORTED by the Lead Architect); production browser acceptance 22 November 2026: 13 of 16 PASS, T16 partly exercised, T9 and T14 NOT TESTED in production; acceptance UX correction IMPLEMENTED on `fix/l4-transfer-acceptance` (uncommitted), NOT DEPLOYED.
 
 **Automated — PASS (run locally, 21 November 2026).**
 
@@ -9225,6 +9229,19 @@ Callable logs for the run: 8 requests, all HTTP 200; 7 `boq_budget.transferred` 
 - Tests: `tests/unit/boqTransferReview.test.js` (22) — initial confirmation required; only the matching key submits; an asynchronous BOQ change invalidates it and a submit before any reset sends nothing; reconfirmation sends the new key; unchanged snapshots keep it; set-to-zero invalidates it; the uncertain wording claims neither failure nor success; the copy; the server bundle and Functions do not import the module. Two pins in `boqBudgetTransferBundle.test.js` were updated to the new, stricter form.
 
 To accept the correction after its Hosting release: in the sandbox, open *Transfer to budget* with a change pending, tick, change that BOQ item in a second tab — the tick clears and *Apply* is disabled until ticked again; tick a set-to-zero after confirming — the tick clears; read the singular wording on a one-change review and the named unpriced item on a blocked row.
+
+**L4 closure record — 22 November 2026 (REPORTED by the Lead Architect and the Product Owner; not re-read from production in this revision).**
+
+| Item | State |
+|---|---|
+| L4 BOQ → working budget transfer | **LIVE** |
+| Azure CI on `main` and the production deployment (Rules, the one callable, Hosting) | **PASSED** |
+| Production financial acceptance (above) | **PASSED** |
+| Acceptance UX correction (merged as `d90e21f`, `main` `74c2a6f` — VERIFIED in Git) and its final confirmation-UX checks | **PASSED** |
+| SHIELD approved versions 1 and 2 in the sandbox | **VERIFIED** (row T11, T13 above) |
+| Browser gaps that remain | T9 server stale-review refusal not reproduced; T14 restricted-role check not performed; the Quant apply step of T16 not performed; a real network disconnection not tested |
+| Coverage of those gaps | The existing Functions-emulator and Rules-emulator tests are RETAINED as the evidence; no production run covers them |
+| L4 Acceptance Sandbox (`3OyBieoY4QHAfQsxBH8T`) | **RETAINED in production**; it contributes to the company Portfolio totals. Do not delete or modify it without a separate authorisation |
 
 **Manual acceptance (after all three release steps; a TEST project, not customer data).**
 

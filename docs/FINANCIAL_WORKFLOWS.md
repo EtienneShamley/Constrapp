@@ -1623,7 +1623,7 @@ any contributing item is unpriced.
 estimate. The cost code remains the join from measurement all the way to
 budget. Manual quantity entry precedes any AI takeoff.
 
-### BOQ → working budget transfer (L4, ADR-81 — IMPLEMENTED, NOT DEPLOYED)
+### BOQ → working budget transfer (L4, ADR-81 — LIVE, production-accepted 22 November 2026)
 
 The one hop that was missing. *Transfer to budget* on the BOQ tab turns each
 cost code's priced BOQ total into ONE **working** budget line. It does not
