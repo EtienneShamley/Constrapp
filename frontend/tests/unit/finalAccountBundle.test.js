@@ -33,6 +33,8 @@ const VARIANTS = {
   unappliedSupplierVariation: p => p.variations.push({ id: 'va', variationType: 'supplier', status: 'approved', approvedSubtotal: 50, lineItems: [{ costCodeId: 'cc1', approvedAmount: 50 }] }),
   openClaim: p => p.progressClaims.push({ id: 'cl', status: 'submitted', poId: 'po1', lineItems: [{ costCodeId: 'cc1', poLineIndex: 0, claimedThisPeriod: 10 }] }),
   unpostedInvoice: p => p.supplierInvoices.push({ ...p.supplierInvoices[0], id: 'inv2', status: 'draft' }),
+  unforecast: p => { p.forecastLines = [] },
+  partlyForecast: p => { p.forecastLines[1].uncommittedCostToComplete = null },
   costToComplete: p => p.forecastLines.push({ id: 'cc1', costCodeId: 'cc1', uncommittedCostToComplete: 100.1 }),
   openCommitment: p => { p.purchaseOrders[0].lineItems[1].lineTotal = 2600.55 },
   creditNote: p => p.supplierCreditNotes.push({

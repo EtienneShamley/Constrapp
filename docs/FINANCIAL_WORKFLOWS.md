@@ -2458,9 +2458,35 @@ awaiting its invoice · no unposted supplier invoice · no draft client invoice,
 receipt, payment, credit note or retention release · **no issued client
 invoice with more receipt allocated to it than its gross value** (whole-cent
 comparison; corrected by the user on the Client Receipts tab, never
-reallocated automatically) · cost to complete zero on every cost code. A purchase order under-run leaves Remaining Committed open
+reallocated automatically) · **every cost code has a saved forecast** · cost to complete zero on every cost code. A purchase order under-run leaves Remaining Committed open
 (a closed PO does not release it, ADR-55): it is closed out with a negative
 supplier variation applied to the line (ADR-62), never by editing the PO.
+
+**Forecast completeness (C1-A correction, 22 November 2026 — IMPLEMENTED on
+`fix/c1a-final-account-forecast-readiness`, NOT DEPLOYED).** *Cost to
+complete is zero* cannot tell "reviewed, nothing left" from "never
+forecast": a cost code with no saved Uncommitted Cost to Complete contributes
+zero. Completeness is therefore a requirement of its own
+(`forecastIncomplete`), with the existing definition (ADR-43 Decision 2,
+ADR-67 Decision 6):
+
+| State of a cost code's forecast | Readiness |
+|---|---|
+| No forecast line, or a line whose input is blank (null) | **Not met** — *Every cost code has a saved forecast*; the code is named |
+| A saved **0** | Met — a saved 0 is a forecast |
+| A saved amount above zero | Forecast is complete; *Cost to complete is zero* is Not met |
+
+The cost codes that must be forecast are the rows the Forecast tab lists
+(`projectForecastRows`, lib/margin.js): every code with an approved-budget
+line, commitment, actual cost, an approved or pending supplier variation, or
+a forecast line. No figure, formula or stored field changed; an approved
+revision is never re-evaluated. Enforcement: the browser gate is UX only; the
+`approveFinalAccount` callable applies the same module to the forecast lines
+it reads inside the approval transaction and refuses with
+`final-account-not-ready` (`blockers: ['forecastIncomplete']`). Security
+Rules cannot enforce it on draft creation (a rule cannot query the forecast
+and budget registers), so a draft remains untrusted until approval — as
+ADR-77 already states.
 
 **Why an over-allocated invoice blocks.** *Client invoices outstanding* is the
 sum of the POSITIVE balances of issued invoices; an over-allocated invoice's

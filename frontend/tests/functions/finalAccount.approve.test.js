@@ -277,6 +277,8 @@ describe('readiness is judged from the records the server reads', () => {
     ['a draft progress claim', 'openClaims', async () => base().collection('progressClaims').doc('c9').set({ status: 'draft', poId: 'po1', lineItems: [], createdAt: A.Timestamp.now() })],
     ['an unposted supplier invoice', 'unpostedInvoices', async () => base().collection('supplierInvoices').doc('i9').set({ status: 'draft', poId: 'po1', lineItems: [], createdAt: A.Timestamp.now() })],
     ['a cost to complete entered on the forecast', 'costToComplete', async () => base().collection('forecastLines').doc('cc1').set({ costCodeId: 'cc1', uncommittedCostToComplete: 100 })],
+    ['a saved forecast CLEARED after the draft (no figure changes)', 'forecastIncomplete', async () => base().collection('forecastLines').doc('cc1').update({ uncommittedCostToComplete: null })],
+    ['a forecast line REMOVED after the draft', 'forecastIncomplete', async () => base().collection('forecastLines').doc('cc2').delete()],
     ['the approved budget pointer removed', 'budget', async () => base().collection('approvedBudget').doc('current').delete()],
     ['the contract value removed', 'contract', async () => base().collection('commercial').doc('baseline').delete()],
     ['a receipt over-allocating an issued client invoice by one cent', 'overAllocatedInvoices', async () => base().collection('clientReceipts').doc('r8').set({ status: 'posted', receiptDate: '2026-10-20', amount: 2200.01, allocatedTotal: 2200.01, unallocatedAmount: 0, allocations: [{ clientInvoiceId: 'ci1', invoiceNumber: 'CI-0001', allocatedAmount: 2200.01 }], createdAt: A.Timestamp.now() })],
@@ -333,6 +335,82 @@ describe('readiness is judged from the records the server reads', () => {
 })
 
 // ── Lifecycle guards ─────────────────────────────────────────────────────────
+
+// ── Forecast completeness (C1-A correction) ──────────────────────────────────
+//
+// The server judges completeness from the forecast lines IT reads in the
+// approval transaction. A draft is client-written and untrusted: one that was
+// prepared (or forged) while a budgeted cost code had no saved forecast must
+// never be approved, although every figure in it agrees with the records.
+
+describe('forecast completeness is enforced by the server', () => {
+  // A draft whose figures match the records exactly, written for a project
+  // that has NO forecast line — what an old client or a forged write produces.
+  const seedUnforecast = async (clear) => {
+    const data = await seedProject()                 // seeded complete, so the draft builds …
+    await seedDraft(data)
+    await clear()                                    // … then the forecasts are removed
+  }
+
+  it('NO forecast line on any budgeted code: refused by name, the draft stays a draft, no audit event', async () => {
+    await seedUnforecast(async () => { for (const id of ['cc1', 'cc2']) await base().collection('forecastLines').doc(id).delete() })
+    const err = await expectTeamError(call('u_pm', ok()), A.CODE.FINAL_ACCOUNT_NOT_READY)
+    expect(err.details.blockers).toEqual(['forecastIncomplete'])
+    expect((await faDoc(1)).status).toBe('draft')
+    expect(await audits()).toHaveLength(0)
+  })
+
+  it('MIXED coverage — one code a saved 0, one never forecast: refused', async () => {
+    await seedUnforecast(async () => base().collection('forecastLines').doc('cc2').delete())
+    const err = await expectTeamError(call('u_admin', ok()), A.CODE.FINAL_ACCOUNT_NOT_READY)
+    expect(err.details.blockers).toEqual(['forecastIncomplete'])
+    expect((await faDoc(1)).status).toBe('draft')
+  })
+
+  it('a POSITIVE forecast is refused as cost to complete, not as a missing forecast', async () => {
+    await seedUnforecast(async () => base().collection('forecastLines').doc('cc1').update({ uncommittedCostToComplete: 75 }))
+    const err = await expectTeamError(call('u_pm', ok()), A.CODE.FINAL_ACCOUNT_NOT_READY)
+    expect(err.details.blockers).toEqual(['costToComplete'])
+  })
+
+  it('an EXPLICIT 0 on every code is complete: approved, and restoring a cleared forecast makes the same draft approvable', async () => {
+    await seedUnforecast(async () => base().collection('forecastLines').doc('cc1').update({ uncommittedCostToComplete: null }))
+    await expectTeamError(call('u_pm', ok()), A.CODE.FINAL_ACCOUNT_NOT_READY)
+    await base().collection('forecastLines').doc('cc1').update({ uncommittedCostToComplete: 0 })
+    expect((await call('u_pm', ok())).status).toBe('approved')
+    expect((await faDoc(1)).figures).toEqual(EXPECTED_FIGURES)
+    expect(await audits()).toHaveLength(1)
+  })
+
+  it('a forecast cleared WHILE the approval is in flight is ordered against it: never an approval over an unseen clear', async () => {
+    const { outcome, write, account } = await raceApprovalAgainst(() => base().collection('forecastLines').doc('cc1').update({ uncommittedCostToComplete: null }))
+    if (outcome.approved) {
+      // Serialised: approved on complete forecasts; the clear committed strictly after.
+      expect(account.data().status).toBe('approved')
+      expect(write.time.valueOf() > account.updateTime.valueOf()).toBe(true)
+    } else {
+      // Or the retry saw the clear and refused.
+      expect(outcome.e.details).toMatchObject({ code: A.CODE.FINAL_ACCOUNT_NOT_READY, blockers: ['forecastIncomplete'] })
+      expect(account.data().status).toBe('draft')
+      expect(await audits()).toHaveLength(0)
+    }
+  })
+
+  it('an APPROVED revision is immutable: forecasts cleared afterwards change nothing, and a replayed request writes nothing', async () => {
+    await seedDraft(await seedProject())
+    await call('u_pm', ok())
+    const before = await faRef(1).get()
+    for (const id of ['cc1', 'cc2']) await base().collection('forecastLines').doc(id).delete()
+    const replay = await call('u_pm', ok())
+    expect(replay).toMatchObject({ status: 'approved', alreadyApproved: true })
+    const after = await faRef(1).get()
+    expect(after.updateTime.isEqual(before.updateTime)).toBe(true)
+    expect(after.data()).toEqual(before.data())
+    expect(await audits()).toHaveLength(1)
+    // A different approver gets "not a draft" — never a re-evaluation.
+    await expectTeamError(call('u_admin', ok()), A.CODE.FINAL_ACCOUNT_NOT_DRAFT)
+  })
+})
 
 describe('lifecycle guards', () => {
   let data
@@ -598,6 +676,7 @@ describe('limits, measured', () => {
         const id = `x${String(i).padStart(4, '0')}`
         p.costCodes.push({ id, code: `90-${String(i).padStart(4, '0')}`, name: `Extra code ${i} ${'n'.repeat(120)}`, isActive: true })
         p.budgetApprovalSnapshots[0].entries.push({ lineId: `l${id}`, costCodeId: id, costCodeName: `90-${String(i).padStart(4, '0')} — Extra code ${i} ${'n'.repeat(120)}`, budgeted: 1.25 })
+        p.forecastLines.push({ id, costCodeId: id, uncommittedCostToComplete: 0 })   // every budgeted code is forecast
       }
       const total = 7000 + extraCodes * 1.25
       p.budgetApprovalSnapshots[0].entryCount = 2 + extraCodes
@@ -620,6 +699,11 @@ describe('limits, measured', () => {
       id: `p${String(i).padStart(4, '0')}`, paymentNumber: `SP-${1000 + i}`, status: 'posted', supplierId: 'sup1', supplierName: 'Ace Concrete',
       paymentDate: '2026-10-03', amount: 1, allocatedTotal: 0, unallocatedAmount: 1, allocations: [],
     }))
+    for (let start = 2; start < data.forecastLines.length; start += 400) {
+      const batch = A.db.batch()
+      data.forecastLines.slice(start, start + 400).forEach(({ id, ...rest }, i) => batch.set(base().collection('forecastLines').doc(id), { ...rest, createdAt: at(start + i) }))
+      await batch.commit()
+    }
     for (let start = 0; start < payments.length; start += 400) {
       const batch = A.db.batch()
       payments.slice(start, start + 400).forEach(({ id, ...rest }, i) => batch.set(base().collection('supplierPayments').doc(id), { ...rest, createdAt: at(10 + start + i) }))
@@ -684,7 +768,7 @@ describe('the callable as deployed (Functions emulator)', () => {
     const refused = await callFunction('approveFinalAccount', ok(), { idToken })
     expect(refused.status).toBe(400)
     expect(refused.error).toMatchObject({ status: 'FAILED_PRECONDITION', details: { code: 'final-account-not-ready', blockers: ['costToComplete'] } })
-    await base().collection('forecastLines').doc('cc1').delete()
+    await base().collection('forecastLines').doc('cc1').set({ costCodeId: 'cc1', uncommittedCostToComplete: 0 })
     const done = await callFunction('approveFinalAccount', ok(), { idToken })
     expect(done.status).toBe(200)
     expect(done.result).toMatchObject({ number: 1, revision: 2, status: 'approved', alreadyApproved: false })

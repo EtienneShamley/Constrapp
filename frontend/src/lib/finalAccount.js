@@ -2,7 +2,8 @@ import { roundMoney } from './purchaseOrders'
 import { toCents } from './payments'
 import { buildCommercialReport, REPORT_SOURCES, REPORT_SOURCE_LABELS } from './commercialReport'
 import { FIGURE_STATE } from './projectSnapshot'
-import { projectForecastTotals } from './margin'
+import { projectForecastRows } from './margin'
+import { forecastRollups } from './forecast'
 import { resolveBudgetSource, budgetLinesFor, approvedVersionCaption, BUDGET_SOURCE } from './budgetApproval'
 import { contractControl, draftClientInvoices } from './clientInvoices'
 import { receivablesSummary, receiptSummary } from './clientReceipts'
@@ -137,6 +138,7 @@ export const BLOCKER = {
   DRAFT_CREDIT_NOTES:   'draftCreditNotes',
   DRAFT_RELEASES:       'draftReleases',
   OVER_ALLOCATED:       'overAllocatedInvoices',
+  FORECAST_INCOMPLETE:  'forecastIncomplete',
   COST_TO_COMPLETE:     'costToComplete',
   FIGURES:              'figures',
   SIZE:                 'size',
@@ -159,6 +161,7 @@ export const READINESS_CHECKS = [
   { code: BLOCKER.DRAFT_CREDIT_NOTES,   label: 'No draft supplier credit notes',           fix: 'Post or void each draft credit note.' },
   { code: BLOCKER.DRAFT_RELEASES,       label: 'No draft retention releases',              fix: 'Post or void each draft retention release.' },
   { code: BLOCKER.OVER_ALLOCATED,       label: 'No over-allocated issued client invoices', fix: 'An issued client invoice has more receipt allocated to it than its gross value. Correct the receipt allocation on the Client Receipts tab (void the receipt and re-enter it) so no invoice is over-allocated. Nothing is reallocated automatically.' },
+  { code: BLOCKER.FORECAST_INCOMPLETE,  label: 'Every cost code has a saved forecast',     fix: 'Save an Uncommitted Cost to Complete for each cost code named here on the Forecast tab. Enter 0 where no further cost is expected — a saved 0 is a forecast; a blank is not.' },
   { code: BLOCKER.COST_TO_COMPLETE,     label: 'Cost to complete is zero',                 fix: 'Close out remaining commitment (a closing supplier variation on each under-run purchase order line) and set every uncommitted cost to complete to zero on the Forecast tab.' },
   { code: BLOCKER.FIGURES,              label: 'Every figure is a valid amount',           fix: 'A figure could not be calculated from the records. Check SHIELD for integrity findings.' },
   { code: BLOCKER.SIZE,                 label: 'Within the size of one record',            fix: 'This project has more cost codes than one Final Account record can hold.' },
@@ -211,10 +214,21 @@ export function computeFinalAccount({ project = null, currencyCode, sources = {}
     currencyCode,
   })
   const budgetApproved = budgetSource.kind === BUDGET_SOURCE.APPROVED
-  const totals = projectForecastTotals({
+  // The forecast rows at the SAVED input — the exact rows the Forecast tab
+  // lists and the Commercial Report rolls up (lib/margin.js). A cost code in
+  // this union with no saved Uncommitted Cost to Complete is UNFORECAST
+  // (ADR-43 Decision 2, ADR-67 Decision 6: a saved 0 is a forecast, a blank
+  // is not). It contributes zero to Cost to complete, so "cost to complete is
+  // zero" alone cannot tell "reviewed, nothing left" from "never reviewed" —
+  // the unforecast codes are a readiness requirement of their own.
+  const forecastRows = projectForecastRows({
     costCodes, budgetLines: budgetLinesFor(budgetSource), purchaseOrders, progressClaims,
     supplierInvoices, supplierCreditNotes, variations, forecastLines,
   })
+  const totals = forecastRollups(forecastRows)
+  const unforecast = forecastRows.filter(r => r.unforecasted)
+    .map(r => ({ costCodeId: String(r.costCodeId), costCodeName: String(r.costCodeName ?? '') }))
+    .sort((a, b) => a.costCodeName.localeCompare(b.costCodeName))
 
   const finalContractSum = pick(report.summary, 'currentContractSum')
   const control = contractControl(clientInvoices, finalContractSum)
@@ -305,6 +319,10 @@ export function computeFinalAccount({ project = null, currencyCode, sources = {}
       const names = overAllocated.slice(0, 5).map(r => r.invoiceNumber || r.id).join(', ')
       block(BLOCKER.OVER_ALLOCATED, `${overAllocated.length} over-allocated: ${names}${overAllocated.length > 5 ? ', …' : ''}`)
     }
+    if (unforecast.length > 0) {
+      const names = unforecast.slice(0, 5).map(r => r.costCodeName || r.costCodeId).join(', ')
+      block(BLOCKER.FORECAST_INCOMPLETE, `${unforecast.length} of ${forecastRows.length} not forecast: ${names}${unforecast.length > 5 ? ', …' : ''}`)
+    }
     if (raw.costToComplete === null || toCents(raw.costToComplete) !== 0 || rowsOpen > 0
       || raw.finalCost === null || raw.actualCost === null || toCents(raw.finalCost) !== toCents(raw.actualCost)) block(BLOCKER.COST_TO_COMPLETE)
     if (!figuresValid) block(BLOCKER.FIGURES)
@@ -329,6 +347,7 @@ export function computeFinalAccount({ project = null, currencyCode, sources = {}
     rows,
     provenance,
     blockers,
+    unforecastCostCodes: sourcesReady ? unforecast : [],
     ready: blockers.length === 0,
     openItems: figures ? openItemsOf(figures) : [],
   }
