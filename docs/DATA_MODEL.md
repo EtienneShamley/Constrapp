@@ -461,9 +461,9 @@ One allocation of project budget against a company cost code.
 | `notes` | string | Editable; ≤ 2000 chars |
 | `createdAt` / `createdBy` | timestamp / uid | Immutable (rules-enforced) |
 | `updatedAt` / `updatedBy` | timestamp / uid | Written on edit; **rules-verified** against the caller and `request.time` |
-| `boqSource` | map, optional | **L4 (ADR-81 — IMPLEMENTED, NOT DEPLOYED).** Present ONLY on a BOQ-sourced line, written ONLY by the trusted `transferBoqToBudget` callable. Rules refuse it on every client create and freeze it on every client update. See *BOQ-sourced lines* below |
+| `boqSource` | map, optional | **L4 (ADR-81 — LIVE since 22 November 2026).** Present ONLY on a BOQ-sourced line, written ONLY by the trusted `transferBoqToBudget` callable. Rules refuse it on every client create and freeze it on every client update. See *BOQ-sourced lines* below |
 
-### BOQ-sourced lines (L4, ADR-81 — IMPLEMENTED, NOT DEPLOYED)
+### BOQ-sourced lines (L4, ADR-81 — LIVE, production-accepted 22 November 2026)
 
 A line created by the BOQ transfer has the deterministic id
 **`boq-{costCodeId}`** — at most one per cost code — and the same fields as a

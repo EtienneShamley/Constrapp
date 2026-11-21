@@ -4495,9 +4495,16 @@ recorded where they were written: *Billing interruption* (12–13 November
 
 No entries yet.
 
-## L3 Stage 2 — application error recovery — HOSTING ONLY (ADR-80; IMPLEMENTED 21 November 2026 — NOT DEPLOYED)
+## L3 Stage 2 — application error recovery — HOSTING ONLY (ADR-80; LIVE — released with the L4 Hosting deploy)
 
-Branch `fix/l3-application-error-recovery` (uncommitted). Client code only: no Firestore or Storage Rules, no Functions, no index, no environment value, no dependency.
+**Status (22 November 2026):** LIVE. Merged to `main` as `b7f825f`. It
+reached production in the L4 Hosting release, built from `main` `a30699e`,
+which contains `b7f825f`. The ancestry is VERIFIED in Git; the deployment
+is REPORTED passed by the Lead Architect (*L4* below). No separate Stage 2
+deploy was made. TESTING.md §66 E1–E10 browser acceptance is not recorded.
+The text below is kept as written on 21 November 2026.
+
+*As written (IMPLEMENTED 21 November 2026 — NOT DEPLOYED):* Branch `fix/l3-application-error-recovery` (uncommitted). Client code only: no Firestore or Storage Rules, no Functions, no index, no environment value, no dependency.
 
 **Release, when authorised:** architect review → merge to `main` → CI green → one Hosting deploy from a clean `main` build (`firebase deploy --only hosting`). Nothing else is deployed. No ordering constraint with any other component.
 
@@ -4505,10 +4512,18 @@ Branch `fix/l3-application-error-recovery` (uncommitted). Client code only: no F
 
 **Rollback:** Firebase Console → Hosting → release history → roll back to the previous release. No data is migrated or reshaped by this change, so a rollback needs no data step.
 
-**Release record:** NOT DEPLOYED.
+**Release record:** released with the L4 Hosting deploy (`main` `a30699e`; REPORTED, 22 November 2026 — see the status above). *As written:* NOT DEPLOYED.
 
-## L4 — BOQ → working budget transfer release order — ADR-81 — MERGE, AZURE GREEN, RULES, ONE callable, HOSTING (IMPLEMENTED 21 November 2026 — NOT DEPLOYED)
+## L4 — BOQ → working budget transfer release order — ADR-81 — MERGE, AZURE GREEN, RULES, ONE callable, HOSTING (LIVE — production-accepted 22 November 2026)
 
+**Status (22 November 2026, REPORTED by the Lead Architect):** L4 is LIVE
+and CLOSED. Azure CI on `main` and every release step below passed; the
+production financial acceptance and the acceptance UX correction (merged as
+`d90e21f`, `main` `74c2a6f`) passed. Remaining browser gaps and the retained
+sandbox: TESTING.md §67 → *L4 closure record*. The procedure below is kept
+as written for the release.
+
+*As written for the release (21 November 2026, IMPLEMENTED — NOT DEPLOYED):*
 Branch `feature/l4-boq-budget-transfer` (uncommitted). Three components
 change: Firestore Rules (the `budgetLines` create rule), ONE new callable
 (`transferBoqToBudget`) and the Hosting bundle. No Storage Rules, index,
