@@ -1,7 +1,19 @@
 # ops/recovery — Firestore restoration verification
 
-**Status: PREPARED 21 November 2026. NOT RUN. No restore has ever been
-performed for Constrap.** Every step that creates or deletes a database
+**Status: RUN ONCE, SUCCESSFULLY (recorded 21 November 2026).** The 20
+November 2026 backup was restored into the temporary database
+`restore-verify-20261120-2329`; an unauthenticated request to it returned
+403; all 44 collection groups (211 documents) and the sample document hash
+matched. That temporary database no longer exists, and production
+`(default)` remains protected (delete protection and point-in-time recovery
+enabled). The exact time and mechanism of the temporary database's deletion
+were not established. The check compares counts and one document hash; it
+does not compare every document's contents. Record: docs/DEPLOYMENT.md →
+*Restoration verification record*.
+
+**The procedure below is kept unchanged for future runs — every warning
+still applies, and a past success authorises nothing.** Use a NEW temporary
+database id each time; never reuse `restore-verify-20261120-2329`. Every step that creates or deletes a database
 needs explicit Product Owner authorisation for that sitting. Nothing here
 runs in CI.
 

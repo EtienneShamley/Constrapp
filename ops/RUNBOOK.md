@@ -9,8 +9,15 @@ approval first. Detailed procedures live where they always have:
 [ops/recovery/README.md](recovery/README.md) (restore verification).
 
 **Status, 21 November 2026:** the DC46 worker policies A, B and C are live.
-The two L3 policies and the uptime check in `ops/monitoring/` are PREPARED,
-NOT CREATED. The restore verification is PREPARED, NOT RUN.
+The L3 uptime check on `app.constrap.com` and the two L3 alert policies
+are CREATED and enabled (uptime alert `15559930914799323534`; Final Account
+5xx alert `9683374685335961795`); their notification channels are
+connected. **Actual alert delivery has NOT been tested** — neither alert has
+fired. The Firestore restore verification was RUN ONCE, SUCCESSFULLY (44
+collection groups / 211 documents and one sample hash matched; it did not
+compare every document's contents); the temporary database no longer
+exists and `(default)` remains protected. Records: DEPLOYMENT.md → *L3
+Stage 1*.
 
 ```
 export P=constrapp-69b5d
@@ -55,7 +62,7 @@ A missed day is a reduced margin, not a data loss.
 ## 3. The uptime check on app.constrap.com is failing
 
 Alert: *L3 app.constrap.com: HTTPS check failing from two or more locations
-for 10 minutes* (once created). The check requests `https://app.constrap.com/`
+for 10 minutes* (policy `15559930914799323534`). The check requests `https://app.constrap.com/`
 every 5 minutes from Google's checker locations and passes only on HTTP 200,
 a valid certificate, a reply within 10 seconds and the application shell in
 the body. **A passing check proves the static page is served. It does not
@@ -79,7 +86,8 @@ dig +short app.constrap.com
 
 ## 4. approveFinalAccount failed
 
-Alert: *L3 approveFinalAccount: server failure (5xx)* (once created). It
+Alert: *L3 approveFinalAccount: server failure (5xx)* (policy
+`9683374685335961795`). It
 counts only HTTP 5xx from the Cloud Run service `approvefinalaccount`.
 Refusals are 4xx and are not counted: no sign-in or App Check token (401),
 wrong role (403), not ready or figures changed (400), stale or busy (409).

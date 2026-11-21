@@ -3,6 +3,8 @@ import { useOutletContext, useNavigate } from 'react-router-dom'
 import Card from '../../components/Card'
 import Btn from '../../components/Btn'
 import Badge from '../../components/Badge'
+import WriteFeedback from '../../components/WriteFeedback'
+import { useWriteAction } from '../../hooks/useWriteAction'
 import { formatCurrency } from '../../lib/formatters'
 import { roundMoney } from '../../lib/purchaseOrders'
 import { useProfile } from '../../hooks/useProfile'
@@ -107,8 +109,7 @@ function InvoiceEditorModal({
       : [blankLine()],
   )
   const [acknowledged, setAcknowledged] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState(null)
+  const write = useWriteAction('Client invoice draft')
 
   const client = clientContacts.find(c => c.id === clientId) ?? null
   const terms  = client?.paymentTerms ?? null
@@ -198,35 +199,27 @@ function InvoiceEditorModal({
   const noNegative = builtLines.every(l => l.amount >= 0)
   const valid = hasClient && !!invoiceDate && hasAmount && allDescribed && noNegative && (!needsAck || acknowledged)
 
-  async function handleSubmit(e) {
+  function handleSubmit(e) {
     e.preventDefault()
     if (!valid) return
-    setSaving(true)
-    setError(null)
-    try {
-      await onSave({
-        clientId,
-        clientName:      client?.displayName || '',
-        clientLegalName: client?.legalName || '',
-        clientAbn:       client?.abn || '',
-        clientEmail:     client?.email || '',
-        clientPhone:     client?.phone || '',
-        clientAddress:   client?.address || null,
-        clientRef,
-        externalInvoiceReference: externalRef,
-        description,
-        periodEnding,
-        invoiceDate,
-        dueDate,
-        paymentTerms: terms,
-        lineItems: builtLines,
-        notes,
-      })
-      onClose()
-    } catch (err) {
-      setError(err?.message || 'Failed to save. Check your connection and try again.')
-      setSaving(false)
-    }
+    write.run(() => onSave({
+      clientId,
+      clientName:      client?.displayName || '',
+      clientLegalName: client?.legalName || '',
+      clientAbn:       client?.abn || '',
+      clientEmail:     client?.email || '',
+      clientPhone:     client?.phone || '',
+      clientAddress:   client?.address || null,
+      clientRef,
+      externalInvoiceReference: externalRef,
+      description,
+      periodEnding,
+      invoiceDate,
+      dueDate,
+      paymentTerms: terms,
+      lineItems: builtLines,
+      notes,
+    }), { onConfirmed: onClose })
   }
 
   const availableNow = roundMoney(contractSum - issuedExGst)
@@ -423,12 +416,12 @@ function InvoiceEditorModal({
           <p className="m-0 font-bold">Invoice total (inc. GST) <span className="ml-2">{money(totals.grossTotal)}</span></p>
         </div>
 
-        {error && <p className="text-[12px] text-brand-red m-0">{error}</p>}
+        <WriteFeedback write={write} />
 
         <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
-          <Btn variant="ghost" type="button" onClick={onClose} sm disabled={saving}>Cancel</Btn>
-          <Btn type="submit" sm disabled={saving || !valid}>
-            {saving ? 'Saving…' : isEdit ? 'Save draft' : 'Create draft invoice'}
+          <Btn variant="ghost" type="button" onClick={onClose} sm disabled={write.busy}>{write.waiting ? 'Close' : 'Cancel'}</Btn>
+          <Btn type="submit" sm disabled={write.locked || !valid}>
+            {write.busy ? 'Saving…' : write.waiting ? 'Waiting for confirmation…' : isEdit ? 'Save draft' : 'Create draft invoice'}
           </Btn>
         </div>
       </form>
@@ -440,21 +433,12 @@ function InvoiceEditorModal({
 
 function VoidModal({ invoice, onClose, onConfirm }) {
   const [reason, setReason] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState(null)
+  const write = useWriteAction('Client invoice void')
 
-  async function submit(e) {
+  function submit(e) {
     e.preventDefault()
     if (!reason.trim()) return
-    setSaving(true)
-    setError(null)
-    try {
-      await onConfirm(invoice, reason)
-      onClose()
-    } catch (err) {
-      setError(err?.message || 'Failed to void. Check your connection and try again.')
-      setSaving(false)
-    }
+    write.run(() => onConfirm(invoice, reason), { onConfirmed: onClose })
   }
 
   return (
@@ -475,10 +459,10 @@ function VoidModal({ invoice, onClose, onConfirm }) {
             autoFocus
           />
         </div>
-        {error && <p className="text-[12px] text-brand-red m-0">{error}</p>}
+        <WriteFeedback write={write} />
         <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
-          <Btn variant="ghost" type="button" onClick={onClose} sm disabled={saving}>Cancel</Btn>
-          <Btn type="submit" sm disabled={saving || !reason.trim()}>{saving ? 'Voiding…' : 'Void invoice'}</Btn>
+          <Btn variant="ghost" type="button" onClick={onClose} sm disabled={write.busy}>{write.waiting ? 'Close' : 'Cancel'}</Btn>
+          <Btn type="submit" sm disabled={write.locked || !reason.trim()}>{write.busy ? 'Voiding…' : write.waiting ? 'Waiting for confirmation…' : 'Void invoice'}</Btn>
         </div>
       </form>
     </ModalShell>
@@ -648,7 +632,7 @@ export default function ProjectClientInvoices() {
   const [editing, setEditing] = useState(null)   // invoice | 'new' | null
   const [voiding, setVoiding] = useState(null)
   const [detail, setDetail]   = useState(null)
-  const [actionError, setActionError] = useState(null)
+  const issueWrite = useWriteAction('Client invoice issue')
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [clientFilter, setClientFilter] = useState('all')
@@ -724,14 +708,12 @@ export default function ProjectClientInvoices() {
     return true
   })
 
-  async function handleIssue(invoice) {
+  // Issue has no dialog of its own, so the write state lives on the page. A
+  // second click while one issue is unanswered is refused (useWriteAction).
+  function handleIssue(invoice) {
+    if (issueWrite.locked) return
     if (!window.confirm(`Issue ${invoice.invoiceNumber}? Issued invoices cannot be edited — only voided.`)) return
-    setActionError(null)
-    try {
-      await issueClientInvoice(invoice)
-    } catch (err) {
-      setActionError(err?.message || 'Failed to issue. Check your connection and try again.')
-    }
+    issueWrite.run(() => issueClientInvoice(invoice))
   }
 
   // ── Gates ──────────────────────────────────────────────────────────────────
@@ -900,7 +882,7 @@ export default function ProjectClientInvoices() {
         </div>
       </div>
 
-      {actionError && <p className="text-[12px] text-brand-red mb-3">{actionError}</p>}
+      {issueWrite.message && <div className="mb-3"><WriteFeedback write={issueWrite} /></div>}
       {clientInvoicesError && (
         <p className="text-[12px] text-brand-amber mb-3">Couldn&apos;t load client invoices — check your connection and access.</p>
       )}

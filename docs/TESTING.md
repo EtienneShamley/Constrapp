@@ -9031,7 +9031,22 @@ or changes any document; a baseline variance appears without an approved
 baseline; a name or email appears in *Last changed*; or any other tab prints
 differently than before.
 
-## 65. L3 Stage 1 — recovery verification, availability check and Final Account failure alert (21 November 2026) — PREPARED; automated checks PASS; NOTHING CREATED and NO RESTORE RUN
+## 65. L3 Stage 1 — recovery verification, availability check and Final Account failure alert (21 November 2026) — CLOSED: monitoring CREATED (VERIFIED read-only); restoration verification SUCCESSFUL (REPORTED); alert delivery NOT TESTED; not every document's contents compared
+
+**Status update — Stage 1 closed (recorded 21 November 2026, NZ).** Evidence and its labels are in DEPLOYMENT.md → *L3 Stage 1* → *Monitoring release record* and *Firestore recovery protection* → *Restoration verification record*. Against the operator checklists below (left unticked as written):
+
+| Check | Result | Status |
+|---|---|---|
+| O2 — five policies, all enabled | Uptime policy `15559930914799323534` and Final Account policy `9683374685335961795` enabled; DC46 A, B, C preserved | VERIFIED read-only, 21 November 2026 |
+| O1, O3 — every location passing for 15 minutes; no incident opened | Not re-read for this record | NOT RECORDED |
+| O4 — release record written | Done in this revision | — |
+| V1 — only `(default)`, delete protection ENABLED | Confirmed | VERIFIED read-only, 21 November 2026 |
+| V3 — unauthenticated request returns 403 | 403 | REPORTED by the Lead Architect |
+| V4 — counts and sample hash | 44 collection groups and 211 documents matched; sample hash matched | REPORTED |
+| V5 — cleanup | Temporary database `restore-verify-20261120-2329` removed; listing shows only `(default)` | REPORTED; listing VERIFIED 21 November 2026. Deletion time and mechanism not independently established |
+| V2, V6 and the IAM / TTL parts of V3 | Not supplied | NOT RECORDED |
+
+**Still open:** actual delivery of an alert notification has NOT been tested. The restoration check compared counts and one document hash; it did NOT compare every document's contents.
 
 **What this stage is.** Operational files and documentation only
 (DEPLOYMENT.md → *L3 Stage 1*). No application code, Rules, Functions or
@@ -9103,3 +9118,44 @@ that is not a whole minute, and has no default database.
 **Stop and report if:** the guard prints STOP; the unauthenticated request
 returns 200; any count differs; the delete names anything but the temporary
 database; or cleanup fails (ops/recovery/README.md → *If cleanup fails*).
+
+## 66. L3 Stage 2 — application error recovery (ADR-80, 21 November 2026) — IMPLEMENTED on `fix/l3-application-error-recovery` (uncommitted); automated tests PASS; NOT DEPLOYED; browser behaviour NOT VERIFIED
+
+**What changed.** (1) The project route no longer says *Project not found.* when the projects read failed, was refused or has only been answered from the local cache. (2) A reusable write-outcome helper (`lib/writeOutcome.js`, `hooks/useWriteAction.jsx`, `components/WriteFeedback.jsx`, `components/UnconfirmedWrites.jsx`) applied to the three money registers: Client Invoices, Client Receipts and Supplier Payments (nine writes). No Rules, Functions, data-hook, formula or dependency change.
+
+**SDK behaviour the design answers to — MEASURED, 21 November 2026** (the real Web SDK, firebase 12, in Node, pointed at a closed local port; no production access):
+
+| Operation with the backend unreachable | Result |
+|---|---|
+| `onSnapshot` on a collection | An EMPTY snapshot with `metadata.fromCache === true`, at once; no error |
+| `setDoc` (a plain write) | Never settled in 45 s — the SDK queues it |
+| `runTransaction` | Rejected with `unavailable` after about 9 s |
+
+A browser tab going offline, and a reply lost after a commit, were NOT reproduced.
+
+**Automated — PASS.** `npm run test:unit`: 96 files, 5,050 tests (two new files, 66 tests; one existing assertion in `projectSnapshot.test.js` updated for the three additive context fields).
+
+- `tests/unit/projectLoadState.test.js` (18): the six states; a failed read is never *not found* whatever the code; `useProject` over a stubbed context; the route layout rendered for ready, loading, not found, unavailable (with *Try again*), permission denied and unconfirmed; a project in another company is plain *not found*; the provider still opens one listener on the same query.
+- `tests/unit/writeOutcome.test.js` (48): error classification (refusals certain, network failures uncertain, no SDK text shown, domain messages kept); success reported only on resolution; permission denied; a stalled write leaves *Saving…* after the limit without failing; a second submission and an acknowledgement refused while in flight; late success and late refusal after the limit; the operation runs exactly once; an uncertain outcome locks the submit until acknowledged; a closed dialog hands the write to the page notice; the three pages' wiring; the data hooks unchanged; the remaining-site count. **Lifecycle checks added after the architect's final correction (9):** closing a dialog during an unresolved write starts no second write; a REOPENED dialog of the same kind is refused, without calling the write, while the first is unanswered and until the server confirms it; a dialog closed on an uncertain outcome keeps the guard until the user clears the page notice, and that clearing is never recorded as a confirmed result; a late uncertain result after closure keeps the guard and a late definite failure frees it; five rapid submits call the write once; a late settlement after closure notifies no dialog listener and leaves no unhandled rejection; the controller holds no cancel mechanism.
+
+ESLint: clean. Production build: succeeds. `git diff --check`: clean. The Rules and Functions suites were NOT run: no Rules, Functions or data-hook file changed.
+
+**Not covered by automation.** Interaction (clicking *Try again*, the acknowledgement, *Dismiss*), real connectivity loss, and the visual result. The unit runner has no DOM.
+
+**Manual acceptance (after a Hosting deploy; a test project, not customer data).**
+
+- [ ] E1 — Open a project normally: header and tabs as before. Open `/projects/<an id that does not exist>`: *Project not found.*
+- [ ] E2 — DevTools → Network → Offline, then reload a project URL: *Waiting for the server* (not *Project not found*). Back online: the project appears without a reload.
+- [ ] E3 — As a deactivated or wrong-company test member (or with the projects request blocked so the listener errors): *could not be loaded* or *do not have access*, with *Try again*; after access or connectivity is restored, *Try again* loads the project.
+- [ ] E4 — Client Receipts → create a draft online: the dialog closes and ONE draft appears, numbered as before.
+- [ ] E5 — Offline, create a draft receipt (a transaction): after some seconds an amber message says it was not confirmed; the submit button is disabled; the form keeps its contents. Check the list, use *I have checked…*, go online, submit: ONE draft exists.
+- [ ] E6 — Offline, post a draft receipt (a plain write): *Posting…* for 15 s, then *Waiting for confirmation…* with *Close* enabled. Close: the notice at the top of the page says it is unconfirmed. Go online: the notice changes to *was saved*; the receipt is posted once.
+- [ ] E7 — Repeat E6 leaving the dialog open: it closes by itself when the connection returns.
+- [ ] E7a — During E6, after closing the dialog and while the notice still says unconfirmed, reopen *Post* on the same or another draft receipt and submit: a red message says an earlier attempt is unconfirmed and this one was not sent; no second write happens. After the notice turns to *was saved*, a new post works.
+- [ ] E7b — During E5, close the dialog while the amber uncertain message shows: the page notice says it *may or may not have been saved*. Reopen *New receipt* and submit: refused. Click *I have checked the list* on the notice, submit again: ONE draft is created.
+- [ ] E7c — With the browser console open through E5–E7b: no React warning about updating an unmounted component and no *Uncaught (in promise)* error.
+- [ ] E8 — Double-click a submit button, and double-click *Issue* on a client invoice: one write, one record.
+- [ ] E9 — As a role without write access, attempt a write through a stale tab: a red message ending *Nothing was saved*; no raw SDK text.
+- [ ] E10 — Supplier Payments and Client Invoices: create, post or issue, and void each still work online, with unchanged figures.
+
+**Remaining write sites (not changed).** 42 files with 58 hand-rolled `setSaving(true)` states (pinned in `writeOutcome.test.js`), plus `setBusy` in Team Settings, Accept Invite and the PULSE acknowledgement panel. They behave as before: a plain write made offline leaves the dialog on *Saving…*, and raw SDK text can appear. Suggested order for a later rollout: Supplier Invoices, Purchase Orders, Progress Claims and Variations (create and edit); Retention Releases and Cash Flow lines; Budget and Forecast; then documents, RFIs, programme and settings. Dialogs built on the `*Actions.js` modules already map errors but still wait without limit.

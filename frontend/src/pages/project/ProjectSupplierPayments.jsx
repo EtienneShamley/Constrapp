@@ -3,6 +3,8 @@ import { useOutletContext, useNavigate, useLocation } from 'react-router-dom'
 import Card from '../../components/Card'
 import Btn from '../../components/Btn'
 import Badge from '../../components/Badge'
+import WriteFeedback from '../../components/WriteFeedback'
+import { useWriteAction } from '../../hooks/useWriteAction'
 import { formatCurrency } from '../../lib/formatters'
 import { roundMoney } from '../../lib/purchaseOrders'
 import { useProfile } from '../../hooks/useProfile'
@@ -99,8 +101,7 @@ function PaymentEditorModal({
     return [blankRow()]
   })
   const [acknowledged, setAcknowledged] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [error, setError]   = useState(null)
+  const write = useWriteAction('Supplier payment draft')
 
   const supplier = supplierContacts.find(c => c.id === supplierId) ?? null
   const supplierName = supplier?.displayName || ''
@@ -206,31 +207,23 @@ function PaymentEditorModal({
 
   const valid = !validationError && (!needsAck || acknowledged)
 
-  async function handleSubmit(e) {
+  function handleSubmit(e) {
     e.preventDefault()
     if (!valid) return
-    setSaving(true)
-    setError(null)
-    try {
-      await onSave({
-        supplierId,
-        supplierName,
-        paymentDate,
-        amount: cash,
-        paymentMethod: method,
-        paymentMethodOther: methodOther,
-        bankReference,
-        remittanceReference,
-        externalReference,
-        allocations: builtAllocations,
-        notes,
-        invoices: supplierInvoices,
-      })
-      onClose()
-    } catch (err) {
-      setError(err?.message || 'Failed to save. Check your connection and try again.')
-      setSaving(false)
-    }
+    write.run(() => onSave({
+      supplierId,
+      supplierName,
+      paymentDate,
+      amount: cash,
+      paymentMethod: method,
+      paymentMethodOther: methodOther,
+      bankReference,
+      remittanceReference,
+      externalReference,
+      allocations: builtAllocations,
+      notes,
+      invoices: supplierInvoices,
+    }), { onConfirmed: onClose })
   }
 
   return (
@@ -476,12 +469,12 @@ function PaymentEditorModal({
         </div>
 
         {validationError && <p className="text-[12px] text-brand-red m-0">{validationError}</p>}
-        {error && <p className="text-[12px] text-brand-red m-0">{error}</p>}
+        <WriteFeedback write={write} />
 
         <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
-          <Btn variant="ghost" type="button" onClick={onClose} sm disabled={saving}>Cancel</Btn>
-          <Btn type="submit" sm disabled={saving || !valid}>
-            {saving ? 'Saving…' : isEdit ? 'Save draft' : 'Create draft payment'}
+          <Btn variant="ghost" type="button" onClick={onClose} sm disabled={write.busy}>{write.waiting ? 'Close' : 'Cancel'}</Btn>
+          <Btn type="submit" sm disabled={write.locked || !valid}>
+            {write.busy ? 'Saving…' : write.waiting ? 'Waiting for confirmation…' : isEdit ? 'Save draft' : 'Create draft payment'}
           </Btn>
         </div>
       </form>
@@ -493,25 +486,16 @@ function PaymentEditorModal({
 
 function PostModal({ payment, currencyCode, onClose, onConfirm }) {
   const money = (n) => formatCurrency(n, currencyCode)
-  const [saving, setSaving] = useState(false)
-  const [error, setError]   = useState(null)
+  const write = useWriteAction('Supplier payment posting')
 
   // ⚠️ CLIENT-ENFORCED. Firestore rules validate only the 'YYYY-MM-DD' shape of
   // paymentDate — a direct SDK call can post a future-dated payment.
   const blocked = postBlockedReason(payment)
 
-  async function submit(e) {
+  function submit(e) {
     e.preventDefault()
     if (blocked) return
-    setSaving(true)
-    setError(null)
-    try {
-      await onConfirm(payment)
-      onClose()
-    } catch (err) {
-      setError(err?.message || 'Failed to post. Check your connection and try again.')
-      setSaving(false)
-    }
+    write.run(() => onConfirm(payment), { onConfirmed: onClose })
   }
 
   return (
@@ -531,10 +515,10 @@ function PostModal({ payment, currencyCode, onClose, onConfirm }) {
           {payment.supplierName ? ` · ${payment.supplierName}` : ''}
         </p>
         {blocked && <p className="m-0 text-[12px] text-brand-red">{blocked}</p>}
-        {error && <p className="text-[12px] text-brand-red m-0">{error}</p>}
+        <WriteFeedback write={write} />
         <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
-          <Btn variant="ghost" type="button" onClick={onClose} sm disabled={saving}>Cancel</Btn>
-          <Btn type="submit" sm disabled={saving || !!blocked}>{saving ? 'Posting…' : 'Post payment'}</Btn>
+          <Btn variant="ghost" type="button" onClick={onClose} sm disabled={write.busy}>{write.waiting ? 'Close' : 'Cancel'}</Btn>
+          <Btn type="submit" sm disabled={write.locked || !!blocked}>{write.busy ? 'Posting…' : write.waiting ? 'Waiting for confirmation…' : 'Post payment'}</Btn>
         </div>
       </form>
     </ModalShell>
@@ -545,21 +529,12 @@ function PostModal({ payment, currencyCode, onClose, onConfirm }) {
 
 function VoidModal({ payment, onClose, onConfirm }) {
   const [reason, setReason] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [error, setError]   = useState(null)
+  const write = useWriteAction('Supplier payment void')
 
-  async function submit(e) {
+  function submit(e) {
     e.preventDefault()
     if (!reason.trim()) return
-    setSaving(true)
-    setError(null)
-    try {
-      await onConfirm(payment, reason)
-      onClose()
-    } catch (err) {
-      setError(err?.message || 'Failed to void. Check your connection and try again.')
-      setSaving(false)
-    }
+    write.run(() => onConfirm(payment, reason), { onConfirmed: onClose })
   }
 
   return (
@@ -583,10 +558,10 @@ function VoidModal({ payment, onClose, onConfirm }) {
             autoFocus
           />
         </div>
-        {error && <p className="text-[12px] text-brand-red m-0">{error}</p>}
+        <WriteFeedback write={write} />
         <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
-          <Btn variant="ghost" type="button" onClick={onClose} sm disabled={saving}>Cancel</Btn>
-          <Btn type="submit" sm disabled={saving || !reason.trim()}>{saving ? 'Voiding…' : 'Void payment'}</Btn>
+          <Btn variant="ghost" type="button" onClick={onClose} sm disabled={write.busy}>{write.waiting ? 'Close' : 'Cancel'}</Btn>
+          <Btn type="submit" sm disabled={write.locked || !reason.trim()}>{write.busy ? 'Voiding…' : write.waiting ? 'Waiting for confirmation…' : 'Void payment'}</Btn>
         </div>
       </form>
     </ModalShell>

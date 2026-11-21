@@ -32,7 +32,21 @@ export function ProjectsProvider({ children }) {
   // consumer behaves exactly as before), but a consumer that renders "no
   // projects" must check `projectsError` first: "none" and "could not load
   // them" are opposite facts.
-  const [snap, setSnap] = useState({ key: null, projects: [], error: false })
+  //
+  // L3 Stage 2 — three ADDITIVE fields, so the project route can tell a failed
+  // or unconfirmed read from a missing project (lib/projects.js →
+  // projectLoadState):
+  //   · `readCode`   the Firestore code of a failed read ('permission-denied', …)
+  //   · `fromCache`  the snapshot has not been confirmed by the server. With an
+  //     unreachable backend the SDK delivers an EMPTY cached list, which is not
+  //     "no projects". `includeMetadataChanges` is what delivers the follow-up
+  //     snapshot when the server confirms a list whose documents did not change.
+  //   · `attempt`    bumped by `retryProjects` to re-open a listener that ended
+  //     with an error (an errored listener never recovers by itself). It lives
+  //     in this tuple, not in a second useState, to keep the keyed-snapshot
+  //     pattern; resetting `key` to null returns the route to "loading".
+  const [snap, setSnap] = useState({ key: null, projects: [], error: false, readCode: null, fromCache: false, attempt: 0 })
+  const attempt = snap.attempt
 
   useEffect(() => {
     if (!companyId) return undefined
@@ -43,17 +57,28 @@ export function ProjectsProvider({ children }) {
 
     const unsubscribe = onSnapshot(
       q,
+      { includeMetadataChanges: true },
       (querySnap) => setSnap({
         key,
         projects: querySnap.docs.map(d => ({ id: d.id, ...d.data() })),
         error: false,
+        readCode: null,
+        fromCache: querySnap.metadata.fromCache === true,
+        attempt,
       }),
       // Read error (most often a rules rejection) — degrade gracefully rather
       // than crashing the app root.
-      () => setSnap({ key, projects: [], error: true }),
+      (err) => setSnap({ key, projects: [], error: true, readCode: err?.code ?? null, fromCache: false, attempt }),
     )
     return unsubscribe
-  }, [companyId])
+  }, [companyId, attempt])
+
+  // Re-open the projects listener after a failed read. Reads only.
+  const retryProjects = useCallback(() => {
+    setSnap((s) => (s.error
+      ? { key: null, projects: [], error: false, readCode: null, fromCache: false, attempt: s.attempt + 1 }
+      : s))
+  }, [])
 
   // Derived, at render time: no synchronous setState in the effect. With no
   // target we are idle (no data, not loading); with a target we are loading
@@ -70,6 +95,8 @@ export function ProjectsProvider({ children }) {
   const projectsLoading = targetKey !== null && !settled
   // Exposed only once the CURRENT target has settled, never raw (ADR-41).
   const projectsError = settled ? snap.error : false
+  const projectsErrorCode = projectsError ? snap.readCode : null
+  const projectsFromCache = settled && snap.fromCache === true
 
   const createProject = useCallback(async ({ name, status, budget, startDate, location, progress, currency }) => {
     if (!companyId || !user) throw new Error('Not authenticated')
@@ -224,7 +251,7 @@ export function ProjectsProvider({ children }) {
 
   return (
     <ProjectsContext.Provider
-      value={{ projects, projectsLoading, projectsError, createProject, updateProject, updateProjectCurrency, lockProjectCurrency }}
+      value={{ projects, projectsLoading, projectsError, projectsErrorCode, projectsFromCache, retryProjects, createProject, updateProject, updateProjectCurrency, lockProjectCurrency }}
     >
       {children}
     </ProjectsContext.Provider>

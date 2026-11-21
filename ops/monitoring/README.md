@@ -1,9 +1,12 @@
 # ops/monitoring — Cloud Monitoring alert policies
 
-**L3 Stage 1 (21 November 2026): three files are PREPARED, NOT CREATED** — an
-uptime check on `app.constrap.com`, its alert policy, and an alert on server
-failures of `approveFinalAccount`. They are described in *L3 files* at the
-end of this document. Nothing about them exists in the cloud. The rest of
+**L3 Stage 1 (21 November 2026): the three L3 objects are CREATED and
+enabled** — an uptime check on `app.constrap.com`, its alert policy
+(`15559930914799323534`), and an alert on server failures of
+`approveFinalAccount` (`9683374685335961795`). The three DC46 policies are
+preserved. Notification channels are connected; **actual alert delivery has
+not been tested.** They are described in *L3 files* at the end of this
+document. The rest of
 this document is the DC46 worker monitoring, unchanged.
 
 ## DC46 worker policies
@@ -99,23 +102,30 @@ procedures, the response runbook, billing continuity and rollback are in
 (policy C: its *Policy C* section; activation: *DC46-C* → *Activation
 runbook*).
 
-## L3 files — PREPARED 21 November 2026, NOT CREATED
+## L3 files — CREATED in production 21 November 2026; delivery NOT tested
+
+**Status (21 November 2026).** All three exist in `constrapp-69b5d` and are
+enabled; the *Cloud state* column below is current. The three DC46 policies
+are unchanged. Notification channels are connected. No L3 alert has fired
+and no test notification was sent, so delivery is unproven. Release record:
+docs/DEPLOYMENT.md → *L3 Stage 1* → *Monitoring release record*.
 
 | File | What it is | Condition | Cloud state |
 |---|---|---|---|
-| `l3-app-availability.uptime-check.json` | Request body for `projects.uptimeCheckConfigs.create`: a public HTTPS check of `https://app.constrap.com/` | Every 5 minutes, from every checker region; passes on HTTP 200, a valid certificate, a reply within 10 seconds and `<div id="root"></div>` in the body | **Does not exist** |
-| `l3-app-availability.policy.json` | Alert on that check | Two or more checker locations failing, sustained for 10 minutes (two check periods). CRITICAL | **Does not exist** |
-| `l3-final-account-callable-failure.policy.json` | Alert on `approveFinalAccount` | Any HTTP 5xx from the Cloud Run service `approvefinalaccount` (`australia-southeast1`). 4xx refusals are not counted. ERROR | **Does not exist** |
+| `l3-app-availability.uptime-check.json` | Request body for `projects.uptimeCheckConfigs.create`: a public HTTPS check of `https://app.constrap.com/` | Every 5 minutes, from every checker region; passes on HTTP 200, a valid certificate, a reply within 10 seconds and `<div id="root"></div>` in the body | **Exists** — `l3-app-constrap-com-https-availability-10ehOIKFFlc` |
+| `l3-app-availability.policy.json` | Alert on that check | Two or more checker locations failing, sustained for 10 minutes (two check periods). CRITICAL | **Exists, enabled** — `15559930914799323534` |
+| `l3-final-account-callable-failure.policy.json` | Alert on `approveFinalAccount` | Any HTTP 5xx from the Cloud Run service `approvefinalaccount` (`australia-southeast1`). 4xx refusals are not counted. ERROR | **Exists, enabled** — `9683374685335961795` |
 
 Same conventions as the DC46 files: request bodies checked against the
 Monitoring API's published schema, no recipient committed, channels passed
 on the command line, pinned by
 `frontend/tests/unit/monitoringPolicies.test.js`. Both alert filters were
 accepted by the live Monitoring API in a read-only `timeSeries.list` query
-on 21 November 2026 (no series yet: the check does not exist and the
-function has never returned a 5xx). **The API has no dry run for creating a
-policy or an uptime check, so the files are not proven until they are
-created.**
+on 21 November 2026, before creation (no series then: the check did not
+exist and the function had never returned a 5xx). The API has no dry run
+for creating a policy or an uptime check; the files were proven as request
+bodies when the objects were created from them. **What is still unproven is
+that either alert fires and that its notification is delivered.**
 
 ### What the availability check is not
 
