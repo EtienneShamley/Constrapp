@@ -6659,3 +6659,34 @@ What this evidence is and is not: it establishes that the published rules and th
 - **CSV dates are text cells in ISO form.** Spreadsheet applications generally recognise them; behaviour on import is the application's.
 
 **Deferred / not built.** Per-activity change history; author names; a printed Gantt chart; a saved or issued programme record; multi-flag selection; a due-soon attention flag (already a *Due* filter); critical path, automatic rescheduling, working calendars; any financial figure on the programme.
+
+## ADR-80: L3 Stage 2 — Application Error Recovery (the project route presents a failed, refused or unconfirmed projects read as what it is; one write-outcome helper with three outcomes — confirmed, failed, uncertain — that never retries and never reports success early; applied to the three money registers only; no Rules, Functions, data-hook, formula or dependency change; Hosting only)
+
+**Date:** 21 November 2026 · **Status:** IMPLEMENTED — NOT DEPLOYED (branch `fix/l3-application-error-recovery`, uncommitted; awaiting architect review). Browser behaviour NOT VERIFIED.
+
+**Context.** The L3 assessment confirmed two faults. `useProject` discarded `projectsError`, so any failed projects read rendered *Project not found.* The older registers `await` a write and show `err.message`; measured against the SDK, a plain write with no connection never settles, so the dialog stays on *Saving…* for ever, and SDK text reaches the user. The same measurement found a third cause of the first fault: an unreachable backend answers a listener with an EMPTY list flagged `fromCache`, with no error.
+
+**Decision 1 — project load states.** `lib/projects.js → projectLoadState` returns loading, ready, not-found, permission-denied, unavailable or offline. *Not found* is said only when a server-confirmed list lacks the id. The provider keeps the read's error code and `fromCache` flag, listens with `includeMetadataChanges` (so a server confirmation of an unchanged list is delivered), and exposes `retryProjects`, which re-opens a listener that ended in error. All additive; the query is unchanged.
+
+**Decision 2 — three write outcomes.** `lib/writeOutcome.js` is a pure controller around ONE call of the caller's operation:
+
+- CONFIRMED only when the operation's promise resolves.
+- FAILED for a server refusal (`permission-denied`, `failed-precondition`, `aborted`, `not-found`, …) or a local validation error: the submit is enabled again.
+- UNCERTAIN for `unavailable`, `deadline-exceeded` and similar: the submit stays disabled until the user states they checked the list.
+- After 15 s without an answer the dialog stops showing *Saving…* and can be closed, but the submit stays disabled. The limit is on waiting; the write is not cancelled, and its eventual result is reported — in the dialog, or by the page-level notice if the dialog has gone.
+- The helper never retries. Duplicate submission from one dialog is refused while a write is in flight or uncertain.
+- **Reopening does not bypass the guard (architect's final correction, 21 November 2026).** A dialog closed with its write unanswered, or with an unacknowledged uncertain outcome, hands that state to the page-level tracker. A new dialog with the same label asks the tracker before sending and is refused, with nothing sent, until the server answers definitely or the user clears the uncertain notice with *I have checked the list*. That clearing removes the notice; it is never recorded as a confirmed success or failure.
+
+**Decision 3 — small rollout.** Applied to Client Invoices, Client Receipts and Supplier Payments (nine writes). The data hooks, their transactions, counters, currency ratchet and guards are untouched. The other sites are listed in TESTING.md §66.
+
+**Security.** Presentation only. Firestore Rules still decide every read and write; no client check was added or removed. A project in another company is *not found*, as before, so nothing is disclosed.
+
+**Limits, stated plainly.**
+
+- The duplicate guard is in memory and keyed by the KIND of write (for example *Client receipt draft*), not by record or project: while one is unanswered, another of the same kind anywhere in the app is refused. A page reload clears the guard, the notice and any queued write; a second browser tab has its own guard. Neither is a server-side control — a determined or unlucky user can still create a second record.
+- `unavailable` on a transaction is treated as uncertain although it usually means nothing was sent. That costs an acknowledgement click; the alternative risks a duplicate.
+- `includeMetadataChanges` makes the projects listener deliver more snapshots (pending-write and cache-state changes). Every consumer of the projects list re-renders on them.
+- The Dashboard, Projects and Portfolio pages do not use the `fromCache` flag: with no connection at load they can still show an empty list.
+- No automated test drives a real browser offline.
+
+**Alternatives rejected.** Automatic retry (duplicates creates). Treating the timeout as failure (a queued write still lands). A client-generated idempotency key on every create (a data-hook and Rules change, out of scope). Converting every dialog now (59 sites; no evidence yet that the pattern is right in the browser).

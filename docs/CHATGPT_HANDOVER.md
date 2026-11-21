@@ -7,11 +7,12 @@ documentation: where this file and a source document disagree, the source
 document wins and this file must be corrected.
 
 **Last updated:** 21 November 2026 (NZ). **Git checkpoint:** `main` at
-`9ce433d` (*Merge GANTT core completion*), equal to `origin/main` (checked
-with `git ls-remote`, 21 November 2026). This revision was prepared on the
-uncommitted branch `chore/l3-recovery-monitoring` (L3 Stage 1 — PREPARED;
-nothing created in production, no restore run); once that branch is merged,
-the checkpoint is the merge commit and this line must be refreshed.
+`4bd358a` (*Merge L3 recovery and monitoring preparation*), equal to
+`origin/main` (fetched 21 November 2026). This revision was prepared on the
+uncommitted branch `fix/l3-application-error-recovery` (L3 Stage 2 —
+IMPLEMENTED, NOT DEPLOYED). **L3 Stage 1 is CLOSED** (monitoring created — VERIFIED read-only 21
+November 2026; restoration verification successful — REPORTED by the Lead
+Architect; alert delivery not tested). Records: DEPLOYMENT.md → *L3 Stage 1*.
 
 **DC46 is closed.** Deferred Control 46 was CLOSED on 18 November 2026 with
 documented accepted risks, after final external-member acceptance in
@@ -39,7 +40,7 @@ current Git state or verifying production. Maintenance is mandatory —
 
 | Item | State |
 |---|---|
-| **Current milestone** | **L3 — Production Reliability — IN PROGRESS.** The read-only assessment was delivered and approved (Lead Architect: GO for Stage 1, 21 November 2026). **Stage 1 — PREPARED on `chore/l3-recovery-monitoring` (uncommitted): files and documentation only.** A Firestore restoration verification procedure with a read-only count script (`ops/recovery/`); an uptime check on `app.constrap.com` with its alert policy, and an alert on `approveFinalAccount` server failures (`ops/monitoring/`, files only); an operations runbook (`ops/RUNBOOK.md`). **Nothing was created, changed or deleted in production; no restore was run; no alert exists beyond DC46 policies A, B and C** (DEPLOYMENT.md → *L3 Stage 1*; TESTING.md §65). Stage 2 (application error recovery, Hosting-only) is NOT started and NOT approved. **Status of everything else:** GANTT 1A1, 1A2, 1B and PULSE 1C — LIVE (VERIFIED read-only 20 November 2026). **GANTT core completion (ADR-79; the Lead Architect's G1, G2, G3) — LIVE since 20 November 2026 08:52 UTC and Product Owner accepted** (merged as `9ce433d`, VERIFIED; live bundle SHA-256-identical to a clean build of `main`, VERIFIED 21 November 2026; acceptance REPORTED by the Lead Architect; certain baseline scenarios not exercised in the browser). **L2-A Commercial Report — LIVE and accepted** (REPORTED). **L2-B Final Account (ADR-77) — DEPLOYED; positive approval, revision and export acceptance OUTSTANDING** (TESTING.md §62 F3–F17) — `approveFinalAccount` deployed source is identical to `main` (VERIFIED 21 November 2026) and it received no request in the preceding 14 days; L2-B is NOT accepted. **L2-C Portfolio Report (ADR-78) — DEPLOYED; visual, CSV and PDF acceptance confirmed (REPORTED); access, parity and performance checks OPEN** (TESTING.md §63). **DC46 — CLOSED 18 November 2026** with accepted risks. **Firestore recovery — protection ENABLED; two READY backups VERIFIED 21 November 2026; restoration verification PREPARED, NOT RUN** |
+| **Current milestone** | **L3 Stage 2 — application error recovery (ADR-80) — IMPLEMENTED on `fix/l3-application-error-recovery` (uncommitted); NOT DEPLOYED; Hosting-only; unit suite 96 files / 5,041 tests PASS; browser behaviour NOT VERIFIED** (TESTING.md §66). The project route no longer shows *Project not found* for a failed, refused or unconfirmed read; a write-outcome helper (confirmed / failed / uncertain) is applied to Client Invoices, Client Receipts and Supplier Payments; 58 older write sites remain. **L3 Stage 1 — CLOSED:** uptime check on `app.constrap.com` and alert policies `15559930914799323534` (uptime) and `9683374685335961795` (Final Account failure) exist and are enabled, DC46 policies A, B, C preserved (VERIFIED read-only, 21 November 2026); **alert delivery NOT tested**. Restoration verification SUCCESSFUL (REPORTED): 20 November backup into `restore-verify-20261120-2329`, unauthenticated 403, 44 collection groups / 211 documents and the sample hash matched, temporary database removed, only `(default)` remains with delete protection enabled (VERIFIED); deletion time and mechanism not established; not every document's contents compared. *The remainder of this cell was written before Stage 1's production actions:* **L3 — Production Reliability — IN PROGRESS.** The read-only assessment was delivered and approved (Lead Architect: GO for Stage 1, 21 November 2026). **Stage 1 — PREPARED on `chore/l3-recovery-monitoring` (uncommitted): files and documentation only.** A Firestore restoration verification procedure with a read-only count script (`ops/recovery/`); an uptime check on `app.constrap.com` with its alert policy, and an alert on `approveFinalAccount` server failures (`ops/monitoring/`, files only); an operations runbook (`ops/RUNBOOK.md`). **Nothing was created, changed or deleted in production; no restore was run; no alert exists beyond DC46 policies A, B and C** (DEPLOYMENT.md → *L3 Stage 1*; TESTING.md §65). Stage 2 (application error recovery, Hosting-only) is NOT started and NOT approved. **Status of everything else:** GANTT 1A1, 1A2, 1B and PULSE 1C — LIVE (VERIFIED read-only 20 November 2026). **GANTT core completion (ADR-79; the Lead Architect's G1, G2, G3) — LIVE since 20 November 2026 08:52 UTC and Product Owner accepted** (merged as `9ce433d`, VERIFIED; live bundle SHA-256-identical to a clean build of `main`, VERIFIED 21 November 2026; acceptance REPORTED by the Lead Architect; certain baseline scenarios not exercised in the browser). **L2-A Commercial Report — LIVE and accepted** (REPORTED). **L2-B Final Account (ADR-77) — DEPLOYED; positive approval, revision and export acceptance OUTSTANDING** (TESTING.md §62 F3–F17) — `approveFinalAccount` deployed source is identical to `main` (VERIFIED 21 November 2026) and it received no request in the preceding 14 days; L2-B is NOT accepted. **L2-C Portfolio Report (ADR-78) — DEPLOYED; visual, CSV and PDF acceptance confirmed (REPORTED); access, parity and performance checks OPEN** (TESTING.md §63). **DC46 — CLOSED 18 November 2026** with accepted risks. **Firestore recovery — protection ENABLED; two READY backups VERIFIED 21 November 2026; restoration verification PREPARED, NOT RUN** |
 | **Latest Git checkpoint** | **VERIFIED:** branch `main`, HEAD `9ce433d` (*Merge GANTT core completion*; preceded by `8e60eb7`, the feature commit), equal to `origin/main` (`git ls-remote`, 21 November 2026); working tree clean before `chore/l3-recovery-monitoring` was branched from it. Azure CI on `9ce433d` was not read in this revision. Before that: `93db6cc` (*Merge L2-C Portfolio Reporting*; preceded by `4ebdd4e`), `891043a` (*Merge L2-B Final Account reconciliation fixes*; preceded by `24e65c1`, the correction itself), `c4b93e5` (*Merge L2-B Final Account*). Azure CI on `main`: REPORTED green. Preceding commits: `2047a0d` (Final Account), `28e5c9f` (Rules capacity merge), `02e973a`, `2d5787c` (L2-A merge), `84c9fb3` (DC46 closeout), `a2544a1` (worker rollback checkpoint) |
 | **Production** | **REPORTED:** live at `https://app.constrap.com` on Firebase project `constrapp-69b5d`. **VERIFIED read-only, 21 November 2026 NZ (latest reading):** Firestore ruleset `10c7596c…` (232,460 bytes) and Storage ruleset `8b8edc14…` (9,271 bytes) byte-identical to `main` `9ce433d`; the Hosting release of 20 November 2026 08:52 UTC serves `index-Cz4wMhcy.js`, SHA-256-identical to a clean build of `main` — so the live application is `main`, including GANTT core completion; `approveFinalAccount` (revision `-00002-jib`, deployed 19 November 2026 20:48 UTC) runs source identical to `main`; **the eight team callables (`-00004-*`) and the worker (`-00003-ceg`) still run their 17 November 2026 source — the selective deploy was deliberate, and the only difference from `main` is the additive Final Account code**; three alert policies (A, B, C), two channels, no uptime check; 7-day figures: one ERROR log entry (the worker's activation line of 17 November), no callable 5xx, about 13,000 Firestore reads. *Earlier reading, 20 November 2026:* Firestore ruleset `10c7596c…` (released 19 November 2026 04:23 UTC; **232,460 bytes**) byte-identical to `frontend/firestore.rules` on `main`; Hosting release `765058ff63073a4b` (19 November 2026 23:54 UTC) serves `index-Co3P5JIm.js`, the bundle a clean build of `main` `93db6cc` produces — so the live application is `main`, including GANTT 1A1 / 1A2 / 1B, PULSE 1C, L2-B and L2-C. Functions and Storage Rules were not re-read on 20 November. *Earlier reading, kept for the record —* **VERIFIED** read-only, 19 November 2026: Firestore ruleset `05c78d00…` (**229,115 bytes**, created 18 November 2026 21:57 UTC) byte-identical to `main` `28e5c9f`; Storage ruleset `8b8edc14…` (9,271 bytes) byte-identical to `main`; eight callables on `-00004-*`; worker `processfilelinkrevocations-00003-ceg`; latest Hosting release `e38715de08e664b5` (18 November 05:29 UTC — REPORTED as the L2-A release; its files were not compared with `main` in this revision). **L2-B (20 November 2026): the Final Account Rules, the `approveFinalAccount` callable and Hosting are REPORTED deployed; they were not re-read from production in this revision.** The figures before this sentence are the 19 November reading, taken before that release. Earlier verification (17–18 November): concurrency 1, `FILE_LINK_RECONCILE_INTERVAL_HOURS=2`, Scheduler enabled, Policies A, B and C enabled, 1 company, 2 active Company Admins, 2 deactivated test members, 0 active external users |
 | **Deferred Control 46** | **CLOSED — 18 November 2026, with accepted risks; production acceptance approved by the architect** (SECURITY.md item 46; ADR-75 → *DC46 closure record*; TESTING.md §59) |
@@ -54,6 +55,9 @@ shares the worker's cloud project · the Firestore Rules have 12,540 bytes of he
 with the Final Account block (REPORTED published).
 
 **Exact next development action:** architect review of
+`fix/l3-application-error-recovery` (L3 Stage 2), then Git integration, one
+Hosting deploy and TESTING.md §66 E1–E10 (each on its own authorisation).
+*As written for Stage 1:* architect review of
 `chore/l3-recovery-monitoring` (L3 Stage 1), then Git integration (Product
 Owner). Then, each on its own authorisation: create the uptime check and the
 two alert policies (DEPLOYMENT.md → *L3 Stage 1*), and run the Firestore
@@ -66,22 +70,22 @@ baseline scenarios not exercised in the browser. After L3: L4, L5 and
 commercial readiness; Constrap IQ / Quant AI, mobile / field and the final
 audit later (Lead Architect's sequencing, 20 November 2026 — unchanged).
 **Next release gate:** none for Stage 1 (no deploy belongs to it).
-**Pre-customer gate:** the Firestore restoration verification (PREPARED,
-NOT RUN).
+**Pre-customer gate:** the Firestore restoration verification — DONE,
+SUCCESSFUL (REPORTED; DEPLOYMENT.md → *Restoration verification record*).
 
 **Awaiting authorisation — none of these is approved yet:**
 
 | Action | State |
 |---|---|
-| Git integration of `chore/l3-recovery-monitoring` (L3 Stage 1) | Awaiting architect review — PREPARED; files and documentation only |
-| Creating the uptime check and the two L3 alert policies in production (DEPLOYMENT.md → *L3 Stage 1* → *Creating the monitoring*) | NOT AUTHORISED. Files only; nothing exists in the cloud |
-| Running the Firestore restoration verification (`ops/recovery/README.md`) — creates and deletes a temporary database | NOT AUTHORISED. Never run |
-| L3 Stage 2 — application error recovery (Hosting-only) | NOT STARTED, NOT APPROVED |
+| Git integration of `chore/l3-recovery-monitoring` (L3 Stage 1) | DONE — merged to `main` as `4bd358a` |
+| Creating the uptime check and the two L3 alert policies in production (DEPLOYMENT.md → *L3 Stage 1* → *Creating the monitoring*) | DONE — created; five policies enabled and one uptime check (VERIFIED read-only, 21 November 2026). Alert delivery NOT tested |
+| Running the Firestore restoration verification (`ops/recovery/README.md`) — creates and deletes a temporary database | DONE — SUCCESSFUL (REPORTED by the Lead Architect); temporary database removed, only `(default)` listed (VERIFIED) |
+| L3 Stage 2 — application error recovery (ADR-80, Hosting-only) | IMPLEMENTED on `fix/l3-application-error-recovery` (uncommitted). Awaiting architect review; Git integration and the Hosting deploy NOT AUTHORISED |
 | GANTT core completion (ADR-79) | DONE — merged as `9ce433d`, released 20 November 2026 08:52 UTC (VERIFIED), Product Owner accepted (REPORTED). Certain baseline scenarios not exercised in the browser — a product acceptance check |
 | L2-C Portfolio Report (ADR-78) | DONE — merged as `93db6cc` (VERIFIED) and deployed (live bundle VERIFIED 20 November 2026). Visual, CSV and PDF acceptance confirmed (REPORTED). **OPEN:** the access, parity and performance checks of TESTING.md §63 |
 | `fix/l2b-final-account-reconciliation` (over-allocation readiness requirement; live / draft wording) | DONE — merged as `891043a` (VERIFIED); REPORTED deployed 20 November 2026 |
 | L2-B positive production acceptance — approval, revisions, export (TESTING.md §62 F3–F17) | PENDING. The reconciliation correction's release is REPORTED done (20 November 2026). Written before that release: The team callables and the reconciliation worker must NOT be redeployed. On the test project the user must first correct the receipt over-allocating CI-0012 before a Final Account can be prepared |
-| **Firestore recovery** — the restoration verification (`ops/recovery/README.md`; record in DEPLOYMENT.md → *Firestore recovery protection*) | Protection ENABLED; **two READY backups VERIFIED read-only, 21 November 2026** (`d05840df…` 19 November 16:51 UTC, `f6e32570…` 20 November 17:01 UTC). **The restoration verification is PREPARED and has NOT been run.** Required before commercial customer onboarding |
+| **Firestore recovery** — the restoration verification (`ops/recovery/README.md`; record in DEPLOYMENT.md → *Firestore recovery protection*) | Protection ENABLED; **two READY backups VERIFIED read-only, 21 November 2026** (`d05840df…` 19 November 16:51 UTC, `f6e32570…` 20 November 17:01 UTC). **Restoration verification SUCCESSFUL (REPORTED; recorded 21 November 2026): 44 collection groups / 211 documents and one sample hash matched; not every document's contents compared.** |
 | Billing administration by the billing account owner (ownership, a second administrator, a budget and its notifications) | NOT DONE — administrator action; a follow-up outside DC46. **Paid billing is REPORTED by the Product Owner (17 November 2026);** that does not complete this item |
 | Other DC46 follow-ups (Storage Data Access audit logs; Rules size reduction; load testing at agreed triggers; drawing-revision visibility policy; faster token revocation) | NOT STARTED, none approved — ROADMAP.md → *DC46 follow-ups* |
 | Minor documentation debt — three source comments still read "Deferred Control 46 — still OPEN" | Not blocking (architect, 18 November 2026); fix with the next code change in those files |
@@ -127,8 +131,8 @@ frontend/            the whole application (Vite root)
   tests/             unit · rules · functions suites
   firestore.rules    storage.rules    firestore.transitional.rules (generated)
   firebase.json      Hosting, both rules files, the Functions codebase, emulators
-ops/monitoring/      alert policy files — DC46 A, B, C created in production; L3 files prepared, not created
-ops/recovery/        Firestore restoration verification procedure + read-only count script (not run)
+ops/monitoring/      alert policy files — DC46 A, B, C created in production; L3 uptime check and two L3 policies created 21 November 2026
+ops/recovery/        Firestore restoration verification procedure + read-only count script (verification run once, successful — REPORTED)
 ops/RUNBOOK.md       production operations runbook
 docs/                detailed documentation (this file lives here)
 AGENT.md  CLAUDE.md  PRODUCT.md  ROADMAP.md  README.md  azure-pipelines.yml
@@ -145,7 +149,7 @@ AGENT.md  CLAUDE.md  PRODUCT.md  ROADMAP.md  README.md  azure-pipelines.yml
 | Callables | `listTeam`, `createInvitation`, `resendInvitation`, `revokeInvitation`, `previewInvitation`, `acceptInvitation`, `changeMemberRole`, `deactivateMember` — App Check enforced | **VERIFIED** by read-only production check, 17–18 November 2026: revisions `-00004-*` (deployed 17 November 2026 20:49 UTC, source of `main` `5fb96da`; functions source unchanged in `0225b03`) |
 | Worker | Cloud Run service `processfilelinkrevocations`, revision `-00003-ceg`, concurrency 1, own service account, `FILE_LINK_RECONCILE_INTERVAL_HOURS=2` | VERIFIED by read-only production check, 18 November 2026 |
 | Scheduler | `firebase-schedule-processFileLinkRevocations-australia-southeast1`, every minute, enabled | VERIFIED by read-only production check, 18 November 2026 |
-| Monitoring | Alert Policies A, B and C; log-based metric `dc46_reconciliation_plan_complete`; email channels `DC46 - Product Owner` and `DC46 - Billing Administrator` (addresses held only in Cloud Monitoring) | VERIFIED by read-only production check, 18 and 21 November 2026 (three policies, all enabled, two channels each). The L3 uptime check and two L3 policies are PROPOSED — files only |
+| Monitoring | Alert Policies A, B and C; log-based metric `dc46_reconciliation_plan_complete`; email channels `DC46 - Product Owner` and `DC46 - Billing Administrator` (addresses held only in Cloud Monitoring) | VERIFIED by read-only production check, 18 and 21 November 2026 (three policies, all enabled, two channels each). **L3 uptime check and L3 policies `15559930914799323534` and `9683374685335961795` CREATED and enabled — VERIFIED read-only, 21 November 2026; notification delivery NOT tested** |
 | Invitation email | Resend, from the Functions only; key in Secret Manager | REPORTED |
 | Emulator project | `constrapp-rules-test` (tests only, never a real project) | VERIFIED |
 | `.firebaserc` | None. Every deploy names `--project` explicitly | VERIFIED |
@@ -264,7 +268,7 @@ Summaries only. The linked source is authoritative.
 | **Production safety** | Nothing reaches production without a named authorisation. Release order per item is documented and followed. No secret in the frontend bundle or in Git. Proposed work is never described as live | [DEPLOYMENT.md](DEPLOYMENT.md); [SECURITY.md](SECURITY.md) → *Secrets & the Vite bundle* |
 
 All decision records: [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) (ADR-0a to
-ADR-79).
+ADR-80).
 
 ---
 
@@ -301,7 +305,7 @@ records, most of them "confirmed by the Product Owner". Dates are as recorded.
 |---|---|
 | DC46 follow-ups (billing administration, Storage audit logs, Rules size, load testing at triggers, drawing visibility, faster revocation) | NOT STARTED, none approved — ROADMAP.md → *DC46 follow-ups* |
 | DC46-C Stage 4 measurement at volume | DEFERRED to a threshold-triggered follow-up (about 500 companies, about 50,000 objects in one company, or routine deferral/overdue lines) |
-| Availability monitoring | An uptime check on `app.constrap.com` and its alert are PROPOSED (L3 Stage 1, files only). It lives inside the production project; a monitor independent of the project is not built and not in L3 |
+| Availability monitoring | An uptime check on `app.constrap.com` and its alert policy EXIST (L3 Stage 1; VERIFIED read-only, 21 November 2026; delivery not tested). It lives inside the production project; a monitor independent of the project is not built and not in L3 |
 | GST boundary hotfix (`fix/gst-boundary-pins`) | Merged; production state unconfirmed — see the verification list below |
 | Estimating; BOQ → Approved Budget transfer | Not built |
 | Commercial reports | L2-A project Commercial Report LIVE and production-accepted (REPORTED, 19 November 2026). **L2-C Portfolio Report DEPLOYED** (ADR-78) — visual and export acceptance PASSED (REPORTED, 20 November 2026); security, parity and performance checks OPEN. Programme CSV / print: LIVE (ADR-79). Not built: charts, trends, portfolio cash-flow forecast, programme indicators on the portfolio, saved report history |
@@ -376,9 +380,9 @@ risks as eliminated.
 Sequence*. Read it there; the list below is only the order.
 
 1. Complete DC46 security — **DONE** (Deferred Control 46 closed 18 November 2026; section G).
-2. International infrastructure assessment — **DONE** (18 November 2026). Firestore recovery protection ENABLED 18 November 2026; two READY backups VERIFIED 21 November 2026; restoration verification PREPARED, NOT RUN.
+2. International infrastructure assessment — **DONE** (18 November 2026). Firestore recovery protection ENABLED 18 November 2026; two READY backups VERIFIED 21 November 2026; restoration verification SUCCESSFUL (REPORTED, recorded 21 November 2026).
 3. L2 — Commercial Reports and Final Account — **L2-A LIVE and accepted**; L2-B: Stage A LIVE; **Stage B DEPLOYED — PRODUCTION ACCEPTANCE PENDING** (reconciliation correction REPORTED deployed 20 November 2026; positive approval acceptance pending); **L2-C Portfolio Reporting DEPLOYED** (ADR-78; visual and export acceptance PASSED — REPORTED; security, parity and performance checks OPEN). **GANTT core completion (ADR-79) LIVE and Product Owner accepted** (20 November 2026).
-4. L3 — Production Reliability — **IN PROGRESS**: assessment approved; Stage 1 PREPARED (nothing created in production, no restore run); Stage 2 not started.
+4. L3 — Production Reliability — **IN PROGRESS**: assessment approved; Stage 1 CLOSED (monitoring created, restoration verified); Stage 2 (ADR-80) IMPLEMENTED, NOT DEPLOYED.
 5. L4 — BOQ-to-Approved-Budget integration — NOT STARTED.
 6. L5 — Accounting integrations, Xero first — NOT STARTED.
 7. Constrap IQ and AI capabilities — NOT STARTED.
@@ -416,8 +420,8 @@ approval. Stages 2, 4, 8 and 11 have no scope recorded in the repository.
 | **Monitoring's own limits** | Policy A cannot be relied on for a billing suspension or a deleted service; both policies live in the project they watch. An independent external availability monitor remains future reliability work | DEPLOYMENT.md → *Policy A* limitations |
 | **International region / latency** | All backend resources are in `australia-southeast1`. Assessed 18 November 2026: retained (architect decision). Measured from New Zealand only (Firestore request about 100–115 ms after TLS); no Caribbean, North American or European measurement exists — validate with a pilot customer session. Tax remains Australian GST only; international tax deferred | ROADMAP.md → *Strategic Development Sequence* stage 2; AGENT.md |
 | **Firestore recovery** | PITR (7 days), daily backups (14-day retention) and delete protection ENABLED 18 November 2026. Two READY backups VERIFIED 21 November 2026. **No restore has been tested, so recovery is unproven**; the verification compares counts and one sample hash, not every document. Storage files are outside Firestore backups (7-day soft delete only). No alert watches backup freshness — a weekly manual check | DEPLOYMENT.md → *Firestore recovery protection*; `ops/recovery/README.md`; `ops/RUNBOOK.md` |
-| **Operational visibility** | No availability check and no callable-failure alert exist yet (PROPOSED in L3 Stage 1). Client-side errors reach only the user's browser console — no reporting service, by decision deferred to commercial readiness. All alerting lives inside the project it watches | `ops/monitoring/README.md`; ROADMAP.md stage 4 |
-| **Application error recovery (L3 Stage 2, not started)** | A failed projects read shows *Project not found*; older registers show raw SDK error text and a write made offline leaves the dialog on *Saving…* — user confusion, not a data-integrity risk (single-document, Rules-guarded writes) | L3 assessment, 21 November 2026 |
+| **Operational visibility** | An availability check and a Final Account failure alert exist since L3 Stage 1, but neither has fired and notification delivery is NOT tested. Client-side errors reach only the user's browser console — no reporting service, by decision deferred to commercial readiness. All alerting lives inside the project it watches | `ops/monitoring/README.md`; ROADMAP.md stage 4 |
+| **Application error recovery (L3 Stage 2 — IMPLEMENTED, NOT DEPLOYED, ADR-80; until it is deployed production behaves as described here, and 58 write sites keep this behaviour afterwards — TESTING.md §66)** | A failed projects read shows *Project not found*; older registers show raw SDK error text and a write made offline leaves the dialog on *Saving…* — user confusion, not a data-integrity risk (single-document, Rules-guarded writes) | L3 assessment, 21 November 2026 |
 | **Rules capacity** | 232,460 of 245,000 bytes — 12,540 bytes of headroom (REPORTED published 20 November 2026). The 1000-expression ceiling and access-call budget are unchanged by ADR-76 | SECURITY.md → *Ruleset source-size limit*; ADR-76, ADR-77 |
 | **Client-enforced controls** | Several lifecycle, uniqueness and cumulative-cap controls remain client-only | SECURITY.md → *Deferred Controls* |
 | **Final Account (deployed, not accepted)** | No revision has been prepared or approved in production; approval consistency is proven against the EMULATOR only. The reconciliation correction is REPORTED released (20 November 2026), so the callable is REPORTED to refuse an over-allocated client invoice and the live view to label forecast figures as forecasts — not re-read from production in this revision. A draft's figures are unverified until the callable recomputes them; the Admin SDK and console can alter an approved revision; the server calculation must be regenerated when `lib/finalAccount.js` or a module it imports changes; registers stay writable after approval — differences are reported, not prevented | SECURITY.md item 47; ADR-77 |
@@ -456,8 +460,9 @@ implementation on `feature/gantt-core-completion` (uncommitted).
 
 *Done, 20–21 November 2026:* GANTT core completion merged as `9ce433d`,
 released Hosting-only and Product Owner accepted; the L3 read-only
-assessment; L3 Stage 1 prepared on `chore/l3-recovery-monitoring`
-(uncommitted).
+assessment; L3 Stage 1 merged as `4bd358a`, its monitoring created and its
+restoration verification run successfully (steps 1–3 below are DONE and
+kept as written).
 
 1. **Architect review and Git integration** of
    `chore/l3-recovery-monitoring` (L3 Stage 1), then refresh this file's
@@ -468,8 +473,9 @@ assessment; L3 Stage 1 prepared on `chore/l3-recovery-monitoring`
 3. **Run the Firestore restoration verification** —
    `ops/recovery/README.md`; TESTING.md §65 V1–V6. It creates and deletes
    a temporary database and never touches `(default)`.
-4. **L3 Stage 2** — application error recovery, Hosting-only, on its own
-   brief.
+4. **L3 Stage 2** — application error recovery (ADR-80): IMPLEMENTED on
+   `fix/l3-application-error-recovery`; architect review, then merge, one
+   Hosting deploy and TESTING.md §66 E1–E10.
 5. **Product acceptance outside L3** — L2-B positive approval (TESTING.md
    §62 F3–F17, with backend evidence for F9; L2-B is not accepted until
    then); the remaining L2-C checks (TESTING.md §63: P4, P19–P20, M1–M5);

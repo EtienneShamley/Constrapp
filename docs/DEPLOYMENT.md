@@ -3781,7 +3781,9 @@ separately authorised):**
 release history (*Rollback* on the previous release). There is no
 `firebase hosting:rollback` command. Nothing else needs reverting.
 
-## Firestore recovery protection — ENABLED 18 November 2026; two READY backups VERIFIED 21 November 2026; restoration verification PREPARED, NOT RUN
+## Firestore recovery protection — ENABLED 18 November 2026; two READY backups VERIFIED 21 November 2026; restoration verification SUCCESSFUL (L3 Stage 1; counts and one sample hash — not every document's contents)
+
+**Status update — restoration verified (recorded 21 November 2026, NZ).** REPORTED by the Lead Architect as verified operational evidence: the 20 November 2026 backup was restored into the temporary database `restore-verify-20261120-2329`; the restore operation reported SUCCESSFUL; an unauthenticated request to the temporary database returned 403; all 44 collection-group counts matched (211 documents); the sample document hash matched; the temporary database was removed. VERIFIED read-only on 21 November 2026 for this record: the database listing shows only `(default)`, with delete protection ENABLED and point-in-time recovery ENABLED; both backups are still READY. **Not established:** the exact time and the mechanism of the temporary database's deletion were not independently established and are not recorded. **Scope of the proof:** the validation compared counts per collection group and one document hash; it did NOT compare every document's contents, and Storage files are outside Firestore backups. The paragraph below, including *No restore has been performed*, is kept as written before the verification.
 
 **Current status (21 November 2026, NZ) — VERIFIED read-only.** Point-in-time recovery ENABLED (7 days; earliest version 18 November 2026 19:28 UTC), one daily backup schedule `86b478d6-9a91-49f8-9c55-ff4d183fed3f` with 14-day retention, delete protection ENABLED, database uid `c296a8a4-ff1a-4576-a13a-9ab628a3d430`. **Two scheduled backups exist and are READY:**
 
@@ -3794,7 +3796,25 @@ The empty list on 19 November was timing: the first scheduled run came about 20 
 
 ### Restoration verification record
 
-NOT RUN. When the verification is authorised and run, record here: date and operator; backup id and snapshot time; temporary database id and uid; restore start and end; the configuration read in step 4 of the procedure; the HTTP status of the Security Rules check; counts, total and sample hash from both readings; MATCH or the mismatches; deletion time; final checks. Never a sample path, a document id or a field value.
+**SUCCESSFUL — REPORTED by the Lead Architect; recorded 21 November 2026 (NZ).**
+
+| Item | Record | Status |
+|---|---|---|
+| Project | `constrapp-69b5d` | — |
+| Backup restored | The 20 November 2026 backup (the scheduled backup with that date is `f6e32570-aea9-480c-b5c0-d7aa9d33d9f4`, snapshot 20 November 2026 17:01:09 UTC) | REPORTED |
+| Temporary database | `restore-verify-20261120-2329` | REPORTED |
+| Restore operation | SUCCESSFUL | REPORTED |
+| Security Rules check | Unauthenticated request returned 403 | REPORTED |
+| Counts | All 44 collection groups matched; 211 documents | REPORTED |
+| Sample document | Field hash matched (no path, id or value recorded) | REPORTED |
+| Cleanup | Temporary database removed; final database listing shows only `(default)` | REPORTED; the listing re-read and VERIFIED 21 November 2026 |
+| Production database | Delete protection ENABLED, point-in-time recovery ENABLED | VERIFIED read-only, 21 November 2026 |
+| Deletion time and mechanism | Not independently established; not recorded | — |
+| Operator, restore start and end times, database uid | Not supplied to this record | — |
+
+The validation was successful but compared counts per collection group and one document hash only. It did not compare every document's contents.
+
+*Instruction as written before the run:* NOT RUN. When the verification is authorised and run, record here: date and operator; backup id and snapshot time; temporary database id and uid; restore start and end; the configuration read in step 4 of the procedure; the HTTP status of the Security Rules check; counts, total and sample hash from both readings; MATCH or the mismatches; deletion time; final checks. Never a sample path, a document id or a field value.
 
 *Status as recorded on 19 November 2026, kept for the record:*
 
@@ -4358,7 +4378,9 @@ writes any document or creates a baseline; another tab's print output
 changes (the Reports tab and the Portfolio share the print rules); or an
 external role reaches the programme.
 
-## L3 Stage 1 — recovery verification, availability check and Final Account failure alert — PREPARED 21 November 2026; NOTHING CREATED, NOTHING RUN
+## L3 Stage 1 — recovery verification, availability check and Final Account failure alert — CLOSED: monitoring CREATED and restoration verification SUCCESSFUL (recorded 21 November 2026); alert delivery NOT tested
+
+**Status update — Stage 1 closed (recorded 21 November 2026, NZ).** Merged to `main` as `4bd358a`. Monitoring, VERIFIED read-only on 21 November 2026: uptime check `l3-app-constrap-com-https-availability-10ehOIKFFlc` on `app.constrap.com` (every 300 s); alert policy `15559930914799323534` (*L3 app.constrap.com: HTTPS check failing from two or more locations for 10 minutes*, enabled, two channels); alert policy `9683374685335961795` (*L3 approveFinalAccount: server failure (5xx)*, enabled, one channel); DC46 policies A, B and C still present and enabled, two channels each — five policies in all. Notification channels verified (REPORTED by the Lead Architect; channel counts re-read). Restoration, REPORTED by the Lead Architect: the 20 November 2026 backup was restored into the temporary database `restore-verify-20261120-2329`; the restore operation reported SUCCESSFUL; an unauthenticated request to the temporary database returned 403; all 44 collection-group counts matched (211 documents); the sample document hash matched; the temporary database was removed (record: *Firestore recovery protection* → *Restoration verification record*). **Not established:** the exact time and the mechanism of the temporary database's deletion were not independently established and are not recorded. **Scope of the proof:** the validation compared counts per collection group and one document hash; it did NOT compare every document's contents, and Storage files are outside Firestore backups. **Not tested:** actual delivery of an alert notification — neither L3 alert has fired or been test-fired. The text below, including the table's *NOT CREATED* / *NOT RUN* cells and *Creating the monitoring — NOT AUTHORISED YET*, is kept as written before these actions.
 
 **Status.** Prepared on `chore/l3-recovery-monitoring` (uncommitted). This
 stage adds files and documentation only: no Hosting, Functions, Firestore
@@ -4451,7 +4473,18 @@ for the check (delete its policy first). Nothing else depends on them.
 
 ### Monitoring release record
 
-NOT CREATED.
+**CREATED — VERIFIED read-only, 21 November 2026 (NZ).** Project `constrapp-69b5d`.
+
+| Object | Identifier | State |
+|---|---|---|
+| Uptime check — `app.constrap.com` HTTPS | `l3-app-constrap-com-https-availability-10ehOIKFFlc` | Exists; period 300 s |
+| Alert policy — uptime | `15559930914799323534` | Enabled; two notification channels |
+| Alert policy — Final Account failure | `9683374685335961795` | Enabled; one notification channel |
+| DC46 policies A, B, C | `15284677036198995887`, `11943159347055161843`, `5090947661132483012` | Preserved; enabled; two channels each |
+
+Notification channels verified (REPORTED by the Lead Architect). **Actual alert-notification delivery was NOT tested**: neither policy has fired and no test notification was sent. Creation time and operator were not supplied to this record. Checklist O1 (every location passing for 15 minutes) and O3 were not re-read for this record.
+
+*As written before creation:* NOT CREATED.
 
 ### Operational incident log
 
@@ -4461,3 +4494,15 @@ recorded where they were written: *Billing interruption* (12–13 November
 2026) under DC46-C.
 
 No entries yet.
+
+## L3 Stage 2 — application error recovery — HOSTING ONLY (ADR-80; IMPLEMENTED 21 November 2026 — NOT DEPLOYED)
+
+Branch `fix/l3-application-error-recovery` (uncommitted). Client code only: no Firestore or Storage Rules, no Functions, no index, no environment value, no dependency.
+
+**Release, when authorised:** architect review → merge to `main` → CI green → one Hosting deploy from a clean `main` build (`firebase deploy --only hosting`). Nothing else is deployed. No ordering constraint with any other component.
+
+**Acceptance:** TESTING.md §66 E1–E10, on a test project.
+
+**Rollback:** Firebase Console → Hosting → release history → roll back to the previous release. No data is migrated or reshaped by this change, so a rollback needs no data step.
+
+**Release record:** NOT DEPLOYED.

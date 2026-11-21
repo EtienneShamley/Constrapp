@@ -193,3 +193,44 @@ export function statusBarSegments(statusCounts) {
   }
   return out
 }
+
+// ── How the project route presents the projects read (L3 Stage 2) ────────────
+//
+// `useProject` finds one project in the company's live projects list. Four
+// different facts used to collapse into "Project not found.":
+//
+//   NOT_FOUND          the SERVER's list was read and this id is not in it
+//   PERMISSION_DENIED  the list read was refused by Firestore rules
+//   UNAVAILABLE        the list read failed for any other reason; the listener
+//                      has ended and only a retry re-opens it
+//   OFFLINE            the only answer so far is the local cache (the SDK
+//                      answers an unreachable backend with an EMPTY cached
+//                      list) — the listener is alive and recovers by itself
+//
+// A project that IS in the list is READY even when the list came from cache:
+// it was read from the server earlier in this session.
+//
+// ⚠️ Presentation only. Nothing here grants or withholds access — Firestore
+// rules decide what the list contains. A project in another company, or one
+// that never existed, is NOT_FOUND either way, so the wording discloses
+// nothing about records the caller cannot read.
+export const PROJECT_LOAD_STATE = {
+  LOADING:           'loading',
+  READY:             'ready',
+  NOT_FOUND:         'not-found',
+  PERMISSION_DENIED: 'permission-denied',
+  UNAVAILABLE:       'unavailable',
+  OFFLINE:           'offline',
+}
+
+export function projectLoadState({ loading, error, errorCode, fromCache, found }) {
+  if (loading) return PROJECT_LOAD_STATE.LOADING
+  if (error) {
+    return errorCode === 'permission-denied'
+      ? PROJECT_LOAD_STATE.PERMISSION_DENIED
+      : PROJECT_LOAD_STATE.UNAVAILABLE
+  }
+  if (found) return PROJECT_LOAD_STATE.READY
+  if (fromCache) return PROJECT_LOAD_STATE.OFFLINE
+  return PROJECT_LOAD_STATE.NOT_FOUND
+}

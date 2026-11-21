@@ -6,10 +6,12 @@ import { useCompany } from '../hooks/useCompany'
 import { resolveProjectCurrency } from '../lib/currency'
 import { PROJECT_TABS } from '../lib/projectTabs'
 import { ModuleMark } from '../components/ModuleMark'
+import Btn from '../components/Btn'
+import { PROJECT_LOAD_STATE } from '../lib/projects'
 
 export default function ProjectDetailLayout() {
   const { projectId } = useParams()
-  const { project, projectLoading } = useProject(projectId)
+  const { project, projectLoading, projectState, retryProject } = useProject(projectId)
   const { company } = useCompany()
 
   // Resolved ONCE here and handed to every project tab through the outlet
@@ -20,8 +22,40 @@ export default function ProjectDetailLayout() {
     return <div className="text-[13px] text-brand-muted">Loading project…</div>
   }
 
+  // L3 Stage 2: "not found" is said ONLY when the server's list was read and
+  // this project is not in it. A refused, failed or unconfirmed read is a
+  // different fact and gets its own wording and recovery.
+  if (projectState === PROJECT_LOAD_STATE.PERMISSION_DENIED) {
+    return (
+      <ProjectNotice
+        state={projectState}
+        title="You do not have access to this company's projects"
+        body="The server refused to list the projects. Your access may have changed — ask a Company Admin, or sign out and in again. Access is enforced by Firestore Security Rules."
+        onRetry={retryProject}
+      />
+    )
+  }
+  if (projectState === PROJECT_LOAD_STATE.UNAVAILABLE) {
+    return (
+      <ProjectNotice
+        state={projectState}
+        title="This project could not be loaded"
+        body="The projects could not be read from the server. This is a loading failure, not a missing project. Check your connection and try again."
+        onRetry={retryProject}
+      />
+    )
+  }
+  if (projectState === PROJECT_LOAD_STATE.OFFLINE) {
+    return (
+      <ProjectNotice
+        state={projectState}
+        title="Waiting for the server"
+        body="The server has not answered yet, so this project cannot be confirmed. It will appear by itself when the connection returns."
+      />
+    )
+  }
   if (!project) {
-    return <div className="text-[13px] text-brand-muted">Project not found.</div>
+    return <div data-project-state={PROJECT_LOAD_STATE.NOT_FOUND} className="text-[13px] text-brand-muted">Project not found.</div>
   }
 
   return (
@@ -67,6 +101,16 @@ export default function ProjectDetailLayout() {
           code ids) into another project. Navigating between tabs or records
           WITHIN a project never changes the key. */}
       <Outlet key={projectId} context={{ project, projectId, currencyCode }} />
+    </div>
+  )
+}
+
+function ProjectNotice({ state, title, body, onRetry }) {
+  return (
+    <div data-project-state={state} role="alert" className="max-w-[560px]">
+      <p className="text-[13px] font-semibold text-brand-text m-0">{title}</p>
+      <p className="text-[12.5px] text-brand-muted m-0 mt-1">{body}</p>
+      {onRetry && <Btn sm variant="ghost" type="button" className="mt-3" onClick={onRetry}>Try again</Btn>}
     </div>
   )
 }
