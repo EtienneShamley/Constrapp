@@ -50,6 +50,13 @@ export const CODE = {
   FINAL_ACCOUNT_CHANGED:    'final-account-figures-changed',
   FINAL_ACCOUNT_TOO_LARGE:  'final-account-too-large',
   FINAL_ACCOUNT_BUSY:       'final-account-busy',
+  // ADR-81 — transferBoqToBudget.
+  BOQ_TRANSFER_DISABLED:    'boq-transfer-disabled',
+  BOQ_TRANSFER_FORBIDDEN:   'boq-transfer-forbidden',
+  BOQ_TRANSFER_STALE:       'boq-transfer-stale-review',
+  BOQ_TRANSFER_BLOCKED:     'boq-transfer-blocked',
+  BOQ_TRANSFER_TOO_LARGE:   'boq-transfer-too-large',
+  BOQ_TRANSFER_BUSY:        'boq-transfer-busy',
 }
 
 const GRPC = {
@@ -87,6 +94,12 @@ const GRPC = {
   [CODE.FINAL_ACCOUNT_CHANGED]:   'failed-precondition',
   [CODE.FINAL_ACCOUNT_TOO_LARGE]: 'failed-precondition',
   [CODE.FINAL_ACCOUNT_BUSY]:      'aborted',
+  [CODE.BOQ_TRANSFER_DISABLED]:   'unavailable',
+  [CODE.BOQ_TRANSFER_FORBIDDEN]:  'permission-denied',
+  [CODE.BOQ_TRANSFER_STALE]:      'failed-precondition',
+  [CODE.BOQ_TRANSFER_BLOCKED]:    'failed-precondition',
+  [CODE.BOQ_TRANSFER_TOO_LARGE]:  'failed-precondition',
+  [CODE.BOQ_TRANSFER_BUSY]:       'aborted',
 }
 
 const MESSAGE = {
@@ -124,6 +137,12 @@ const MESSAGE = {
   [CODE.FINAL_ACCOUNT_CHANGED]:   'The project records have changed since this draft was prepared. Withdraw it and prepare a new draft.',
   [CODE.FINAL_ACCOUNT_TOO_LARGE]: 'This project holds more records than a Final Account approval can read in one step.',
   [CODE.FINAL_ACCOUNT_BUSY]:      'The project records were being changed while this approval ran. Nothing was approved. Try again.',
+  [CODE.BOQ_TRANSFER_DISABLED]:   'BOQ to budget transfer is temporarily unavailable.',
+  [CODE.BOQ_TRANSFER_FORBIDDEN]:  'Only a Company Admin, Project Manager or QS can transfer the BOQ to the budget.',
+  [CODE.BOQ_TRANSFER_STALE]:      'The BOQ or the working budget changed since you reviewed this transfer. Nothing was written. Review it again.',
+  [CODE.BOQ_TRANSFER_BLOCKED]:    'A cost code chosen for set-to-zero is no longer eligible. Nothing was written. Review the transfer again.',
+  [CODE.BOQ_TRANSFER_TOO_LARGE]:  'This project holds more records than a BOQ transfer can read in one step. Nothing was written.',
+  [CODE.BOQ_TRANSFER_BUSY]:       'The BOQ or the budget was being changed while this transfer ran. Nothing was written. Try again.',
 }
 
 export class TeamError extends HttpsError {

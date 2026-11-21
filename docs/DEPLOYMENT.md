@@ -4506,3 +4506,133 @@ Branch `fix/l3-application-error-recovery` (uncommitted). Client code only: no F
 **Rollback:** Firebase Console → Hosting → release history → roll back to the previous release. No data is migrated or reshaped by this change, so a rollback needs no data step.
 
 **Release record:** NOT DEPLOYED.
+
+## L4 — BOQ → working budget transfer release order — ADR-81 — MERGE, AZURE GREEN, RULES, ONE callable, HOSTING (IMPLEMENTED 21 November 2026 — NOT DEPLOYED)
+
+Branch `feature/l4-boq-budget-transfer` (uncommitted). Three components
+change: Firestore Rules (the `budgetLines` create rule), ONE new callable
+(`transferBoqToBudget`) and the Hosting bundle. No Storage Rules, index,
+migration, secret, IAM or scheduler change. **No existing Function is
+redeployed.**
+
+**The sequence. Nothing is deployed to production before step 2 is green.**
+
+1. Commit and merge the feature to `main`.
+2. **Azure `main` pipeline GREEN** on that commit — the gate for everything below.
+3. Deploy Firestore Rules.
+4. Deploy ONLY the new `transferBoqToBudget` callable.
+5. Verify the callable deployment.
+6. Build and deploy Hosting.
+7. Complete TESTING.md §67 acceptance (T1–T16) on a test project.
+
+**Why this order.** Each step is compatible with the production state before
+it. The Rules only refuse client creates of `boq-…` budget-line ids and of a
+`boqSource` field; no deployed client writes either, and manual lines keep
+random ids without a hyphen. The callable is unreachable from the deployed
+bundle. Hosting last: the *Transfer to budget* button appears only when both
+of its dependencies are live. Hosting first would show a button whose call
+answers *not available on the server yet* (nothing is written); the callable
+before the Rules would leave BOQ-sourced ids and provenance forgeable by a
+client.
+
+*Preconditions for step 3.* Steps 1 and 2 complete. From a clean `main`
+checkout in `frontend/`: `npm run rules:transitional:check`,
+`npm run functions:calc:check` and `npm run functions:transfer-calc:check`
+clean; `wc -c firestore.rules` reads **232,776**. Confirm the live ruleset is
+the 232,460-byte file of `main` `b7f825f`. Record the current Hosting version
+id and Rules ruleset id. The local toolchain as for ADR-77 (firebase-tools
+15.34.2, Java 21 or later for the emulators).
+
+**STEP 3 — Firestore Rules.** From `frontend/`:
+`firebase deploy --only firestore:rules --project constrapp-69b5d`
+*Verify:* the Console shows a 232,776-byte ruleset; on the Budget tab a manual
+line can still be added and corrected. *Compatibility:* the deployed app is
+unaffected. *Rollback:* see **Rollback** below — these Rules are RETAINED in
+an emergency, not reverted.
+
+**STEP 4 — the ONE new callable.** From `frontend/`:
+`firebase deploy --only functions:team:transferBoqToBudget --project constrapp-69b5d`
+**The `team:` codebase prefix is REQUIRED** (*L2-B Stage B*, step 2 — the
+unqualified form matches no function). Confirm the CLI's plan lists exactly
+ONE function — a create of `transferBoqToBudget` — before accepting it; if it
+lists any other function, stop. **Never `--only functions`** — that would
+redeploy the eight team callables, `approveFinalAccount` and the DC46
+reconciliation worker. `functions/.env.constrapp-69b5d` carries
+`BOQ_BUDGET_TRANSFER_ENABLED=true` (architect decision, 21 November 2026); the
+code default is `false` (fail closed), and the flag is read by this function
+only. `FINAL_ACCOUNT_APPROVAL_ENABLED` and every other parameter are
+unchanged. The predeploy chain runs the Functions lint and pure tests, which
+include the generated-proposal checks and the flag pins.
+
+**STEP 5 — verify the callable (read-only).** `gcloud run services list`
+shows a NEW service `transferboqtobudget` at revision `-00001-*`; **every
+other service — the eight team callables, `approvefinalaccount` and
+`processfilelinkrevocations` — keeps the revision it had before step 4**
+(record them before and compare). An unauthenticated request without App
+Check to the new service is refused 401. Do not proceed to step 6 otherwise.
+
+**STEP 6 — Hosting.** From the same clean `main` checkout in `frontend/`:
+`npm run build`, then
+`firebase deploy --only hosting --project constrapp-69b5d`
+
+**STEP 7 — acceptance.** TESTING.md §67 T1–T16, on a test project.
+
+### Rollback
+
+**Emergency rollback — in this order, and normally no further:**
+
+1. **Restore the previous Hosting release.** Firebase console → Hosting →
+   release history → roll back to the recorded previous version (there is no
+   `firebase hosting:rollback` CLI command). The *Transfer to budget* button
+   disappears.
+2. **Disable the new callable with its flag.** Set
+   `BOQ_BUDGET_TRANSFER_ENABLED=false` in `functions/.env.constrapp-69b5d` and
+   redeploy that ONE function
+   (`firebase deploy --only functions:team:transferBoqToBudget --project constrapp-69b5d`).
+   It then answers `boq-transfer-disabled` before any read. No other function
+   is redeployed. Do not delete the function as a first resort.
+3. **RETAIN the L4 Rules (232,776 bytes).**
+4. **Preserve every working budget line**, BOQ-sourced ones included. Nothing
+   is deleted, zeroed or migrated automatically.
+
+**Why the Rules are not reverted.** The earlier ruleset (232,460 bytes) does
+not reserve `boq-…` ids or the `boqSource` field. Once the callable has been
+live, `budgetLines/boq-{costCodeId}` documents with server-written provenance
+may exist. Under the earlier Rules a browser client could CREATE a line at an
+unused `boq-` id carrying a forged `boqSource`, which the application would
+then read as a trusted BOQ-sourced line. The L4 Rules are strictly more
+restrictive than the earlier ones for clients and are compatible with both the
+previous and the new Hosting bundle, so keeping them costs nothing.
+**Any future Rules rollback or replacement must be separately reviewed for
+compatibility with the BOQ-sourced lines already stored, and must keep the
+reservation unless that review decides otherwise.** Before the callable has
+ever been live (after step 3 only) the earlier ruleset is still compatible,
+but reverting it then gains nothing either.
+
+**State after an emergency rollback.** BOQ-sourced working lines remain on the
+Budget tab as ordinary working lines; the previous bundle shows them without
+the *From BOQ* label and lets a financial role correct `budgeted` and `notes`
+as for any line (Rules still freeze `boqSource`). Any budget version already
+approved from them is an ordinary SHIELD version and is unaffected.
+
+### Failure recovery
+
+- *A transfer that should not have been made.* Budget lines cannot be deleted.
+  BOQ-sourced lines are unapproved WORKING data: correct the amount on the
+  Budget tab (it is then shown as changed by hand), or void the BOQ items and
+  use *Set this line to zero*. If no version was approved from them, no
+  report, forecast, commitment or approved figure was affected.
+- *A wrong approved version.* Not a transfer fault: approve a corrected version
+  through SHIELD (ADR-70); approved versions are never edited.
+- *The callable errors or times out.* The user sees an uncertain outcome and
+  may send the same request again; an applied request is answered *already
+  applied*. Check Cloud Logging for `boq transfer call failed`. Disable with
+  the flag (Rollback step 2) if needed.
+- *The audit record.* One `boq_budget.transferred` event per transfer that
+  changed a line, in `companies/{c}/auditEvents` (Admin SDK / console only).
+
+**Not created by this release:** no alert policy for `transferBoqToBudget`
+failures (the L3 Final Account alert does not cover it). Adding one is a
+separate operational authorisation.
+
+**Release record:** NOT DEPLOYED.

@@ -150,7 +150,7 @@ describe('release safety', () => {
     expect(firebaseJson.functions.map(f => f.codebase)).toEqual(['team'])
     // No other export shares the prefix the CLI filter matches on (id === name || id.startsWith(name + '-')).
     const names = [...index.matchAll(/^export const (\w+)\s+=\s+(wrap|onCall|onSchedule)\(/gm)].map(m => m[1])
-    expect(names).toHaveLength(10)
+    expect(names).toHaveLength(11)   // + transferBoqToBudget (ADR-81)
     expect(names.filter(n => n === 'approveFinalAccount' || n.startsWith('approveFinalAccount-'))).toEqual(['approveFinalAccount'])
   })
 

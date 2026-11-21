@@ -17,6 +17,8 @@
     "rules:transitional:check": "node scripts/build-transitional-rules.mjs --check",
     "functions:calc": "node scripts/build-final-account-bundle.mjs",
     "functions:calc:check": "node scripts/build-final-account-bundle.mjs --check",
+    "functions:transfer-calc": "node scripts/build-boq-transfer-bundle.mjs",
+    "functions:transfer-calc:check": "node scripts/build-boq-transfer-bundle.mjs --check",
     "test:unit": "vitest run --config vitest.config.js",
     "test:rules": "firebase emulators:exec --only firestore,storage --project constrapp-rules-test \"vitest run --config vitest.rules.config.js\"",
     "test:functions": "firebase emulators:exec --only auth,firestore,functions --project constrapp-rules-test \"vitest run --config vitest.functions.config.js\"",

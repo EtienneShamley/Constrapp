@@ -32,6 +32,9 @@ export const AUDIT = {
   FILE_LINKS_RECONCILIATION_OVERDUE:  'file_links.reconciliation_overdue',
   // ADR-77 — one event per approved Final Account revision, in its transaction.
   FINAL_ACCOUNT_APPROVED:             'final_account.approved',
+  // ADR-81 — one event per BOQ transfer that CHANGED a working budget line, in
+  // its transaction. A transfer that writes nothing writes no event.
+  BOQ_BUDGET_TRANSFERRED:             'boq_budget.transferred',
 }
 
 export const auditCollection = (db, companyId) =>

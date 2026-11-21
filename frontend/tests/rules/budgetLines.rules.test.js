@@ -545,6 +545,93 @@ describe('budgetLines — delete is blocked', () => {
   })
 })
 
+// ── F2. BOQ-SOURCED LINES ARE THE TRUSTED CALLABLE'S ALONE (L4, ADR-81) ──────
+//
+// `budgetLines/boq-{costCodeId}` and the `boqSource` provenance map are written
+// only by the Admin-SDK `transferBoqToBudget` callable. No client — whatever
+// its role — may create a line at a reserved id or carrying `boqSource`, and
+// none may rewrite or remove the map on an existing line. Everything a client
+// could do to a manual line before, it still can.
+
+describe('budgetLines — BOQ-sourced lines are reserved for the trusted transfer (ADR-81)', () => {
+  const BOQ_SOURCE = {
+    first:  { at: new Date('2026-11-20T00:00:00Z'), by: 'server', amount: 40_000, itemCount: 3, fingerprint: 'v1:aa' },
+    latest: { at: new Date('2026-11-21T00:00:00Z'), by: 'server', amount: 40_000, itemCount: 3, fingerprint: 'v1:aa', operation: 'create', transferCount: 1, requestKey: 'r1:x', resultKey: 'v1:y' },
+  }
+  const payload = (extra = {}) => ({
+    costCodeId: 'cc7', costCodeName: '07-100 — Roofing',
+    budgeted: 40_000, committed: 0, actual: 0, invoiced: 0, notes: '',
+    createdAt: serverTimestamp(), createdBy: USERS.pm.uid, ...extra,
+  })
+  const seedSourced = () => seed({ costCodeId: 'cc7', costCodeName: '07-100 — Roofing', budgeted: 40_000, boqSource: BOQ_SOURCE }, 'boq-cc7')
+
+  for (const key of WRITERS) {
+    it(`${USERS[key].role} CANNOT create a line at a reserved boq- id`, async () => {
+      await assertFails(setDoc(lineRef(ctx(USERS[key]), COMPANY_A, 'boq-cc7'), payload()))
+      await assertFails(setDoc(lineRef(ctx(USERS[key]), COMPANY_A, 'boq-'), payload()))
+      await assertFails(setDoc(lineRef(ctx(USERS[key]), COMPANY_A, 'boq-anything-else'), payload()))
+    })
+
+    it(`${USERS[key].role} CANNOT forge boqSource on a new line — at a reserved id or an ordinary one`, async () => {
+      await assertFails(setDoc(lineRef(ctx(USERS[key]), COMPANY_A, 'boq-cc7'), payload({ boqSource: BOQ_SOURCE })))
+      await assertFails(setDoc(lineRef(ctx(USERS[key]), COMPANY_A, `forged-${key}`), payload({ boqSource: BOQ_SOURCE })))
+      await assertFails(setDoc(lineRef(ctx(USERS[key]), COMPANY_A, `forged2-${key}`), payload({ boqSource: {} })))
+      await assertFails(setDoc(lineRef(ctx(USERS[key]), COMPANY_A, `forged3-${key}`), payload({ boqSource: null })))
+    })
+  }
+
+  it('an id that merely CONTAINS "boq-" is an ordinary line and still accepted', async () => {
+    await assertSucceeds(setDoc(lineRef(ctx(USERS.qs), COMPANY_A, 'myboq-line'), payload()))
+    await assertSucceeds(setDoc(lineRef(ctx(USERS.qs), COMPANY_A, 'BOQ-upper'), payload()))
+  })
+
+  it('NO client can alter, replace or remove boqSource on a BOQ-sourced line', async () => {
+    await seedSourced()
+    const ref = lineRef(ctx(USERS.admin), COMPANY_A, 'boq-cc7')
+    await assertFails(updateDoc(ref, { 'boqSource.latest.amount': 1, ...stamps(USERS.admin) }))
+    await assertFails(updateDoc(ref, { 'boqSource.latest.resultKey': 'v1:forged', ...stamps(USERS.admin) }))
+    await assertFails(updateDoc(ref, { 'boqSource.first.amount': 1, ...stamps(USERS.admin) }))
+    await assertFails(updateDoc(ref, { boqSource: { ...BOQ_SOURCE, latest: { ...BOQ_SOURCE.latest, amount: 55_000 } }, budgeted: 55_000, ...stamps(USERS.admin) }))
+    await assertFails(updateDoc(ref, { boqSource: deleteField(), ...stamps(USERS.admin) }))
+    expect((await stored('boq-cc7')).boqSource.latest.amount).toBe(40_000)
+  })
+
+  it('NO client can ADD boqSource to a manual line', async () => {
+    await seed()
+    await assertFails(updateDoc(lineRef(ctx(USERS.admin)), { boqSource: BOQ_SOURCE, ...stamps(USERS.admin) }))
+    await assertFails(updateDoc(lineRef(ctx(USERS.admin)), { budgeted: 1, boqSource: BOQ_SOURCE, ...stamps(USERS.admin) }))
+  })
+
+  for (const key of WRITERS) {
+    it(`${USERS[key].role} can still correct budgeted and notes on a BOQ-sourced line — the provenance is untouched`, async () => {
+      await seedSourced()
+      await assertSucceeds(updateDoc(lineRef(ctx(USERS[key]), COMPANY_A, 'boq-cc7'), { budgeted: 41_500, notes: 'allowance added', ...stamps(USERS[key]) }))
+      const after = await stored('boq-cc7')
+      expect(after.budgeted).toBe(41_500)
+      expect(after.boqSource.latest.amount).toBe(40_000)   // the evidence still describes the TRANSFER
+      expect(after.boqSource.first.amount).toBe(40_000)
+    })
+  }
+
+  for (const key of NON_WRITERS) {
+    it(`${USERS[key].role} can neither read nor change a BOQ-sourced line`, async () => {
+      await seedSourced()
+      await assertFails(getDoc(lineRef(ctx(USERS[key]), COMPANY_A, 'boq-cc7')))
+      await assertFails(updateDoc(lineRef(ctx(USERS[key]), COMPANY_A, 'boq-cc7'), { budgeted: 1, ...stamps(USERS[key]) }))
+    })
+  }
+
+  it('a BOQ-sourced line cannot be deleted, and its cost code cannot be re-pointed', async () => {
+    await seedSourced()
+    await assertFails(deleteDoc(lineRef(ctx(USERS.admin), COMPANY_A, 'boq-cc7')))
+    await assertFails(updateDoc(lineRef(ctx(USERS.admin), COMPANY_A, 'boq-cc7'), { costCodeId: 'cc1', ...stamps(USERS.admin) }))
+  })
+
+  it('a Company B admin cannot create a reserved line in Company A', async () => {
+    await assertFails(setDoc(lineRef(ctx(USERS.other), COMPANY_A, 'boq-cc7'), payload()))
+  })
+})
+
 // ── G. THE DOCUMENTED GAPS — client-enforced only ───────────────────────────
 
 describe('budgetLines — cost-code existence is NOT verified (Deferred Control 28)', () => {

@@ -6662,7 +6662,7 @@ What this evidence is and is not: it establishes that the published rules and th
 
 ## ADR-80: L3 Stage 2 — Application Error Recovery (the project route presents a failed, refused or unconfirmed projects read as what it is; one write-outcome helper with three outcomes — confirmed, failed, uncertain — that never retries and never reports success early; applied to the three money registers only; no Rules, Functions, data-hook, formula or dependency change; Hosting only)
 
-**Date:** 21 November 2026 · **Status:** IMPLEMENTED — NOT DEPLOYED (branch `fix/l3-application-error-recovery`, uncommitted; awaiting architect review). Browser behaviour NOT VERIFIED.
+**Date:** 21 November 2026 · **Status:** MERGED to `main` as `b7f825f` (VERIFIED in Git); L3 reported CLOSED by the Lead Architect, 21 November 2026. The Hosting deploy and browser behaviour are NOT independently verified in this record. *As written:* IMPLEMENTED — NOT DEPLOYED (branch `fix/l3-application-error-recovery`, uncommitted; awaiting architect review). Browser behaviour NOT VERIFIED.
 
 **Context.** The L3 assessment confirmed two faults. `useProject` discarded `projectsError`, so any failed projects read rendered *Project not found.* The older registers `await` a write and show `err.message`; measured against the SDK, a plain write with no connection never settles, so the dialog stays on *Saving…* for ever, and SDK text reaches the user. The same measurement found a third cause of the first fault: an unreachable backend answers a listener with an EMPTY list flagged `fromCache`, with no error.
 
@@ -6690,3 +6690,68 @@ What this evidence is and is not: it establishes that the published rules and th
 - No automated test drives a real browser offline.
 
 **Alternatives rejected.** Automatic retry (duplicates creates). Treating the timeout as failure (a queued write still lands). A client-generated idempotency key on every create (a data-hook and Rules change, out of scope). Converting every dialog now (59 sites; no evidence yet that the pattern is right in the browser).
+
+## ADR-81: L4 — BOQ-to-Approved-Budget integration (a priced BOQ becomes WORKING budget lines through ONE trusted callable, `transferBoqToBudget` — the second narrowly scoped exception to the ADR-72 "no financial logic in Functions" rule; identifiers and a review key in, never an amount; one transaction that reads the complete BOQ, budget-line and cost-code registers; one deterministic line per cost code with first / latest transfer provenance; already-applied recognition; a small Rules reservation; the SHIELD approved-budget model unchanged; merge and Azure `main` green, then Rules, then the one callable, then Hosting)
+
+**Date:** 21 November 2026 · **Status:** IMPLEMENTED — NOT DEPLOYED (branch `feature/l4-boq-budget-transfer`, uncommitted; awaiting architect review). Browser behaviour and production NOT VERIFIED. Authorised by the Lead Architect, 21 November 2026 (Option B of the L4 assessment), including the second financial Cloud Function.
+
+**Context.** The lifecycle was connected everywhere except one hop. Drawing → Quantity → BOQ existed (ADR-32, ADR-51 to ADR-54). Working budget lines → draft approval → approved version → adjustments → every report existed (ADR-39, ADR-70, ADR-71). Nothing turned a priced BOQ into budget lines: `ROADMAP.md` recorded the transfer as deferred "with an idempotence design — budget lines cannot be deleted, so a double-transfer must be structurally impossible". Estimating (margin and overheads) is a separate, unbuilt module and is not part of this decision.
+
+**Why not a client transaction.** The Web SDK's `Transaction.get()` accepts a `DocumentReference` only (`@firebase/firestore` 4.16.0); it cannot read a query. A browser transfer would query the BOQ and the budget lines outside the transaction and could not see a BOQ item or a manual budget line created while it ran — an understated budget, a skipped unpriced item, or a double-counted cost code. A client guard would need a Rules-enforced source-revision counter bumped by every BOQ write (create, edit, void, the Quant quantity application) and by every manual budget-line create, a shared contended document, and a staged release — and the amounts would still be computed in the browser. The Admin SDK's `Transaction.get(query)` (`@google-cloud/firestore` 9.4.0) reads whole queries inside a serializable transaction, and ADR-77 already uses it.
+
+**Decision 1 — one shared proposal module.** `src/lib/boqBudgetTransfer.js` (pure: no React, no Firebase, no clock) is the one description of the transfer. The browser runs it for the review dialog; the callable runs the generated bundle `functions/src/generated/boqBudgetTransferCalc.js`, produced by `scripts/build-boq-transfer-bundle.mjs` exactly as the Final Account bundle is. `tests/unit/boqBudgetTransferBundle.test.js` proves the bundle is fresh, self-contained and equal to its source for every row state and blocker. No formula is added: an item's amount is the stored, Rules-pinned `amount` (`lib/boq.js → boqLineAmount`), re-checked against that same function and added in whole cents.
+
+**Decision 2 — row states.** One row per cost code that has active BOQ items or already holds a BOQ-sourced line:
+
+| State | Meaning | Written |
+|---|---|---|
+| `create` | No budget line on the code | A new line at the BOQ amount |
+| `refresh` | A BOQ-sourced line whose amount is not the BOQ amount | `budgeted` and the latest-transfer evidence |
+| `unchanged` | A BOQ-sourced line already equal to the BOQ | Nothing |
+| `zero-available` | A BOQ-sourced line whose BOQ items are now all void | Nothing, unless the reviewer ticks set-to-zero (unticked by default) |
+| `blocked` | See below | Nothing |
+
+Blockers, every one listed for its code: an active item with no rate (a zero rate IS a price; a partly priced code is blocked whole — never a partial sum); an item whose quantity or amount is unusable or is not `quantity × rate`; an item whose `currency` is not the project's resolved currency; a cost code missing from the library; an inactive cost code; a manual budget line already on the code; a BOQ-sourced line sharing its code with a manual line; a BOQ-sourced line with an unreadable amount. A blocked code never stops the other codes.
+
+**Decision 3 — one deterministic line per cost code.** A BOQ-sourced line lives at `budgetLines/boq-{costCodeId}` and is created with `tx.create`, which fails if the document exists. A second BOQ-sourced line for a cost code cannot be written.
+
+**Decision 4 — the callable.** `transferBoqToBudget` (`functions/src/boqBudget/`), following `approveFinalAccount`: enabled gate → authenticate → strict schema → authorise → operate. The request is `{ projectId, reviewKey, setToZero }` and nothing else; any other key is refused. One transaction, every read before any write:
+
+1. the caller's membership, read inside the transaction — active, of a company, `company_admin` / `project_manager` / `qs`; the company comes from that document;
+2. the company and the project under that company (another tenant's project id is not found);
+3. the complete `boqItems`, `budgetLines` and `costCodes` registers as queries — UNORDERED, so a document lacking an ordering field is still seen;
+4. the proposal, in the project's own resolved currency;
+5. the review guard (Decision 5);
+6. the writes: one create or update per changed cost code, `currencyLocked: true` on the project when it is not yet set, and one audit event `boq_budget.transferred`.
+
+It reads and writes no `budgetApprovals`, `budgetApprovalSnapshots`, `approvedBudget` or `budgetAdjustments` document. Options: region `australia-southeast1`, App Check enforced, no secret, 512 MiB, 120 s, at most five instances; a kill switch `BOQ_BUDGET_TRANSFER_ENABLED` that defaults to off in code and is stated in every project env file. Transaction attempts are bounded at five; an aborted transaction is the typed `boq-transfer-busy`.
+
+**Decision 5 — reviewKey, requestKey and already-applied.** `reviewKey` is a digest of the reviewed proposal. Canonical inputs: the key version and currency code; then, for every row sorted by cost-code id, the id, state, sorted blockers, active item count, BOQ amount in cents, working amount on the code in cents, the BOQ-sourced line's amount in cents and the source fingerprint. Excluded: timestamps, actors, names, descriptions, notes and read order. The source fingerprint covers each active item's id, quantity, rate, amount in cents, unit and currency. The callable recomputes the key from its own reads; a mismatch writes nothing.
+
+A request that DID commit no longer matches the current key (its create rows are now unchanged rows). Every line a request writes therefore stores `requestKey` (the review key bound to the set-to-zero choices) and `resultKey` (the key of the state the request produced). A repeat is answered **already applied** only when a line carries that `requestKey` AND its `resultKey` is the current key — so any later BOQ change, manual edit or other transfer makes the repeat a **stale review** instead. A current review with nothing to write is **unchanged**: no write, no audit event.
+
+**Decision 6 — provenance.** On a BOQ-sourced line:
+
+- `boqSource.first` — time, actor, amount, item count and fingerprint of the first transfer; written once, never changed.
+- `boqSource.latest` — time, actor, amount, item count, fingerprint, operation, transfer count, `requestKey`, `resultKey`; overwritten in the same write as `budgeted`.
+
+A manual edit of `budgeted` on such a line remains permitted (the existing ADR-39 update) and cannot touch `boqSource`; the page then shows "changed by hand since the BOQ transfer" because the amount no longer equals `latest.amount`. Current BOQ-versus-budget reconciliation stays a read-time comparison and is never stored. Approved history stays in the immutable SHIELD snapshots, which carry the line id and amount and no BOQ evidence. **A fingerprint is an equality check, not a BOQ revision:** it cannot reconstruct the BOQ, and BOQ items remain editable with no history.
+
+**Decision 7 — Rules.** One change, to the `budgetLines` create rule: a client create is refused when the document id starts `boq-` or the document carries `boqSource`. The existing update allow-list already freezes `boqSource`. Manual create, edit and the role boundaries are unchanged. `firestore.rules` 232,460 → 232,776 bytes; `firestore.transitional.rules` regenerated, 233,456 bytes. No BOQ rule, index, collection or migration.
+
+**Decision 8 — client.** `ProjectBoq.jsx` gains *Transfer to budget* (the three financial roles) and `BoqBudgetTransferModal.jsx`: per cost code the BOQ amount, the working amount now, the amount after, the action and every blocked reason; an explicit confirmation; and the L3 write-outcome controller unchanged (ADR-80). After an uncertain outcome the dialog keeps the request it sent and a repeat sends that same request. `ProjectBudget.jsx` shows the BOQ origin and a hand-change warning on sourced lines. No browser code writes a BOQ-sourced line.
+
+**Security.** The Function authorises every call itself and takes the company from the caller's membership. Rules keep a client from creating or forging a BOQ-sourced line. Still client-side or unenforced, stated plainly (SECURITY.md → Deferred Control 48): a financial-role user can still create or edit MANUAL budget lines directly, as before; a manual edit of a BOQ-sourced line's amount is allowed by design; the Admin SDK and the console bypass Rules; the review key is a non-cryptographic digest that asserts a review and is not a secret; consistency under concurrent writes is proven against the emulator only.
+
+**Limits, stated plainly.**
+
+- No frozen BOQ exists behind an approved budget version. Versioned BOQs or a BOQ snapshot were assessed and left out.
+- A re-approval after a transfer supersedes the approved adjustments of the replaced version, under the existing ADR-71 acknowledgement; adjustments are never written back to working lines.
+- A cost code with a manual line is blocked, not merged: the user corrects it by hand.
+- The server reads the registers unordered; a manual budget line with no `createdAt` (possible only through a direct SDK write) is invisible to the browser's ordered query, so the browser's review then never matches and every transfer is refused as stale until that line is corrected.
+- Each register is read whole, bounded by detection at 5,000 documents (the ADR-77 bound); above it the transfer is refused by name. Measured in the emulator only: 2,000 items over 500 cost codes in about 0.2 s.
+- Both serial orders of an overlapping source write are exercised deterministically in the emulator (TESTING.md §67): transfer first, with the write proven held until the transfer commits; and source write first, with the transfer's deciding attempt reading the changed source. Left to itself the emulator always chose transfer first. Production has not been exercised.
+
+**Alternatives rejected.** A client transaction with a source-revision counter (above). Writing an approved version directly from the BOQ (bypasses SHIELD). A separate estimate or draft-budget collection (a second budget model). Adding a second line beside a manual line (double counts). Automatic set-to-zero (changes a budget nobody reviewed). Full BOQ revisioning (larger than L4 needs).
+
+**Release.** Merge; Azure `main` green; then Firestore Rules; then ONLY the new callable; verify it; then Hosting; then TESTING.md §67 acceptance. No production deployment before the Azure gate; no existing Function is redeployed. **Rollback:** restore the previous Hosting release and disable the callable with `BOQ_BUDGET_TRANSFER_ENABLED=false` (redeploying that one function); RETAIN the L4 Rules and every working budget line — the earlier Rules do not reserve BOQ-sourced ids or provenance, so they are not restored once L4 data may exist, and any Rules rollback needs its own data-compatibility review. No automatic deletion or migration (DEPLOYMENT.md → *L4*). **Production flag:** `BOQ_BUDGET_TRANSFER_ENABLED=true` for the controlled release (architect decision, 21 November 2026); default off in code. Tests: TESTING.md §67.

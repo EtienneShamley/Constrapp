@@ -3521,6 +3521,54 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     certificate, a tax document or proof of payment, and no surface says
     otherwise.
 
+48. **BOQ → working budget transfer — what Rules, the callable and the Admin
+    SDK can and cannot guarantee (ADR-81, L4 — IMPLEMENTED, NOT DEPLOYED).**
+    *Rules-enforced:* no client may create a budget line whose id starts
+    `boq-` or that carries `boqSource`; no client may add, change or remove
+    `boqSource` on any line (the existing update allow-list); reads and
+    writes of budget lines stay with the three financial roles; delete stays
+    blocked.
+    *Function-enforced (the Admin SDK bypasses Rules, so the callable
+    authorises itself):* App Check; a signed-in caller; an exact request
+    schema with no amount; an ACTIVE membership with role `company_admin`,
+    `project_manager` or `qs`, re-read inside the transaction; the company
+    taken from that membership, so another tenant's project is not found; the
+    proposal recomputed from the complete BOQ, budget-line and cost-code
+    registers read inside one transaction; the project currency resolved by
+    the server; every blocker; one line per cost code (`tx.create` at a
+    deterministic id); a stale review refused with nothing written.
+    *Not enforced, stated plainly:*
+    (a) **Manual budget lines are unchanged.** A financial-role user can
+    still create or edit a manual line directly, including one on a cost code
+    the BOQ covers. The transfer then BLOCKS that cost code; it does not
+    prevent the manual line.
+    (b) **A BOQ-sourced line's amount can be edited by hand** (the ADR-39
+    update). `boqSource` cannot follow that edit, so the page reports the
+    line as changed by hand; nothing stops the edit.
+    (c) **The BOQ itself is unchanged**: items stay editable, edits are
+    version-guarded in the client only (Deferred Control 33), and no BOQ
+    history is kept. A fingerprint proves equality with a later state, never
+    the earlier content.
+    (d) **The review key is a non-cryptographic digest and not a secret.** It
+    asserts "this is the state I reviewed"; the server recomputes it, so a
+    forged key can only make a request match or not match the server's own
+    state. It records that a proposal was shown, not that it was understood.
+    (e) **The Admin SDK and the Firebase console bypass Rules** and can write
+    any budget line, a BOQ-sourced one included.
+    (f) Consistency under concurrent writes rests on Firestore's serializable
+    read-write transactions; the Function adds no guard of its own. Both
+    serial orders of an overlapping BOQ update, BOQ create and manual-line
+    insert are proven against the EMULATOR; it has not been exercised in
+    production.
+    (g) A call that returns no typed answer has an UNCERTAIN outcome; the
+    client says so, and a repeat of the same request is answered *already
+    applied* without a second write. Only an aborted transaction and the
+    typed refusals are reported as certainly not written.
+    (h) A register above 5,000 documents is refused, not truncated.
+    (i) A transfer is **not** an approval. Segregation between the person who
+    transfers and the person who approves is not enforced, as for manual
+    lines (Deferred Control 44 — self-approval permitted).
+
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
 is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.

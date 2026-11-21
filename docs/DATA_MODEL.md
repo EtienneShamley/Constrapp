@@ -159,7 +159,10 @@ Append-only, written in the same transaction as the change: `type`
 `member.auth_reenabled` · `company.bootstrapped` · `reconcile.fix` ·
 `file_links.revocation_requested` · `file_links.revoked` ·
 `file_links.revocation_incomplete` — ADR-74, sequence numbers and counts
-only),
+only · `boq_budget.transferred` — ADR-81, one per transfer that changed a
+working budget line: counts, before / after amounts, `requestKey`,
+`resultKey` and a per-cost-code `lines` list; a transfer that writes nothing
+writes no event),
 `actorUid`, `targetUid`, `targetEmail`, `inviteId`, `before`, `after`,
 `requestId`, `source` (`callable` / `operator` / `worker`), `at`.
 
@@ -458,6 +461,35 @@ One allocation of project budget against a company cost code.
 | `notes` | string | Editable; ≤ 2000 chars |
 | `createdAt` / `createdBy` | timestamp / uid | Immutable (rules-enforced) |
 | `updatedAt` / `updatedBy` | timestamp / uid | Written on edit; **rules-verified** against the caller and `request.time` |
+| `boqSource` | map, optional | **L4 (ADR-81 — IMPLEMENTED, NOT DEPLOYED).** Present ONLY on a BOQ-sourced line, written ONLY by the trusted `transferBoqToBudget` callable. Rules refuse it on every client create and freeze it on every client update. See *BOQ-sourced lines* below |
+
+### BOQ-sourced lines (L4, ADR-81 — IMPLEMENTED, NOT DEPLOYED)
+
+A line created by the BOQ transfer has the deterministic id
+**`boq-{costCodeId}`** — at most one per cost code — and the same fields as a
+manual line (`costCodeName` is the cost code's display name at transfer;
+`notes` starts empty; `createdBy` is the user who ran the transfer) plus:
+
+| Field | Type | Notes |
+|---|---|---|
+| `boqSource.first` | map | `at`, `by`, `amount`, `itemCount`, `fingerprint` of the FIRST transfer. Written once; never changed |
+| `boqSource.latest` | map | `at`, `by`, `amount`, `itemCount`, `fingerprint`, `operation` (`create` / `refresh` / `zero`), `transferCount`, `requestKey`, `resultKey` of the LATEST transfer. Overwritten in the same write as `budgeted` |
+
+- `amount` is what that transfer wrote to `budgeted`. If a user later edits
+  `budgeted` by hand (still permitted, ADR-39), `latest.amount` no longer
+  equals it and the Budget tab says the line was changed by hand; the
+  evidence describes the transfer, not the edit.
+- `fingerprint` is a digest of the active BOQ items on the cost code at that
+  transfer (id, quantity, rate, amount in cents, unit, currency). It answers
+  "are these the same items?" and **cannot reconstruct them — it is not a BOQ
+  revision.**
+- `requestKey` and `resultKey` let the callable recognise a repeated request
+  that already committed (ADR-81 Decision 5). They are not financial values.
+- Ids starting `boq-` are reserved by Rules against client creates. Manual
+  lines keep random ids.
+- An approved budget snapshot (below) captures a BOQ-sourced line exactly like
+  any other — `lineId`, `costCodeId`, `costCodeName`, `budgeted` — and carries
+  no `boqSource`.
 
 ### Editable fields (ADR-39)
 

@@ -3,7 +3,7 @@ import { useOutletContext, useNavigate } from 'react-router-dom'
 import Card from '../../components/Card'
 import Btn from '../../components/Btn'
 import ProgBar from '../../components/ProgBar'
-import { formatCurrency } from '../../lib/formatters'
+import { formatCurrency, formatDate } from '../../lib/formatters'
 import { useAuth } from '../../hooks/useAuth'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
 import { useApprovedBudget } from '../../hooks/useApprovedBudget'
@@ -27,6 +27,7 @@ import {
 import { useProfile } from '../../hooks/useProfile'
 import { activeCostCodes, costCodeDisplayName, resolveCostCodeName } from '../../lib/costCodes'
 import { budgetLineToForm } from '../../lib/budgetLines'
+import { boqSourceInfo } from '../../lib/boqBudgetTransfer'
 import {
   resolveBudgetSource, budgetSourceState, budgetLinesFor, workingVsApproved,
   adjustedByCostCode, baseApprovedByLine, adjustmentNetByCostCode,
@@ -141,6 +142,12 @@ function BudgetLineEditorModal({ line = null, costCodes, currencyCode, onClose, 
                   The cost code cannot be changed — moving an approved budget between codes would relocate it
                   underneath existing commitments and actuals. Add a line on the correct code instead.
                 </p>
+                {boqSourceInfo(line).isBoqSourced && (
+                  <p className="m-0 mt-1 text-[11px] text-brand-amber">
+                    This line was created from the BOQ. An amount entered here replaces the transferred amount and is
+                    shown as changed by hand; the next BOQ transfer will offer to refresh it to the BOQ total.
+                  </p>
+                )}
               </>
             ) : (
               <select
@@ -191,6 +198,38 @@ function BudgetLineEditorModal({ line = null, costCodes, currencyCode, onClose, 
         </form>
       </div>
     </div>
+  )
+}
+
+// L4 (ADR-81): where a working line came from. A BOQ-sourced line is written
+// only by the trusted transfer; `boqSource.latest` describes that TRANSFER. If
+// the amount was edited by hand afterwards, the evidence no longer describes
+// the figure on the line — that is said plainly, never hidden.
+function BoqOrigin({ line, money }) {
+  const info = boqSourceInfo(line)
+  if (!info.isBoqSourced) return null
+  const latest = info.latest
+  return (
+    <span className="block text-[10.5px] font-normal text-brand-muted">
+      From BOQ
+      {latest && typeof latest.amount === 'number'
+        ? ` · last transferred ${money(latest.amount)}${latest.at ? ` on ${formatDate(latest.at)}` : ''}${Number.isInteger(latest.itemCount) ? ` from ${latest.itemCount} item${latest.itemCount === 1 ? '' : 's'}` : ''}`
+        : ''}
+    </span>
+  )
+}
+
+function BoqManualChange({ line, money }) {
+  const info = boqSourceInfo(line)
+  if (!info.isBoqSourced || !info.manuallyChanged) return null
+  return (
+    <span
+      className="block text-[11px] text-brand-amber"
+      title="This amount was changed after the last BOQ transfer, so the transfer details no longer describe it. Compare it with the BOQ on the BOQ tab."
+    >
+      ⚠ changed by hand since the BOQ transfer
+      {info.latest && typeof info.latest.amount === 'number' ? ` (${money(info.latest.amount)})` : ''}
+    </span>
   )
 }
 
@@ -636,9 +675,11 @@ export default function ProjectBudget() {
                         the stored snapshot is never rewritten (ADR-39). */}
                     <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text">
                       {resolveCostCodeName(line.costCodeId, costCodes, line.costCodeName)}
+                      <BoqOrigin line={line} money={money} />
                     </td>
                     <td className="px-3.5 py-3 text-[13px] text-brand-text">
                       {money(line.budgeted || 0)}
+                      <BoqManualChange line={line} money={money} />
                       {budgetApproved && Object.prototype.hasOwnProperty.call(approvedPerLine, line.id) && Math.round((line.budgeted || 0) * 100) !== Math.round(approvedPerLine[line.id] * 100) && (
                         <span className="block text-[11px] text-brand-amber" title="The working amount differs from the approved version — not approved until a new version is approved.">⚠ differs from approved</span>
                       )}

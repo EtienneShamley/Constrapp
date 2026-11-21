@@ -9159,3 +9159,66 @@ ESLint: clean. Production build: succeeds. `git diff --check`: clean. The Rules 
 - [ ] E10 — Supplier Payments and Client Invoices: create, post or issue, and void each still work online, with unchanged figures.
 
 **Remaining write sites (not changed).** 42 files with 58 hand-rolled `setSaving(true)` states (pinned in `writeOutcome.test.js`), plus `setBusy` in Team Settings, Accept Invite and the PULSE acknowledgement panel. They behave as before: a plain write made offline leaves the dialog on *Saving…*, and raw SDK text can appear. Suggested order for a later rollout: Supplier Invoices, Purchase Orders, Progress Claims and Variations (create and edit); Retention Releases and Cash Flow lines; Budget and Forecast; then documents, RFIs, programme and settings. Dialogs built on the `*Actions.js` modules already map errors but still wait without limit.
+
+## 67. L4 — BOQ → working budget transfer (ADR-81, 21 November 2026) — IMPLEMENTED on `feature/l4-boq-budget-transfer` (uncommitted); automated tests PASS (unit, Rules emulator, Functions emulator); NOT DEPLOYED; browser behaviour NOT VERIFIED
+
+**Automated — PASS (run locally, 21 November 2026).**
+
+| Suite | Command | Result | New in L4 |
+|---|---|---|---|
+| Unit | `npm run test:unit` | 99 files, 5,152 tests | 3 files, 102 tests |
+| Functions pure (predeploy) | `npm run functions:test` | 5 files, 130 tests | 1 file, 31 tests |
+| Rules emulator | `npm run test:rules` | 36 files, 2,336 tests | 17 tests in `budgetLines.rules.test.js` |
+| Functions emulator | `npm run test:functions` | 10 files, 295 tests | 1 file, 63 tests |
+
+ESLint (app and Functions): clean. Production build: succeeds. `functions:calc:check`, `functions:transfer-calc:check`, `rules:transitional:check`: up to date. `git diff --check`: clean. Two existing pins were updated because a third callable now exists: the `onCall(` count in `finalAccountBundle.test.js` (2 → 3) and the exported-function count in `functions/test/finalAccount.test.js` (10 → 11). No existing security assertion was relaxed.
+
+- `tests/unit/boqBudgetTransfer.test.js` (42): grouping and whole-cent sums against `lib/boq.js`; zero rate transfers at 0, null rate blocks the whole code; void items excluded; every blocker (unpriced, unusable source, currency, missing and inactive cost code, manual line, two lines on a code, unreadable line); create / refresh / unchanged / fully voided; set-to-zero only when chosen; the summary; the review key (deterministic; unchanged by read order, timestamps, actors, names and notes; changed by a quantity, rate, unit, new item, void, unpricing, cost-code move, working amount, new manual line, deactivated code, currency); the request key; already-applied recognised after a commit and NOT after a BOQ change, a manual edit or different choices; transferred lines capture into a SHIELD snapshot and a later working change does not move the approved total.
+- `tests/unit/boqBudgetTransferBundle.test.js` (27): the generated bundle is fresh, deterministic, self-contained and equal to its source for eleven variants covering every row state and blocker; the callable surface (App Check, region, no secret, schema, company from membership, every read transactional and before the first write, no approved-budget collection named); the browser surface (no Firebase import in the page or dialog, no amount in the request, the shared write-outcome controller, no hook writes a BOQ-sourced line).
+- `tests/unit/boqBudgetTransferActions.test.js` (33): the request; the three results; every typed refusal is certain and says nothing was written; `unauthenticated`, `permission-denied`, `not-found`, `invalid-argument` without detail are certain; `deadline-exceeded`, `unavailable`, `internal`, `unknown`, `cancelled`, `aborted`, `resource-exhausted` and a bare network error are UNCERTAIN; with the write controller a stale review unlocks, an uncertain outcome locks until acknowledged, and a second click sends nothing.
+- `functions/test/boqBudget.test.js` (31): gates before any data access; the exact request schema; membership; the shipped bundle; one transaction with five attempts; the kill switch default off in code, present in every env file and `true` for production; the flag is read by the new callable only and the Final Account gate is unchanged; `.env.local` is ignored by Git and by the Functions deploy and no env file carries a secret; no existing production parameter changed.
+- `tests/rules/budgetLines.rules.test.js` (+17): no financial role can create a line at a `boq-` id or with `boqSource` (including `{}` and `null`); an id merely containing `boq-` is ordinary; no client can alter, replace, remove or add `boqSource`; each financial role can still correct `budgeted` and `notes` on a BOQ-sourced line with the provenance untouched; non-financial roles can neither read nor change one; delete and re-pointing stay refused; cross-company create refused.
+- `tests/functions/boqBudgetTransfer.test.js` (63), real Admin SDK transactions against the emulators:
+  - who may transfer: unauthenticated, no membership, each of the three roles, subcontractor / client / super_admin refused, deactivated, a role removed just before the transaction, another company (not found; with a same-id project of their own, a stale review that reveals nothing), the kill switch, an amount in the request;
+  - transfer: one line per cost code at the server's amounts with `first` / `latest`, the currency lock and one audit event; a refresh moves `budgeted` and `latest` together and preserves `first`; a manual edit shows as a discrepancy and the next transfer offers a refresh; blocked codes left alone; currency mismatch; a review made in another currency is stale; zero rate;
+  - fully voided source: unticked writes nothing; ticked sets zero; an ineligible tick refuses the whole request;
+  - stale and repeats: stale after a BOQ edit, after a manual line, and for a manual line with no `createdAt`; the identical request after a commit is *already applied* with no second line, event or rewrite; after a BOQ change or a manual edit it is stale; different choices are not the applied request; a current review with nothing to write is *unchanged* with no event; an empty BOQ locks no currency;
+  - simultaneous transfers: two users, and one user three times — one set of lines, one event; a forced abort is retried once;
+  - concurrent source writes (a BOQ edit, a new priced item, a new unpriced item, a new manual line, a void) started between the transaction's reads and writes: the transfer either refuses or the competing write commits strictly after it;
+  - failures: an error in the transaction, and a commit rejected by the server, leave no line, no lock and no event; five aborts give the typed busy refusal; a deadline is not typed and a repeat applies once; a lost response after a commit is answered *already applied*; an over-bound register is refused by name;
+  - approved budget: after a create, a refresh and a set-to-zero, the pointer, header, snapshot and adjustment documents are byte-for-byte unchanged with unchanged update times, and the resolved approved total and per-cost-code figures are unchanged; only `budgetLines`, the project lock and the audit event are written; an already-locked project is not rewritten;
+  - scale; the deployed wrapper (App Check required, typed refusals, end to end).
+
+**Measured (emulator, one run, this machine).** 150 BOQ items over 40 cost codes: 40 lines in 42 ms, audit event 5,814 bytes. 2,000 items over 500 cost codes: 500 lines in 209 ms, audit event 67,818 bytes; the repeat recognised as already applied. No production timing exists. Each register is bounded by detection at 5,000 documents.
+
+**Concurrency — both serial orders, forced (10 tests, *forced overlap*).** Three overlaps with an in-progress transfer: a BOQ item UPDATE, a BOQ item CREATE (priced, and unpriced) and a MANUAL budget-line insert. The order is fixed by explicit synchronisation and then confirmed from the server's commit times.
+
+| Order | How it is forced | Persisted result |
+|---|---|---|
+| **B — transfer first** | The competing write starts after the transfer has read its sources and is checked to be still unsettled 500 ms later, as the transfer proceeds to its writes | The transfer applies the EARLIER source (cc1 at 137.02, two items); the write's commit time is later than the line's; the BOQ change is then visible as drift (*Refresh* to 187.02 or 637.02), and a late manual line as *Blocked — more than one budget line* |
+| **A — source write first** | The same start; the transfer's first attempt is then aborted (retryable ABORTED), the write commits, and a gate holds the second attempt until that commit is acknowledged. Recorded sequence: attempt 1 read → attempt 1 aborted → source write committed → attempt 2 read | With a review of the OLD source: refused as stale; no line, no lock, no audit event. With a review of the NEW source: applied on the CHANGED source (cc1 at 187.02; 637.02 with three items); with a new unpriced item, cc1 blocked and never part-summed; with a manual line, cc1 blocked and no `boq-cc1` beside it. The line's commit time is later than the write's |
+
+No transfer was observed that disagreed with its serialisation point, and **no guard was added to the Function** — the tests observe Firestore's existing transaction guarantees. The five earlier race tests, which let the backend choose, took order B every time. All of this is the EMULATOR; production has not been exercised.
+
+**Not covered by automation.** The dialog's interaction and appearance (the unit runner has no DOM); real connectivity loss in a browser; App Check with a real token; production.
+
+**Manual acceptance (after all three release steps; a TEST project, not customer data).**
+
+- [ ] T1 — As `qs`, on a project with no budget lines, add BOQ items on three cost codes: two fully priced (one with a rate of 0 on one item), one with an unpriced item. Open *Transfer to budget*: two codes *Create*, one *Blocked* naming the unpriced item; totals match the BOQ page.
+- [ ] T2 — *Apply transfer* is disabled until the review box is ticked. Tick and apply: *Transfer applied*, with the counts and the before → after amounts.
+- [ ] T3 — Budget tab: two lines marked *From BOQ*, each equal to its BOQ total; the summary says *Working budget (not approved)*. BOQ tab comparison: variance 0 on both.
+- [ ] T4 — Open the dialog again: both codes *Unchanged*; *Apply transfer* stays disabled.
+- [ ] T5 — Price the unpriced item; reopen: that code is now *Create*. Apply. Three lines.
+- [ ] T6 — Add a manual budget line on a fourth cost code, then a priced BOQ item on that code: the dialog shows *Blocked — a manually entered budget line already holds this cost code*; nothing is added for it.
+- [ ] T7 — Change a BOQ rate. Reopen: that code is *Refresh* with the old and new amounts. Apply; the Budget line updates and still shows *From BOQ* with the new last-transferred amount.
+- [ ] T8 — Edit a BOQ-sourced line's amount on the Budget tab: it shows *changed by hand since the BOQ transfer*. The dialog offers *Refresh* with the hand-change note.
+- [ ] T9 — Stale review: open the dialog; in a second tab change a BOQ quantity; in the first tab the list updates. (To force the server refusal, apply within the moment before the first tab updates, or block the listener in DevTools.) A stale request shows *changed since you reviewed … Nothing was written*.
+- [ ] T10 — Void every BOQ item on one transferred code: the dialog shows *BOQ items void* with *Set this line to zero* UNTICKED and the line unchanged after an apply of other codes. Tick it and apply: the line is 0.
+- [ ] T11 — As `project_manager`, prepare and approve the budget (version 1). Forecast, Commercial Report and Portfolio show the approved total.
+- [ ] T12 — Change a BOQ rate and transfer again: the dialog states the Approved Budget does not change; after applying, the Budget tab shows the pending difference and every report still shows version 1's total.
+- [ ] T13 — Approve version 2: reports now show the new total; version 1 is unchanged in the history.
+- [ ] T14 — As `subcontractor` and as `client`: no *Transfer to budget* button; the BOQ tab is restricted as before.
+- [ ] T15 — DevTools → Network → Offline, then apply: an amber uncertain message, the button locked; go online, acknowledge, *Send the same transfer again*: *Transfer applied* or *Already applied*, and exactly one line per cost code.
+- [ ] T16 — Double-click *Apply transfer*: one transfer. Existing flows unchanged: add and edit a manual budget line; add, edit and void a BOQ item; apply a Quant quantity.
+
+**Release order and rollback.** DEPLOYMENT.md → *L4*: merge, Azure `main` green, Rules, ONLY the new callable, verify, Hosting, then T1–T16. Emergency rollback restores the previous Hosting release and disables the callable by its flag; the L4 Rules and every working budget line are retained.

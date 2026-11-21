@@ -146,7 +146,7 @@ describe('the trusted backend surface', () => {
     expect(opts).toMatch(/enforceAppCheck:\s*true/)
     expect(opts).toMatch(/region:\s*REGION/)
     expect(opts).not.toMatch(/secrets|serviceAccount/)
-    expect((index.match(/onCall\(/g) || []).length).toBe(2)   // the team wrapper + this one
+    expect((index.match(/onCall\(/g) || []).length).toBe(3)   // the team wrapper, this one, and transferBoqToBudget (ADR-81)
     expect(index).not.toMatch(/onRequest\(/)
   })
 

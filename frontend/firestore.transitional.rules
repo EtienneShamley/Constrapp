@@ -285,11 +285,16 @@ service cloud.firestore {
       }
       allow read: if financialMember(companyId);
 
+      // L4 (ADR-81): `boq-…` ids and `boqSource` are written ONLY by the
+      // trusted transferBoqToBudget callable — no client create may use them
+      // (the update allow-list below already freezes `boqSource`).
       allow create: if budgetLineWriter()
           && request.resource.data.costCodeId is string
           && request.resource.data.costCodeId.size() > 0
           && request.resource.data.budgeted is number
-          && request.resource.data.budgeted >= 0;
+          && request.resource.data.budgeted >= 0
+          && !lineId.matches('boq-.*')
+          && !('boqSource' in request.resource.data);
 
       allow update: if budgetLineWriter()
           // The cost-code spine and the provenance no update may move.
