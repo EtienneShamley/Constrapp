@@ -9160,7 +9160,7 @@ ESLint: clean. Production build: succeeds. `git diff --check`: clean. The Rules 
 
 **Remaining write sites (not changed).** 42 files with 58 hand-rolled `setSaving(true)` states (pinned in `writeOutcome.test.js`), plus `setBusy` in Team Settings, Accept Invite and the PULSE acknowledgement panel. They behave as before: a plain write made offline leaves the dialog on *Saving…*, and raw SDK text can appear. Suggested order for a later rollout: Supplier Invoices, Purchase Orders, Progress Claims and Variations (create and edit); Retention Releases and Cash Flow lines; Budget and Forecast; then documents, RFIs, programme and settings. Dialogs built on the `*Actions.js` modules already map errors but still wait without limit.
 
-## 67. L4 — BOQ → working budget transfer (ADR-81, 21 November 2026) — IMPLEMENTED on `feature/l4-boq-budget-transfer` (uncommitted); automated tests PASS (unit, Rules emulator, Functions emulator); NOT DEPLOYED; browser behaviour NOT VERIFIED
+## 67. L4 — BOQ → working budget transfer (ADR-81, 21 November 2026) — DEPLOYED (`main` `a30699e`; REPORTED by the Lead Architect); production browser acceptance 22 November 2026: 13 of 16 PASS, T16 partly exercised, T9 and T14 NOT TESTED in production; acceptance UX correction IMPLEMENTED on `fix/l4-transfer-acceptance` (uncommitted), NOT DEPLOYED
 
 **Automated — PASS (run locally, 21 November 2026).**
 
@@ -9201,6 +9201,30 @@ ESLint (app and Functions): clean. Production build: succeeds. `functions:calc:c
 No transfer was observed that disagreed with its serialisation point, and **no guard was added to the Function** — the tests observe Firestore's existing transaction guarantees. The five earlier race tests, which let the backend choose, took order B every time. All of this is the EMULATOR; production has not been exercised.
 
 **Not covered by automation.** The dialog's interaction and appearance (the unit runner has no DOM); real connectivity loss in a browser; App Check with a real token; production.
+
+**Production acceptance — 22 November 2026 (Chrome, signed in as `company_admin`; RUN by the engineer).** In a sandbox project the Product Owner authorised: **L4 Acceptance Sandbox**, project `3OyBieoY4QHAfQsxBH8T`, company Apex Builders (`2Vf3CVuYE8wWzg8hLjR5`), AUD, existing company cost codes 0100, 0200, 0300 and 0900. Every financial write was confined to the sandbox and checked against the server records (read-only Firestore reads). Before the run, the deployed Rules were byte-identical to `main` (232,776 bytes), `transferBoqToBudget` was at revision `-00001-zol` with every other function on its earlier revision, and `BOQ_BUDGET_TRANSFER_ENABLED=true` was set on that one service (VERIFIED read-only).
+
+| Check | Production result |
+|---|---|
+| T1–T8, T10–T13, T15 | **PASS** (13 checks) |
+| T16 | **Partly exercised:** a double-click sent one request — one line, one audit event; adding, editing and voiding BOQ items, adding and editing manual lines, and SHIELD capture and approval worked. Applying a Quant quantity was NOT exercised |
+| T9 | **NOT TESTED in production.** The second tab's change always reached the first tab's live list before a submit, so the server's stale-review refusal was never reached in the browser. It is covered by the Functions emulator tests only |
+| T14 | **NOT TESTED in production** — no `subcontractor` or `client` test login exists and none was created. Covered by the Functions emulator and Rules tests only |
+| T15 | **PASS by simulation:** a lost response was simulated in the page (the request reached the server and committed; the response was replaced with a network error). The dialog showed the uncertain state, made no automatic retry, locked until acknowledged, and the resend of the same `reviewKey` was answered *Already applied* — one write and one audit event for two requests. **An actual network disconnection was NOT tested** |
+| T11, T13 (SHIELD) | Version 1 ($3,320, `ot2xqdkX2hfDA4dmIXAf`) and version 2 ($3,440, `yBLZIcxyaucKuoVuvmj3`) approved in the sandbox. After a transfer under version 1, the version 1 approval, its snapshot and the pointer were byte-identical with unchanged update times; after version 2, version 1's approval and snapshot were unchanged and the pointer moved to version 2. No adjustment was created |
+
+Callable logs for the run: 8 requests, all HTTP 200; 7 `boq_budget.transferred` audit events (the repeat wrote nothing). No browser console errors were observed. **This is not full browser coverage:** one account and one browser; no restricted roles; no real disconnection; DevTools were not available.
+
+**The sandbox is RETAINED** (not deleted). It holds 6 BOQ items, 4 working budget lines and 2 approved SHIELD versions, and **its amounts currently appear in the company Portfolio report** (Approved Budget $3,440, AUD subtotal).
+
+**Acceptance findings and correction — IMPLEMENTED on `fix/l4-transfer-acceptance` (uncommitted), NOT DEPLOYED, NOT browser-verified.** Found in the run: (1) the review tick stayed ticked when a live BOQ change altered the proposal on screen (the request sent was always the one displayed, never a different figure, but the reviewer had confirmed other values); (2) after an uncertain outcome the acknowledgement read *"it was not saved. Let me try again"*, which is wrong when the server did commit; (3) "these 1 change"; (4) a row blocked by an unpriced item did not name it. The correction (Hosting-only; no Rules, Functions, generated bundle or financial-model change):
+
+- The tick stores the key of the exact request it confirms (`transferRequestKey` of the reviewKey and set-to-zero choices — `lib/boqTransferReview.js`). It shows and counts only while that key is the current one; a changed proposal or a set-to-zero toggle clears it in the same render, and it does not come back if the figures return. Submit re-derives the request and sends nothing unless the stored key names it — no React effect is relied on. An unchanged snapshot (new objects, other read order, renamed text) keeps it. The server's stale-review refusal is unchanged.
+- The transfer's uncertain state now says the result is not known, to check the Budget tab, that nothing is retried automatically, and that sending again resends the same reviewed transfer, which the server applies once only; the button reads *"I have checked the budget lines — let me send the same transfer again."* Every other dialog keeps the L3 wording (`WriteFeedback`'s default).
+- "this change" / "these N changes"; a row blocked by an unpriced item names up to three such items from the BOQ register the page already holds.
+- Tests: `tests/unit/boqTransferReview.test.js` (22) — initial confirmation required; only the matching key submits; an asynchronous BOQ change invalidates it and a submit before any reset sends nothing; reconfirmation sends the new key; unchanged snapshots keep it; set-to-zero invalidates it; the uncertain wording claims neither failure nor success; the copy; the server bundle and Functions do not import the module. Two pins in `boqBudgetTransferBundle.test.js` were updated to the new, stricter form.
+
+To accept the correction after its Hosting release: in the sandbox, open *Transfer to budget* with a change pending, tick, change that BOQ item in a second tab — the tick clears and *Apply* is disabled until ticked again; tick a set-to-zero after confirming — the tick clears; read the singular wording on a one-change review and the named unpriced item on a blocked row.
 
 **Manual acceptance (after all three release steps; a TEST project, not customer data).**
 

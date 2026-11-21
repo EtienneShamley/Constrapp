@@ -7,10 +7,15 @@ import { useWriteAction } from '../../../hooks/useWriteAction'
 import { formatCurrency } from '../../../lib/formatters'
 import { WRITE_PHASE } from '../../../lib/writeOutcome'
 import {
-  TRANSFER_ROW_STATE, TRANSFER_ROW_STATE_LABELS, TRANSFER_BLOCKER_LABELS,
+  TRANSFER_ROW_STATE, TRANSFER_ROW_STATE_LABELS, TRANSFER_BLOCKER, TRANSFER_BLOCKER_LABELS,
   buildTransferProposal, transferSummary, centsToAmount,
 } from '../../../lib/boqBudgetTransfer'
 import { BOQ_TRANSFER_ERROR, transferOutcomeText } from '../../../lib/boqBudgetTransferActions'
+import {
+  transferConfirmationKey, isConfirmationCurrent, reconcileConfirmation, canSubmitTransfer,
+  transferRequestToSend, confirmationLabel, unpricedItemLabels,
+  TRANSFER_UNCERTAIN_ACK_LABEL, TRANSFER_UNCERTAIN_HINT,
+} from '../../../lib/boqTransferReview'
 
 // ── Transfer the BOQ to the working budget — review, confirm, apply (ADR-81) ──
 //
@@ -30,6 +35,11 @@ import { BOQ_TRANSFER_ERROR, transferOutcomeText } from '../../../lib/boqBudgetT
 // "nothing was written". A timeout or lost connection is UNCERTAIN: the
 // dialog says so, keeps the request it sent, and a repeat sends that SAME
 // request — the server applies it once only.
+//
+// CONFIRMATION (L4 correction, lib/boqTransferReview.js): the tick stores the
+// key of the exact request it confirms (reviewKey + set-to-zero choices). It
+// counts only while that key equals the current one, is cleared as soon as it
+// does not, and submit re-checks it before sending anything.
 
 const thCls = 'text-left px-3 py-2 text-brand-muted text-[10.5px] font-bold uppercase tracking-[0.4px] whitespace-nowrap'
 const tdCls = 'px-3 py-2.5 text-[12.5px] text-brand-text align-top'
@@ -63,7 +73,8 @@ export default function BoqBudgetTransferModal({
   const write = useWriteAction('BOQ to budget transfer')
 
   const [zero, setZero] = useState(() => new Set())   // ticked set-to-zero cost codes — empty by default
-  const [confirmed, setConfirmed] = useState(false)
+  // The key of the request the reviewer ticked — never a bare boolean.
+  const [confirmedFor, setConfirmedFor] = useState(null)
   const [result, setResult] = useState(null)          // the server-confirmed outcome
   // The request last SENT whose outcome is not known. A repeat sends exactly
   // this — never a fresh proposal — so the server can recognise it.
@@ -79,14 +90,24 @@ export default function BoqBudgetTransferModal({
     [proposal, zero],
   )
   const summary = useMemo(() => transferSummary(proposal, zeroChoices), [proposal, zeroChoices])
+  const currentKey = transferConfirmationKey(proposal.reviewKey, zeroChoices)
+
+  // A confirmation of a request that is no longer the one on screen is
+  // dropped during this render (React re-renders before committing), so it
+  // can neither show nor come back if the figures return to what was ticked.
+  const reconciled = reconcileConfirmation(confirmedFor, currentKey)
+  if (reconciled !== confirmedFor) setConfirmedFor(reconciled)
+  const confirmed = isConfirmationCurrent(confirmedFor, currentKey)
 
   const ready = !sourcesLoading && !sourcesError
   const uncertain = write.phase === WRITE_PHASE.UNCERTAIN || write.phase === WRITE_PHASE.UNCONFIRMED
-  const canSubmit = ready && !write.locked && (pending ? true : (summary.operationCount > 0 && confirmed))
+  const canSubmit = canSubmitTransfer({
+    ready, locked: write.locked, pending, operationCount: summary.operationCount, confirmedFor, currentKey,
+  })
 
   function toggleZero(costCodeId) {
     setResult(null)
-    setConfirmed(false)
+    setConfirmedFor(null)
     setZero(prev => {
       const next = new Set(prev)
       if (next.has(costCodeId)) next.delete(costCodeId); else next.add(costCodeId)
@@ -97,7 +118,10 @@ export default function BoqBudgetTransferModal({
   function submit(e) {
     e.preventDefault()
     if (!canSubmit) return
-    const request = pending ?? { reviewKey: proposal.reviewKey, setToZero: zeroChoices }
+    // Independent of the render: re-derive the current request and send
+    // nothing unless the stored confirmation names exactly it.
+    const request = transferRequestToSend({ pending, reviewKey: proposal.reviewKey, zeroChoices, confirmedFor })
+    if (!request) { setConfirmedFor(null); return }
     setPending(request)
     setResult(null)
     write.run(
@@ -109,7 +133,7 @@ export default function BoqBudgetTransferModal({
       {
         onConfirmed: (res) => {
           setPending(null)
-          setConfirmed(false)
+          setConfirmedFor(null)
           setZero(new Set())
           setResult(res)
         },
@@ -214,6 +238,14 @@ export default function BoqBudgetTransferModal({
                                 {row.blockers.map(b => <li key={b}>{TRANSFER_BLOCKER_LABELS[b] ?? b}</li>)}
                               </ul>
                             )}
+                            {row.state === TRANSFER_ROW_STATE.BLOCKED && row.blockers.includes(TRANSFER_BLOCKER.UNPRICED) && (() => {
+                              const unpriced = unpricedItemLabels(boqItems, row.costCodeId)
+                              return unpriced.shown.length > 0 && (
+                                <p className="m-0 mt-1 text-[11px] text-brand-muted" data-unpriced-items={row.costCodeId}>
+                                  Unpriced: {unpriced.shown.join('; ')}{unpriced.more > 0 ? ` and ${unpriced.more} more` : ''}
+                                </p>
+                              )
+                            })()}
                             {row.state === TRANSFER_ROW_STATE.REFRESH && row.manuallyChanged && (
                               <p className="m-0 mt-1 text-[11px] text-brand-amber">
                                 This line was changed by hand after the last transfer
@@ -269,22 +301,17 @@ export default function BoqBudgetTransferModal({
               className="mt-0.5 w-4 h-4 accent-brand-accent"
               checked={confirmed}
               disabled={write.locked}
-              onChange={(e) => setConfirmed(e.target.checked)}
+              data-confirmed-for={confirmed ? currentKey : ''}
+              onChange={(e) => setConfirmedFor(e.target.checked ? currentKey : null)}
             />
-            <span>
-              I have reviewed these {summary.operationCount} change{summary.operationCount === 1 ? '' : 's'} to the working budget
-              {summary.zeroCount > 0 ? `, including ${summary.zeroCount} line${summary.zeroCount === 1 ? '' : 's'} set to zero` : ''}.
-            </span>
+            <span>{confirmationLabel(summary.operationCount, summary.zeroCount)}</span>
           </label>
         )}
 
         <div className="mt-3">
-          <WriteFeedback write={write} />
+          <WriteFeedback write={write} acknowledgeLabel={TRANSFER_UNCERTAIN_ACK_LABEL} />
           {(uncertain || (pending && write.phase === WRITE_PHASE.IDLE)) && (
-            <p className={`${hintCls} mt-1.5`}>
-              Trying again sends the same reviewed transfer, not a new one. The server applies it once only: if it
-              already went through and nothing has changed since, it answers &quot;already applied&quot; and writes nothing.
-            </p>
+            <p className={`${hintCls} mt-1.5`} data-transfer-uncertain-hint="">{TRANSFER_UNCERTAIN_HINT}</p>
           )}
         </div>
 
