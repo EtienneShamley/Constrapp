@@ -30,13 +30,13 @@ export const REVISION_SCHEMA_VERSION = 1
 export const DRAWING_WRITE_ROLES = ['company_admin', 'project_manager']
 export const canWriteDrawings = (role) => DRAWING_WRITE_ROLES.includes(role)
 
-// Drawing READS are open to every provisioned member of the company — including
-// subcontractor and client — because a drawing is operational site information
+// Drawing READS are open to the internal roles and to a subcontractor or client
+// ASSIGNED to the project — because a drawing is operational site information
 // and withholding the current sheet is the actual safety risk.
 //
-// ⚠️ KNOWN LIMITATION: membership is COMPANY-WIDE, not project-specific, so a
-// member of the company can read the drawings of every project in that company.
-// Per-project membership is deferred (docs/SECURITY.md → Deferred Control 20).
+// M2-A2: an external role reads only the projects in its server-managed
+// users/{uid}.projectIds (rules-enforced, Firestore and Storage). INTERNAL
+// roles remain company-wide: they read the drawings of every project.
 
 export const DRAWING_STATUS = {
   ACTIVE:    'active',

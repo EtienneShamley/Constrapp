@@ -234,3 +234,91 @@ export function projectLoadState({ loading, error, errorCode, fromCache, found }
   if (fromCache) return PROJECT_LOAD_STATE.OFFLINE
   return PROJECT_LOAD_STATE.NOT_FOUND
 }
+
+// ── External project isolation (M2-A2) ───────────────────────────────────────
+//
+// WHO READS WHAT. Three audiences, and every role outside the first two reads
+// no project at all:
+//   · INTERNAL  company_admin / project_manager / qs — the project document,
+//     every project of their company (unchanged).
+//   · ASSIGNED  client / subcontractor — the DIRECTORY ENTRY of each project
+//     listed in their own users/{uid}.projectIds, and nothing else. They never
+//     read the project document, so its headline budget and currency are not
+//     in anything they can load.
+//   · everyone else (super_admin, an unknown or missing role) — nothing.
+//
+// ⚠️ Presentation and query selection only. Firestore Security Rules are the
+// boundary: they refuse the project document to a non-internal role and refuse
+// a directory entry, drawing, document or file of an unassigned project. The
+// predicates below choose WHICH read to open so the app never issues one the
+// rules would refuse — they grant nothing.
+export const PROJECT_INTERNAL_ROLES = ['company_admin', 'project_manager', 'qs']
+export const PROJECT_ASSIGNED_ROLES = ['client', 'subcontractor']
+export const readsProjectDocuments = (role) => PROJECT_INTERNAL_ROLES.includes(role)
+export const readsAssignedProjects = (role) => PROJECT_ASSIGNED_ROLES.includes(role)
+
+// The five display fields a directory entry holds — and the ONLY five. Rules
+// refuse any other key and any value that differs from the project document
+// in the same commit, so this list is the mirror of an enforced shape.
+export const PROJECT_DIRECTORY_KEYS = ['name', 'status', 'location', 'startDate', 'progress']
+
+// The directory entry for a project being written, taken from the EXACT values
+// going into the project document in the same batch (`startDate` is already a
+// Timestamp or null by then). Anything else on the input is dropped.
+export function projectDirectoryFields({ name, status, location, startDate, progress }) {
+  return { name, status, location, startDate, progress }
+}
+
+// One listener per assigned project, so the list is bounded. An assignment
+// beyond the cap is not subscribed (it stays readable by rules; it is simply
+// not listed) — a user needing more is a provisioning question, not a UI one.
+export const ASSIGNED_PROJECTS_MAX = 30
+
+const PROJECT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
+
+// The caller's assigned project ids, from their own profile: well-formed ids
+// only, de-duplicated, sorted (a stable subscription key) and capped. A
+// missing, null or malformed `projectIds` is NO assignment — the same answer
+// the rules give.
+export function assignedProjectIds(profile) {
+  if (!profile || !readsAssignedProjects(profile.role)) return []
+  const raw = profile.projectIds
+  if (!Array.isArray(raw)) return []
+  const ids = [...new Set(raw.filter(id => typeof id === 'string' && PROJECT_ID_RE.test(id)))]
+  return ids.sort().slice(0, ASSIGNED_PROJECTS_MAX)
+}
+
+// The state of the assigned-directory subscription (useProjectDirectory).
+// `key` is null until EVERY listener of the current target has reported, so
+// the list is never shown half-loaded (a project still in flight would read as
+// "not found"). Reports for the target in flight collect in `pending`.
+export const EMPTY_DIRECTORY_SNAPSHOT = {
+  key: null, projects: [], error: false, readCode: null, fromCache: false, attempt: 0, pending: null,
+}
+
+// Fold ONE listener report into the snapshot. `report` is
+// `{ project, fromCache, code }`: `project` is the entry (or null when the
+// document does not exist or the read failed) and `code` the Firestore error
+// code of a failed read.
+//   · an entry that does not exist, or that rules refuse, is simply not in the
+//     list — an assignment the server no longer honours is not an outage;
+//   · any other failure makes the whole list `error` (a list with a silent
+//     hole would state a false "you have N projects").
+// Entries keep the order of `ids`. Pure; a report for another target is ignored.
+export function foldDirectoryReport(snap, key, ids, id, report) {
+  const pending = snap.pending && snap.pending.key === key ? snap.pending : { key, byId: {} }
+  if (!ids.includes(id)) return snap
+  const byId = { ...pending.byId, [id]: report }
+  const next = { key, byId }
+  if (!ids.every(i => byId[i])) return { ...snap, pending: next }
+  const failed = ids.map(i => byId[i]).find(r => r.code && r.code !== 'permission-denied')
+  return {
+    key,
+    projects: failed ? [] : ids.map(i => byId[i].project).filter(Boolean),
+    error: !!failed,
+    readCode: failed ? failed.code : null,
+    fromCache: ids.some(i => byId[i].fromCache === true),
+    attempt: snap.attempt,
+    pending: next,
+  }
+}

@@ -142,6 +142,7 @@ export default function Dashboard() {
         listState={portfolio.listState}
         company={company}
         canViewSnapshot={canViewSnapshot}
+        showCommercial={canViewSnapshot}
         selectedId={selectedId}
         onSnapshot={showSnapshot}
         onOpen={(projectId) => navigate(`/projects/${projectId}/overview`)}

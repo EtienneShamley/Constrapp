@@ -6790,3 +6790,64 @@ A manual edit of `budgeted` on such a line remains permitted (the existing ADR-3
 - **Open decisions.** The Xero-assigned versus Constrap invoice number; which roles may export; and token encryption with a Secret Manager key versus Cloud KMS.
 
 **Prerequisites before any implementation.** Recorded Product Owner approval lifting the ROADMAP.md product-market-fit gate. Approval of this ADR, including the third trusted-backend exception and the matching CLAUDE.md and AGENT.md amendment. A separate authorisation for Xero app registration and Demo Company testing.
+
+---
+
+## ADR-83: M2-A2 — External Project Isolation, Stage A (a server-managed `projectIds` assignment on `users/{uid}`; the project document becomes internal-only; an external-safe `projectDirectory` entry pinned to its project in the same commit; Firestore and Storage reads of drawings, revisions and project documents scoped to assigned projects; `client` and `subcontractor` are the only assignable roles; no assignment means no access; assignment management deferred to Stage B)
+
+**Date:** 23 November 2026 · **Status:** STAGE A IMPLEMENTED — NOT DEPLOYED (branch `feature/m2-a2-external-project-isolation`, uncommitted, from `main` `6a1a1ac`; architect decision: CONDITIONAL GO, pre-merge completion). **Deferred Control 20 is NOT closed in production.** External-user onboarding remains BLOCKED. TESTING.md §63 P19–P20 (C1-B) remain pending. Nothing in this ADR is browser-verified or production-verified.
+
+**Context.** Membership was company-wide: any provisioned member of a company read every `projects` document, every drawing and revision, every project-visible document and the matching Storage objects (Deferred Control 20). The C1-B Portfolio assessment (23 November 2026) confirmed it for `client` and `subcontractor`, and found one exposure not recorded before: the project document carries the headline `budget`, which those roles could read and were shown. Production then held one company, nine projects and no active external user (read-only, 23 November 2026).
+
+**Decision.**
+
+1. **Assignment.** `users/{uid}.projectIds` — a list of project ids — is the only source of external project access. `users/{uid}` is client-read-only (ADR-27), so no client can write it. Stage A adds no writer: nothing sets the field yet (Stage B).
+2. **Who reads a project's shared records.** One predicate, `projectReader(companyId, projectId)`, in `firestore.rules` and `storage.rules`: a member of the company who is either `company_admin` / `project_manager` / `qs`, or `client` / `subcontractor` with `projectIds` a list containing the project id.
+3. **No assignment means no access.** A missing, null, empty or non-list `projectIds` grants nothing. Every other role — `super_admin`, an unknown role, no role — reads no project record, with or without an assignment.
+4. **The project document is internal-only.** `projects/{projectId}` is read by the three internal roles only. No external role reads the headline budget, the currency or any field added to that document later.
+5. **External-safe representation.** `companies/{c}/projectDirectory/{projectId}` holds exactly `name`, `status`, `location`, `startDate`, `progress`. `get`: `projectReader`. `list`: internal roles only — an external role can never enumerate the directory. Delete is denied.
+6. **Atomic projection consistency.** The entry is written by the client and is not client-controlled:
+   - *Directory side.* Writers are `company_admin` / `project_manager`. The entry must hold the five keys and no other, typed, each equal to the project document **after the commit** (`getAfter`), and the project must exist.
+   - *Project side (FINAL ruleset).* A project is created with its entry in the same commit; an update that changes any of the five fields carries the entry.
+   - No commit that passes the Rules leaves the two different. A write that changes none of the five fields — the currency pin, the currency lock — evaluates no pairing.
+7. **Internal roles are unchanged.** They stay company-wide. Per-project scoping of internal staff is not part of this decision.
+8. **The application.** `ProjectsProvider` opens the project query for an internal role only. For `client` / `subcontractor` it opens one document listener per assigned id on the directory (`useProjectDirectory`), capped at 30. Project create and edit are one batch of two documents. Navigation, project tabs and the headline-budget displays are filtered by role — presentation only.
+
+**Why a projection, not a narrowed project document.** Firestore has no field-level read control. Moving `budget` out of the project document would have left every field added later readable by external roles by default. The directory is an allow-list: a field reaches an external role only if a Rules change adds it.
+
+**Why Rules-paired client writes, not a trigger.** A Firestore-triggered Function would be a new trusted-backend pattern and only eventually consistent. The `getAfter` pairing is the existing pattern (ADR-61, ADR-68, ADR-70), is atomic, and adds no Function.
+
+**Every writer of a project document, reviewed (23 November 2026).**
+
+| Writer | Fields written | Directory impact |
+|---|---|---|
+| `useProjects.createProject` | the five, `budget`, `currency`, `currencyLocked`, stamps | one batch with the entry |
+| `useProjects.updateProject` | the five | one batch with the entry |
+| `useProjects.updateProjectCurrency` | `currency` | none |
+| `useProjects.lockProjectCurrency` | `currencyLocked` (+ `currency`) | none |
+| `projectCurrencyLock.stageProjectCurrencyLock` (every financial transaction) | `currencyLocked` | none |
+| `useCompany` currency pin (batched) | `currency` | none |
+| `functions/src/boqBudget/transfer.js` (Admin SDK) | `currencyLocked` | none |
+| `functions/src/finalAccount/approve.js` | reads only | none |
+| Operator scripts | none writes a project | none |
+
+**Document-access budget.** Firestore allows 10 `exists()` / `get()` / `getAfter()` calls per operation and 20 per batched write or transaction. Counting every call in the source (repeated calls for one document may be cached; that is not relied on): the project half of a pair spends 8, the directory half 9, the pair 17. The application commits exactly one pair. A second pair in the same commit would exceed 20 on that count and must not be written. The emulator is not evidence for these limits — measured on 23 November 2026 it enforces 10 per operation on distinct documents only and does not enforce the per-commit limit. `tests/unit/externalProjectIsolation.test.js` pins the counts.
+
+**Storage.** Storage Rules may access at most two Firestore documents per evaluation. The document read already used two (`users/{uid}` and the document's metadata); `projectReader` reads the same `users/{uid}` document, so the count is unchanged.
+
+**Release (NOT DONE) — DEPLOYMENT.md → *M2-A2 Stage A*.** A dedicated Stage-1 ruleset, `firestore.m2a2-transitional.rules`, differs from the FINAL ruleset in the two project-side pairing lines only. It exists because the bundle in production writes projects without an entry. Order: Stage-1 Firestore Rules and Storage Rules → Hosting → directory backfill → FINAL Rules. **`firestore.transitional.rules` (ADR-63 / ADR-65 / ADR-68) must NOT be published for this release:** it relaxes four lines whose FINAL forms are live.
+
+**Stage B (NOT STARTED — required before any external onboarding).**
+
+- Operator-only assignment management: provisioning an external member, and setting or removing `projectIds`, with an audit event.
+- Invitation acceptance merges into `users/{uid}` and deactivation does not clear fields, so a stale `projectIds` would survive a re-invitation. Both must reset it.
+- A file-link revocation request when an assignment is removed.
+- A live negative test with a real external account in an isolated test company.
+
+**Security, stated plainly.**
+
+- *Rules-enforced (emulator-proven, not production-verified):* tenancy; the two read audiences; the fail-closed assignment; the internal-only project document; the directory's shape, its equality with the project, and the project-side pairing under the FINAL ruleset; the Storage read scope.
+- *Client-side only:* the navigation, tab and budget-column filtering; the 30-listener cap. These can be bypassed by a direct Firestore call and protect nothing.
+- *Not enforced:* internal roles are not project-scoped. A download URL copied before an assignment is removed keeps working until the periodic sweep runs (ADR-74 / ADR-75). Admin-SDK writes bypass Rules. Under the Stage-1 ruleset a project may exist without an entry or with an entry an old bundle did not update; such an entry holds only the five display fields.
+
+**Consequences.** `super_admin` loses the project, drawing and document reads it held as an ordinary member (none exists in production). An external user provisioned before Stage B reads nothing. Rolling the Firestore or Storage ruleset back to the pre-M2-A2 version reopens Deferred Control 20 and is a deliberate, separately authorised act.

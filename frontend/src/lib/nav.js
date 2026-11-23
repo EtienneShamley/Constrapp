@@ -16,12 +16,16 @@
 // roles only. The list is spelled out here (it mirrors lib/margin.js →
 // FINANCIAL_ROLES, asserted equal by tests/unit/portfolioSurface.test.js) so
 // this module stays free of imports.
+//
+// Contacts and Subcontractors (M2-A2) read the company contact directory, which
+// rules have always refused to every non-internal role; the entries are now
+// limited to the roles that can open them.
 export const NAV = [
   { to: '/',                label: 'Dashboard',        icon: '⊞', end: true   },
   { to: '/projects',        label: 'Projects',          icon: '🏗'             },
   { to: '/portfolio',       label: 'Portfolio',         icon: '📊', roles: ['company_admin', 'project_manager', 'qs'] },
-  { to: '/contacts',        label: 'Contacts',          icon: '👤'             },
-  { to: '/subcontractors',  label: 'Subcontractors',    icon: '👷'             },
+  { to: '/contacts',        label: 'Contacts',          icon: '👤', roles: ['company_admin', 'project_manager', 'qs'] },
+  { to: '/subcontractors',  label: 'Subcontractors',    icon: '👷', roles: ['company_admin', 'project_manager', 'qs'] },
 ]
 
 // The entries offered to a role. While the role is unknown (profile loading)

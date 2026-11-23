@@ -120,17 +120,80 @@ export function buildTransitionalRules(finalSource) {
   return HEADER_TRANSITIONAL + out
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
-  const built = buildTransitionalRules(readFileSync(FINAL_RULES_PATH, 'utf8'))
-  if (process.argv.includes('--check')) {
-    const current = existsSync(TRANSITIONAL_RULES_PATH) ? readFileSync(TRANSITIONAL_RULES_PATH, 'utf8') : null
-    if (current !== built) {
-      console.error('firestore.transitional.rules is out of date — run: node scripts/build-transitional-rules.mjs')
-      process.exit(1)
+// ── M2-A2 (External Project Isolation) — a SEPARATE Stage-1 ruleset ──────────
+//
+// The four pairs above belong to releases whose FINAL rules are long live;
+// publishing firestore.transitional.rules again would RELAX them. M2-A2
+// therefore derives its own file, which differs from firestore.rules in the
+// two directory-pairing lines ONLY — every other control, including the four
+// strict lines above and the whole external read boundary, is the FINAL one.
+// Stage 1 exists because the bundle being served when the rules are published
+// still writes a project without its directory entry.
+export const M2A2_TRANSITIONAL_RULES_PATH = resolve(HERE, '../firestore.m2a2-transitional.rules')
+
+export const M2A2_LINE_PAIRS = [
+  {
+    name: 'projects create — the directory pair',
+    final:
+      "          && directoryPaired(); // M2-A2 FINAL: a project is CREATED with its directory entry",
+    transitional:
+      "          ; // M2-A2 TRANSITIONAL (STAGE 1): the directory entry is OPTIONAL at create while the pre-M2-A2 bundle is served",
+  },
+  {
+    name: 'projects update — the directory pair',
+    final:
+      "                 && (!changedKeys().hasAny(['name', 'status', 'location', 'startDate', 'progress']) || directoryPaired()) // M2-A2 FINAL: a display-field change carries its directory entry",
+    transitional:
+      "                 // M2-A2 TRANSITIONAL (STAGE 1): a display-field change MAY omit its directory entry while the pre-M2-A2 bundle is served",
+  },
+]
+
+export const M2A2_HEADER_TRANSITIONAL_LINES = [
+  '// ⚠️ M2-A2 STAGE-1 TRANSITIONAL RULESET — derived from firestore.rules by',
+  '// scripts/build-transitional-rules.mjs; never edit by hand. Differs from the',
+  `// FINAL ruleset in exactly ${M2A2_LINE_PAIRS.length} rule lines (search "M2-A2 TRANSITIONAL (STAGE 1)"). Deploy`,
+  '// FIRST (firebase.m2a2-transitional.json), before the M2-A2 Hosting bundle; replace',
+  '// with firestore.rules (FINAL) once the new bundle is live and the directory is',
+  '// backfilled. Temporary compatibility only.',
+]
+
+export function buildM2a2TransitionalRules(finalSource) {
+  if (!finalSource.startsWith(HEADER_FINAL)) {
+    throw new Error('firestore.rules does not start with the rules_version header')
+  }
+  let out = finalSource.slice(HEADER_FINAL.length)
+  for (const pair of M2A2_LINE_PAIRS) {
+    const occurrences = out.split(pair.final).length - 1
+    if (occurrences !== 1) {
+      throw new Error(`Expected exactly one FINAL marker line for "${pair.name}" in firestore.rules, found ${occurrences}`)
     }
-    console.log('firestore.transitional.rules is up to date')
+    out = out.replace(pair.final, pair.transitional)
+  }
+  return HEADER_FINAL + '\n' + M2A2_HEADER_TRANSITIONAL_LINES.join('\n') + out
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  const finalSource = readFileSync(FINAL_RULES_PATH, 'utf8')
+  const outputs = [
+    { path: TRANSITIONAL_RULES_PATH, name: 'firestore.transitional.rules', built: buildTransitionalRules(finalSource) },
+    { path: M2A2_TRANSITIONAL_RULES_PATH, name: 'firestore.m2a2-transitional.rules', built: buildM2a2TransitionalRules(finalSource) },
+  ]
+  if (process.argv.includes('--check')) {
+    let stale = false
+    for (const o of outputs) {
+      const current = existsSync(o.path) ? readFileSync(o.path, 'utf8') : null
+      if (current !== o.built) {
+        console.error(`${o.name} is out of date — run: node scripts/build-transitional-rules.mjs`)
+        stale = true
+      } else {
+        console.log(`${o.name} is up to date`)
+      }
+    }
+    if (stale) process.exit(1)
   } else {
-    writeFileSync(TRANSITIONAL_RULES_PATH, built)
-    console.log(`wrote ${TRANSITIONAL_RULES_PATH} (${Buffer.byteLength(built, 'utf8')} bytes)`)
+    for (const o of outputs) {
+      writeFileSync(o.path, o.built)
+      console.log(`wrote ${o.path} (${Buffer.byteLength(o.built, 'utf8')} bytes)`)
+    }
   }
 }

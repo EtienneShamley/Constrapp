@@ -4651,3 +4651,132 @@ failures (the L3 Final Account alert does not cover it). Adding one is a
 separate operational authorisation.
 
 **Release record:** NOT DEPLOYED.
+
+---
+
+## M2-A2 Stage A — External Project Isolation release order — ADR-83 — MERGE, AZURE GREEN, STAGE-1 RULES + STORAGE RULES, HOSTING, BACKFILL, FINAL RULES (STAGE A IMPLEMENTED — NOT DEPLOYED)
+
+**Status (23 November 2026):** implemented on
+`feature/m2-a2-external-project-isolation` (uncommitted). **Nothing in this
+section has been run.** No commit, merge, deploy or production write. DC20
+is open in production; external onboarding is blocked.
+
+Four components change: Firestore Rules, Storage Rules, the Hosting bundle,
+and production data (one new document per existing project, by an operator
+script). No Function, index, secret, IAM or scheduler change. Every command
+runs from `frontend/` unless stated.
+
+**Sizes (`wc -c`):** `firestore.rules` **236,737** (budget 245,000; 8,263
+headroom); `firestore.m2a2-transitional.rules` **237,176**; `storage.rules`
+**10,323**.
+
+### The Stage-1 ruleset — which file, and which file NOT
+
+- **Publish `firestore.m2a2-transitional.rules`** (through
+  `firebase.m2a2-transitional.json`). It is derived by
+  `npm run rules:transitional` and differs from `firestore.rules` in a
+  six-line header comment and exactly two rule lines: the project-create and
+  project-update directory pairing. Every read rule, the directory block and
+  every other write rule are the FINAL ones.
+- **Do NOT publish `firestore.transitional.rules`** (`firebase.transitional.json`).
+  That file belongs to the ADR-63 / ADR-65 / ADR-68 releases and relaxes four
+  lines whose FINAL forms are live: the variation scope pair, the progress
+  claim `variationLineCount` and invoice-link keys at create, the activity
+  revision contract, and the invoice-link keys on claim approval. Publishing
+  it would weaken production. It is kept only because existing tests derive
+  from it; retiring it is a separate task.
+
+### Preconditions
+
+1. Architect approval; commit; merge to `main`.
+2. **Azure `main` GREEN on the merge commit. No production step before it.**
+3. Read-only check that production still matches the previous `main`
+   (Firestore ruleset 232,776 bytes, Storage ruleset 9,271 bytes).
+4. `npm run rules:transitional:check` clean on the release checkout.
+5. Read-only count of active `client` / `subcontractor` / `super_admin`
+   users. Zero were active on 23 November 2026. Any that exist lose all
+   project access at step 1 below until Stage B assigns them — tell the
+   Product Owner first.
+
+### Release order
+
+Each step needs its own authorisation.
+
+1. **Stage-1 Firestore Rules and Storage Rules.**
+   `firebase deploy --only firestore:rules --config firebase.m2a2-transitional.json --project constrapp-69b5d`
+   then `firebase deploy --only storage --project constrapp-69b5d`.
+   From here the read boundary is final: the project document is
+   internal-only and external reads need an assignment. The bundle still
+   being served keeps creating and editing projects.
+   Verify read-only: the published Firestore ruleset is byte-identical to
+   `firestore.m2a2-transitional.rules`, the Storage ruleset to
+   `storage.rules`; an internal user opens Projects, a drawing and a document.
+2. **Hosting.** `firebase deploy --only hosting --project constrapp-69b5d`
+   from a clean build of `main`. Verify the served bundle against the build;
+   as an internal user create a test project and edit a project — each
+   writes its directory entry.
+3. **Directory backfill** (from `frontend/functions`, operator's own ADC):
+   - Dry run — reads only, writes nothing:
+     `node scripts/backfill-project-directory.mjs --project constrapp-69b5d`
+     **This is the production check of the source data types.** Review every
+     line. `INVALID` (a source value of the wrong type), `MISMATCH` (an entry
+     that differs from its project) and `ORPHAN` are refused and make the
+     script exit 1; fix each by saving the project in the app, never by hand.
+   - **Apply — only with a separate, explicit Product Owner authorisation
+     given after the dry-run output has been reviewed:**
+     `node scripts/backfill-project-directory.mjs --project constrapp-69b5d --apply`
+     It creates missing entries only, each in a transaction that re-reads the
+     project; it never overwrites, never deletes and never touches a project
+     document. It writes no audit event — keep the terminal output as the
+     record.
+   - Run the dry run again. **Gate for step 4: `missing 0 · invalid 0 ·
+     mismatch 0 · orphan 0 · failed 0`, and `in sync` equal to the number of
+     projects.**
+4. **FINAL Firestore Rules.** Only when the gate in step 3 is met:
+   `firebase deploy --only firestore:rules --project constrapp-69b5d`.
+   Verify byte-identical to `firestore.rules`. From here a project cannot be
+   created, or have a display field changed, without its entry.
+   A browser tab still running the pre-M2-A2 bundle can no longer create or
+   edit a project until it is reloaded.
+
+Then TESTING.md §68 (internal regression). The external checks there need
+Stage B.
+
+### Rollback
+
+Roll back in the reverse order. **No step below reopens Deferred Control 20
+except the last one, which is never routine.**
+
+| Undo | Action | Effect on the boundary |
+|---|---|---|
+| Step 4 | Republish the Stage-1 ruleset (step 1's first command) | None — the read boundary is identical |
+| Step 3 | Nothing. Entries are inert; leave them | None |
+| Step 2 | Restore the previous Hosting release in the Firebase console (there is no CLI rollback). **Only while the Stage-1 ruleset is published** — under the FINAL ruleset the old bundle cannot create or edit projects, so undo step 4 first | None |
+| Step 1 | Republish the pre-M2-A2 Firestore ruleset and Storage ruleset | **REOPENS DC20:** every member again reads every project document (headline budget included), drawing, revision and project document of the company |
+
+Rules for the last row:
+
+- It requires a separate Product Owner authorisation that names the
+  exposure. It is not part of an emergency Hosting rollback.
+- It is acceptable only while no `client` or `subcontractor` holds an
+  assignment and none is active. Check first, read-only.
+- After Stage B onboards an external user, do not use it: deactivate the
+  external members instead, then investigate.
+- Undo step 2 before it — the M2-A2 bundle writes directory entries, which
+  the old ruleset has no block for, so project create and edit would fail.
+- Firestore and Storage are rolled back together or not at all; rolling back
+  one alone leaves files or records readable without the other.
+
+### Failure recovery
+
+- **Step 1 publishes, an internal page fails:** undo step 1's Firestore
+  publish only if the failure is a read the internal roles need; otherwise
+  fix forward. Record what failed first.
+- **Project create or edit denied after step 2:** the Stage-1 ruleset is not
+  the published one — check which ruleset is live before anything else.
+- **Backfill reports a refusal:** do not proceed to step 4. The Stage-1
+  ruleset is safe to leave published for as long as it takes.
+
+### Release record
+
+Not started.

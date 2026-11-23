@@ -47,11 +47,14 @@ describe('navigation: Portfolio is offered to financial roles only', () => {
     }
   })
 
-  it('every other entry is offered to everyone, exactly as before', () => {
-    for (const role of ['company_admin', 'subcontractor', undefined]) {
-      expect(navFor(role).map(n => n.to)).toEqual(expect.arrayContaining(['/', '/projects', '/contacts', '/subcontractors']))
+  it('Dashboard and Projects are offered to everyone; the contact pages to the internal roles only (M2-A2)', () => {
+    for (const role of ['company_admin', 'project_manager', 'qs']) {
+      expect(navFor(role).map(n => n.to)).toEqual(['/', '/projects', '/portfolio', '/contacts', '/subcontractors'])
     }
-    expect(NAV.filter(n => n.roles).map(n => n.to)).toEqual(['/portfolio'])
+    for (const role of ['subcontractor', 'client', 'super_admin', undefined]) {
+      expect(navFor(role).map(n => n.to)).toEqual(['/', '/projects'])
+    }
+    expect(NAV.filter(n => n.roles).map(n => n.to)).toEqual(['/portfolio', '/contacts', '/subcontractors'])
   })
 
   it('the sidebar renders the role-filtered list', () => {

@@ -38,8 +38,11 @@ const USERS = {
   admin:  { uid: 'u_admin',  role: 'company_admin',   companyId: COMPANY_A },
   pm:     { uid: 'u_pm',     role: 'project_manager', companyId: COMPANY_A },
   qs:     { uid: 'u_qs',     role: 'qs',              companyId: COMPANY_A },
-  sub:    { uid: 'u_sub',    role: 'subcontractor',   companyId: COMPANY_A },
-  client: { uid: 'u_client', role: 'client',          companyId: COMPANY_A },
+  // M2-A2: an external role reads a project only when ASSIGNED to it; the
+  // unassigned and malformed-assignment denials are proven in
+  // tests/rules/externalIsolation.rules.test.js.
+  sub:    { uid: 'u_sub',    role: 'subcontractor',   companyId: COMPANY_A, projectIds: [PROJECT_A] },
+  client: { uid: 'u_client', role: 'client',          companyId: COMPANY_A, projectIds: [PROJECT_A] },
   sup:    { uid: 'u_sup',    role: 'super_admin',     companyId: COMPANY_A },
   other:  { uid: 'u_other',  role: 'company_admin',   companyId: COMPANY_B },
 }
@@ -151,7 +154,7 @@ beforeEach(async () => {
   await testEnv.withSecurityRulesDisabled(async (c) => {
     const db = c.firestore()
     for (const u of Object.values(USERS)) {
-      await setDoc(doc(db, 'users', u.uid), { role: u.role, companyId: u.companyId, name: u.uid })
+      await setDoc(doc(db, 'users', u.uid), { role: u.role, companyId: u.companyId, name: u.uid, ...(u.projectIds ? { projectIds: u.projectIds } : {}) })
     }
     await setDoc(doc(db, 'companies', COMPANY_A), { name: 'Company A' })
     await setDoc(doc(db, 'companies', COMPANY_B), { name: 'Company B' })
@@ -187,8 +190,8 @@ describe('READS — visibility is the gate', () => {
     }
   })
 
-  it('4. super_admin is an ordinary member here — project yes, internal no', async () => {
-    await assertSucceeds(getDoc(docRef(ctx(USERS.sup), 'projectDoc')))
+  it('4. super_admin is neither internal nor an assignable external role — it reads NO document (M2-A2)', async () => {
+    await assertFails(getDoc(docRef(ctx(USERS.sup), 'projectDoc')))
     await assertFails(getDoc(docRef(ctx(USERS.sup), 'internalDoc')))
   })
 
@@ -614,7 +617,8 @@ describe('DOCUMENTED GAPS — enforced by the client only', () => {
 // AND `status: 'active'`. Superseded and withdrawn documents are invalidated:
 // internal roles keep them as history, everyone else loses them at once.
 describe('READS — a non-internal role reads ACTIVE project documents only', () => {
-  const EXTERNAL = () => [USERS.sub, USERS.client, USERS.sup]
+  // M2-A2: the ASSIGNED external roles. super_admin reads nothing (test 61 below).
+  const EXTERNAL = () => [USERS.sub, USERS.client]
   const INTERNAL = () => [USERS.admin, USERS.pm, USERS.qs]
 
   beforeEach(async () => {
@@ -626,8 +630,9 @@ describe('READS — a non-internal role reads ACTIVE project documents only', ()
     })
   })
 
-  it('61. subcontractor, client and super_admin read an ACTIVE project document', async () => {
+  it('61. an ASSIGNED subcontractor and client read an ACTIVE project document; super_admin does not', async () => {
     for (const user of EXTERNAL()) await assertSucceeds(getDoc(docRef(ctx(user), 'active')))
+    await assertFails(getDoc(docRef(ctx(USERS.sup), 'active')))
   })
 
   it('62. they are DENIED a SUPERSEDED project document', async () => {

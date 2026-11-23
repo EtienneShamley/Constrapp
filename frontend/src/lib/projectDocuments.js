@@ -19,7 +19,7 @@ export const DOCUMENT_STATUS = {
 }
 
 export const DOCUMENT_VISIBILITY = {
-  PROJECT:  'project',   // every provisioned member of the company
+  PROJECT:  'project',   // internal roles, and externals assigned to the project
   INTERNAL: 'internal',  // internal roles only
 }
 

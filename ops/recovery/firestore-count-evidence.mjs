@@ -41,8 +41,8 @@ export const COLLECTION_GROUPS = [
   'budgetApprovals', 'budgetLines', 'cashFlowLines', 'clientInvoices', 'clientReceipts',
   'commercial', 'companies', 'contacts', 'costCodes', 'counters', 'devOutbox', 'documents',
   'drawings', 'fileLinkRevocationQueue', 'finalAccounts', 'forecastLines', 'invitations',
-  'members', 'programmeBaselineSnapshots', 'programmeBaselines', 'progressClaims', 'projects',
-  'pulseAcknowledgements', 'purchaseOrders', 'rateLimits', 'retentionReleases', 'revisions',
+  'members', 'programmeBaselineSnapshots', 'programmeBaselines', 'progressClaims', 'projectDirectory',
+  'projects', 'pulseAcknowledgements', 'purchaseOrders', 'rateLimits', 'retentionReleases', 'revisions',
   'rfis', 'supplierCreditNotes', 'supplierInvoices', 'supplierPayments', 'system',
   'takeoffMeasurements', 'takeoffPages', 'tenderBids', 'tenderPackages', 'users', 'variations',
 ]

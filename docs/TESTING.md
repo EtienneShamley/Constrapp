@@ -9320,3 +9320,67 @@ To accept the correction after its Hosting release: in the sandbox, open *Transf
 - [ ] T16 — Double-click *Apply transfer*: one transfer. Existing flows unchanged: add and edit a manual budget line; add, edit and void a BOQ item; apply a Quant quantity.
 
 **Release order and rollback.** DEPLOYMENT.md → *L4*: merge, Azure `main` green, Rules, ONLY the new callable, verify, Hosting, then T1–T16. Emergency rollback restores the previous Hosting release and disables the callable by its flag; the L4 Rules and every working budget line are retained.
+
+---
+
+## 68. M2-A2 Stage A — External Project Isolation (ADR-83, 23 November 2026) — STAGE A IMPLEMENTED — NOT DEPLOYED; automated tests PASS (emulators); NOT browser-verified; NOT production-verified; external checks BLOCKED on Stage B
+
+**Scope.** Rules, Storage Rules, the projects provider, the directory hook,
+the role-filtered navigation and the backfill script (ADR-83). Deferred
+Control 20 is open in production. §63 P19–P20 remain pending.
+
+**Automated (local emulators, 23 November 2026 — not production-verified).**
+
+| Suite | Result |
+|---|---|
+| Unit | **101 files / 5,244 tests** PASS (100 / 5,198 before) |
+| Firestore + Storage Rules emulator | **39 files / 2,492 tests** PASS (36 / 2,336 before) |
+| Functions pure | **6 files / 136** PASS (5 / 130 before) |
+| Functions emulator | **10 files / 310** PASS (303 before) |
+| `npm run lint` (frontend), Functions lint | 0 errors / 0 warnings |
+| `npm run build` | clean (the existing chunk-size notice only) |
+| `rules:transitional:check` (both derived rulesets), `functions:calc:check`, `functions:transfer-calc:check` | up to date |
+| `git diff --check` | clean |
+
+| Suite | Coverage |
+|---|---|
+| `tests/rules/externalIsolation.rules.test.js` (76) | Assigned project allowed (records and files, `get` and `list`); unassigned project denied; another company denied, including the SAME project id in two companies; the project document denied to every external role, by `get`, list, id-filtered and collection-group query; the headline budget absent from the directory entry; directory listing denied to external roles; ten malformed assignments (missing, null, empty, string, map, list of objects, number, boolean, `*`, prefix); `super_admin`, an unknown role, a role-less and a wrong-case role denied with an assignment present; a deactivated profile with a stale assignment; internal roles unchanged; internal / superseded / withdrawn documents and the upload window still denied; no client can write `users/{uid}`; server-side assignment change takes effect at the next read |
+| `tests/rules/projectDirectory.rules.test.js` | Paired create and edit accepted; a project created or display-edited WITHOUT its entry rejected; an entry without a project, for another project id, or changed alone rejected; ten injected keys (budget, currency, `projectIds`, role and others); each of the five fields wrong, missing or wrongly typed; delete denied; writers limited to `company_admin` / `project_manager`; a project that pre-dates the directory; currency pin, currency lock and the QS ratchet unaffected, with and without an entry |
+| `tests/rules/projectDirectoryTransitional.rules.test.js` | Stage-1 ruleset: the pre-M2-A2 create and edit still accepted; the directory already strict; the read boundary already final |
+| `tests/rules/` — `drawings`, `externalRoles`, `projects`, `projectDocuments`, `storage` | 55 cases that asserted the company-wide read now assert the boundary — among them drawings test 85, which had pinned DC20 as a limitation |
+| `tests/unit/externalProjectIsolation.test.js` (46) | Role sets; `assignedProjectIds`; the directory fold (never half-loaded; a refused entry is absent, any other failure makes the list unavailable); tabs and navigation; the provider's read selection and paired writes; every other project writer touches no display field; the Stage-1 ruleset is derived and differs in two lines; the access-call budget |
+| `functions/test/projectDirectory.test.js`, `tests/functions/scripts.test.js` | Backfill: dry-run by default and non-mutating; `--apply` creates five-field entries, touches no project, is idempotent; mismatch, wrong type and orphan refused with exit 1; `--company-id` |
+
+**Access-call limits.** Firestore allows 10 document-access calls per
+operation and 20 per commit. Counting every call: project half 8, directory
+half 9, one pair 17. The app commits one pair. **The emulator does not prove
+this** — it counts distinct documents per operation and does not enforce the
+per-commit limit (measured 23 November 2026). The first production project
+create and edit after the Hosting step are the real check (M3 below).
+
+**Manual acceptance — internal regression (after DEPLOYMENT.md → *M2-A2
+Stage A* steps 1–4; a TEST project, not customer data). NOT RUN.**
+
+- [ ] M1 — After step 1 (Stage-1 Rules, old bundle): as each internal role, Dashboard, Projects, a project Overview, a drawing and a document open as before.
+- [ ] M2 — After step 1: create and edit a project with the OLD bundle — both succeed.
+- [ ] M3 — After step 2 (Hosting): as `company_admin`, create a project; as `project_manager`, edit its name, status, location, start date and progress. Both succeed (this is the production check of the access-call budget). The Firestore console shows `projectDirectory/{id}` with exactly five fields equal to the project.
+- [ ] M4 — As `qs`: Projects lists every project; no project can be created or edited (unchanged). Record a budget line on an unlocked project — the currency lock engages as before.
+- [ ] M5 — Company Settings: change nothing, confirm the page loads; on a test company, the currency pin still succeeds.
+- [ ] M6 — After step 3: the dry run reports every project `in sync`.
+- [ ] M7 — After step 4 (FINAL Rules): repeat M3. A tab left open on the old bundle fails to edit a project until reloaded (expected).
+- [ ] M8 — Portfolio, Commercial Report, Final Account and GANTT open for the internal roles as before.
+
+**Manual acceptance — external roles. BLOCKED: needs Stage B (assignment
+management) and an isolated test company with two Product-Owner-controlled
+emails. NOT RUN.**
+
+- [ ] X1 — A `subcontractor` assigned to project A only: Projects lists A alone, with no Headline Budget column and no *Add New Project*; the sidebar offers Dashboard and Projects.
+- [ ] X2 — Project A shows the Overview (no budget card) and Documents tabs only; drawings and active project documents open and download.
+- [ ] X3 — Entering project B's URL directly: *Project not found*. A direct SDK read of `projects/A`, `projects/B`, `projectDirectory/B`, a drawing of B and a Storage object of B is `permission-denied`.
+- [ ] X4 — A `client` with no assignment: *No projects have been assigned to you yet*; every direct read is denied.
+- [ ] X5 — Remove the assignment (operator): project A disappears at the next read.
+- [ ] X6 — §63 P19–P20.
+
+**Not covered by any test.** A real browser session of an external role; the
+production access-call limit; a production project whose stored field types
+differ from what the app writes (the backfill dry run reports these).

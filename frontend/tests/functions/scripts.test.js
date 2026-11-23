@@ -184,3 +184,102 @@ describe('revoke-file-links.mjs', () => {
     expect(r.out).toContain('never a key file')
   })
 })
+
+// ── backfill-project-directory.mjs (M2-A2) ───────────────────────────────────
+describe('backfill-project-directory.mjs', () => {
+  const base = ['--project', PROJECT_ID]
+  const START = new Date('2026-03-01T00:00:00Z')
+  const display = (name) => ({ name, status: 'In Progress', location: 'Brisbane', startDate: START, progress: 40 })
+  const project = (name, extra = {}) => ({ ...display(name), budget: 5000000, currency: 'AUD', currencyLocked: true, createdBy: 'u1', ...extra })
+  const projects = (c = COMPANY_A) => A.db.collection('companies').doc(c).collection('projects')
+  const directory = (c = COMPANY_A) => A.db.collection('companies').doc(c).collection('projectDirectory')
+  const entries = async (c = COMPANY_A) => Object.fromEntries((await directory(c).get()).docs.map(d => [d.id, d.data()]))
+
+  beforeEach(async () => { await seedCompany(COMPANY_A) })
+
+  it('validates its arguments and refuses to run without an explicit project', () => {
+    expect(run('backfill-project-directory.mjs', []).code).toBe(2)
+    expect(run('backfill-project-directory.mjs', [...base, '--bogus']).code).toBe(2)
+    expect(run('backfill-project-directory.mjs', [...base, '--company-id', 'bad id']).code).toBe(2)
+    expect(run('backfill-project-directory.mjs', [...base, '--company-id', 'nope']).code).toBe(1)
+  })
+
+  it('is DRY-RUN BY DEFAULT: it reports the missing entries and writes nothing', async () => {
+    await projects().doc('p1').set(project('One'))
+    await projects().doc('p2').set(project('Two'))
+    const dry = run('backfill-project-directory.mjs', base)
+    expect(dry.code).toBe(0)
+    expect(dry.out).toContain('[DRY RUN]')
+    expect(dry.out).toContain('MISSING   companies/companyA/projects/p1 — would create its directory entry')
+    expect(dry.out).toContain('Projects 2 · in sync 0 · missing 2 · invalid 0 · mismatch 0 · orphan 0 · failed 0')
+    expect(dry.out).toContain('Dry run — nothing written. Re-run with --apply')
+    expect(await entries()).toEqual({})
+  })
+
+  it('--apply creates exactly the five-field entries, touches no project, and is idempotent', async () => {
+    await projects().doc('p1').set(project('One'))
+    await projects().doc('bare').set({ name: 'Bare', budget: 0 })
+    const before = (await projects().doc('p1').get()).updateTime.toMillis()
+
+    const real = run('backfill-project-directory.mjs', [...base, '--apply'])
+    expect(real.code).toBe(0)
+    expect(real.out).toContain('[APPLY]')
+    expect(real.out).toContain('Projects 2 · in sync 0 · missing 2 · created 2 · invalid 0 · mismatch 0 · orphan 0 · failed 0')
+    const made = await entries()
+    expect(Object.keys(made.p1).sort()).toEqual(['location', 'name', 'progress', 'startDate', 'status'])
+    expect(made.p1).toMatchObject({ name: 'One', status: 'In Progress', location: 'Brisbane', progress: 40 })
+    expect(made.p1.startDate.toMillis()).toBe(START.getTime())
+    expect(made.bare).toEqual({ name: 'Bare', status: '', location: '', startDate: null, progress: 0 })
+    expect(JSON.stringify(made)).not.toContain('5000000')
+    expect((await projects().doc('p1').get()).updateTime.toMillis()).toBe(before)
+
+    const again = run('backfill-project-directory.mjs', [...base, '--apply'])
+    expect(again.code).toBe(0)
+    expect(again.out).toContain('Projects 2 · in sync 2 · missing 0 · created 0')
+    expect(await entries()).toEqual(made)
+  })
+
+  it('REFUSES a mismatched existing entry — never overwrites it — and exits non-zero', async () => {
+    await projects().doc('p1').set(project('One'))
+    await directory().doc('p1').set({ ...display('Stale name') })
+    await projects().doc('p2').set(project('Two'))
+    await directory().doc('p2').set({ ...display('Two'), budget: 5000000 })
+    const real = run('backfill-project-directory.mjs', [...base, '--apply'])
+    expect(real.code).toBe(1)
+    expect(real.out).toContain('MISMATCH  companies/companyA/projects/p1 — name differs from the project (refused; never overwritten)')
+    expect(real.out).toContain('MISMATCH  companies/companyA/projects/p2 — unexpected key "budget"')
+    expect((await entries()).p1.name).toBe('Stale name')
+    expect((await entries()).p2.budget).toBe(5000000)
+  })
+
+  it('REFUSES a project whose source values have the wrong type, and still creates the sound ones', async () => {
+    await projects().doc('good').set(project('Good'))
+    await projects().doc('badDate').set(project('Bad date', { startDate: '2026-03-01' }))
+    await projects().doc('badName').set(project('x', { name: 42, progress: '40' }))
+    const dry = run('backfill-project-directory.mjs', base)
+    expect(dry.code).toBe(1)
+    expect(dry.out).toContain('INVALID   companies/companyA/projects/badDate — startDate is a string, expected a Timestamp or null')
+    const real = run('backfill-project-directory.mjs', [...base, '--apply'])
+    expect(real.code).toBe(1)
+    expect(real.out).toContain('invalid 2')
+    expect(Object.keys(await entries())).toEqual(['good'])
+  })
+
+  it('reports an orphan entry and leaves it alone', async () => {
+    await directory().doc('ghost').set(display('Ghost'))
+    const real = run('backfill-project-directory.mjs', [...base, '--apply'])
+    expect(real.code).toBe(1)
+    expect(real.out).toContain('ORPHAN    companies/companyA/projectDirectory/ghost')
+    expect(Object.keys(await entries())).toEqual(['ghost'])
+  })
+
+  it('--company-id limits the run to one company', async () => {
+    await seedCompany('companyB')
+    await projects().doc('p1').set(project('One'))
+    await projects('companyB').doc('pb').set(project('B one'))
+    const real = run('backfill-project-directory.mjs', [...base, '--company-id', 'companyB', '--apply'])
+    expect(real.code).toBe(0)
+    expect(await entries()).toEqual({})
+    expect(Object.keys(await entries('companyB'))).toEqual(['pb'])
+  })
+})

@@ -24,8 +24,8 @@ import {
 // an upload failure can never leave a drawing claiming a revision that is not
 // there. Firestore rules enforce the empty birth.
 //
-// READS ARE OPEN TO EVERY PROVISIONED COMPANY MEMBER, including subcontractor
-// and client — a drawing is site information. WRITES are company_admin /
+// READS: the internal roles, and a subcontractor or client ASSIGNED to this
+// project (M2-A2, rules-enforced) — a drawing is site information. WRITES are company_admin /
 // project_manager only (rules-enforced; lib/drawings.js carries the UX mirror).
 export function useDrawings(projectId) {
   const { user }    = useAuth()

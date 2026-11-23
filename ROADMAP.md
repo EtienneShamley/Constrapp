@@ -186,7 +186,9 @@ Bring documentation in line with the implemented system:
   any PO, claim, budget line or cost code. Still open:
   **company-wide `projects` / drawings / documents / Storage reads** for those
   roles (DC20 → M2-A2 project scoping, after which external onboarding may be
-  reassessed) and the opposite capability, a supplier reading **only its own**
+  reassessed — **M2-A2 Stage A, ADR-83: IMPLEMENTED, NOT DEPLOYED, 23 November
+  2026; DC20 is still open in production; Stage B, assignment management, NOT
+  STARTED**) and the opposite capability, a supplier reading **only its own**
   POs / claims (M3 portal; needs a user → contact link). Hiding tabs changes
   nothing — only the rules do; see SECURITY.md → *Documented Roles vs Enforced
   Roles*
@@ -294,7 +296,9 @@ of the work still to do:
   features already in production before new functionality is built on them:
   - L2-B Final Account: F3–F17, the positive approval, revision and export
     path; nothing has yet been approved in production.
-  - L2-C Portfolio: P4, P19–P20 and M1–M5.
+  - L2-C Portfolio: P4, P19–P20 and M1–M5. **P19–P20 remain PENDING (23
+    November 2026):** they need an external session, and external onboarding
+    is blocked until M2-A2 (ADR-83) Stage A is deployed and Stage B is built.
   - The GANTT baseline scenarios not exercised in the browser.
   - Product Owner confirmation of the GST boundary hotfix and Premium
     Dashboard v2 production state.
