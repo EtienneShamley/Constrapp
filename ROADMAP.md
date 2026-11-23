@@ -191,8 +191,10 @@ Bring documentation in line with the implemented system:
   deployed; directory backfill verified 10 of 10; a paired project create and
   edit passed in production). The company-wide read is closed in the deployed
   Rules. **Still outstanding:** a real external-role production test — DC20's
-  live acceptance; **Stage B, provisioning and assignment management, NOT
-  implemented**; onboarding remains blocked) and the opposite capability, a supplier reading **only its own**
+  live acceptance; **Stage B, provisioning and assignment management (ADR-84):
+  IMPLEMENTED — NOT DEPLOYED, 23 November 2026** (Functions and operator
+  scripts only; emulator-proven; TESTING.md §69); onboarding remains blocked
+  until its production acceptance passes) and the opposite capability, a supplier reading **only its own**
   POs / claims (M3 portal; needs a user → contact link). Hiding tabs changes
   nothing — only the rules do; see SECURITY.md → *Documented Roles vs Enforced
   Roles*
@@ -302,7 +304,8 @@ of the work still to do:
     path; nothing has yet been approved in production.
   - L2-C Portfolio: P4, P19–P20 and M1–M5. **P19–P20 remain PENDING (23
     November 2026):** they need an external session, and external onboarding
-    is blocked until M2-A2 Stage B is built (Stage A, ADR-83, is LIVE since
+    is blocked until M2-A2 Stage B (ADR-84, IMPLEMENTED — NOT DEPLOYED) is
+    deployed and accepted (Stage A, ADR-83, is LIVE since
     23 November 2026).
   - The GANTT baseline scenarios not exercised in the browser.
   - Product Owner confirmation of the GST boundary hotfix and Premium

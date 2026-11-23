@@ -4744,7 +4744,7 @@ Each step needs its own authorisation.
    edit a project until it is reloaded.
 
 Then TESTING.md §68 (internal regression). The external checks there need
-Stage B.
+Stage B (*M2-A2 Stage B*, below — IMPLEMENTED, NOT DEPLOYED).
 
 ### Rollback
 
@@ -4806,3 +4806,126 @@ step 1.
 **No rollback was used.** The rollback table above still applies:
 republishing the pre-M2-A2 Firestore or Storage ruleset reopens Deferred
 Control 20 and needs its own authorisation.
+
+## M2-A2 Stage B — External provisioning release order — ADR-84 — MERGE, AZURE GREEN, THREE CALLABLES; no Rules, no Hosting (IMPLEMENTED — NOT DEPLOYED)
+
+**Status (23 November 2026):** implemented on
+`feature/m2-a2-external-provisioning` (uncommitted, from `main` `10807b8`).
+**Nothing in this section has been run.** No commit, merge, deploy, script
+run against production, account creation or production write. External
+onboarding is BLOCKED until step 5 passes.
+
+**What changes in production:** three existing callables are redeployed.
+Nothing else — no Firestore Rules (still 236,737 bytes), no Storage Rules,
+no Hosting bundle (the build is still `index-BOg2hoYg.js`), no new function,
+index, parameter, secret, IAM binding or scheduler job. Every command runs
+from `frontend/` unless stated.
+
+| Callable | Why it is redeployed |
+|---|---|
+| `acceptInvitation` | Writes or removes `users/{uid}.projectIds` with the membership; re-validates the stored role and every project |
+| `deactivateMember` | Removes `projectIds` in the commit that ends the membership |
+| `resendInvitation` | Email wording only: names the *Client* and *Subcontractor* roles |
+
+The other five team callables, `approveFinalAccount`, `transferBoqToBudget`
+and the `processFileLinkRevocations` worker are **not** redeployed. Their
+source changed only in ways they do not execute (a new revocation reason
+written by the operator script; a guard in the shared invitation library
+that the callable's own schema already enforces).
+
+### Release order
+
+**STEP 1 — merge and CI.** Commit, merge to `main`, Azure `main` GREEN. No
+production step before it.
+
+**STEP 2 — pre-flight (read-only).** Clean `main` checkout. Confirm the live
+Firestore ruleset is the 236,737-byte file and the Storage ruleset the
+10,323-byte file of `main` (Stage A). Record the current revision of every
+service: `gcloud run services list --region australia-southeast1 --project constrapp-69b5d`.
+
+**STEP 3 — the three callables.**
+`firebase deploy --only functions:team:acceptInvitation,functions:team:deactivateMember,functions:team:resendInvitation --project constrapp-69b5d`
+The `team:` codebase prefix is REQUIRED on each name. Confirm the CLI's plan
+lists exactly THREE updates before accepting it; if it lists any other
+function, stop. **Never `--only functions`.** The predeploy chain runs the
+Functions lint and pure tests.
+
+**STEP 4 — verify (read-only).** The three services show a new revision;
+**the other eight keep the revision recorded in step 2.** A request without
+App Check to each of the three is refused 401. In the application, as a
+Company Admin: Settings → Team loads; an internal invitation can be created
+and revoked (TESTING.md §69 → R1–R3).
+
+**STEP 5 — production acceptance (TESTING.md §69 P1–P14),** in an isolated
+test company, each `--apply` on its own Product Owner authorisation. Only
+when it passes is external onboarding unblocked — and that is a separate
+decision, recorded in ROADMAP.md and SECURITY.md.
+
+**The operator scripts must not be applied before step 3.** The callables in
+production today would accept an external invitation and write the role
+without the assignment (the member would read nothing), and would not clear
+an assignment on deactivation.
+
+### Operator provisioning workflow
+
+Credentials: the operator's own login, as for the bootstrap script (*L1*):
+`gcloud auth application-default login`. A key file is refused
+(`GOOGLE_APPLICATION_CREDENTIALS` must be unset). The identity needs
+Firestore read / write and Firebase Authentication **read**; the scripts
+never write to Authentication. Run from `frontend/functions/` on a clean
+`main` checkout.
+
+1. **Dry run** — reads only:
+   `node scripts/provision-external-member.mjs --project <firebase-project-id> --company-id <companyId> --email <address> --role client|subcontractor --project-ids <id>,<id>`
+   It confirms the company, the email's account state, the role and every
+   project, and warns when a project has no directory entry.
+2. **Apply** — one of:
+   - `… --apply --no-link` — PREFERRED. The link is discarded. A Company
+     Admin opens Settings → Team → Pending invitations and presses *Resend*:
+     a fresh link is emailed to the invited address, and acceptance then
+     marks the account email-verified.
+   - `… --apply --link-file <path outside the repository> --app-url https://app.constrap.com`
+     — the link is written to a NEW file, mode 0600. Hand it over on a
+     trusted channel and delete the file. It proves nothing about the
+     mailbox.
+
+   Neither form prints the link, a token or a password. No account is
+   created.
+3. **The invitee accepts** in the application: registers (or signs in) with
+   the invited email and accepts. The membership and the assignment are
+   written together. Until then they have no access.
+4. **Change the projects later** — dry run first, then `--apply`:
+   `node scripts/set-member-projects.mjs --project <firebase-project-id> --company-id <companyId> (--uid <uid> | --email <address>) (--set <ids> | --clear | --add <ids> --remove <ids>)`
+5. **End the membership** — a Company Admin deactivates the member in
+   Settings → Team (existing). The assignment is removed with it.
+6. **Check** — `node scripts/reconcile-membership.mjs --project <firebase-project-id>`
+   reports R7 / R8 / R9 (assignments that should not exist or are broken).
+
+**Removal is not instant for copied links.** After step 4 with a removal, or
+step 5, the Rules deny at the next request. A download URL the member copied
+earlier may keep working until the background sweep completes; the Team page
+shows *Old file links: revocation pending* until then.
+
+**Do not paste a link file's contents into a terminal, a ticket or a chat.**
+The older `bootstrap-company.mjs` still prints its link; when a test company
+is bootstrapped for step 5, the Product Owner runs it themself.
+
+### Rollback
+
+No data migration and no Rules change, so the rollback is the three
+callables only.
+
+| Situation | Action | Effect |
+|---|---|---|
+| A redeployed callable misbehaves | From a checkout of `main` at the pre-Stage-B commit (`10807b8`): the step 3 command | Acceptance again writes no assignment (an external member accepted afterwards reads nothing — fail closed); deactivation again leaves the field (inert: a deactivated profile has no company, and the Rules deny) |
+| Stop all team operations at once | `TEAM_MANAGEMENT_ENABLED=false` in `functions/.env.constrapp-69b5d` and redeploy the affected callables | They answer `team-management-disabled`; no data is touched |
+| An external member must lose access now | Deactivate them in Settings → Team (works on both versions), or `set-member-projects.mjs --clear --apply` | Denied at the next request; old links follow the sweep |
+| A pending external invitation must not be used | Revoke it in Settings → Team | The link is refused |
+| A stray assignment after a rollback | `reconcile-membership.mjs --fix` (F2) | Removed, with an audit event |
+
+**Assignments already written stay in force after a Functions rollback** —
+the Rules (Stage A) honour them. Rolling the code back does not remove
+anyone's access; deactivation does.
+
+**Never** republish the pre-M2-A2 Firestore or Storage ruleset while any
+`client` or `subcontractor` is active (*M2-A2 Stage A → Rollback*).

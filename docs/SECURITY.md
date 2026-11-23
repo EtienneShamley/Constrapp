@@ -1797,6 +1797,79 @@ Since ADR-27 the enforced `role` in that table is **settable only out of band**:
 rows above. That is what makes the table meaningful — previously any user could
 place themselves in any row with a single write.
 
+## External Project Isolation — M2-A2 Stage B (ADR-84) — IMPLEMENTED — NOT DEPLOYED; external onboarding BLOCKED until production acceptance passes
+
+**Status, 23 November 2026.** Implemented on
+`feature/m2-a2-external-provisioning` (uncommitted). **Nothing in this
+section is live.** No Function has been deployed, no script has been run
+against production, no external account exists. Emulator-proven only.
+External-user onboarding remains BLOCKED until the Functions are deployed
+and TESTING.md §69 and §68 X1–X6 pass in production.
+
+**What it adds.** Stage A's Rules decide what an assignment opens. Stage B
+is the only writer of the assignment — `users/{uid}.projectIds` — and it is
+trusted code and operator scripts, with no Rule, no Hosting change and no
+new callable.
+
+| Path | Who | What it may write to `projectIds` |
+|---|---|---|
+| `acceptInvitation` (callable, changed) | The invitee, signed in as the invited email, holding the one-time token | External role: exactly the list on the stored invitation, after re-validation. Internal role: the field is **removed** |
+| `deactivateMember` (callable, changed) | A Company Admin | The field is **removed**, in the commit that ends the membership |
+| `scripts/set-member-projects.mjs` | An operator, own credentials | Replaces the list of an active `client` / `subcontractor` |
+| `scripts/reconcile-membership.mjs --fix` | An operator | Removes it from a profile that must not hold one |
+| Any browser | — | Nothing. `users/{uid}` is client-read-only (ADR-27), and no callable accepts a `projectIds` key |
+
+**Invariants (each has an emulator test — TESTING.md §69).**
+
+1. Only `client` and `subcontractor` ever hold an assignment. Internal
+   roles, `super_admin`, an unknown role and a profile without an active
+   membership never do.
+2. An assignment is 1–30 unique project ids at provisioning (0–30 after an
+   operator change), each an existing project **of the member's company** —
+   the project is read at `companies/{companyId}/projects/{id}`, so another
+   company's project cannot pass.
+3. Missing, malformed, duplicate, oversized, cross-company and nonexistent
+   assignments are refused. Nothing is repaired or silently dropped.
+4. The assignment is validated when the invitation is created and **again
+   at acceptance**, from the stored invitation and the projects as they are
+   then. The invitee's request is never read for it.
+5. The assignment commits in the same transaction as the membership.
+6. An assignment never outlives its membership and is never inherited by
+   the next one: deactivation removes it, and every acceptance writes it
+   explicitly.
+7. A browser cannot create an external invitation or shape an assignment:
+   the invitation schema refuses both external roles and every schema
+   refuses the key.
+8. Every assignment change is audited with the complete list before and
+   after; a removal queues a file-link revocation in the same commit.
+9. A repeated or concurrent request is safe: changes serialise on the
+   company membership lock, and a request that changes nothing writes
+   nothing.
+10. No password, token or acceptance link is printed or logged by the
+    scripts.
+
+**What is NOT enforced or not built.**
+
+- **Operator scripts validate; they do not authorise.** Whoever holds
+  Firestore write credentials for the project can assign any project of any
+  company. Control of production credentials is the boundary.
+- **Old download URLs are not revoked at once.** Removing a project (or
+  deactivating the member) closes it in the Rules at the next request; a URL
+  the member copied earlier may keep working until the queued sweep
+  completes, and longer if a sweep is incomplete (ADR-74 / ADR-75).
+- A `--link-file` link proves nothing about the mailbox. Prefer `--no-link`
+  and a Company Admin's *Resend*, which emails the invited address.
+- A Company Admin may *Resend* or *Revoke* an operator-created external
+  invitation (existing callables, unchanged). Resend cannot change its role
+  or its projects.
+- No in-app assignment screen; no notice to a member whose assignment
+  changes; no scoping inside a project; internal roles are not
+  project-scoped.
+- An already-issued ID token lives up to an hour; the Rules re-read
+  `users/{uid}` on every request, so this does not extend access to data.
+- Nothing here has been exercised with a real external account in a
+  production browser.
+
 ## External Project Isolation — M2-A2 Stage A (ADR-83) — STAGE A LIVE — CLOSED and production-accepted 23 November 2026; live external-role acceptance OUTSTANDING; onboarding BLOCKED
 
 **Status, 23 November 2026 (closeout).** Stage A is LIVE. The FINAL
@@ -1856,10 +1929,11 @@ bypassed by a direct Firestore call; the Rules above are the boundary.
 
 - Internal roles are not project-scoped; they read every project of their
   company.
-- **Assignment management does not exist yet (Stage B).** Nothing writes
-  `projectIds`; a `client` or `subcontractor` provisioned today reads nothing
-  once Stage A is live.
-- Invitation acceptance and deactivation do not clear `projectIds` (Stage B).
+- **Assignment management is not live.** Stage B (ADR-84) is IMPLEMENTED —
+  NOT DEPLOYED: in production nothing writes `projectIds`, and a `client` or
+  `subcontractor` provisioned today reads nothing.
+- In production, invitation acceptance and deactivation do not yet clear
+  `projectIds` (corrected by Stage B, not deployed).
 - A download URL copied before an assignment is removed keeps working until
   the periodic sweep (ADR-74 / ADR-75).
 - Under the Stage-1 ruleset (between the first Rules publish and the FINAL
@@ -2119,6 +2193,9 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     acceptance is outstanding — no external session has been run in
     production — and onboarding stays blocked until Stage B (assignment
     management) and that test. See *External Project Isolation* above.
+    **23 November 2026 — Stage B (ADR-84) is IMPLEMENTED — NOT DEPLOYED.**
+    This control stays open until it is deployed and the live external-role
+    test passes.
 21. **File bytes are never inspected.** Storage Rules enforce content type,
     object name and size from **upload metadata**; they cannot verify that the
     bytes are what the metadata claims, and there is **no antivirus scanning**
@@ -4404,7 +4481,7 @@ makes every callable answer `team-management-disabled` without touching data.
 
 **Not enforced / not built (stated plainly).** No custom claims (rules still
 `get()` `users/{uid}`); no self-service company registration; no external
-(subcontractor/client) onboarding — DC20's live acceptance is outstanding (M2-A2 Stage A, ADR-83, LIVE since 23 November 2026; Stage B not built); no MFA; no admin UI
+(subcontractor/client) onboarding — DC20's live acceptance is outstanding (M2-A2 Stage A, ADR-83, LIVE since 23 November 2026; Stage B, ADR-84, IMPLEMENTED — NOT DEPLOYED); no MFA; no admin UI
 over the audit log; no automated email bounce handling; **Storage download
 URLs are not revoked immediately on deactivation — a background clean-up
 (ADR-74, live since 12 November 2026) removes them afterwards (Deferred

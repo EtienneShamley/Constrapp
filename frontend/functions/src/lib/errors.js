@@ -57,6 +57,9 @@ export const CODE = {
   BOQ_TRANSFER_BLOCKED:     'boq-transfer-blocked',
   BOQ_TRANSFER_TOO_LARGE:   'boq-transfer-too-large',
   BOQ_TRANSFER_BUSY:        'boq-transfer-busy',
+  // ADR-84 — operator assignment management (never returned by a callable:
+  // acceptInvitation answers `invalid-invitation` for a bad stored assignment).
+  INVALID_ASSIGNMENT:       'invalid-assignment',
 }
 
 const GRPC = {
@@ -100,6 +103,7 @@ const GRPC = {
   [CODE.BOQ_TRANSFER_BLOCKED]:    'failed-precondition',
   [CODE.BOQ_TRANSFER_TOO_LARGE]:  'failed-precondition',
   [CODE.BOQ_TRANSFER_BUSY]:       'aborted',
+  [CODE.INVALID_ASSIGNMENT]:      'failed-precondition',
 }
 
 const MESSAGE = {
@@ -143,6 +147,7 @@ const MESSAGE = {
   [CODE.BOQ_TRANSFER_BLOCKED]:    'A cost code chosen for set-to-zero is no longer eligible. Nothing was written. Review the transfer again.',
   [CODE.BOQ_TRANSFER_TOO_LARGE]:  'This project holds more records than a BOQ transfer can read in one step. Nothing was written.',
   [CODE.BOQ_TRANSFER_BUSY]:       'The BOQ or the budget was being changed while this transfer ran. Nothing was written. Try again.',
+  [CODE.INVALID_ASSIGNMENT]:      'Those project assignments are not valid for that member.',
 }
 
 export class TeamError extends HttpsError {

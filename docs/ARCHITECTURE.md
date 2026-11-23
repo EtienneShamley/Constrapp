@@ -94,7 +94,9 @@ frontend/functions/
   src/lib/                 authz · validation · tokens · invitations · members ·
                            companyLock · rateLimit · audit · email (Resend adapter) ·
                            membershipState · errors · params · firebaseAdmin
-  scripts/                 bootstrap-company.mjs · reconcile-membership.mjs
+  scripts/                 bootstrap-company.mjs · reconcile-membership.mjs ·
+                           provision-external-member.mjs · set-member-projects.mjs
+                           (ADR-84: operator-only; lib/memberProjects.js is not a callable)
   test/                    pure unit tests (no emulator)
   .env.<projectId>         NON-secret parameters (APP_BASE_URL, EMAIL_FROM, kill switch)
 ```

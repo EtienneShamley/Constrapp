@@ -1,7 +1,9 @@
-import { beforeAll, beforeEach, describe, it, expect } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { dirname, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { admin, resetEmulators, makeHandlers, seedCompany, seedUser, req, parseLink, COMPANY_A, PROJECT_ID } from './_harness.js'
 
 // ── Operator scripts against the emulators ──────────────────────────────────
@@ -281,5 +283,284 @@ describe('backfill-project-directory.mjs', () => {
     expect(real.code).toBe(0)
     expect(await entries()).toEqual({})
     expect(Object.keys(await entries('companyB'))).toEqual(['pb'])
+  })
+})
+
+// ── M2-A2 Stage B (ADR-84) — the two external-member scripts ────────────────
+
+const project = (companyId, id) => A.db.collection('companies').doc(companyId).collection('projects').doc(id)
+const seedProjects = async (companyId, ids, { directory = true } = {}) => {
+  for (const id of ids) {
+    const shared = { name: `Project ${id}`, status: 'active', location: '', startDate: null, progress: 0 }
+    await project(companyId, id).set({ ...shared, budget: 1000 })
+    if (directory) await A.db.collection('companies').doc(companyId).collection('projectDirectory').doc(id).set(shared)
+  }
+}
+const invitationsOf = (companyId) => A.db.collection('companies').doc(companyId).collection('invitations').get().then(s => s.docs.map(d => ({ id: d.id, ...d.data() })))
+const auditTypes = (companyId) => A.db.collection('companies').doc(companyId).collection('auditEvents').get().then(s => s.docs.map(d => d.data().type).sort())
+// Nothing that could be an acceptance link or its token.
+const expectNoCredential = (text) => {
+  expect(text).not.toMatch(/accept-invite/)
+  expect(text).not.toMatch(/[#&]t=/)
+  expect(text).not.toMatch(/[A-Za-z0-9_-]{43}/)
+}
+
+describe('provision-external-member.mjs', () => {
+  const base = ['--project', PROJECT_ID, '--company-id', COMPANY_A, '--email', 'Cleo@Client.test', '--role', 'client', '--project-ids', 'p2,p1']
+  let dir
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'constrap-provision-'))
+    await seedCompany(COMPANY_A, 'Acme Builders')
+    await seedUser({ uid: 'u_admin', email: 'admin@acme.test', role: 'company_admin', companyId: COMPANY_A })
+    await seedProjects(COMPANY_A, ['p1'])
+    await seedProjects(COMPANY_A, ['p2'], { directory: false })
+    await seedCompany('otherco', 'Other Co')
+    await seedProjects('otherco', ['pB'])
+  })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+  it('validates its arguments: explicit project, an external role, a clean id list, and exactly one delivery with --apply', () => {
+    expect(run('provision-external-member.mjs', []).code).toBe(2)
+    expect(run('provision-external-member.mjs', base.slice(2)).code).toBe(2)                                     // no --project
+    for (const role of ['qs', 'company_admin', 'super_admin', 'Client']) {
+      expect(run('provision-external-member.mjs', [...base.slice(0, 7), role, ...base.slice(8)]).code, role).toBe(2)
+    }
+    for (const ids of ['p1,,p2', 'p1,', 'a/b', 'p1 p2']) expect(run('provision-external-member.mjs', [...base.slice(0, 9), ids]).code, ids).toBe(2)
+    expect(run('provision-external-member.mjs', [...base, '--bogus']).code).toBe(2)
+    const neither = run('provision-external-member.mjs', [...base, '--apply'])
+    expect(neither.code).toBe(2)
+    expect(neither.out).toContain('exactly one of --no-link or --link-file')
+    expect(run('provision-external-member.mjs', [...base, '--apply', '--no-link', '--link-file', join(dir, 'l.txt')]).code).toBe(2)
+    expect(run('provision-external-member.mjs', [...base, '--no-link']).code).toBe(2)                             // delivery without --apply
+    expect(run('provision-external-member.mjs', [...base, '--link-file', join(dir, 'l.txt')]).code).toBe(2)
+  })
+
+  it('refuses a link file inside the repository, one that exists, a missing folder and a missing origin — before anything is written', async () => {
+    const inRepo = run('provision-external-member.mjs', [...base, '--apply', '--link-file', resolve(FUNCTIONS, 'link.txt')])
+    expect(inRepo.code).toBe(2)
+    expect(inRepo.out).toContain('OUTSIDE this repository')
+    expect(existsSync(resolve(FUNCTIONS, 'link.txt'))).toBe(false)
+    const existing = join(dir, 'existing.txt')
+    writeFileSync(existing, 'keep me')
+    expect(run('provision-external-member.mjs', [...base, '--apply', '--link-file', existing]).code).toBe(2)
+    expect(readFileSync(existing, 'utf8')).toBe('keep me')
+    expect(run('provision-external-member.mjs', [...base, '--apply', '--link-file', join(dir, 'no-such-folder', 'l.txt')]).code).toBe(2)
+    expect(run('provision-external-member.mjs', [...base, '--apply', '--link-file', join(dir, 'l.txt')], { APP_BASE_URL: '' }).code).toBe(2)
+    expect(await invitationsOf(COMPANY_A)).toEqual([])
+  })
+
+  it('refuses a key file, like every operator script', () => {
+    const r = run('provision-external-member.mjs', base, { GOOGLE_APPLICATION_CREDENTIALS: '/tmp/key.json' })
+    expect(r.code).toBe(1)
+    expect(r.out).toContain('never a key file')
+  })
+
+  it('is DRY-RUN BY DEFAULT: it reports the plan, warns about a missing directory entry and writes nothing', async () => {
+    const dry = run('provision-external-member.mjs', base)
+    expect(dry.code).toBe(0)
+    expect(dry.out).toContain('DRY RUN')
+    expect(dry.out).toContain('company "Acme Builders" exists')
+    expect(dry.out).toContain('cleo@client.test — no account yet')
+    expect(dry.out).toContain('2 project(s), all found in this company: p1, p2')
+    expect(dry.out).toContain('no project-directory entry for: p2')
+    expect(dry.out).toContain('nothing written')
+    expect(await invitationsOf(COMPANY_A)).toEqual([])
+    expect(await auditTypes(COMPANY_A)).toEqual([])
+    expect((await A.auth.listUsers()).users.map(u => u.email)).toEqual(['admin@acme.test'])
+  })
+
+  it('--apply --no-link creates the invitation and keeps no link anywhere; a Company Admin\'s Resend then delivers it', async () => {
+    const r = run('provision-external-member.mjs', [...base, '--apply', '--no-link'])
+    expect(r.code).toBe(0)
+    expectNoCredential(r.out)
+    expect(r.out).toContain('presses Resend for cleo@client.test')
+    const [inv] = await invitationsOf(COMPANY_A)
+    expect(inv).toMatchObject({ email: 'cleo@client.test', role: 'client', projectIds: ['p1', 'p2'], status: 'pending', deliveredVia: 'operator', createdBy: 'operator' })
+    expect(r.out).toContain(`invitation ${inv.id} created`)
+    expect(r.out).not.toContain(inv.tokenHash)
+    expect(await auditTypes(COMPANY_A)).toEqual(['invite.created'])
+    // No account and no membership were created.
+    expect((await A.auth.listUsers()).users.map(u => u.email)).toEqual(['admin@acme.test'])
+    expect((await A.db.collection('users').get()).size).toBe(1)
+
+    const { handlers: H, mailer } = await makeHandlers()
+    await H.resendInvitation(req('u_admin', { inviteId: inv.id }))
+    expect(mailer.sent[0].to).toBe('cleo@client.test')
+    await A.auth.createUser({ uid: 'u_cleo', email: 'cleo@client.test', password: 'correct-horse-battery' })
+    await H.acceptInvitation(req('u_cleo', parseLink(mailer.lastLink())))
+    expect((await A.db.collection('users').doc('u_cleo').get()).data()).toMatchObject({ role: 'client', companyId: COMPANY_A, projectIds: ['p1', 'p2'] })
+
+    // A second run for an email that already holds a pending invitation is
+    // refused: nothing is rotated or duplicated.
+    const again = run('provision-external-member.mjs', [...base.slice(0, 5), 'sam@sub.test', ...base.slice(6), '--apply', '--no-link'])
+    expect(again.code).toBe(0)
+    const dup = run('provision-external-member.mjs', [...base.slice(0, 5), 'sam@sub.test', ...base.slice(6), '--apply', '--no-link'])
+    expect(dup.code).toBe(1)
+    expect(dup.out).toContain('Refused: invite-pending')
+    expect((await invitationsOf(COMPANY_A)).filter(i => i.email === 'sam@sub.test')).toHaveLength(1)
+  })
+
+  it('--apply --link-file writes the link to a NEW 0600 file and never to the console', async () => {
+    const file = join(dir, 'cleo-link.txt')
+    const r = run('provision-external-member.mjs', [...base.slice(0, 7), 'subcontractor', ...base.slice(8), '--apply', '--link-file', file])
+    expect(r.code).toBe(0)
+    expectNoCredential(r.out)
+    expect(r.out).toContain(`The acceptance link is in ${file} (mode 0600)`)
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+    const link = readFileSync(file, 'utf8').trim()
+    expect(link.startsWith('http://localhost:5173/accept-invite#')).toBe(true)
+    expect(r.out).not.toContain(parseLink(link).token)
+
+    const { handlers: H } = await makeHandlers()
+    expect(await H.previewInvitation(req(null, parseLink(link)))).toMatchObject({ email: 'cleo@client.test', role: 'subcontractor', accountState: 'new' })
+    await A.auth.createUser({ uid: 'u_cleo', email: 'cleo@client.test', password: 'correct-horse-battery' })
+    await H.acceptInvitation(req('u_cleo', parseLink(link)))
+    expect((await A.db.collection('users').doc('u_cleo').get()).data()).toMatchObject({ role: 'subcontractor', projectIds: ['p1', 'p2'] })
+    expect((await A.auth.getUser('u_cleo')).emailVerified).toBe(false)
+  })
+
+  it('a refusal exits 1, names its reason, writes nothing and leaves no link file', async () => {
+    const file = join(dir, 'refused.txt')
+    const cases = [
+      [[...base.slice(0, 9), 'p1,nope'], 'invalid-assignment — project-not-found · project id(s): nope'],
+      [[...base.slice(0, 9), 'p1,pB'], 'invalid-assignment — project-not-found · project id(s): pB'],          // another company's project
+      [[...base.slice(0, 9), 'p1,p1'], 'invalid-assignment — duplicate'],
+      [[...base.slice(0, 9), Array.from({ length: 31 }, (_, i) => `q${i}`).join(',')], 'invalid-assignment — too-many'],
+      [[...base.slice(0, 3), 'ghostco', ...base.slice(4)], 'not-found'],
+      [[...base.slice(0, 5), 'admin@acme.test', ...base.slice(6)], 'already-member'],
+    ]
+    for (const [args, message] of cases) {
+      for (const mode of [[], ['--apply', '--link-file', file]]) {
+        const r = run('provision-external-member.mjs', [...args, ...mode])
+        expect(r.code, message).toBe(1)
+        expect(r.out, message).toContain(`Refused: ${message}`)
+        expect(existsSync(file), message).toBe(false)
+      }
+    }
+    expect(await invitationsOf(COMPANY_A)).toEqual([])
+    expect(await auditTypes(COMPANY_A)).toEqual([])
+  })
+})
+
+describe('set-member-projects.mjs', () => {
+  const base = ['--project', PROJECT_ID, '--company-id', COMPANY_A]
+  const profile = (uid) => A.db.collection('users').doc(uid).get().then(s => s.data())
+  beforeEach(async () => {
+    await seedCompany(COMPANY_A, 'Acme Builders')
+    await seedUser({ uid: 'u_admin', email: 'admin@acme.test', role: 'company_admin', companyId: COMPANY_A })
+    await seedUser({ uid: 'u_qs', email: 'qs@acme.test', role: 'qs', companyId: COMPANY_A })
+    await seedUser({ uid: 'u_cleo', email: 'cleo@client.test', role: 'client', companyId: COMPANY_A })
+    await A.db.collection('users').doc('u_cleo').update({ projectIds: ['p1', 'p2'] })
+    await seedProjects(COMPANY_A, ['p1', 'p2', 'p3'])
+  })
+
+  it('validates its arguments: one member, one kind of change, an explicit project', () => {
+    expect(run('set-member-projects.mjs', []).code).toBe(2)
+    expect(run('set-member-projects.mjs', ['--company-id', COMPANY_A, '--uid', 'u_cleo', '--add', 'p3']).code).toBe(2)   // no --project
+    expect(run('set-member-projects.mjs', [...base, '--add', 'p3']).code).toBe(2)                                        // no member
+    expect(run('set-member-projects.mjs', [...base, '--uid', 'u_cleo', '--email', 'cleo@client.test', '--add', 'p3']).code).toBe(2)
+    expect(run('set-member-projects.mjs', [...base, '--uid', 'u_cleo']).code).toBe(2)                                    // no change
+    expect(run('set-member-projects.mjs', [...base, '--uid', 'u_cleo', '--set', 'p1', '--add', 'p3']).code).toBe(2)
+    expect(run('set-member-projects.mjs', [...base, '--uid', 'u_cleo', '--set', 'p1', '--clear']).code).toBe(2)
+    expect(run('set-member-projects.mjs', [...base, '--uid', 'u_cleo', '--clear', '--remove', 'p1']).code).toBe(2)
+    expect(run('set-member-projects.mjs', [...base, '--uid', 'u_cleo', '--add', 'p1,,p2']).code).toBe(2)
+    expect(run('set-member-projects.mjs', [...base, '--uid', 'u_cleo', '--set', '']).code).toBe(2)
+    expect(run('set-member-projects.mjs', [...base, '--uid', 'u_cleo', '--add', 'p3'], { GOOGLE_APPLICATION_CREDENTIALS: '/tmp/key.json' }).code).toBe(1)
+  })
+
+  it('is DRY-RUN BY DEFAULT: it shows the change and writes nothing', async () => {
+    const dry = run('set-member-projects.mjs', [...base, '--email', 'Cleo@Client.test', '--add', 'p3', '--remove', 'p1'])
+    expect(dry.code).toBe(0)
+    expect(dry.out).toContain('DRY RUN')
+    expect(dry.out).toContain('member u_cleo (cleo@client.test) — active client')
+    expect(dry.out).toContain('projects now:   p1, p2')
+    expect(dry.out).toContain('projects after: p2, p3')
+    expect(dry.out).toContain('Applying would also queue a file-link revocation')
+    expect((await profile('u_cleo')).projectIds).toEqual(['p1', 'p2'])
+    expect(await auditTypes(COMPANY_A)).toEqual([])
+    expect((await A.db.collection('companies').doc(COMPANY_A).collection('system').get()).empty).toBe(true)
+  })
+
+  it('--apply writes the list, one audit event and — for a removal — a revocation request, with the honest warning', async () => {
+    const added = run('set-member-projects.mjs', [...base, '--uid', 'u_cleo', '--add', 'p3', '--apply'])
+    expect(added.code).toBe(0)
+    expect(added.out).not.toContain('revocation queued')
+    expect((await profile('u_cleo')).projectIds).toEqual(['p1', 'p2', 'p3'])
+    expect(await auditTypes(COMPANY_A)).toEqual(['member.projects_changed'])
+
+    const removed = run('set-member-projects.mjs', [...base, '--uid', 'u_cleo', '--set', 'p3', '--apply'])
+    expect(removed.code).toBe(0)
+    expect(removed.out).toContain('File-link revocation queued (request 1)')
+    expect(removed.out).toContain('may keep working until the sweep completes')
+    expect((await profile('u_cleo')).projectIds).toEqual(['p3'])
+    expect(await auditTypes(COMPANY_A)).toEqual(['file_links.revocation_requested', 'member.projects_changed', 'member.projects_changed'])
+    const state = (await A.db.collection('companies').doc(COMPANY_A).collection('system').doc('fileLinkRevocation').get()).data()
+    expect(state).toMatchObject({ requestSeq: 1, requestReason: 'member.assignment_removed', requestedBy: 'operator' })
+
+    // Repeating it is safe.
+    const again = run('set-member-projects.mjs', [...base, '--uid', 'u_cleo', '--set', 'p3', '--apply'])
+    expect(again.code).toBe(0)
+    expect(again.out).toContain('No change')
+    expect((await auditTypes(COMPANY_A))).toHaveLength(3)
+
+    const cleared = run('set-member-projects.mjs', [...base, '--uid', 'u_cleo', '--clear', '--apply'])
+    expect(cleared.code).toBe(0)
+    expect(cleared.out).toContain('will hold NO project')
+    expect(await profile('u_cleo')).toMatchObject({ projectIds: [], role: 'client', companyId: COMPANY_A })
+  })
+
+  it('refuses an internal member, an unknown member and a project of another company — exit 1, nothing written', async () => {
+    await seedCompany('otherco', 'Other Co')
+    await seedProjects('otherco', ['pB'])
+    const internal = run('set-member-projects.mjs', [...base, '--uid', 'u_qs', '--add', 'p1', '--apply'])
+    expect(internal.code).toBe(1)
+    expect(internal.out).toContain('Refused: invalid-assignment — role')
+    expect('projectIds' in (await profile('u_qs'))).toBe(false)
+    const unknown = run('set-member-projects.mjs', [...base, '--email', 'nobody@client.test', '--add', 'p1', '--apply'])
+    expect(unknown.code).toBe(1)
+    expect(unknown.out).toContain('Refused: not-found')
+    const foreign = run('set-member-projects.mjs', [...base, '--uid', 'u_cleo', '--add', 'pB', '--apply'])
+    expect(foreign.code).toBe(1)
+    expect(foreign.out).toContain('Refused: invalid-assignment — project-not-found · project id(s): pB')
+    expect((await profile('u_cleo')).projectIds).toEqual(['p1', 'p2'])
+    expect(await auditTypes(COMPANY_A)).toEqual([])
+  })
+})
+
+describe('reconcile-membership.mjs — project assignments (ADR-84)', () => {
+  it('reports an assignment held by an internal or removed profile and a broken external one; --fix removes only the first two kinds', async () => {
+    await seedCompany(COMPANY_A, 'Acme Builders')
+    await seedProjects(COMPANY_A, ['p1'])
+    await seedUser({ uid: 'u_admin', email: 'admin@acme.test', role: 'company_admin', companyId: COMPANY_A })
+    await seedUser({ uid: 'u_qs', email: 'qs@acme.test', role: 'qs', companyId: COMPANY_A })
+    await seedUser({ uid: 'u_ok', email: 'ok@client.test', role: 'client', companyId: COMPANY_A })
+    await seedUser({ uid: 'u_bad', email: 'bad@client.test', role: 'subcontractor', companyId: COMPANY_A })
+    await seedUser({ uid: 'u_odd', email: 'odd@client.test', role: 'client', companyId: COMPANY_A })
+    await seedUser({ uid: 'u_gone', email: 'gone@client.test', role: 'client', companyId: COMPANY_A })
+    const users = A.db.collection('users')
+    await users.doc('u_qs').update({ projectIds: ['p1'] })                  // R7 — internal role
+    await users.doc('u_ok').update({ projectIds: ['p1'] })                  // sound: no finding
+    await users.doc('u_bad').update({ projectIds: ['p1', 'missing'] })      // R9 — a project that does not exist
+    await users.doc('u_odd').update({ projectIds: 'p1' })                   // R9 — not a list
+    await users.doc('u_gone').update({ projectIds: ['p1'], companyId: null, role: null, status: 'deactivated', formerCompanyId: COMPANY_A, formerRole: 'client', authSyncPending: false })
+
+    const report = run('reconcile-membership.mjs', ['--project', PROJECT_ID], { RECONCILE_JSON: '1' })
+    expect(report.code).toBe(0)
+    expect(findingsOf(report).map(f => f.code).sort()).toEqual(['R7', 'R8', 'R9', 'R9'])
+    expect((await users.doc('u_qs').get()).data().projectIds).toEqual(['p1'])   // report only
+
+    const fixed = run('reconcile-membership.mjs', ['--project', PROJECT_ID, '--fix'], { RECONCILE_JSON: '1' })
+    expect(fixed.code).toBe(0)
+    expect('projectIds' in (await users.doc('u_qs').get()).data()).toBe(false)
+    expect('projectIds' in (await users.doc('u_gone').get()).data()).toBe(false)
+    expect((await users.doc('u_ok').get()).data().projectIds).toEqual(['p1'])
+    expect((await users.doc('u_bad').get()).data().projectIds).toEqual(['p1', 'missing'])   // a person decides
+    expect((await users.doc('u_odd').get()).data().projectIds).toBe('p1')
+    const fixes = (await A.db.collection('companies').doc(COMPANY_A).collection('auditEvents').get()).docs.map(d => d.data()).filter(e => e.type === 'reconcile.fix')
+    expect(fixes.map(e => e.targetUid).sort()).toEqual(['u_gone', 'u_qs'])
+    expect(fixes.every(e => e.after.fix === 'F2' && e.before.projectIds.join() === 'p1')).toBe(true)
+
+    const after = run('reconcile-membership.mjs', ['--project', PROJECT_ID], { RECONCILE_JSON: '1' })
+    expect(findingsOf(after).map(f => f.code).sort()).toEqual(['R9', 'R9'])
   })
 })

@@ -9397,9 +9397,9 @@ Stage A* steps 1–4; a TEST project, not customer data). NOT RUN.**
 - [ ] M7 — After step 4 (FINAL Rules): repeat M3. A tab left open on the old bundle fails to edit a project until reloaded (expected).
 - [ ] M8 — Portfolio, Commercial Report, Final Account and GANTT open for the internal roles as before.
 
-**Manual acceptance — external roles. BLOCKED: needs Stage B (assignment
-management) and an isolated test company with two Product-Owner-controlled
-emails. NOT RUN.**
+**Manual acceptance — external roles. BLOCKED: needs Stage B (ADR-84 —
+IMPLEMENTED, NOT DEPLOYED; §69) deployed, and an isolated test company with
+two Product-Owner-controlled emails. NOT RUN.**
 
 - [ ] X1 — A `subcontractor` assigned to project A only: Projects lists A alone, with no Headline Budget column and no *Add New Project*; the sidebar offers Dashboard and Projects.
 - [ ] X2 — Project A shows the Overview (no budget card) and Documents tabs only; drawings and active project documents open and download.
@@ -9411,3 +9411,70 @@ emails. NOT RUN.**
 **Not covered by any test.** A real browser session of an external role; the
 production access-call limit; a production project whose stored field types
 differ from what the app writes (the backfill dry run reports these).
+
+## 69. M2-A2 Stage B — External member assignments and provisioning (ADR-84, 23 November 2026) — IMPLEMENTED — NOT DEPLOYED; automated tests PASS (emulators); production acceptance NOT RUN; external onboarding BLOCKED
+
+**Scope.** `acceptInvitation`, `deactivateMember`, the operator library
+(`functions/src/lib/memberProjects.js`), the two operator scripts and the
+reconcile checks (ADR-84). No Rules, Storage Rules or Hosting change.
+
+**Automated — all PASS, 23 November 2026 (local emulators; not production).**
+Unit 101 files / 5,244 · Rules emulator 39 files / 2,492 (unchanged — no Rule changed) ·
+Functions pure 7 files / 155 · Functions emulator 11 files / 354. ESLint (application
+and Functions) 0 errors, 0 warnings; production build clean, bundle
+`index-BOg2hoYg.js` (unchanged); transitional-rules and both generated-bundle
+checks up to date; `git diff --check` clean.
+
+| Requirement | Where it is tested |
+|---|---|
+| Valid client and subcontractor provisioning | `team.externalProvisioning.test.js` → *provisionExternalMember*; `scripts.test.js` → *provision-external-member.mjs* |
+| Assignment to permitted projects — through the real Rules | *the Rules open exactly the assigned projects…* (client SDK reads of the directory entry and a drawing) |
+| Cross-company and unassigned denial | same test; provisioning and assignment refusals for another company's project id |
+| Removed-project denial | *removing a project closes it at once…* |
+| Re-invitation and stale assignments | *an assignment ends with the membership and never comes back* (four tests) |
+| Deactivated membership | *deactivation removes projectIds in the same commit…*; assignment of a deactivated member refused |
+| Unknown and internal roles | provisioning, library, acceptance (tampered stored role) and assignment refusals |
+| Invalid invitation assignments | creation refusals (missing, empty, 31, duplicate, malformed, nonexistent, cross-company); acceptance re-validation (project removed since; tampered list) |
+| Client-supplied assignment ignored | *a browser cannot create or shape an external membership* (schema refusals; Rules refuse the member writing their own `users/{uid}`) |
+| Atomic with activation | the profile and the consumed invitation carry the same commit time |
+| Concurrent assignment changes | four concurrent changes all land, audit events chain; a change racing a deactivation |
+| Audit correctness | `member.projects_changed`, `invite.created`, `invite.accepted`, `member.deactivated` before / after |
+| Revocation request creation | removal → request, queue marker, member sequence, Team-page status *pending*; addition → none |
+| Repeated requests | no second write, event or request |
+| Operator scripts, dry run and apply | argument refusals, dry run writes nothing, `--no-link`, `--link-file` (mode 0600, link absent from output), refusals leave no file |
+| Reconcile | R7, R8, R9 reported; `--fix` removes R7 / R8 only, audited |
+| Existing Team Management regressions | every pre-existing Functions suite unchanged and passing; internal invitation, acceptance and deactivation shapes pinned unchanged |
+| Structure | `functions/test/memberProjects.test.js`: still eight callables; the operator library is imported by the two scripts only; which files write `projectIds` |
+
+**Regression after the Functions deploy — NOT RUN.**
+
+- [ ] R1 — Settings → Team loads for a Company Admin; members and pending invitations list as before.
+- [ ] R2 — Invite an internal member (Product-Owner-controlled email), accept, sign in: full access as before. `users/{uid}` carries no `projectIds` (read-only check).
+- [ ] R3 — Deactivate that member: signed out, Auth disabled, *Old file links: revocation pending* then *revoked*.
+
+**Production acceptance — NOT RUN. Needs: the three callables deployed; an
+isolated test company (not Apex Builders) with at least three projects
+created through the application, a drawing and an active project-visibility
+document in two of them; two Product-Owner-controlled mailboxes with no
+existing account; operator credentials; an authorisation for each
+`--apply`.**
+
+- [ ] P1 — Dry run of `provision-external-member.mjs` for a `subcontractor` on project A: plan printed, nothing written (no invitation, no audit event).
+- [ ] P2 — Dry runs that must be refused: a project id of another company; a nonexistent id; a duplicated id; role `qs`.
+- [ ] P3 — `--apply --no-link`: one pending invitation, delivery *Operator link*, in the Team page. The terminal shows no link.
+- [ ] P4 — A Company Admin presses *Resend*: the email arrives at the invited address and names *Subcontractor*.
+- [ ] P5 — The invitee registers and accepts. `users/{uid}`: `role` `subcontractor`, `projectIds` exactly `[A]`, written in the same commit as the membership (read-only check).
+- [ ] P6 — TESTING.md §68 X1–X3 as that subcontractor (project A only; project B's URL and direct reads denied; no budget anywhere).
+- [ ] P7 — Provision a `client` on projects A and B the same way; §68 X-checks for a client. §63 P19–P20.
+- [ ] P8 — `set-member-projects.mjs --remove B` (dry run, then `--apply`): project B disappears for the client at the next read; one `member.projects_changed` event with both lists; a revocation request; the Team page shows *revocation pending*, later *revoked*. (§68 X5)
+- [ ] P9 — Before P8, copy a document download URL of project B if one can be obtained; record whether it still opens after P8 and when it stops. (The application itself uses authenticated downloads — ADR-73 — so there may be none.)
+- [ ] P10 — Repeat the P8 command: *No change*.
+- [ ] P11 — `set-member-projects.mjs` against a Company Admin, Project Manager or QS: refused.
+- [ ] P12 — A Company Admin deactivates the subcontractor: signed out; `projectIds` absent from `users/{uid}`; the audit event records what it was.
+- [ ] P13 — Re-provision the same email as a `client` on project C only and accept: `projectIds` is exactly `[C]`; project A is denied.
+- [ ] P14 — `reconcile-membership.mjs` (report only): no R7, R8 or R9.
+
+**Not covered by any test.** A real browser session of an external role;
+real email delivery of an external invitation; a download URL copied before
+a removal (P9); production IAM for the operator identity; the Firestore
+lock behaviour of a refused script run on production (emulator only).

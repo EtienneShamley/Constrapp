@@ -35,6 +35,10 @@ export const AUDIT = {
   // ADR-81 — one event per BOQ transfer that CHANGED a working budget line, in
   // its transaction. A transfer that writes nothing writes no event.
   BOQ_BUDGET_TRANSFERRED:             'boq_budget.transferred',
+  // ADR-84 — an operator changed an external member's project assignment.
+  // `before` and `after` each carry the complete `projectIds` list. A request
+  // that changes nothing writes no event.
+  MEMBER_PROJECTS_CHANGED:            'member.projects_changed',
 }
 
 export const auditCollection = (db, companyId) =>

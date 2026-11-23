@@ -1,9 +1,9 @@
-import { Timestamp } from './firebaseAdmin.js'
+import { FieldValue, Timestamp } from './firebaseAdmin.js'
 import { CODE, fail } from './errors.js'
 import { AUDIT, auditInTx, auditNow } from './audit.js'
 import { withCompanyLock, countActiveAdmins, membersCollection, usersCollection } from './companyLock.js'
 import { userRef } from './authz.js'
-import { OPERATOR_ROLES, isDeactivatableRole } from './validation.js'
+import { OPERATOR_ROLES, isDeactivatableRole, currentAssignment } from './validation.js'
 import { MEMBER_STATUS, isActiveMemberOf, isDeactivated, toIso } from './membershipState.js'
 import { REASON, stateRef as fileLinkStateRef, requestRevocationInTx, reducesFileAccess, fileLinkRow } from './fileLinkRevocation.js'
 
@@ -162,6 +162,11 @@ export async function deactivateMember(deps, { companyId, actor, uid, requestId 
     }
 
     const ts = Timestamp.fromDate(nowDate)
+    // ADR-84: a project assignment ends with the membership. The field is
+    // REMOVED in this commit, so it cannot come back with a later invitation;
+    // the audit event keeps what it was.
+    const hadAssignment = profile.projectIds !== undefined
+    const assignedBefore = hadAssignment ? { projectIds: currentAssignment(profile.projectIds).projectIds } : {}
     // ADR-74: queue the background sweep of legacy download tokens in the SAME
     // transaction that ends the membership — the request can never be lost,
     // and the membership never waits for it.
@@ -173,6 +178,7 @@ export async function deactivateMember(deps, { companyId, actor, uid, requestId 
       formerCompanyId: companyId, formerRole: profile.role,
       deactivatedAt: ts, deactivatedBy: actor.uid, authSyncPending: true,
       updatedAt: ts, updatedBy: actor.uid,
+      projectIds: FieldValue.delete(),
     })
     tx.set(membersCollection(db, companyId).doc(uid), {
       email: profile.email ?? null, name: profile.name ?? '', role: profile.role,
@@ -181,7 +187,8 @@ export async function deactivateMember(deps, { companyId, actor, uid, requestId 
     }, { merge: true })
     auditInTx(tx, db, companyId, {
       type: AUDIT.MEMBER_DEACTIVATED, actorUid: actor.uid, targetUid: uid, targetEmail: profile.email ?? null,
-      before: { role: profile.role, companyId }, after: { role: null, companyId: null, status: MEMBER_STATUS.DEACTIVATED },
+      before: { role: profile.role, companyId, ...assignedBefore },
+      after: { role: null, companyId: null, status: MEMBER_STATUS.DEACTIVATED, ...(hadAssignment ? { projectIds: [] } : {}) },
       requestId, source,
     }, nowDate)
     return { changed: true, authSyncPending: true, email: profile.email ?? null }
