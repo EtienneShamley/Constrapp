@@ -1,0 +1,5 @@
+{
+  "firestore": {
+    "rules": "firestore.m2a2-transitional.rules"
+  }
+}

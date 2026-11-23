@@ -1,17 +1,37 @@
 import { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react'
-import { collection, doc, onSnapshot, addDoc, updateDoc, serverTimestamp, query, orderBy, Timestamp } from 'firebase/firestore'
+import { collection, doc, onSnapshot, updateDoc, writeBatch, serverTimestamp, query, orderBy, Timestamp } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { useAuth } from './useAuth'
 import { useCompany } from './useCompany'
+import { useProfile } from './useProfile'
+import { useProjectDirectory } from './useProjectDirectory'
 import { currencyToPinOnLock, isKnownCurrencyCode, resolveCompanyCurrency } from '../lib/currency'
-import { buildProjectFields, validateProjectEdit } from '../lib/projects'
+import {
+  buildProjectFields, validateProjectEdit, projectDirectoryFields,
+  readsProjectDocuments, readsAssignedProjects, assignedProjectIds,
+} from '../lib/projects'
 
 const ProjectsContext = createContext(null)
 
 export function ProjectsProvider({ children }) {
   const { user }    = useAuth()
   const { company } = useCompany()
+  const { profile } = useProfile()
   const companyId = company?.id ?? null
+
+  // M2-A2 — WHICH read this caller may open (lib/projects.js). Internal roles
+  // subscribe to the project documents below, exactly as before. A client or
+  // subcontractor never reads a project document: their list comes from the
+  // directory entries of their ASSIGNED projects (useProjectDirectory). Any
+  // other role, and a role not yet known, opens nothing.
+  // ⚠️ Query selection only — Firestore rules refuse the project documents to
+  // a non-internal role and an unassigned directory entry to everyone external.
+  const role = profile?.role ?? null
+  const internalCompanyId = readsProjectDocuments(role) ? companyId : null
+  const assignedIds = useMemo(() => assignedProjectIds(profile), [profile])
+  const {
+    directory, directoryLoading, directoryError, directoryErrorCode, directoryFromCache, retryDirectory,
+  } = useProjectDirectory(readsAssignedProjects(role) ? companyId : null, assignedIds)
 
   // Live subscription state, tagged with the target (`key`) it belongs to —
   // the keyed-snapshot pattern used by useProjectActivities / useDrawings. The
@@ -20,7 +40,8 @@ export function ProjectsProvider({ children }) {
   // projects/loading are DERIVED at render time below
   // (react-hooks/set-state-in-effect).
   //
-  // The target is the COMPANY alone. ⚠️ THIS IS A ROOT PROVIDER: `projects`
+  // The target is the COMPANY alone (for an internal role; null otherwise, so
+  // nothing is subscribed). ⚠️ THIS IS A ROOT PROVIDER: `projects`
   // feeds useProject, which gates the ENTIRE project route tree through
   // ProjectDetailLayout ("Loading project…" / "Project not found."). The
   // `targetKey`/`key` expressions below must stay identical — if they ever
@@ -49,10 +70,10 @@ export function ProjectsProvider({ children }) {
   const attempt = snap.attempt
 
   useEffect(() => {
-    if (!companyId) return undefined
+    if (!internalCompanyId) return undefined
 
-    const key = companyId
-    const ref = collection(db, 'companies', companyId, 'projects')
+    const key = internalCompanyId
+    const ref = collection(db, 'companies', internalCompanyId, 'projects')
     const q   = query(ref, orderBy('createdAt', 'desc'))
 
     const unsubscribe = onSnapshot(
@@ -71,10 +92,10 @@ export function ProjectsProvider({ children }) {
       (err) => setSnap({ key, projects: [], error: true, readCode: err?.code ?? null, fromCache: false, attempt }),
     )
     return unsubscribe
-  }, [companyId, attempt])
+  }, [internalCompanyId, attempt])
 
   // Re-open the projects listener after a failed read. Reads only.
-  const retryProjects = useCallback(() => {
+  const retryInternalProjects = useCallback(() => {
     setSnap((s) => (s.error
       ? { key: null, projects: [], error: false, readCode: null, fromCache: false, attempt: s.attempt + 1 }
       : s))
@@ -84,19 +105,29 @@ export function ProjectsProvider({ children }) {
   // target we are idle (no data, not loading); with a target we are loading
   // until the subscription reports for THAT target (`settled`), which also
   // hides a previous company's projects immediately.
-  const targetKey = companyId || null
+  const targetKey = internalCompanyId || null
   const settled = targetKey !== null && snap.key === targetKey
   // Memoised so the write callbacks below (which validate against the live
   // list) keep stable dependencies across renders.
-  const projects = useMemo(
+  const internalProjects = useMemo(
     () => (settled ? snap.projects : []),
     [settled, snap.projects],
   )
-  const projectsLoading = targetKey !== null && !settled
+  const internalLoading = targetKey !== null && !settled
   // Exposed only once the CURRENT target has settled, never raw (ADR-41).
-  const projectsError = settled ? snap.error : false
-  const projectsErrorCode = projectsError ? snap.readCode : null
-  const projectsFromCache = settled && snap.fromCache === true
+  const internalError = settled ? snap.error : false
+  const internalErrorCode = internalError ? snap.readCode : null
+  const internalFromCache = settled && snap.fromCache === true
+
+  // ONE list for every consumer, whichever source fed it. An assigned role's
+  // entries carry the five directory fields only — no `budget`, no `currency`.
+  const assigned = readsAssignedProjects(role)
+  const projects          = assigned ? directory          : internalProjects
+  const projectsLoading   = assigned ? directoryLoading   : internalLoading
+  const projectsError     = assigned ? directoryError     : internalError
+  const projectsErrorCode = assigned ? directoryErrorCode : internalErrorCode
+  const projectsFromCache = assigned ? directoryFromCache : internalFromCache
+  const retryProjects     = assigned ? retryDirectory     : retryInternalProjects
 
   const createProject = useCallback(async ({ name, status, budget, startDate, location, progress, currency }) => {
     if (!companyId || !user) throw new Error('Not authenticated')
@@ -111,14 +142,22 @@ export function ProjectsProvider({ children }) {
 
     const headlineBudget = Number(budget) || 0
 
-    const col = collection(db, 'companies', companyId, 'projects')
-    await addDoc(col, {
+    // M2-A2 — the project and its DIRECTORY ENTRY (the external-safe copy of the
+    // five display fields) are written in ONE batch: rules refuse a project
+    // created without a matching entry, and an entry that differs from the
+    // project, so the two cannot drift.
+    const fields = {
       name:      name.trim(),
       status,
-      budget:    headlineBudget,
       startDate: startDate ? Timestamp.fromDate(new Date(startDate)) : null,
       location:  location.trim(),
       progress:  Math.min(100, Math.max(0, Number(progress) || 0)),
+    }
+    const ref   = doc(collection(db, 'companies', companyId, 'projects'))
+    const batch = writeBatch(db)
+    batch.set(ref, {
+      ...fields,
+      budget:    headlineBudget,
       currency:  projectCurrency,
       // A non-zero headline budget IS monetary data, so the currency must be
       // right at creation — it locks immediately, exactly as a budget line or
@@ -127,6 +166,8 @@ export function ProjectsProvider({ children }) {
       createdAt: serverTimestamp(),
       createdBy: user.uid,
     })
+    batch.set(doc(db, 'companies', companyId, 'projectDirectory', ref.id), projectDirectoryFields(fields))
+    await batch.commit()
   }, [companyId, user, company])
 
   // Correct a project's METADATA after creation (ADR-39).
@@ -139,12 +180,17 @@ export function ProjectsProvider({ children }) {
   // independently freeze `budget`/`createdAt`/`createdBy` and enforce the
   // status enum, so this is the UX mirror of an enforced boundary.
   //
+  // M2-A2 — ONE BATCH, TWO DOCUMENTS: the same five values go to the project
+  // and to its directory entry (a `set`, so a project that pre-dates the
+  // directory gains its entry on its first edit). Rules refuse either half
+  // without the other.
+  //
   // NO TRANSACTION AND NO CURRENCY RATCHET. Every other write path in the app
   // stages `stageProjectCurrencyLock` because it commits MONETARY data; this
   // one commits none. A name, a location, a start date, a progress percentage
   // and a status badge are financially inert — no budget, commitment, actual,
   // forecast, margin or cash-flow figure reads any of them — so there is
-  // nothing here for the ratchet to protect and a plain updateDoc is correct.
+  // nothing here for the ratchet to protect, and no transaction is needed.
   //
   // `startDate` arrives as a 'YYYY-MM-DD' string (or '' / null to clear) and is
   // converted to a Timestamp here, because pages never import firebase/*.
@@ -160,13 +206,17 @@ export function ProjectsProvider({ children }) {
     const validationError = validateProjectEdit(fields)
     if (validationError) throw new Error(validationError)
 
-    await updateDoc(doc(db, 'companies', companyId, 'projects', projectId), {
+    const stored = {
       name:      fields.name,
       status:    fields.status,
       startDate: fields.startDate ? Timestamp.fromDate(new Date(fields.startDate)) : null,
       location:  fields.location,
       progress:  fields.progress,
-    })
+    }
+    const batch = writeBatch(db)
+    batch.update(doc(db, 'companies', companyId, 'projects', projectId), stored)
+    batch.set(doc(db, 'companies', companyId, 'projectDirectory', projectId), projectDirectoryFields(stored))
+    await batch.commit()
   }, [companyId, user])
 
   // Change a project's currency BEFORE it holds any monetary data.

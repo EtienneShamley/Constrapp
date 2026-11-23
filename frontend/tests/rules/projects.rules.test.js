@@ -8,7 +8,7 @@ import {
   assertFails,
 } from '@firebase/rules-unit-testing'
 import {
-  doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, writeBatch, Timestamp,
+  doc, getDoc, setDoc as rawSetDoc, updateDoc as rawUpdateDoc, deleteDoc, deleteField, writeBatch, Timestamp,
 } from 'firebase/firestore'
 
 // ── companies/{companyId}/projects/{projectId} Security Rules — emulator tests ─
@@ -99,9 +99,50 @@ const LEGACY_PROJECT = {
 // Seeds the project document with rules DISABLED — stored state, asserted by
 // nothing. Every currency-ratchet test starts from a state the app can really
 // reach, then attempts ONE write through the rules.
+//
+// M2-A2 — A PROJECT WRITE TRAVELS WITH ITS DIRECTORY ENTRY. The FINAL rules
+// refuse a project created without its projectDirectory entry, and a change to
+// name / status / location / startDate / progress that does not carry it. The
+// two wrappers below write what useProjects writes: ONE batch holding the
+// project write and the entry mirroring the five values the project will hold
+// afterwards. Every pre-M2-A2 assertion in this file therefore still tests the
+// rule it names — a write the project rules refuse fails the batch exactly as
+// before. A write that touches none of the five fields (currency, the lock) is
+// sent alone, as the app sends it. Seeds use the raw functions with rules
+// disabled, so a seeded project has NO entry — a project that pre-dates the
+// directory. tests/rules/projectDirectory.rules.test.js proves the pairing
+// itself, including the unpaired writes that must now fail.
+const DISPLAY_KEYS = ['name', 'status', 'location', 'startDate', 'progress']
+const isProjectRef = (ref) => ref.parent.id === 'projects'
+const directoryRefOf = (ref) => doc(ref.firestore, 'companies', ref.parent.parent.id, 'projectDirectory', ref.id)
+const isDelete = (v) => !!v && typeof v === 'object' && v._methodName === 'deleteField'
+const pick = (d, k, fallback) => (d[k] === undefined || isDelete(d[k]) ? fallback : d[k])
+const entryOf = (d) => ({
+  name: pick(d, 'name', ''), status: pick(d, 'status', ''), location: pick(d, 'location', ''),
+  startDate: pick(d, 'startDate', null), progress: pick(d, 'progress', 0),
+})
+async function setDoc(ref, data) {
+  if (!isProjectRef(ref)) return rawSetDoc(ref, data)
+  const batch = writeBatch(ref.firestore)
+  batch.set(ref, data)
+  batch.set(directoryRefOf(ref), entryOf(data))
+  return batch.commit()
+}
+async function updateDoc(ref, fields) {
+  if (!isProjectRef(ref) || !DISPLAY_KEYS.some(k => k in fields)) return rawUpdateDoc(ref, fields)
+  let current = {}
+  await testEnv.withSecurityRulesDisabled(async (c) => {
+    current = (await getDoc(doc(c.firestore(), ref.path))).data() ?? {}
+  })
+  const batch = writeBatch(ref.firestore)
+  batch.update(ref, fields)
+  batch.set(directoryRefOf(ref), entryOf({ ...current, ...fields }))
+  return batch.commit()
+}
+
 async function seed(fields) {
   await testEnv.withSecurityRulesDisabled(async (c) => {
-    await setDoc(projRef(c.firestore()), { ...LEGACY_PROJECT, ...fields })
+    await rawSetDoc(projRef(c.firestore()), { ...LEGACY_PROJECT, ...fields })
   })
 }
 
@@ -144,21 +185,29 @@ beforeEach(async () => {
     await setDoc(doc(db, 'companies', COMPANY_A), { name: 'Apex Builders' })
     await setDoc(doc(db, 'companies', COMPANY_B), { name: 'Company B' })
     // Company B's own project, for the cross-tenant checks.
-    await setDoc(projRef(db, COMPANY_B), { ...LEGACY_PROJECT, currency: 'ZAR', currencyLocked: true })
+    await rawSetDoc(projRef(db, COMPANY_B), { ...LEGACY_PROJECT, currency: 'ZAR', currencyLocked: true })
   })
 })
 
 // ── A. READ ─────────────────────────────────────────────────────────────────
 //
-// Reads are role-agnostic on purpose: every role must be able to read
-// `currency` to render amounts with the correct label.
+// M2-A2: the project document is INTERNAL-ONLY. It carries the headline budget
+// and the currency; a client or subcontractor reads the project's directory
+// entry instead (tests/rules/projectDirectory.rules.test.js).
 
 describe('projects — read', () => {
-  it('every provisioned Company A role can read the project', async () => {
+  it('every INTERNAL Company A role can read the project', async () => {
     await seed({ currency: 'AUD', currencyLocked: true })
-    for (const key of ['admin', 'pm', 'qs', 'sub', 'client', 'sadmin']) {
+    for (const key of ['admin', 'pm', 'qs']) {
       const snap = await assertSucceeds(getDoc(projRef(ctx(USERS[key]))))
       expect(snap.data().currency).toBe('AUD')
+    }
+  })
+
+  it('subcontractor, client and super_admin CANNOT read the project (M2-A2)', async () => {
+    await seed({ currency: 'AUD', currencyLocked: true })
+    for (const key of ['sub', 'client', 'sadmin']) {
+      await assertFails(getDoc(projRef(ctx(USERS[key]))))
     }
   })
 
@@ -556,7 +605,7 @@ describe('projects — tenant isolation', () => {
 
   it('the carve-out does not cross tenants: an unpinned Company A project stays out of reach', async () => {
     await testEnv.withSecurityRulesDisabled(async (c) => {
-      await setDoc(projRef(c.firestore(), COMPANY_B, 'bLegacy'), { ...LEGACY_PROJECT, currencyLocked: true })
+      await rawSetDoc(projRef(c.firestore(), COMPANY_B, 'bLegacy'), { ...LEGACY_PROJECT, currencyLocked: true })
     })
     await assertFails(updateDoc(projRef(ctx(USERS.admin), COMPANY_B, 'bLegacy'), { currency: 'AUD' }))
   })
@@ -636,7 +685,7 @@ describe('projects — the headline budget is IMMUTABLE', () => {
 
   it('a project with NO budget key stays writable and cannot gain one', async () => {
     await testEnv.withSecurityRulesDisabled(async (c) => {
-      await setDoc(projRef(c.firestore()), {
+      await rawSetDoc(projRef(c.firestore()), {
         name: 'No budget key', status: 'Planning', currency: 'AUD', currencyLocked: true,
       })
     })
@@ -775,7 +824,7 @@ describe('projects — LEGACY documents remain writable (the load-bearing carve-
 
   it('a minimal project holding only a name stays writable', async () => {
     await testEnv.withSecurityRulesDisabled(async (c) => {
-      await setDoc(projRef(c.firestore()), { name: 'Bare' })
+      await rawSetDoc(projRef(c.firestore()), { name: 'Bare' })
     })
     await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), { name: 'Bare renamed' }))
     await assertSucceeds(updateDoc(projRef(ctx(USERS.admin)), { progress: 10 }))

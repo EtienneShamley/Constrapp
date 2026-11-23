@@ -42,8 +42,9 @@ const USERS = {
   admin:  { uid: 'u_admin',  role: 'company_admin',   companyId: COMPANY_A },
   pm:     { uid: 'u_pm',     role: 'project_manager', companyId: COMPANY_A },
   qs:     { uid: 'u_qs',     role: 'qs',              companyId: COMPANY_A },
-  sub:    { uid: 'u_sub',    role: 'subcontractor',   companyId: COMPANY_A },
-  client: { uid: 'u_client', role: 'client',          companyId: COMPANY_A },
+  // M2-A2: an external role reads a project only when ASSIGNED to it.
+  sub:    { uid: 'u_sub',    role: 'subcontractor',   companyId: COMPANY_A, projectIds: [PROJECT_A] },
+  client: { uid: 'u_client', role: 'client',          companyId: COMPANY_A, projectIds: [PROJECT_A] },
   sup:    { uid: 'u_sup',    role: 'super_admin',     companyId: COMPANY_A },
   other:  { uid: 'u_other',  role: 'company_admin',   companyId: COMPANY_B },
 }
@@ -245,7 +246,7 @@ beforeEach(async () => {
   await testEnv.withSecurityRulesDisabled(async (c) => {
     const db = c.firestore()
     for (const u of Object.values(USERS)) {
-      await setDoc(doc(db, 'users', u.uid), { role: u.role, companyId: u.companyId, name: u.uid })
+      await setDoc(doc(db, 'users', u.uid), { role: u.role, companyId: u.companyId, name: u.uid, ...(u.projectIds ? { projectIds: u.projectIds } : {}) })
     }
     await setDoc(doc(db, 'companies', COMPANY_A), { name: 'Company A' })
     await setDoc(doc(db, 'companies', COMPANY_B), { name: 'Company B' })
@@ -262,19 +263,21 @@ describe('READS — every provisioned company member', () => {
     await seedRevision('rev1')
   })
 
-  it('1. all six Company A roles read a drawing master', async () => {
-    for (const user of [USERS.admin, USERS.pm, USERS.qs, USERS.sub, USERS.client, USERS.sup]) {
+  it('1. the internal roles and an ASSIGNED subcontractor / client read a drawing master; super_admin does not (M2-A2)', async () => {
+    for (const user of [USERS.admin, USERS.pm, USERS.qs, USERS.sub, USERS.client]) {
       await assertSucceeds(getDoc(dwgRef(ctx(user))))
     }
+    await assertFails(getDoc(dwgRef(ctx(USERS.sup))))
   })
 
-  it('2. all six Company A roles read a revision', async () => {
-    for (const user of [USERS.admin, USERS.pm, USERS.qs, USERS.sub, USERS.client, USERS.sup]) {
+  it('2. the internal roles and an ASSIGNED subcontractor / client read a revision; super_admin does not (M2-A2)', async () => {
+    for (const user of [USERS.admin, USERS.pm, USERS.qs, USERS.sub, USERS.client]) {
       await assertSucceeds(getDoc(revRef(ctx(user), 'rev1')))
     }
+    await assertFails(getDoc(revRef(ctx(USERS.sup), 'rev1')))
   })
 
-  it('3. a subcontractor — who can read NO financial collection — reads drawings', async () => {
+  it('3. an ASSIGNED subcontractor — who can read NO financial collection — reads drawings', async () => {
     await assertSucceeds(getDoc(dwgRef(ctx(USERS.sub))))
   })
 
@@ -860,7 +863,7 @@ describe('DOCUMENTED GAPS — enforced by the client only', () => {
       reinstateWrite(USERS.admin, 'rev1', { revisionCount: 3 })))
   })
 
-  it('85. membership is COMPANY-WIDE — a member reads drawings on every project', async () => {
+  it('85. CLOSED BY M2-A2 (was Deferred Control 20) — an external role reads drawings on its ASSIGNED projects only', async () => {
     await testEnv.withSecurityRulesDisabled(async (c) => {
       const db = c.firestore()
       await setDoc(doc(db, `companies/${COMPANY_A}/projects`, 'otherProject'), { name: 'Other' })
@@ -868,7 +871,10 @@ describe('DOCUMENTED GAPS — enforced by the client only', () => {
         ...masterPayload(USERS.admin), createdAt: Timestamp.now(), updatedAt: Timestamp.now(),
       })
     })
-    // The subcontractor was never assigned to this project — and still reads it.
-    await assertSucceeds(getDoc(doc(ctx(USERS.sub), 'companies', COMPANY_A, 'projects', 'otherProject', 'drawings', 'd9')))
+    // The subcontractor is assigned to PROJECT_A only: the other project is denied…
+    await assertFails(getDoc(doc(ctx(USERS.sub), 'companies', COMPANY_A, 'projects', 'otherProject', 'drawings', 'd9')))
+    await assertFails(getDoc(doc(ctx(USERS.client), 'companies', COMPANY_A, 'projects', 'otherProject', 'drawings', 'd9')))
+    // …while the internal roles stay company-wide.
+    await assertSucceeds(getDoc(doc(ctx(USERS.qs), 'companies', COMPANY_A, 'projects', 'otherProject', 'drawings', 'd9')))
   })
 })

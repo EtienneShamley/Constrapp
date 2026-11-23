@@ -59,7 +59,8 @@ describe('ProjectGeneralDocuments — history controls are internal', () => {
 })
 
 describe('the rules the query has to satisfy', () => {
-  const EXTERNAL_READ = "|| (sameCompany(companyId) && resource.data.visibility == 'project' && resource.data.status == 'active');"
+  // M2-A2: the non-internal reader must ALSO be assigned to the project.
+  const EXTERNAL_READ = "|| (projectReader(companyId, projectId) && resource.data.visibility == 'project' && resource.data.status == 'active');"
 
   it('firestore.rules: the non-internal read branch requires project visibility AND active status', () => {
     expect(squash(firestoreRules)).toContain(`allow read: if internalMember() ${EXTERNAL_READ}`)
@@ -75,8 +76,8 @@ describe('the rules the query has to satisfy', () => {
     )
   })
 
-  it('storage.rules: the drawing read is untouched — every member of the company', () => {
+  it('storage.rules: the drawing read is project-scoped since M2-A2 — internal roles, or an assigned client / subcontractor', () => {
     const block = storageRules.slice(storageRules.indexOf('match /companies/{companyId}/projects/{projectId}/drawings/'))
-    expect(squash(block)).toContain('allow get: if memberOf(companyId); allow create:')
+    expect(squash(block)).toContain('allow get: if projectReader(companyId, projectId); allow create:')
   })
 })

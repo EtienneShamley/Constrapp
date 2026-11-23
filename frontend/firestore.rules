@@ -24,6 +24,21 @@ service cloud.firestore {
           && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
           && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
     }
+    // M2-A2: who may read ONE project's shared records (directory entry, drawings,
+    // project documents). Internal roles: every project of their company. client /
+    // subcontractor: ONLY a project listed in their server-managed users/{uid}
+    // .projectIds. Every other role, and a missing / non-list assignment, is denied.
+    function projectReader(companyId, projectId) {
+      return sameCompany(companyId)
+          && (memberRole() in ['company_admin', 'project_manager', 'qs']
+              || (memberRole() in ['client', 'subcontractor']
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('projectIds', null) is list
+                  && projectId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.projectIds));
+    }
+    // M2-A2: the external-safe directory entry of a project.
+    function directoryPath(companyId, projectId) {
+      return /databases/$(database)/documents/companies/$(companyId)/projectDirectory/$(projectId);
+    }
     // Keys this update changes.
     function changedKeys() {
       return request.resource.data.diff(resource.data).affectedKeys();
@@ -138,8 +153,10 @@ service cloud.firestore {
           && request.resource.data.baseCurrency.matches('^[A-Z]{3}$');
     }
 
-    // Projects — read by any member of the company; create / update company_admin
-    // and project_manager (plus the QS currency-lock ratchet); delete blocked.
+    // Projects — INTERNAL roles only since M2-A2 (the document carries the headline
+    // budget and currency; external roles read projectDirectory instead); create /
+    // update company_admin and project_manager (plus the QS currency-lock ratchet);
+    // delete blocked.
     match /companies/{companyId}/projects/{projectId} {
       // Status vocabulary mirrors lib/projects.js → PROJECT_STATUSES (short and
       // product-owned, so enumerated — unlike the shape-tested currency codes).
@@ -179,8 +196,16 @@ service cloud.firestore {
             && request.resource.data.get('createdAt', null) == resource.data.get('createdAt', null)
             && request.resource.data.get('createdBy', null) == resource.data.get('createdBy', null);
       }
-      allow read: if request.auth != null
-          && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId;
+      // M2-A2: the directory entry mirrors the five display fields AFTER this commit.
+      function directoryPaired() {
+        return existsAfter(directoryPath(companyId, projectId))
+            && getAfter(directoryPath(companyId, projectId)).data.name == request.resource.data.get('name', '')
+            && getAfter(directoryPath(companyId, projectId)).data.status == request.resource.data.get('status', '')
+            && getAfter(directoryPath(companyId, projectId)).data.location == request.resource.data.get('location', '')
+            && getAfter(directoryPath(companyId, projectId)).data.startDate == request.resource.data.get('startDate', null)
+            && getAfter(directoryPath(companyId, projectId)).data.progress == request.resource.data.get('progress', 0);
+      }
+      allow read: if financialMember(companyId);
 
       allow create: if request.auth != null
           && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
@@ -189,7 +214,8 @@ service cloud.firestore {
               || (request.resource.data.currency is string
                   && request.resource.data.currency.matches('^[A-Z]{3}$')))
           && (!('currencyLocked' in request.resource.data)
-              || request.resource.data.currencyLocked is bool);
+              || request.resource.data.currencyLocked is bool)
+          && directoryPaired(); // M2-A2 FINAL: a project is CREATED with its directory entry
 
       allow update: if request.auth != null
           && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
@@ -222,6 +248,7 @@ service cloud.firestore {
                  && progressOk()
                  && locationOk()
                  && startDateOk()
+                 && (!changedKeys().hasAny(['name', 'status', 'location', 'startDate', 'progress']) || directoryPaired()) // M2-A2 FINAL: a display-field change carries its directory entry
                )
                ||
                // (b) QS currency-lock ratchet ONLY: false/absent -> true,
@@ -234,6 +261,37 @@ service cloud.firestore {
                )
              );
 
+      allow delete: if false;
+    }
+
+    // Project Directory (M2-A2) — the EXTERNAL-SAFE entry of a project: exactly five
+    // display fields, each equal to the project document AFTER the commit. No
+    // budget, currency or access data can be stored here. get: internal roles and an
+    // ASSIGNED client / subcontractor; list: internal roles only; delete blocked.
+    match /companies/{companyId}/projectDirectory/{projectId} {
+      function source() {
+        return getAfter(projectPath(companyId, projectId)).data;
+      }
+      function mirrorsProject() {
+        return existsAfter(projectPath(companyId, projectId))
+            && request.resource.data.keys().hasOnly(['name', 'status', 'location', 'startDate', 'progress'])
+            && request.resource.data.keys().hasAll(['name', 'status', 'location', 'startDate', 'progress'])
+            && request.resource.data.name is string
+            && request.resource.data.status is string
+            && request.resource.data.location is string
+            && (request.resource.data.startDate == null || request.resource.data.startDate is timestamp)
+            && request.resource.data.progress is number
+            && request.resource.data.name == source().get('name', '')
+            && request.resource.data.status == source().get('status', '')
+            && request.resource.data.location == source().get('location', '')
+            && request.resource.data.startDate == source().get('startDate', null)
+            && request.resource.data.progress == source().get('progress', 0);
+      }
+      allow get: if projectReader(companyId, projectId);
+      allow list: if financialMember(companyId);
+      allow create, update: if sameCompany(companyId)
+          && memberRole() in ['company_admin', 'project_manager']
+          && mirrorsProject();
       allow delete: if false;
     }
 
@@ -3283,7 +3341,7 @@ service cloud.firestore {
             && request.resource.data.description.size() <= 2000;
       }
 
-      allow read: if sameCompany(companyId);
+      allow read: if projectReader(companyId, projectId);
 
       allow create: if drawingWriter()
           && identityShape()
@@ -3390,7 +3448,7 @@ service cloud.firestore {
               && request.resource.data.storagePath == expectedStoragePath();
         }
 
-        allow read: if sameCompany(companyId);
+        allow read: if projectReader(companyId, projectId);
 
         // Every revision is born CURRENT — it is created by the promotion
         // transaction, which supersedes the previous current in the same commit.
@@ -3515,7 +3573,7 @@ service cloud.firestore {
       }
 
       allow read: if internalMember()
-          || (sameCompany(companyId) && resource.data.visibility == 'project' && resource.data.status == 'active');
+          || (projectReader(companyId, projectId) && resource.data.visibility == 'project' && resource.data.status == 'active');
 
       allow create: if internalMember()
           && metadataShape()

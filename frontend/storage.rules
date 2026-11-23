@@ -37,9 +37,10 @@ rules_version = '2';
 //     ceiling is enforced, the honesty of the label is not.
 //   · they do not scan for malware. AV scanning needs a trusted backend and is
 //     deferred (docs/SECURITY.md).
-//   · they do not know about PROJECT membership. Membership is company-wide, so
-//     any provisioned member of a company can read that company's drawings
-//     across every project.
+//   · INTERNAL roles are not project-scoped: company_admin / project_manager /
+//     qs read every project's files. client / subcontractor read ONLY the
+//     projects in their server-managed users/{uid}.projectIds (M2-A2); every
+//     other role reads nothing.
 //   · they cannot clean up orphaned objects — with no delete and no backend,
 //     an object whose Firestore write failed simply remains, unreferenced.
 //   · they cannot revoke a Firebase download-token URL that has already been
@@ -71,6 +72,23 @@ service firebase.storage {
       return profile().role in roles;
     }
 
+    // M2-A2 — who may read ONE project's files. Internal roles: every project
+    // of their company. client / subcontractor: only a project listed in
+    // users/{uid}.projectIds, which no client can write (firestore.rules denies
+    // every write to users/). A missing, null, empty or non-list assignment,
+    // and every other role, is denied. Same users/ document as memberOf(), so
+    // no further cross-service read is spent.
+    function projectReader(companyId, projectId) {
+      return memberOf(companyId)
+          && (
+               hasRole(['company_admin', 'project_manager', 'qs'])
+               || (hasRole(['client', 'subcontractor'])
+                   && 'projectIds' in profile()
+                   && profile().projectIds is list
+                   && projectId in profile().projectIds)
+             );
+    }
+
     // ── Object shape ─────────────────────────────────────────────────────────
 
     // The ONE object name each content type may be stored under. Deriving the
@@ -100,9 +118,10 @@ service firebase.storage {
 
     // ── Drawing revisions ────────────────────────────────────────────────────
     //
-    // READ: any provisioned member of the company, INCLUDING subcontractor and
-    // client. A drawing is operational site information; withholding the current
-    // sheet is the real safety risk. This mirrors the Firestore drawings block.
+    // READ: internal roles, and a client / subcontractor ASSIGNED to this
+    // project (M2-A2). A drawing is operational site information; withholding
+    // the current sheet from the people building from it is the real safety
+    // risk. This mirrors the Firestore drawings block.
     //
     // WRITE: company_admin / project_manager only. QS is excluded — a QS
     // measures from drawings but does not control what the site builds from.
@@ -110,7 +129,7 @@ service firebase.storage {
     // Only `get` is granted, never `list`: the register lives in Firestore, and
     // nothing in the app enumerates Storage. 50 MB ceiling.
     match /companies/{companyId}/projects/{projectId}/drawings/{drawingId}/{revisionId}/{fileName} {
-      allow get: if memberOf(companyId);
+      allow get: if projectReader(companyId, projectId);
 
       allow create: if memberOf(companyId)
                     && hasRole(['company_admin', 'project_manager'])
@@ -125,7 +144,8 @@ service firebase.storage {
     // READ is gated on the Firestore metadata's `visibility` AND `status`:
     //   · internal roles (company_admin / project_manager / qs) read everything,
     //     including superseded and withdrawn files — the register's history;
-    //   · everyone else reads an object only once its metadata document EXISTS
+    //   · a client / subcontractor ASSIGNED to this project (M2-A2) reads an
+    //     object only once its metadata document EXISTS
     //     and says `visibility == 'project'` AND `status == 'active'`. A
     //     superseded or withdrawn document is invalidated: its bytes are denied
     //     to non-internal roles at the next read (ADR-75 addendum, DC46).
@@ -144,7 +164,7 @@ service firebase.storage {
         return /databases/(default)/documents/companies/$(companyId)/projects/$(projectId)/documents/$(documentId);
       }
 
-      allow get: if memberOf(companyId)
+      allow get: if projectReader(companyId, projectId)
                  && (
                       hasRole(['company_admin', 'project_manager', 'qs'])
                       || (firestore.exists(metadataRef())

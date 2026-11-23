@@ -361,7 +361,12 @@ export default function ProjectOverview() {
 
   return (
     <div>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+      {/* M2-A2: the headline budget card is rendered for financial roles only. A
+          client or subcontractor is given the project's directory entry, which
+          holds no budget at all — UX only; Firestore rules refuse them the
+          project document that carries it. */}
+      <div className={`grid grid-cols-1 ${isFinancialRole(profile?.role) ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} gap-3.5`}>
+        {isFinancialRole(profile?.role) && (
         <Card>
           {/* The HEADLINE budget — captured at creation, reporting metadata
               only. It feeds no financial derivation; the current Approved
@@ -374,6 +379,7 @@ export default function ProjectOverview() {
             Set at creation. The current Approved Budget is on the Budget tab.
           </p>
         </Card>
+        )}
         <Card>
           <p className="text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1.5">Start Date</p>
           <p className="text-lg font-bold text-brand-text">{formatDate(project.startDate)}</p>

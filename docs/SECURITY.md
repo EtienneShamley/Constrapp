@@ -237,7 +237,10 @@ financial roles on every commercially sensitive collection** — since ADR-56
 confirmed P0 exposure, below). The collections any provisioned member may still
 read are `companies`, `projects`, `drawings` (+ revisions) and
 project-visibility `documents` — company-wide, not project-scoped (Deferred
-Control 20).
+Control 20). **M2-A2 Stage A (ADR-83) — IMPLEMENTED, NOT DEPLOYED** — scopes
+those reads to assigned projects for `client` / `subcontractor` and removes
+them for every other non-internal role; until it is published, this paragraph
+describes production. See *External Project Isolation* below.
 
 | Path | Read | Create/Update | Delete |
 |---|---|---|---|
@@ -1792,6 +1795,68 @@ Since ADR-27 the enforced `role` in that table is **settable only out of band**:
 rows above. That is what makes the table meaningful — previously any user could
 place themselves in any row with a single write.
 
+## External Project Isolation — M2-A2 Stage A (ADR-83) — STAGE A IMPLEMENTED — NOT DEPLOYED
+
+**Status, 23 November 2026.** Implemented on
+`feature/m2-a2-external-project-isolation` (uncommitted). **Nothing below is
+live. Deferred Control 20 is NOT closed in production, and external-user
+onboarding remains BLOCKED** until Stage A is deployed, Stage B is built and
+a live external-account test passes. Emulator-proven only; not
+browser-verified, not production-verified.
+
+**What the new Rules enforce (Firestore and Storage).**
+
+| Record | Read audience after Stage A |
+|---|---|
+| `projects/{projectId}` (headline `budget`, `currency`) | `company_admin`, `project_manager`, `qs` only |
+| `projectDirectory/{projectId}` — `name`, `status`, `location`, `startDate`, `progress` | `get`: the internal roles, and a `client` / `subcontractor` assigned to that project. `list`: internal roles only |
+| `drawings` and `revisions` | the internal roles, and an assigned `client` / `subcontractor` |
+| `documents` | internal roles: all. Assigned `client` / `subcontractor`: `visibility: 'project'` and `status: 'active'` only |
+| Storage drawing and document objects | the same audience as their Firestore records |
+
+- **Assignment** is `users/{uid}.projectIds`, a list of project ids.
+  `users/{uid}` is client-read-only, so no client can change it.
+- **No assignment means no access.** A missing, null, empty or non-list
+  `projectIds` grants nothing.
+- **Approved external roles only.** `client` and `subcontractor` are the only
+  assignable roles. `super_admin`, an unknown role and a role-less profile
+  read no project record, with or without an assignment.
+- **An assignment never crosses a company.** The company match is tested
+  before the assignment; two companies using the same project id stay apart.
+- **The directory cannot carry anything else.** Rules refuse any key outside
+  the five and any value that differs from the project document after the
+  commit; under the FINAL ruleset a project cannot be created, or have a
+  display field changed, without its entry in the same commit.
+
+**What is client-side only.** The navigation entries, the project tabs and
+the headline-budget columns hidden from external roles, and the cap of 30
+assigned-project listeners. These are enforced only in the client and can be
+bypassed by a direct Firestore call; the Rules above are the boundary.
+
+**What is NOT enforced.**
+
+- Internal roles are not project-scoped; they read every project of their
+  company.
+- **Assignment management does not exist yet (Stage B).** Nothing writes
+  `projectIds`; a `client` or `subcontractor` provisioned today reads nothing
+  once Stage A is live.
+- Invitation acceptance and deactivation do not clear `projectIds` (Stage B).
+- A download URL copied before an assignment is removed keeps working until
+  the periodic sweep (ADR-74 / ADR-75).
+- Under the Stage-1 ruleset (between the first Rules publish and the FINAL
+  one) a project may lack an entry, or hold one the previous bundle did not
+  update. Such an entry contains only the five display fields.
+- Admin-SDK writes bypass Rules.
+
+**Rollback warning.** Republishing the pre-M2-A2 Firestore or Storage
+ruleset restores company-wide reads for external roles — it reopens Deferred
+Control 20. It is never a routine rollback step (DEPLOYMENT.md → *M2-A2
+Stage A → Rollback*).
+
+Tests: `tests/rules/externalIsolation.rules.test.js`,
+`projectDirectory.rules.test.js`, `projectDirectoryTransitional.rules.test.js`
+(TESTING.md §68).
+
 ## Deferred Controls
 
 These are known gaps, deliberately deferred (client-side checks exist in the
@@ -2025,6 +2090,13 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     Until it lands, external-user onboarding is **NOT SAFE**: provision
     `subcontractor` and `client` accounts only for companies whose whole
     drawing and document set they may see.
+    **Status, 23 November 2026 — M2-A2 Stage A (ADR-83): IMPLEMENTED, NOT
+    DEPLOYED.** The Rules that scope these reads to assigned projects, and
+    make the project document internal-only, exist on an uncommitted branch.
+    **This control is OPEN in production** and stays open until Stage A is
+    published; onboarding stays blocked until Stage B (assignment
+    management) and a live external-account test. See *External Project
+    Isolation* above.
 21. **File bytes are never inspected.** Storage Rules enforce content type,
     object name and size from **upload metadata**; they cannot verify that the
     bytes are what the metadata claims, and there is **no antivirus scanning**
@@ -4310,7 +4382,7 @@ makes every callable answer `team-management-disabled` without touching data.
 
 **Not enforced / not built (stated plainly).** No custom claims (rules still
 `get()` `users/{uid}`); no self-service company registration; no external
-(subcontractor/client) onboarding — DC20 still stands; no MFA; no admin UI
+(subcontractor/client) onboarding — DC20 still stands (M2-A2 Stage A, ADR-83, is implemented but NOT deployed); no MFA; no admin UI
 over the audit log; no automated email bounce handling; **Storage download
 URLs are not revoked immediately on deactivation — a background clean-up
 (ADR-74, live since 12 November 2026) removes them afterwards (Deferred

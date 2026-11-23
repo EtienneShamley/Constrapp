@@ -16,6 +16,11 @@ import { PROJECTS_LIST_STATE } from '../../lib/projects'
 // so. From `lg:` a table (scrolling inside its own container, so the Actions
 // column is never clipped by the Card); below `lg:` stacked cards with 44px
 // actions.
+//
+// M2-A2: `showCommercial` is true for the internal roles only. A client or
+// subcontractor is listed the projects ASSIGNED to them from directory entries
+// that carry no budget and no currency, so those two columns are not rendered
+// for them. UX only — Firestore rules refuse them the project documents.
 
 const thCls = 'text-left px-3 py-[9px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px]'
 
@@ -29,15 +34,18 @@ function ProgressCell({ value }) {
 }
 
 export default function ProjectRegister({
-  projects, listState, company, canViewSnapshot, selectedId, onSnapshot, onOpen, onViewAll,
+  projects, listState, company, canViewSnapshot, showCommercial, selectedId, onSnapshot, onOpen, onViewAll,
 }) {
+  const headers = ['Project', 'Status', ...(showCommercial ? ['Headline Budget'] : []), 'Reported Progress', ...(showCommercial ? ['Currency'] : []), 'Start Date', 'Actions']
   return (
     <Card padding={false}>
       <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-4 sm:px-5">
         <div>
           <h2 className="m-0 text-[15px] font-bold text-brand-text">Projects</h2>
           <p className="m-0 mt-0.5 text-[11.5px] text-brand-muted">
-            Every project · Headline Budget in each project&apos;s own currency · progress as reported
+            {showCommercial
+              ? <>Every project · Headline Budget in each project&apos;s own currency · progress as reported</>
+              : <>The projects assigned to you · progress as reported</>}
           </p>
         </div>
         <Btn sm variant="ghost" onClick={onViewAll}>View all</Btn>
@@ -53,7 +61,9 @@ export default function ProjectRegister({
           </p>
         </div>
       ) : listState === PROJECTS_LIST_STATE.EMPTY ? (
-        <div className="px-5 py-8 text-center text-[13px] text-brand-muted">No projects yet. Head to Projects to create one.</div>
+        <div className="px-5 py-8 text-center text-[13px] text-brand-muted">
+          {showCommercial ? 'No projects yet. Head to Projects to create one.' : 'No projects have been assigned to you yet.'}
+        </div>
       ) : (
         <>
           {/* lg and up — the table, in its own horizontal scroller. */}
@@ -61,7 +71,7 @@ export default function ProjectRegister({
             <table className="w-full border-collapse min-w-[960px]">
               <thead>
                 <tr className="bg-brand-card">
-                  {['Project', 'Status', 'Headline Budget', 'Reported Progress', 'Currency', 'Start Date', 'Actions'].map(h => (
+                  {headers.map(h => (
                     <th key={h} className={`${thCls} ${h === 'Project' ? 'pl-5' : ''}`}>{h}</th>
                   ))}
                 </tr>
@@ -81,11 +91,13 @@ export default function ProjectRegister({
                         {p.location && <p className="m-0 mt-0.5 text-[11px] leading-tight text-brand-muted">{p.location}</p>}
                       </td>
                       <td className="px-3 py-3"><Badge label={p.status} sm /></td>
-                      <td className="px-3 py-3 text-[13px] font-semibold tabular-nums text-brand-text-soft">
-                        {p.budget ? formatCurrency(p.budget, currencyCode) : '—'}
-                      </td>
+                      {showCommercial && (
+                        <td className="px-3 py-3 text-[13px] font-semibold tabular-nums text-brand-text-soft">
+                          {p.budget ? formatCurrency(p.budget, currencyCode) : '—'}
+                        </td>
+                      )}
                       <td className="min-w-[140px] px-3 py-3"><ProgressCell value={p.progress} /></td>
-                      <td className="px-3 py-3 text-[12px] font-semibold text-brand-muted">{currencyCode}</td>
+                      {showCommercial && <td className="px-3 py-3 text-[12px] font-semibold text-brand-muted">{currencyCode}</td>}
                       <td className="px-3 py-3 text-[12px] text-brand-muted">{formatDate(p.startDate)}</td>
                       <td className="px-3 py-3">
                         <div className="flex items-center gap-1.5">
@@ -123,15 +135,17 @@ export default function ProjectRegister({
                     <Badge label={p.status} sm />
                   </div>
                   <dl className="m-0 mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-[12px]">
+                    {showCommercial && (
+                      <div className="min-w-0">
+                        <dt className="text-[10.5px] font-bold uppercase tracking-[0.4px] text-brand-muted">Headline Budget</dt>
+                        <dd className="m-0 truncate font-semibold tabular-nums text-brand-text-soft">
+                          {p.budget ? formatCurrency(p.budget, currencyCode) : '—'}
+                        </dd>
+                      </div>
+                    )}
                     <div className="min-w-0">
-                      <dt className="text-[10.5px] font-bold uppercase tracking-[0.4px] text-brand-muted">Headline Budget</dt>
-                      <dd className="m-0 truncate font-semibold tabular-nums text-brand-text-soft">
-                        {p.budget ? formatCurrency(p.budget, currencyCode) : '—'}
-                      </dd>
-                    </div>
-                    <div className="min-w-0">
-                      <dt className="text-[10.5px] font-bold uppercase tracking-[0.4px] text-brand-muted">Currency · Start</dt>
-                      <dd className="m-0 truncate text-brand-text-soft">{currencyCode} · {formatDate(p.startDate)}</dd>
+                      <dt className="text-[10.5px] font-bold uppercase tracking-[0.4px] text-brand-muted">{showCommercial ? 'Currency · Start' : 'Start'}</dt>
+                      <dd className="m-0 truncate text-brand-text-soft">{showCommercial ? `${currencyCode} · ` : ''}{formatDate(p.startDate)}</dd>
                     </div>
                     <div className="col-span-2">
                       <dt className="text-[10.5px] font-bold uppercase tracking-[0.4px] text-brand-muted">Reported Progress</dt>

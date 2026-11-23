@@ -60,8 +60,11 @@ const USERS = {
   admin:  { uid: 'u_admin',  role: 'company_admin',   companyId: COMPANY_A },
   pm:     { uid: 'u_pm',     role: 'project_manager', companyId: COMPANY_A },
   qs:     { uid: 'u_qs',     role: 'qs',              companyId: COMPANY_A },
-  sub:    { uid: 'u_sub',    role: 'subcontractor',   companyId: COMPANY_A },
-  client: { uid: 'u_client', role: 'client',          companyId: COMPANY_A },
+  // M2-A2: an external role reads a project only when ASSIGNED to it; the
+  // unassigned and malformed-assignment denials are proven in
+  // tests/rules/externalIsolation.rules.test.js.
+  sub:    { uid: 'u_sub',    role: 'subcontractor',   companyId: COMPANY_A, projectIds: [PROJECT_A] },
+  client: { uid: 'u_client', role: 'client',          companyId: COMPANY_A, projectIds: [PROJECT_A] },
   sup:    { uid: 'u_sup',    role: 'super_admin',     companyId: COMPANY_A },
   other:  { uid: 'u_other',  role: 'company_admin',   companyId: COMPANY_B },
 }
@@ -161,7 +164,7 @@ beforeEach(async () => {
   await testEnv.withSecurityRulesDisabled(async (c) => {
     const db = c.firestore()
     for (const u of Object.values(USERS)) {
-      await setDoc(doc(db, 'users', u.uid), { role: u.role, companyId: u.companyId, name: u.uid })
+      await setDoc(doc(db, 'users', u.uid), { role: u.role, companyId: u.companyId, name: u.uid, ...(u.projectIds ? { projectIds: u.projectIds } : {}) })
     }
   })
 })
@@ -171,10 +174,11 @@ beforeEach(async () => {
 describe('DRAWING FILES — read', () => {
   beforeEach(async () => { await seedObject(drawingPath()) })
 
-  it('1. every provisioned Company A role reads a drawing file', async () => {
-    for (const user of [USERS.admin, USERS.pm, USERS.qs, USERS.sub, USERS.client, USERS.sup]) {
+  it('1. the internal roles and an ASSIGNED subcontractor / client read a drawing file; super_admin does not (M2-A2)', async () => {
+    for (const user of [USERS.admin, USERS.pm, USERS.qs, USERS.sub, USERS.client]) {
       await assertSucceeds(read(user, drawingPath()))
     }
+    await assertFails(read(USERS.sup, drawingPath()))
   })
 
   it('2. a subcontractor — who reads no financial data — reads the drawing file', async () => {
@@ -387,12 +391,13 @@ describe('DOCUMENT FILES — write', () => {
 // ── DOCUMENT OBJECTS — READ (visibility via Firestore) ───────────────────────
 
 describe('DOCUMENT FILES — read is gated on Firestore visibility', () => {
-  it('33. a PROJECT document is readable by every member once its metadata exists', async () => {
+  it('33. a PROJECT document is readable by the internal roles and an ASSIGNED subcontractor / client once its metadata exists; super_admin is denied (M2-A2)', async () => {
     await seedObject(documentPath({ documentId: 'pub' }))
     await seedDocumentMetadata('pub', 'project')
-    for (const user of [USERS.admin, USERS.pm, USERS.qs, USERS.sub, USERS.client, USERS.sup]) {
+    for (const user of [USERS.admin, USERS.pm, USERS.qs, USERS.sub, USERS.client]) {
       await assertSucceeds(read(user, documentPath({ documentId: 'pub' })))
     }
+    await assertFails(read(USERS.sup, documentPath({ documentId: 'pub' })))
   })
 
   it('34. an INTERNAL document is readable by internal roles', async () => {
@@ -600,7 +605,8 @@ describe('AUTHENTICATED BYTE READS — the path every view and download now uses
 // The rules-checked read only. A download-token URL is served without rules
 // and is NOT covered by anything here (Deferred Control 46 — still OPEN).
 describe('DOCUMENT FILES — a non-internal role reads the bytes of ACTIVE project documents only', () => {
-  const EXTERNAL = () => [USERS.sub, USERS.client, USERS.sup]
+  // M2-A2: the ASSIGNED external roles. super_admin reads nothing (test 58 below).
+  const EXTERNAL = () => [USERS.sub, USERS.client]
   const INTERNAL = () => [USERS.admin, USERS.pm, USERS.qs]
   const pathOf = (documentId, companyId = COMPANY_A) => documentPath({ companyId, documentId })
 
@@ -611,11 +617,13 @@ describe('DOCUMENT FILES — a non-internal role reads the bytes of ACTIVE proje
     }
   })
 
-  it('58. an ACTIVE project document: bytes and metadata allowed to subcontractor, client and super_admin', async () => {
+  it('58. an ACTIVE project document: bytes and metadata allowed to an ASSIGNED subcontractor and client; super_admin denied', async () => {
     for (const user of EXTERNAL()) {
       await assertSucceeds(readBytes(user, pathOf('active')))
       await assertSucceeds(read(user, pathOf('active')))
     }
+    await assertFails(readBytes(USERS.sup, pathOf('active')))
+    await assertFails(read(USERS.sup, pathOf('active')))
   })
 
   it('59. a WITHDRAWN project document: bytes and metadata DENIED to them', async () => {

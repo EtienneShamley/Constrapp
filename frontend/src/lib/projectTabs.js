@@ -46,3 +46,20 @@ export const PROJECT_TABS = [
   { to: 'timeline',         label: 'GANTT', mark: 'gantt' },
   { to: 'rfis',             label: 'RFIs' },
 ]
+
+// The tabs offered to a role (M2-A2). Internal roles get every tab. Any other
+// role — in practice a client or subcontractor on an ASSIGNED project — gets
+// the two whose data it can read: the project's directory entry (Overview) and
+// its drawings and project-visible documents (Documents). Every other tab
+// reads a collection the rules refuse to it.
+//
+// ⚠️ A UX filter only, like lib/nav.js: the routes still exist, each page
+// gates itself, and Firestore Security Rules are the enforced boundary. The
+// role list is spelled out (it mirrors lib/projects.js →
+// PROJECT_INTERNAL_ROLES, asserted equal by tests/unit/externalProjectIsolation.test.js)
+// so this module stays free of imports.
+const INTERNAL_TAB_ROLES = ['company_admin', 'project_manager', 'qs']
+export const EXTERNAL_PROJECT_TABS = ['overview', 'documents']
+export const projectTabsFor = (role) => (INTERNAL_TAB_ROLES.includes(role)
+  ? PROJECT_TABS
+  : PROJECT_TABS.filter(tab => EXTERNAL_PROJECT_TABS.includes(tab.to)))

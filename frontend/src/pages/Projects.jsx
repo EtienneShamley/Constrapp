@@ -13,7 +13,7 @@ import {
   CURRENCIES, resolveCompanyCurrency, resolveProjectCurrency,
   isCompanyCurrencyConfigured,
 } from '../lib/currency'
-import { PROJECT_STATUSES, projectStartDateToInput } from '../lib/projects'
+import { PROJECT_STATUSES, projectStartDateToInput, readsProjectDocuments } from '../lib/projects'
 
 // Roles permitted to write the project document — the UX mirror of the
 // Firestore rules, which are the enforced boundary (the same predicate
@@ -270,6 +270,12 @@ export default function Projects() {
   const companyCurrency   = resolveCompanyCurrency(company)
   const companyConfigured = isCompanyCurrencyConfigured(company)
   const canEdit           = canEditProject(profile?.role)
+  // M2-A2: a client or subcontractor lists only the projects assigned to them,
+  // from directory entries that carry no budget — so the Headline Budget column
+  // and the create actions are not offered. UX only: Firestore rules refuse
+  // them the project documents and every project write.
+  const internal          = readsProjectDocuments(profile?.role)
+  const columns           = ['', 'Project Name', 'Status', ...(internal ? ['Headline Budget'] : []), 'Start Date', 'Progress', 'Actions']
 
   // The live document, re-resolved by id at render time, so an edit always
   // opens the current version even if the subscription updated underneath it.
@@ -291,17 +297,23 @@ export default function Projects() {
         title="Projects"
         sub={`${count} project${count !== 1 ? 's' : ''}${companyName ? ` · ${companyName}` : ''}`}
       >
-        <Btn onClick={() => setEditing('new')}>+ Add New Project</Btn>
+        {internal && <Btn onClick={() => setEditing('new')}>+ Add New Project</Btn>}
       </PageHeader>
 
       <Card padding={false}>
         {projectsLoading ? (
           <div className="px-5 py-12 text-center text-[13px] text-brand-muted">Loading projects…</div>
         ) : count === 0 ? (
-          <div className="px-5 py-12 text-center">
-            <p className="text-[13px] text-brand-muted mb-3">No projects yet. Create your first one to get started.</p>
-            <Btn onClick={() => setEditing('new')}>+ Create your first project</Btn>
-          </div>
+          internal ? (
+            <div className="px-5 py-12 text-center">
+              <p className="text-[13px] text-brand-muted mb-3">No projects yet. Create your first one to get started.</p>
+              <Btn onClick={() => setEditing('new')}>+ Create your first project</Btn>
+            </div>
+          ) : (
+            <div className="px-5 py-12 text-center">
+              <p className="text-[13px] text-brand-muted m-0">No projects have been assigned to you yet. Ask your contact at the company to arrange access.</p>
+            </div>
+          )
         ) : (
           // `Card` carries `overflow-hidden` for its rounded corners, so a table
           // wider than the Card is CLIPPED rather than scrolled and the last
@@ -310,7 +322,7 @@ export default function Projects() {
             <table className="w-full border-collapse min-w-[860px]">
               <thead>
                 <tr className="bg-brand-card border-b border-brand-border">
-                  {['', 'Project Name', 'Status', 'Headline Budget', 'Start Date', 'Progress', 'Actions'].map(h => (
+                  {columns.map(h => (
                     <th
                       key={h}
                       className="text-left px-3.5 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px]"
@@ -335,9 +347,11 @@ export default function Projects() {
                     <td className="px-3.5 py-3">
                       <Badge label={p.status} sm />
                     </td>
-                    <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">
-                      {p.budget ? formatCurrency(p.budget, resolveProjectCurrency(p, company)) : '—'}
-                    </td>
+                    {internal && (
+                      <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">
+                        {p.budget ? formatCurrency(p.budget, resolveProjectCurrency(p, company)) : '—'}
+                      </td>
+                    )}
                     <td className="px-3.5 py-3 text-[12px] text-brand-muted">{formatDate(p.startDate)}</td>
                     <td className="px-3.5 py-3 min-w-[110px]">
                       <div className="flex items-center gap-1.5">

@@ -449,7 +449,8 @@ describe('the project register keeps loading, unavailable and empty distinct', (
 
   it('useProjects exposes projectsError (settled-only), additively', () => {
     const code = stripComments(read('hooks/useProjects.jsx'))
-    expect(code).toContain('const projectsError = settled ? snap.error : false')
+    expect(code).toContain('const internalError = settled ? snap.error : false')
+    expect(code).toContain('const projectsError     = assigned ? directoryError     : internalError')
     // L3 Stage 2 added three more ADDITIVE fields after projectsError.
     expect(code).toMatch(/value=\{\{ projects, projectsLoading, projectsError, projectsErrorCode, projectsFromCache, retryProjects, createProject, updateProject, updateProjectCurrency, lockProjectCurrency \}\}/)
   })

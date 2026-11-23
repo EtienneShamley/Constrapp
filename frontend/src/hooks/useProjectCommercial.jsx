@@ -8,8 +8,8 @@ import { stageProjectCurrencyLock } from './projectCurrencyLock'
 // The Project Commercial Baseline — the ONLY authored inputs of the Project
 // Margin foundation. It lives in a dedicated single-document subcollection
 // keyed by a DETERMINISTIC id ('baseline'), NOT on the Project document: the
-// Project doc is company-member readable (subcontractors/clients can read it),
-// but contract value, client identity, and implied margin are commercially
+// Project doc is readable by all three internal roles (since M2-A2 no external
+// role reads it), but contract value, client identity, and implied margin are commercially
 // sensitive and must be financial-role-only reads. Firestore rules restrict the
 // commercial collection to exactly this one document id.
 //

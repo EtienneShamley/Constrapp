@@ -66,8 +66,11 @@ const USERS = {
   admin:   { uid: 'u_admin',   role: 'company_admin',   companyId: COMPANY_A },
   pm:      { uid: 'u_pm',      role: 'project_manager', companyId: COMPANY_A },
   qs:      { uid: 'u_qs',      role: 'qs',              companyId: COMPANY_A },
-  sub:     { uid: 'u_sub',     role: 'subcontractor',   companyId: COMPANY_A },
-  client:  { uid: 'u_client',  role: 'client',          companyId: COMPANY_A },
+  // M2-A2: the external roles are ASSIGNED to PROJECT_A — the only way they
+  // read any project record. tests/rules/externalIsolation.rules.test.js proves
+  // the unassigned, malformed-assignment and cross-project denials.
+  sub:     { uid: 'u_sub',     role: 'subcontractor',   companyId: COMPANY_A, projectIds: [PROJECT_A] },
+  client:  { uid: 'u_client',  role: 'client',          companyId: COMPANY_A, projectIds: [PROJECT_A] },
   sadmin:  { uid: 'u_sadmin',  role: 'super_admin',     companyId: COMPANY_A },
   unknown: { uid: 'u_unknown', role: 'auditor',         companyId: COMPANY_A }, // not a recognised role
   norole:  { uid: 'u_norole',                           companyId: COMPANY_A }, // membership doc without `role`
@@ -89,6 +92,7 @@ const orphan = () => testEnv.authenticatedContext(UNPROVISIONED_UID).firestore()
 const profileFor = (user) => {
   const p = { companyId: user.companyId, name: user.uid }
   if (user.role) p.role = user.role
+  if (user.projectIds) p.projectIds = user.projectIds
   return p
 }
 
@@ -408,12 +412,18 @@ describe('no alternate match grants access', () => {
 // Each case pins BOTH directions: still readable where it was, still denied
 // where it was. A regression in either direction fails here.
 
-describe('projects — read audience unchanged (every company member)', () => {
-  for (const key of [...FINANCIAL, ...EXTERNAL, 'sadmin']) {
+describe('projects — INTERNAL roles only since M2-A2 (the document carries the headline budget)', () => {
+  for (const key of FINANCIAL) {
     it(`${USERS[key].role} still reads the project document and lists projects`, async () => {
       await assertSucceeds(getDoc(projectRef(ctx(USERS[key]))))
       const snap = await assertSucceeds(getDocs(collection(ctx(USERS[key]), 'companies', COMPANY_A, 'projects')))
       expect(snap.size).toBe(1)
+    })
+  }
+  for (const key of [...EXTERNAL, 'sadmin', 'unknown', 'norole']) {
+    it(`${USERS[key].role ?? 'a role-less member'} is DENIED the project document and the project list — even when assigned to it`, async () => {
+      await assertFails(getDoc(projectRef(ctx(USERS[key]))))
+      await assertFails(getDocs(collection(ctx(USERS[key]), 'companies', COMPANY_A, 'projects')))
     })
   }
   it('another company, an orphan and an anonymous caller are still denied', async () => {
@@ -432,10 +442,15 @@ describe('projects — read audience unchanged (every company member)', () => {
   })
 })
 
-describe('drawings — read audience unchanged (every company member)', () => {
-  for (const key of [...FINANCIAL, ...EXTERNAL, 'sadmin']) {
+describe('drawings — internal roles, and an ASSIGNED subcontractor / client (M2-A2)', () => {
+  for (const key of [...FINANCIAL, ...EXTERNAL]) {
     it(`${USERS[key].role} still reads the drawing master`, async () => {
       await assertSucceeds(getDoc(drawingRef(ctx(USERS[key]))))
+    })
+  }
+  for (const key of ['sadmin', 'unknown', 'norole']) {
+    it(`${USERS[key].role ?? 'a role-less member'} is DENIED the drawing master`, async () => {
+      await assertFails(getDoc(drawingRef(ctx(USERS[key]))))
     })
   }
   it('another company and an anonymous caller are still denied', async () => {
@@ -452,7 +467,7 @@ describe('drawings — read audience unchanged (every company member)', () => {
   })
 })
 
-describe('documents — visibility gate unchanged', () => {
+describe('documents — visibility gate unchanged for an ASSIGNED external role', () => {
   for (const key of EXTERNAL) {
     it(`${USERS[key].role} still reads a project-visibility document and is still denied an internal one`, async () => {
       await assertSucceeds(getDoc(documentRef(ctx(USERS[key]), 'docProject')))
@@ -466,7 +481,7 @@ describe('documents — visibility gate unchanged', () => {
   })
 })
 
-describe('Storage — unchanged (storage.rules is not part of M2-A)', () => {
+describe('Storage — an ASSIGNED external role reads as before (project scoping: M2-A2)', () => {
   for (const key of EXTERNAL) {
     it(`${USERS[key].role} still reads a drawing file and a project-visibility document file`, async () => {
       await assertSucceeds(readObject(USERS[key], drawingObject()))

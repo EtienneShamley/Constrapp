@@ -11,6 +11,7 @@ users/{uid}
 companies/{companyId}
   costCodes/{costCodeId}
   contacts/{contactId}
+  projectDirectory/{projectId}         (external-safe project entry — M2-A2, ADR-83; NOT DEPLOYED)
   counters/{counterId}                 (purchaseOrders, progressClaims, supplierInvoices,
                                         variationsClient, variationsSupplier, clientInvoices,
                                         clientReceipts, supplierPayments, tenderPackages)
@@ -91,6 +92,7 @@ flow must issue membership from a **trusted backend**, never from the client.
 | `formerCompanyId`, `formerRole` | string \| null (OPTIONAL) | **ADR-72.** Set by deactivation (history); cleared by re-acceptance |
 | `deactivatedAt`, `deactivatedBy` | timestamp, uid \| null (OPTIONAL) | **ADR-72.** Set by deactivation |
 | `authSyncPending`, `authSyncedAt` | bool, timestamp (OPTIONAL) | **ADR-72.** `true` between the Firestore commit of a deactivation and the Auth disable + refresh-token revocation |
+| `projectIds` | array of string (OPTIONAL) | **M2-A2 (ADR-83) — STAGE A IMPLEMENTED, NOT DEPLOYED.** The projects a `client` / `subcontractor` is assigned to — the only source of external project access. Ignored for every other role. Missing, null, empty or not a list ⇒ no project access. Server-managed: no client can write it. **Nothing writes it yet** (assignment management is Stage B), and deactivation / re-acceptance do not yet clear it. Unrelated to `contacts.projectIds` |
 
 **Deactivation (ADR-72)** sets `companyId: null` and `role: null`. Because
 every rule authorises by `users/{uid}.companyId`, a deactivated profile reads
@@ -335,6 +337,12 @@ so every project numbers its RFIs from `RFI-0001` independently.
 
 ## companies/{companyId}/projects/{projectId}
 
+**Read audience — M2-A2 (ADR-83), IMPLEMENTED, NOT DEPLOYED:** the three
+internal roles only. In production today every company member still reads
+this document (Deferred Control 20). The five fields `name`, `status`,
+`location`, `startDate` and `progress` are mirrored to
+`projectDirectory/{projectId}` (below).
+
 | Field | Type | Notes |
 |---|---|---|
 | `name` | string | Editable; required, ≤ 200 chars |
@@ -400,6 +408,35 @@ hold no money, so they **never** lock. Detecting that evidence is
 **client-enforced** (`lib/currency.js` → `monetaryLockReasons`); Firestore rules
 cannot enumerate random-id subcollections. What rules **do** enforce is the
 one-way ratchet once the flag is set. See [SECURITY.md](SECURITY.md).
+
+## companies/{companyId}/projectDirectory/{projectId}
+
+**M2-A2 (ADR-83) — STAGE A IMPLEMENTED, NOT DEPLOYED.** The external-safe
+entry of a project. Document id = the project id. A `client` or
+`subcontractor` assigned to the project reads this instead of the project
+document, which becomes internal-only.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | Equal to `projects/{projectId}.name` (`''` when the project has none) |
+| `status` | string | Equal to the project's `status` (`''` when absent) |
+| `location` | string | Equal to the project's `location` (`''` when absent) |
+| `startDate` | Timestamp \| null | Equal to the project's `startDate` (`null` when absent) |
+| `progress` | number | Equal to the project's `progress` (`0` when absent) |
+
+- **Exactly these five keys.** No budget, currency, stamp or access data;
+  Rules refuse any other key.
+- **Never authored separately.** `useProjects` writes it in the same batch
+  as the project create or edit. Rules require every value to equal the
+  project document after the commit and, under the FINAL ruleset, refuse a
+  project create or display-field change without it.
+- **Read:** `get` by the internal roles and an assigned `client` /
+  `subcontractor`; `list` by internal roles only. **Write:** `company_admin`
+  / `project_manager`. **Delete:** denied.
+- **Projects created before M2-A2 have no entry** until they are edited or
+  `functions/scripts/backfill-project-directory.mjs` creates it
+  (DEPLOYMENT.md → *M2-A2 Stage A*). A missing entry hides the project from
+  external roles; it exposes nothing.
 
 ## …/projects/{projectId}/boqItems/{itemId}
 

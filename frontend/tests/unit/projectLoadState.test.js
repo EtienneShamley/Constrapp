@@ -23,6 +23,8 @@ vi.mock('react-router-dom', () => ({
 }))
 vi.mock('../../src/hooks/useProjects', () => ({ useProjects: () => S.ctx }))
 vi.mock('../../src/hooks/useCompany', () => ({ useCompany: () => ({ company: { id: 'c1', currency: 'AUD' } }) }))
+// M2-A2: the layout filters its tabs and the headline line by role.
+vi.mock('../../src/hooks/useProfile', () => ({ useProfile: () => ({ profile: { role: 'company_admin' } }) }))
 
 const { useProject } = await import('../../src/hooks/useProject')
 const { default: ProjectDetailLayout } = await import('../../src/layouts/ProjectDetailLayout')
@@ -155,18 +157,25 @@ describe('the projects provider wiring', () => {
     expect(src).toContain('{ includeMetadataChanges: true }')
     expect(src).toContain('fromCache: querySnap.metadata.fromCache === true')
     expect(src).toContain("readCode: err?.code ?? null")
-    expect(src).toContain('const projectsErrorCode = projectsError ? snap.readCode : null')
-    expect(src).toContain('const projectsFromCache = settled && snap.fromCache === true')
+    // M2-A2: the internal subscription's derivations are prefixed `internal`;
+    // the published `projects*` fields select between it and the directory.
+    expect(src).toContain('const internalErrorCode = internalError ? snap.readCode : null')
+    expect(src).toContain('const internalFromCache = settled && snap.fromCache === true')
+    expect(src).toContain('const projectsErrorCode = assigned ? directoryErrorCode : internalErrorCode')
+    expect(src).toContain('const projectsFromCache = assigned ? directoryFromCache : internalFromCache')
   })
 
   it('retry re-opens the listener only after an error, and returns the route to loading', () => {
-    expect(src).toContain('}, [companyId, attempt])')
+    expect(src).toContain('}, [internalCompanyId, attempt])')
     expect(src).toMatch(/setSnap\(\(s\) => \(s\.error\s*\? \{ key: null, projects: \[\], error: false, readCode: null, fromCache: false, attempt: s\.attempt \+ 1 \}\s*: s\)\)/)
   })
 
   it('still reads the same single query: no new read path, no access decision in the client', () => {
     expect(src.match(/onSnapshot\(/g)).toHaveLength(1)
-    expect(src).toContain("collection(db, 'companies', companyId, 'projects')")
+    expect(src).toContain("collection(db, 'companies', internalCompanyId, 'projects')")
+    // M2-A2: the query is opened for an internal role only — a selection of
+    // which read to issue, never a grant (the rules refuse it to anyone else).
+    expect(src).toContain('const internalCompanyId = readsProjectDocuments(role) ? companyId : null')
     expect(src).not.toMatch(/getDocs?\(|collectionGroup\(/)
   })
 

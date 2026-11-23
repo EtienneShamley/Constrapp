@@ -3,16 +3,23 @@ import Badge from '../components/Badge'
 import { formatCurrency } from '../lib/formatters'
 import { useProject } from '../hooks/useProject'
 import { useCompany } from '../hooks/useCompany'
+import { useProfile } from '../hooks/useProfile'
 import { resolveProjectCurrency } from '../lib/currency'
-import { PROJECT_TABS } from '../lib/projectTabs'
+import { projectTabsFor } from '../lib/projectTabs'
 import { ModuleMark } from '../components/ModuleMark'
 import Btn from '../components/Btn'
-import { PROJECT_LOAD_STATE } from '../lib/projects'
+import { PROJECT_LOAD_STATE, readsProjectDocuments } from '../lib/projects'
 
 export default function ProjectDetailLayout() {
   const { projectId } = useParams()
   const { project, projectLoading, projectState, retryProject } = useProject(projectId)
   const { company } = useCompany()
+  const { profile } = useProfile()
+  // M2-A2: a client or subcontractor is given the project's directory entry,
+  // which has no budget or currency — the headline line below would only ever
+  // read "—" beside a currency that is not theirs to see. UX only; the rules
+  // are what keep the project document from them.
+  const internal = readsProjectDocuments(profile?.role)
 
   // Resolved ONCE here and handed to every project tab through the outlet
   // context, so no page resolves a currency for itself and no page can drift.
@@ -69,17 +76,21 @@ export default function ProjectDetailLayout() {
                 created. It is reporting metadata and feeds no derivation; the
                 live Approved Budget is the sum of the project's budget lines on
                 the Budget tab. Labelled so the two are never confused (ADR-39). */}
-            {project.budget
-              ? <>Headline Budget {formatCurrency(project.budget, currencyCode)}</>
-              : '—'}
-            <span className="ml-2 text-[11px] font-semibold text-brand-muted">{currencyCode}</span>
+            {internal && (
+              <>
+                {project.budget
+                  ? <>Headline Budget {formatCurrency(project.budget, currencyCode)}</>
+                  : '—'}
+                <span className="ml-2 text-[11px] font-semibold text-brand-muted">{currencyCode}</span>
+              </>
+            )}
           </p>
         </div>
         <Badge label={project.status} />
       </div>
 
       <nav data-print-hide className="flex flex-wrap gap-1 border-b border-brand-border mb-5">
-        {PROJECT_TABS.map(({ to, label, mark }) => (
+        {projectTabsFor(profile?.role).map(({ to, label, mark }) => (
           <NavLink
             key={to}
             to={to}
