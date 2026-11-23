@@ -6795,7 +6795,7 @@ A manual edit of `budgeted` on such a line remains permitted (the existing ADR-3
 
 ## ADR-83: M2-A2 — External Project Isolation, Stage A (a server-managed `projectIds` assignment on `users/{uid}`; the project document becomes internal-only; an external-safe `projectDirectory` entry pinned to its project in the same commit; Firestore and Storage reads of drawings, revisions and project documents scoped to assigned projects; `client` and `subcontractor` are the only assignable roles; no assignment means no access; assignment management deferred to Stage B)
 
-**Date:** 23 November 2026 · **Status:** STAGE A IMPLEMENTED — NOT DEPLOYED (branch `feature/m2-a2-external-project-isolation`, uncommitted, from `main` `6a1a1ac`; architect decision: CONDITIONAL GO, pre-merge completion). **Deferred Control 20 is NOT closed in production.** External-user onboarding remains BLOCKED. TESTING.md §63 P19–P20 (C1-B) remain pending. Nothing in this ADR is browser-verified or production-verified.
+**Date:** 23 November 2026 · **Status:** STAGE A LIVE — CLOSED and production-accepted, 23 November 2026 (Lead Architect decision; merged as `0c941f1`, `main` `22cf7db` — VERIFIED in Git). Record: *Stage A closure record* at the end of this ADR. No known Stage A implementation defect. **Limitations:** no real external-role session has been run in a production browser; external onboarding remains BLOCKED; TESTING.md §63 P19–P20 (C1-B) remain pending; Stage B (provisioning and assignment management) is NOT implemented; Deferred Control 20's live external-role acceptance is outstanding. *As written on the date:* STAGE A IMPLEMENTED — NOT DEPLOYED (branch `feature/m2-a2-external-project-isolation`, uncommitted, from `main` `6a1a1ac`; architect decision: CONDITIONAL GO, pre-merge completion). **Deferred Control 20 is NOT closed in production.** External-user onboarding remains BLOCKED. TESTING.md §63 P19–P20 (C1-B) remain pending. Nothing in this ADR is browser-verified or production-verified.
 
 **Context.** Membership was company-wide: any provisioned member of a company read every `projects` document, every drawing and revision, every project-visible document and the matching Storage objects (Deferred Control 20). The C1-B Portfolio assessment (23 November 2026) confirmed it for `client` and `subcontractor`, and found one exposure not recorded before: the project document carries the headline `budget`, which those roles could read and were shown. Production then held one company, nine projects and no active external user (read-only, 23 November 2026).
 
@@ -6851,3 +6851,18 @@ A manual edit of `budgeted` on such a line remains permitted (the existing ADR-3
 - *Not enforced:* internal roles are not project-scoped. A download URL copied before an assignment is removed keeps working until the periodic sweep runs (ADR-74 / ADR-75). Admin-SDK writes bypass Rules. Under the Stage-1 ruleset a project may exist without an entry or with an entry an old bundle did not update; such an entry holds only the five display fields.
 
 **Consequences.** `super_admin` loses the project, drawing and document reads it held as an ordinary member (none exists in production). An external user provisioned before Stage B reads nothing. Rolling the Firestore or Storage ruleset back to the pre-M2-A2 version reopens Deferred Control 20 and is a deliberate, separately authorised act.
+
+**Stage A closure record — 23 November 2026.**
+
+| Item | State | Evidence |
+|---|---|---|
+| FINAL Firestore Rules | **LIVE** | Ruleset `67b6425a…`, 236,737 bytes, released 23 November 2026 02:50 UTC, byte-identical to `main` `22cf7db` — VERIFIED read-only |
+| Restricted Storage Rules | **LIVE** | Ruleset `2f3a4788…`, 10,323 bytes, released 23 November 2026 03:04 UTC, byte-identical to `main`; both `get` rules call `projectReader` — VERIFIED read-only. Published AFTER the FINAL Firestore Rules, not with the Stage-1 ruleset as planned: the first acceptance pass found the pre-M2-A2 Storage ruleset (`8b8edc14…`) still live |
+| Hosting | **LIVE** | `index-BOg2hoYg.js`, SHA-256-identical to a clean build of `main` `22cf7db` — VERIFIED read-only |
+| Stage-1 ruleset, then backfill | Done | REPORTED by the Product Owner (9 of 9 before the test). VERIFIED afterwards: 10 projects, 10 matching entries, no orphan; backfill dry run `in sync 10`, nothing else |
+| Paired create and edit in production | **PASSED** | Test project `Iusni6U8enVn47fKBGDB` (*M2-A2 Security Acceptance — VERIFIED*, Apex Builders), created and edited through the application by a Company Admin. Project and entry share one create time and one update time, to the microsecond — one commit each |
+| Directory fields | **VERIFIED** | Exactly `name`, `status`, `location`, `startDate`, `progress`, each equal to the project; no budget, currency or other key |
+| Project documents and internal budgets | Protected by the deployed Rules | The live ruleset is the emulator-tested source. The denial itself has NOT been exercised by an external session in production |
+| Existing nine projects | Unchanged | Update times and fields identical before and after — VERIFIED read-only |
+
+The test project stays in production and contributes to the Portfolio totals; do not delete or modify it without a separate authorisation. **Not covered in production:** an external-role session; an unpaired or injected write (emulator only); a Project Manager edit; TESTING.md §68 M1, M2, M4, M5 and M8.

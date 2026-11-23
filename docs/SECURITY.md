@@ -237,10 +237,12 @@ financial roles on every commercially sensitive collection** — since ADR-56
 confirmed P0 exposure, below). The collections any provisioned member may still
 read are `companies`, `projects`, `drawings` (+ revisions) and
 project-visibility `documents` — company-wide, not project-scoped (Deferred
-Control 20). **M2-A2 Stage A (ADR-83) — IMPLEMENTED, NOT DEPLOYED** — scopes
-those reads to assigned projects for `client` / `subcontractor` and removes
-them for every other non-internal role; until it is published, this paragraph
-describes production. See *External Project Isolation* below.
+Control 20). **Superseded on 23 November 2026 — M2-A2 Stage A (ADR-83) is
+LIVE:** `projects` is now internal-only, and `drawings`, revisions and
+project-visibility `documents` are read by the internal roles and by a
+`client` / `subcontractor` assigned to the project; every other non-internal
+role reads none of them. `companies` is still readable by any member. See
+*External Project Isolation* below.
 
 | Path | Read | Create/Update | Delete |
 |---|---|---|---|
@@ -1795,9 +1797,26 @@ Since ADR-27 the enforced `role` in that table is **settable only out of band**:
 rows above. That is what makes the table meaningful — previously any user could
 place themselves in any row with a single write.
 
-## External Project Isolation — M2-A2 Stage A (ADR-83) — STAGE A IMPLEMENTED — NOT DEPLOYED
+## External Project Isolation — M2-A2 Stage A (ADR-83) — STAGE A LIVE — CLOSED and production-accepted 23 November 2026; live external-role acceptance OUTSTANDING; onboarding BLOCKED
 
-**Status, 23 November 2026.** Implemented on
+**Status, 23 November 2026 (closeout).** Stage A is LIVE. The FINAL
+Firestore ruleset (`67b6425a…`, 236,737 bytes) and the Storage ruleset
+(`2f3a4788…`, 10,323 bytes) are byte-identical to `main` `22cf7db`, and the
+served bundle is a clean build of it (VERIFIED read-only). A paired project
+create and edit passed in production and the directory holds 10 of 10
+matching entries (ADR-83 → *Stage A closure record*). No known Stage A
+implementation defect.
+
+**What is and is not proven.** The Rules below are deployed, and they are
+the source the emulator suites tested. **No external-role session has been
+run in production**, so the denials are emulator-proven and
+deployed-rule-inspected, not production-exercised. Deferred Control 20's
+live external-role acceptance is outstanding; external-user onboarding
+remains BLOCKED until Stage B (provisioning and assignment management, NOT
+implemented) is built and that test passes. TESTING.md §63 P19–P20 remain
+pending.
+
+*As written before deployment (23 November 2026):* Implemented on
 `feature/m2-a2-external-project-isolation` (uncommitted). **Nothing below is
 live. Deferred Control 20 is NOT closed in production, and external-user
 onboarding remains BLOCKED** until Stage A is deployed, Stage B is built and
@@ -2090,13 +2109,16 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     Until it lands, external-user onboarding is **NOT SAFE**: provision
     `subcontractor` and `client` accounts only for companies whose whole
     drawing and document set they may see.
-    **Status, 23 November 2026 — M2-A2 Stage A (ADR-83): IMPLEMENTED, NOT
-    DEPLOYED.** The Rules that scope these reads to assigned projects, and
-    make the project document internal-only, exist on an uncommitted branch.
-    **This control is OPEN in production** and stays open until Stage A is
-    published; onboarding stays blocked until Stage B (assignment
-    management) and a live external-account test. See *External Project
-    Isolation* above.
+    **Status, 23 November 2026 (closeout) — M2-A2 Stage A (ADR-83) is LIVE.**
+    The Rules that scope these reads to assigned projects, and make the
+    project document internal-only, are published in Firestore and Storage
+    (VERIFIED read-only, byte-identical to `main`). The company-wide read
+    described above no longer applies to `client`, `subcontractor` or any
+    other non-internal role; internal roles remain company-wide.
+    **This control is NOT yet recorded as closed:** its live external-role
+    acceptance is outstanding — no external session has been run in
+    production — and onboarding stays blocked until Stage B (assignment
+    management) and that test. See *External Project Isolation* above.
 21. **File bytes are never inspected.** Storage Rules enforce content type,
     object name and size from **upload metadata**; they cannot verify that the
     bytes are what the metadata claims, and there is **no antivirus scanning**
@@ -4382,7 +4404,7 @@ makes every callable answer `team-management-disabled` without touching data.
 
 **Not enforced / not built (stated plainly).** No custom claims (rules still
 `get()` `users/{uid}`); no self-service company registration; no external
-(subcontractor/client) onboarding — DC20 still stands (M2-A2 Stage A, ADR-83, is implemented but NOT deployed); no MFA; no admin UI
+(subcontractor/client) onboarding — DC20's live acceptance is outstanding (M2-A2 Stage A, ADR-83, LIVE since 23 November 2026; Stage B not built); no MFA; no admin UI
 over the audit log; no automated email bounce handling; **Storage download
 URLs are not revoked immediately on deactivation — a background clean-up
 (ADR-74, live since 12 November 2026) removes them afterwards (Deferred

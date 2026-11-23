@@ -4654,9 +4654,13 @@ separate operational authorisation.
 
 ---
 
-## M2-A2 Stage A — External Project Isolation release order — ADR-83 — MERGE, AZURE GREEN, STAGE-1 RULES + STORAGE RULES, HOSTING, BACKFILL, FINAL RULES (STAGE A IMPLEMENTED — NOT DEPLOYED)
+## M2-A2 Stage A — External Project Isolation release order — ADR-83 — MERGE, AZURE GREEN, STAGE-1 RULES + STORAGE RULES, HOSTING, BACKFILL, FINAL RULES (STAGE A LIVE — released and production-accepted 23 November 2026)
 
-**Status (23 November 2026):** implemented on
+**Status (23 November 2026, closeout):** Stage A is LIVE and CLOSED (Lead
+Architect decision). Record: *Release record* at the end of this section.
+The procedure below is kept as written for the release.
+
+*As written for the release (23 November 2026, IMPLEMENTED — NOT DEPLOYED):* implemented on
 `feature/m2-a2-external-project-isolation` (uncommitted). **Nothing in this
 section has been run.** No commit, merge, deploy or production write. DC20
 is open in production; external onboarding is blocked.
@@ -4779,4 +4783,26 @@ Rules for the last row:
 
 ### Release record
 
-Not started.
+**23 November 2026 — released; CLOSED and production-accepted (Lead
+Architect).** Merged as `0c941f1`, `main` `22cf7db` (VERIFIED in Git). Azure
+CI on that commit was not read in this record.
+
+| Step | State | Evidence |
+|---|---|---|
+| 1a. Stage-1 Firestore Rules | Done | REPORTED by the Product Owner; superseded by step 4, so not readable afterwards |
+| 1b. Storage Rules | **Done late** — ruleset `2f3a4788…`, 10,323 bytes, released 03:04 UTC | VERIFIED read-only, byte-identical to `main`. Published after step 4: the first acceptance pass found the pre-M2-A2 ruleset `8b8edc14…` (9,271 bytes) still live |
+| 2. Hosting | Done — `index-BOg2hoYg.js` | VERIFIED: SHA-256-identical to a clean build of `main` `22cf7db` |
+| 3. Backfill | Done — 9 of 9 | REPORTED by the Product Owner. VERIFIED before the acceptance test: 9 projects, 9 matching entries |
+| 4. FINAL Firestore Rules | Done — ruleset `67b6425a…`, 236,737 bytes, released 02:50 UTC | VERIFIED read-only, byte-identical to `main` |
+| Acceptance | **PASSED** | TESTING.md §68 → *Production acceptance record* |
+
+**Deviation, recorded.** Between the Stage-1 publish and 03:04 UTC the
+Firestore read boundary was in force while Storage still allowed any company
+member to fetch a drawing or project-document file by path. No active
+external user existed (read-only, 23 November 2026). For a later release
+that changes both rulesets, verify the Storage release before moving past
+step 1.
+
+**No rollback was used.** The rollback table above still applies:
+republishing the pre-M2-A2 Firestore or Storage ruleset reopens Deferred
+Control 20 and needs its own authorisation.

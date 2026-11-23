@@ -11,7 +11,7 @@ users/{uid}
 companies/{companyId}
   costCodes/{costCodeId}
   contacts/{contactId}
-  projectDirectory/{projectId}         (external-safe project entry — M2-A2, ADR-83; NOT DEPLOYED)
+  projectDirectory/{projectId}         (external-safe project entry — M2-A2, ADR-83; LIVE)
   counters/{counterId}                 (purchaseOrders, progressClaims, supplierInvoices,
                                         variationsClient, variationsSupplier, clientInvoices,
                                         clientReceipts, supplierPayments, tenderPackages)
@@ -92,7 +92,7 @@ flow must issue membership from a **trusted backend**, never from the client.
 | `formerCompanyId`, `formerRole` | string \| null (OPTIONAL) | **ADR-72.** Set by deactivation (history); cleared by re-acceptance |
 | `deactivatedAt`, `deactivatedBy` | timestamp, uid \| null (OPTIONAL) | **ADR-72.** Set by deactivation |
 | `authSyncPending`, `authSyncedAt` | bool, timestamp (OPTIONAL) | **ADR-72.** `true` between the Firestore commit of a deactivation and the Auth disable + refresh-token revocation |
-| `projectIds` | array of string (OPTIONAL) | **M2-A2 (ADR-83) — STAGE A IMPLEMENTED, NOT DEPLOYED.** The projects a `client` / `subcontractor` is assigned to — the only source of external project access. Ignored for every other role. Missing, null, empty or not a list ⇒ no project access. Server-managed: no client can write it. **Nothing writes it yet** (assignment management is Stage B), and deactivation / re-acceptance do not yet clear it. Unrelated to `contacts.projectIds` |
+| `projectIds` | array of string (OPTIONAL) | **M2-A2 (ADR-83) — Stage A LIVE since 23 November 2026.** The projects a `client` / `subcontractor` is assigned to — the only source of external project access. Ignored for every other role. Missing, null, empty or not a list ⇒ no project access. Server-managed: no client can write it. **Nothing writes it yet** (assignment management is Stage B), and deactivation / re-acceptance do not yet clear it. Unrelated to `contacts.projectIds` |
 
 **Deactivation (ADR-72)** sets `companyId: null` and `role: null`. Because
 every rule authorises by `users/{uid}.companyId`, a deactivated profile reads
@@ -337,9 +337,8 @@ so every project numbers its RFIs from `RFI-0001` independently.
 
 ## companies/{companyId}/projects/{projectId}
 
-**Read audience — M2-A2 (ADR-83), IMPLEMENTED, NOT DEPLOYED:** the three
-internal roles only. In production today every company member still reads
-this document (Deferred Control 20). The five fields `name`, `status`,
+**Read audience — M2-A2 (ADR-83), LIVE since 23 November 2026:** the three
+internal roles only. No external role reads this document. The five fields `name`, `status`,
 `location`, `startDate` and `progress` are mirrored to
 `projectDirectory/{projectId}` (below).
 
@@ -411,10 +410,11 @@ one-way ratchet once the flag is set. See [SECURITY.md](SECURITY.md).
 
 ## companies/{companyId}/projectDirectory/{projectId}
 
-**M2-A2 (ADR-83) — STAGE A IMPLEMENTED, NOT DEPLOYED.** The external-safe
+**M2-A2 (ADR-83) — Stage A LIVE since 23 November 2026** (10 projects, 10
+matching entries — VERIFIED read-only that day). The external-safe
 entry of a project. Document id = the project id. A `client` or
 `subcontractor` assigned to the project reads this instead of the project
-document, which becomes internal-only.
+document, which is internal-only.
 
 | Field | Type | Notes |
 |---|---|---|
