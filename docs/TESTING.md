@@ -9323,11 +9323,38 @@ To accept the correction after its Hosting release: in the sandbox, open *Transf
 
 ---
 
-## 68. M2-A2 Stage A — External Project Isolation (ADR-83, 23 November 2026) — STAGE A IMPLEMENTED — NOT DEPLOYED; automated tests PASS (emulators); NOT browser-verified; NOT production-verified; external checks BLOCKED on Stage B
+## 68. M2-A2 Stage A — External Project Isolation (ADR-83, 23 November 2026) — STAGE A LIVE — CLOSED and production-accepted 23 November 2026; paired create / edit and directory PASSED in production; external-role checks X1–X6 NOT RUN (BLOCKED on Stage B); automated tests PASS (emulators)
 
 **Scope.** Rules, Storage Rules, the projects provider, the directory hook,
-the role-filtered navigation and the backfill script (ADR-83). Deferred
-Control 20 is open in production. §63 P19–P20 remain pending.
+the role-filtered navigation and the backfill script (ADR-83). §63 P19–P20
+remain pending. *As written before deployment:* Deferred Control 20 is open
+in production.
+
+**Production acceptance record — 23 November 2026 (Company Admin session,
+Apex Builders `2Vf3CVuYE8wWzg8hLjR5`; server state read through the
+Firestore and Rules REST APIs, read-only).**
+
+| Check | Result |
+|---|---|
+| Pre-flight: FINAL Firestore ruleset and Hosting bundle identical to `main` `22cf7db`; 9 projects, 9 matching entries | PASS |
+| Create *M2-A2 Security Acceptance — TEST* through the application | PASS — project `Iusni6U8enVn47fKBGDB`; project and entry created at `2026-11-23T02:52:52.060012Z`, the same instant |
+| Entry holds exactly `name`, `status`, `location`, `startDate`, `progress`, equal to the project; no budget, currency or other key | PASS |
+| Rename to *… — VERIFIED* and set progress 25 through the application | PASS — both documents updated at `2026-11-23T02:53:27.658907Z`; all five fields equal |
+| 10 projects, 10 matching entries, no orphan; backfill dry run `in sync 10 · missing 0 · invalid 0 · mismatch 0 · orphan 0 · failed 0` | PASS |
+| The nine existing projects (update time and fields) | Unchanged |
+| No financial record on the test project (ten subcollections read) | PASS |
+| Browser: write requests 200; no permission error. Console capture began after the create click | PASS |
+| Storage ruleset: `2f3a4788…`, 10,323 bytes, identical to `main`; both `get` rules use `projectReader`; no membership-only read | PASS — on the second pass; the first found the pre-M2-A2 ruleset still live (DEPLOYMENT.md → *M2-A2 Stage A → Release record*) |
+
+**What that record does and does not show.** It shows the paired writes are
+accepted by the deployed FINAL Rules — including the access-call budget, for
+one pair — and that the deployed Rules are the emulator-tested source. **It
+does not show an external role being denied in production:** no external
+account exists and none was created. Against the checklist below: M3 was run
+as a Company Admin for both the create and the edit (the Project Manager
+edit was not); M6 PASSED; M1, M2, M4, M5, M7 and M8 are not recorded; X1–X6
+were NOT RUN. The test project stays in production — do not delete or
+modify it.
 
 **Automated (local emulators, 23 November 2026 — not production-verified).**
 
