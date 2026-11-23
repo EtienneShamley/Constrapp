@@ -335,7 +335,8 @@ describe('audit', () => {
     expect(AUDIT.FILE_LINKS_REVOCATION_REQUESTED).toBe('file_links.revocation_requested')
     expect(AUDIT.FILE_LINKS_REVOKED).toBe('file_links.revoked')
     expect(AUDIT.FILE_LINKS_REVOCATION_INCOMPLETE).toBe('file_links.revocation_incomplete')
-    expect(Object.values(REASON)).toEqual(['member.deactivated', 'member.role_reduced', 'operator', 'periodic'])
+    // `member.assignment_removed` joined with ADR-84 (an operator took a project away).
+    expect(Object.values(REASON)).toEqual(['member.deactivated', 'member.role_reduced', 'member.assignment_removed', 'operator', 'periodic'])
     expect(() => auditPayload({ type: AUDIT.FILE_LINKS_REVOKED, after: { seq: 1, scanned: 2, removed: 1, failed: 0 } }, new Date())).not.toThrow()
   })
 })

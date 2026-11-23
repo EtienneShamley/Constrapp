@@ -53,3 +53,18 @@ export const log = {
 }
 
 export const silentLogger = { info() {}, warn() {}, error() {}, debug() {} }
+
+// ── Shared by the external-member scripts (ADR-84) ───────────────────────────
+
+export const ID_LIST_PATTERN = /^[A-Za-z0-9_-]{1,64}(,[A-Za-z0-9_-]{1,64})*$/
+export const parseIdList = (v) => (v === undefined ? undefined : v.split(','))
+
+// A refusal from the library (lib/errors.js), as one line for the operator.
+// Only the stable code and the ids involved — never a raw exception dump.
+export function describeRefusal(err) {
+  const d = err?.details
+  if (!d?.code) return null
+  const ids = d.projectIds ?? (d.projectId ? [d.projectId] : [])
+  const extra = [d.reason, d.what, d.field, ids.length ? `project id(s): ${ids.join(', ')}` : null, d.inviteId ? `invitation ${d.inviteId}` : null].filter(Boolean)
+  return `${d.code}${extra.length ? ` — ${extra.join(' · ')}` : ''}`
+}

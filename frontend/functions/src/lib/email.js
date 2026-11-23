@@ -38,6 +38,10 @@ export const ROLE_LABELS = {
   company_admin:   'Company Admin',
   project_manager: 'Project Manager',
   qs:              'Quantity Surveyor',
+  // ADR-84: only an operator creates an invitation for these two roles. A
+  // Company Admin may RESEND one, which sends this email.
+  client:          'Client',
+  subcontractor:   'Subcontractor',
 }
 
 export function renderInviteEmail({ companyName, inviterName, role, link, expiresAt }) {

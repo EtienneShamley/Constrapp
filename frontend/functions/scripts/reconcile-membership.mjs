@@ -11,6 +11,11 @@
 //   F1  users with status=deactivated and authSyncPending=true
 //       → disable the Auth account + revoke refresh tokens, clear the flag
 //       (exactly what deactivateMember does after its Firestore commit)
+//   F2  a profile that holds a project assignment (`projectIds`) it must not:
+//       an active member who is NOT a client or subcontractor (R7), or a
+//       profile with no active membership (R8)
+//       → remove the field. The Rules ignore it in both cases, so no access
+//       changes; it is removed so that it can never be revived (ADR-84)
 //
 // Everything else is reported and left alone — it needs a human decision:
 //   R1  a company with no active company_admin
@@ -20,6 +25,9 @@
 //   R5  pending invitations expired more than 30 days ago (derived state;
 //       nothing to fix — revoke in the app if you want them gone)
 //   R6  invitations stuck in a non-pending, non-terminal status
+//   R9  an active client / subcontractor whose assignment is not a clean list
+//       of at most 30 unique ids, or names a project that does not exist in
+//       their company (fix with scripts/set-member-projects.mjs)
 
 import { parseArgs, usage, configureProject, log, silentLogger } from './_cli.mjs'
 
@@ -34,7 +42,7 @@ const say = JSON_MODE ? (...a) => console.error(...a) : log.info
 const SPEC = {
   'project':    { required: true, pattern: /^[a-z0-9-]{4,40}$/, help: 'Firebase project id (explicit, always)' },
   'company-id': { pattern: /^[A-Za-z0-9_-]{1,64}$/, help: 'limit to one company (default: all)' },
-  'fix':        { flag: true, help: 'apply the unambiguous fixes (F1); default is report only' },
+  'fix':        { flag: true, help: 'apply the unambiguous fixes (F1, F2); default is report only' },
 }
 
 async function main() {
@@ -44,7 +52,10 @@ async function main() {
   const { getDb, getAdminAuth } = await import('../src/lib/firebaseAdmin.js')
   const { syncDeactivatedAuth } = await import('../src/lib/members.js')
   const { isActiveMemberOf, isActiveAdminOf, isDeactivated, effectiveInviteStatus, toMillis } = await import('../src/lib/membershipState.js')
-  const { auditNow, AUDIT } = await import('../src/lib/audit.js')
+  const { auditNow, auditInTx, AUDIT } = await import('../src/lib/audit.js')
+  const { FieldValue } = await import('../src/lib/firebaseAdmin.js')
+  const { isExternalRole, currentAssignment, MAX_PROJECT_ASSIGNMENTS } = await import('../src/lib/validation.js')
+  const { missingProjects } = await import('../src/lib/projectAssignments.js')
 
   const db = getDb(), auth = getAdminAuth()
   const now = () => new Date()
@@ -74,6 +85,46 @@ async function main() {
       say(ok ? `       → fixed: Auth disabled, refresh tokens revoked` : `       → Auth sync failed again; left pending`)
       if (ok) await auditNow(db, companyId, { type: AUDIT.RECONCILE_FIX, actorUid: 'operator', targetUid: u.uid, after: { fix: 'F1' }, source: 'operator' }, now())
     }
+  }
+
+  // R7 / R8 (fix F2), R9 — project assignments (ADR-84)
+  for (const u of users) {
+    if (u.projectIds === undefined) continue
+    const active = isActiveMemberOf(u, u.companyId)
+    const companyId = active ? u.companyId : (u.formerCompanyId ?? null)
+    if (args['company-id'] && companyId !== args['company-id']) continue
+    if (active && isExternalRole(u.role)) {
+      const held = currentAssignment(u.projectIds)
+      if (!held.sound || held.projectIds.length > MAX_PROJECT_ASSIGNMENTS) {
+        report('R9', `users/${u.uid} (${u.role} of ${companyId}) holds a project assignment that is not a list of at most ${MAX_PROJECT_ASSIGNMENTS} unique ids`)
+      } else if (companyIds.has(companyId)) {
+        const missing = await missingProjects(db, db, companyId, held.projectIds)
+        if (missing.length > 0) report('R9', `users/${u.uid} (${u.role} of ${companyId}) is assigned ${missing.length} project(s) that do not exist there: ${missing.join(', ')}`, { missing })
+      }
+      continue
+    }
+    const code = active ? 'R7' : 'R8'
+    report(code, active
+      ? `users/${u.uid} is an active ${u.role ?? '(no role)'} of ${companyId} but holds a project assignment (only a client or subcontractor may)`
+      : `users/${u.uid} has no active membership but still holds a project assignment`)
+    if (!fix) continue
+    if (!companyId || !companyIds.has(companyId)) { say('       → left alone: no company to record the fix under'); continue }
+    // Re-read inside a transaction: the profile may have been accepted,
+    // deactivated or reassigned since the scan.
+    const fixed = await db.runTransaction(async (tx) => {
+      const ref = db.collection('users').doc(u.uid)
+      const snap = await tx.get(ref)
+      const p = snap.exists ? snap.data() : null
+      if (!p || p.projectIds === undefined) return false
+      if (isActiveMemberOf(p, p.companyId) && isExternalRole(p.role)) return false
+      tx.update(ref, { projectIds: FieldValue.delete() })
+      auditInTx(tx, db, companyId, {
+        type: AUDIT.RECONCILE_FIX, actorUid: 'operator', targetUid: u.uid,
+        before: { projectIds: currentAssignment(p.projectIds).projectIds }, after: { fix: 'F2', projectIds: [] }, source: 'operator',
+      }, now())
+      return true
+    })
+    say(fixed ? '       → fixed: assignment removed' : '       → changed meanwhile; left alone')
   }
 
   // R4 — dangling company references
@@ -123,7 +174,7 @@ async function main() {
   }
 
   say('')
-  say(findings.length === 0 ? 'No inconsistencies found.' : `${findings.length} finding(s). ${fix ? 'Fixes applied where unambiguous.' : 'Re-run with --fix to apply F1 fixes.'}`)
+  say(findings.length === 0 ? 'No inconsistencies found.' : `${findings.length} finding(s). ${fix ? 'Fixes applied where unambiguous.' : 'Re-run with --fix to apply F1 and F2 fixes.'}`)
   if (JSON_MODE) process.stdout.write(`${JSON.stringify(findings)}\n`)
 }
 

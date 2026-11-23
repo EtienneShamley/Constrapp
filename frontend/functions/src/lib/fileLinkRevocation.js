@@ -65,7 +65,10 @@ export const MARKER_ID = 'pending'
 export const stateRef = (db, companyId) => companyRef(db, companyId).collection('system').doc('fileLinkRevocation')
 export const markerRef = (db, companyId) => companyRef(db, companyId).collection(QUEUE_COLLECTION).doc(MARKER_ID)
 
-export const REASON = { DEACTIVATED: 'member.deactivated', ROLE_REDUCED: 'member.role_reduced', OPERATOR: 'operator', PERIODIC: 'periodic' }
+// `member.assignment_removed` (ADR-84): an operator took a project away from a
+// client or subcontractor. URGENT like every membership request — the sweep is
+// company-wide, exactly as for a deactivation.
+export const REASON = { DEACTIVATED: 'member.deactivated', ROLE_REDUCED: 'member.role_reduced', ASSIGNMENT_REMOVED: 'member.assignment_removed', OPERATOR: 'operator', PERIODIC: 'periodic' }
 
 // ADR-75. A marker or state written before Stage 1 carries no priority and is
 // URGENT — the only kind of request that existed then.

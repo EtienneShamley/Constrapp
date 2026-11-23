@@ -6,6 +6,8 @@ import { AUDIT, auditInTx, auditNow } from './audit.js'
 import { EmailError, renderInviteEmail } from './email.js'
 import { withCompanyLock, companyRef, invitationsCollection, membersCollection } from './companyLock.js'
 import { userRef } from './authz.js'
+import { ASSIGNMENT_PROBLEM, currentAssignment, invitationAssignment } from './validation.js'
+import { missingProjects } from './projectAssignments.js'
 import {
   INVITE_STATUS, MEMBER_STATUS, effectiveInviteStatus, isActiveMember, isActiveMemberOf, toIso,
 } from './membershipState.js'
@@ -22,6 +24,17 @@ import {
 // as a guess against the new one).
 //
 // Every function takes `deps`: { db, auth, email, now, config, log }.
+//
+// ── Project assignments (M2-A2 Stage B, ADR-84) ──────────────────────────────
+//
+// An invitation for `client` / `subcontractor` carries `projectIds`: the
+// projects that member will read. ONLY an operator script can create one —
+// the callable's schema refuses both the role and the key — and the list is
+// checked twice: when the invitation is created, and again on the STORED
+// record inside the acceptance transaction, where each project must still
+// exist in the company. Acceptance writes `users/{uid}.projectIds` in the same
+// commit as the membership; an internal-role acceptance REMOVES the field.
+// Nothing the invitee sends is ever read as an assignment.
 
 export const DELIVERY = { EMAIL: 'email', OPERATOR: 'operator' }
 
@@ -51,10 +64,20 @@ const publicInvite = (id, inv, now) => ({
 
 // ── Create ───────────────────────────────────────────────────────────────────
 
-export async function createInvitation(deps, { companyId, actor, email, role, deliveredVia = DELIVERY.EMAIL, requestId = null, source = 'callable' }) {
+export async function createInvitation(deps, { companyId, actor, email, role, projectIds, deliveredVia = DELIVERY.EMAIL, requestId = null, source = 'callable' }) {
   const { db, auth, now, config } = deps
   const nowDate = now()
   const cfg = config()
+
+  // ADR-84. Internal roles carry no assignment; an external role needs 1–30
+  // unique ids and can only come from an operator script, operator-delivered.
+  // Checked before anything is read or counted.
+  const assignment = invitationAssignment(role, projectIds)
+  if (!assignment.ok) {
+    fail(assignment.reason === ASSIGNMENT_PROBLEM.ROLE && projectIds === undefined ? CODE.INVALID_ROLE : CODE.INVALID_ASSIGNMENT,
+      { reason: assignment.reason, ...(assignment.projectId ? { projectId: assignment.projectId } : {}) })
+  }
+  if (assignment.external && (source !== 'operator' || deliveredVia !== DELIVERY.OPERATOR)) fail(CODE.INVALID_ROLE, { field: 'role' })
 
   if (deliveredVia === DELIVERY.EMAIL) {
     if (!cfg.appBaseUrl) fail(CODE.APP_URL_NOT_CONFIGURED)
@@ -82,9 +105,15 @@ export async function createInvitation(deps, { companyId, actor, email, role, de
     const pending = await tx.get(invitationsCollection(db, companyId)
       .where('email', '==', email).where('status', '==', INVITE_STATUS.PENDING))
     if (!pending.empty) fail(CODE.INVITE_PENDING, { inviteId: pending.docs[0].id })
+    if (assignment.external) {
+      const missing = await missingProjects(tx, db, companyId, assignment.projectIds)
+      if (missing.length > 0) fail(CODE.INVALID_ASSIGNMENT, { reason: ASSIGNMENT_PROBLEM.NOT_FOUND, projectIds: missing })
+    }
 
     tx.create(inviteRef, {
       email, role,
+      // Present ONLY on an external-role invitation (ADR-84).
+      ...(assignment.external ? { projectIds: assignment.projectIds } : {}),
       status: INVITE_STATUS.PENDING,
       tokenHash: hashToken(token),
       previousTokenHash: null,
@@ -102,7 +131,7 @@ export async function createInvitation(deps, { companyId, actor, email, role, de
     })
     auditInTx(tx, db, companyId, {
       type: AUDIT.INVITE_CREATED, actorUid: actor.uid, targetEmail: email, inviteId: inviteRef.id,
-      after: { role, expiresAt: expiresAt.toISOString(), deliveredVia }, requestId, source,
+      after: { role, expiresAt: expiresAt.toISOString(), deliveredVia, ...(assignment.external ? { projectIds: assignment.projectIds } : {}) }, requestId, source,
     }, nowDate)
   })
 
@@ -370,6 +399,29 @@ export async function acceptInvitation(deps, { cred, callerUid, name = '', reque
     if (isActiveMemberOf(profile, cred.companyId)) fail(CODE.ALREADY_MEMBER)
     if (isActiveMember(profile)) fail(CODE.MEMBER_OF_OTHER_COMPANY)
 
+    // ADR-84 — the assignment is decided HERE, from the stored invitation and
+    // the projects as they are now. An unknown role, an internal role carrying
+    // an assignment, an external role without a sound one, or a project that
+    // no longer exists in this company: the invitation is refused and stays
+    // pending (nothing is written). The holder is told only that the link is
+    // not valid; the reason is in the log.
+    const assignment = invitationAssignment(current.role, current.projectIds)
+    const missing = assignment.ok && assignment.external
+      ? await missingProjects(tx, db, cred.companyId, assignment.projectIds) : []
+    if (!assignment.ok || missing.length > 0) {
+      log?.warn?.('invitation refused: role or project assignment not valid', {
+        companyId: cred.companyId, inviteId: cred.inviteId, role: current.role ?? null,
+        reason: assignment.ok ? ASSIGNMENT_PROBLEM.NOT_FOUND : assignment.reason, missing,
+      })
+      fail(CODE.INVALID_INVITATION, { reason: 'assignment' })
+    }
+    // What the profile held before — possibly an assignment left by an earlier
+    // membership. It is never carried forward: an external role gets exactly
+    // the invitation's list, an internal role gets none.
+    const hadAssignment = profile !== null && profile.projectIds !== undefined
+    const staleBefore = hadAssignment ? { projectIds: currentAssignment(profile.projectIds).projectIds } : {}
+    const assignedAfter = assignment.external ? { projectIds: assignment.projectIds } : (hadAssignment ? { projectIds: [] } : {})
+
     const ts = Timestamp.fromDate(nowDate)
     const existingName = profile?.name
     const finalName = resolvedName || existingName || ''
@@ -388,6 +440,10 @@ export async function acceptInvitation(deps, { cred, callerUid, name = '', reque
       formerCompanyId: null, formerRole: null,
       deactivatedAt: null, deactivatedBy: null,
       authSyncPending: false,
+      // ADR-84: written in the SAME commit as the membership, and always
+      // explicitly — this is a merge, so an omitted key would keep whatever a
+      // previous membership left behind.
+      projectIds: assignment.external ? assignment.projectIds : FieldValue.delete(),
     }, { merge: true })
 
     // members/{uid} — history and listing; never a source of permissions.
@@ -410,8 +466,8 @@ export async function acceptInvitation(deps, { cred, callerUid, name = '', reque
 
     auditInTx(tx, db, cred.companyId, {
       type: AUDIT.INVITE_ACCEPTED, actorUid: callerUid, targetUid: callerUid, targetEmail: inv.email,
-      inviteId: cred.inviteId, before: { status: profile?.status ?? null, companyId: profile?.companyId ?? null },
-      after: { role: current.role, companyId: cred.companyId }, requestId,
+      inviteId: cred.inviteId, before: { status: profile?.status ?? null, companyId: profile?.companyId ?? null, ...staleBefore },
+      after: { role: current.role, companyId: cred.companyId, ...assignedAfter }, requestId,
     }, nowDate)
 
     return { alreadyAccepted: false, role: current.role, name: finalName }

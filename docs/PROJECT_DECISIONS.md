@@ -6837,7 +6837,7 @@ A manual edit of `budgeted` on such a line remains permitted (the existing ADR-3
 
 **Release (NOT DONE) — DEPLOYMENT.md → *M2-A2 Stage A*.** A dedicated Stage-1 ruleset, `firestore.m2a2-transitional.rules`, differs from the FINAL ruleset in the two project-side pairing lines only. It exists because the bundle in production writes projects without an entry. Order: Stage-1 Firestore Rules and Storage Rules → Hosting → directory backfill → FINAL Rules. **`firestore.transitional.rules` (ADR-63 / ADR-65 / ADR-68) must NOT be published for this release:** it relaxes four lines whose FINAL forms are live.
 
-**Stage B (NOT STARTED — required before any external onboarding).**
+**Stage B (IMPLEMENTED — NOT DEPLOYED, 23 November 2026: ADR-84).** *As written for Stage A:* **Stage B (NOT STARTED — required before any external onboarding).**
 
 - Operator-only assignment management: provisioning an external member, and setting or removing `projectIds`, with an audit event.
 - Invitation acceptance merges into `users/{uid}` and deactivation does not clear fields, so a stale `projectIds` would survive a re-invitation. Both must reset it.
@@ -6866,3 +6866,44 @@ A manual edit of `budgeted` on such a line remains permitted (the existing ADR-3
 | Existing nine projects | Unchanged | Update times and fields identical before and after — VERIFIED read-only |
 
 The test project stays in production and contributes to the Portfolio totals; do not delete or modify it without a separate authorisation. **Not covered in production:** an external-role session; an unpaired or injected write (emulator only); a Project Manager edit; TESTING.md §68 M1, M2, M4, M5 and M8.
+
+## ADR-84: M2-A2 — External Project Isolation, Stage B (operator-managed provisioning and project assignment for `client` and `subcontractor`; the assignment travels on an operator-created invitation and is written to `users/{uid}.projectIds` by the existing `acceptInvitation` transaction; deactivation and every acceptance reset it; operator-only assignment changes with an audit event and a file-link revocation request on removal; no self-service onboarding; no Rules, Hosting or new callable)
+
+**Date:** 23 November 2026 · **Status:** IMPLEMENTED — NOT DEPLOYED (branch `feature/m2-a2-external-provisioning`, uncommitted, from `main` `10807b8`). **External onboarding remains BLOCKED** until this is deployed and a production acceptance with a real external account passes (TESTING.md §69, §68 X1–X6). Deferred Control 20's live external-role acceptance is still outstanding. Emulator-proven only; nothing here is browser-verified or production-verified. Builds on ADR-83 (Stage A, LIVE).
+
+**Context.** Stage A made `users/{uid}.projectIds` the only source of a `client` / `subcontractor`'s project access and left it without a writer. It also recorded two gaps: invitation acceptance merges into `users/{uid}` and deactivation cleared no field, so an old assignment could survive a re-invitation; and removing an assignment queued no file-link revocation. A `client` or `subcontractor` could not be invited in the application at all (the callable's schema refuses both roles).
+
+**Decision.**
+
+1. **No self-service, and no new callable.** A `client` or `subcontractor` exists only because an operator ran a script; they read only the projects an operator assigned. The eight team callables keep their schemas: `createInvitation` still refuses both roles, and every schema refuses a `projectIds` key. `functions/src/lib/memberProjects.js` is reachable from the two operator scripts only (pinned by `functions/test/memberProjects.test.js`).
+2. **The assignment travels on the invitation.** An invitation for an external role carries `projectIds` — 1 to 30 unique, well-formed project ids, each an existing project **of that company**. Only `source: 'operator'` with `deliveredVia: 'operator'` may create one. An internal-role invitation carries no such field and is refused if it does.
+3. **A project "belongs to the company" by its path.** A project is `companies/{companyId}/projects/{projectId}`; the check reads that document. An id that exists only under another company is absent there, and is refused exactly like an id that exists nowhere.
+4. **Checked twice.** When the invitation is created, inside its transaction; and again on the **stored** record inside the `acceptInvitation` transaction — role and list re-validated, every project re-read. A project removed in between, an unknown role, an internal role carrying a list, or an external role without a sound one: the invitation is refused (`invalid-invitation`, `details.reason: 'assignment'`), nothing is written and it stays pending. The invitee's request is never read for an assignment.
+5. **Atomic with activation.** `users/{uid}` — `role`, `companyId`, `status` **and** `projectIds` — the consumed invitation, `members/{uid}` and the `invite.accepted` audit event commit in one transaction under the company membership lock.
+6. **Always written, never inherited.** Acceptance writes `projectIds` explicitly: the invitation's list for an external role, a field **delete** for an internal role. `deactivateMember` deletes the field in the commit that ends the membership. An assignment therefore cannot come back through a re-invitation, and an internal member never holds one. Each event records what was there (`before.projectIds`).
+7. **Operator-only assignment changes** (`setMemberProjects`): `set` (0–30), or `add` / `remove` resolved against the current list inside the transaction. The member must be an active `client` / `subcontractor` of the named company; **every** project of the resulting list must exist there. One transaction under the membership lock writes the list, one `member.projects_changed` event (complete list before and after) and — when a project was removed — an urgent file-link revocation request (`member.assignment_removed`, ADR-74) with the member's `fileLinkRevocationSeq`. A request that changes nothing writes nothing.
+8. **Operator scripts.** `scripts/provision-external-member.mjs` and `scripts/set-member-projects.mjs`: dry-run by default, `--apply` to write, `--project` always explicit, the operator's own ADC login (a key file is refused). They create no Auth account and no password. **The acceptance link is never printed:** `--no-link` discards it (a Company Admin then uses the existing *Resend*, which emails a fresh link to the invited address), or `--link-file` writes it to a new mode-0600 file outside the repository.
+9. **Reconciliation.** `reconcile-membership.mjs` reports an assignment on a profile that must not hold one — an active member who is not external (R7), a profile with no active membership (R8) — and `--fix` removes it with a `reconcile.fix` event (F2). A broken assignment on an active external member (R9) is reported only.
+
+**Why the invitation, not an account created by the operator.** Creating the Auth account in a script would mean a password or a sign-in link in an operator's terminal, and a membership that exists before the person has shown they hold the mailbox. The invitation path already proves possession of the token and of the Auth record's email, is one-time, expires, rate-limits lookups and is audited. Stage B adds one field to it.
+
+**Why not a Company Admin screen.** Assigning projects to external users in the application is a product decision (which roles may do it, how it is shown) and a new write path. The brief is operator-managed provisioning; the library is written so a later, separately approved callable could call it after its own authorisation.
+
+**A Company Admin can already Resend or Revoke any pending invitation,** including an operator-created external one. Resend emails the invited address and cannot change the role or the projects; Revoke only removes access. Neither callable was changed. Left as it is, and used as the preferred delivery route.
+
+**A defect found and corrected while building — in the new scripts, not in deployed code.** The Firestore SDK sends a failed transaction's rollback without waiting for it; a script that called `process.exit()` straight after a refusal left the membership lock held until Firestore timed the transaction out (seen as a 409 on the emulator's reset). The two new scripts run a read-only pass first and set `process.exitCode`. The four older scripts still call `process.exit(1)` and are unchanged.
+
+**Security, stated plainly.**
+
+- *Enforced by the Rules (Stage A, LIVE):* what an assignment opens. Stage B adds no Rule.
+- *Enforced by trusted code (emulator-proven, NOT deployed):* everything in this decision. The Admin SDK bypasses the Rules, so these checks are the whole control for who receives an assignment.
+- *Operator trust.* Anyone who can run the scripts with Firestore write access can assign any project of any company. The scripts validate; they do not authorise. Access to production credentials is the control.
+- *Not immediate.* Removing a project closes it in the Rules at the next request. **A download URL the member copied earlier may keep working until the queued sweep completes** — and longer if a sweep is incomplete (ADR-74 / ADR-75).
+- *Not built.* No in-app assignment screen; no notification to the member when an assignment changes; no per-document scoping inside a project; internal roles are not project-scoped; `--link-file` delivery proves nothing about the mailbox (the account is not marked email-verified).
+- *A bad assignment at acceptance shows the existing "link is not valid" wording* — no Hosting change; the reason is in the Functions log.
+
+**Deployment (NOT DONE) — DEPLOYMENT.md → *M2-A2 Stage B*.** Functions only: `acceptInvitation` and `deactivateMember` (behaviour), `resendInvitation` (the two role labels in the email). No Rules, Storage Rules, Hosting, index, secret, IAM or scheduler change; `firestore.rules` stays 236,737 bytes. The scripts must not be applied before the deploy.
+
+**Verification.** TESTING.md §69. Unit 101 files / 5,244; Rules emulator 39 files / 2,492; Functions pure 7 files / 155; Functions emulator 11 files / 354 — all PASS. Lint, build and the derived-file checks clean; the Hosting bundle is unchanged (`index-BOg2hoYg.js`).
+
+**Consequences.** `REASON` gains `member.assignment_removed`; `AUDIT` gains `member.projects_changed`; `CODE` gains `invalid-assignment` (operator paths only). An invitation whose stored role is not one of the five known roles is now refused at acceptance (none exists in production — the callable and the bootstrap script create internal roles only; not verified by a production read in this task).
