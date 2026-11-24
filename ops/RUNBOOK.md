@@ -12,8 +12,21 @@ approval first. Detailed procedures live where they always have:
 The L3 uptime check on `app.constrap.com` and the two L3 alert policies
 are CREATED and enabled (uptime alert `15559930914799323534`; Final Account
 5xx alert `9683374685335961795`); their notification channels are
-connected. **Actual alert delivery has NOT been tested** — neither alert has
-fired. The Firestore restore verification was RUN ONCE, SUCCESSFULLY (44
+connected. **Alert delivery TESTED — C1-D, CLOSED 25 November 2026
+(Lead Architect):** on 24 November 2026 UTC a temporary heartbeat policy on
+the `DC46 - Product Owner` channel opened an incident, recovered by itself
+and was deleted. The Product Owner received both the opening and the
+recovery email. Limits:
+- The billing-administrator channel was not tested in that run.
+- Exact arrival times are unknown.
+- Neither L3 alert, nor policy A or C, has fired on its real condition.
+  Policy B fired once, on an expected line, on 17 November.
+- Whether the permanent policies send a recovery email is unverified.
+- Observed timings are not service levels.
+
+Record: DEPLOYMENT.md → *L3 Stage 1* → *C1-D alert delivery acceptance
+record*. *As written 21 November 2026:* "**Actual alert delivery has NOT been
+tested** — neither alert has fired." The Firestore restore verification was RUN ONCE, SUCCESSFULLY (44
 collection groups / 211 documents and one sample hash matched; it did not
 compare every document's contents); the temporary database no longer
 exists and `(default)` remains protected. Records: DEPLOYMENT.md → *L3
@@ -141,6 +154,11 @@ curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
 
 All alerting lives inside the project it watches. If the project's billing
 is suspended or the project is damaged, assume no alert arrives.
+
+Cloud Monitoring keeps no per-recipient delivery record. Only a recipient can
+confirm that an email arrived. To repeat a delivery test, use the temporary
+heartbeat policy in DEPLOYMENT.md → *C1-D alert delivery acceptance record*
+(section 8: it needs approval, and is deleted in the same sitting).
 
 ## 7. Recording an incident, and when to escalate
 

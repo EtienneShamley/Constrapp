@@ -8147,8 +8147,11 @@ it stopped, paused or broke the production worker.
   aggregation select the live series. It does not show that an absence opens
   an incident or that policy B matches.
 - **Neither permanent failure condition was deliberately triggered in
-  production.** Policy A has never opened an incident; policy B has never
-  matched a line.
+  production.** Policy A has never opened an incident. *Corrected
+  25 November 2026 (C1-D):* policy B **has** matched once, on the predicted
+  first-pass overdue line at activation (17 November 2026; incident 19:18:06
+  – 18 November 19:22:24 UTC; §73). *As written:* "policy B has never
+  matched a line."
 - The billing administrator's receipt says nothing about billing alerts, a
   budget or the billing account; billing continuity is still unconfirmed.
 
@@ -9249,7 +9252,7 @@ or changes any document; a baseline variance appears without an approved
 baseline; a name or email appears in *Last changed*; or any other tab prints
 differently than before.
 
-## 65. L3 Stage 1 — recovery verification, availability check and Final Account failure alert (21 November 2026) — CLOSED: monitoring CREATED (VERIFIED read-only); restoration verification SUCCESSFUL (REPORTED); alert delivery NOT TESTED; not every document's contents compared
+## 65. L3 Stage 1 — recovery verification, availability check and Final Account failure alert (21 November 2026) — CLOSED: monitoring CREATED (VERIFIED read-only); restoration verification SUCCESSFUL (REPORTED); alert delivery TESTED 24 November 2026 UTC through a temporary policy on the Product Owner channel (C1-D, §73); neither L3 alert has fired on its real condition; not every document's contents compared
 
 **Status update — Stage 1 closed (recorded 21 November 2026, NZ).** Evidence and its labels are in DEPLOYMENT.md → *L3 Stage 1* → *Monitoring release record* and *Firestore recovery protection* → *Restoration verification record*. Against the operator checklists below (left unticked as written):
 
@@ -9264,7 +9267,7 @@ differently than before.
 | V5 — cleanup | Temporary database `restore-verify-20261120-2329` removed; listing shows only `(default)` | REPORTED; listing VERIFIED 21 November 2026. Deletion time and mechanism not independently established |
 | V2, V6 and the IAM / TTL parts of V3 | Not supplied | NOT RECORDED |
 
-**Still open:** actual delivery of an alert notification has NOT been tested. The restoration check compared counts and one document hash; it did NOT compare every document's contents.
+**Updated 25 November 2026 (C1-D, §73):** delivery of an opened and a resolved alert notification through the Product Owner channel was TESTED with a temporary heartbeat policy; receipt was REPORTED by the Product Owner, and natural recovery was observed in the cloud. The availability policy file was aligned with the policy as created (check-id filter, `resource.label.*` grouping). Neither L3 alert has fired on its real condition. *As written:* **Still open:** actual delivery of an alert notification has NOT been tested. The restoration check compared counts and one document hash; it did NOT compare every document's contents.
 
 **What this stage is.** Operational files and documentation only
 (DEPLOYMENT.md → *L3 Stage 1*). No application code, Rules, Functions or
@@ -10183,3 +10186,138 @@ midnight; a QS or external session on the programme; "by another user"
 (L2); a stale quick action or cancel through the UI; offline capture;
 §41 check 3 and §43 checks for the Stage-1 / failure paths (release-stage or
 DevTools-blocking scenarios).
+
+## 73. C1-D — Monitoring and alert delivery acceptance (25 November 2026 NZDT; 24 November 2026 21:56–22:36 UTC) — **CLOSED** (Lead Architect, 25 November 2026 — REPORTED): inventory and parity VERIFIED; temporary heartbeat alert delivered to the Product Owner channel and recovered naturally; evidence limitations recorded
+
+**Architect decision (25 November 2026 — REPORTED).** GO — **C1-D is CLOSED** and integration is authorised. D1–D7 accepted; the Product Owner's opening and recovery notifications confirmed; natural incident recovery verified; the repository uptime-policy correction and the strengthened configuration test approved; all temporary resources removed and the permanent production policies unchanged. **Evidence limitations (stand after closure):** the billing-administrator channel was not tested in this run; exact email arrival times are unknown; not every permanent policy has fired on its intended condition (only policy B, once); the permanent policies' recovery-notification behaviour is unverified; receipt of policy B's 17 November email is unverified; observed timings are not service levels. **Monitoring requirements retained for operational hardening and customer readiness:** a `transferBoqToBudget` failure alert; callable errors without a 5xx; membership-reconciliation monitoring; backup monitoring; billing-outage monitoring; independent notification paths. **Next milestone: L3 Stage 2 E1–E10 remaining acceptance.**
+
+*Heading as written at the run:* … RUN: inventory and parity VERIFIED; temporary heartbeat alert delivered and recovered naturally; awaiting architect review
+
+**Scope.** The C1-D row of the tracker (C4): a production inventory of the
+alerting, repository parity, and one end-to-end alert-delivery test using a
+synthetic signal approved by the Lead Architect. It also gathers existing
+evidence. Read-only except for the approved creation and deletion of one
+temporary alert policy. No application code, deploy, Rules, Functions,
+Scheduler, channel, account or business-data change. Context: the C1-C
+closeout is integrated (`main` `caf6ecf`, VERIFIED in Git); Azure `main`
+GREEN is REPORTED by the Product Owner. Records: DEPLOYMENT.md → *L3 Stage 1*
+→ *C1-D alert delivery acceptance record* and *Operational incident log*;
+DEPLOYMENT.md → *DC46-C monitoring readiness* → *Policy B incident*; tracker B9.
+
+**Checklist.**
+
+| # | Check | Result | Evidence |
+|---|---|---|---|
+| D1 | Policies, channels, uptime check and log metric exist and are enabled | **PASS.** 5 policies, all enabled and none edited since creation; 2 email channels, enabled and unmodified since 16 Nov; 1 uptime check (all 6 locations passing); 1 log metric; 0 open incidents | Cloud, 24 Nov 21:56–22:05 UTC |
+| D2 | Live configuration equals the repository | **PASS after correction.** DC46 A, B, C, the metric and the uptime check are identical. The L3 availability policy was created with a check-id filter and `resource.label.*` grouping; these were verified to mean the same (below), and the file and its test were aligned with production. The Final Account policy omits the default `thresholdValue` 0 | Cloud; audit log; `monitoringPolicies.test.js` |
+| D3 | The synthetic signal opens an incident on a policy using a production channel | **PASS.** Heartbeat at 22:24:03 UTC; incident `0.ofehms6qj26w` opened at 22:29:20 | Cloud |
+| D4 | Notification sent and receipt confirmed | **PASS (Product Owner channel).** The opening email was received by 11:32 NZDT, showing the test policy, start 22:29 UTC, threshold 0 and value 1 | **Reported** by the Product Owner; exact arrival times and the incident id not visible |
+| D5 | The condition clears and the incident closes | **PASS — natural recovery.** At 22:33:35 the condition "returned to normal with a value of 0.000" and the incident closed; the resolved email was received by 11:34 NZDT | Cloud; **Reported** |
+| D6 | Temporary policy removed, nothing else changed | **PASS.** Deleted at 22:34:58, 26 minutes after creation; post-test checks below | Cloud |
+| D7 | Documentation and tracker | Done in this revision | — |
+
+**The synthetic test.** One temporary policy, `TEST - C1-D alert delivery
+check - delete after use` (`10264183102153085239`). It is a threshold above
+0 on the planning-heartbeat metric `dc46_reconciliation_plan_complete`, with
+a 5-minute `ALIGN_DELTA` window, a duration of 60 s,
+`EVALUATION_MISSING_DATA_INACTIVE`, OPENED and CLOSED notifications, no
+renotification, and a 30-minute auto-close. It went to the Product Owner
+channel only: the billing administrator was not available, as the approval
+required. It reads an existing metric and calls nothing. The full body and
+the timeline are in the deployment record.
+
+| UTC, 24 Nov | Event | Class |
+|---|---|---|
+| 22:08:41 | Policy created (audit) | Cloud |
+| 22:24:03.05 | Heartbeat log line; metric point 22:23:51–22:24:51 = 1 | Cloud |
+| 22:29:20 | Incident opened | Cloud |
+| by 22:32 | Opening email received | Reported |
+| 22:33:35 | Natural recovery; incident closed | Cloud |
+| by 22:34 | Recovery email received | Reported |
+| 22:34:58 | Policy deleted (audit) | Cloud |
+
+Observed — **not service levels**:
+- Heartbeat to incident: 5 min 17 s.
+- Incident duration: 4 min 15 s; the Product Owner's email shows 4 min 14 s.
+- Open to email: no more than about 4 min.
+- Recovery to email: no more than about 1.5 min.
+
+**Post-test integrity (Cloud, 22:35 UTC):**
+- The five original policies are byte-identical to the pre-test read and
+  match their files.
+- No TEST policy remains.
+- Both channels are unchanged.
+- Three incidents in all, none open; history is kept.
+- The audit log since 22:00 holds only the create and the delete.
+- No error-level line from any service.
+- The worker `-00003-ceg` is at 100 % with 59/59 requests successful; the
+  Scheduler job is `ENABLED`.
+- The Firestore writes at 22:25–22:26 match the worker's periodic sweep (the
+  same pattern as 20:22 / 20:23). The test made no Firestore call. No
+  business data, account or Apex Builders record was touched.
+
+**Evidence gathered, not repeated:**
+- **16 November** — a delivery test on both channels (receipt reported, no
+  times recorded).
+- **17–18 November** — **policy B's real incident.** The predicted
+  first-pass `reconciliation overdue` line at activation (19:17:02) opened
+  `0.of4o1z1d3uvz` at 19:18:06, which auto-closed on 18 November at
+  19:22:24. This corrects §54, DEPLOYMENT.md, `ops/monitoring/README.md`,
+  ADR-75 and the handover, which said policy B had never matched. Its email
+  receipt was not recorded. A mailbox search is optional and was not
+  reported.
+- **30-day health** — zero 5xx on all 11 services. The only non-2xx were
+  401 / 400 / 403 / 404 probes and refusals. One single-location uptime
+  failure (24 November 11:11:41 UTC) stayed below the two-location threshold
+  by design.
+
+**The availability policy's filter as created (D2).** Both forms were read
+read-only over the check's whole history (1,157 five-minute rounds), and
+both return one identical series. `uptime_url` carries only `project_id` and
+`host`, and the check id is the only one on the host. The production form is
+narrower and has the intended meaning, so it was adopted. The test now pins
+the exact id, and requires that the id derives from the committed check's
+display name. Each of three deliberate mutations makes it fail: the old
+host-only filter, the old grouping, and a foreign id. The live policy was
+not changed.
+
+**Coverage.** Implemented and deployed:
+- worker policies A, B and C;
+- the uptime check and its policy;
+- the `approveFinalAccount` 5xx policy.
+
+Verified alert delivery: the Product Owner channel (C1-D, opened and
+resolved); the billing-administrator channel only as reported on
+16 November.
+
+**Missing — retained for operational hardening and customer readiness;
+no policy added:**
+- a `transferBoqToBudget` failure alert;
+- callable errors that do not return a 5xx (handler errors returned as 4xx
+  or 200, and error lines in the eight team callables);
+- monitoring of membership reconciliation (an operator script, not
+  scheduled);
+- backup monitoring (manual weekly check only);
+- billing-outage monitoring, and alerting independent of this project;
+- independent notification paths (two email recipients only, no second
+  medium).
+
+Still never fired on a real condition: policy A, policy C, the uptime
+policy, and the Final Account policy. Whether the permanent metric policies
+send a resolved email is not established: their `notificationPrompts` is
+unset, and log-based policy B notifies on opening only.
+
+**Automated checks (this revision):**
+- `npx vitest run --config vitest.config.js tests/unit/monitoringPolicies.test.js`
+  — **1 file / 24 tests pass**.
+- The three negative mutations each fail one test.
+- ESLint is clean on the test file.
+- `git diff --check` is clean.
+
+No application code changed, so the other suites were not re-run.
+
+**Not covered:**
+- the billing-administrator channel at this run;
+- exact email arrival times;
+- any policy firing on its real failure condition;
+- behaviour during a billing suspension.
