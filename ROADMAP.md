@@ -314,13 +314,28 @@ of the work still to do:
   → *C*; detail stays in TESTING.md):
   - **C1-A — L2-B Final Account:** positive approval, revision and export
     path PASSED in production on 22 November 2026 (TESTING.md §62b); the
-    forecast-readiness correction is deployed and retested. **Remaining:** the
+    forecast-readiness correction is deployed and retested. **CLOSED (REPORTED
+    by the Lead Architect, 25 November 2026).** Remaining acceptance run on 24
+    November 2026: F5, F6, F15, Project Manager approval, the native print / PDF
+    part of F14 and retest R5 PASSED in production on a dedicated synthetic
+    USD project in the isolated test company (retained), with figures equal
+    to independent expectations to the cent; F16 PARTLY — no figure reaches a
+    signed-out, deactivated or non-financial account, but the restricted
+    notice itself was not observed in production; F16 was accepted on that
+    evidence together with the unit test of the notice, and its browser check
+    is carried forward to the external-role session that L4 T14 and §61 W4
+    need (TESTING.md §62c; tracker B6). R5 rests on stored-state evidence and
+    client-side and cash figures were exercised at zero only. Self-approval
+    remains a documented policy gap. The Project Manager and QS test identities stay active for the
+    remaining internal-role tests. *As written before:* **Remaining:** the
     role checks F5, F6, F15, F16 and Project Manager approval; the native
     print dialog and a PDF file (F14); retest R5. Active Project Manager and
     QS test identities now exist in the isolated test company (C1-B, 24
     November 2026) and can be reused, subject to the architect's decision.
-  - **C1-B — L2-C Portfolio:** **all checks run — awaiting the architect's
-    closure decision (24 November 2026).** P19–P20 PASSED for both external
+  - **C1-B — L2-C Portfolio:** **CLOSED (REPORTED by the Lead Architect, 24
+    November 2026; closeout merged as `c236bd9`, merge `2561344`; Azure
+    `main` CI green — REPORTED).** *As written before closure:* all checks
+    run — awaiting the architect's closure decision (24 November 2026). P19–P20 PASSED for both external
     roles (payloads not decoded); read-only production run PASSED, parity on
     five rows to the cent ACCEPTED by the architect, M1 and M4 measured;
     **P7, P9 and P18 PASSED in production** on two retained synthetic NZD
@@ -333,6 +348,9 @@ of the work still to do:
     (TESTING.md §42, §64).
   - **C1-D — Monitoring:** a test of alert notification delivery (TESTING.md
     §65; no alert has fired on a real condition).
+  - **Next milestone (Lead Architect, 25 November 2026):** L4 remaining
+    acceptance (T9, T14, the Quant step of T16 — §67) and the M2-A2 Stage A
+    internal-role regression (§68).
   - **Also open:** L3 Stage 2 E1–E10 (§66); L4 T9, T14 and the Quant step of
     T16 (§67); M2-A2 Stage A internal regression M1, M2, M4, M5, M7, M8 (§68);
     L2-B Stage A smoke checks W2–W4 (§61); Product Owner confirmation of the
@@ -519,6 +537,8 @@ original invoice due date).
 
 **8. Final Account and Commercial Reporting**
 Reconcile approved budget, variations, and actual cost into final project margin; commercial reporting on margin, cost-to-complete, cash flow, and final account (not a generic export builder).
+
+*Status, 24 November 2026:* the production acceptance of L2-B has since been run (22 and 24 November — *C1-A* under *Approved development order (post-L4)* above; TESTING.md §62–§62c) and **C1-A was CLOSED by the Lead Architect on 25 November 2026 (REPORTED)**. The paragraph below keeps the wording of its date.
 
 **L2-B Final Account — DEPLOYED — PRODUCTION ACCEPTANCE PENDING (ADR-77; implemented 19 November 2026; REPORTED by the Product Owner and the Lead Architect, 20 November 2026: Firestore Rules, the `approveFinalAccount` callable and Hosting deployed; Azure CI green on `main` `c4b93e5`).** Commercial → Final Account: a readiness checklist over the live records, a draft revision built from the server's records, approval by a Company Admin or Project Manager through the trusted `approveFinalAccount` callable (which recomputes every figure and stores its own), an immutable approved revision with approver, time and source-read time, revision history with supersession, a live comparison that names every difference without recalculating the revision, and CSV / print for approved revisions only. Internal approval — never a client agreement, certificate or proof of payment. Not built: client signature or certificate, client retention, subcontract final accounts, creator ≠ approver segregation, register locking after approval.
 

@@ -6,7 +6,45 @@ history. It is an index and a checkpoint, **not** a second copy of the
 documentation: where this file and a source document disagree, the source
 document wins and this file must be corrected.
 
-**Last updated:** 24 November 2026 (UTC), C1-B Portfolio acceptance revision.
+**Last updated:** 25 November 2026, C1-A closeout revision (acceptance run recorded 24 November 2026 UTC).
+**Git checkpoint:** `main` at `2561344` (*Merge C1-B Portfolio acceptance
+closeout*; documentation commit `c236bd9`), equal to `origin/main` (fetched 24
+November 2026 — VERIFIED). This revision was prepared on the uncommitted
+branch `docs/c1a-final-account-acceptance` (documentation only).
+**C1-B — L2-C Portfolio: CLOSED** and Azure `main` CI GREEN (both REPORTED by
+the Lead Architect, 24 November 2026).
+**C1-A — L2-B Final Account: CLOSED (Lead Architect decision, 25 November
+2026 — REPORTED).** The remaining production acceptance was run on 24
+November 2026 (10:21–10:53 UTC). In the isolated company `constrap-acceptance-test`, on one
+dedicated synthetic project that is retained (Z `5hmVvUCoOIEPrzdeowYK`, *TEST
+USD-1 — Final Account acceptance*, USD): **F5, F6, F15, Project Manager
+approval, the native print / PDF part of F14 and retest R5 PASSED**;
+independent `Decimal` expectations equal the stored approved revision, the
+screen, the Reports tab, the Portfolio, the CSV and the PDF to the cent.
+Approval is reachable only through the `approveFinalAccount` callable for all
+three internal roles (24 direct-write shapes denied by the deployed Rules; a
+QS call refused `not-approver`); a repeated approval is answered without a
+second write. **F16 is PARTLY evidenced:** no figure reaches a signed-out,
+deactivated or non-financial account (production), but the *Final Account is
+restricted* notice for a signed-in non-financial account was not observed in
+production (unit test only — both external test accounts stay disabled).
+**The architect accepted F16 on that combined evidence; the notice is NOT
+recorded as observed in production, and its browser check is carried forward
+to the external-role session that L4 T14 and §61 W4 need.** R5 rests on
+stored-state evidence, and client-side and cash figures were exercised at
+zero only — both limitations stand.
+Revision 1 withdrawn, revision 2 approved by the Project Manager on a draft
+the QS prepared. Apex Builders, Projects A–C and fixtures X / Y unchanged; the
+TEST Project Manager and QS remain **active** for the remaining internal-role
+tests. Fixture Z, its supplier contact, the two counters and the approved
+revision are retained. New cosmetic findings, tracker D3 #22–#26, are in the
+deferred UX and reporting correction bundle. Self-approval remains a
+documented policy gap for a future approval-segregation implementation.
+**Next milestone: L4 remaining acceptance and M2-A2 Stage A internal-role
+regression.** Record:
+SECURITY_DATA_TEST_TRACKER.md → B6; TESTING.md §62c. Rows further down that
+call Final Account acceptance PENDING pre-date this revision.
+*As written for the previous revision (C1-B):* **Last updated:** 24 November 2026 (UTC), C1-B Portfolio acceptance revision.
 **Git checkpoint:** `main` at `62e824a` (*Merge operator tooling security
 hardening*; feature commit `bc64487`), equal to `origin/main` (fetched 24
 November 2026 — VERIFIED). This revision was prepared on the uncommitted
@@ -632,6 +670,32 @@ and deployed, visual and export acceptance REPORTED passed; the GANTT core
 completion read-only assessment (production state of GANTT 1A1 / 1A2 / 1B
 and PULSE 1C VERIFIED) and, after the Lead Architect's GO (ADR-79), its
 implementation on `feature/gantt-core-completion` (uncommitted).
+
+**Next, from 25 November 2026 (C1-A closeout). Each step needs explicit authorisation.**
+
+*Done, 24–25 November 2026:* C1-B CLOSED and merged (`2561344`); C1-A
+remaining acceptance run and **C1-A CLOSED** (Lead Architect, 25 November).
+
+1. **Git integration of `docs/c1a-final-account-acceptance`** (documentation
+   only; authorised by the closure decision, not yet committed).
+2. **Next milestone — L4 remaining acceptance and M2-A2 Stage A
+   internal-role regression** (Lead Architect, 25 November 2026): L4 T9, T14
+   and the Quant step of T16 (TESTING.md §67); Stage A M3–M5, M7, M8 (§68).
+   T14 needs an active external session (operator re-provisioning + Product
+   Owner sign-in); that same session carries the **F16 restricted-notice
+   check** from C1-A and the §61 W4 check. The retained TEST Company Admin,
+   Project Manager and QS serve the internal items (tracker C4 → *What the
+   retained test identities can serve*).
+3. **Other remaining C1 items** (tracker C4): C1-C GANTT baseline scenarios;
+   C1-D alert-delivery test; L3 Stage 2 E1–E10; §61 W2–W3.
+4. **Deferred UX and reporting correction bundle** (one Hosting-only change
+   when scheduled): D3 #9, #19, #21 and, from C1-A, #22–#26; #20 needs a
+   reproduction first.
+5. **Policy gap, not a defect:** creator ≠ approver segregation on Final
+   Account is not implemented (self-approval is permitted and labelled) — for
+   a future approval-segregation implementation.
+
+*As written for the C1-B revision (earlier on 24 November):*
 
 **Next, from 24 November 2026 (C1-B revision). Each step needs explicit authorisation.**
 
