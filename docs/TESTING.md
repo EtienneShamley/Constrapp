@@ -7115,6 +7115,8 @@ and the Stage-1 ruleset published in the test project for check 3.
 
 ## 42. Constrapp GANTT™ — Programme 1B, approved schedule baselines & progress variance (ADR-66) — LIVE in production (confirmed by the Product Owner)
 
+**Production acceptance (25 November 2026 NZDT) — see §72; functional acceptance CLOSED (Lead Architect, 25 November 2026 — REPORTED); the dashed outlines, offline capture and Day / Month visuals carried forward.** Checks 1 and 2 PASSED in production on the retained CAD fixture `V2Vj8jds7RUkBAmZ1jzm`, with every variance equal to an independent calculation; check 3: the invalid-programme refusal and the Rules refusals PASSED, the QS session and the offline capture were not run (Rules evidence: emulator and §71 M8). One UX finding: D3 #30. The text below is kept as written.
+
 **Automated:** unit **68 files / 3,861 tests** (new `ganttBaseline.test.js`
 and `programmeBaselineActions.test.js`; `timelineGantt` and `ganttSurface`
 extended — see §0b); rules **29 files / 1,935 tests** (new
@@ -9075,6 +9077,8 @@ A load that is slow for a real company is a design-review trigger (ADR-78 →
 
 ## 64. GANTT™ core completion — attention filter, programme export / print, last change (ADR-79, 20 November 2026) — LIVE since 20 November 2026 08:52 UTC; Product Owner accepted (REPORTED; no per-step record held here); automated tests PASS
 
+**Per-step production record (25 November 2026 NZDT) — see §72; functional acceptance CLOSED (Lead Architect, 25 November 2026 — REPORTED); R1–R13, Safari / Firefox, G3–G6, G9–G11 carried forward, not passed.** G1, G2, G7, G8, G8a, C1, C3–C5, C9 and L1 PASSED on the CAD fixture, L7 in part (same account in two tabs — refusal, *Reload latest* and the reloaded *Last changed* time PASSED; the "by another user" wording not observable); R1–R13, G3–G6, G9–G11, C2, C6–C8, L2–L6, A1–A3 not run in this record (A1–A3 rest on the emulator and §71 M8). The text below is kept as written.
+
 **Status update (21 November 2026, NZ) — LIVE and Product Owner accepted.** Merged to `main` as `9ce433d` (*Merge GANTT core completion*; feature commit `8e60eb7`) — VERIFIED in Git. Released Hosting-only on 20 November 2026 08:52 UTC: the live bundle `index-Cz4wMhcy.js` is SHA-256-identical to a clean build of `main` `9ce433d` (VERIFIED read-only, 21 November 2026). The three additions — the Lead Architect's G1, G2 and G3 — are Product Owner accepted (REPORTED by the Lead Architect, 21 November 2026; no per-step acceptance record is held here). Certain baseline scenarios were not exercised in the browser and remain a separate product acceptance check. The steps below are kept as written; none is ticked here because no per-step result was supplied.
 
 **What was run (20 November 2026, branch `feature/gantt-core-completion`,
@@ -9944,3 +9948,238 @@ fixture; replay of a deactivated account's old token (only the session
 sign-out was observed); any browser other than Chrome on macOS. Budget
 approvals, BOQ edits and forecast saves are client-SDK writes and leave no
 `auditEvents` entry — the record itself carries the actor and time.
+
+## 72. C1-C — GANTT production acceptance (25 November 2026 NZDT; 24 November 2026 20:30–21:16 UTC) — **functional acceptance CLOSED** (Lead Architect, 25 November 2026 — REPORTED); presentation, browser and resilience checks carried forward, not passed
+
+**Architect decision (25 November 2026 — REPORTED).** GO — **C1-C functional
+acceptance is CLOSED** and Git integration is authorised. Scheduling,
+dependencies, baseline management, revision protection, variance calculations
+and downstream consistency are accepted; the existing role evidence (§71 M8
+and the Rules emulator) is accepted and no test account is to be reactivated.
+**Carried forward — tracked, NOT passed:** native print / PDF R1–R13; Safari
+and Firefox; Day / Month chart visuals; the dashed baseline outlines; the
+individual attention-filter checks (G3–G6, G9–G10); overnight G11; offline
+capture; the unexecuted stale quick-action and stale cancellation scenarios.
+**Triage:** D3 #30 and #31 are P3 deferred UX corrections. **Deferred Control
+23** (valid-shaped impossible dates accepted by the Rules) is retained as a
+**data-integrity hardening requirement before customer readiness** (tracker
+D1 R-7). The unintended invalid-date write and its correction (below) remain
+part of this record. **Final fixture state VERIFIED (read-only, after the
+decision):** all 86 date values on the 11 activities and 3 baseline snapshots
+are real calendar dates, every planned finish is on or after its start, T08 is
+9–16 December 2026 at revision 4, and no activity was written after 21:04:37
+UTC. No further production mutation was made. **Rule for future negative
+production probes:** verify the expected enforcement mechanism first (the
+Rules text, SECURITY.md → *Deferred Controls*, and the existing Rules test)
+and send only probes whose refusal is established. **Browser isolation:** the
+deviation is recorded in tracker section A; required origins —
+`app.constrap.com` the Product Owner's personal session only (never replaced
+for a test), `constrapp-69b5d.web.app` the TEST Company Admin,
+`constrapp-69b5d.firebaseapp.com` every other test identity. **Next
+milestone: C1-D — monitoring and alert delivery.**
+
+*Heading as written before the decision:* … RUN: scheduling, dependencies, baselines, variance, revision guard and downstream consistency PASSED in production on a new retained CAD fixture; independent calculations equal on every surface; print, QS / external sessions and other browsers NOT RUN — awaiting architect review
+
+**Scope.** The outstanding GANTT acceptance: §40–§42 (GANTT 1A1, 1A2, 1B), the
+programme parts of §43 (PULSE 1C) and §64 (ADR-79), which had no per-step
+production record (tracker C4 row C1-C). Run by the engineer as the TEST
+Company Admin (`oOANhA…`) in the isolated company `constrap-acceptance-test`
+— on `app.constrap.com`, where the Product Owner replaced the personal session
+with the TEST admin (a browser-isolation deviation; see the decision above);
+nothing was done in Apex Builders. Documentation only on
+`docs/c1c-gantt-acceptance` (uncommitted); no application code, Rules,
+Functions, configuration or deployment changed. Evidence classes as in
+[SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md); summary in
+tracker **B8**.
+
+**Pre-flight (read-only, 20:30–20:40 UTC).** `main` `8b8c3e5` clean and equal
+to `origin/main` (VERIFIED in Git; the L4 / Stage A closeout is integrated —
+merge `8b8c3e5`, documentation commit `0062cb7`; Azure `main` GREEN is REPORTED
+by the Product Owner). Deployed Firestore ruleset `67b6425a…` (236,737 bytes)
+and Storage ruleset `2f3a4788…` (10,323 bytes) byte-identical to `main`. The
+live Hosting release (23 November 2026 02:43 UTC) serves `index-BOg2hoYg.js`
+and `index-CAs65qiC.css`, **SHA-256-identical to a clean `npm run build` of
+`main` `8b8c3e5`** (PROD-VERIFIED); no GANTT source file has changed since
+`9ce433d` (ADR-79). So GANTT 1A1, 1A2, 1B, PULSE 1C and ADR-79 are deployed as
+merged. D3 #28 is recorded (tracker B7, §71). No unresolved server-side
+security defect was found. Baseline snapshot: Apex 258 documents; test company
+148 documents, 7 projects and 7 directory entries; PM, QS, `subcontractor` and
+`client` Auth accounts disabled, TEST Company Admin active.
+
+**Scheduling semantics used (from the code and ADR-29 / 65 / 66 — nothing
+assumed).** Calendar days only (no working calendar, weekends or holidays);
+the planned finish is **inclusive** — duration = finish − start + 1; a
+milestone has duration 0 and finish = start. Dependencies are **finish-to-start
+only**, lag an integer 0–365 days: earliest start = predecessor finish + 1 +
+lag, or milestone date + lag for a milestone predecessor. A conflict is
+*start < earliest*; **nothing is rescheduled** (no automatic dependency-driven
+scheduling, no critical path, no resource levelling). Overdue = open and
+planned finish before today (viewer's local day); blocked = not started,
+planned start today or earlier, and a predecessor not completed or unresolved.
+Baseline variance = current − baseline (start, finish), completion = actual
+finish − baseline finish; positive = later. **Progress variance is not
+implemented** (the snapshot stores `percentComplete`; no surface compares it)
+— a roadmap item, not a failure.
+
+**Fixture (new, RETAINED).** *TEST CAD-1 — C1-C GANTT programme acceptance*,
+`V2Vj8jds7RUkBAmZ1jzm`, CAD (a currency no other fixture uses, so it forms its
+own Portfolio group at CAD 0.00), created through *Projects → Add New Project*
+at 20:54:36 UTC with its directory entry in the same commit. No financial
+record. Final programme (11 activities, all written through the GANTT dialogs
+except where stated):
+
+| Key | Activity | Planned | Status at close | Predecessor | Rev |
+|---|---|---|---|---|---|
+| T01 | Site establishment | 16–20 Nov | Completed, actual 16–22 Nov | — | 2 |
+| T02 | Excavation | 23–27 Nov | In progress 40% | T01 +0 | 1 |
+| T03 | Footings | 30 Nov–4 Dec | Not started | T02 +2 | 1 |
+| M01 | Foundations complete (milestone) | 2 Dec (was 5 Dec) | Not started | T03 +0 (acknowledged conflict) | 2 |
+| T04 | Ground slab | 5–11 Dec | Not started | M01 +0 | 2 |
+| T05 | Survey set-out | 18–24 Nov | In progress 85% (overdue) | — | 3 |
+| T06 | Services trenching | 25–26 Nov | **Cancelled** | T02 +0 | 2 |
+| T07 | Temporary hoarding | 7–8 Dec | **Cancelled** | — | 2 |
+| T08 | Scaffold erection | 9–16 Dec (was 9–10 Dec) | Not started | T07 +0 (now *review*) | 4 |
+| T09 | Roof sheeting | 14–18 Dec | Not started (added after Baseline A) | — | 1 |
+| T10 | Handover | 21–22 Dec | Not started (added after Baseline B capture) | — | 1 |
+
+Baselines: **Baseline 1 — C1C Baseline A** `h09hcFrJCpDwgvsZMn6k` (approved,
+9 entries, *Original*); **Baseline 2 — C1C Baseline B** `0fE0x3cgfKowu0vPfUhp`
+(approved, 10 entries incl. T07 as cancelled history, *Active*); **C1C
+Baseline C (concurrency draft)** `OKcMBtOz24ddnXHUwHMe` (withdrawn, 11
+entries). Keep all three.
+
+**Independent expectations.** A separate Python standard-library model
+(`datetime.date` arithmetic only; no application code), fed first with the
+planned programme and then with the records read back through the Firestore
+REST API, produced every expected duration, earliest start, conflict, blocked,
+overdue, due-soon, variance, summary count and envelope below **before** each
+UI surface was read. The UI, PULSE, the Dashboard and the CSV were then each
+compared with those figures — never one surface with another as the only
+evidence.
+
+**Results — scheduling and dependencies (§40, §41).**
+
+| # | Check | Expected (independent) | Observed | Result |
+|---|---|---|---|---|
+| S1 | Create activities (normal, completed with actuals, in progress, milestone) | Stored exactly as entered; revision 1; exact 24-key shape; author `oOANhA…` | REST read: all nine initial records equal the plan field for field | **PASS** (PROD-VERIFIED) |
+| S2 | Duration | T01 5, T03 5 (30 Nov–4 Dec, across a month end), T04 7, T05 7, T06/T07/T08 2; M01 milestone; later T08 8, T09 5, T10 2 | Editor *Duration: n days*, List and CSV identical | **PASS** |
+| S3 | Earliest start | T02 21/11 (20 + 1 + 0); T03 30/11 (27 + 1 + **2**); M01 05/12; T04 05/12 (milestone + 0); T06 28/11; T08 09/12 | Editor *Earliest permitted start* identical in each case | **PASS** |
+| S4 | Boundary cases | T03 starting ON its earliest date; T04 starting ON the milestone day — no conflict | No conflict panel, no acknowledgement box | **PASS** |
+| S5 | Conflict and acknowledgement | T06 starts 25/11 < 28/11 | *Conflict: earliest permitted start 28/11/2026, planned start 25/11/2026*; Save without the tick refused (*Tick the acknowledgement to save it anyway*); changing the start un-ticked it; saved after ticking. Likewise M01 at 02/12 < 05/12 | **PASS** |
+| S6 | Cycle prevention (UI) | T01's successors, direct and transitive: T02, T03, T06, M01, T04 | Exactly those five listed as *this would create a dependency cycle* and disabled; T01 itself not offered; T05, T07, T08 offered | **PASS** (client-side; Rules cannot traverse the graph — Deferred Control 41) |
+| S7 | Invalid dependency / record — server | Refused | SDK writes from the TEST admin's own session (App Check initialised): blind write with unchanged revision, revision skip, finish before start, type `SS`, lag −1, lag 366, self-predecessor, non-existent predecessor, progress 101, not-started at 50%, delete — **11 × `permission-denied`**, record unchanged | **PASS** (PROD-VERIFIED server-side) |
+| S8 | Attention, initial | Needs 2, Overdue 1 (T05, 1 day), Blocked 1 (T06), Conflict 1 (T06), Review 0; *Later than baseline* not evaluated | Identical; *Later than baseline · not evaluated* disabled with the reason (G8) | **PASS** |
+| S9 | Summary cards | Overdue 1, Due next 14 days 5, In progress 2, Milestones remaining 1 | Identical | **PASS** |
+| S10 | Progress update | T05 80 → 85 stored at revision 3 | REST read | **PASS** |
+| S11 | Cancellation | Blank reason refused; with a reason T07, T06 cancelled; T08 then *Review — Predecessor cancelled* | *Enter a reason for cancelling this activity*; cancellation stored; T08 flagged *Review* | **PASS** |
+| S12 | Persistence after reload | A second tab, the Dashboard and the REST API show the saved values | Identical after fresh page loads | **PASS** |
+| S13 | Last changed (L1) | T01 saved 20:55:08 UTC | *Last changed 25 Nov 2026, 09:55 am NZDT by you* | **PASS** |
+
+**Results — revision and concurrency (§41 check 2, §64 L7).** Same TEST admin
+in two tabs (no further account was activated). Tab A opened T05 (revision 1);
+tab B saved a note → revision 2. Tab A then saved 85%: **refused** — *Someone
+else changed this activity after you opened it. Nothing was saved — your edits
+are still here*; the typed 85% remained; the server `updateTime` was
+unchanged. **Reload latest** loaded tab B's note; saving again wrote
+**revision 3 holding both changes** (tab B's note and tab A's 85%) — no
+silent overwrite. Server enforcement: a blind write that does not carry the
+next revision is refused by the Rules (S7). **Not reproduced:** a stale *quick
+action* and a stale cancel through the UI (the list re-renders from the live
+listener, so a stale copy could not be held without a fetch hold); the
+"by another user" wording (one account). Both rest on §41 automated tests and
+the Rules evidence above.
+
+**Results — baselines and variance (§42).**
+
+| # | Check | Expected (independent) | Observed | Result |
+|---|---|---|---|---|
+| B1 | Capture | Preview 9 activities, 0 cancelled history, 1 milestone; header `draft` rev 1 + one snapshot in the same commit | Preview identical; header and snapshot share the commit time; the 9 snapshot entries equal the stored programme, each with exactly the ten keys | **PASS** (PROD-VERIFIED) |
+| B2 | Review and self-approval | No drift; self-approval note | *No activity has changed since this baseline was captured*; *You captured this draft. Approving it yourself is permitted…*; approved → *Baseline 1 … Active · Original*, *captured and approved by the same person* | **PASS** |
+| B3 | Approval stamps; snapshot immutable | Header `approved`, revision 2, `approvedBy` = caller; snapshot unchanged | REST: as expected; snapshot SHA-256 identical before and after approval and to the end of the run | **PASS** |
+| B4 | Variance after edits (T08 finish +6; M01 −3 with acknowledged conflict; T01 actual finish 22 Nov; T09 added; T07 cancelled) | Captured 9, added 1, cancelled since 1, compared 8: earlier 1, unchanged 6, later 1; completed late 1 of 1; largest finish movement T08 +6; envelope 11/12 → 18/12 **+7** | Panel identical; List *vs baseline*: T01 0 d *Finished 2 days after the baseline finish*, M01 −3 d, T08 +6 d, T07 *Cancelled*, T09 *Added* | **PASS** |
+| B5 | Early / on-time / delayed | M01 earlier (−3), six unchanged, T08 later (+6) | As expected, milestone shown as *Milestone* | **PASS** |
+| B6 | Attention with a baseline | Needs 4; Overdue 1; Blocked 1; Conflict 2 (T06, M01); Review 1 (T08); Later than baseline 1 (T08) | Identical; *Hide baseline* removes the column and leaves the count at 1 (G7) | **PASS** |
+| B7 | PULSE parity (G2, §43) | Same four sets | PULSE: overdue T05 1 day; blocked T06, 0 days, waiting on T02; *3 dependency links on 3 open activities* (M01 earliest 05/12; T08 cancelled predecessor; T06); later than Baseline 1: T08 10/12 → 16/12, 6 days | **PASS** |
+| B8 | Drift and refused approval (§42 check 2) | Draft B, then T04 edited and T10 added in tab B | *Edited since capture · T04 revision 1 → 2*, *Added since capture · T10*; Approve disabled until ticked. After tab B cancelled T06, Approve in tab A **refused** — *The programme changed again after you reviewed it. Nothing was approved*; list now shows *Cancelled since capture · T06*; box un-ticked; header unchanged (REST) | **PASS** |
+| B9 | Re-baselining | B approved → *Baseline 2 · Active*, A → *Original* and selectable | As expected. Against B2: captured 10 (1 cancelled history), added 1, cancelled since 1, unchanged 8, later 0; attention Needs 3, Overdue 1, Blocked 0, Conflict 1, Review 1, Later 0 — equal to the model | **PASS** |
+| B10 | Historical comparison (G8a) | Against A after all changes: captured 9, added 2, cancelled 2, compared 7: earlier 1, unchanged 5, later 1; envelope 11/12 → 22/12 **+11** | Identical; *Later than baseline* 1 while PULSE (active B2) has 0; the amber line names the historical basis | **PASS** |
+| B11 | Withdrawal | Blank reason refused; with a reason → `withdrawn` | *Enter a reason for withdrawing this draft*; C stored `withdrawn`, revision 2 | **PASS** |
+| B12 | Concurrent approve after a withdrawal | Second action refused | **UI:** the stale review dialog in tab A **closed by itself** when its listener saw the draft withdrawn, with no message (D3 #30) — the approve could not be sent. **Server:** an approve of the withdrawn header sent through the SDK → `permission-denied` | **PASS with a UX finding** |
+| B13 | Baseline immutability — server | Refused | SDK: rename / withdraw / delete an approved header, edit / delete an approved snapshot, a snapshot without its header, a header without its snapshot, edit / reopen a cancelled activity, a create with a forged cancellation — **10 × `permission-denied`** (11 with the B12 probe); none of the probe documents exists afterwards; every header and snapshot hash unchanged since its last legitimate write | **PASS** (PROD-VERIFIED) |
+| B14 | Invalid programme cannot be baselined (§42 check 3) | Capture refused, naming the record | With T08 holding an impossible date (see *Unintended write* below): *1 activity cannot be captured as stored … C1C T08 Scaffold erection has no usable planned start*; *Capture draft baseline* disabled; the List shows "—" for its start and duration rather than an invented figure | **PASS** |
+| B15 | Progress variance | Not implemented | — | NOT BUILT (roadmap) |
+
+**Results — export and downstream (§64, item 7 of the brief).**
+
+| Surface | Expected (independent) | Observed | Result |
+|---|---|---|---|
+| Programme CSV (captured in memory, nothing saved to disk) | Whole programme 11 of 11; active basis B2; per-row dates, durations, flags and variances as above | File name `constrap-programme-report-test-cad-1-c1-c-gantt-programme-acceptance-2026-11-25.csv`; header block, *Baseline basis ACTIVE*; every row equal to the stored records and the model (T08 8 days, T10 *NOT IN BASELINE / NOT COMPARED*, T06 *Cancelled since the baseline was approved*, T07 *Already cancelled when the baseline was approved*); **0 empty cells**; no write (REST before / after) | **PASS** (C1, C3–C5, C9) |
+| Dashboard Programme panel | 11 activities: 6 not started, 2 in progress, 1 completed, 2 cancelled; overdue 1; due in 14 days 3 (T02, M01, T03); next milestone M01 02/12, 7 days | Identical | **PASS** |
+| Project Overview | — | No programme figure (only the GANTT tab) | Not built — roadmap |
+| Portfolio | CAD in its own group, all CAD 0.00; no programme indicator | As expected; **NZD weighted margin 26%**, **GBP approved budget 12,565.34**, USD 29.7% unchanged | **PASS**; programme indicators on the Portfolio not built — roadmap |
+| Commercial / financial records | Programme writes no financial document | The fixture holds no budget line, BOQ item, PO, invoice, forecast, approval, snapshot, adjustment, claim, variation, Final Account or PULSE acknowledgement; no other project's document changed | **PASS** |
+| Print / Save as PDF (R1–R13) | — | **NOT RUN** (a print dialog blocks browser automation); PO acceptance of ADR-79 REPORTED | NOT RUN |
+
+**Role and security evidence.** Production: the deployed ruleset is
+byte-identical to `main`; every refusal above came from the deployed Rules in
+the TEST admin's own session. Earlier production evidence reused: §71 M8 — the
+Company Admin, Project Manager and QS opened GANTT, *+ Add activity* shown to
+the Project Manager and not to the QS. Emulator (re-run 25 November):
+`activities.rules.test.js`, `activitiesTransitional.rules.test.js`,
+`programmeBaselines.rules.test.js`, `externalRoles.rules.test.js`,
+`externalIsolation.rules.test.js` — **5 files / 445 tests PASS** — the QS can
+read but not write activities or baselines; `client` and `subcontractor`
+cannot read `activities` or `programmeBaselines` even on an assigned project.
+Role matrix as documented (`PROGRAMME_READ_ROLES` / `PROGRAMME_WRITE_ROLES`;
+Rules `programmeReader` / `programmeWriter`, `baselineReader` /
+`baselineWriter`). **Not run in production:** a QS or external-role session on
+the programme (the accounts stay deactivated; no further live role evidence is
+needed for closure in the engineer's view — §71 M8 and the emulator cover the
+matrix).
+
+**Unintended write (engineer error, recorded).** Probe S7-12 sent
+`plannedStart: '2026-02-30'` to T08 expecting a refusal; the Rules check the
+date **shape** only and **accepted** it (revision 1 → 2). This is the
+documented Deferred Control 23 (SECURITY.md item 23; proven by
+`activities.rules.test.js` — *ACCEPTS an impossible calendar date of valid
+shape*) — not a new defect — and the probe should not have been sent. It was
+confined to the fixture; it was used for B14, and T08 was then corrected
+through the editor (revision 3, 9–10 Dec). The app degraded safely ("—", no
+invented duration, capture refused).
+
+**Observations (not defects).** The conflict acknowledgement is bound to the
+exact start + predecessor combination: any change clears it, and restoring
+the acknowledged combination shows it ticked again (`ackKey === currentAckKey`
+in `ActivityEditorModal.jsx`) — by design. The *Activities* figure in the
+capture preview counted 8 while T08's date was unusable and 9 once corrected.
+
+**Findings (tracker D3).** **#30** (P3, UX) — a baseline review dialog closes
+without a message when another session withdraws (or approves) the draft; the
+§42 wording *Someone else changed this baseline* was not seen; the server
+refusal is proven. **#31** (P3, wording) — for a cancelled successor the CSV /
+List predecessor text still reads *Starts before its predecessor allows*
+although the *Dependency conflict* column and the attention counts correctly
+exclude it.
+
+**Data integrity (20:36 → 21:16 UTC).** Apex Builders: 258 documents, path and
+update time **identical** (including the worker's system document — no run in
+the window). Test company: 148 → 167 documents; the 19 additions are the
+fixture project, its directory entry, 11 activities, 3 baseline headers and
+3 snapshots; **no existing document changed**; 8 projects and 8 directory
+entries. No `auditEvents` entry was written (programme writes are client-SDK
+writes and carry their own actor and time). Fixtures A–C, X, Y, Z and L4 and
+their Storage objects (md5, metageneration, no token) unchanged; Z's approved
+Final Account revision 2 hash `74cc8f7a…` equals its C1-A record; L4
+independent check *ALL CHECKS OK*. `users` unchanged; PM, QS, `subcontractor`
+and `client` Auth accounts still disabled; only the TEST admin's last sign-in
+moved (Product Owner sign-in, 20:53 UTC). **Not compared:** Apex document
+contents (path and update time only); Apex Storage.
+
+**Still not covered.** Print / PDF R1–R13 and Safari / Firefox; chart
+visuals at Day and Month zoom, cost-code grouping with collapsed arrows, and
+the dashed baseline outlines (the chart was seen at Week zoom only); the
+attention-filter chips pressed one by one (G3–G6, G9–G10); G11 across local
+midnight; a QS or external session on the programme; "by another user"
+(L2); a stale quick action or cancel through the UI; offline capture;
+§41 check 3 and §43 checks for the Stage-1 / failure paths (release-stage or
+DevTools-blocking scenarios).
