@@ -316,13 +316,19 @@ of the work still to do:
     path PASSED in production on 22 November 2026 (TESTING.md §62b); the
     forecast-readiness correction is deployed and retested. **Remaining:** the
     role checks F5, F6, F15, F16 and Project Manager approval; the native
-    print dialog and a PDF file (F14); retest R5.
-  - **C1-B — L2-C Portfolio:** P19–P20 **PASSED for both external roles** (24
-    November 2026, M2-A2 Stage B run; the page's request payloads were not
-    decoded — TESTING.md §63 note). **Remaining:** P18 (Project Manager and QS
-    sessions), row-to-Reports-tab parity as a recorded acceptance (a 22
-    November read-only P4 run is reported, not accepted), M1–M5 (M4 needs one
-    isolated load).
+    print dialog and a PDF file (F14); retest R5. Active Project Manager and
+    QS test identities now exist in the isolated test company (C1-B, 24
+    November 2026) and can be reused, subject to the architect's decision.
+  - **C1-B — L2-C Portfolio:** **all checks run — awaiting the architect's
+    closure decision (24 November 2026).** P19–P20 PASSED for both external
+    roles (payloads not decoded); read-only production run PASSED, parity on
+    five rows to the cent ACCEPTED by the architect, M1 and M4 measured;
+    **P7, P9 and P18 PASSED in production** on two retained synthetic NZD
+    commercial fixtures in the isolated test company (Company Admin, Project
+    Manager and QS identical); **P15 PASSED on local emulators only**.
+    Deferred UX wording: tracker D3 #9, #19, #21; #20 needs a reproduction.
+    *As written before:* remaining P18, parity as a recorded acceptance,
+    M1–M5.
   - **C1-C — GANTT:** the baseline scenarios not exercised in the browser
     (TESTING.md §42, §64).
   - **C1-D — Monitoring:** a test of alert notification delivery (TESTING.md

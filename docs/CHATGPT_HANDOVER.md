@@ -6,7 +6,27 @@ history. It is an index and a checkpoint, **not** a second copy of the
 documentation: where this file and a source document disagree, the source
 document wins and this file must be corrected.
 
-**Last updated:** 24 November 2026 (UTC), M2-A2 final closeout revision.
+**Last updated:** 24 November 2026 (UTC), C1-B Portfolio acceptance revision.
+**Git checkpoint:** `main` at `62e824a` (*Merge operator tooling security
+hardening*; feature commit `bc64487`), equal to `origin/main` (fetched 24
+November 2026 — VERIFIED). This revision was prepared on the uncommitted
+branch `docs/c1b-portfolio-acceptance` (documentation only).
+**Operator tooling safety — INTEGRATED** (D3 #1–#3, #16, #18 complete; unit
+5,244, Functions pure 179, Functions emulator 367, `npm run test:team` PASS ×4;
+Azure `main` green — REPORTED by the Lead Architect; no deployment; production
+transaction cleanup never exercised; D3 #17 open).
+**C1-B — L2-C Portfolio acceptance — all checks run, awaiting the architect's
+closure decision.** Read-only run in Apex Builders (05:14–05:27 UTC): P1–P6,
+P8, P12, P13, P21, P22 PASS, parity on five rows to the cent (ACCEPTED by the
+architect), M1 = 10, M4 = 136 reads per Portfolio read. Final targeted run in
+the isolated test company (07:15–07:37 UTC): **P7, P9, P18 PASS in
+production** on two retained synthetic **NZD** commercial fixtures (weighted
+margin 26.00% against independent expectations); **P15 PASS on local
+emulators only**. Two internal test identities now exist and are **active** in
+`constrap-acceptance-test` — a new Project Manager (`KSC9zf…`) and the
+re-activated QS (`PvzTgu…`); their final state awaits architect review. Apex
+Builders unchanged. Record: SECURITY_DATA_TEST_TRACKER.md → B4, B5; TESTING.md §63.
+*As written for the previous revision (M2-A2 final closeout):*
 **Git checkpoint:** `main` at `bd9021c` (*Merge M2-A2 external member
 provisioning*; feature commit `cddfca8`), equal to `origin/main` (fetched 24
 November 2026 — VERIFIED). This revision was prepared on the uncommitted
@@ -612,6 +632,22 @@ and deployed, visual and export acceptance REPORTED passed; the GANTT core
 completion read-only assessment (production state of GANTT 1A1 / 1A2 / 1B
 and PULSE 1C VERIFIED) and, after the Lead Architect's GO (ADR-79), its
 implementation on `feature/gantt-core-completion` (uncommitted).
+
+**Next, from 24 November 2026 (C1-B revision). Each step needs explicit authorisation.**
+
+1. **Architect review of `docs/c1b-portfolio-acceptance`** (documentation
+   only) and the **C1-B closure decision** — recommended GO with P15 local
+   only and the measurement limits recorded (tracker B5, C4).
+2. **Decide the final state of the PM and QS test identities** (retain
+   active for C1-A role checks, or deactivate from the Team page).
+3. **Next C1 item: C1-A Final Account role checks** (F5, F6, F15, F16, PM
+   approval) — they can reuse the retained PM / QS identities; F14 native
+   print / PDF; retest R5.
+4. **Deferred UX corrections** (one Hosting-only bundle when scheduled): D3
+   #9 subtotal count wording, #19 Reports-tab working-budget label, #21
+   offline status line; #20 needs a reproduction first.
+
+*As written earlier on 24 November (before the C1-B revision):*
 
 **Next, from 24 November 2026. Each step needs explicit authorisation.**
 

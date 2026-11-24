@@ -8,8 +8,9 @@ accepted risks in [SECURITY.md](SECURITY.md); decisions in
 [DEPLOYMENT.md](DEPLOYMENT.md); order of work in [../ROADMAP.md](../ROADMAP.md);
 the operational checkpoint in [CHATGPT_HANDOVER.md](CHATGPT_HANDOVER.md).
 
-**Last updated:** 24 November 2026 (operator tooling safety, D3 #1–#3 and #16 — IMPLEMENTED — PENDING INTEGRATION on `feature/operator-tooling-safety`, uncommitted; architect corrections applied: provisioning link file, local launcher, shutdown reporting). Earlier the same day: M2-A2 final closeout — Stage A, Stage B and DC20 CLOSED by the Lead Architect.
-`main` `2e48a2a`.
+**Last updated:** 24 November 2026 (C1-B final targeted acceptance, 07:15–07:37 UTC — section B5: P7, P9, P18 PASS in production on retained NZD commercial fixtures in the isolated test company; P15 PASS locally only. Earlier the same day: C1-B read-only run, 05:14–05:27 UTC — section B4; operator tooling safety INTEGRATED — merged as `bc64487`, merge `62e824a`). Prepared on `docs/c1b-portfolio-acceptance` (uncommitted, documentation only). Earlier the same day: M2-A2 final closeout — Stage A, Stage B and DC20 CLOSED by the Lead Architect.
+`main` `62e824a`, equal to `origin/main` (fetched 24 Nov 2026 — VERIFIED).
+*As written for the previous revision:* operator tooling safety, D3 #1–#3 and #16 — IMPLEMENTED — PENDING INTEGRATION on `feature/operator-tooling-safety`; `main` `2e48a2a`.
 
 ## Evidence classes
 
@@ -32,11 +33,11 @@ All times are UTC unless marked otherwise.
 
 | Item | State |
 |---|---|
-| Current milestone | **Operator tooling safety (D3 #1–#3, #16, R-6) — IMPLEMENTED — PENDING INTEGRATION** (24 Nov 2026; architect accepted the design and its corrections are applied; scripts, local launcher and tests only; no deployment). Last closed: **M2-A2 External Project Isolation** — Stage A (ADR-83) and Stage B (ADR-84) **LIVE and CLOSED**; **Deferred Control 20 CLOSED** (Lead Architect, 24 Nov 2026) |
+| Current milestone | **C1-B — L2-C Portfolio acceptance — final targeted run COMPLETE (24 Nov 2026), awaiting architect closure decision** — P7, P9, P18 PASS in production (B5); P15 PASS on local emulators only; financial parity ACCEPTED by the architect (B4). *As written after the read-only run:* read-only production run COMPLETE; NOT closed (P18 blocked on internal-role sessions — section B4). **Operator tooling safety (D3 #1–#3, #16, #18, R-6) — INTEGRATED** (merged as `bc64487`, merge `62e824a`; no deployment required). Last closed: **M2-A2 External Project Isolation** — Stage A (ADR-83) and Stage B (ADR-84) **LIVE and CLOSED**; **Deferred Control 20 CLOSED** (Lead Architect, 24 Nov 2026) |
 | Release status | Stage B merged as `cddfca8`, `main` `bd9021c`. Three callables live since 23 Nov 2026 ~09:11 UTC — `acceptinvitation-00005-mol`, `deactivatemember-00005-suy`, `resendinvitation-00005-mer`; source identical to `main`; other eight services unchanged; Firestore `67b6425a…`, Storage `2f3a4788…`, Hosting `index-BOg2hoYg.js` unchanged (PROD-VERIFIED 23–24 Nov) |
 | Acceptance | **Complete (24 Nov 2026 00:50 UTC):** S1–S3, R1–R3, P1–P14 PASS; §68 X1–X7 PASS (X1–X3, X6 for both external roles); §63 P19–P20 PASS for both roles with the network-payload limitation; reconcile 0 findings; directory 13 / 13; Apex unchanged. Recorded in TESTING.md §63, §68, §69 (closeout branch `docs/m2-a2-stage-b-closeout`) |
 | Documentation | Closeout merged to `main` (`a219deb`, merge `2e48a2a`; VERIFIED in Git 24 Nov). *As written:* closeout on `docs/m2-a2-stage-b-closeout` (uncommitted): ROADMAP, PROJECT_DECISIONS (ADR-83 / ADR-84 closure records), SECURITY (DC20, Stage A / B), TESTING, DEPLOYMENT (release record), DATA_MODEL, ARCHITECTURE, CHATGPT_HANDOVER, this file |
-| Next step | Architect review and Git integration of `feature/operator-tooling-safety` (section D5); the M2-A2 closeout branch is merged (`2e48a2a`) |
+| Next step | Architect decision on **C1-B closure** (B5 — recommended GO with P15 local-only and the measurement limits recorded) and on the final state of the two internal test identities (PM and QS, both active). Then the next C1 item — C1-A Final Account role checks can reuse the same PM / QS identities. *As written after the read-only run:* a decision on P18 — not to be run in Apex Builders (architect, 24 Nov) |
 | Real customer external onboarding | **BLOCKED** pending a readiness decision. The residual risks in D1 are tracked, **not** accepted for a customer release by the M2-A2 closure |
 
 ### Isolated test environment (production project `constrapp-69b5d`)
@@ -58,6 +59,17 @@ delete any record below without approval.
 | Former subcontractor → client (P5 → P12 → P13; deactivated at the end) | `R5SbTZ8KBnZ0V9DHOPiZizaGq0h1` — **deactivated** 24 Nov 00:49:03, Auth disabled, no `projectIds` |
 | Client invitation (P7) | `9d0NBe1iNKvmTiVxVmhU` — **accepted** 24 Nov 00:05:41 UTC |
 | Client (P7 → X7; deactivated at the end) | `KZ1uF9XWcIMfDjrLziY0Q1W22dc2` — **deactivated** 24 Nov 00:49:24, Auth disabled, no `projectIds` |
+| Internal QS (R2–R3) — **re-activated for C1-B P18** | `PvzTgu8t0XW8AUGQ9CkUelR3ziy1` — re-invited (`L5EK7cPAmldIFNBxs9lY`), account re-enabled 24 Nov 07:24:13, accepted 07:25:02; **active `qs`**, same uid and creation time, no `projectIds`. Retained for the remaining internal-role acceptance (final state for architect review) |
+| Internal Project Manager — **new for C1-B P18** | `KSC9zfPAhZR6eYWLEZ9oSxdPcjJ3` — invited (`1zY5f0BshNiwgKcCji7d`), registered and accepted 24 Nov 07:23:39; **active `project_manager`**, email verified, no custom claims, no `projectIds`. Retained (final state for architect review) |
+| Commercial regression fixture X (NZD) | `xDi4s4wnEXUC6q6dEdxX` — *TEST NZD-1 — Commercial regression (large)*: OCV 200,000; budget line CT-100 150,000; **approved version 1** (`sX5XWlgS9XTi49WjIThd`) 150,000; forecast CTC 160,000 → FFC 160,000, variance −10,000, GP 40,000, margin 20.00%. Planning. **Retained** |
+| Commercial regression fixture Y (NZD) | `5jSw0R9QVWizCwWqJZyU` — *TEST NZD-2 — Commercial regression (small)*: OCV 50,000; budget line CT-100 30,000; **approved version 1** (`e3XQDi0sWR8XyWYtB21J`) 30,000; forecast CTC 25,000 → FFC 25,000, variance 5,000, GP 25,000, margin 50.00%. Planning (Completed 07:30 → restored 07:31). **Retained** |
+| Company cost code (shared by X and Y) | `Ixk3c3hJ0zUnL3tKp68a` — *CT-100 Synthetic regression works (TEST)*, active (cost codes cannot be deleted). **Retained** |
+
+The NZD fixtures are deliberately **not AUD**: Projects A, B and C are open AUD
+projects with no contract value, so an AUD group could never show a contract or
+margin subtotal (Product Owner decision, 24 Nov). They hold no PO, claim,
+invoice, variation, receipt or adjustment. Do not modify A, B or C to make an
+AUD margin render.
 
 Origins: `app.constrap.com` is the Product Owner's Apex session (never used by
 tests); `constrapp-69b5d.web.app` the TEST admin; `constrapp-69b5d.firebaseapp.com`
@@ -243,10 +255,180 @@ Status as recorded in the linked section; class shown where the record states it
 | L2-B Stage A — capacity recovery 3 (ADR-76) | Live ruleset byte-identical to `main` | PROD-VERIFIED (19 Nov) | §61 |
 | L2-B Final Account (ADR-77) + C1-A | F3, F4, F7–F13, F17 PASS in sandbox; forecast-readiness correction live; retest R1, R2, R4 PASS, R3 blocking PASS | PROD-VERIFIED (22 Nov) | §62, §62b |
 | L2-C Portfolio (ADR-78) | Visual, CSV, PDF acceptance | PROD-REPORTED (20 Nov) | §63 |
-| C1-B Portfolio | P4 row parity to the cent; M2 load timings | PROD-VERIFIED (22 Nov) — report to architect, **not yet recorded in TESTING.md** | §63 |
+| C1-B Portfolio | P4 row parity to the cent; M2 load timings | PROD-VERIFIED (22 Nov) — report to architect; superseded as the recorded parity evidence by the 24 Nov run (B4) | §63 |
+| C1-B Portfolio (24 Nov) | P1–P8, P12, P13, P21, P22; M1, M4; CSV = screen; P4 on five rows (55 figures) | PROD-VERIFIED (24 Nov) — read-only, Company Admin; P18 blocked | §63; B4 |
 | GANTT 1A1/1A2/1B, PULSE 1C, GANTT core completion (ADR-79) | Live bundle verified; PO accepted | PROD-VERIFIED (bundle) + PROD-REPORTED | §40–§43, §64 |
 | L3 Stage 1 monitoring + restoration verification | Monitoring created; restore SUCCESSFUL (counts + one sample hash) | PROD-VERIFIED (monitoring) + PROD-REPORTED (restore) | §65 |
 | L4 BOQ → working budget (ADR-81) | T1–T8, T10–T13, T15, T16 PASS; UX correction PASS | PROD-VERIFIED (22 Nov) | §67 |
+| Operator tooling safety (D3 #1–#3, #16, #18) | Merged (`bc64487`, merge `62e824a`); unit 101 / 5,244, Functions pure 8 / 179, Functions emulator 11 / 367; `npm run test:team` PASS ×4; Azure `main` green (REPORTED by the Lead Architect); no deployment required | EMULATOR + PROD-REPORTED (CI) — **never exercised against production** | §70; D5 |
+
+### B4. C1-B — L2-C Portfolio read-only production acceptance (24 November 2026, PROD-VERIFIED)
+
+**Session.** Apex Builders (`2Vf3CVuYE8wWzg8hLjR5`), the Product Owner's
+existing `company_admin` session on `app.constrap.com`, in a dedicated
+Claude-controlled tab (no sign-in needed). 05:14–05:27 UTC. Live Hosting
+bundle unchanged since L2-C. Every action read-only: no button other than
+Refresh and Export CSV was used; the CSV was captured in page memory (the
+download was intercepted, no file written) and discarded afterwards. No
+Admin SDK write; no production configuration read or changed beyond
+Cloud Monitoring and Logging reads.
+
+**No write (P22, backend evidence).** Cloud Monitoring
+`firestore.googleapis.com/document/write_count` and `delete_count` for the
+whole database: **0 in every minute from 05:12 to the end of the session**.
+The only writes near the window — 13 writes and 2 deletes in the 05:10–05:11
+points, before the browser session started at 05:14:34 — are the DC46 worker's
+periodic reconciliation (`processfilelinkrevocations`: *reconciliation plan
+complete* 05:10:03, worker runs 05:10:03 and 05:11:02), not a test action.
+
+**Scope at the time of the run (M1).** Two companies exist: Apex Builders and
+the isolated test company (3 projects, no financial records). Apex: **10
+open projects, 0 completed** — AUD 7, USD 2, ZAR 1; Planning 7, In Progress
+3; 8 working budget only; 2 approved (C1-A sandbox version 1, L4 sandbox
+version 2); 6 with no contract value. Three of the ten are retained test
+projects (Stage A `Iusni6U8…`, L4 `3OyBieoY…`, C1-A `oeqHCgEM…`). No real
+customer company exists yet, so M1 = 10 is the largest company, not a
+customer measurement.
+
+| # | Result | Evidence |
+|---|---|---|
+| P1 | PASS | Sidebar order Dashboard, Projects, **Portfolio**, Contacts, Subcontractors |
+| P2 | PASS | During Refresh: status *Loading project records… 7 of 10 projects read*, Export and Print disabled until settled; subtotals in a loading state; then *All 10 projects have been read.* |
+| P3 | PASS | *Apex Builders*; *Open projects (10 projects)* (no completed projects, so no "completed not included" clause); *AUD, USD, ZAR — reported separately, never combined*; generation time; *Records read between 06:14:35 pm and 06:14:36 pm* NZDT (CSV: 05:14:35.989Z → 05:14:36.702Z) |
+| P4 | **PASS — 5 rows, 55 of 55 figures to the cent** | Portfolio row = project Reports tab for C1-A (approved v1), L4 (approved v2), Gold Coast apartments, Residential Developements (both working budget, contract set) and Peter House (ZAR). Figures in the table below |
+| P5 | PASS | Eight working-budget rows: *Budget: Working budget (not approved)*; Approved budget and Variance *Not approved* with *Working budget …* / *Working variance …* beneath; AUD, USD and ZAR Approved Budget and Variance subtotals *Incomplete* with the count |
+| P6 | PASS | Six rows with no contract value: Contract sum, Gross profit, Margin *Not set*; AUD and USD contract / profit / margin subtotals *Incomplete* |
+| P7 | PARTIAL — precondition absent | No currency has every project approved and complete. The six complete AUD subtotals checked by hand: Actual 23,199.50; Remaining committed 13,000.50; Forecast final cost 65,850.00; Supplier invoices unpaid 5,521.45; Client invoices outstanding 839,100.00; Pending client variations 142,000.00 — all equal the row sums. Aggregate margin checked only on ZAR (one project: 550,000 ÷ 550,000 = 100%); a multi-project aggregate margin is not exercisable on this data |
+| P8 | PASS | Three sections (AUD, USD, ZAR), each with its own subtotals; the only cross-currency block is *Project counts · all currencies · no money*; no combined figure |
+| P9 | NOT EXERCISABLE | No completed project in any company. Needs a completed project (a status write) |
+| P10, P11, P14, P16, P17 | Not re-run | Covered by the visual / CSV / PDF acceptance (PROD-REPORTED 20 Nov; per-item record not held). P11 link target `/projects/{id}/reports` confirmed in source (`CurrencyGroup.jsx`); the Reports tabs were opened by URL |
+| P12 | PASS | Refresh at 05:19 UTC: rows returned to loading and reloaded; read window moved from 06:14:35 pm to 06:19:18–06:19:19 pm NZDT; every subtotal unchanged |
+| P13 | PASS (content) | CSV generated through the page's own Export: header block (company, scope, currencies, generated, records read, coverage COMPLETE, amounts basis), column glossary, 10 PROJECT and 3 SUBTOTAL lines, each with a Currency cell; incomplete subtotals `INCOMPLETE` with notes (*Approved Budget: 2 of 7 projects (5 budget not approved)*); numbers unformatted. **Every CSV value equals the screen.** Not opened in a spreadsheet application |
+| P15 | NOT RUN | Needs DevTools → Network → Offline (not available to the browser extension); unit-tested (§63) |
+| P18 | **BLOCKED — needs writes** | Apex has no active `project_manager` or `qs` (the one PM, `L1vCSi…`, is deactivated; two `company_admin` users). The test company has no financial records and its QS is deactivated. Prerequisite and scope below |
+| P19, P20 | PASS (reused, not repeated) | B2a, B2b — subcontractor and client, 24 Nov; payload limitation retained |
+| P21 | PASS | Dashboard: *Portfolio · project counts* (active 3, total 10, by status) — no money; the only amounts are in the one-project snapshot (Lakes Apartments, AUD) |
+| P22 | PASS | Zero Firestore writes / deletes during the session (above) |
+| M1 | 10 projects | Above |
+| M2 | Reused (22 Nov) | Cold navigation → *All 9 read* ≈ 2.7 s; warm reload 1.5 s; in-page Refresh 480–612 ms. 24 Nov loader read windows (10 projects): cold 0.71 s, Refresh ≤ 1 s (display resolution) |
+| M3 | Not measurable as specified (reused) | Server reads travel over the shared Listen WebChannel, not one HTTP request per read (22 Nov). The loader's request plan for this company is 13 × 8 + 15 + 16–17 = 135–136 document requests (code; §63 unit tests) |
+| M4 | **136 document reads for one Portfolio read (in-page Refresh)** | Cloud Monitoring `document/read_count`, whole database, raw 1-minute points: idle 1 / min at 05:16, 05:17 and 05:20; Refresh at 05:19:18 → **21 + 115 = 136** over the 05:18–05:19 points (the sampler splits one burst across two points; includes ~1–2 idle reads). Cold page load including the application shell's listeners: **102 + 189 = 291** over 05:14–05:15. A per-register breakdown is not available from the metric |
+| M5 | Not measurable (reused) | Cross-origin streamed responses report no transfer size (22 Nov) |
+
+**P4 figures (each identical on the Portfolio row, the Reports tab and the CSV).**
+
+| Project (currency, budget) | Contract | Budget | Actual | Rem. committed | FFC | Variance | Gross profit | Margin | Payables | Receivables | Pending client var. |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| C1-A (AUD, approved v1) | 10,500.00 | 8,000.00 | 1,000.00 | 0.00 | 1,000.00 | 7,000.00 | 9,500.00 | 90.5% | 1,100.00 | 0.00 | 0.00 |
+| L4 (AUD, approved v2) | Not set | 3,440.00 | 0.00 | 0.00 | 0.00 | 3,440.00 | Not set | Not set | 0.00 | 0.00 | 0.00 |
+| Gold Coast apartments (AUD, working) | 1,071,200.00 | working 542,000.00 | 21,899.50 | 8,000.50 | 59,400.00 | working 482,600.00 | 1,011,800.00 | 94.5% | 4,421.45 | 91,100.00 | 2,000.00 |
+| Residential Developements (AUD, working) | 1,075,000.00 | working 1,000.00 | 300.00 | 2,200.00 | 2,650.00 | working −1,650.00 | 1,072,350.00 | 99.8% | 0.00 | 748,000.00 | 140,000.00 |
+| Peter House (ZAR, working) | 550,000.00 | working 0.00 | 0.00 | 0.00 | 0.00 | working 0.00 | 550,000.00 | 100% | 0.00 | 22,000.00 | 0.00 |
+
+Each row is also internally consistent: gross profit = contract − FFC;
+variance = budget − FFC; margin = profit ÷ contract (CSV to two decimals:
+90.48, 99.75, 94.45, 100.00). Working-budget figures are shown by the
+Portfolio as *Not approved* with the working amount beneath, and by the
+Reports tab under its *Approved budget* card with the sub-label *Working
+budget (not approved)* — same value, different presentation (D3 #19).
+
+**Subtotal wording (D3 #9) — assessed against the live UI.** For the AUD
+Approved Budget subtotal the three surfaces read: card *Incomplete — Not
+totalled — 5 of 7 projects: 5 budget not approved*; table footer
+*Incomplete / 2 of 7*; CSV *Approved Budget: 2 of 7 projects (5 budget not
+approved)*. All three come from the same `subtotalFor` result (`included` 2,
+`affected` 5, `total` 7) and every surface withholds the value — no partial
+sum is shown or exported anywhere. The card counts **excluded** projects
+(`portfolioSubtotalNote`, `portfolioReport.js:517`), the table counts
+**included** projects without saying so (`CurrencyGroup.jsx:241`), and the CSV
+gives both. The source comment above `portfolioSubtotalNote` describes the
+included-count form (*"4 of 6 projects — 2 budget not approved"*), so the card
+text departs from its own stated intent. **Classification: cosmetic wording
+only** — not a reporting inconsistency of any value, not a calculation
+defect. Recommended correction in D3 #9.
+
+**P18 — prerequisite and scope (not authorised here).** One active
+`project_manager` and one active `qs` in Apex Builders — two Team-page
+invitations to Product-Owner-controlled aliases and their acceptances (new
+accounts) — or the reactivation of the deactivated PM. Then, in each session,
+read-only: open `/portfolio`, compare every subtotal and the five P4 rows with
+the table above (or a fresh Company Admin read the same hour), export the CSV
+in memory; then deactivate both from the Team page (urgent file-link sweep
+expected, as in B2). The same sessions would cover C1-A F5, F6, F15, F16, L4
+T14 and the Stage A internal M-items (C4) — one role-session task rather than
+three.
+
+### B5. C1-B — final targeted acceptance in `constrap-acceptance-test` (24 November 2026, PROD-VERIFIED unless marked)
+
+**Architect decisions applied:** financial parity ACCEPTED (B4); no test
+accounts in Apex Builders; work only in the isolated test company. **Product
+Owner decisions (24 Nov, in session):** fixtures in **NZD** rather than AUD
+(see the note under *Isolated test environment*); one shared company cost code
+`CT-100`. Every write went through the application as the TEST Company Admin
+(`oOANhA…`, session verified in the page) on `constrapp-69b5d.web.app`; role
+sessions on `constrapp-69b5d.firebaseapp.com`. No Admin SDK write; no derived
+value written.
+
+**Writes made (complete list, 07:15–07:31 UTC):** two projects with their
+directory entries (each one commit); one cost code; two commercial baselines
+(each sets the project's currency lock in the same transaction); two budget
+lines; two forecast lines; two budget approvals (capture → approve version 1:
+header, immutable snapshot, pointer); two invitations (`invite.created`) with
+their rate-limit records; PM registration and acceptance (`invite.accepted`;
+new Auth account, `users`, `members`); QS re-activation (`member.auth_reenabled`)
+and acceptance (`invite.accepted`); membership lock; Y status Planning →
+Completed → Planning (project + directory entry in one commit each). Invitation
+emails sent to Product-Owner aliases (Resend, `sendCount` 1, no error).
+
+**Independent expectations** (computed in Python with `Decimal` from the stored
+records read over REST — baseline OCV, budget lines, forecast lines, approval
+snapshot `entries` / `total`; no PO, claim, invoice, credit note, variation,
+receipt, payment, retention or adjustment exists): FFC = actual 0 + committed 0
++ CTC; GP = contract − FFC; margin = GP ÷ contract (ADR-78: aggregate
+`marginPercent(Σ profit, Σ contract)`, never the mean of project margins).
+
+| | Contract | Approved budget | FFC | Variance | GP | Margin |
+|---|---|---|---|---|---|---|
+| X | 200,000.00 | 150,000.00 | 160,000.00 | −10,000.00 | 40,000.00 | 20.00% |
+| Y | 50,000.00 | 30,000.00 | 25,000.00 | 5,000.00 | 25,000.00 | 50.00% |
+| **NZD subtotal** | **250,000.00** | **180,000.00** | **185,000.00** | **−5,000.00** | **65,000.00** | **26.00%** (arithmetic mean would be 35.00%) |
+| X only (Y completed, default view) | 200,000.00 | 150,000.00 | 160,000.00 | −10,000.00 | 40,000.00 | 20.00% |
+
+| # | Result | Evidence |
+|---|---|---|
+| P7 — incomplete budget | **PASS** | With X approved and Y on its working budget (07:20): NZD contract 250,000, FFC 185,000, GP 65,000, **margin 26%** (CSV 26.00) — margin needs no approved budget; Approved Budget and Variance subtotals *Incomplete — Not totalled — 1 of 2 projects: 1 budget not approved*; CSV `INCOMPLETE` with *1 of 2 projects (1 budget not approved)*; Y row *Not approved*, working 30,000 / working variance 5,000 |
+| P7 — complete group | **PASS** | Both approved (07:21): every NZD subtotal equals the table above to the cent on screen and in the CSV; **margin 26% / 26.00, not 35** — weighted, not averaged; variance −5,000 signed. The AUD group (A, B, C) stays *Incomplete* (3 contract value not set, 3 budget not approved) — unchanged behaviour |
+| P9 | **PASS** | Y set Completed through the Edit form (07:30). Default view: *Open projects (4 projects) · 1 completed not included*; counts 4, *Planning 4*; NZD group *1 project*, subtotals = X only (200,000 / 150,000 / 160,000 / −10,000 / 40,000 / **20%**); CSV scope and lines identical. *Include completed*: status line went straight to *4 of 5 projects read* (only Y was read; the loaded rows were not re-read) → *All projects, including completed (5 projects)*, *Planning 4 · Completed 1*, NZD subtotals back to 26%; CSV scope *All projects, including completed (5 projects)*, Y line `Completed`. Y restored to Planning (07:31; the lifecycle allows any status change) and the default view re-checked: 5 projects, 26% |
+| P18 — Company Admin | **PASS** | Figures above; controls Refresh, Export CSV, Print / Save as PDF, *Include completed* only; no console message |
+| P18 — Project Manager (`KSC9zf…`) | **PASS** | Session uid verified in the page. Same scope (5 projects, AUD and NZD separate), same NZD subtotals and rows; CSV PROJECT + SUBTOTAL lines (7, excluding the read-time column) SHA-256 `15310838fd5c3249…` — **identical to the Company Admin's**; same three buttons and one checkbox, no mutation control on the page; zero console messages across two loads |
+| P18 — QS (`PvzTgu…`) | **PASS** | Session uid verified. Identical scope, subtotals, rows; CSV fingerprint `15310838fd5c3249…` — identical; same controls; zero console messages |
+| P18 — cross-company | **PASS (application level)** | As PM and as QS, the Apex project URL (Gold Coast) shows *Project not found.*, no console message. A direct REST probe of non-financial Apex paths with the role's session token was **not run** (blocked by the session's safety controls); Rules-level cross-company denial rests on R2 (23 Nov, QS session: Apex company / project / file 403) and the Rules suites. No Apex financial data was requested |
+| P15 | **PASS — LOCAL ONLY (EMULATOR)** | Not production acceptance. Local emulators (`npm run test:team`, project `constrapp-rules-test`) + Vite on 127.0.0.1:5173; one seeded company / NZD project; headless Chrome 158 driven over DevTools (`Network.emulateNetworkConditions offline: true`). Online: 200,000 / 160,000 / 20%. Offline → Refresh: settled in 0.2 s; **13 figures *Unavailable* (never 0)**, *Could not load: …* per source, *Financial coverage is incomplete: records could not be loaded for 1 of 1 project*, every subtotal *Incomplete — 1 unavailable*, source data incomplete 1. Online → Refresh: figures restored. Only SDK transport warnings in the console. The production browser extension cannot simulate offline; the owner's network was not touched |
+
+**Data integrity (read-only snapshots taken before the first write at 07:15 and after 07:37).** Apex
+Builders: 257 of 257 documents unchanged except `system/fileLinkRevocation`
+(07:12:02 — the DC46 periodic reconciliation: *reconciliation plan complete*
+07:11:03; worker runs 07:11 / 07:12). Test company: Projects A, B, C and all
+their documents and drawings unchanged; five Storage fixtures byte-identical
+(MD5), no download token; directory **5 / 5 in sync** (fields equal; X's
+project document additionally carries the currency lock from its baseline
+commit, a field the directory does not hold); only the writes listed above.
+`users`: QS profile (re-activation) and the new PM profile only; the
+subcontractor and client profiles unchanged. Auth: `ct-sub` and `ct-client`
+**disabled**; `ct-admin`, `ct-pm`, `ct-qs` enabled. Five audit events:
+`invite.created` ×2, `invite.accepted` (PM), `member.auth_reenabled` (QS),
+`invite.accepted` (QS), all `source: callable`.
+
+**Observations (not blocking; recorded in D3).**
+- #20 — after the first *Save all changes* on X's Forecast tab, the page kept
+  showing *Not forecast* and FFC 0 although the forecast line was written
+  (verified over REST, 07:18:10); a reload showed FFC 160,000. Y's save
+  updated at once. Seen once in two saves; not reproduced.
+- #21 — offline (P15), the status line still reads *All 1 project has been
+  read.* while every source failed; the coverage notice below it is correct.
+- The PM's first registration left the test-user tab signed in as the TEST
+  Company Admin, not the PM; signed out and the PM signed in again. Test
+  procedure only (D3 #15).
 
 ---
 
@@ -275,14 +457,20 @@ reference until TESTING.md §69 records the results.
 | X5 | Assignment removed → project disappears at next read | **PASS** (24 Nov) — B denied ~20 s after removal in the same session; UI updated without a reload | P8 — B2 |
 | X6 | §63 P19–P20 | **PASS** — subcontractor (23 Nov) and client (24 Nov) | P6 — B2a; P7 — B2b |
 
-### C3. Portfolio — [TESTING.md §63](TESTING.md) — P19–P20 COMPLETE; P18, M1–M5 open
+### C3. Portfolio — [TESTING.md §63](TESTING.md) — COMPLETE for closure review (24 Nov: B4 read-only run; B5 P7, P9, P18 in production, P15 locally)
 
 | ID | Objective | Status |
 |---|---|---|
 | P19 | External user: no Portfolio entry; `/portfolio` restricted; no financial request | **PASS** — subcontractor and client: no entry, restricted message; only the Auth lookup and shared Listen channel seen (bodies not decodable — B2a limits) |
 | P20 | External user: direct financial read denied by Rules | **PASS** — subcontractor (24 reads on A → 403) and client (48 reads on A and B → 403) |
-| P18 | Role-specific access (PM / QS) | NOT RUN — needs PM / QS sessions |
-| M1–M5 | Performance | M2 measured (C1-B); M4 needs one isolated load; M3 premise wrong (WebChannel); M5 not measurable cross-origin |
+| P4 | Row = Reports tab to the cent | **PASS** (24 Nov) — five rows, 55 / 55 figures; CSV = screen (B4) |
+| P1–P3, P5, P6, P8, P12, P13, P21, P22 | Page, states, currencies, refresh, CSV, Dashboard, no write | **PASS** (24 Nov, B4); P22 by Monitoring write / delete counts (0) |
+| P7 | Hand-checked subtotals and aggregate margin | **PASS** (24 Nov, B5) — NZD fixtures: weighted margin 26.00% (not the 35% mean) against independent expectations; incomplete-budget treatment per spec. *Earlier:* PARTIAL on Apex data (B4) |
+| P9 | *Include completed* | **PASS** (24 Nov, B5) — default excludes, counts and subtotals X-only; toggle reads only the completed project; CSV scope follows; status restored |
+| P15 | Offline | **PASS — LOCAL ONLY** (24 Nov, B5; emulators + headless Chrome) — not production acceptance |
+| P10, P11, P14, P16, P17 | Indicators, links, PDF, widths, keyboard | Not re-run — PROD-REPORTED visual / export acceptance (20 Nov) |
+| P18 | Role-specific access (PM / QS) | **PASS** (24 Nov, B5) — Company Admin, PM, QS: identical figures and CSV fingerprint, no mutation control, no console message; Apex project *Project not found* for PM and QS. *Earlier:* BLOCKED in Apex (B4) |
+| M1–M5 | Performance | M1 = 10 (Apex; no customer company yet); M2 reused (22 Nov); **M4 = 136 reads per Portfolio read** (isolated Refresh; cold page load incl. shell 291); M3 not measurable as specified (WebChannel; plan 135–136 requests); M5 not measurable cross-origin |
 
 ### C4. Remaining acceptance roadmap
 
@@ -294,7 +482,7 @@ approved); its IDs below are the Lead Architect's.
 | ID | Area | Remaining | Already done (do not reopen) | Needs | Record |
 |---|---|---|---|---|---|
 | C1-A | L2-B Final Account | Role checks F5, F6, F15, F16 and Project Manager approval; F14 native print dialog and a PDF file; retest R5 | Positive path F3, F4, F7–F13, F17 PASS in production (22 Nov); forecast-readiness correction live and retested (R1, R2, R4, R3 blocking) | PM / QS / second-user sessions on a test project | §62, §62b |
-| C1-B | L2-C Portfolio | P18 (PM / QS); row-to-Reports-tab parity as a recorded acceptance; M1–M5 (M4: one isolated load; M3 premise wrong; M5 not measurable cross-origin) | Visual, CSV, PDF (REPORTED 20 Nov); **P19–P20 PASS for both external roles** (24 Nov; payloads not decoded); a P4 read-only run on four rows (22 Nov, reported — not recorded as accepted) | PM / QS sessions; a quiet window for M4 | §63 |
+| C1-B | L2-C Portfolio | **None blocking — architect closure decision** (B5). Limits kept: P15 local only; P10, P11, P14, P16, P17 rest on the REPORTED visual / export acceptance; M3, M5 not measurable; P19 payloads not decoded; REST-level cross-company probe as PM / QS not run. Deferred UX: D3 #9, #19, #20, #21 | Visual, CSV, PDF (REPORTED 20 Nov); P19–P20 PASS for both external roles (24 Nov; payloads not decoded); **read-only run 24 Nov (B4): P1–P6, P8, P12, P13, P21, P22 PASS, P7 partial, P4 five rows to the cent, M1, M4 measured** | — (PM / QS identities and NZD fixtures now exist in the test company) | §63; B4; B5 |
 | C1-C | GANTT | Baseline scenarios not exercised in the browser; no per-step record for ADR-79 | 1A1 / 1A2 / 1B / PULSE 1C live bundle VERIFIED; GANTT core completion PO-accepted (REPORTED) | A test project with a programme | §42, §64 |
 | C1-D | Monitoring | A notification-delivery test of the L3 alert policies; no alert has fired on a real condition | Policies and uptime check created (VERIFIED read-only 21 Nov); DC46 policy email path REPORTED | An authorised synthetic trigger | §65; DEPLOYMENT.md |
 | L3 | Stage 2 error recovery | E1–E10 browser acceptance | Live through the L4 Hosting release (REPORTED) | Browser session; controlled offline | §66 |
@@ -322,7 +510,7 @@ item here.
 | R-3 | **Withdrawn drawing revisions.** An assigned external member reads every revision of an assigned project's drawings, withdrawn ones included (Firestore and Storage) | Security | Open — documented limitation | ADR-83; SECURITY.md item 46 | Drawing-revision visibility policy (DC46 follow-up) |
 | R-4 | **App Check not enforced** on Firestore, Storage or Authentication (callables enforce it) | Security | Open — deferred | DEPLOYMENT.md → *Deferred: general App Check enforcement* | Commercial-readiness milestone |
 | R-5 | **Internal regression unrecorded.** TESTING.md §68 M1, M2, M4, M5, M7, M8 | Reliability | Open — untested, not failed | §68 | C4 row *M2-A2 A* |
-| R-6 | **Operator tooling safety.** `bootstrap-company.mjs` writes by default and prints its acceptance link; four older scripts call `process.exit(1)` after a refused transaction (lock held until timeout) | Operator safety | **IMPLEMENTED — PENDING INTEGRATION** (24 Nov 2026) — not closed. D3 #16 corrected in the same change. Remaining: scripts validate, they do not authorise (R-2); a link file proves nothing about the mailbox; local emulators hold the operator's CLI login (D3 #17) | ADR-84 lessons; Stage B S1; TESTING.md §70 (EMULATOR) | Architect review → merge → Azure green (no production dry run needed — architect) |
+| R-6 | **Operator tooling safety.** `bootstrap-company.mjs` wrote by default and printed its acceptance link; four older scripts called `process.exit(1)` after a refused transaction (lock held until timeout) | Operator safety | **MITIGATED — INTEGRATED** (merged as `bc64487`, merge `62e824a`, 24 Nov 2026; Azure `main` green — REPORTED by the Lead Architect; no deployment required). D3 #1–#3, #16, #18 complete. **Not tested against production:** transaction cleanup after a refused production transaction is proven on the emulator only. Remaining: scripts validate, they do not authorise (R-2); a link file proves nothing about the mailbox; local emulators hold the operator's CLI login (D3 #17) | ADR-84 lessons; Stage B S1; TESTING.md §70 (EMULATOR) | None for this item; D3 #17 separately |
 
 **Decided, not a risk:** a Company Admin may *Resend* or *Revoke* an
 operator-created external invitation — permitted under ADR-84 for as long as
@@ -344,46 +532,58 @@ neither can change the role or the assignment (Lead Architect, 24 Nov 2026).
 - Rules capacity: `firestore.rules` 236,737 of 245,000 bytes; the
   1000-expression ceiling; one project / directory pair per commit.
 
-### D3. Defect and finding register (#1–#3 implemented on `feature/operator-tooling-safety`; nothing else changed)
+### D3. Defect and finding register (#1–#3, #16, #18 integrated in `62e824a`; #9 assessed, #19–#21 recorded by C1-B, 24 Nov; #9 and #19 deferred by the architect)
 
 Priority: **P1** before customer external onboarding; **P2** next
 convenient milestone; **P3** backlog.
 
 | # | Finding | Category | Status | Priority | Dependency | Proposed milestone | Source |
 |---|---|---|---|---|---|---|---|
-| 1 | `bootstrap-company.mjs` writes by default (`--dry-run` to preview) | Operator safety | **IMPLEMENTED — PENDING INTEGRATION** — dry run by default; writes need `--apply` + exactly one delivery option; conflicting flags exit 2; a read-only plan pass precedes every write; a pending invitation is rotated only on `--rotate` (EMULATOR: §70 OT1–OT6) | P1 | Merge | Operator tooling safety (D5) | ADR-84; Stage B S1 |
-| 2 | `bootstrap-company.mjs` prints the acceptance link to stdout | Operator safety / security | **IMPLEMENTED — PENDING INTEGRATION** — never printed; `--no-link` or `--link-file` (new 0600 file, outside the repository on the real path, O_EXCL + O_NOFOLLOW, reserved before any write, verified after creation); a failed write after the commit exits 3, removes the partial file, names the invitation; recovery `--rotate --link-file` (EMULATOR + pure: §70 OT3, OT7–OT9) | P1 | Merge | Operator tooling safety (D5) | ADR-84; Stage B S1 |
-| 3 | Four older scripts call `process.exit(1)` after a refused transaction (rollback not awaited → lock held until timeout) | Operator safety / reliability | **IMPLEMENTED — PENDING INTEGRATION** — shared `runOperatorScript`: `process.exitCode`, then `Firestore.terminate()` (awaits the rollback), forced exit only after a 30 s shutdown timeout that starts after the operation settled; a failed or timed-out cleanup is printed as an explicit failure, never as success; exit code kept; no retry. Hazard measured (~1 min lock with `process.exit`, none after); sensitivity-checked (EMULATOR + pure: §70 OT10–OT14, runner tests) | P1 | Merge | Operator tooling safety (D5) | ADR-84 |
+| 1 | `bootstrap-company.mjs` writes by default (`--dry-run` to preview) | Operator safety | **COMPLETE — INTEGRATED** (`62e824a`) — dry run by default; writes need `--apply` + exactly one delivery option; conflicting flags exit 2; a read-only plan pass precedes every write; a pending invitation is rotated only on `--rotate` (EMULATOR: §70 OT1–OT6) | P1 | — | Operator tooling safety (D5) — done | ADR-84; Stage B S1 |
+| 2 | `bootstrap-company.mjs` prints the acceptance link to stdout | Operator safety / security | **COMPLETE — INTEGRATED** (`62e824a`) — never printed; `--no-link` or `--link-file` (new 0600 file, outside the repository on the real path, O_EXCL + O_NOFOLLOW, reserved before any write, verified after creation); a failed write after the commit exits 3, removes the partial file, names the invitation; recovery `--rotate --link-file` (EMULATOR + pure: §70 OT3, OT7–OT9) | P1 | — | Operator tooling safety (D5) — done | ADR-84; Stage B S1 |
+| 3 | Four older scripts call `process.exit(1)` after a refused transaction (rollback not awaited → lock held until timeout) | Operator safety / reliability | **COMPLETE — INTEGRATED** (`62e824a`; production cleanup not exercised) — shared `runOperatorScript`: `process.exitCode`, then `Firestore.terminate()` (awaits the rollback), forced exit only after a 30 s shutdown timeout that starts after the operation settled; a failed or timed-out cleanup is printed as an explicit failure, never as success; exit code kept; no retry. Hazard measured (~1 min lock with `process.exit`, none after); sensitivity-checked (EMULATOR + pure: §70 OT10–OT14, runner tests) | P1 | — | Operator tooling safety (D5) — done | ADR-84 |
 | 4 | Withdrawn drawing revisions readable by assigned externals (R-3) | Security | Open | P1 (policy decision) | Architect policy | Drawing-revision visibility (DC46 follow-up) | ADR-83 |
 | 5 | *+ Add New Project* shown to `qs` (`Projects.jsx:300`; Rules deny the create) | UX | Open | P2 | — | UX fix bundle (Hosting-only) | Stage B R2 |
 | 6 | External roles reach `/settings/company` and `/settings/team` from the user menu (read-only notices; country and currency) | UX | Open | P2 | — | UX fix bundle | Stage B P6 |
 | 7 | Top bar reads *Dashboard* on `/settings` pages | UX | Open | P3 | — | UX fix bundle | Stage B R1 |
 | 8 | No in-app notice when an assignment is removed (project disappears; stale link shows *Project not found*) | UX | Open | P2 | Design | UX fix bundle (needs a design) | Stage B P8 / X5 |
-| 9 | Portfolio subtotal card *4 of 6* (affected) vs table / CSV *2 of 6* (included) | UX | Open | P3 | — | C1-B or UX fix bundle | C1-B |
+| 9 | Portfolio subtotal count wording: the card counts **excluded** projects (*Not totalled — 5 of 7 projects: 5 budget not approved*, `portfolioReport.js:517`), the table footer counts **included** projects unlabelled (*2 of 7*, `CurrencyGroup.jsx:241`), the CSV gives both (*2 of 7 projects (5 budget not approved)*) | UX — **cosmetic wording only** (re-assessed on the live UI 24 Nov: one `subtotalFor` result; no value shown or exported for an incomplete subtotal; no calculation or reporting-value defect) | Open | P3 — not blocking C1-B; **deferred** (architect) | — | UX fix bundle (Hosting-only). Smallest fix: one wording for both — the card note to `Not totalled — {included} of {total} projects included; {reasons}` (matches the CSV and the function's own comment) and the footer to `{included} of {total} included`; update the two `portfolioSubtotalNote` expectations in `portfolioReport.test.js` (lines 417, 473) | C1-B (22 Nov; B4) |
 | 10 | Final Account open draft does not name the missing forecast cost code | UX | Accepted, non-blocking | P3 | — | Backlog | C1-A retest R3 |
 | 11 | 58 older write sites keep raw SDK error text and *Saving…* offline | Reliability / UX | Open | P3 | — | Core functionality (ROADMAP) | §66; handover I |
 | 12 | Three source comments still say *DC46 — still OPEN* | Documentation | Open | P3 | Next change in those files | Opportunistic | Handover A |
 | 13 | SECURITY.md *Known limitations* still says every Storage object carries its token (superseded by DC46 sweeps) | Documentation | Open | P3 | — | Next SECURITY.md change | Observed 24 Nov |
 | 14 | Operator checks must read `custom_fields` for Storage download tokens; zsh needs `${VAR}:method` braces in REST URLs | Operator tooling note | Recorded | — | — | Runbook note | Stage B |
 | 15 | Testing-profile sessions are per origin and replaced by any sign-in on that origin; sign-ins in another browser do not reach it | Test procedure | Recorded | — | — | Test procedure | Stage B P5, P13, final |
-| 16 | `provision-external-member.mjs --link-file` checks the repository boundary on the typed path; a folder that is a symbolic link into the working tree is not caught (final-component and existing-file checks are sound) | Operator safety | **IMPLEMENTED — PENDING INTEGRATION** — the hole demonstrated on `main` (exit 0, link file created in the repository; emulator); now `_linkFile.mjs` (real path, O_EXCL + O_NOFOLLOW, 0600, reserved before the write); exit 3 on a post-commit delivery failure with Resend recovery; no rotation, no duplicate (EMULATOR: §70 OT15–OT16) | P1 (raised by the architect) | Merge | Operator tooling safety | Operator tooling safety |
+| 16 | `provision-external-member.mjs --link-file` checks the repository boundary on the typed path; a folder that is a symbolic link into the working tree is not caught (final-component and existing-file checks are sound) | Operator safety | **COMPLETE — INTEGRATED** (`62e824a`) — the hole demonstrated on `main` `2e48a2a` (exit 0, link file created in the repository; emulator); now `_linkFile.mjs` (real path, O_EXCL + O_NOFOLLOW, 0600, reserved before the write); exit 3 on a post-commit delivery failure with Resend recovery; no rotation, no duplicate (EMULATOR: §70 OT15–OT16) | P1 (raised by the architect) | — | Operator tooling safety — done | Operator tooling safety |
 | 17 | `npm run test:team` / `test:functions`: the Firebase CLI makes one authenticated metadata request for the emulator project id (403 — no access; no production project read) and hands the operator's CLI login to the Functions emulator as credentials; Storage and Pub/Sub are not emulated there | Local tooling / security | Open — limitation recorded | P3 | Design | Use a `demo-` emulator project id (separate change: `.env`, harness, suites) | Launcher end-to-end run, 24 Nov |
-| 18 | `npm run test:team` did not wait for the Auth emulator (first-run bootstrap `ECONNREFUSED :9099`) and probed Vite on `127.0.0.1` while Vite 8 bound `::1` only (*Starting Vite… failed*) | Local tooling | **IMPLEMENTED — PENDING INTEGRATION** — bounded readiness for Auth, Firestore, Functions and the CLI ready signal; Vite `--host 127.0.0.1`; bounded shutdown wait. End-to-end PASS, four fresh runs (§70) | P2 | Merge | Operator tooling safety | First implementation report |
+| 19 | Reports tab (L2-A) shows a working budget under its *Approved budget* card, with the sub-label *Working budget (not approved)*; the Portfolio shows the same value as *Not approved* with the working amount beneath | UX — wording (observation; values identical; pre-dates L2-C) | Open — **deferred** (architect) | P3 | — | UX fix bundle, if accepted | C1-B (24 Nov; B4) |
+| 20 | Forecast tab: after the first *Save all changes* on a project, the page kept showing *Not forecast* / FFC 0 although the forecast line was written (REST-verified); a reload showed the saved figure. Seen once in two saves, not reproduced | Reliability / UX — display only (stored value and every other surface correct) | Open — needs a reproduction | P3 | Reproduction | UX / reliability bundle | C1-B B5 (fixture X, 07:18) |
+| 21 | Portfolio status line reads *All N projects have been read.* when every read failed (offline); the coverage notice below it is correct | UX — wording | Open | P3 | — | UX fix bundle (with #9) | C1-B B5 (P15, local) |
+| 18 | `npm run test:team` did not wait for the Auth emulator (first-run bootstrap `ECONNREFUSED :9099`) and probed Vite on `127.0.0.1` while Vite 8 bound `::1` only (*Starting Vite… failed*) | Local tooling | **COMPLETE — INTEGRATED** (`62e824a`) — bounded readiness for Auth, Firestore, Functions and the CLI ready signal; Vite `--host 127.0.0.1`; bounded shutdown wait. End-to-end PASS, four fresh runs (§70) | P2 | — | Operator tooling safety — done | First implementation report |
 
 ### D4. Implementation roadmap (strategic order unchanged)
 
 | State | Items |
 |---|---|
-| **Implemented and production-accepted** | Commercial foundations; M1, M2-A, M2-B1/B2/B3, M3-A/B1/B2; SHIELD 2A / 2B1 / 2B2; L1 Team Management; DC46 (closed with accepted risks); L2-A; L2-B Stage A; L4 (closed with listed gaps); **M2-A2 Stage A and B (DC20 closed)** |
-| **Implemented, not fully accepted** | L2-B Final Account (C1-A); L2-C Portfolio (C1-B); GANTT 1A1 / 1A2 / 1B and core completion (C1-C); L3 Stage 1 alerting (C1-D) and Stage 2 (E1–E10); GST boundary hotfix and Premium Dashboard v2 (production evidence) |
-| **Known defects requiring fixes** | D3 #1–#3, #16, #18 implemented, pending integration; D3 #4–#9 (UX), #17 (local tooling) |
+| **Implemented and production-accepted** | Commercial foundations; M1, M2-A, M2-B1/B2/B3, M3-A/B1/B2; SHIELD 2A / 2B1 / 2B2; L1 Team Management; DC46 (closed with accepted risks); L2-A; L2-B Stage A; L4 (closed with listed gaps); **M2-A2 Stage A and B (DC20 closed)**. *Integrated, no production acceptance required:* operator tooling safety (`62e824a`) |
+| **Implemented, not fully accepted** | L2-B Final Account (C1-A); L2-C Portfolio (C1-B — all checks run; **awaiting the architect's closure decision**); GANTT 1A1 / 1A2 / 1B and core completion (C1-C); L3 Stage 1 alerting (C1-D) and Stage 2 (E1–E10); GST boundary hotfix and Premium Dashboard v2 (production evidence) |
+| **Known defects requiring fixes** | D3 #4–#9, #19, #21 (UX; #9, #19, #21 wording only), #20 (needs reproduction), #17 (local tooling). D3 #1–#3, #16, #18 complete (`62e824a`) |
 | **Security hardening** | D1 R-1 … R-6; general App Check enforcement; DC46 follow-ups (Storage audit logs, faster revocation, drawing-revision policy, load testing at triggers); billing-account administration |
 | **Not yet implemented** | Real customer external onboarding (gated); self-serve company signup; billing and subscriptions; client portal; client credit notes and client retention; estimating; creator ≠ approver segregation on Final Account; company legal / tax identity; client-side error reporting; external availability monitor |
 | **Deferred (order per ROADMAP → *Approved development order (post-L4)*)** | 1 remaining core functionality and acceptance (C1) → 2 SaaS readiness and international foundations → 3 mobile / PWA → 4 Xero (ADR-82 PROPOSED) → 5 Constrap IQ → 6 Quant AI → 7 final production audit. Stage 8 advanced modules unscoped |
 
-### D5. Next smallest actionable milestone — IMPLEMENTED — PENDING INTEGRATION (24 November 2026)
+### D5. Operator tooling safety — INTEGRATED (24 November 2026)
 
-*Status:* implemented on `feature/operator-tooling-safety` (uncommitted),
+*Status (24 Nov 2026, C1-B revision):* **merged to `main`** as `bc64487`
+(*fix(security): harden operator tooling and secure invitation delivery*),
+merge `62e824a` (VERIFIED in Git, equal to `origin/main`). Azure `main` CI
+green (REPORTED by the Lead Architect; not read here). Corrections D3 #1–#3,
+#16 and #18 complete; D3 #17 outstanding. No production deployment was
+required and none was made. **Production transaction cleanup was not
+tested** — the refused-transaction lock behaviour and its fix are proven on
+the emulator only. *Next actionable milestone (updated after B5):* the architect's C1-B closure decision, then C1-A role checks using the retained PM / QS identities.
+
+*As written before integration:* implemented on `feature/operator-tooling-safety` (uncommitted),
 awaiting architect review. **Deployment: none required** — no Rules, Storage
 Rules, Hosting, callable or `functions/src` change. Tests (after the
 architect corrections): functions pure 8 files / 179 (was 7 / 155); functions
@@ -409,6 +609,9 @@ Newest first. Add one row per test or step; keep detail in the linked record.
 
 | ID / milestone | Objective | Environment | Result | Evidence | Date | Open issues | Follow-up |
 |---|---|---|---|---|---|---|---|
+| C1-B / L2-C (final) | P7 weighted margin and incomplete budget; P9 completed filter; P18 three roles; P15 offline | Prod, isolated test company (NZD fixtures, TEST admin, new PM, re-activated QS); P15 local emulators + headless Chrome | P7, P9, P18 PASS; P15 PASS (local only) | B5; independent Decimal expectations; CSV fingerprints; snapshot diffs (Apex unchanged) | 24 Nov 07:15–07:37 | D3 #20, #21; REST cross-company probe not run | Architect closure decision |
+| C1-B / L2-C | Portfolio read-only acceptance: P1–P22 where read-only, M1–M5 | Prod, read-only, Company Admin (Apex), dedicated tab | P1–P6, P8, P12, P13, P21, P22 PASS; P4 5 rows / 55 figures; P7 partial; P9 not exercisable; P15 not run; P18 BLOCKED; M1 10; M4 136 reads | B4; TESTING.md §63; Monitoring read / write / delete counts; worker log | 24 Nov 05:14–05:27 | P18 needs PM / QS (writes); D3 #9, #19 wording | Architect decision on P18 |
+| Integration / operator tooling safety | Merge; CI | Git; Azure | Merged `bc64487` / `62e824a`; Azure green (REPORTED) | `git log`; Lead Architect | 24 Nov 2026 | D3 #17; production cleanup untested | — |
 | Corrections / operator tooling safety | D3 #16 provisioning link file; `test:team` readiness and Vite host; explicit cleanup-failure reporting | Local emulators + pure tests; `npm run test:team` × 4 (no production) | IMPLEMENTED — PENDING INTEGRATION; automated PASS (pure 179, emulator 367, unit 5,244); launcher PASS | TESTING.md §70 OT15–OT16, runner tests, launcher table; D3 #16 demonstrated on `main` | 24 Nov 2026 | D3 #17 (emulator credentials, `demo-` id) | Architect review → merge |
 | Operator tooling safety / D3 #1–#3 | Bootstrap dry-run default; link never printed; graceful termination of four older scripts | Local emulators + pure tests (no production) | IMPLEMENTED — PENDING INTEGRATION; automated PASS | TESTING.md §70 OT1–OT14; pure `operatorTooling.test.js`; hazard measurement and sensitivity check (scratch) | 24 Nov 2026 | D3 #16 (provision link-file real path); production lock behaviour unmeasured | Architect review → merge |
 | Closeout / M2-A2 | Stage A, Stage B, DC20 CLOSED; documentation closeout | Repository (docs only) | Architect decision recorded | ROADMAP, PROJECT_DECISIONS, SECURITY, TESTING, DEPLOYMENT, DATA_MODEL, ARCHITECTURE, HANDOVER on `docs/m2-a2-stage-b-closeout` | 24 Nov 2026 | Customer onboarding gated; D1 risks open | D5 |
@@ -442,9 +645,9 @@ Newest first. Add one row per test or step; keep detail in the linked record.
 |---|---|---|---|---|---|---|
 | M2-A2 Stage A (ADR-83) | Yes | Yes | Yes | **Yes — CLOSED** (23 Nov); external X1–X7 PASSED (24 Nov); internal regression M1, M2, M4, M5, M7, M8 not recorded | — | — |
 | M2-A2 Stage B (ADR-84) | Yes | Yes (3 callables) | Yes | **Yes — CLOSED** (24 Nov): S1–S3, R1–R3, P1–P14 PASS; **DC20 CLOSED** | Real customer external onboarding (readiness decision) | — |
-| Operator tooling safety (D3 #1–#3, #16, #18) | Yes — PENDING INTEGRATION | Not applicable (scripts and local launcher only; no deployment) | Yes (§70); `test:team` end-to-end PASS | Not required (architect: no production dry run for this review) | — | — |
+| Operator tooling safety (D3 #1–#3, #16, #18) | Yes — **merged** `62e824a` | Not applicable (scripts and local launcher only; no deployment) | Yes (§70); `test:team` end-to-end PASS ×4; Azure green (REPORTED) | Not required (architect); production cleanup never exercised | — | D3 #17 |
 | L2-B Final Account (ADR-77) | Yes | Yes | Yes | **Partly** — positive path; role checks open | — | — |
-| L2-C Portfolio (ADR-78) | Yes | Yes | Yes (unit) | **Partly** — visual / export, P4; P19–P20 PASSED (subcontractor and client); P18, M-checks open | — | — |
+| L2-C Portfolio (ADR-78) | Yes | Yes | Yes (unit) | **Yes, pending the architect's closure** — B4 read-only run, B5 P7 / P9 / P18 PASS; P19–P20 PASSED; P15 local only; M1, M4 measured | — | — |
 | L4 transfer (ADR-81) | Yes | Yes | Yes | Yes (CLOSED) with listed gaps | — | — |
 | L3 Stage 2 (ADR-80) | Yes | Yes | Yes | Not recorded (E1–E10) | — | — |
 | DC46 (ADR-73–75) | Yes | Yes | Yes | Yes — CLOSED 18 Nov | — | Stage 4 volume |
