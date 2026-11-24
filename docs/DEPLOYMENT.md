@@ -4744,7 +4744,9 @@ Each step needs its own authorisation.
    edit a project until it is reloaded.
 
 Then TESTING.md §68 (internal regression). The external checks there need
-Stage B (*M2-A2 Stage B*, below — IMPLEMENTED, NOT DEPLOYED).
+Stage B (*M2-A2 Stage B*, below — LIVE since 23 November 2026; the external
+checks X1–X7 PASSED in production on 23–24 November 2026). *As written for
+the release:* Stage B (*M2-A2 Stage B*, below — IMPLEMENTED, NOT DEPLOYED).
 
 ### Rollback
 
@@ -4807,9 +4809,18 @@ step 1.
 republishing the pre-M2-A2 Firestore or Storage ruleset reopens Deferred
 Control 20 and needs its own authorisation.
 
-## M2-A2 Stage B — External provisioning release order — ADR-84 — MERGE, AZURE GREEN, THREE CALLABLES; no Rules, no Hosting (IMPLEMENTED — NOT DEPLOYED)
+## M2-A2 Stage B — External provisioning release order — ADR-84 — MERGE, AZURE GREEN, THREE CALLABLES; no Rules, no Hosting (STAGE B LIVE — released 23 November 2026; production-accepted and CLOSED 24 November 2026)
 
-**Status (23 November 2026):** implemented on
+**Status (24 November 2026, closeout):** Stage B is LIVE and CLOSED (Lead
+Architect decision). The three callables were deployed on 23 November 2026
+and the production acceptance (TESTING.md §69, S1–S3, R1–R3, P1–P14) PASSED
+in the isolated test company by 24 November 2026 00:50 UTC. Record: *Release
+record* at the end of this section. **Real customer external onboarding
+remains BLOCKED pending a separate readiness decision** (SECURITY.md →
+*External Project Isolation — M2-A2 Stage B*). The procedure below is kept as
+written for the release.
+
+*As written for the release (23 November 2026, IMPLEMENTED — NOT DEPLOYED):* implemented on
 `feature/m2-a2-external-provisioning` (uncommitted, from `main` `10807b8`).
 **Nothing in this section has been run.** No commit, merge, deploy, script
 run against production, account creation or production write. External
@@ -4929,3 +4940,37 @@ anyone's access; deactivation does.
 
 **Never** republish the pre-M2-A2 Firestore or Storage ruleset while any
 `client` or `subcontractor` is active (*M2-A2 Stage A → Rollback*).
+
+### Release record
+
+**23 November 2026 — released; 24 November 2026 — production-accepted and
+CLOSED (Lead Architect).** Merged as `cddfca8`, `main` `bd9021c` (VERIFIED in
+Git). Azure CI on that commit was not read in this record.
+
+| Step | State | Evidence |
+|---|---|---|
+| 1. Merge and CI | Done — `main` `bd9021c` | VERIFIED in Git; Azure result not read here |
+| 2. Pre-flight | Done | Firestore ruleset `67b6425a…` (236,737 bytes) and Storage ruleset `2f3a4788…` (10,323 bytes) live and unchanged by Stage B — VERIFIED read-only 23 and 24 November 2026 |
+| 3. Three callables | Done — `acceptinvitation-00005-mol` (created 23 November 2026 09:11:18 UTC), `deactivatemember-00005-suy` (09:11:28), `resendinvitation-00005-mer` (09:11:28) | VERIFIED read-only: the uploaded source archive of each is identical to `frontend/functions` on `main` (method: the `gcf-v2-sources` object generation of each service) |
+| 4. Verify | Done | VERIFIED read-only, 23 and 24 November 2026: the other eight services kept their revisions (`createinvitation-00004-xuj`, `previewinvitation-00004-nuy`, `listteam-00004-wax`, `changememberrole-00004-dul`, `revokeinvitation-00004-giw`, `processfilelinkrevocations-00003-ceg`, `approvefinalaccount-00003-jad`, `transferboqtobudget-00001-zol`); Hosting still `index-BOg2hoYg.js`. The 401-without-App-Check probe of the three callables is **not recorded**. R1–R3 PASSED (TESTING.md §69) |
+| 5. Production acceptance | **PASSED** — S1–S3, R1–R3, P1–P14, §68 X1–X7, §63 P19–P20 (both external roles) | TESTING.md §69 → *Production acceptance record*; [SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md) → B2 |
+
+**Isolated test company retained** — `constrap-acceptance-test`
+(*Constrap Acceptance — TEST (not a customer)*), bootstrapped 23 November
+2026 20:10 UTC with `bootstrap-company.mjs` (a deliberate production write,
+Product-Owner-authorised). End state, VERIFIED read-only 24 November 2026
+00:50 UTC: the TEST Company Admin active (kept for regression testing); the
+QS, the subcontractor and the client test accounts **deactivated, Auth
+disabled, no `projectIds`**; three projects and five synthetic file fixtures
+retained, no download token on any; directory 13 / 13 in sync;
+`reconcile-membership.mjs` (report only) 0 findings across the project.
+Apex Builders unchanged from the pre-test baseline. Do not delete the test
+company or its records.
+
+**Deviations, recorded.** None in the release. During acceptance: the
+first P5 *registered* report had no production trace (the registration was
+repeated and then verified); one positive control for P9 minted a download
+token on one fixture by an architect-approved member request, removed by the
+urgent sweep that P8 queued. Neither changed the release.
+
+**No rollback was used.**

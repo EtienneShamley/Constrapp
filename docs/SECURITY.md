@@ -242,7 +242,9 @@ LIVE:** `projects` is now internal-only, and `drawings`, revisions and
 project-visibility `documents` are read by the internal roles and by a
 `client` / `subcontractor` assigned to the project; every other non-internal
 role reads none of them. `companies` is still readable by any member. See
-*External Project Isolation* below.
+*External Project Isolation* below. **24 November 2026 — Deferred Control 20
+CLOSED** (Lead Architect): Stage B (ADR-84) is live and the external-role
+production acceptance passed (TESTING.md §68 X1–X7, §69).
 
 | Path | Read | Create/Update | Delete |
 |---|---|---|---|
@@ -1761,7 +1763,7 @@ coarser model:
 | `super_admin` | **No special powers** — treated as an ordinary company member (cannot even write projects) |
 | `company_admin`, `project_manager` | Write access to everything writable |
 | `qs` | Same, except projects |
-| `subcontractor`, `client` | Read `companies`, `projects`, `drawings` / revisions and project-visibility `documents` across the **whole company** — **not** scoped to their own projects (DC20). **No financial collection since ADR-56** (M2-A — LIVE IN PRODUCTION since 27 October 2026: merged, Azure green, ruleset published and production-verified by the product owner) |
+| `subcontractor`, `client` | **Since M2-A2 (ADR-83 / ADR-84 — LIVE; production-accepted 24 November 2026):** read `companies`, their own `users/{uid}`, and — for **assigned projects only** — the `projectDirectory` entry, `drawings` / revisions and `project` + `active` `documents` with their Storage objects; never the `projects` document. *As written before:* Read `companies`, `projects`, `drawings` / revisions and project-visibility `documents` across the **whole company** — **not** scoped to their own projects (DC20). **No financial collection since ADR-56** (M2-A — LIVE IN PRODUCTION since 27 October 2026: merged, Azure green, ruleset published and production-verified by the product owner) |
 
 The fine-grained per-module access matrix in PRODUCT.md is product intent, not
 implementation.
@@ -1791,15 +1793,69 @@ implementation.
 > and variation **write** rules are hardened by ADR-57 / ADR-58 / ADR-59
 > (M2-B1 / M2-B2 / M2-B3, all live since 27 October 2026 — one Hosting deploy,
 > then one rules publish).
+>
+> **Update, 24 November 2026:** the remaining company-wide exposure named
+> above is closed — M2-A2 Stage A (ADR-83) and Stage B (ADR-84) are live and
+> production-accepted, and Deferred Control 20 is CLOSED. Real customer
+> external onboarding is still gated by a separate readiness decision
+> (*External Project Isolation — M2-A2 Stage B*).
 
 Since ADR-27 the enforced `role` in that table is **settable only out of band**:
 `users/{uid}` is client-read-only, so no user can move themselves between the
 rows above. That is what makes the table meaningful — previously any user could
 place themselves in any row with a single write.
 
-## External Project Isolation — M2-A2 Stage B (ADR-84) — IMPLEMENTED — NOT DEPLOYED; external onboarding BLOCKED until production acceptance passes
+## External Project Isolation — M2-A2 Stage B (ADR-84) — STAGE B LIVE since 23 November 2026 — CLOSED and production-accepted 24 November 2026; Deferred Control 20 CLOSED; real customer external onboarding BLOCKED pending a readiness decision
 
-**Status, 23 November 2026.** Implemented on
+**Status, 24 November 2026 (closeout).** The three callables
+(`acceptinvitation-00005-mol`, `deactivatemember-00005-suy`,
+`resendinvitation-00005-mer`) have been live since 23 November 2026 09:11 UTC,
+with source identical to `main` `bd9021c` (VERIFIED read-only); no Rules or
+Hosting change. The production acceptance — TESTING.md §69 S1–S3, R1–R3,
+P1–P14 and §68 X1–X7, with §63 P19–P20 for both external roles — PASSED in
+the isolated test company `constrap-acceptance-test` (23–24 November 2026).
+The Lead Architect closed Stage A, Stage B and Deferred Control 20 on 24
+November 2026. **Real customer external onboarding remains BLOCKED** until a
+separate readiness decision is recorded; the residual risks below are not
+accepted for a customer release by this closure.
+
+**What the production acceptance showed.** From real `subcontractor` and
+`client` browser sessions against the deployed Rules (not the Admin SDK): only
+assigned projects' directory entries, drawings, revisions, active
+project-visibility documents and their files are readable; project records
+(headline budget), unassigned projects, internal documents, every financial
+collection (including on assigned projects), other members' profiles and
+another company's records are denied. Assignment removal, clearing and
+reassignment took effect at the next read in the same session; deactivation
+removed the assignment, disabled the account and signed a live session out;
+re-inviting the same email reused the identity without restoring the old
+assignment. Evidence: TESTING.md §69 → *Production acceptance record*;
+[SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md) → B2–B2c.
+
+**Residual risks after closure (tracked — SECURITY_DATA_TEST_TRACKER.md →
+*Security risk register*).**
+
+- **Copied download links (Deferred Control 46).** Any active member can
+  mint a working download link for a file it may read with one direct
+  request (confirmed in production, Stage B P9). It works anonymously until a
+  sweep removes the token. Urgent sweeps after a removal or deactivation were
+  observed to complete in 11–57 s; that is evidence, not a guarantee.
+- **Privileged bypass.** Admin SDK and console writes bypass the Rules, the
+  operator scripts' validation, their audit events and the revocation
+  request. Control of production credentials is the boundary.
+- **Withdrawn drawing revisions.** An assigned external member reads every
+  revision of an assigned project's drawings, withdrawn ones included.
+- **App Check** is not enforced on Firestore, Storage or Authentication.
+- **Internal regression.** TESTING.md §68 M1, M2, M4, M5, M7, M8 are not
+  recorded.
+- **Operator tooling.** `bootstrap-company.mjs` writes by default and prints
+  its acceptance link; four older scripts call `process.exit(1)` after a
+  refused transaction (ADR-84 lesson).
+
+Internal roles remaining company-wide is an accepted architectural decision
+(ADR-83), not a residual risk of this closure.
+
+*As written for the implementation (23 November 2026):* Implemented on
 `feature/m2-a2-external-provisioning` (uncommitted). **Nothing in this
 section is live.** No Function has been deployed, no script has been run
 against production, no external account exists. Emulator-proven only.
@@ -1861,16 +1917,18 @@ new callable.
   and a Company Admin's *Resend*, which emails the invited address.
 - A Company Admin may *Resend* or *Revoke* an operator-created external
   invitation (existing callables, unchanged). Resend cannot change its role
-  or its projects.
+  or its projects. **Permitted under ADR-84 (Lead Architect, 24 November
+  2026) for as long as neither can change the role or the assignment.**
 - No in-app assignment screen; no notice to a member whose assignment
   changes; no scoping inside a project; internal roles are not
   project-scoped.
 - An already-issued ID token lives up to an hour; the Rules re-read
   `users/{uid}` on every request, so this does not extend access to data.
-- Nothing here has been exercised with a real external account in a
-  production browser.
+- *As written before acceptance:* Nothing here has been exercised with a
+  real external account in a production browser. **Now exercised** —
+  TESTING.md §69 (24 November 2026).
 
-## External Project Isolation — M2-A2 Stage A (ADR-83) — STAGE A LIVE — CLOSED and production-accepted 23 November 2026; live external-role acceptance OUTSTANDING; onboarding BLOCKED
+## External Project Isolation — M2-A2 Stage A (ADR-83) — STAGE A LIVE — CLOSED and production-accepted 23 November 2026; live external-role acceptance PASSED 23–24 November 2026 (Stage B run); Deferred Control 20 CLOSED 24 November 2026; customer onboarding separately gated
 
 **Status, 23 November 2026 (closeout).** Stage A is LIVE. The FINAL
 Firestore ruleset (`67b6425a…`, 236,737 bytes) and the Storage ruleset
@@ -1880,7 +1938,13 @@ create and edit passed in production and the directory holds 10 of 10
 matching entries (ADR-83 → *Stage A closure record*). No known Stage A
 implementation defect.
 
-**What is and is not proven.** The Rules below are deployed, and they are
+**Update, 24 November 2026.** The external-role denials below have now been
+exercised in production from real `subcontractor` and `client` sessions
+(TESTING.md §68 X1–X7) — see *M2-A2 Stage B* above. Deferred Control 20 is
+CLOSED. The internal regression checklist (§68 M1, M2, M4, M5, M7, M8) is
+still not recorded.
+
+*As written at the Stage A closeout:* **What is and is not proven.** The Rules below are deployed, and they are
 the source the emulator suites tested. **No external-role session has been
 run in production**, so the denials are emulator-proven and
 deployed-rule-inspected, not production-exercised. Deferred Control 20's
@@ -1929,13 +1993,15 @@ bypassed by a direct Firestore call; the Rules above are the boundary.
 
 - Internal roles are not project-scoped; they read every project of their
   company.
-- **Assignment management is not live.** Stage B (ADR-84) is IMPLEMENTED —
-  NOT DEPLOYED: in production nothing writes `projectIds`, and a `client` or
-  `subcontractor` provisioned today reads nothing.
-- In production, invitation acceptance and deactivation do not yet clear
-  `projectIds` (corrected by Stage B, not deployed).
+- *As written at the Stage A closeout, superseded 23 November 2026 by
+  Stage B:* **Assignment management is not live.** Stage B (ADR-84) is
+  IMPLEMENTED — NOT DEPLOYED: in production nothing writes `projectIds`, and a
+  `client` or `subcontractor` provisioned today reads nothing.
+- *As written at the Stage A closeout, superseded by Stage B:* In production,
+  invitation acceptance and deactivation do not yet clear `projectIds`.
 - A download URL copied before an assignment is removed keeps working until
-  the periodic sweep (ADR-74 / ADR-75).
+  a sweep removes its token — since Stage B, the urgent sweep queued by the
+  removal (ADR-74 / ADR-75; observed in production, TESTING.md §69 P9).
 - Under the Stage-1 ruleset (between the first Rules publish and the FINAL
   one) a project may lack an entry, or hold one the previous bundle did not
   update. Such an entry contains only the five display fields.
@@ -2167,7 +2233,9 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     is no period locking, no immutable snapshot, and no change history beyond
     last-write stamps. Fabricated timing lines are a lower-severity analogue of
     Deferred Control 17: a line asserts an expectation, not a bank movement.
-20. **Project-specific membership does not exist.** Membership is
+20. **Project-specific membership does not exist.** **— CLOSED 24 November
+    2026 for external roles (M2-A2, ADR-83 / ADR-84); closure note at the end
+    of this item. The text below is kept as written.** Membership is
     **company-wide**: `users/{uid}.companyId` grants access to every project in
     that company. With Documents & Drawings this becomes visible rather than
     theoretical — a `subcontractor` provisioned for one job reads the drawings
@@ -2189,13 +2257,24 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     (VERIFIED read-only, byte-identical to `main`). The company-wide read
     described above no longer applies to `client`, `subcontractor` or any
     other non-internal role; internal roles remain company-wide.
-    **This control is NOT yet recorded as closed:** its live external-role
+    *As written at the Stage A closeout:* **This control is NOT yet recorded
+    as closed:** its live external-role
     acceptance is outstanding — no external session has been run in
     production — and onboarding stays blocked until Stage B (assignment
     management) and that test. See *External Project Isolation* above.
-    **23 November 2026 — Stage B (ADR-84) is IMPLEMENTED — NOT DEPLOYED.**
-    This control stays open until it is deployed and the live external-role
+    *As written at the Stage B implementation:* **23 November 2026 — Stage B
+    (ADR-84) is IMPLEMENTED — NOT DEPLOYED.** This control stays open until it is deployed and the live external-role
     test passes.
+    **CLOSED — 24 November 2026 (Lead Architect decision).** Stage B is live
+    (since 23 November 2026) and the live external-role production acceptance
+    passed: TESTING.md §69 S1–S3, R1–R3, P1–P14 and §68 X1–X7, with §63
+    P19–P20 for both external roles. External project access is scoped to
+    assigned projects in Firestore and Storage, proven from real
+    `subcontractor` and `client` sessions. **What closure does not mean:**
+    internal roles stay company-wide (accepted, ADR-83); the residual risks
+    listed under *External Project Isolation — M2-A2 Stage B* remain open and
+    tracked; real customer external onboarding stays BLOCKED until a
+    separate readiness decision is recorded.
 21. **File bytes are never inspected.** Storage Rules enforce content type,
     object name and size from **upload metadata**; they cannot verify that the
     bytes are what the metadata claims, and there is **no antivirus scanning**
@@ -4259,8 +4338,9 @@ trigger and QS already writes general documents.
 
 - **`subcontractor` and `client` are denied entirely** — deliberately **not**
   the drawings read model. RFI content routinely carries contractual positions,
-  and those roles are not scoped to their own projects (Deferred Control 20).
-  There is no external RFI portal in V1; building one is a client-portal
+  and those roles are not scoped to their own projects (Deferred Control 20;
+  closed 24 November 2026 for drawings and documents — RFIs stay denied to
+  both roles). There is no external RFI portal in V1; building one is a client-portal
   feature with its own scoping design.
 - **`super_admin` gains nothing**, matching every other collection.
 - Because the read gate is uniform, **no `where()` query workaround is needed**
@@ -4481,7 +4561,7 @@ makes every callable answer `team-management-disabled` without touching data.
 
 **Not enforced / not built (stated plainly).** No custom claims (rules still
 `get()` `users/{uid}`); no self-service company registration; no external
-(subcontractor/client) onboarding — DC20's live acceptance is outstanding (M2-A2 Stage A, ADR-83, LIVE since 23 November 2026; Stage B, ADR-84, IMPLEMENTED — NOT DEPLOYED); no MFA; no admin UI
+(subcontractor/client) customer onboarding — BLOCKED pending a readiness decision, although DC20 is CLOSED (24 November 2026: M2-A2 Stage A, ADR-83, and Stage B, ADR-84, LIVE and production-accepted; *As written before:* DC20's live acceptance is outstanding); no MFA; no admin UI
 over the audit log; no automated email bounce handling; **Storage download
 URLs are not revoked immediately on deactivation — a background clean-up
 (ADR-74, live since 12 November 2026) removes them afterwards (Deferred

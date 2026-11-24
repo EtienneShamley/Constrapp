@@ -92,7 +92,7 @@ flow must issue membership from a **trusted backend**, never from the client.
 | `formerCompanyId`, `formerRole` | string \| null (OPTIONAL) | **ADR-72.** Set by deactivation (history); cleared by re-acceptance |
 | `deactivatedAt`, `deactivatedBy` | timestamp, uid \| null (OPTIONAL) | **ADR-72.** Set by deactivation |
 | `authSyncPending`, `authSyncedAt` | bool, timestamp (OPTIONAL) | **ADR-72.** `true` between the Firestore commit of a deactivation and the Auth disable + refresh-token revocation |
-| `projectIds` | array of string (OPTIONAL) | **M2-A2 (ADR-83) — Stage A LIVE since 23 November 2026.** The projects a `client` / `subcontractor` is assigned to — the only source of external project access. Ignored for every other role. Missing, null, empty or not a list ⇒ no project access. Server-managed: no client can write it. **In production nothing writes it yet.** Stage B (ADR-84, IMPLEMENTED — NOT DEPLOYED): written by `acceptInvitation` from the operator-created invitation (external role) or removed (internal role), removed by `deactivateMember`, replaced by `scripts/set-member-projects.mjs`; stored sorted, 0–30 unique ids, each a project of the member's company. Unrelated to `contacts.projectIds` |
+| `projectIds` | array of string (OPTIONAL) | **M2-A2 (ADR-83) — Stage A LIVE since 23 November 2026.** The projects a `client` / `subcontractor` is assigned to — the only source of external project access. Ignored for every other role. Missing, null, empty or not a list ⇒ no project access. Server-managed: no client can write it. **Stage B (ADR-84) — LIVE since 23 November 2026, production-accepted 24 November 2026:** written by `acceptInvitation` from the operator-created invitation (external role) or removed (internal role), removed by `deactivateMember`, replaced by `scripts/set-member-projects.mjs`; stored sorted, 0–30 unique ids, each a project of the member's company. A deactivated profile has no field (removed, not emptied); a cleared active member holds `[]`. *As written before Stage B:* In production nothing writes it yet. Unrelated to `contacts.projectIds` |
 
 **Deactivation (ADR-72)** sets `companyId: null` and `role: null`. Because
 every rule authorises by `users/{uid}.companyId`, a deactivated profile reads
@@ -130,8 +130,8 @@ browser request — any role, including `company_admin` — is denied
 | Field | Type | Notes |
 |---|---|---|
 | `email` | string | Normalised (trimmed, lower-case). One `pending` invitation per (company, email) |
-| `role` | `'company_admin' \| 'project_manager' \| 'qs'` | Never `super_admin`. **ADR-84 (NOT DEPLOYED):** also `'client'` / `'subcontractor'`, on an invitation created by `scripts/provision-external-member.mjs` only — the callable still refuses both |
-| `projectIds` | array of string (external-role invitations ONLY) | **ADR-84 (NOT DEPLOYED).** 1–30 unique project ids of this company, sorted. Absent on an internal-role invitation. Re-validated at acceptance, then written to `users/{uid}.projectIds` in the acceptance transaction |
+| `role` | `'company_admin' \| 'project_manager' \| 'qs'` | Never `super_admin`. **ADR-84 (LIVE since 23 November 2026):** also `'client'` / `'subcontractor'`, on an invitation created by `scripts/provision-external-member.mjs` only — the callable still refuses both |
+| `projectIds` | array of string (external-role invitations ONLY) | **ADR-84 (LIVE since 23 November 2026).** 1–30 unique project ids of this company, sorted. Absent on an internal-role invitation. Re-validated at acceptance, then written to `users/{uid}.projectIds` in the acceptance transaction |
 | `status` | `'pending' \| 'accepted' \| 'revoked'` | Stored states. `expired` (now ≥ `expiresAt`) and `locked` (`failedAttempts` ≥ 10) are DERIVED at read time, never written |
 | `tokenHash`, `previousTokenHash` | hex SHA-256 | Only the hash of the 256-bit token is stored; the previous hash lets a rotated-away link be refused without counting as a guess |
 | `expiresAt` | timestamp | Seven days from creation or the last resend |
@@ -160,7 +160,7 @@ Append-only, written in the same transaction as the change: `type`
 (`invite.created` · `invite.resent` · `invite.revoked` · `invite.accepted` ·
 `member.role_changed` · `member.deactivated` · `member.auth_synced` ·
 `member.auth_reenabled` · `company.bootstrapped` · `reconcile.fix` ·
-`member.projects_changed` — ADR-84 (NOT DEPLOYED), an operator changed an
+`member.projects_changed` — ADR-84 (LIVE since 23 November 2026), an operator changed an
 external member's projects: `before.projectIds` and `after.projectIds` are
 the complete lists; a request that changes nothing writes no event ·
 `file_links.revocation_requested` · `file_links.revoked` ·
@@ -188,7 +188,7 @@ value is ever stored.**
 `system/fileLinkRevocation` — the durable state of legacy download-token
 revocation for the company: `requestSeq`, `requestedAt`, `requestedBy`,
 `requestReason` (`member.deactivated` / `member.role_reduced` / `operator`;
-ADR-84, NOT DEPLOYED: `member.assignment_removed`),
+ADR-84, LIVE since 23 November 2026: `member.assignment_removed`),
 `completedSeq`, `completedAt`, `completedPassStartedAt`, `lastPass` (`seq`,
 `pages`, `scanned`, `removed`, `failed`, `complete`, `finishedAt`),
 `consecutiveIncomplete`, `nextAttemptAt` (retry backoff), and while a sweep is
