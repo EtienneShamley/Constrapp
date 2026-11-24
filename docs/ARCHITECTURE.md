@@ -84,7 +84,10 @@ re-reading the project's registers in one transaction and recomputing every figu
 `functions/src/generated/finalAccountCalc.js` — a generated bundle of the browser's own
 `src/lib/finalAccount.js` (`npm run functions:calc`), so there is one calculation, not two. It performs no
 other financial write and licenses no other financial logic in the backend. Operator scripts (`functions/scripts/`) bootstrap a company
-and reconcile membership with the operator's own credentials.
+and reconcile membership with the operator's own credentials, and — since M2-A2 Stage B (ADR-84, LIVE since 23 November 2026,
+production-accepted 24 November 2026) — provision `client` / `subcontractor` invitations and change their project assignments
+(`users/{uid}.projectIds`, which the Firestore and Storage Rules read to scope every external read — ADR-83). There is no in-app
+assignment screen; external members are operator-provisioned only.
 
 ```
 frontend/functions/

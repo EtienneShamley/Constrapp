@@ -8823,7 +8823,25 @@ refuses the approval.
 
 ---
 
-## 63. L2-C — Portfolio Report (ADR-78, 20 November 2026) — DEPLOYED; visual, CSV and PDF acceptance confirmed (REPORTED); access, parity and performance checks OPEN
+## 63. L2-C — Portfolio Report (ADR-78, 20 November 2026) — DEPLOYED; visual, CSV and PDF acceptance confirmed (REPORTED); external-role checks P19–P20 PASSED for both external roles (24 November 2026, network-payload limitation recorded); P18, parity and performance checks OPEN
+
+**Status update (24 November 2026) — P19–P20 PASSED for both external roles**
+(M2-A2 Stage B production acceptance, §69 P6 / P7 / P13; isolated test
+company). **P19:** as a `subcontractor` and as a `client`, no Portfolio entry
+in the sidebar; typing `/portfolio` shows *The Portfolio Report is
+restricted*; no console error; the only backend traffic was the Auth lookup
+and the shared Firestore Listen channel. **Limitation:** the Listen-channel
+request bodies could not be decoded (two capture attempts; the positive
+control captured nothing), so *the page requests no financial collection* is
+NOT proven by network inspection — it rests on the code and the unit tests
+below. **P20:** from each external session, direct reads of 22 financial and
+commercial collections plus `commercial/baseline` and
+`approvedBudget/current` on every **assigned** project were denied by the
+Firestore Rules (403): 24 reads as the subcontractor, 48 as the client on two
+projects. Still OPEN: P18 (Project Manager / QS sessions), row-to-Reports-tab
+parity as recorded here, M1–M5. A C1-B read-only run of 22 November 2026
+(P4 parity on four rows, M2 timings) was reported to the architect and is not
+recorded here as accepted.
 
 **Status update (21 November 2026, NZ).** Visual, CSV and PDF acceptance is confirmed (REPORTED by the Lead Architect). Still OPEN: the external-role access checks, row-to-Reports-tab parity and the performance measurements below. Classified in the L3 assessment as a product acceptance item, not an L3 dependency.
 
@@ -8895,8 +8913,8 @@ a working budget only, and — if available — one in a second currency.
 | P16 | 375 px, 768 px and 1280 px widths | Cards below `lg`, table from `lg` scrolling inside its own container; controls wrap; touch targets ≥ 44 px; no horizontal page scroll |
 | P17 | Keyboard only | Checkbox, Refresh, Export, Print, each project link and each indicator disclosure reachable and operable; focus visible |
 | P18 | Sign in as `project_manager`, then `qs` | Same page, same figures |
-| P19 | **Negative path.** Sign in as a `subcontractor` (or `client`) test user | No Portfolio entry in the sidebar. Typing `/portfolio` shows "The Portfolio Report is restricted". Network tab: **no** Firestore request for budget lines, purchase orders, invoices or any other financial collection from this page |
-| P20 | Still as the external user, in the console attempt a direct read of a financial collection | Denied by **Firestore Rules** (`permission-denied`) — the rule, not the page, is the control |
+| P19 | **Negative path.** Sign in as a `subcontractor` (or `client`) test user — **PASSED 24 Nov 2026 for both roles; network payloads not decoded (status update above)** | No Portfolio entry in the sidebar. Typing `/portfolio` shows "The Portfolio Report is restricted". Network tab: **no** Firestore request for budget lines, purchase orders, invoices or any other financial collection from this page |
+| P20 | Still as the external user, in the console attempt a direct read of a financial collection — **PASSED 24 Nov 2026 for both roles (403)** | Denied by **Firestore Rules** (`permission-denied`) — the rule, not the page, is the control |
 | P21 | Dashboard, as a financial role | Unchanged: counts only in the portfolio card, no financial column in the project register, one project in the snapshot |
 | P22 | Budget tab of any project, before and after visiting Portfolio | Figures unchanged — the page wrote nothing |
 
@@ -9323,7 +9341,7 @@ To accept the correction after its Hosting release: in the sandbox, open *Transf
 
 ---
 
-## 68. M2-A2 Stage A — External Project Isolation (ADR-83, 23 November 2026) — STAGE A LIVE — CLOSED and production-accepted 23 November 2026; paired create / edit and directory PASSED in production; external-role checks X1–X6 NOT RUN (BLOCKED on Stage B); automated tests PASS (emulators)
+## 68. M2-A2 Stage A — External Project Isolation (ADR-83, 23 November 2026) — STAGE A LIVE — CLOSED and production-accepted 23 November 2026; paired create / edit and directory PASSED in production; external-role checks X1–X7 PASSED in production 23–24 November 2026 (Stage B run, §69); internal regression M1, M2, M4, M5, M7, M8 NOT RECORDED; automated tests PASS (emulators)
 
 **Scope.** Rules, Storage Rules, the projects provider, the directory hook,
 the role-filtered navigation and the backfill script (ADR-83). §63 P19–P20
@@ -9397,22 +9415,32 @@ Stage A* steps 1–4; a TEST project, not customer data). NOT RUN.**
 - [ ] M7 — After step 4 (FINAL Rules): repeat M3. A tab left open on the old bundle fails to edit a project until reloaded (expected).
 - [ ] M8 — Portfolio, Commercial Report, Final Account and GANTT open for the internal roles as before.
 
-**Manual acceptance — external roles. BLOCKED: needs Stage B (ADR-84 —
-IMPLEMENTED, NOT DEPLOYED; §69) deployed, and an isolated test company with
-two Product-Owner-controlled emails. NOT RUN.**
+**Manual acceptance — external roles. PASSED in production, 23–24 November
+2026** (Stage B run in the isolated test company `constrap-acceptance-test`,
+§69 → *Production acceptance record*; full matrices in
+[SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md) → B2a, B2b,
+B2c). Evidence kinds: **Rules probes** — requests from the member's own
+signed-in browser session (Firestore REST and Storage downloads with that
+session's ID token, against the deployed Rules; no Admin SDK); **browser** —
+what the application showed; **operator** — read-only server reads.
+*As written before:* BLOCKED: needs Stage B (ADR-84 — IMPLEMENTED, NOT
+DEPLOYED; §69) deployed, and an isolated test company with two
+Product-Owner-controlled emails. NOT RUN.
 
-- [ ] X1 — A `subcontractor` assigned to project A only: Projects lists A alone, with no Headline Budget column and no *Add New Project*; the sidebar offers Dashboard and Projects.
-- [ ] X2 — Project A shows the Overview (no budget card) and Documents tabs only; drawings and active project documents open and download.
-- [ ] X3 — Entering project B's URL directly: *Project not found*. A direct SDK read of `projects/A`, `projects/B`, `projectDirectory/B`, a drawing of B and a Storage object of B is `permission-denied`.
-- [ ] X4 — A `client` with no assignment: *No projects have been assigned to you yet*; every direct read is denied.
-- [ ] X5 — Remove the assignment (operator): project A disappears at the next read.
-- [ ] X6 — §63 P19–P20.
+- [x] X1 — A `subcontractor` assigned to project A only: Projects lists A alone, with no Headline Budget column and no *Add New Project*; the sidebar offers Dashboard and Projects. **PASS** — browser, subcontractor on `[A]` (P6, 23 Nov) and client on `[A, B]` (P7, 24 Nov).
+- [x] X2 — Project A shows the Overview (no budget card) and Documents tabs only; drawings and active project documents open and download. **PASS** — browser (tabs, registers; the internal document not listed) and Rules probes (files downloaded 200 through the Storage Rules; not opened in the application's viewer).
+- [x] X3 — Entering project B's URL directly: *Project not found*. A direct SDK read of `projects/A`, `projects/B`, `projectDirectory/B`, a drawing of B and a Storage object of B is `permission-denied`. **PASS** — browser and Rules probes (403), for the subcontractor (B unassigned) and the client (C unassigned).
+- [x] X4 — A `client` with no assignment: *No projects have been assigned to you yet*; every direct read is denied. **PASS** (24 Nov) — `set-member-projects.mjs --clear`; same session, no sign-out; own profile and company document 200, 42 other probes 403.
+- [x] X5 — Remove the assignment (operator): project A disappears at the next read. **PASS** (24 Nov, run on project B) — denied about 20 s after the removal in the same session; the open page dropped the project without a reload.
+- [x] X6 — §63 P19–P20. **PASS** for both external roles, with the network limitation recorded in §63.
+- [x] X7 (added 24 November 2026) — Reassign a cleared client to project C only: C opens; nothing previously assigned returns. **PASS** — `--add C`; one audit event, no revocation request; C directory and lists 200, C project record and financial collections 403, every A and B resource and file 403.
 
-**Not covered by any test.** A real browser session of an external role; the
-production access-call limit; a production project whose stored field types
-differ from what the app writes (the backfill dry run reports these).
+**Not covered by any test.** The production access-call limit; a production
+project whose stored field types differ from what the app writes (the
+backfill dry run reports these). *As written before Stage B:* A real browser
+session of an external role — now covered (X1–X7 above).
 
-## 69. M2-A2 Stage B — External member assignments and provisioning (ADR-84, 23 November 2026) — IMPLEMENTED — NOT DEPLOYED; automated tests PASS (emulators); production acceptance NOT RUN; external onboarding BLOCKED
+## 69. M2-A2 Stage B — External member assignments and provisioning (ADR-84, 23 November 2026) — STAGE B LIVE since 23 November 2026 — CLOSED and production-accepted 24 November 2026 (S1–S3, R1–R3, P1–P14 PASS); automated tests PASS (emulators); real customer external onboarding still BLOCKED pending a readiness decision
 
 **Scope.** `acceptInvitation`, `deactivateMember`, the operator library
 (`functions/src/lib/memberProjects.js`), the two operator scripts and the
@@ -9446,35 +9474,68 @@ checks up to date; `git diff --check` clean.
 | Existing Team Management regressions | every pre-existing Functions suite unchanged and passing; internal invitation, acceptance and deactivation shapes pinned unchanged |
 | Structure | `functions/test/memberProjects.test.js`: still eight callables; the operator library is imported by the two scripts only; which files write `projectIds` |
 
-**Regression after the Functions deploy — NOT RUN.**
+**Regression after the Functions deploy — PASSED 23 November 2026** (isolated
+test company; *Production acceptance record* below). *As written before:* NOT RUN.
 
-- [ ] R1 — Settings → Team loads for a Company Admin; members and pending invitations list as before.
-- [ ] R2 — Invite an internal member (Product-Owner-controlled email), accept, sign in: full access as before. `users/{uid}` carries no `projectIds` (read-only check).
-- [ ] R3 — Deactivate that member: signed out, Auth disabled, *Old file links: revocation pending* then *revoked*.
+- [x] R1 — Settings → Team loads for a Company Admin; members and pending invitations list as before. **PASS** (browser + operator).
+- [x] R2 — Invite an internal member (Product-Owner-controlled email), accept, sign in: full access as before. `users/{uid}` carries no `projectIds` (read-only check). **PASS** — QS invited and accepted; own-company reads 200, Apex reads 403 (Rules probes from the QS session); no `projectIds`.
+- [x] R3 — Deactivate that member: signed out, Auth disabled, *Old file links: revocation pending* then *revoked*. **PASS** — the open QS tab was signed out; urgent sweep seq 2 completed.
 
-**Production acceptance — NOT RUN. Needs: the three callables deployed; an
-isolated test company (not Apex Builders) with at least three projects
-created through the application, a drawing and an active project-visibility
-document in two of them; two Product-Owner-controlled mailboxes with no
-existing account; operator credentials; an authorisation for each
-`--apply`.**
+**Production acceptance — PASSED, 23–24 November 2026** (Lead Architect:
+Stage B CLOSED, 24 November 2026). *As written before:* NOT RUN. Needs: the
+three callables deployed; an isolated test company (not Apex Builders) with
+at least three projects created through the application, a drawing and an
+active project-visibility document in two of them; two
+Product-Owner-controlled mailboxes with no existing account; operator
+credentials; an authorisation for each `--apply`.
 
-- [ ] P1 — Dry run of `provision-external-member.mjs` for a `subcontractor` on project A: plan printed, nothing written (no invitation, no audit event).
-- [ ] P2 — Dry runs that must be refused: a project id of another company; a nonexistent id; a duplicated id; role `qs`.
-- [ ] P3 — `--apply --no-link`: one pending invitation, delivery *Operator link*, in the Team page. The terminal shows no link.
-- [ ] P4 — A Company Admin presses *Resend*: the email arrives at the invited address and names *Subcontractor*.
-- [ ] P5 — The invitee registers and accepts. `users/{uid}`: `role` `subcontractor`, `projectIds` exactly `[A]`, written in the same commit as the membership (read-only check).
-- [ ] P6 — TESTING.md §68 X1–X3 as that subcontractor (project A only; project B's URL and direct reads denied; no budget anywhere).
-- [ ] P7 — Provision a `client` on projects A and B the same way; §68 X-checks for a client. §63 P19–P20.
-- [ ] P8 — `set-member-projects.mjs --remove B` (dry run, then `--apply`): project B disappears for the client at the next read; one `member.projects_changed` event with both lists; a revocation request; the Team page shows *revocation pending*, later *revoked*. (§68 X5)
-- [ ] P9 — Before P8, copy a document download URL of project B if one can be obtained; record whether it still opens after P8 and when it stops. (The application itself uses authenticated downloads — ADR-73 — so there may be none.)
-- [ ] P10 — Repeat the P8 command: *No change*.
-- [ ] P11 — `set-member-projects.mjs` against a Company Admin, Project Manager or QS: refused.
-- [ ] P12 — A Company Admin deactivates the subcontractor: signed out; `projectIds` absent from `users/{uid}`; the audit event records what it was.
-- [ ] P13 — Re-provision the same email as a `client` on project C only and accept: `projectIds` is exactly `[C]`; project A is denied.
-- [ ] P14 — `reconcile-membership.mjs` (report only): no R7, R8 or R9.
+- [x] P1 — Dry run of `provision-external-member.mjs` for a `subcontractor` on project A: plan printed, nothing written (no invitation, no audit event).
+- [x] P2 — Dry runs that must be refused: a project id of another company; a nonexistent id; a duplicated id; role `qs`. (Also refused: 31 ids, a mixed list, a trailing comma, a path-like id, `*`.)
+- [x] P3 — `--apply --no-link`: one pending invitation, delivery *Operator link*, in the Team page. The terminal shows no link.
+- [x] P4 — A Company Admin presses *Resend*: the email arrives at the invited address and names *Subcontractor*. (Receipt REPORTED by the Product Owner; send VERIFIED: provider message id, no error.)
+- [x] P5 — The invitee registers and accepts. `users/{uid}`: `role` `subcontractor`, `projectIds` exactly `[A]`, written in the same commit as the membership (read-only check).
+- [x] P6 — TESTING.md §68 X1–X3 as that subcontractor (project A only; project B's URL and direct reads denied; no budget anywhere).
+- [x] P7 — Provision a `client` on projects A and B the same way; §68 X-checks for a client. §63 P19–P20.
+- [x] P8 — `set-member-projects.mjs --remove B` (dry run, then `--apply`): project B disappears for the client at the next read; one `member.projects_changed` event with both lists; a revocation request; the Team page shows *revocation pending*, later *revoked*. (§68 X5)
+- [x] P9 — Before P8, copy a document download URL of project B if one can be obtained; record whether it still opens after P8 and when it stops. (No fixture carried a token; the positive control was minted by one architect-approved `getDownloadURL`-equivalent request from the client's own session. 200 before the removal, 200 after it until the sweep, 403 after the urgent sweep.)
+- [x] P10 — Repeat the P8 command: *No change*.
+- [x] P11 — `set-member-projects.mjs` against a Company Admin, Project Manager or QS: refused. (Run against the Company Admin and the deactivated QS; no Project Manager exists in the test company. The apply path re-runs the same check inside its transaction — code inspection.)
+- [x] P12 — A Company Admin deactivates the subcontractor: signed out; `projectIds` absent from `users/{uid}`; the audit event records what it was. (Auth disabled and refresh tokens revoked — VERIFIED. **No subcontractor browser session was open during P12**, so the sign-out was not observed there; it was observed for the final deactivation of the same account, below.)
+- [x] P13 — Re-provision the same email as a `client` on project C only and accept: `projectIds` is exactly `[C]`; project A is denied. (Same Auth identity re-enabled; no duplicate account; `[A]` not restored.)
+- [x] P14 — `reconcile-membership.mjs` (report only): no R7, R8 or R9. (0 findings for the test company and the whole project; still 0 after the final deactivations.)
 
-**Not covered by any test.** A real browser session of an external role;
-real email delivery of an external invitation; a download URL copied before
-a removal (P9); production IAM for the operator identity; the Firestore
-lock behaviour of a refused script run on production (emulator only).
+**Production acceptance record (23–24 November 2026; project
+`constrapp-69b5d`; company `constrap-acceptance-test`, bootstrapped for this
+test; Apex Builders not touched).** Server state was read through the
+Firestore, Identity Toolkit, Cloud Storage and Cloud Logging APIs,
+read-only; access was tested from each member's own browser session. Every
+`--apply` and Team-page mutation ran once, on Product Owner authorisation.
+Per-step evidence, audit-event ids and timings:
+[SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md) → B2, B2a,
+B2b, B2c.
+
+| Area | Result | Evidence kind |
+|---|---|---|
+| S1–S3: test company bootstrapped; TEST Company Admin accepted; projects A (headline budget 123,456), B, C and five synthetic PDF fixtures created through the application | PASS | operator reads, browser |
+| Subcontractor on `[A]` (P6): 10 reads allowed, 58 denied | PASS | Rules probes, browser |
+| Client on `[A, B]` (P7): 18 allowed, 80 denied — incl. 22 financial collections + baseline + approved budget on **each** assigned project | PASS | Rules probes, browser |
+| Removal of B (P8 / X5): denied in the same session ~20 s later; UI updated without a reload | PASS | Rules probes, browser |
+| Copied download URL (P9): anonymous 200 → 403 after the urgent sweep (seq 4, 57 s after the removal, removed 1) | PASS | anonymous HTTP, operator reads |
+| Clear (X4), reassign (X7), internal-role refusal (P11) | PASS | Rules probes, browser, operator |
+| Deactivation (P12) and re-invitation of the same identity as a client (P13) | PASS | operator reads, Rules probes, browser |
+| Reconcile (P14) | PASS — 0 findings | operator |
+| Final state | Both external test accounts and the QS deactivated (Auth disabled, no `projectIds`); TEST admin active; projects and fixtures kept, no token; directory 13 / 13; Apex unchanged | operator reads |
+
+**Observed revocation timings are evidence, not guarantees.** Urgent sweeps
+completed 11–57 s after their request (the worker runs every minute); the
+periodic 2-hour reconciliation played no part. A copied link lives until a
+sweep removes its token; completion depends on scheduling, worker health and
+backlog (ADR-75).
+
+**Not covered by any test.** Production IAM for the operator identity; the
+Firestore lock behaviour of a refused script run on production (emulator
+only); a Project Manager target for P11; the decoded payload of the
+Portfolio page's Firestore requests (§63 P19 note). *As written before:* A
+real browser session of an external role; real email delivery of an external
+invitation; a download URL copied before a removal (P9) — all three now
+covered.

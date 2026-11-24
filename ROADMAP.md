@@ -183,7 +183,16 @@ Bring documentation in line with the implemented system:
   POs and variations; the policy itself is not approved — DC4)
 - External-role financial reads — **P0 closed in production (ADR-56, M2-A,
   LIVE since 27 October 2026):** `subcontractor` / `client` can no longer read
-  any PO, claim, budget line or cost code. Still open:
+  any PO, claim, budget line or cost code. **DC20 CLOSED — 24 November 2026
+  (Lead Architect):** M2-A2 Stage A (ADR-83) and Stage B (ADR-84) are LIVE and
+  CLOSED; external reads are scoped to assigned projects in Firestore and
+  Storage, proven from real `subcontractor` and `client` production sessions
+  (TESTING.md §68 X1–X7, §69 S1–S3 / R1–R3 / P1–P14, §63 P19–P20 for both
+  roles). **Real customer external onboarding remains BLOCKED** pending a
+  separate readiness decision; residual risks are tracked in SECURITY.md →
+  *External Project Isolation — M2-A2 Stage B* and
+  [docs/SECURITY_DATA_TEST_TRACKER.md](docs/SECURITY_DATA_TEST_TRACKER.md).
+  *As written before the Stage B closeout:* Still open:
   **company-wide `projects` / drawings / documents / Storage reads** for those
   roles (DC20 → M2-A2 project scoping, after which external onboarding may be
   reassessed — **M2-A2 Stage A, ADR-83: LIVE — CLOSED and production-accepted, 23
@@ -300,6 +309,30 @@ of the work still to do:
 - **Proposed next milestone (PROPOSED — not approved):** *C1 — Core
   acceptance closeout*, under priority 1. It completes the acceptance of
   features already in production before new functionality is built on them:
+  **Status of the items, 24 November 2026** (the remaining-acceptance
+  index is [docs/SECURITY_DATA_TEST_TRACKER.md](docs/SECURITY_DATA_TEST_TRACKER.md)
+  → *C*; detail stays in TESTING.md):
+  - **C1-A — L2-B Final Account:** positive approval, revision and export
+    path PASSED in production on 22 November 2026 (TESTING.md §62b); the
+    forecast-readiness correction is deployed and retested. **Remaining:** the
+    role checks F5, F6, F15, F16 and Project Manager approval; the native
+    print dialog and a PDF file (F14); retest R5.
+  - **C1-B — L2-C Portfolio:** P19–P20 **PASSED for both external roles** (24
+    November 2026, M2-A2 Stage B run; the page's request payloads were not
+    decoded — TESTING.md §63 note). **Remaining:** P18 (Project Manager and QS
+    sessions), row-to-Reports-tab parity as a recorded acceptance (a 22
+    November read-only P4 run is reported, not accepted), M1–M5 (M4 needs one
+    isolated load).
+  - **C1-C — GANTT:** the baseline scenarios not exercised in the browser
+    (TESTING.md §42, §64).
+  - **C1-D — Monitoring:** a test of alert notification delivery (TESTING.md
+    §65; no alert has fired on a real condition).
+  - **Also open:** L3 Stage 2 E1–E10 (§66); L4 T9, T14 and the Quant step of
+    T16 (§67); M2-A2 Stage A internal regression M1, M2, M4, M5, M7, M8 (§68);
+    L2-B Stage A smoke checks W2–W4 (§61); Product Owner confirmation of the
+    GST boundary hotfix and Premium Dashboard v2 production state.
+
+  *As written before the Stage B closeout:*
   - L2-B Final Account: F3–F17, the positive approval, revision and export
     path; nothing has yet been approved in production.
   - L2-C Portfolio: P4, P19–P20 and M1–M5. **P19–P20 remain PENDING (23
