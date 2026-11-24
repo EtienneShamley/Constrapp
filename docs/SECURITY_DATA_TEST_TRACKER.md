@@ -8,8 +8,8 @@ accepted risks in [SECURITY.md](SECURITY.md); decisions in
 [DEPLOYMENT.md](DEPLOYMENT.md); order of work in [../ROADMAP.md](../ROADMAP.md);
 the operational checkpoint in [CHATGPT_HANDOVER.md](CHATGPT_HANDOVER.md).
 
-**Last updated:** 24 November 2026 (M2-A2 final closeout — Stage A, Stage B and DC20 CLOSED by the Lead Architect; documentation on `docs/m2-a2-stage-b-closeout`).
-`main` `bd9021c`.
+**Last updated:** 24 November 2026 (operator tooling safety, D3 #1–#3 and #16 — IMPLEMENTED — PENDING INTEGRATION on `feature/operator-tooling-safety`, uncommitted; architect corrections applied: provisioning link file, local launcher, shutdown reporting). Earlier the same day: M2-A2 final closeout — Stage A, Stage B and DC20 CLOSED by the Lead Architect.
+`main` `2e48a2a`.
 
 ## Evidence classes
 
@@ -32,11 +32,11 @@ All times are UTC unless marked otherwise.
 
 | Item | State |
 |---|---|
-| Current milestone | **None in progress.** Last closed: **M2-A2 External Project Isolation** — Stage A (ADR-83) and Stage B (ADR-84) **LIVE and CLOSED**; **Deferred Control 20 CLOSED** (Lead Architect, 24 Nov 2026) |
+| Current milestone | **Operator tooling safety (D3 #1–#3, #16, R-6) — IMPLEMENTED — PENDING INTEGRATION** (24 Nov 2026; architect accepted the design and its corrections are applied; scripts, local launcher and tests only; no deployment). Last closed: **M2-A2 External Project Isolation** — Stage A (ADR-83) and Stage B (ADR-84) **LIVE and CLOSED**; **Deferred Control 20 CLOSED** (Lead Architect, 24 Nov 2026) |
 | Release status | Stage B merged as `cddfca8`, `main` `bd9021c`. Three callables live since 23 Nov 2026 ~09:11 UTC — `acceptinvitation-00005-mol`, `deactivatemember-00005-suy`, `resendinvitation-00005-mer`; source identical to `main`; other eight services unchanged; Firestore `67b6425a…`, Storage `2f3a4788…`, Hosting `index-BOg2hoYg.js` unchanged (PROD-VERIFIED 23–24 Nov) |
 | Acceptance | **Complete (24 Nov 2026 00:50 UTC):** S1–S3, R1–R3, P1–P14 PASS; §68 X1–X7 PASS (X1–X3, X6 for both external roles); §63 P19–P20 PASS for both roles with the network-payload limitation; reconcile 0 findings; directory 13 / 13; Apex unchanged. Recorded in TESTING.md §63, §68, §69 (closeout branch `docs/m2-a2-stage-b-closeout`) |
-| Documentation | Closeout on `docs/m2-a2-stage-b-closeout` (uncommitted): ROADMAP, PROJECT_DECISIONS (ADR-83 / ADR-84 closure records), SECURITY (DC20, Stage A / B), TESTING, DEPLOYMENT (release record), DATA_MODEL, ARCHITECTURE, CHATGPT_HANDOVER, this file |
-| Next step | Architect review and Git integration of the closeout branch; then the next smallest milestone (section D5) |
+| Documentation | Closeout merged to `main` (`a219deb`, merge `2e48a2a`; VERIFIED in Git 24 Nov). *As written:* closeout on `docs/m2-a2-stage-b-closeout` (uncommitted): ROADMAP, PROJECT_DECISIONS (ADR-83 / ADR-84 closure records), SECURITY (DC20, Stage A / B), TESTING, DEPLOYMENT (release record), DATA_MODEL, ARCHITECTURE, CHATGPT_HANDOVER, this file |
+| Next step | Architect review and Git integration of `feature/operator-tooling-safety` (section D5); the M2-A2 closeout branch is merged (`2e48a2a`) |
 | Real customer external onboarding | **BLOCKED** pending a readiness decision. The residual risks in D1 are tracked, **not** accepted for a customer release by the M2-A2 closure |
 
 ### Isolated test environment (production project `constrapp-69b5d`)
@@ -322,7 +322,7 @@ item here.
 | R-3 | **Withdrawn drawing revisions.** An assigned external member reads every revision of an assigned project's drawings, withdrawn ones included (Firestore and Storage) | Security | Open — documented limitation | ADR-83; SECURITY.md item 46 | Drawing-revision visibility policy (DC46 follow-up) |
 | R-4 | **App Check not enforced** on Firestore, Storage or Authentication (callables enforce it) | Security | Open — deferred | DEPLOYMENT.md → *Deferred: general App Check enforcement* | Commercial-readiness milestone |
 | R-5 | **Internal regression unrecorded.** TESTING.md §68 M1, M2, M4, M5, M7, M8 | Reliability | Open — untested, not failed | §68 | C4 row *M2-A2 A* |
-| R-6 | **Operator tooling safety.** `bootstrap-company.mjs` writes by default and prints its acceptance link; four older scripts call `process.exit(1)` after a refused transaction (lock held until timeout) | Operator safety | Open — known | ADR-84 lessons; Stage B S1 | Proposed next milestone (D5) |
+| R-6 | **Operator tooling safety.** `bootstrap-company.mjs` writes by default and prints its acceptance link; four older scripts call `process.exit(1)` after a refused transaction (lock held until timeout) | Operator safety | **IMPLEMENTED — PENDING INTEGRATION** (24 Nov 2026) — not closed. D3 #16 corrected in the same change. Remaining: scripts validate, they do not authorise (R-2); a link file proves nothing about the mailbox; local emulators hold the operator's CLI login (D3 #17) | ADR-84 lessons; Stage B S1; TESTING.md §70 (EMULATOR) | Architect review → merge → Azure green (no production dry run needed — architect) |
 
 **Decided, not a risk:** a Company Admin may *Resend* or *Revoke* an
 operator-created external invitation — permitted under ADR-84 for as long as
@@ -344,16 +344,16 @@ neither can change the role or the assignment (Lead Architect, 24 Nov 2026).
 - Rules capacity: `firestore.rules` 236,737 of 245,000 bytes; the
   1000-expression ceiling; one project / directory pair per commit.
 
-### D3. Defect and finding register (no fixes in the closeout)
+### D3. Defect and finding register (#1–#3 implemented on `feature/operator-tooling-safety`; nothing else changed)
 
 Priority: **P1** before customer external onboarding; **P2** next
 convenient milestone; **P3** backlog.
 
 | # | Finding | Category | Status | Priority | Dependency | Proposed milestone | Source |
 |---|---|---|---|---|---|---|---|
-| 1 | `bootstrap-company.mjs` writes by default (`--dry-run` to preview) | Operator safety | Open | P1 | — | Operator tooling safety (D5) | ADR-84; Stage B S1 |
-| 2 | `bootstrap-company.mjs` prints the acceptance link to stdout | Operator safety / security | Open | P1 | — | Operator tooling safety (D5) | ADR-84; Stage B S1 |
-| 3 | Four older scripts call `process.exit(1)` after a refused transaction (rollback not awaited → lock held until timeout) | Operator safety / reliability | Open | P1 | — | Operator tooling safety (D5) | ADR-84 |
+| 1 | `bootstrap-company.mjs` writes by default (`--dry-run` to preview) | Operator safety | **IMPLEMENTED — PENDING INTEGRATION** — dry run by default; writes need `--apply` + exactly one delivery option; conflicting flags exit 2; a read-only plan pass precedes every write; a pending invitation is rotated only on `--rotate` (EMULATOR: §70 OT1–OT6) | P1 | Merge | Operator tooling safety (D5) | ADR-84; Stage B S1 |
+| 2 | `bootstrap-company.mjs` prints the acceptance link to stdout | Operator safety / security | **IMPLEMENTED — PENDING INTEGRATION** — never printed; `--no-link` or `--link-file` (new 0600 file, outside the repository on the real path, O_EXCL + O_NOFOLLOW, reserved before any write, verified after creation); a failed write after the commit exits 3, removes the partial file, names the invitation; recovery `--rotate --link-file` (EMULATOR + pure: §70 OT3, OT7–OT9) | P1 | Merge | Operator tooling safety (D5) | ADR-84; Stage B S1 |
+| 3 | Four older scripts call `process.exit(1)` after a refused transaction (rollback not awaited → lock held until timeout) | Operator safety / reliability | **IMPLEMENTED — PENDING INTEGRATION** — shared `runOperatorScript`: `process.exitCode`, then `Firestore.terminate()` (awaits the rollback), forced exit only after a 30 s shutdown timeout that starts after the operation settled; a failed or timed-out cleanup is printed as an explicit failure, never as success; exit code kept; no retry. Hazard measured (~1 min lock with `process.exit`, none after); sensitivity-checked (EMULATOR + pure: §70 OT10–OT14, runner tests) | P1 | Merge | Operator tooling safety (D5) | ADR-84 |
 | 4 | Withdrawn drawing revisions readable by assigned externals (R-3) | Security | Open | P1 (policy decision) | Architect policy | Drawing-revision visibility (DC46 follow-up) | ADR-83 |
 | 5 | *+ Add New Project* shown to `qs` (`Projects.jsx:300`; Rules deny the create) | UX | Open | P2 | — | UX fix bundle (Hosting-only) | Stage B R2 |
 | 6 | External roles reach `/settings/company` and `/settings/team` from the user menu (read-only notices; country and currency) | UX | Open | P2 | — | UX fix bundle | Stage B P6 |
@@ -366,6 +366,9 @@ convenient milestone; **P3** backlog.
 | 13 | SECURITY.md *Known limitations* still says every Storage object carries its token (superseded by DC46 sweeps) | Documentation | Open | P3 | — | Next SECURITY.md change | Observed 24 Nov |
 | 14 | Operator checks must read `custom_fields` for Storage download tokens; zsh needs `${VAR}:method` braces in REST URLs | Operator tooling note | Recorded | — | — | Runbook note | Stage B |
 | 15 | Testing-profile sessions are per origin and replaced by any sign-in on that origin; sign-ins in another browser do not reach it | Test procedure | Recorded | — | — | Test procedure | Stage B P5, P13, final |
+| 16 | `provision-external-member.mjs --link-file` checks the repository boundary on the typed path; a folder that is a symbolic link into the working tree is not caught (final-component and existing-file checks are sound) | Operator safety | **IMPLEMENTED — PENDING INTEGRATION** — the hole demonstrated on `main` (exit 0, link file created in the repository; emulator); now `_linkFile.mjs` (real path, O_EXCL + O_NOFOLLOW, 0600, reserved before the write); exit 3 on a post-commit delivery failure with Resend recovery; no rotation, no duplicate (EMULATOR: §70 OT15–OT16) | P1 (raised by the architect) | Merge | Operator tooling safety | Operator tooling safety |
+| 17 | `npm run test:team` / `test:functions`: the Firebase CLI makes one authenticated metadata request for the emulator project id (403 — no access; no production project read) and hands the operator's CLI login to the Functions emulator as credentials; Storage and Pub/Sub are not emulated there | Local tooling / security | Open — limitation recorded | P3 | Design | Use a `demo-` emulator project id (separate change: `.env`, harness, suites) | Launcher end-to-end run, 24 Nov |
+| 18 | `npm run test:team` did not wait for the Auth emulator (first-run bootstrap `ECONNREFUSED :9099`) and probed Vite on `127.0.0.1` while Vite 8 bound `::1` only (*Starting Vite… failed*) | Local tooling | **IMPLEMENTED — PENDING INTEGRATION** — bounded readiness for Auth, Firestore, Functions and the CLI ready signal; Vite `--host 127.0.0.1`; bounded shutdown wait. End-to-end PASS, four fresh runs (§70) | P2 | Merge | Operator tooling safety | First implementation report |
 
 ### D4. Implementation roadmap (strategic order unchanged)
 
@@ -373,14 +376,24 @@ convenient milestone; **P3** backlog.
 |---|---|
 | **Implemented and production-accepted** | Commercial foundations; M1, M2-A, M2-B1/B2/B3, M3-A/B1/B2; SHIELD 2A / 2B1 / 2B2; L1 Team Management; DC46 (closed with accepted risks); L2-A; L2-B Stage A; L4 (closed with listed gaps); **M2-A2 Stage A and B (DC20 closed)** |
 | **Implemented, not fully accepted** | L2-B Final Account (C1-A); L2-C Portfolio (C1-B); GANTT 1A1 / 1A2 / 1B and core completion (C1-C); L3 Stage 1 alerting (C1-D) and Stage 2 (E1–E10); GST boundary hotfix and Premium Dashboard v2 (production evidence) |
-| **Known defects requiring fixes** | D3 #1–#9 (operator safety first, then UX) |
+| **Known defects requiring fixes** | D3 #1–#3, #16, #18 implemented, pending integration; D3 #4–#9 (UX), #17 (local tooling) |
 | **Security hardening** | D1 R-1 … R-6; general App Check enforcement; DC46 follow-ups (Storage audit logs, faster revocation, drawing-revision policy, load testing at triggers); billing-account administration |
 | **Not yet implemented** | Real customer external onboarding (gated); self-serve company signup; billing and subscriptions; client portal; client credit notes and client retention; estimating; creator ≠ approver segregation on Final Account; company legal / tax identity; client-side error reporting; external availability monitor |
 | **Deferred (order per ROADMAP → *Approved development order (post-L4)*)** | 1 remaining core functionality and acceptance (C1) → 2 SaaS readiness and international foundations → 3 mobile / PWA → 4 Xero (ADR-82 PROPOSED) → 5 Constrap IQ → 6 Quant AI → 7 final production audit. Stage 8 advanced modules unscoped |
 
-### D5. Next smallest actionable milestone (PROPOSED — not approved)
+### D5. Next smallest actionable milestone — IMPLEMENTED — PENDING INTEGRATION (24 November 2026)
 
-**Operator tooling safety** — D3 #1–#3 / R-6: `bootstrap-company.mjs`
+*Status:* implemented on `feature/operator-tooling-safety` (uncommitted),
+awaiting architect review. **Deployment: none required** — no Rules, Storage
+Rules, Hosting, callable or `functions/src` change. Tests (after the
+architect corrections): functions pure 8 files / 179 (was 7 / 155); functions
+emulator 11 files / 367 (was 11 / 354; TESTING.md §70); unit 101 / 5,244
+unchanged; `npm run test:team` end-to-end PASS (four fresh runs). *First
+implementation report:* pure 177, emulator 365. Safe procedure, migration and recovery:
+DEPLOYMENT.md → *Operator tooling safety*. Remaining acceptance: merge, Azure
+green. No production dry run needed (architect). Not closed.
+
+*As proposed:* **Operator tooling safety** — D3 #1–#3 / R-6: `bootstrap-company.mjs`
 dry-run by default with an explicit `--apply`, and its link never printed
 (`--no-link` / `--link-file`, as ADR-84's scripts already do); the four older
 scripts to set `process.exitCode` after a refused transaction. Scripts and
@@ -396,6 +409,8 @@ Newest first. Add one row per test or step; keep detail in the linked record.
 
 | ID / milestone | Objective | Environment | Result | Evidence | Date | Open issues | Follow-up |
 |---|---|---|---|---|---|---|---|
+| Corrections / operator tooling safety | D3 #16 provisioning link file; `test:team` readiness and Vite host; explicit cleanup-failure reporting | Local emulators + pure tests; `npm run test:team` × 4 (no production) | IMPLEMENTED — PENDING INTEGRATION; automated PASS (pure 179, emulator 367, unit 5,244); launcher PASS | TESTING.md §70 OT15–OT16, runner tests, launcher table; D3 #16 demonstrated on `main` | 24 Nov 2026 | D3 #17 (emulator credentials, `demo-` id) | Architect review → merge |
+| Operator tooling safety / D3 #1–#3 | Bootstrap dry-run default; link never printed; graceful termination of four older scripts | Local emulators + pure tests (no production) | IMPLEMENTED — PENDING INTEGRATION; automated PASS | TESTING.md §70 OT1–OT14; pure `operatorTooling.test.js`; hazard measurement and sensitivity check (scratch) | 24 Nov 2026 | D3 #16 (provision link-file real path); production lock behaviour unmeasured | Architect review → merge |
 | Closeout / M2-A2 | Stage A, Stage B, DC20 CLOSED; documentation closeout | Repository (docs only) | Architect decision recorded | ROADMAP, PROJECT_DECISIONS, SECURITY, TESTING, DEPLOYMENT, DATA_MODEL, ARCHITECTURE, HANDOVER on `docs/m2-a2-stage-b-closeout` | 24 Nov 2026 | Customer onboarding gated; D1 risks open | D5 |
 | Final run / M2-A2 B | X4, X7, P11–P14, final deactivation of both external accounts | Prod, operator + TEST admin + client sessions | PASS | B2 rows *Final pre-flight* … *Final integrity*; B2c timings | 24 Nov 00:28–00:50 | Origin-swap of test sessions (procedure); none in product | Architect closure decision |
 | P8–P10 / M2-A2 B | Remove B from the client; X5; copied-link revocation; idempotency | Prod, operator + client session + anonymous | PASS | B2 P9 control, P8, X5, P9, P10: 200 → 403 for the copied link across urgent sweep seq 4; snapshot diff | 24 Nov 00:20–00:24 | Pre-flight token check used a wrong key (corrected) | P11–P14 |
@@ -427,6 +442,7 @@ Newest first. Add one row per test or step; keep detail in the linked record.
 |---|---|---|---|---|---|---|
 | M2-A2 Stage A (ADR-83) | Yes | Yes | Yes | **Yes — CLOSED** (23 Nov); external X1–X7 PASSED (24 Nov); internal regression M1, M2, M4, M5, M7, M8 not recorded | — | — |
 | M2-A2 Stage B (ADR-84) | Yes | Yes (3 callables) | Yes | **Yes — CLOSED** (24 Nov): S1–S3, R1–R3, P1–P14 PASS; **DC20 CLOSED** | Real customer external onboarding (readiness decision) | — |
+| Operator tooling safety (D3 #1–#3, #16, #18) | Yes — PENDING INTEGRATION | Not applicable (scripts and local launcher only; no deployment) | Yes (§70); `test:team` end-to-end PASS | Not required (architect: no production dry run for this review) | — | — |
 | L2-B Final Account (ADR-77) | Yes | Yes | Yes | **Partly** — positive path; role checks open | — | — |
 | L2-C Portfolio (ADR-78) | Yes | Yes | Yes (unit) | **Partly** — visual / export, P4; P19–P20 PASSED (subcontractor and client); P18, M-checks open | — | — |
 | L4 transfer (ADR-81) | Yes | Yes | Yes | Yes (CLOSED) with listed gaps | — | — |

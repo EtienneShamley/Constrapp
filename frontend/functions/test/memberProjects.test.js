@@ -220,8 +220,16 @@ describe('operator scripts — source pins', () => {
   it('the acceptance link reaches a private file and nothing else — never the console', () => {
     const code = stripComments(PROVISION)
     const linkUses = code.split('\n').filter(l => /\.link\b/.test(l)).map(l => l.trim())
-    expect(linkUses).toEqual(['if (fd !== null) writeSync(fd, `${done.link}\\n`)'])
-    expect(code).toContain("openSync(linkFile, 'wx', 0o600)")
+    expect(linkUses).toEqual(['const delivered = deliverToLinkFile(reserved, done.link)'])
+    // The shared, hardened helper (D3 #16): real-path repository check, O_EXCL | O_NOFOLLOW, 0600.
+    expect(code).toContain("from './_linkFile.mjs'")
+    expect(code).toContain('linkFile = checkLinkFileDestination(args[\'link-file\'])')
+    expect(code).toContain('reserved = reserveLinkFile(linkFile)')
+    expect(code).not.toMatch(/openSync|writeSync|REPO_ROOT/)
+    // Reserved before the write; a delivery failure after the commit exits 3 and never rotates.
+    expect(code.indexOf('reserveLinkFile(linkFile)')).toBeLessThan(code.indexOf('dryRun: false'))
+    expect(code).toContain('process.exitCode = 3')
+    expect(code).not.toMatch(/resendInvitation|generateToken|hashToken/)
     expect(code).not.toMatch(/console\.(log|error|warn)\([^)]*(link|token|done)\b/)
     expect(code).not.toMatch(/log\.(info|warn|error)\([^\n]*\bdone\.link/)
     expect(code).not.toMatch(/password|createUser|generatePasswordResetLink|generateSignInWithEmailLink|createCustomToken/i)

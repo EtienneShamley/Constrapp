@@ -1850,7 +1850,23 @@ assignment. Evidence: TESTING.md §69 → *Production acceptance record*;
   recorded.
 - **Operator tooling.** `bootstrap-company.mjs` writes by default and prints
   its acceptance link; four older scripts call `process.exit(1)` after a
-  refused transaction (ADR-84 lesson).
+  refused transaction (ADR-84 lesson). **IMPLEMENTED — PENDING INTEGRATION
+  (24 November 2026, `feature/operator-tooling-safety`, scripts only, no
+  deployment):** the bootstrap is dry-run by default, needs `--apply` plus
+  exactly one of `--no-link` / `--link-file`, never prints the link, and
+  rotates a pending invitation only on `--rotate`; the four scripts set the
+  exit code and terminate the Firestore client, so a refused transaction's
+  rollback is delivered before the process ends (emulator-proven).
+  Client-independent limits stay: the scripts validate, they do not
+  authorise (privileged bypass, above); a `--link-file` link proves nothing
+  about the mailbox. *Architect corrections (same day):* `provision-external-member.mjs`
+  now uses the same link-file helper — its repository check had used the typed
+  path, so a folder symbolic link into the working tree let the link land
+  there (demonstrated on `main`, emulator; D3 #16, corrected); a cleanup that
+  fails or times out is reported as a failure. Local emulators receive the
+  operator's Firebase CLI login as credentials (firebase-tools design;
+  DEPLOYMENT.md → *Operator tooling safety*). Not exercised against
+  production.
 
 Internal roles remaining company-wide is an accepted architectural decision
 (ADR-83), not a residual risk of this closure.

@@ -98,8 +98,11 @@ frontend/functions/
                            companyLock · rateLimit · audit · email (Resend adapter) ·
                            membershipState · errors · params · firebaseAdmin
   scripts/                 bootstrap-company.mjs · reconcile-membership.mjs ·
-                           provision-external-member.mjs · set-member-projects.mjs
+                           provision-external-member.mjs · set-member-projects.mjs ·
+                           backfill-project-directory.mjs · revoke-file-links.mjs
                            (ADR-84: operator-only; lib/memberProjects.js is not a callable)
+                           _cli.mjs (arguments, ADC guard, runOperatorScript lifecycle) ·
+                           _linkFile.mjs (private 0600 link-file delivery)
   test/                    pure unit tests (no emulator)
   .env.<projectId>         NON-secret parameters (APP_BASE_URL, EMAIL_FROM, kill switch)
 ```

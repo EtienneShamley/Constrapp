@@ -621,13 +621,17 @@ company; Stage A, Stage B and Deferred Control 20 CLOSED (Lead Architect).
 
 1. **Architect review and Git integration** of
    `docs/m2-a2-stage-b-closeout` (documentation only, no deploy).
-2. **Proposed next smallest milestone (PROPOSED — not approved): operator
-   tooling safety** — `bootstrap-company.mjs` to dry-run by default and
-   never print its link; the four older scripts to set `process.exitCode`
-   instead of calling `process.exit(1)` after a refused transaction.
-   Scripts and their tests only; no Rules, Functions, Hosting or production
-   write. It removes one tracked residual risk that gates customer
-   onboarding.
+2. **Operator tooling safety — IMPLEMENTED, PENDING INTEGRATION (24
+   November 2026, `feature/operator-tooling-safety`, uncommitted, awaiting
+   architect review)** — `bootstrap-company.mjs` is dry-run by default and
+   never prints its link (`--apply` + `--no-link` / `--link-file`; explicit
+   `--rotate`); the four older scripts set `process.exitCode` and terminate
+   the Firestore client after a refused transaction. Scripts and their tests
+   only; no Rules, Functions, Hosting, deployment or production write.
+   Architect corrections applied the same day: provisioning uses the shared
+   link-file helper (D3 #16), `npm run test:team` readiness and Vite host
+   fixed and run end-to-end, cleanup failures reported explicitly.
+   TESTING.md §70; DEPLOYMENT.md → *Operator tooling safety*.
 3. **Then C1 — Core acceptance closeout** (still PROPOSED), with the
    remaining items indexed in
    [SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md) → *C*:

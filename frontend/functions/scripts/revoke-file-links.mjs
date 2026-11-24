@@ -21,7 +21,7 @@
 // ⚠️ Removing a token cannot be undone. The app does not use tokens (ADR-73),
 //    so nothing in the current build depends on them.
 
-import { parseArgs, usage, configureProject, log } from './_cli.mjs'
+import { parseArgs, usage, configureProject, log, runOperatorScript, releaseOnExit, UsageError, EXIT } from './_cli.mjs'
 
 const SPEC = {
   'project':         { required: true, pattern: /^[a-z0-9-]{4,40}$/, help: 'Firebase project id (explicit, always)' },
@@ -40,13 +40,14 @@ async function main() {
     if (!!args['company-id'] === !!args['all-companies']) throw new Error('Give exactly one scope: --company-id <id> or --all-companies')
     if (args.execute && args['confirm-project'] !== args.project) throw new Error('--execute needs --confirm-project <the same project id>')
     if (!args.execute && args['confirm-project']) throw new Error('--confirm-project is only meaningful with --execute')
-  } catch (e) { log.error(e.message); log.info(usage('scripts/revoke-file-links.mjs', SPEC)); process.exit(2) }
+  } catch (e) { throw new UsageError(e.message) }
 
   const { emulated } = configureProject(args.project)
   const { getDb, getBucket } = await import('../src/lib/firebaseAdmin.js')
   const { runOperator } = await import('../src/lib/fileLinkOperator.js')
 
   const db = getDb(), bucket = getBucket(args.bucket)
+  releaseOnExit(() => db.terminate())
   const execute = !!args.execute
 
   log.info(`${execute ? '[EXECUTE] ' : '[DRY RUN — read only] '}Project ${args.project}${emulated ? ' (EMULATORS)' : ''} · bucket ${args.bucket} · ${args['company-id'] ? `company ${args['company-id']}` : 'ALL companies'}`)
@@ -54,7 +55,7 @@ async function main() {
   const companies = args['company-id']
     ? [await db.collection('companies').doc(args['company-id']).get()].filter(s => s.exists)
     : (await db.collection('companies').get()).docs
-  if (companies.length === 0) { log.error('No matching company.'); process.exit(1) }
+  if (companies.length === 0) { log.error('No matching company.'); return EXIT.REFUSED }
 
   const summary = await runOperator(
     { db, bucket, now: () => new Date(), out: log },
@@ -65,7 +66,10 @@ async function main() {
   const unfinished = summary.filter(s => s.executed && !s.complete).length
   if (!execute) log.info('Dry run: nothing was changed. Re-run with --execute --confirm-project <id> to remove the tokens.')
   else if (unfinished === 0) log.info('All companies in scope completed with zero failures.')
-  else { log.warn(`${unfinished} company(ies) did not complete.`); process.exit(3) }
+  else { log.warn(`${unfinished} company(ies) did not complete.`); return 3 }
+  return EXIT.OK
 }
 
-main().catch((e) => { log.error(e?.message ?? e); process.exit(1) })
+// Never process.exit() here: see runOperatorScript in _cli.mjs. An
+// unfinished request stays queued for the worker; nothing is retried here.
+runOperatorScript(main, { usageText: usage('scripts/revoke-file-links.mjs', SPEC), out: log.info })
