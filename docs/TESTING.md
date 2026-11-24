@@ -8825,7 +8825,68 @@ refuses the approval.
 
 ---
 
-## 63. L2-C — Portfolio Report (ADR-78, 20 November 2026) — DEPLOYED; visual, CSV and PDF acceptance confirmed (REPORTED); external-role checks P19–P20 PASSED for both external roles (24 November 2026, network-payload limitation recorded); P18, parity and performance checks OPEN
+## 63. L2-C — Portfolio Report (ADR-78, 20 November 2026) — DEPLOYED; visual, CSV and PDF acceptance confirmed (REPORTED); P19–P20 PASSED for both external roles; read-only production run PASSED (parity ACCEPTED by the architect); P7, P9, P18 PASSED in production on retained NZD fixtures in the isolated test company; P15 PASSED locally only (24 November 2026) — awaiting the architect's closure decision
+
+**Status update (24 November 2026, 07:15–07:37 UTC) — C1-B final targeted
+acceptance (PROD-VERIFIED unless marked).** Isolated company
+`constrap-acceptance-test` only (no Apex Builders account or write). Two
+synthetic **NZD** commercial fixtures created through the application by the
+TEST Company Admin and **retained** — X `xDi4s4wnEXUC6q6dEdxX` (OCV 200,000,
+approved v1 150,000, CTC 160,000) and Y `5jSw0R9QVWizCwWqJZyU` (OCV 50,000,
+approved v1 30,000, CTC 25,000), sharing cost code `CT-100`. NZD, not AUD,
+because open Projects A–C have no contract value, so an AUD margin subtotal can
+never render (Product Owner decision). Internal identities: a new
+`project_manager` (`KSC9zf…`) and the re-activated `qs` (`PvzTgu…`), both via
+Team invitations, both retained and active. Full record:
+[SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md) → B5.
+
+| # | Result |
+|---|---|
+| P7 | **PASS** — expectations computed independently (Python `Decimal`) from the stored baseline, budget, forecast and approval-snapshot records: NZD contract 250,000, approved budget 180,000, FFC 185,000, variance −5,000, GP 65,000, **margin 26.00%** (aggregate profit ÷ aggregate contract; the mean of 20% and 50% would be 35%). Screen and CSV equal to the cent. With Y's budget still working: margin 26% shown; Approved Budget and Variance subtotals *Incomplete — 1 of 2, 1 budget not approved* (CSV `INCOMPLETE`) |
+| P9 | **PASS** — Y set Completed through the Edit form: default scope *4 projects · 1 completed not included*, NZD subtotals = X only (20%); *Include completed* read only the completed project (*4 of 5 projects read*), restored 26% and the 5-project scope; CSV scope and lines follow; Y restored to Planning |
+| P18 | **PASS** — Company Admin, Project Manager and QS (session uids verified): identical scope, rows and subtotals; CSV PROJECT / SUBTOTAL lines SHA-256 `15310838fd5c3249…` identical for all three; controls Refresh, Export CSV, Print, *Include completed* only; zero console messages. Apex project URL → *Project not found* for PM and QS (a REST-level probe with the role's token was not run) |
+| P15 | **PASS — LOCAL ONLY, not production acceptance** — local emulators (`npm run test:team`) + Vite on 127.0.0.1, headless Chrome 158 with DevTools offline emulation: every figure *Unavailable* (never 0), *Financial coverage is incomplete*, subtotals *Incomplete*; recovered online |
+
+Data integrity: Apex Builders unchanged apart from the DC46 periodic sweep
+(07:12); Projects A–C, their documents, drawings and five Storage fixtures
+unchanged (no token); directory 5 / 5 in sync; subcontractor and client still
+disabled. Observations recorded as tracker D3 #20 (Forecast tab showed *Not
+forecast* once after a save that succeeded; not reproduced) and #21 (*All N
+projects have been read* while every read failed offline). Deferred UX
+wording: D3 #9, #19.
+
+**Status update (24 November 2026, 05:14–05:27 UTC) — C1-B read-only
+production run (PROD-VERIFIED).** Apex Builders, the Product Owner's existing
+`company_admin` session, dedicated browser tab; read-only (Refresh and
+Export CSV only; the CSV captured in page memory, no file). Cloud Monitoring
+shows **zero Firestore writes and deletes** for the whole database across the
+session (the only nearby writes, at 05:10–05:11, are the DC46 worker's
+periodic reconciliation). Full record, figures and method:
+[SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md) → B4.
+
+| # | Result |
+|---|---|
+| P1, P2, P3, P5, P6, P8, P12, P21, P22 | PASS |
+| P4 | **PASS** — C1-A (approved v1), L4 (approved v2), Gold Coast apartments, Residential Developements (AUD, working budget) and Peter House (ZAR): every one of the 11 figures equals the project's Reports tab to the cent (55 / 55) |
+| P7 | PARTIAL — the six complete AUD subtotals equal the row sums (checked by hand); no currency has every project approved and complete; aggregate margin checked on the one-project ZAR group only |
+| P9 | NOT EXERCISABLE — no completed project exists |
+| P13 | PASS (content) — the CSV's every value equals the screen; header block, Currency cell on every line, `INCOMPLETE` subtotals with counts; not opened in a spreadsheet |
+| P15 | NOT RUN — DevTools offline unavailable to the browser extension; unit-tested |
+| P10, P11, P14, P16, P17 | Not re-run — covered by the visual / export acceptance (REPORTED) |
+| P18 | **BLOCKED** — Apex Builders has no active `project_manager` or `qs`; needs invitations (production writes) — prerequisite in the tracker, B4 |
+| P19, P20 | PASS (24 November, M2-A2 Stage B — reused, not repeated) |
+| M1 | 10 open projects, 0 completed (AUD 7, USD 2, ZAR 1), of which 3 are retained test projects — the largest of the two companies; no customer company yet |
+| M2 | Reused from 22 November (cold ≈ 2.7 s, warm 1.5 s, Refresh 480–612 ms); 24 November loader read windows 0.71 s (cold) and ≤ 1 s (Refresh) |
+| M3 | Not measurable as specified — reads share the Listen WebChannel; the loader's plan for this company is 135–136 document requests |
+| M4 | **136 document reads** for one Portfolio read (an in-page Refresh, quiet minutes either side, 1-minute Monitoring points); a cold page load including the application shell: 291 |
+| M5 | Not measurable — cross-origin streamed responses report no size |
+
+**Subtotal wording (finding D3 #9) re-assessed on the live page:** the card
+counts excluded projects (*Not totalled — 5 of 7 projects*), the table footer
+included projects (*2 of 7*), the CSV both (*2 of 7 projects (5 budget not
+approved)*), all from one subtotal result; no surface shows or exports a
+partial sum. Cosmetic wording only — not a calculation or reporting-value
+defect.
 
 **Status update (24 November 2026) — P19–P20 PASSED for both external roles**
 (M2-A2 Stage B production acceptance, §69 P6 / P7 / P13; isolated test
@@ -8905,7 +8966,7 @@ a working budget only, and — if available — one in a second currency.
 | P6 | A project with no contract value | Contract sum, gross profit and margin read **Not set**; the matching subtotals are Incomplete |
 | P7 | A currency whose projects are all complete and approved | Each subtotal equals the sum of its rows (check two by hand); the margin equals subtotal profit ÷ subtotal contract sum |
 | P8 | Two currencies (if available) | Two separate sections, each with its own subtotals; no figure anywhere combines them; "reported separately, never combined" in the header |
-| P9 | Tick **Include completed** | Completed projects appear and load; already-loaded rows do not reload (Network tab: no repeat requests for them) |
+| P9 | Tick **Include completed** — **PASSED 24 Nov 2026 (B5)** | Completed projects appear and load; already-loaded rows do not reload (Network tab: no repeat requests for them) |
 | P10 | Expand a row's **Financial indicators** | Five indicators, each *Finding*, *No finding* or *Not evaluated*, with a link to the relevant project tab; no programme indicator |
 | P11 | Click a project name | The project's Reports tab opens |
 | P12 | **Refresh** | Rows return to "—" and reload; the read window changes |
@@ -8914,7 +8975,7 @@ a working budget only, and — if available — one in a second currency.
 | P15 | Offline test: DevTools → Network → Offline, then **Refresh** | Every figure reads **Unavailable** (not 0, not "—" forever); "Financial coverage is incomplete"; subtotals Incomplete. Go back online and Refresh |
 | P16 | 375 px, 768 px and 1280 px widths | Cards below `lg`, table from `lg` scrolling inside its own container; controls wrap; touch targets ≥ 44 px; no horizontal page scroll |
 | P17 | Keyboard only | Checkbox, Refresh, Export, Print, each project link and each indicator disclosure reachable and operable; focus visible |
-| P18 | Sign in as `project_manager`, then `qs` | Same page, same figures |
+| P18 | Sign in as `project_manager`, then `qs` — **PASSED 24 Nov 2026 (isolated test company, B5)** | Same page, same figures |
 | P19 | **Negative path.** Sign in as a `subcontractor` (or `client`) test user — **PASSED 24 Nov 2026 for both roles; network payloads not decoded (status update above)** | No Portfolio entry in the sidebar. Typing `/portfolio` shows "The Portfolio Report is restricted". Network tab: **no** Firestore request for budget lines, purchase orders, invoices or any other financial collection from this page |
 | P20 | Still as the external user, in the console attempt a direct read of a financial collection — **PASSED 24 Nov 2026 for both roles (403)** | Denied by **Firestore Rules** (`permission-denied`) — the rule, not the page, is the control |
 | P21 | Dashboard, as a financial role | Unchanged: counts only in the portfolio card, no financial column in the project register, one project in the snapshot |
@@ -9542,7 +9603,13 @@ real browser session of an external role; real email delivery of an external
 invitation; a download URL copied before a removal (P9) — all three now
 covered.
 
-## 70. Operator tooling safety — D3 #1–#3 and #16 (24 November 2026) — IMPLEMENTED — PENDING INTEGRATION (architect corrections applied); automated tests PASS (emulators and pure); `npm run test:team` end-to-end PASS; scripts only, no deployment; NOT exercised against production
+## 70. Operator tooling safety — D3 #1–#3 and #16 (24 November 2026) — INTEGRATED (merged as `bc64487`, merge `62e824a`; Azure `main` green — REPORTED by the Lead Architect); automated tests PASS (emulators and pure); `npm run test:team` end-to-end PASS; scripts only, no deployment; NOT exercised against production
+
+*Integration note (24 November 2026):* merged with the architect corrections
+(D3 #16, #18 and explicit cleanup-failure reporting). Counts at merge: unit
+101 files / 5,244; Functions pure 8 / 179; Functions emulator 11 / 367;
+four fresh `npm run test:team` runs PASS. D3 #17 remains open. The text below
+was written before integration.
 
 Branch `feature/operator-tooling-safety` (uncommitted). Procedure, migration
 and recovery: [DEPLOYMENT.md](DEPLOYMENT.md) → *Operator tooling safety*.
