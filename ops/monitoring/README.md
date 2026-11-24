@@ -4,9 +4,14 @@
 enabled** — an uptime check on `app.constrap.com`, its alert policy
 (`15559930914799323534`), and an alert on server failures of
 `approveFinalAccount` (`9683374685335961795`). The three DC46 policies are
-preserved. Notification channels are connected; **actual alert delivery has
-not been tested.** They are described in *L3 files* at the end of this
-document. The rest of
+preserved. Notification channels are connected. **C1-D (24 November 2026
+UTC): alert delivery was tested end to end through a temporary policy on the
+Product Owner channel.** The opened and resolved emails were received (as
+reported by the Product Owner), and the condition recovered by itself. Record:
+docs/DEPLOYMENT.md → *L3 Stage 1* → *C1-D alert delivery acceptance record*.
+Neither L3 alert has fired on its real condition. **C1-D CLOSED by the Lead
+Architect, 25 November 2026**, with its evidence limitations (TESTING.md
+§73). They are described in *L3 files* at the end of this document. The rest of
 this document is the DC46 worker monitoring, unchanged.
 
 ## DC46 worker policies
@@ -72,12 +77,18 @@ interruption.
 
 ## What has and has not been shown
 
-- Policy C exists only as files. Its filter is pinned to the exact line the
-  worker writes; its behaviour in Cloud Monitoring is untested.
+- Policy C exists in production since 17 November 2026, and its metric counts
+  one point per hourly planning pass. Its absence condition has never fired.
+  *As written before creation:* "Policy C exists only as files."
 - Policy B notifies only when the worker writes a matching error-level line.
   A run that dies without writing one is left to policy A.
-- **Neither policy has fired on its real condition.** No absence and no
-  error line was deliberately produced in production.
+- **Policy B has matched a real line once** (corrected 25 November 2026,
+  C1-D). The predicted first-pass `reconciliation overdue` line at
+  activation (17 November 2026 19:17:02 UTC) opened an incident at 19:18:06,
+  which auto-closed on 18 November at 19:22:24. Its email receipt was not
+  recorded. **Policy A has never fired.** No absence and no error line was
+  deliberately produced in production. *As written:* "Neither policy has
+  fired on its real condition."
 - Both policies live in the project they watch. An independent external
   availability monitor does not exist; it remains future reliability work.
 
@@ -89,6 +100,22 @@ above. It was run once on 16 November 2026: one incident opened, the policy
 was deleted, the incident closed. That both recipients received the email is
 reported by the Product Owner; it is not observed in any cloud record. A
 repeat needs explicit approval and is deleted in the same sitting.
+
+**C1-D (24 November 2026 UTC)** used a different temporary policy, held
+outside this folder so that the committed file set is unchanged; its body is
+in the deployment record. It is a threshold condition on the heartbeat
+metric with a 5-minute window, `EVALUATION_MISSING_DATA_INACTIVE`, and
+OPENED and CLOSED notifications, so it opens on a healthy heartbeat and
+recovers by itself.
+- It went to the Product Owner channel only.
+- Created 22:08:41; incident opened 22:29:20; natural recovery and closure
+  22:33:35; deleted 22:34:58.
+- The opened and resolved emails were received (reported by the Product
+  Owner; exact arrival times not visible).
+- Cloud Monitoring records incident open and resolve events
+  (`monitoring.googleapis.com/ViolationOpenEventv1`,
+  `ViolationAutoResolveEventv1`), but **no per-recipient delivery record**:
+  receipt can only come from the recipient.
 
 ## Cost
 
@@ -102,12 +129,16 @@ procedures, the response runbook, billing continuity and rollback are in
 (policy C: its *Policy C* section; activation: *DC46-C* → *Activation
 runbook*).
 
-## L3 files — CREATED in production 21 November 2026; delivery NOT tested
+## L3 files — CREATED in production 21 November 2026; delivery path TESTED 24 November 2026 UTC (C1-D); neither alert has fired
 
 **Status (21 November 2026).** All three exist in `constrapp-69b5d` and are
 enabled; the *Cloud state* column below is current. The three DC46 policies
-are unchanged. Notification channels are connected. No L3 alert has fired
-and no test notification was sent, so delivery is unproven. Release record:
+are unchanged. Notification channels are connected. No L3 alert has fired.
+*Updated 25 November 2026 (C1-D):* the email path these policies use was
+tested with a temporary policy on the Product Owner channel. The
+availability policy file was aligned with the created policy (see
+*Availability policy as created*). *As written 21 November:* "No L3 alert
+has fired and no test notification was sent, so delivery is unproven." Release record:
 docs/DEPLOYMENT.md → *L3 Stage 1* → *Monitoring release record*.
 
 | File | What it is | Condition | Cloud state |
@@ -125,7 +156,10 @@ on 21 November 2026, before creation (no series then: the check did not
 exist and the function had never returned a 5xx). The API has no dry run
 for creating a policy or an uptime check; the files were proven as request
 bodies when the objects were created from them. **What is still unproven is
-that either alert fires and that its notification is delivered.**
+that either alert fires on its real condition.** Email delivery through the
+Product Owner channel, which both use, was shown by C1-D. *As written 21
+November:* "…that either alert fires and that its notification is
+delivered."
 
 ### What the availability check is not
 
@@ -137,9 +171,22 @@ that either alert fires and that its notification is delivered.**
 - It is not independent. The check and its policy live in the project they
   watch, exactly like policies A, B and C. What Cloud Monitoring does while
   the project's billing is suspended is not documented and not tested.
-- The policy is tied to the check by host name, because a check's id is
-  assigned when it is created. A second uptime check on the same host would
-  be counted by the same policy.
+- **Availability policy as created** (corrected 25 November 2026, C1-D). The
+  policy is tied to the check by host AND by the check's server-assigned id
+  (`metric.label.check_id="l3-app-constrap-com-https-availability-10ehOIKFFlc"`),
+  and it groups by `resource.label.*`. That is how it was created on
+  20 November 2026 (audit log); the file and its test now say the same.
+  - `uptime_url` has only `project_id` and `host`, so the grouping is one
+    group and `REDUCE_COUNT_FALSE` counts the failing checker locations of
+    this one check.
+  - Over the check's whole history, the result was compared with the earlier
+    host-only form and was identical.
+  - A second check on the same host is no longer counted.
+  - **If the check is re-created it gets a new id, and this policy must be
+    re-created with it**, or it watches nothing.
+  - *As written 21 November:* "tied to the check by host name, because a
+    check's id is assigned when it is created. A second uptime check on the
+    same host would be counted by the same policy."
 - A single failing location, or one failed round, raises nothing by design.
   Expect a notification roughly 10 to 20 minutes after an outage begins (an
   estimate; never observed).

@@ -6,15 +6,15 @@ import path from 'node:path'
 // ── Monitoring — the committed alert policy, metric and uptime-check files ───
 //
 // L3 Stage 1 added three files (an uptime check, its alert policy and the
-// approveFinalAccount failure policy): PREPARED, not created. Their tests are
-// at the end of this file. The DC46 notes below are unchanged.
+// approveFinalAccount failure policy): CREATED in production on 21 November
+// 2026. Their tests are at the end of this file. The DC46 notes below are unchanged.
 //
 // ops/monitoring/*.policy.json are applied by hand with
 // `gcloud monitoring policies create --policy-from-file`, and the one
 // *.metric.json with `gcloud logging metrics create --config-from-file`, each
 // only once authorised (docs/DEPLOYMENT.md → DC46-C monitoring readiness).
 // Policies A and B were created in production on 16 November 2026; policy C
-// and its metric are PREPARED, not created. Nothing in CI creates any of them.
+// and its metric on 17 November 2026. Nothing in CI creates any of them.
 // This suite only keeps the committed files honest:
 //   · no recipient, channel or address is ever committed
 //   · each policy stays scoped to the ONE worker service
@@ -24,7 +24,7 @@ import path from 'node:path'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../ops/monitoring')
 const read = (name) => JSON.parse(readFileSync(path.join(dir, name), 'utf8'))
 const files = readdirSync(dir).filter(f => f.endsWith('.policy.json')).sort()
-// L3 Stage 1 — PREPARED, not created in production.
+// L3 Stage 1 — created in production 21 November 2026.
 const L3_UPTIME = 'l3-app-availability.uptime-check.json'
 const L3_UPTIME_POLICY = 'l3-app-availability.policy.json'
 const L3_CALLABLE_POLICY = 'l3-final-account-callable-failure.policy.json'
@@ -187,7 +187,9 @@ describe('ops/monitoring policy files', () => {
 
 // ── L3 Stage 1 — availability check and Final Account callable failure ───────
 //
-// PREPARED, not created. These pin the files against the things they must
+// CREATED in production 21 November 2026 (docs/DEPLOYMENT.md → L3 Stage 1).
+// The availability policy file was aligned with the created policy during
+// C1-D (24 November 2026 UTC). These pin the files against the things they must
 // agree with in THIS repository: the page the check fetches, the function the
 // policy watches, and the error codes that must not raise an alert.
 describe('ops/monitoring L3 files', () => {
@@ -226,11 +228,23 @@ describe('ops/monitoring L3 files', () => {
   it('the availability policy alerts only on repeated failure: two or more locations, for two check periods', () => {
     const policy = read(L3_UPTIME_POLICY)
     const c = policy.conditions[0].conditionThreshold
-    // Tied to the check by host, because the check's id is assigned by the
-    // server when it is created and cannot be committed in advance.
-    expect(c.filter).toBe(`metric.type="monitoring.googleapis.com/uptime_check/check_passed" AND resource.type="uptime_url" AND resource.labels.host="${read(L3_UPTIME).monitoredResource.labels.host}"`)
+    // Tied to the ONE check by host AND by the check's id. The id is assigned
+    // by the server when the check is created (21 November 2026); this file
+    // records the production policy as created, verified read-only on
+    // 24 November 2026 UTC (C1-D). The server derives the id from the check's
+    // display name, so the id must still belong to the committed check. If the
+    // check is ever re-created it gets a new id, and this policy must be
+    // re-created with it.
+    const CHECK_ID = 'l3-app-constrap-com-https-availability-10ehOIKFFlc'
+    const slug = read(L3_UPTIME).displayName.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+    expect(CHECK_ID).toMatch(new RegExp(`^${slug}-[A-Za-z0-9]+$`))
+    expect(c.filter).toBe(`metric.type="monitoring.googleapis.com/uptime_check/check_passed" AND resource.type="uptime_url" AND resource.labels.host="${read(L3_UPTIME).monitoredResource.labels.host}" AND metric.label.check_id="${CHECK_ID}"`)
+    // Grouped by every resource label of uptime_url (project_id, host): with
+    // one host in one project that is one group, so REDUCE_COUNT_FALSE counts
+    // the failing checker locations of this check — the same result as
+    // grouping by host (compared over the check's whole history, C1-D).
     expect(c.aggregations).toEqual([{
-      alignmentPeriod: '1200s', perSeriesAligner: 'ALIGN_NEXT_OLDER', crossSeriesReducer: 'REDUCE_COUNT_FALSE', groupByFields: ['resource.labels.host'],
+      alignmentPeriod: '1200s', perSeriesAligner: 'ALIGN_NEXT_OLDER', crossSeriesReducer: 'REDUCE_COUNT_FALSE', groupByFields: ['resource.label.*'],
     }])
     // More than one failing location, never a single checker's bad minute.
     expect(c).toMatchObject({ comparison: 'COMPARISON_GT', thresholdValue: 1, trigger: { count: 1 } })

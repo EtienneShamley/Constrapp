@@ -12,13 +12,13 @@
     {
       "displayName": "Uptime check on app.constrap.com failing from 2+ checker locations for 10 minutes",
       "conditionThreshold": {
-        "filter": "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND resource.type=\"uptime_url\" AND resource.labels.host=\"app.constrap.com\"",
+        "filter": "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND resource.type=\"uptime_url\" AND resource.labels.host=\"app.constrap.com\" AND metric.label.check_id=\"l3-app-constrap-com-https-availability-10ehOIKFFlc\"",
         "aggregations": [
           {
             "alignmentPeriod": "1200s",
             "perSeriesAligner": "ALIGN_NEXT_OLDER",
             "crossSeriesReducer": "REDUCE_COUNT_FALSE",
-            "groupByFields": ["resource.labels.host"]
+            "groupByFields": ["resource.label.*"]
           }
         ],
         "comparison": "COMPARISON_GT",

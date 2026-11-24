@@ -2999,7 +2999,7 @@ the policies remain detection only.
 | **CREATED — verified read-only** | Two email notification channels, `DC46 - Product Owner` and `DC46 - Billing Administrator` (recipients are not in Git) |
 | **RUN AND REMOVED** | The temporary delivery-test policy (`ops/monitoring/dc46-delivery-test.temporary-policy.json`): created, fired once, deleted; its incident is closed. No temporary production resource remains |
 | **REPORTED by the Product Owner** | Both recipients received the test notification. Not observed: Google exposes no per-recipient delivery record that was found |
-| **NOT TESTED in production** | Policy A on a real absence; policy B on a real error line; anything during a billing suspension |
+| **NOT TESTED in production** | Policy A on a real absence; anything during a billing suspension. *Corrected 25 November 2026 (C1-D):* **policy B has matched a real error line once** — the predicted first-pass `reconciliation overdue` line at activation (17 November 2026 19:17:02 UTC) opened an incident at 19:18:06 that auto-closed on 18 November 19:22:24 (*Monitoring release record* → *Policy B incident*). It was not deliberately triggered. *As written:* Policy A on a real absence; policy B on a real error line; anything during a billing suspension |
 | **NOT VERIFIED — administrator action** | Billing continuity (below) |
 | **CREATED 17 November 2026 (last changed 18:42 UTC), enabled** | Policy C, the planning heartbeat, and its log-based metric — `ops/monitoring/dc46-planning-heartbeat.metric.json` and `dc46-planning-heartbeat-absent.policy.json` (*Policy C* below). Created before activation; verified read-only on 17 and 18 November 2026 (enabled, two channels, metric filter identical to the file, one point per hourly pass) |
 | **DONE 16 November 2026** | The callable deploy (the eight callables only; *DC46-C* → *Callable release record*) |
@@ -3079,6 +3079,24 @@ incident id shown in the email, which the delivery-test procedure asks for.
   recorded afterwards, in the closeout brief of 17 November 2026. The
   read-only verification at 18:42 had it as unverified.
 
+**Policy B incident — 17–18 November 2026 (recorded 25 November 2026, C1-D; Cloud, read-only).**
+The only incident a permanent policy has opened. At activation (*DC46-C* →
+*Activation runbook* → *First-pass overdue*), worker revision
+`processfilelinkrevocations-00003-ceg` wrote, at 17 November 2026
+19:17:02.390 UTC, the predicted ERROR line `file-links: reconciliation
+overdue; tokens in these companies are older than the bound` (stderr).
+Policy B (`11943159347055161843`) opened incident `0.of4o1z1d3uvz` at
+19:18:06 (Cloud Logging `monitoring.googleapis.com/ViolationOpenEventv1`,
+written twice with the same violation id). It closed on 18 November 2026 at
+19:22:24, by policy B's 24-hour auto-close: a log-match incident has no
+recovery condition. No other error-level line from the worker exists in the
+40 days read on 24 November 2026. Policy B carries both channels and,
+according to the Monitoring API reference, log-based policies notify on
+OPENED only, so one email per channel was due and none on closure.
+**Receipt was not recorded at the time and is not established.** This shows
+that policy B's filter matches a real worker error line in production and
+opens an incident. It was the expected line, not a failure.
+
 **What the deployed monitoring does not do — do not round up.**
 
 | Limitation | Statement |
@@ -3086,7 +3104,7 @@ incident id shown in the email, which the delivery-test procedure asks for.
 | Terminated or deleted resources | Policy A does not guarantee detection. Google documents that metrics of terminated or deleted resources are not considered for metric-absence policies. If the function or its Cloud Run service is deleted, assume silence |
 | Billing suspension | Unverified. Whether Cloud Monitoring evaluates policies or sends email for a project without billing is not documented and was not tested. Policy A must not be described as detecting a billing interruption |
 | Policy B depends on matching log lines | It notifies only when the worker's container writes a line at error level that matches the filter. A run that dies without writing one is not seen by B |
-| Neither failure condition was triggered | No absence and no error line was deliberately produced in production. Policy A has never opened an incident; policy B has never matched. Only the email path was exercised, by a policy that fires on healthy traffic |
+| Neither failure condition was deliberately triggered | No absence and no error line was deliberately produced in production. Policy A has never opened an incident. *Corrected 25 November 2026 (C1-D):* policy B **has** matched once, on the expected first-pass overdue line at activation (17 November 2026; *Policy B incident* below); whether its email arrived was not recorded. *As written 16 November:* "Policy A has never opened an incident; policy B has never matched. Only the email path was exercised, by a policy that fires on healthy traffic" |
 | Same project | Both policies, their data and their notifications depend on `constrapp-69b5d` and on Google Cloud |
 | No external monitor | An independent availability monitor hosted outside this project and its billing account does not exist. It remains future reliability work; none is designed or scoped |
 
@@ -4382,7 +4400,7 @@ writes any document or creates a baseline; another tab's print output
 changes (the Reports tab and the Portfolio share the print rules); or an
 external role reaches the programme.
 
-## L3 Stage 1 — recovery verification, availability check and Final Account failure alert — CLOSED: monitoring CREATED and restoration verification SUCCESSFUL (recorded 21 November 2026); alert delivery NOT tested
+## L3 Stage 1 — recovery verification, availability check and Final Account failure alert — CLOSED: monitoring CREATED and restoration verification SUCCESSFUL (recorded 21 November 2026); alert delivery TESTED 24 November 2026 UTC through a temporary policy on the Product Owner channel (C1-D); neither L3 alert has fired on its real condition
 
 **Status update — Stage 1 closed (recorded 21 November 2026, NZ).** Merged to `main` as `4bd358a`. Monitoring, VERIFIED read-only on 21 November 2026: uptime check `l3-app-constrap-com-https-availability-10ehOIKFFlc` on `app.constrap.com` (every 300 s); alert policy `15559930914799323534` (*L3 app.constrap.com: HTTPS check failing from two or more locations for 10 minutes*, enabled, two channels); alert policy `9683374685335961795` (*L3 approveFinalAccount: server failure (5xx)*, enabled, one channel); DC46 policies A, B and C still present and enabled, two channels each — five policies in all. Notification channels verified (REPORTED by the Lead Architect; channel counts re-read). Restoration, REPORTED by the Lead Architect: the 20 November 2026 backup was restored into the temporary database `restore-verify-20261120-2329`; the restore operation reported SUCCESSFUL; an unauthenticated request to the temporary database returned 403; all 44 collection-group counts matched (211 documents); the sample document hash matched; the temporary database was removed (record: *Firestore recovery protection* → *Restoration verification record*). **Not established:** the exact time and the mechanism of the temporary database's deletion were not independently established and are not recorded. **Scope of the proof:** the validation compared counts per collection group and one document hash; it did NOT compare every document's contents, and Storage files are outside Firestore backups. **Not tested:** actual delivery of an alert notification — neither L3 alert has fired or been test-fired. The text below, including the table's *NOT CREATED* / *NOT RUN* cells and *Creating the monitoring — NOT AUTHORISED YET*, is kept as written before these actions.
 
@@ -4486,9 +4504,147 @@ for the check (delete its policy first). Nothing else depends on them.
 | Alert policy — Final Account failure | `9683374685335961795` | Enabled; one notification channel |
 | DC46 policies A, B, C | `15284677036198995887`, `11943159347055161843`, `5090947661132483012` | Preserved; enabled; two channels each |
 
-Notification channels verified (REPORTED by the Lead Architect). **Actual alert-notification delivery was NOT tested**: neither policy has fired and no test notification was sent. Creation time and operator were not supplied to this record. Checklist O1 (every location passing for 15 minutes) and O3 were not re-read for this record.
+**Updated 25 November 2026 (C1-D; Cloud, read-only).** The availability
+policy as created differs from the file as then committed. The Admin
+Activity audit log shows it created with gcloud on 20 November 2026 at
+21:50:41 UTC with two changes: the filter adds
+`metric.label.check_id="l3-app-constrap-com-https-availability-10ehOIKFFlc"`,
+and the condition groups by `resource.label.*` instead of
+`resource.labels.host`. Both were verified to have the intended meaning:
+- `uptime_url` carries only `project_id` and `host`, so the grouping is still one group.
+- The check id is the only one on the host.
+- Both forms return the same series over the check's whole history: 1,157
+  five-minute rounds and the same single one-location failure on
+  24 November 2026 at 11:11:41 UTC (below the threshold).
+
+The id restriction only removes the earlier caveat that a second check on
+the same host would be counted. The repository file and its test were
+aligned with production; the live policy was not changed. Every other
+policy, the uptime check and the log metric matched their files field by
+field. (The Final Account policy reads without `thresholdValue`, which is
+the API omitting the default 0.) Delivery: *C1-D alert delivery acceptance
+record* below.
+
+*As written 21 November 2026:* Notification channels verified (REPORTED by the Lead Architect). **Actual alert-notification delivery was NOT tested**: neither policy has fired and no test notification was sent. Creation time and operator were not supplied to this record. Checklist O1 (every location passing for 15 minutes) and O3 were not re-read for this record.
 
 *As written before creation:* NOT CREATED.
+
+### C1-D alert delivery acceptance record (24 November 2026 UTC; 25 November 2026 NZDT)
+
+**C1-D CLOSED (Lead Architect decision, 25 November 2026 — REPORTED).** D1–D7 accepted (TESTING.md §73). **Evidence limitations (stand after closure):** the billing-administrator channel was not tested in this run; exact email arrival times are unknown; not every permanent policy has fired on its intended condition (only policy B, once); the permanent policies' recovery-notification behaviour is unverified; receipt of policy B's 17 November email is unverified; observed timings are not service levels.
+
+**Approved by the Lead Architect (25 November 2026).** The approval covered
+exactly one production mutation pair: create one temporary alert policy and
+delete it. No existing policy, channel, Function, Scheduler job, Rule,
+Hosting setting or data was changed. The billing administrator was not
+available, so **only the `DC46 - Product Owner` channel** was attached, as
+the approval required. Operator: the Product Owner's gcloud account (gcloud
+593.0.0).
+
+**Method.** The temporary policy opens an incident because the worker is
+healthy, and closes it by itself. It is a threshold condition on the
+existing planning-heartbeat metric `dc46_reconciliation_plan_complete`
+(policy C's filter). The heartbeat is counted about once an hour; a
+5-minute `ALIGN_DELTA` window holds it for about 5 minutes and then
+empties, so the condition clears without deletion. The policy sends OPENED
+and CLOSED notifications, never renotifies, and auto-closes after 30
+minutes of missing data.
+
+The request body (held outside the repository, so that the committed
+monitoring file set is unchanged; no recipient is in it):
+
+```json
+{
+  "displayName": "TEST - C1-D alert delivery check - delete after use",
+  "combiner": "OR", "enabled": true, "severity": "WARNING",
+  "userLabels": { "milestone": "c1d", "policy": "temporary-delivery-test" },
+  "conditions": [{
+    "displayName": "A reconciliation planning heartbeat was counted in the last 5 minutes (expected TRUE once an hour - this is a test)",
+    "conditionThreshold": {
+      "filter": "metric.type=\"logging.googleapis.com/user/dc46_reconciliation_plan_complete\" AND resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"processfilelinkrevocations\" AND resource.labels.location=\"australia-southeast1\"",
+      "aggregations": [{ "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_DELTA", "crossSeriesReducer": "REDUCE_SUM", "groupByFields": ["resource.labels.service_name"] }],
+      "comparison": "COMPARISON_GT", "thresholdValue": 0, "duration": "60s",
+      "evaluationMissingData": "EVALUATION_MISSING_DATA_INACTIVE",
+      "trigger": { "count": 1 }
+    }
+  }],
+  "alertStrategy": { "autoClose": "1800s", "notificationPrompts": ["OPENED", "CLOSED"] },
+  "documentation": { "mimeType": "text/markdown", "subject": "TEST ONLY - Constrap alert delivery check (C1-D) - no action needed", "content": "(says it is a test, that a resolved email follows, and asks only for the arrival time)" }
+}
+```
+
+Before creation, these were verified:
+- Every field name and enum value, against the Monitoring v3 discovery document.
+- That gcloud 593's bundled client supports
+  `MetricThreshold.evaluationMissingData` and
+  `AlertStrategy.notificationPrompts`.
+- That no policy named TEST existed, and that five policies existed.
+- That the Product Owner channel was resolved by name and was enabled.
+- The last heartbeat time, read again just before creation (21:23:02 UTC).
+
+Created with `gcloud monitoring policies create --project constrapp-69b5d
+--policy-from-file=<body> --notification-channels=<Product Owner channel>`.
+Deleted with `gcloud monitoring policies delete
+projects/constrapp-69b5d/alertPolicies/10264183102153085239 --quiet`.
+
+**Timeline — 24 November 2026, UTC.** *Cloud* means read from the
+Monitoring API, Cloud Logging or the Admin Activity audit log; *Reported*
+means stated by the Product Owner from the emails.
+
+| Time (UTC) | Event | Evidence |
+|---|---|---|
+| 22:08:41 | `CreateAlertPolicy` audited; policy `10264183102153085239` created (record time 22:08:42.52), Product Owner channel only; read-back identical to the body (except the omitted default `thresholdValue` 0) | Cloud |
+| 22:24:03.05 | The worker wrote `file-links: reconciliation plan complete` | Cloud (log) |
+| 22:23:51–22:24:51 | Metric point with value 1; the minutes before and after read 0 | Cloud (time series). The ingestion time itself is not exposed; the point was present by 22:29:20 |
+| 22:29:20 | Incident `0.ofehms6qj26w` OPENED: "is above the threshold of 0.000 with a value of 1.000" (`ViolationOpenEventv1`) | Cloud |
+| by 22:32 (11:32 NZDT) | The opening email was received. It showed the correct test policy, the incident start 22:29 UTC, threshold 0 and observed value 1 | **Reported** by the Product Owner. The exact arrival time and the incident id were not visible in the screenshot |
+| 22:33:35 | The condition "returned to normal with a value of 0.000" and the incident CLOSED (`ViolationAutoResolveEventv1`) — **natural recovery**, not deletion or auto-close | Cloud |
+| by 22:34 (11:34 NZDT) | The recovery email was received, stating that the value returned to 0 | **Reported** by the Product Owner. Exact arrival time not visible |
+| 22:34:58 | `DeleteAlertPolicy` audited; temporary policy deleted, 26 minutes after creation | Cloud |
+
+Observed intervals, which are **not** service levels:
+
+| Interval | Duration |
+|---|---|
+| Heartbeat line to incident open | 5 min 17 s |
+| Incident open (closed at 22:33:35) | 4 min 15 s; the Product Owner's email shows 4 min 14 s |
+| Incident open to opening email received | no more than about 4 min (bounded by the reported minute) |
+| Recovery to recovery email received | no more than about 1.5 min (bounded by the reported minute) |
+
+**Clean-up verified (Cloud, 22:35 UTC):**
+- Exactly the five original policies remain, each byte-identical to its
+  pre-test read and with unchanged mutation times, and each matches its
+  repository file.
+- No policy named TEST remains.
+- Both channels are unchanged (no mutation since 16 November).
+- Three incidents in all, none open; the test incident is kept as history.
+- The Admin Activity audit log since 22:00 holds only the one create and the
+  one delete.
+- No error-level line from any service since 21:50.
+- Worker `-00003-ceg` serves 100 % of traffic with 59 of 59 requests
+  successful that hour, and the Scheduler job is `ENABLED`.
+- The only Firestore writes, at 22:25–22:26, coincide with the worker's
+  periodic sweep after the 22:24 planning pass, the same pattern as the
+  20:22 / 20:23 pass. The test made no Firestore call. No business data was
+  touched and no account was changed.
+
+**What it proves:**
+- The `DC46 - Product Owner` email channel delivers both an opened and a
+  resolved notification from a metric-threshold policy, and the recipient
+  received them within minutes.
+- A threshold condition on a live series opens an incident and recovers by
+  itself.
+
+**What it does not prove:**
+- That any of the five production policies fires on its real condition
+  (only policy B ever has).
+- Delivery through the `DC46 - Billing Administrator` channel. It was
+  exercised on 16 November, with receipt reported and no times recorded.
+- Whether the permanent policies send a resolved email. Their
+  `notificationPrompts` is unset, so Google's default applies; log-based
+  policy B notifies on opening only.
+- Anything during a billing suspension.
+- Exact email arrival times, which were not visible.
 
 ### Operational incident log
 
@@ -4497,7 +4653,31 @@ set out in [ops/RUNBOOK.md](../ops/RUNBOOK.md) §7. Earlier incidents are
 recorded where they were written: *Billing interruption* (12–13 November
 2026) under DC46-C.
 
-No entries yet.
+- **17 November 2026 19:18:06 – 18 November 19:22:24 UTC — DC46 policy B,
+  `DC46 file-link worker: error logged` (recorded 25 November 2026).**
+  - *What happened:* an expected line at the activation of periodic
+    reconciliation, not a failure.
+  - *Noticed:* in the incident list during C1-D. It was not logged here at
+    the time.
+  - *Affected:* nothing.
+  - *Evidence:* the first planning pass of revision `-00003-ceg` reported
+    one overdue company (`reconciliation overdue`, 19:17:02). The sweep a
+    minute later completed with zero failures.
+  - *Cause:* the predicted first-pass overdue (*DC46-C* → *Activation
+    runbook*).
+  - *Done:* nothing; the incident auto-closed after 24 hours. Email receipt
+    was not recorded.
+  - *Follow-up:* none.
+- **24 November 2026 22:29:20 – 22:33:35 UTC — temporary policy `TEST -
+  C1-D alert delivery check - delete after use`.**
+  - *What happened:* a deliberate, approved delivery test, not an incident.
+  - *Affected:* nothing.
+  - *Evidence:* *C1-D alert delivery acceptance record* above.
+  - *Done:* the policy was deleted at 22:34:58 under the Lead Architect's
+    approval.
+  - *Follow-up:* none.
+
+*As written 21 November 2026:* No entries yet.
 
 ## L3 Stage 2 — application error recovery — HOSTING ONLY (ADR-80; LIVE — released with the L4 Hosting deploy)
 
