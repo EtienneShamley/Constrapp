@@ -344,8 +344,27 @@ of the work still to do:
     Deferred UX wording: tracker D3 #9, #19, #21; #20 needs a reproduction.
     *As written before:* remaining P18, parity as a recorded acceptance,
     M1–M5.
-  - **C1-C — GANTT:** the baseline scenarios not exercised in the browser
-    (TESTING.md §42, §64).
+  - **C1-C — GANTT: functional acceptance CLOSED (REPORTED by the Lead
+    Architect, 25 November 2026)** (TESTING.md §72; tracker B8). Carried
+    forward, tracked and not passed: native print / PDF R1–R13; Safari and Firefox; Day / Month chart visuals; the dashed baseline outlines; the individual attention-filter checks; overnight G11; offline capture; the unexecuted stale quick-action and stale cancellation scenarios. D3 #30, #31 are P3 deferred UX
+    corrections; Deferred Control 23 (impossible programme dates accepted by
+    the Rules) is retained as a data-integrity hardening requirement before
+    customer readiness. The CAD programme fixture is retained. *As run:*
+    production acceptance on 25 November 2026 NZDT (TESTING.md §72; tracker
+    B8). Release state VERIFIED (Rules byte-identical, live bundle
+    SHA-256-identical to `main`). On a new retained CAD fixture in the
+    isolated test company, scheduling, finish-to-start dependencies, conflict
+    acknowledgement, cycle prevention, the revision guard, baseline capture /
+    approval / drift / re-baselining / withdrawal, variance against the active
+    and a historical baseline, PULSE parity, the programme CSV and the
+    Dashboard panel PASSED, each equal to an independent calculation; 22
+    server-side refusals. Not run (proposed as limits): print / PDF, a QS or
+    external session on the programme, other browsers. New P3 findings D3
+    #30, #31. **Not built (roadmap, not failures):** progress variance against
+    a baseline; programme figures on the Project Overview and the Portfolio;
+    critical path, working calendars, resource levelling and dependency types
+    other than finish-to-start. *As written before:* the baseline scenarios
+    not exercised in the browser (TESTING.md §42, §64).
   - **C1-D — Monitoring:** a test of alert notification delivery (TESTING.md
     §65; no alert has fired on a real condition).
   - **L4 acceptance — CLOSED with recorded evidence limitations; M2-A2 Stage A
@@ -366,6 +385,13 @@ of the work still to do:
     are retained. Findings D3 #27–#29 form a **P2 external-role UI correction
     bundle**; an external purchase order create was confirmed refused by the
     Rules (no authorisation defect).
+  - **Next milestone (Lead Architect, 25 November 2026): C1-D — monitoring
+    and alert delivery** (TESTING.md §65), then L3 Stage 2 E1–E10. *As
+    written after the C1-C run:* the Lead Architect's C1-C closure decision;
+    recommended next milestone C1-D, then L3 Stage 2 E1–E10. The L4 / Stage A
+    closeout is integrated (`main` `8b8c3e5`; Azure `main` GREEN — REPORTED by
+    the Product Owner). Real customer external onboarding stays separately
+    gated. *As written for the previous revision:*
   - **Next milestone (Lead Architect, 25 November 2026): C1-C GANTT
     production acceptance.** *As written before the run:*
   - **Next milestone (Lead Architect, 25 November 2026):** L4 remaining
