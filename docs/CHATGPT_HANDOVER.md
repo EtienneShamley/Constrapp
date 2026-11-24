@@ -6,7 +6,75 @@ history. It is an index and a checkpoint, **not** a second copy of the
 documentation: where this file and a source document disagree, the source
 document wins and this file must be corrected.
 
-**Last updated:** 25 November 2026, C1-A closeout revision (acceptance run recorded 24 November 2026 UTC).
+**Last updated:** 25 November 2026 (NZDT), L4 / Stage A consolidated acceptance revision (run 24 November 2026 19:00–19:42 UTC).
+**Git checkpoint:** `main` at `0cf17e6` (*Merge C1-A Final Account acceptance
+closeout*; documentation commit `c05e16a`), equal to `origin/main` (fetched 25
+November 2026 NZDT — VERIFIED). Azure `main` CI GREEN — REPORTED by the Product
+Owner. This revision was prepared on the uncommitted branch
+`docs/l4-stage-a-acceptance` (documentation only; nothing deployed).
+**L4 acceptance: CLOSED with recorded evidence limitations. M2-A2 Stage A
+internal-role regression: CLOSED within its applicable scope (Lead Architect
+decision, 25 November 2026 — REPORTED).** Accepted as decided: T14 as `client`
+on the existing production and emulator evidence; M1, M2 and the stale-bundle
+part of M7 superseded; the M4 BOQ-item lock variant (budget-line variant not
+run); the M5 currency pin emulator-only; T15 not executed; the F16 notice
+observed in production; W2–W4 with display findings. **Next milestone: C1-C
+GANTT production acceptance.** The evidence is the consolidated production
+run of 24 November 19:00–19:42 UTC, in the isolated company `constrap-acceptance-test` on one new
+retained synthetic project (L4 `gdaYQYRD7cc0yUTkK0cD`, *TEST GBP-1 — L4
+BOQ-to-budget acceptance*, GBP — its own Portfolio currency group):
+- **L4 (§67):** **T9 PASS** — a transfer request made stale by a second user's
+  BOQ edit was refused by the server (`boq-transfer-stale-review`), the dialog
+  said nothing was written, and nothing was. **Quant step of T16 PASS** — a
+  measured 96.006 m² was applied to a BOQ item; the chain drawing → quantity →
+  BOQ → working budget → **approved version 1 (GBP 12,565.34)** equals
+  independent `Decimal` expectations to the cent on every surface. **T14 PASS
+  as `subcontractor`** at three layers (no BOQ tab or button; Rules denials;
+  the callable's `boq-transfer-forbidden`). **T14 as `client` was not re-run**
+  (Product Owner decision: one reactivation; earlier production evidence §68
+  X1–X3 and §63 P20). A real network disconnection is still not tested.
+- **Stage A (§68):** **M3** (Project Manager edit of all five fields), **M4**
+  (QS lists everything, cannot create or edit — UI and Rules; currency lock
+  engaged by the QS's first priced BOQ item) and **M8** (Portfolio, Commercial
+  Report, Final Account, GANTT for all three internal roles) **PASS**; M5 page
+  load PASS, its currency pin not run (nothing to pin); **M1, M2 and the
+  stale-bundle part of M7 are superseded** — that release stage is over and
+  they were never verified.
+- **§61:** W2, W3, W4 PASS. **§62 F16: the *Final Account is restricted* notice
+  is now OBSERVED in production** (a signed-in `subcontractor` on fixture Z; no
+  figure, no control).
+- **Budget approval authority:** a QS can prepare but not approve — no control,
+  and the Rules refused the application's own approve transaction sent from the
+  QS session; the Company Admin approved.
+- **Accounts:** the TEST Project Manager, QS and the one re-activated external
+  identity were **deactivated** through the Team page at the end; Auth
+  disabled, tokens revoked, assignments removed, revocation sweep complete;
+  reconciliation report: no inconsistencies. The TEST Company Admin stays
+  active. A further role session needs a new invitation.
+- **Integrity:** Apex Builders identical (258 documents); projects A–C and
+  fixtures X, Y, Z untouched; NZD weighted margin still 26%; Z's approved
+  revision 2 still agrees with the records.
+- **Integrity limits that stand:** token replay after deactivation not
+  tested; Apex Storage objects not compared; the Apex comparison is by
+  document path and update time, not content; the Hosting bundle not
+  re-compared with a build.
+- **New findings (no data exposed) — P2 external-role UI correction bundle
+  (architect, 25 November):** tracker D3 #27 (Budget tab
+  by URL as an external role shows a loading fault, not a restricted notice),
+  #28 (Purchase Orders tab shows an empty register and a create button), #29
+  (Commercial sub-navigation shown to external roles). **D3 #28 was inspected
+  for an authorisation defect and none was found:** the `purchaseOrders` Rules
+  allow read, create and update only to the three internal roles
+  (`financialMember`), and existing emulator tests refuse a create by an
+  assigned subcontractor and client (TESTING.md §71). A production create by
+  an external role was not attempted.
+Record: SECURITY_DATA_TEST_TRACKER.md → B7; TESTING.md §71. The Project
+Manager, QS and external test accounts stay deactivated; the TEST Company
+Admin, the GBP fixture and every earlier fixture are retained. Real customer external onboarding stays
+separately gated. Statements further down that the Project Manager and QS are
+active, or that T9, T14, W2–W4 or the F16 notice are open, pre-date this
+revision.
+*As written for the previous revision (C1-A closeout):* **Last updated:** 25 November 2026, C1-A closeout revision (acceptance run recorded 24 November 2026 UTC).
 **Git checkpoint:** `main` at `2561344` (*Merge C1-B Portfolio acceptance
 closeout*; documentation commit `c236bd9`), equal to `origin/main` (fetched 24
 November 2026 — VERIFIED). This revision was prepared on the uncommitted
@@ -676,6 +744,19 @@ implementation on `feature/gantt-core-completion` (uncommitted).
 *Done, 24–25 November 2026:* C1-B CLOSED and merged (`2561344`); C1-A
 remaining acceptance run and **C1-A CLOSED** (Lead Architect, 25 November).
 
+*Done, 25 November 2026 (NZDT):* C1-A closeout integrated (`main` `0cf17e6` —
+VERIFIED in Git; Azure green — REPORTED). L4 remaining acceptance and the
+Stage A internal-role regression **run in production** (tracker B7, TESTING.md
+§71) and **CLOSED by the Lead Architect** — L4 with recorded evidence
+limitations, Stage A within its applicable scope.
+
+0. **Now:** Git integration of `docs/l4-stage-a-acceptance` (documentation
+   only, uncommitted). Then **the next milestone — C1-C GANTT production
+   acceptance** (item 3; needs its own brief, a programme on a test project
+   and, for role checks, a fresh invitation). The **P2 external-role UI
+   correction bundle** (D3 #27–#29, with #5 and #6) is a separate Hosting-only
+   change when scheduled. Items 1 and 2 below are kept as written and are
+   complete.
 1. **Git integration of `docs/c1a-final-account-acceptance`** (documentation
    only; authorised by the closure decision, not yet committed).
 2. **Next milestone — L4 remaining acceptance and M2-A2 Stage A
