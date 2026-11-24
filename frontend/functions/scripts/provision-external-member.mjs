@@ -24,21 +24,31 @@
 //   --link-file <path>   the link is written to a NEW file, mode 0600, outside
 //                        this repository. Hand it over on a channel you trust
 //                        and delete the file. A link delivered this way proves
-//                        nothing about the mailbox.
+//                        nothing about the mailbox. The destination is checked
+//                        and created by _linkFile.mjs, exactly as for the
+//                        bootstrap: the folder's REAL path must lie outside the
+//                        repository (a symbolic link into it is refused), the
+//                        file must not exist (a symbolic link counts), and it
+//                        is created exclusively, mode 0600, before any write.
+//
+// If the invitation commits but the link file cannot be written, the script
+// exits 3, names the invitation and removes the partial file; the link is not
+// shown and nothing is retried. Recover WITHOUT a second invitation: a Company
+// Admin presses Resend for the email (a fresh link, emailed; the lost one stops
+// working), or revokes the invitation in the Team page and this script is run
+// again. A plain re-run is refused (invite-pending) — it never rotates.
 //
 // It never creates a company, never changes an existing member, and refuses an
 // email that already holds a pending invitation (revoke that one in the Team
 // page first) or an active membership anywhere.
 //
-// Exit code: 0 done (or dry run clean), 1 refused, 2 usage error.
+// Exit code: 0 done (or dry run clean), 1 refused, 2 usage error,
+// 3 invitation committed but the link file was not written.
 
-import { closeSync, existsSync, openSync, statSync, unlinkSync, writeSync } from 'node:fs'
-import { dirname, resolve, sep } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { parseArgs, usage, configureProject, log, silentLogger, ID_LIST_PATTERN, parseIdList, describeRefusal } from './_cli.mjs'
+import { checkLinkFileDestination, reserveLinkFile, deliverToLinkFile, discardLinkFile, redactCredentials, LinkFileError } from './_linkFile.mjs'
 
 const NAME = 'scripts/provision-external-member.mjs'
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 
 const SPEC = {
   'project':     { required: true, pattern: /^[a-z0-9-]{4,40}$/, help: 'Firebase project id (explicit, always)' },
@@ -62,18 +72,17 @@ async function main() {
   let args
   try { args = parseArgs(process.argv.slice(2), SPEC) } catch (e) { fatalUsage(e.message) }
   const apply = !!args.apply
-  const linkFile = args['link-file'] ? resolve(args['link-file']) : null
-  if (apply && !!args['no-link'] === !!linkFile) fatalUsage('--apply needs exactly one of --no-link or --link-file <path>')
-  if (!apply && (args['no-link'] || linkFile || args['app-url'])) fatalUsage('--no-link, --link-file and --app-url are only meaningful with --apply')
+  const wantsFile = args['link-file'] !== undefined
+  if (apply && !!args['no-link'] === wantsFile) fatalUsage('--apply needs exactly one of --no-link or --link-file <path>')
+  if (!apply && (args['no-link'] || wantsFile || args['app-url'])) fatalUsage('--no-link, --link-file and --app-url are only meaningful with --apply')
 
   const { emulated } = configureProject(args.project)
-  const appBaseUrl = linkFile ? (args['app-url'] ?? process.env.APP_BASE_URL ?? '') : ''
-  if (linkFile) {
+  const appBaseUrl = wantsFile ? (args['app-url'] ?? process.env.APP_BASE_URL ?? '') : ''
+  let linkFile = null
+  if (wantsFile) {
     if (!appBaseUrl) fatalUsage('--link-file needs --app-url (or APP_BASE_URL) to build the acceptance link')
     if (!emulated && !appBaseUrl.startsWith('https://')) fatalUsage('--app-url must be an https origin outside the emulators')
-    if (linkFile === REPO_ROOT || linkFile.startsWith(REPO_ROOT + sep)) fatalUsage('--link-file must be OUTSIDE this repository: an acceptance link must never be committed')
-    if (existsSync(linkFile)) fatalUsage('--link-file names a file that already exists; nothing is overwritten')
-    if (!existsSync(dirname(linkFile)) || !statSync(dirname(linkFile)).isDirectory()) fatalUsage('--link-file: the folder does not exist')
+    try { linkFile = checkLinkFileDestination(args['link-file']) } catch (e) { fatalUsage(e.message) }
   }
 
   const { getDb, getAdminAuth } = await import('../src/lib/firebaseAdmin.js')
@@ -106,23 +115,37 @@ async function main() {
   }
 
   // Reserve the link file BEFORE the invitation exists, so the link is never
-  // created without somewhere private to put it.
-  let fd = null
-  if (linkFile) fd = openSync(linkFile, 'wx', 0o600)
+  // created without somewhere private to put it, and a destination that
+  // changed since the check writes nothing.
+  let reserved = null
+  if (linkFile) {
+    try { reserved = reserveLinkFile(linkFile) } catch (e) {
+      if (!(e instanceof LinkFileError)) throw e
+      log.error(e.message)
+      process.exitCode = 1
+      return
+    }
+  }
   let done
   try {
     done = await provisionExternalMember(deps, { ...request, dryRun: false })
-    if (fd !== null) writeSync(fd, `${done.link}\n`)
   } catch (e) {
-    if (fd !== null) { closeSync(fd); fd = null; try { unlinkSync(linkFile) } catch { /* nothing to remove */ } }
+    if (reserved) discardLinkFile(reserved)   // refused: no link exists for this file
     throw e
-  } finally {
-    if (fd !== null) closeSync(fd)
   }
 
   log.info(`• invitation ${done.inviteId} created (expires ${done.expiresAt}) — pending until accepted`)
   log.info('')
-  if (linkFile) {
+  if (reserved) {
+    const delivered = deliverToLinkFile(reserved, done.link)
+    if (!delivered.ok) {
+      log.error(`The invitation ${done.inviteId} IS CREATED, but the link could not be written to ${linkFile} (${delivered.code}).`)
+      log.error(`The link is lost and was not shown${delivered.removed ? '; the partial file was removed' : ''}. Nothing was retried.`)
+      log.error(`Recover without a second invitation: a Company Admin presses Resend for ${done.email} in Settings → Team (a fresh link, emailed),`)
+      log.error('or revokes that invitation there and runs this script again. A plain re-run is refused (invite-pending).')
+      process.exitCode = 3
+      return
+    }
     log.info(`The acceptance link is in ${linkFile} (mode 0600). It is NOT shown here.`)
     log.info('Hand it to the invitee on a channel you trust, then delete the file.')
   } else {
@@ -138,6 +161,6 @@ async function main() {
 // times the transaction out.
 main().catch((e) => {
   const refusal = describeRefusal(e)
-  log.error(refusal ? `Refused: ${refusal}` : (e?.message ?? e))
+  log.error(redactCredentials(refusal ? `Refused: ${refusal}` : (e?.message ?? e)))
   process.exitCode = 1
 })

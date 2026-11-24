@@ -7673,7 +7673,9 @@ is **OFF**, and no App Check monitoring period has been completed.
   - `scripts.test.js` — `bootstrap-company.mjs` (argument validation, dry run
     writes nothing, company + operator invitation + link printed once,
     acceptance makes the first admin, idempotent re-run, rotation instead of a
-    second invitation, refusal of an ambiguous rename) and
+    second invitation, refusal of an ambiguous rename — *as written for L1;
+    since operator tooling safety the link is never printed and rotation needs
+    `--rotate`, §70*) and
     `reconcile-membership.mjs` (report vs `--fix`; only the pending Auth sync is
     fixed).
 - `tests/rules/teamPaths.rules.test.js` — every browser role, including
@@ -9539,3 +9541,83 @@ Portfolio page's Firestore requests (§63 P19 note). *As written before:* A
 real browser session of an external role; real email delivery of an external
 invitation; a download URL copied before a removal (P9) — all three now
 covered.
+
+## 70. Operator tooling safety — D3 #1–#3 and #16 (24 November 2026) — IMPLEMENTED — PENDING INTEGRATION (architect corrections applied); automated tests PASS (emulators and pure); `npm run test:team` end-to-end PASS; scripts only, no deployment; NOT exercised against production
+
+Branch `feature/operator-tooling-safety` (uncommitted). Procedure, migration
+and recovery: [DEPLOYMENT.md](DEPLOYMENT.md) → *Operator tooling safety*.
+Summary index: [SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md)
+→ D1 R-6, D3 #1–#3.
+
+### Automated — `frontend/functions/test/operatorTooling.test.js` (pure, no emulator; 24 tests)
+
+| Area | Checks |
+|---|---|
+| Link-file destination | new file in a private folder accepted; repository refused directly and through a folder symbolic link into it; existing file, symbolic link to a file and dangling symbolic link refused (targets untouched); missing folder, a file as folder, group- or world-writable folder refused; sticky world-writable folder accepted; folder of another uid refused |
+| Reservation and delivery | empty regular file, mode 0600, one link, operator-owned; a second reservation of the path refused; **eight concurrent processes → exactly one creates it**; a failed (partial) write removes the file and returns no link; discard never removes a file that replaced the reserved one; a reservation through a link into the repository leaves nothing there; credential redaction |
+| `runOperatorScript` (real child processes) | returned code kept (0 / 1 / 3); error → 1, `UsageError` → 2 with usage; shutdown steps run after `main` settles, also after an error; **a failing step is an explicit `✖ Cleanup FAILED … INCOMPLETE` (codes 0 / 1 / 3 kept), never a clean-shutdown message**; a shutdown that never finishes → `✖ Cleanup did NOT complete within 1 s — the process is being terminated`, forced exit, no hang, code kept (0 / 1); **the timeout starts only after `main` settled** (a 1.5 s operation with a 0.5 s timeout completes normally); a clean shutdown prints nothing; `main` runs exactly once, also when it throws |
+| Source pins (also `memberProjects.test.js` for provisioning) | provisioning uses `_linkFile.mjs` (`checkLinkFileDestination`, `reserveLinkFile` before `dryRun: false`, `deliverToLinkFile`), no `openSync` / `writeSync` / `REPO_ROOT` of its own, exit 3 on a post-commit delivery failure, no rotation path; the four older scripts: no `process.exit(`, `runOperatorScript(main, …)`, `releaseOnExit(() => db.terminate())`; the runner's only `process.exit` is the timeout fallback, after `process.exitCode`; bootstrap: plan → dry-run return → reservation → first write, plan function read-only; the link reaches only `deliverToLinkFile`; no console printing; rotation re-checked under the lock; deployed entry points import no script |
+
+### Automated — `frontend/tests/functions/scripts.test.js` (emulators; bootstrap 11 tests, provisioning +2, lifecycle 3 tests)
+
+| ID | Check | Result |
+|---|---|---|
+| OT1 | Twelve bad command lines (no project, bad id, unknown flag, `--apply` alone, `--apply --dry-run`, both / no delivery option, delivery without `--apply`, `--app-url` with `--no-link`, a non-origin URL) → exit 2; a key file → exit 1; **nothing written** (companies, invitations, audit, lock, users, Auth) | PASS |
+| OT2 | Default, `--dry-run`, the old write command (`--app-url` only) and `--rotate` dry runs → read only; a dry run against an existing pending invitation → read only | PASS |
+| OT3 | `--apply --link-file`: company, operator invitation, `company.bootstrapped` + `invite.created`; link only in the 0600 file, never on stdout / stderr; the link accepts and makes the first admin (not email-verified); re-run → nothing to do, no file; rename → refused, no write | PASS |
+| OT4 | `--apply --no-link`: no link anywhere; later `--rotate --link-file` delivers the same invitation with a new token (`invite.resent`) | PASS |
+| OT5 | A pending invitation: plain re-run refused (no file, no write); `--rotate` keeps one invitation, kills the old link, the new one works | PASS |
+| OT6 | `--rotate` refuses a pending `project_manager` invitation and an email with nothing pending; no write | PASS |
+| OT7 | Unsafe destinations (repository, folder link into it, existing file, links, missing / shared folder, no origin) → exit 2 before any write; targets untouched | PASS |
+| OT8 | Two runs racing for one link file → exactly one exit 0; the other exit 1 / 2 and **no document of its company** | PASS |
+| OT9 | Link write fails after the commit (ENOSPC fixture, partial write) → exit 3, invitation named and pending, partial file removed, no credential in output; plain re-run refused; `--rotate --link-file` recovers the same invitation | PASS |
+| OT10 | Refusal inside the invitation transaction and inside a rotation (fixture) → exit 1, one attempt only, no invitation / audit / lock write, no link file, **membership lock writable at once** | PASS |
+| OT11 | Refusal inside the company transaction → no company, no audit, document writable at once | PASS |
+| OT12 | `backfill-project-directory.mjs --apply`, refused transaction → `FAILED` once, exit 1, no entry, project and entry writable at once | PASS |
+| OT13 | `reconcile-membership.mjs --fix`, refused F2 → exit 1, field kept, no audit, profile writable at once | PASS |
+| OT14 | Exit codes and prompt exit (< 15 s, no shutdown warning) for the four scripts on success, refusal and usage error; reconcile JSON mode still one stdout line | PASS |
+| OT15 | **D3 #16 regression** — `provision-external-member.mjs --apply --link-file` through a folder symbolic link into `frontend/functions` and into the repository root, a link to a file, a dangling link, a world-writable folder → exit 2, nothing in the repository, targets untouched, no invitation or audit | PASS |
+| OT16 | Provisioning: link write fails after the commit (ENOSPC fixture) → exit 3, invitation named and pending (role, projects kept), partial file removed, no credential in output; a plain re-run refused `invite-pending` (no duplicate, no rotation); a Company Admin's Resend delivers a fresh link for the same invitation | PASS |
+
+**Sensitivity check (not committed):** with the runner temporarily changed back
+to an immediate `process.exit(code)`, OT10–OT13's lock assertions failed
+(`expected false to be true`), as did OT14; restored byte-identical
+afterwards. **Hazard measurement (scratch, not committed):** on a fresh
+emulator, a transaction that read `companies/x/system/membership` and was
+refused: `process.exit(1)` → a one-attempt write of that document failed with
+`ABORTED: Transaction lock timeout` for about 45–60 s; `process.exitCode` and
+`Firestore.terminate()` → written in ~90 ms.
+
+**D3 #16 demonstration (emulator, not committed):** `main`'s
+`provision-external-member.mjs` with `--link-file <tmp>/repo-alias/zz-leak.txt`
+(`repo-alias` → `frontend/functions`) exited 0 and created
+`frontend/functions/zz-leak.txt` (`git status`: untracked) — the link inside the
+working tree. This branch: exit 2, *must be OUTSIDE this repository*, no file,
+0 invitations. The file and the temporary copy were removed.
+
+### `npm run test:team` end-to-end (local emulators, 24 November 2026) — PASS
+
+Four consecutive fresh runs, driven from a scratch script that never printed
+the link:
+
+| Check | Result (runs 1–4) |
+|---|---|
+| Emulators ready (Auth config endpoint, Firestore *Ok*, Functions, *All emulators ready*) | ready in 17–22 s each run |
+| Bootstrap on the **first** attempt (`--apply --link-file`, private temp folder) | `done` every run (before the fix, the first run failed `ECONNREFUSED 127.0.0.1:9099`) |
+| Emulator link shown by the launcher; temp link folder removed | yes; 0 folders left |
+| Link origin | `http://127.0.0.1:5173` |
+| The link is a working invitation (`previewInvitation` through the Functions emulator, unsigned emulator App Check token) | HTTP 200, role `company_admin`, account `new` (run 4; runs 1–3 sent no App Check header → 401, a probe error) |
+| Vite reachable; bind address | `http://127.0.0.1:5173/` → 200; listening on `127.0.0.1:5173` only (no `::1`, no wildcard) |
+| Ctrl+C shutdown | *Stopped*; 0 processes and 0 emulator / Vite ports left |
+| Production connection | **None to the production project or its data.** Non-loopback traffic seen only from the Firebase CLI process: one metadata request for `constrapp-rules-test` → 403 (`--debug`). firebase-tools hands the CLI login to the Functions emulator as credentials (DEPLOYMENT.md → *Local emulators and credentials*) |
+
+### Manual — not required for integration
+
+- [ ] A production dry run — **not needed for this review** (architect, 24
+  November 2026).
+- [ ] A browser session against `npm run test:team` (accept the link, open the
+  Team page) — not run; the HTTP checks above stand in for it.
+
+**Not covered.** The lock behaviour on production Firestore (emulator only;
+production expiry may differ); a real full disk; another OS user racing for the
+link folder.

@@ -28,7 +28,7 @@
 // assigned client's or subcontractor's list. Exit code: 0 clean, 1 when any
 // project was refused or failed, 2 on a usage error.
 
-import { parseArgs, usage, configureProject, log } from './_cli.mjs'
+import { parseArgs, usage, configureProject, log, runOperatorScript, releaseOnExit, UsageError, EXIT } from './_cli.mjs'
 import { expectedEntry, entryDifferences } from './_projectDirectory.mjs'
 
 const SPEC = {
@@ -39,10 +39,11 @@ const SPEC = {
 
 async function main() {
   let args
-  try { args = parseArgs(process.argv.slice(2), SPEC) } catch (e) { log.error(e.message); console.log(usage('scripts/backfill-project-directory.mjs', SPEC)); process.exit(2) }
+  try { args = parseArgs(process.argv.slice(2), SPEC) } catch (e) { throw new UsageError(e.message) }
   const { emulated } = configureProject(args.project)
   const { getDb } = await import('../src/lib/firebaseAdmin.js')
   const db = getDb()
+  releaseOnExit(() => db.terminate())
   const apply = !!args.apply
 
   log.info(`${apply ? '[APPLY] ' : '[DRY RUN] '}Project ${args.project}${emulated ? ' (EMULATORS)' : ''}${args['company-id'] ? ` · company ${args['company-id']}` : ' · all companies'}`)
@@ -50,7 +51,7 @@ async function main() {
   const companies = args['company-id']
     ? [await db.collection('companies').doc(args['company-id']).get()].filter(s => s.exists)
     : (await db.collection('companies').get()).docs
-  if (args['company-id'] && companies.length === 0) { log.error('Company not found.'); process.exit(1) }
+  if (args['company-id'] && companies.length === 0) { log.error('Company not found.'); return EXIT.REFUSED }
 
   const totals = { projects: 0, inSync: 0, missing: 0, created: 0, invalid: 0, mismatch: 0, orphan: 0, failed: 0 }
 
@@ -114,7 +115,10 @@ async function main() {
   if (!apply && totals.missing === 0) log.info('Dry run — nothing to create.')
 
   const refused = totals.invalid + totals.mismatch + totals.orphan + totals.failed
-  if (refused > 0) { log.error(`${refused} item(s) need attention — see above.`); process.exit(1) }
+  if (refused > 0) { log.error(`${refused} item(s) need attention — see above.`); return EXIT.REFUSED }
+  return EXIT.OK
 }
 
-main().catch((e) => { log.error(e?.message ?? e); process.exit(1) })
+// Never process.exit() here: see runOperatorScript in _cli.mjs. A failed
+// create is reported once (FAILED / SKIPPED) and never retried.
+runOperatorScript(main, { usageText: usage('scripts/backfill-project-directory.mjs', SPEC) })

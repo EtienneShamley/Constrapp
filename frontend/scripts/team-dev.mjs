@@ -5,7 +5,9 @@
 //
 // One command that starts the Auth, Firestore AND Functions emulators,
 // bootstraps a disposable company with an operator-delivered Company Admin
-// invitation (prints the acceptance link), then starts Vite with the
+// invitation (the bootstrap writes its link to a private temporary file —
+// it never prints it; this launcher reads that EMULATOR-ONLY link back and
+// shows it, then deletes the file), then starts Vite with the
 // emulator opt-ins set FOR THAT CHILD PROCESS ONLY:
 //
 //   VITE_USE_FIREBASE_EMULATOR=true  VITE_USE_AUTH_EMULATOR=true
@@ -18,9 +20,10 @@
 
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { dirname, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -44,13 +47,24 @@ function portFree(port) {
   })
 }
 
-async function waitFor(port, timeoutMs = 120_000) {
-  const deadline = Date.now() + timeoutMs
+// Bounded readiness: poll `probe` (a real request to the service, not a
+// fixed sleep) every 300 ms until it answers true or the deadline passes.
+const READY_TIMEOUT_MS = 120_000
+async function waitUntil(probe, deadline) {
   while (Date.now() < deadline && !shuttingDown) {
-    try { const r = await fetch(`http://${HOST}:${port}/`); if (r.status > 0) return true } catch { /* not yet */ }
+    try { if (await probe()) return true } catch { /* not listening yet */ }
     await sleep(300)
   }
   return false
+}
+const answers = (path, ok = (r) => r.ok) => async (port) => ok(await fetch(`http://${HOST}:${port}${path}`, { signal: AbortSignal.timeout(2000) }))
+// Each emulator's own readiness endpoint. Auth answers its project config only
+// once it serves requests (the bootstrap's first Auth lookup needs it);
+// Firestore answers "Ok" on /; the Functions emulator answers on / once bound.
+const PROBES = {
+  auth: answers(`/emulator/v1/projects/${PROJECT_ID}/config`),
+  firestore: answers('/'),
+  functions: answers('/', (r) => r.status > 0),
 }
 
 function spawnGroup(cmd, args, opts = {}) {
@@ -69,7 +83,10 @@ async function shutdown(code = 0) {
   shuttingDown = true
   console.log(`\n${c.dim('Shutting down Vite and the emulators…')}`)
   for (const ch of children) killGroup(ch, 'SIGTERM')
-  await sleep(2500)
+  // Wait for the children to exit (bounded), then force any that remain.
+  const exited = (ch) => ch.exitCode !== null || ch.signalCode !== null
+  const until = Date.now() + 10_000
+  while (Date.now() < until && !children.every(exited)) await sleep(200)
   for (const ch of children) killGroup(ch, 'SIGKILL')
   console.log(c.dim('Stopped. Emulator data was in-memory and is now discarded.'))
   process.exit(code)
@@ -90,7 +107,9 @@ async function main() {
   if (!vitePort) fail(`No free Vite port among ${VITE_PORTS.join(', ')}.`)
 
   const adminEmail = (process.env.TEAM_ADMIN_EMAIL || 'admin@example.test').trim()
-  const appBaseUrl = `http://localhost:${vitePort}`
+  // The same loopback address Vite binds to (--host below) and the launcher
+  // probes: `localhost` can resolve to ::1 only, which the probe would miss.
+  const appBaseUrl = `http://${HOST}:${vitePort}`
 
   console.log(`\n${c.bold('Team management — manual acceptance')} ${c.dim(`· emulator project ${PROJECT_ID}`)}`)
   console.log(c.dim('─'.repeat(64)))
@@ -101,14 +120,25 @@ async function main() {
   emulator.stdout.on('data', (d) => { log += d.toString() })
   emulator.stderr.on('data', (d) => { log += d.toString() })
   emulator.on('exit', (code) => { if (!shuttingDown) { console.error(`\n${c.red('✖')} The emulators exited (code ${code}).`); console.error(c.dim(log.split('\n').slice(-30).join('\n'))); shutdown(1) } })
-  if (!(await waitFor(ports.firestore)) || !(await waitFor(ports.functions))) { console.log(c.red('failed')); console.error(c.dim(log.split('\n').slice(-30).join('\n'))); await shutdown(1); return }
+  // All three services, and the CLI's own "ready" signal (Functions loaded),
+  // before anything talks to them — one bounded deadline for the lot.
+  const deadline = Date.now() + READY_TIMEOUT_MS
+  const notReady = []
+  for (const name of ['auth', 'firestore', 'functions']) {
+    if (!(await waitUntil(() => PROBES[name](ports[name]), deadline))) notReady.push(name)
+  }
+  if (notReady.length === 0 && !(await waitUntil(async () => log.includes('All emulators ready'), deadline))) notReady.push('emulator hub')
+  if (notReady.length > 0) { console.log(c.red(`failed — not ready within ${READY_TIMEOUT_MS / 1000} s: ${notReady.join(', ')}`)); console.error(c.dim(log.split('\n').slice(-30).join('\n'))); await shutdown(1); return }
   console.log(c.green('ready'))
 
   process.stdout.write(`  ${c.dim('2/3')} Bootstrapping a company and its first admin… `)
+  const linkDir = mkdtempSync(join(tmpdir(), 'constrap-team-dev-'))   // 0700, outside the repository
+  const linkFile = join(linkDir, 'admin-link.txt')
   const boot = spawn(process.execPath, [
     resolve(FRONTEND, 'functions/scripts/bootstrap-company.mjs'),
     '--project', PROJECT_ID, '--company-id', 'demo-builders', '--company-name', 'Demo Builders',
     '--admin-email', adminEmail, '--country', 'AU', '--currency', 'AUD', '--app-url', appBaseUrl,
+    '--apply', '--link-file', linkFile,
   ], {
     cwd: resolve(FRONTEND, 'functions'),
     env: { ...process.env, FIRESTORE_EMULATOR_HOST: `${HOST}:${ports.firestore}`, FIREBASE_AUTH_EMULATOR_HOST: `${HOST}:${ports.auth}`, GOOGLE_APPLICATION_CREDENTIALS: '' },
@@ -118,12 +148,15 @@ async function main() {
   boot.stdout.on('data', (d) => { bootOut += d.toString() })
   boot.stderr.on('data', (d) => { bootOut += d.toString() })
   const bootCode = await new Promise((r) => boot.on('exit', r))
+  let link = null
+  try { if (bootCode === 0) link = readFileSync(linkFile, 'utf8').trim() } catch { /* reported below */ }
+  rmSync(linkDir, { recursive: true, force: true })
   if (bootCode !== 0) { console.log(c.red('failed')); console.error(bootOut); await shutdown(1); return }
-  const link = bootOut.split('\n').find(l => l.startsWith(`${appBaseUrl}/accept-invite#`))
   console.log(c.green('done'))
 
   process.stdout.write(`  ${c.dim('3/3')} Starting Vite on ${HOST}:${vitePort}… `)
-  const vite = spawnGroup(viteBin, ['--mode', 'emulator', '--port', String(vitePort), '--strictPort'], {
+  // Loopback only, IPv4 — exactly the address probed below and used for links.
+  const vite = spawnGroup(viteBin, ['--mode', 'emulator', '--host', HOST, '--port', String(vitePort), '--strictPort'], {
     env: {
       ...process.env,
       VITE_USE_FIREBASE_EMULATOR: 'true',
@@ -145,11 +178,11 @@ async function main() {
   vite.stdout.on('data', () => {})
   vite.stderr.on('data', (d) => process.stderr.write(d))
   vite.on('exit', (code) => { if (!shuttingDown) { console.error(`\n${c.red('✖')} Vite exited (code ${code}).`); shutdown(1) } })
-  if (!(await waitFor(vitePort))) { console.log(c.red('failed')); await shutdown(1); return }
+  if (!(await waitUntil(() => answers('/')(vitePort), Date.now() + READY_TIMEOUT_MS))) { console.log(c.red(`failed — not reachable on ${HOST}:${vitePort}`)); await shutdown(1); return }
   console.log(c.green('ready'))
 
   console.log(`\n  ${c.bold('Open the Company Admin acceptance link:')}`)
-  console.log(`  ${c.cyan(link ?? '(link not found — see bootstrap output above)')}`)
+  console.log(`  ${c.cyan(link ?? '(link file not written — see bootstrap output above)')}`)
   console.log(`\n  ${c.dim('Register as')} ${adminEmail} ${c.dim('(any 12+ character password), then Company Settings → Team.')}`)
   console.log(`  ${c.dim('Invitation emails land in Firestore at companies/demo-builders/devOutbox/{inviteId} (field "link").')}`)
   console.log(`  ${c.dim('App Check is skipped by the Functions emulator; production enforces it.')}`)

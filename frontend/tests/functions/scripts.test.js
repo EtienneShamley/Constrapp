@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, it, expect } from 'vitest'
-import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -32,6 +32,25 @@ function findingsOf(r) {
 }
 
 const WARNING_PRELOAD = resolve(HERE, 'fixtures/emit-warning.mjs')
+const REFUSE_TRANSACTION = resolve(HERE, 'fixtures/refuse-transaction.mjs')
+const FAIL_LINK_WRITE = resolve(HERE, 'fixtures/fail-link-write.mjs')
+
+const lockRef = (companyId) => A.db.collection('companies').doc(companyId).collection('system').doc('membership')
+// True when a one-attempt transaction can write the document straight away.
+// A transaction left open by a script that exited before its rollback went
+// out keeps the document locked: the emulator then answers ABORTED
+// ("Transaction lock timeout") after ~2 s, and keeps the lock for about a
+// minute.
+async function writableAtOnce(ref) {
+  const started = Date.now()
+  try {
+    await A.db.runTransaction(async (tx) => { await tx.get(ref); tx.set(ref, { lifecycleProbe: started }, { merge: true }) }, { maxAttempts: 1 })
+  } catch (e) {
+    if (/lock timeout/i.test(e?.message ?? '')) return false
+    throw e
+  }
+  return Date.now() - started < 1500
+}
 
 let A
 beforeAll(async () => { A = await admin() })
@@ -39,33 +58,98 @@ beforeEach(async () => { await resetEmulators() })
 
 describe('bootstrap-company.mjs', () => {
   const base = ['--project', PROJECT_ID, '--company-id', 'acme', '--company-name', 'Acme Builders', '--admin-email', 'Ada@Acme.test', '--country', 'AU', '--currency', 'AUD']
+  let dir
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'constrap-bootstrap-')) })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
-  it('validates its arguments and refuses to run without an explicit project', () => {
-    expect(run('bootstrap-company.mjs', []).code).toBe(2)
-    expect(run('bootstrap-company.mjs', ['--project', PROJECT_ID, '--company-id', 'Bad Id', '--company-name', 'x', '--admin-email', 'a@b.co']).code).toBe(2)
-    expect(run('bootstrap-company.mjs', [...base, '--bogus']).code).toBe(2)
+  // Everything the script could write: the company and its subcollections, and Auth.
+  const footprint = async () => {
+    const companies = (await A.db.collection('companies').get()).docs.map(d => d.id).sort()
+    const sub = {}
+    for (const c of companies) {
+      for (const coll of ['invitations', 'auditEvents', 'system', 'members']) {
+        const s = await A.db.collection('companies').doc(c).collection(coll).get()
+        if (s.size) sub[`${c}/${coll}`] = s.docs.map(d => `${d.id}:${d.updateTime.toMillis()}`).sort()
+      }
+    }
+    return { companies, sub, users: (await A.db.collection('users').get()).size, auth: (await A.auth.listUsers()).users.length }
+  }
+  const EMPTY = { companies: [], sub: {}, users: 0, auth: 0 }
+  const linkOf = (file) => readFileSync(file, 'utf8').trim()
+  const applyTo = (file, extra = []) => [...base, '--apply', '--link-file', file, ...extra]
+
+  it('validates its arguments and refuses to run without an explicit project — with nothing written', async () => {
+    const usageCases = [
+      [],
+      ['--project', PROJECT_ID, '--company-id', 'Bad Id', '--company-name', 'x', '--admin-email', 'a@b.co'],
+      [...base, '--bogus'],
+      base.slice(2),                                                           // no --project
+      [...base, '--apply'],                                                    // no delivery option
+      [...base, '--apply', '--dry-run', '--no-link'],                          // contradictory execution flags
+      [...base, '--apply', '--no-link', '--link-file', join(dir, 'l.txt')],    // two delivery options
+      [...base, '--no-link'],                                                  // delivery without --apply
+      [...base, '--link-file', join(dir, 'l.txt')],
+      [...base, '--dry-run', '--link-file', join(dir, 'l.txt')],
+      [...base, '--apply', '--no-link', '--app-url', 'http://localhost:5173'], // origin is meaningless without a file
+      [...base, '--apply', '--link-file', join(dir, 'l.txt'), '--app-url', 'http://localhost:5173/path'],
+    ]
+    for (const args of usageCases) {
+      const r = run('bootstrap-company.mjs', args)
+      expect(r.code, args.join(' ')).toBe(2)
+      expectNoCredential(r.out)
+    }
+    expect(run('bootstrap-company.mjs', [...base, '--apply', '--no-link'], { GOOGLE_APPLICATION_CREDENTIALS: '/tmp/key.json' }).code).toBe(1)
+    expect(await footprint()).toEqual(EMPTY)
   })
 
-  it('dry-run writes nothing; the real run creates the company, an operator invitation and prints the link once', async () => {
-    const dry = run('bootstrap-company.mjs', [...base, '--dry-run'])
+  it('is DRY-RUN BY DEFAULT: no flag, --dry-run, and the old write command all read only', async () => {
+    for (const args of [base, [...base, '--dry-run'], [...base, '--app-url', 'http://localhost:5173'], [...base, '--rotate']]) {
+      const r = run('bootstrap-company.mjs', args)
+      if (args.includes('--rotate')) {
+        expect(r.code).toBe(1)                     // nothing to rotate — still read-only
+        expect(r.out).toContain('no pending invitation')
+      } else {
+        expect(r.code, args.join(' ')).toBe(0)
+        expect(r.out).toContain('[DRY RUN — read only]')
+        expect(r.out).toContain('would create companies/acme')
+        expect(r.out).toContain('would create an operator-delivered company_admin invitation for ada@acme.test')
+        expect(r.out).toContain('Dry run — nothing written. Re-run with --apply and exactly one of --no-link or --link-file <path>.')
+      }
+      expectNoCredential(r.out)
+    }
+    expect(await footprint()).toEqual(EMPTY)
+    // The dry run of an existing company with a pending invitation is read-only too.
+    run('bootstrap-company.mjs', [...base, '--apply', '--no-link'])
+    const before = await footprint()
+    const dry = run('bootstrap-company.mjs', [...base, '--rotate'])
     expect(dry.code).toBe(0)
-    expect(dry.out).toContain('DRY RUN')
-    expect((await A.db.collection('companies').doc('acme').get()).exists).toBe(false)
+    expect(dry.out).toContain('would ROTATE the pending invitation')
+    expect(await footprint()).toEqual(before)
+  })
 
-    const real = run('bootstrap-company.mjs', base)
+  it('--apply --link-file creates the company, an operator invitation and its audit; the link reaches only a new 0600 file', async () => {
+    const file = join(dir, 'ada-link.txt')
+    const real = run('bootstrap-company.mjs', applyTo(file))
     expect(real.code).toBe(0)
-    const link = real.out.split('\n').find(l => l.startsWith('http://localhost:5173/accept-invite#'))
-    expect(link).toBeTruthy()
-    const company = await A.db.collection('companies').doc('acme').get()
-    expect(company.data()).toMatchObject({ name: 'Acme Builders', countryCode: 'AU', baseCurrency: 'AUD' })
+    expectNoCredential(real.out)
+    expect(real.out).toContain(`The acceptance link is in ${file} (mode 0600). It is NOT shown here.`)
+    const st = statSync(file)
+    expect(st.mode & 0o777).toBe(0o600)
+    expect(st.isFile() && st.nlink === 1).toBe(true)
+    const link = linkOf(file)
+    expect(link.startsWith('http://localhost:5173/accept-invite#')).toBe(true)
     const cred = parseLink(link)
-    const inv = await A.db.collection('companies').doc('acme').collection('invitations').doc(cred.inviteId).get()
-    expect(inv.data()).toMatchObject({ email: 'ada@acme.test', role: 'company_admin', status: 'pending', deliveredVia: 'operator' })
-    expect(real.out).not.toContain(inv.data().tokenHash)
-    const audits = (await A.db.collection('companies').doc('acme').collection('auditEvents').get()).docs.map(d => d.data().type)
-    expect(audits).toEqual(expect.arrayContaining(['company.bootstrapped', 'invite.created']))
+    expect(real.out).not.toContain(cred.token)
 
-    // The printed link is a working invitation; acceptance makes the first admin.
+    const company = await A.db.collection('companies').doc('acme').get()
+    expect(company.data()).toMatchObject({ name: 'Acme Builders', countryCode: 'AU', baseCurrency: 'AUD', createdBy: 'operator' })
+    const inv = await A.db.collection('companies').doc('acme').collection('invitations').doc(cred.inviteId).get()
+    expect(inv.data()).toMatchObject({ email: 'ada@acme.test', role: 'company_admin', status: 'pending', deliveredVia: 'operator', createdBy: 'operator' })
+    expect(real.out).toContain(`invitation ${cred.inviteId} created`)
+    expect(real.out).not.toContain(inv.data().tokenHash)
+    expect(await auditTypes('acme')).toEqual(['company.bootstrapped', 'invite.created'])
+
+    // The file's link is a working invitation; acceptance makes the first admin.
     const { handlers: H } = await makeHandlers()
     expect((await H.previewInvitation(req(null, cred))).accountState).toBe('new')
     await A.auth.createUser({ uid: 'u_ada', email: 'ada@acme.test', password: 'correct-horse-battery' })
@@ -73,26 +157,199 @@ describe('bootstrap-company.mjs', () => {
     expect((await A.db.collection('users').doc('u_ada').get()).data()).toMatchObject({ companyId: 'acme', role: 'company_admin' })
     expect((await A.auth.getUser('u_ada')).emailVerified).toBe(false)   // operator link proves no mailbox
 
-    // Idempotent: re-running reports nothing to do; a different name is refused.
-    const again = run('bootstrap-company.mjs', base)
+    // Idempotent: re-running reports nothing to do and creates no file; a different name is refused.
+    const before = await footprint()
+    const again = run('bootstrap-company.mjs', applyTo(join(dir, 'again.txt')))
     expect(again.code).toBe(0)
     expect(again.out).toContain('already an active Company Admin')
-    const renamed = run('bootstrap-company.mjs', [...base.slice(0, 5), 'Other Name', ...base.slice(6)])
+    expect(existsSync(join(dir, 'again.txt'))).toBe(false)
+    const renamed = run('bootstrap-company.mjs', [...base.slice(0, 5), 'Other Name', ...base.slice(6), '--apply', '--link-file', join(dir, 'renamed.txt')])
     expect(renamed.code).toBe(1)
-    expect(renamed.out).toContain('Refusing')
+    expect(renamed.out).toContain('Refusing an ambiguous change')
+    expect(existsSync(join(dir, 'renamed.txt'))).toBe(false)
+    expect(await footprint()).toEqual(before)
   })
 
-  it('re-running before acceptance rotates the pending invitation instead of creating a second one', async () => {
-    const first = run('bootstrap-company.mjs', base)
-    const link1 = first.out.split('\n').find(l => l.startsWith('http://localhost:5173/accept-invite#'))
-    const second = run('bootstrap-company.mjs', base)
-    const link2 = second.out.split('\n').find(l => l.startsWith('http://localhost:5173/accept-invite#'))
-    expect(parseLink(link1).inviteId).toBe(parseLink(link2).inviteId)
-    expect(parseLink(link1).token).not.toBe(parseLink(link2).token)
-    expect((await A.db.collection('companies').doc('acme').collection('invitations').get()).size).toBe(1)
+  it('--apply --no-link keeps no link anywhere; the invitation is delivered later by an explicit --rotate --link-file', async () => {
+    const r = run('bootstrap-company.mjs', [...base, '--apply', '--no-link'])
+    expect(r.code).toBe(0)
+    expectNoCredential(r.out)
+    expect(r.out).toContain('No link was kept')
+    expect(readdirSync(dir)).toEqual([])
+    const [inv] = await invitationsOf('acme')
+    expect(inv).toMatchObject({ email: 'ada@acme.test', role: 'company_admin', status: 'pending', deliveredVia: 'operator' })
+
+    const file = join(dir, 'later.txt')
+    const later = run('bootstrap-company.mjs', applyTo(file, ['--rotate']))
+    expect(later.code).toBe(0)
+    expectNoCredential(later.out)
+    expect(parseLink(linkOf(file)).inviteId).toBe(inv.id)
+    const after = await invitationsOf('acme')
+    expect(after).toHaveLength(1)
+    expect(after[0].tokenHash).not.toBe(inv.tokenHash)
+    expect(after[0].previousTokenHash).toBe(inv.tokenHash)
+    expect(await auditTypes('acme')).toEqual(['company.bootstrapped', 'invite.created', 'invite.resent'])
+    const { handlers: H } = await makeHandlers()
+    expect((await H.previewInvitation(req(null, parseLink(linkOf(file))))).accountState).toBe('new')
+  })
+
+  it('never replaces a pending invitation silently: a re-run is refused unless --rotate, which keeps one invitation and kills the old link', async () => {
+    const f1 = join(dir, 'one.txt'), f2 = join(dir, 'two.txt'), f3 = join(dir, 'three.txt')
+    expect(run('bootstrap-company.mjs', applyTo(f1)).code).toBe(0)
+    const link1 = linkOf(f1)
+    const before = await footprint()
+
+    const plain = run('bootstrap-company.mjs', applyTo(f2))
+    expect(plain.code).toBe(1)
+    expect(plain.out).toContain(`a pending company_admin invitation ${parseLink(link1).inviteId} already exists`)
+    expect(existsSync(f2)).toBe(false)
+    expect(await footprint()).toEqual(before)
+
+    const rotated = run('bootstrap-company.mjs', applyTo(f3, ['--rotate']))
+    expect(rotated.code).toBe(0)
+    expect(rotated.out).toContain(`invitation ${parseLink(link1).inviteId} rotated`)
+    const link3 = linkOf(f3)
+    expect(parseLink(link3).inviteId).toBe(parseLink(link1).inviteId)
+    expect(parseLink(link3).token).not.toBe(parseLink(link1).token)
+    expect(await invitationsOf('acme')).toHaveLength(1)
     const { handlers: H, CODE } = { ...(await makeHandlers()), CODE: A.CODE }
     await expect(H.previewInvitation(req(null, parseLink(link1)))).rejects.toMatchObject({ details: { code: CODE.INVALID_INVITATION } })
-    expect((await H.previewInvitation(req(null, parseLink(link2)))).accountState).toBe('new')
+    expect((await H.previewInvitation(req(null, parseLink(link3)))).accountState).toBe('new')
+  })
+
+  it('--rotate refuses a pending invitation for another role, and an apply with nothing to rotate', async () => {
+    await seedCompany('acme', 'Acme Builders')
+    await seedUser({ uid: 'u_admin', email: 'boss@acme.test', role: 'company_admin', companyId: 'acme' })
+    const { handlers: H } = await makeHandlers()
+    await H.createInvitation(req('u_admin', { email: 'ada@acme.test', role: 'project_manager' }))
+    const before = await footprint()
+    for (const extra of [[], ['--rotate']]) {
+      const r = run('bootstrap-company.mjs', applyTo(join(dir, 'pm.txt'), extra))
+      expect(r.code).toBe(1)
+      expect(r.out).toContain('is for the role project_manager, not company_admin')
+      expect(existsSync(join(dir, 'pm.txt'))).toBe(false)
+    }
+    expect(await footprint()).toEqual(before)
+    const none = run('bootstrap-company.mjs', [...base.slice(0, 7), 'nobody@acme.test', ...base.slice(8), '--apply', '--no-link', '--rotate'])
+    expect(none.code).toBe(1)
+    expect(none.out).toContain('there is no pending invitation for nobody@acme.test to rotate')
+    expect(await footprint()).toEqual(before)
+  })
+
+  it('refuses an unsafe link destination before anything is written: repository, existing file, symbolic links, missing or shared folder', async () => {
+    const existing = join(dir, 'existing.txt')
+    writeFileSync(existing, 'keep me')
+    const target = join(dir, 'target.txt')
+    writeFileSync(target, 'target')
+    symlinkSync(target, join(dir, 'to-file.txt'))
+    symlinkSync(join(dir, 'nowhere.txt'), join(dir, 'dangling.txt'))
+    symlinkSync(FUNCTIONS, join(dir, 'repo-alias'))                          // a folder link INTO the repository
+    const shared = join(dir, 'shared')
+    mkdirSync(shared)
+    chmodSync(shared, 0o777)
+    const cases = [
+      [resolve(FUNCTIONS, 'link.txt'), 'OUTSIDE this repository'],
+      [join(dir, 'repo-alias', 'link.txt'), 'OUTSIDE this repository'],
+      [existing, 'already exists'],
+      [join(dir, 'to-file.txt'), 'already exists'],
+      [join(dir, 'dangling.txt'), 'already exists'],
+      [join(dir, 'no-such-folder', 'l.txt'), 'the folder does not exist'],
+      [join(shared, 'l.txt'), 'writable by other users'],
+    ]
+    for (const [file, message] of cases) {
+      const r = run('bootstrap-company.mjs', applyTo(file))
+      expect(r.code, file).toBe(2)
+      expect(r.out, file).toContain(message)
+    }
+    expect(run('bootstrap-company.mjs', applyTo(join(dir, 'l.txt')), { APP_BASE_URL: '' }).code).toBe(2)   // no origin
+    expect(readFileSync(existing, 'utf8')).toBe('keep me')
+    expect(readFileSync(target, 'utf8')).toBe('target')
+    expect(lstatSync(join(dir, 'dangling.txt')).isSymbolicLink()).toBe(true)
+    expect(existsSync(join(dir, 'nowhere.txt'))).toBe(false)
+    expect(existsSync(resolve(FUNCTIONS, 'link.txt'))).toBe(false)
+    expect(readdirSync(shared)).toEqual([])
+    expect(await footprint()).toEqual(EMPTY)
+  })
+
+  it('two runs racing for one link file: exactly one writes it, the other writes nothing anywhere', async () => {
+    const file = join(dir, 'race.txt')
+    const spawnRun = (companyId) => new Promise((res) => {
+      const args = ['--project', PROJECT_ID, '--company-id', companyId, '--company-name', `Co ${companyId}`, '--admin-email', `ada@${companyId}.test`, '--apply', '--link-file', file]
+      const ch = spawn(process.execPath, [resolve(FUNCTIONS, 'scripts/bootstrap-company.mjs'), ...args], {
+        cwd: FUNCTIONS, env: { ...process.env, APP_BASE_URL: 'http://localhost:5173', GOOGLE_APPLICATION_CREDENTIALS: '' },
+      })
+      let out = ''
+      ch.stdout.on('data', (d) => { out += d }); ch.stderr.on('data', (d) => { out += d })
+      ch.on('exit', (code) => res({ companyId, code, out }))
+    })
+    const results = await Promise.all(['race-one', 'race-two'].map(spawnRun))
+    const winners = results.filter(r => r.code === 0)
+    expect(winners).toHaveLength(1)
+    const loser = results.find(r => r.code !== 0)
+    expect([1, 2]).toContain(loser.code)
+    expect(loser.out).toMatch(/already exists|appeared while being created/)
+    for (const r of results) expectNoCredential(r.out)
+    expect(parseLink(linkOf(file)).companyId).toBe(winners[0].companyId)
+    const fp = await footprint()
+    expect(fp.companies).toEqual([winners[0].companyId])
+    expect(Object.keys(fp.sub).filter(k => k.startsWith(loser.companyId))).toEqual([])
+  })
+
+  it('a link file that cannot be written AFTER the commit: exit 3, the invitation is named, the partial file is removed, nothing is retried — and --rotate recovers', async () => {
+    const file = join(dir, 'full-disk.txt')
+    const r = run('bootstrap-company.mjs', applyTo(file), { NODE_OPTIONS: `--import=${FAIL_LINK_WRITE}` })
+    expect(r.code).toBe(3)
+    expectNoCredential(r.out)
+    expect(existsSync(file)).toBe(false)
+    const [inv] = await invitationsOf('acme')
+    expect(inv).toMatchObject({ status: 'pending', email: 'ada@acme.test' })
+    expect(r.out).toContain(`The invitation ${inv.id} IS CREATED, but the link could not be written to ${file} (ENOSPC)`)
+    expect(r.out).toContain('the partial file was removed')
+    expect(r.out).toContain('--apply --rotate --link-file')
+
+    // Recovery: a plain re-run is refused (no duplicate, no silent rotation) …
+    const plain = run('bootstrap-company.mjs', applyTo(join(dir, 'retry.txt')))
+    expect(plain.code).toBe(1)
+    expect(await invitationsOf('acme')).toEqual([inv])
+    // … and the explicit rotation delivers a fresh link for the same invitation.
+    const recovered = join(dir, 'recovered.txt')
+    expect(run('bootstrap-company.mjs', applyTo(recovered, ['--rotate'])).code).toBe(0)
+    expect(parseLink(linkOf(recovered)).inviteId).toBe(inv.id)
+    expect(await invitationsOf('acme')).toHaveLength(1)
+    expect(await auditTypes('acme')).toEqual(['company.bootstrapped', 'invite.created', 'invite.resent'])
+  })
+
+  it('a refusal inside the invitation transaction: exit 1, nothing written, no link file, not retried, and the membership lock is free at once', async () => {
+    await seedCompany('acme', 'Acme Builders')
+    const file = join(dir, 'refused.txt')
+    const r = run('bootstrap-company.mjs', applyTo(file), { NODE_OPTIONS: `--import=${REFUSE_TRANSACTION}` })
+    expect(r.code).toBe(1)
+    expect(r.out).toContain('simulated refusal inside the transaction')
+    expect(r.stderr.match(/\[fixture\] transaction 1 attempt/g)).toHaveLength(1)
+    expectNoCredential(r.out)
+    expect(existsSync(file)).toBe(false)
+    expect(await invitationsOf('acme')).toEqual([])
+    expect(await auditTypes('acme')).toEqual([])
+    expect((await lockRef('acme').get()).exists).toBe(false)
+    expect(await writableAtOnce(lockRef('acme'))).toBe(true)
+
+    // The same for a rotation: the old token stays, the lock is free.
+    expect(run('bootstrap-company.mjs', [...base, '--apply', '--no-link']).code).toBe(0)
+    const [inv] = await invitationsOf('acme')
+    const rot = run('bootstrap-company.mjs', applyTo(file, ['--rotate']), { NODE_OPTIONS: `--import=${REFUSE_TRANSACTION}` })
+    expect(rot.code).toBe(1)
+    expect(existsSync(file)).toBe(false)
+    expect(await invitationsOf('acme')).toEqual([inv])
+    expect(await auditTypes('acme')).toEqual(['invite.created'])
+    expect(await writableAtOnce(lockRef('acme'))).toBe(true)
+  })
+
+  it('a refusal inside the company transaction leaves no company and no audit event', async () => {
+    const r = run('bootstrap-company.mjs', applyTo(join(dir, 'c.txt')), { NODE_OPTIONS: `--import=${REFUSE_TRANSACTION}` })
+    expect(r.code).toBe(1)
+    expect(existsSync(join(dir, 'c.txt'))).toBe(false)
+    expect(await footprint()).toEqual(EMPTY)
+    expect(await writableAtOnce(A.db.collection('companies').doc('acme'))).toBe(true)
   })
 })
 
@@ -349,6 +606,66 @@ describe('provision-external-member.mjs', () => {
     expect(await invitationsOf(COMPANY_A)).toEqual([])
   })
 
+  it('D3 #16 regression: a folder that is a symbolic link INTO the repository is refused — and so are file links and shared folders — before anything is written', async () => {
+    symlinkSync(FUNCTIONS, join(dir, 'repo-alias'))                     // the reported hole: path typed outside, real path inside
+    symlinkSync(resolve(FUNCTIONS, '..', '..'), join(dir, 'root-alias'))
+    const target = join(dir, 'target.txt')
+    writeFileSync(target, 'target')
+    symlinkSync(target, join(dir, 'to-file.txt'))
+    symlinkSync(join(dir, 'nowhere.txt'), join(dir, 'dangling.txt'))
+    const shared = join(dir, 'shared')
+    mkdirSync(shared)
+    chmodSync(shared, 0o777)
+    const cases = [
+      [join(dir, 'repo-alias', 'leak.txt'), 'OUTSIDE this repository'],
+      [join(dir, 'root-alias', 'leak.txt'), 'OUTSIDE this repository'],
+      [join(dir, 'to-file.txt'), 'already exists'],
+      [join(dir, 'dangling.txt'), 'already exists'],
+      [join(shared, 'l.txt'), 'writable by other users'],
+    ]
+    for (const [file, message] of cases) {
+      const r = run('provision-external-member.mjs', [...base, '--apply', '--link-file', file])
+      expect(r.code, file).toBe(2)
+      expect(r.out, file).toContain(message)
+      expectNoCredential(r.out)
+    }
+    expect(existsSync(resolve(FUNCTIONS, 'leak.txt'))).toBe(false)
+    expect(existsSync(resolve(FUNCTIONS, '..', '..', 'leak.txt'))).toBe(false)
+    expect(readFileSync(target, 'utf8')).toBe('target')
+    expect(existsSync(join(dir, 'nowhere.txt'))).toBe(false)
+    expect(readdirSync(shared)).toEqual([])
+    expect(await invitationsOf(COMPANY_A)).toEqual([])
+    expect(await auditTypes(COMPANY_A)).toEqual([])
+  })
+
+  it('a link file that cannot be written AFTER the commit: exit 3, invitation named, partial file removed; no rotation, no duplicate; Resend recovers', async () => {
+    const file = join(dir, 'full-disk.txt')
+    const r = run('provision-external-member.mjs', [...base, '--apply', '--link-file', file], { NODE_OPTIONS: `--import=${FAIL_LINK_WRITE}` })
+    expect(r.code).toBe(3)
+    expectNoCredential(r.out)
+    expect(existsSync(file)).toBe(false)
+    const [inv] = await invitationsOf(COMPANY_A)
+    expect(inv).toMatchObject({ email: 'cleo@client.test', role: 'client', projectIds: ['p1', 'p2'], status: 'pending', deliveredVia: 'operator' })
+    expect(r.out).toContain(`The invitation ${inv.id} IS CREATED, but the link could not be written to ${file} (ENOSPC)`)
+    expect(r.out).toContain('the partial file was removed')
+    expect(r.out).toContain('presses Resend for cleo@client.test')
+    expect(await auditTypes(COMPANY_A)).toEqual(['invite.created'])
+
+    // A plain re-run is refused: no second invitation, no rotation.
+    const again = run('provision-external-member.mjs', [...base, '--apply', '--link-file', join(dir, 'again.txt')])
+    expect(again.code).toBe(1)
+    expect(again.out).toContain(`Refused: invite-pending — invitation ${inv.id}`)
+    expect(existsSync(join(dir, 'again.txt'))).toBe(false)
+    expect(await invitationsOf(COMPANY_A)).toEqual([inv])
+
+    // Recovery through the existing path: a Company Admin's Resend emails a fresh link.
+    const { handlers: H, mailer } = await makeHandlers()
+    await H.resendInvitation(req('u_admin', { inviteId: inv.id }))
+    expect(mailer.sent[0].to).toBe('cleo@client.test')
+    expect(parseLink(mailer.lastLink()).inviteId).toBe(inv.id)
+    expect(await invitationsOf(COMPANY_A)).toHaveLength(1)
+  })
+
   it('refuses a key file, like every operator script', () => {
     const r = run('provision-external-member.mjs', base, { GOOGLE_APPLICATION_CREDENTIALS: '/tmp/key.json' })
     expect(r.code).toBe(1)
@@ -562,5 +879,67 @@ describe('reconcile-membership.mjs — project assignments (ADR-84)', () => {
 
     const after = run('reconcile-membership.mjs', ['--project', PROJECT_ID], { RECONCILE_JSON: '1' })
     expect(findingsOf(after).map(f => f.code).sort()).toEqual(['R9', 'R9'])
+  })
+})
+
+// ── Operator tooling safety (D3 #3): no premature exit after a refusal ──────
+//
+// Each of the four older scripts used to call process.exit() after a failed
+// transaction, before the SDK's un-awaited rollback went out; the documents
+// that transaction read stayed locked for about a minute. They now return an
+// exit code and terminate the Firestore client, which waits for that rollback.
+describe('operator script lifecycle after a refused transaction', () => {
+  const refusing = { NODE_OPTIONS: `--import=${REFUSE_TRANSACTION}` }
+  const attempts = (r) => (r.stderr.match(/\[fixture\] transaction 1 attempt/g) ?? []).length
+
+  it('backfill-project-directory.mjs: reports the failure once, exits 1, writes no entry and leaves the project unlocked', async () => {
+    await seedCompany(COMPANY_A)
+    await seedProjects(COMPANY_A, ['p1'], { directory: false })
+    const r = run('backfill-project-directory.mjs', ['--project', PROJECT_ID, '--apply'], refusing)
+    expect(r.code).toBe(1)
+    expect(r.out).toContain(`FAILED    companies/${COMPANY_A}/projects/p1 — simulated refusal inside the transaction`)
+    expect(attempts(r)).toBe(1)
+    expect((await A.db.collection('companies').doc(COMPANY_A).collection('projectDirectory').get()).size).toBe(0)
+    expect(await writableAtOnce(A.db.collection('companies').doc(COMPANY_A).collection('projectDirectory').doc('p1'))).toBe(true)
+    expect(await writableAtOnce(project(COMPANY_A, 'p1'))).toBe(true)
+  })
+
+  it('reconcile-membership.mjs --fix: a refused F2 fix exits 1, keeps the field, writes no audit event and leaves the profile unlocked', async () => {
+    await seedCompany(COMPANY_A)
+    await seedUser({ uid: 'u_admin', email: 'admin@acme.test', role: 'company_admin', companyId: COMPANY_A })
+    await seedUser({ uid: 'u_qs', email: 'qs@acme.test', role: 'qs', companyId: COMPANY_A })
+    await A.db.collection('users').doc('u_qs').update({ projectIds: ['p1'] })   // R7
+    const r = run('reconcile-membership.mjs', ['--project', PROJECT_ID, '--fix'], refusing)
+    expect(r.code).toBe(1)
+    expect(r.out).toContain('simulated refusal inside the transaction')
+    expect(attempts(r)).toBe(1)
+    expect((await A.db.collection('users').doc('u_qs').get()).data().projectIds).toEqual(['p1'])
+    expect(await auditTypes(COMPANY_A)).toEqual([])
+    expect(await writableAtOnce(A.db.collection('users').doc('u_qs'))).toBe(true)
+  })
+
+  it('exit codes are kept and the processes end promptly on success, refusal and usage error', async () => {
+    await seedCompany(COMPANY_A)
+    const timed = (script, args, env) => { const t = Date.now(); const r = run(script, args, env); return { ...r, ms: Date.now() - t } }
+    const cases = [
+      ['revoke-file-links.mjs', ['--project', PROJECT_ID, '--bucket', 'some-bucket.firebasestorage.app', '--company-id', 'nope'], 1],
+      ['revoke-file-links.mjs', ['--project', PROJECT_ID, '--bucket', 'some-bucket.firebasestorage.app'], 2],
+      ['backfill-project-directory.mjs', ['--project', PROJECT_ID], 0],
+      ['backfill-project-directory.mjs', ['--project', PROJECT_ID, '--company-id', 'nope'], 1],
+      ['reconcile-membership.mjs', ['--project', PROJECT_ID, '--company-id', COMPANY_A], 0],
+      ['reconcile-membership.mjs', ['--project', PROJECT_ID, '--company-id', 'nope'], 1],
+      ['reconcile-membership.mjs', ['--project', PROJECT_ID, '--bogus'], 2],
+      ['bootstrap-company.mjs', ['--project', PROJECT_ID, '--company-id', 'acme', '--company-name', 'Acme', '--admin-email', 'a@acme.test'], 0],
+    ]
+    for (const [script, args, code] of cases) {
+      const r = timed(script, args)
+      expect(r.code, `${script} ${args.join(' ')}\n${r.out}`).toBe(code)
+      expect(r.ms, script).toBeLessThan(15000)
+      expect(r.stderr, script).not.toContain('did not shut down')
+    }
+    // reconcile's JSON mode still carries exactly one stdout line on a refusal-free run.
+    const json = run('reconcile-membership.mjs', ['--project', PROJECT_ID, '--company-id', COMPANY_A], { RECONCILE_JSON: '1' })
+    expect(json.code).toBe(0)
+    expect(json.stdout.trim().split('\n')).toHaveLength(1)
   })
 })

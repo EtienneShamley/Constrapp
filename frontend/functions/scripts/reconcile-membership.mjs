@@ -29,7 +29,7 @@
 //       of at most 30 unique ids, or names a project that does not exist in
 //       their company (fix with scripts/set-member-projects.mjs)
 
-import { parseArgs, usage, configureProject, log, silentLogger } from './_cli.mjs'
+import { parseArgs, usage, configureProject, log, silentLogger, runOperatorScript, releaseOnExit, UsageError, EXIT } from './_cli.mjs'
 
 // Output contract. Default: a human report on stdout. With RECONCILE_JSON=1,
 // stdout carries EXACTLY ONE line — the JSON array of findings — and every
@@ -47,7 +47,7 @@ const SPEC = {
 
 async function main() {
   let args
-  try { args = parseArgs(process.argv.slice(2), SPEC) } catch (e) { log.error(e.message); say(usage('scripts/reconcile-membership.mjs', SPEC)); process.exit(2) }
+  try { args = parseArgs(process.argv.slice(2), SPEC) } catch (e) { throw new UsageError(e.message) }
   const { emulated } = configureProject(args.project)
   const { getDb, getAdminAuth } = await import('../src/lib/firebaseAdmin.js')
   const { syncDeactivatedAuth } = await import('../src/lib/members.js')
@@ -58,6 +58,7 @@ async function main() {
   const { missingProjects } = await import('../src/lib/projectAssignments.js')
 
   const db = getDb(), auth = getAdminAuth()
+  releaseOnExit(() => db.terminate())
   const now = () => new Date()
   const fix = !!args.fix
   const findings = []
@@ -69,7 +70,7 @@ async function main() {
     ? [await db.collection('companies').doc(args['company-id']).get()].filter(s => s.exists)
     : (await db.collection('companies').get()).docs
   const companyIds = new Set(companiesSnap.map(s => s.id))
-  if (args['company-id'] && companyIds.size === 0) { log.error('Company not found.'); process.exit(1) }
+  if (args['company-id'] && companyIds.size === 0) { log.error('Company not found.'); return EXIT.REFUSED }
 
   const usersSnap = await db.collection('users').get()
   const users = usersSnap.docs.map(d => ({ uid: d.id, ...d.data() }))
@@ -176,6 +177,9 @@ async function main() {
   say('')
   say(findings.length === 0 ? 'No inconsistencies found.' : `${findings.length} finding(s). ${fix ? 'Fixes applied where unambiguous.' : 'Re-run with --fix to apply F1 and F2 fixes.'}`)
   if (JSON_MODE) process.stdout.write(`${JSON.stringify(findings)}\n`)
+  return EXIT.OK
 }
 
-main().catch((e) => { log.error(e?.message ?? e); process.exit(1) })
+// Never process.exit() here: see runOperatorScript in _cli.mjs. A failed F2
+// transaction ends the run (exit 1) after its rollback has been delivered.
+runOperatorScript(main, { usageText: usage('scripts/reconcile-membership.mjs', SPEC), out: say })

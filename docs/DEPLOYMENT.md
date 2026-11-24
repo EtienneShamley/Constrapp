@@ -1680,9 +1680,13 @@ password-reset checks after each. Rollback is the same console toggle.
    with body `{"data":{}}` and **no** App Check header must answer **401**.
    Logs: `npx firebase functions:log --project constrapp-69b5d`.
 3. **Bootstrap a verification company** (or the first real customer):
-   `cd frontend/functions && node scripts/bootstrap-company.mjs --project constrapp-69b5d --company-id <slug> --company-name "<Name>" --admin-email <email> --app-url https://<origin> --dry-run`,
-   then the same without `--dry-run`. It prints the acceptance link ONCE; hand
-   it over a trusted channel.
+   `cd frontend/functions && node scripts/bootstrap-company.mjs --project constrapp-69b5d --company-id <slug> --company-name "<Name>" --admin-email <email>`
+   (a dry run — the default), then the same with
+   `--apply --link-file <new file outside the repository> --app-url https://<origin>`.
+   The link goes to that file (mode 0600) and is never printed; hand it over a
+   trusted channel and delete the file. *Updated 24 November 2026 (operator
+   tooling safety, PENDING INTEGRATION):* before that change the script wrote
+   by default and printed the link — see *Operator tooling safety* below.
 4. **Hosting:** build fresh (`rm -rf dist && npm run build`) with the
    production `VITE_FIREBASE_*` values **plus `VITE_FIREBASE_APPCHECK_SITE_KEY`**
    — never redeploy a `dist/` built without the key — confirm the bundle
@@ -4897,7 +4901,10 @@ never write to Authentication. Run from `frontend/functions/` on a clean
      marks the account email-verified.
    - `… --apply --link-file <path outside the repository> --app-url https://app.constrap.com`
      — the link is written to a NEW file, mode 0600. Hand it over on a
-     trusted channel and delete the file. It proves nothing about the
+     trusted channel and delete the file. *(Since operator tooling safety:
+     the folder's real path is checked, and exit 3 means the invitation exists
+     but the file was not written — recover with Resend, never a re-run; see
+     *Operator tooling safety*.)* It proves nothing about the
      mailbox.
 
    Neither form prints the link, a token or a password. No account is
@@ -4918,8 +4925,11 @@ earlier may keep working until the background sweep completes; the Team page
 shows *Old file links: revocation pending* until then.
 
 **Do not paste a link file's contents into a terminal, a ticket or a chat.**
-The older `bootstrap-company.mjs` still prints its link; when a test company
-is bootstrapped for step 5, the Product Owner runs it themself.
+*As written for Stage B:* the older `bootstrap-company.mjs` still printed its
+link; when a test company was bootstrapped for step 5, the Product Owner ran
+it themself. *Since operator tooling safety (24 November 2026, PENDING
+INTEGRATION):* it is dry-run by default and never prints the link — see
+*Operator tooling safety* below.
 
 ### Rollback
 
@@ -4974,3 +4984,140 @@ token on one fixture by an architect-approved member request, removed by the
 urgent sweep that P8 queued. Neither changed the release.
 
 **No rollback was used.**
+
+## Operator tooling safety — scripts only (D3 #1–#3; IMPLEMENTED — PENDING INTEGRATION, 24 November 2026)
+
+Branch `feature/operator-tooling-safety` (uncommitted, awaiting architect
+review). **No deployment is required and none is planned.** Nothing deployed
+changes: no Firestore or Storage Rules, no Hosting, no callable, no
+`frontend/functions/src/**` file. The changed files are operator scripts under
+`frontend/functions/scripts/`, the local emulator launcher
+`frontend/scripts/team-dev.mjs`, tests and documentation. The scripts are part
+of the Functions source upload but are never imported by `src/index.js`; a
+future Functions deploy would carry them inert.
+
+### Safe bootstrap procedure (`bootstrap-company.mjs`)
+
+Credentials and checkout as for every operator script: the operator's own
+`gcloud auth application-default login` (a key file is refused), a clean
+`main` checkout, run from `frontend/functions/`.
+
+1. **Dry run** — the default; reads only:
+   `node scripts/bootstrap-company.mjs --project <firebase-project-id> --company-id <slug> --company-name "<Name>" --admin-email <email> [--country AU --currency AUD]`
+   It reports whether the company would be created or reused, whether the
+   email is already an admin (nothing to do), and whether an invitation would
+   be created or a pending one exists. `--dry-run` is still accepted.
+2. **Apply** — exactly one delivery option:
+   - `… --apply --link-file <path> --app-url https://<origin>` — the link is
+     written to a NEW file, mode 0600. The file must not exist (a symbolic
+     link counts as existing), must lie outside the repository (checked on the
+     folder's real path), and its folder must belong to the operator and not
+     be writable by others unless sticky. The file is created exclusively
+     **before** any production write; a bad destination writes nothing. Hand
+     the link over on a trusted channel, then delete the file. It proves
+     nothing about the mailbox (the admin's account is not marked
+     email-verified).
+   - `… --apply --no-link` — the link is discarded. Deliver it later with
+     step 3, or — only when the company already has an active Company Admin —
+     that admin presses *Resend* in Settings → Team, which emails a fresh link.
+3. **A pending invitation is never replaced silently.** If one exists for the
+   email, `--apply` is refused (exit 1). `--apply --rotate (--no-link |
+   --link-file <path>)` gives that same invitation a new token: the link
+   handed out before stops working; no second invitation is created; one
+   `invite.resent` audit event. `--rotate` refuses when there is nothing
+   pending, and refuses a pending invitation for any role other than
+   `company_admin` (revoke that one in the Team page).
+
+Exit codes: 0 done, dry run or nothing to do · 1 refused or failed · 2 usage ·
+**3 the invitation committed but the link file could not be written.**
+
+### Migration from the previous command line
+
+| Before (wrote by default, printed the link) | Now |
+|---|---|
+| `… --dry-run` | Unchanged (a dry run is the default; `--dry-run` still accepted) |
+| `… --app-url <origin>` (the old *write* command) | **Now a dry run**; nothing is written. Add `--apply` and a delivery option |
+| `… --app-url <origin>` redirected to a 0600 file to capture the link | `… --apply --link-file <path> --app-url <origin>` |
+| Re-running before acceptance rotated the token | `… --apply --rotate (--no-link \| --link-file <path>)` — explicit |
+| `--app-url` accepted any URL | An origin only (`https://host[:port]`); https outside the emulators; only with `--link-file` (rejected with `--no-link`) |
+| `--apply` with `--dry-run`, both delivery options, or neither | Refused (exit 2) |
+
+`npm run test:team` (emulators only) now runs the bootstrap with
+`--apply --link-file` in a private temporary folder, reads the emulator link
+back, shows it and deletes the folder. *Launcher corrections (architect
+review, 24 November 2026):* it now waits — one bounded 120 s deadline, a real
+request every 300 ms, no fixed sleep — for the Auth emulator (its project
+config endpoint), Firestore (`/` answers *Ok*), Functions and the CLI's *All
+emulators ready* signal before the bootstrap runs; Vite is started with
+`--host 127.0.0.1`, the address the launcher probes and the links use
+(links are now `http://127.0.0.1:<port>/…`, not `localhost`, which can
+resolve to `::1` only); shutdown waits (bounded, 10 s) for the children to
+exit before forcing them.
+
+### Failure and recovery
+
+| Situation | What happened | Recovery |
+|---|---|---|
+| Refused in the dry-run pass (rename, active member, pending invitation without `--rotate`, nothing to rotate, role mismatch) | Nothing written; no link file created | Fix the cause; re-run |
+| Refused inside a transaction (a race: an invitation created, accepted or revoked meanwhile) | That transaction rolled back; exit 1; the reserved link file removed. A company created in the same run stays (with its `company.bootstrapped` event) — a re-run reuses it | Re-run the dry run, then apply |
+| Link file not written after the commit (disk full, I/O error) — exit 3 | The invitation **exists and is pending**; the output names it; the partial file was removed; the link was **not** shown and nothing was retried | `… --apply --rotate --link-file <a new path>` — same invitation, new link; the lost one is dead. **Do not** re-run without `--rotate` (it is refused) |
+| The operator lost the link file before handing it over | The invitation is pending | `--apply --rotate --link-file <new path>` |
+| The link may have leaked | The invitation is pending | `--apply --rotate --no-link` kills it at once; or a Company Admin revokes it in the Team page |
+
+### Process lifecycle — all four older scripts
+
+`bootstrap-company.mjs`, `backfill-project-directory.mjs`,
+`reconcile-membership.mjs` and `revoke-file-links.mjs` no longer call
+`process.exit()`. They return an exit code to the shared
+`runOperatorScript` (`scripts/_cli.mjs`), which sets `process.exitCode` and
+then awaits `Firestore.terminate()` — which waits for every in-flight request,
+including the rollback the SDK sends without awaiting after a failed
+transaction. Only if shutdown takes longer than 30 s does it force the exit. That clock
+starts only after the operation has settled, and a cleanup that times out or
+throws is printed as an explicit **failure** (`✖ Cleanup did NOT complete …` /
+`✖ Cleanup is INCOMPLETE …`, with what may be left locked) — never as a clean
+shutdown. The exit code stays the operation's own, because it describes the
+data; nothing is retried. **Measured on the emulator (24 November 2026):** with the
+old `process.exit(1)`, the document a refused transaction had read stayed
+locked for about a minute (`ABORTED: Transaction lock timeout`); with the
+change it was free at once. No script retries a refused or failed mutation.
+Exit codes are unchanged (revoke-file-links keeps 3 for an unfinished
+company).
+
+### External provisioning link file (D3 #16 — corrected)
+
+*As first written:* `provision-external-member.mjs --link-file` checked the
+repository boundary on the path as typed, so a folder that is a symbolic link
+into the working tree was not caught. **Demonstrated on `main`'s script
+(emulator, 24 November 2026): exit 0 and the link file was created inside the
+repository as an untracked file** (removed at once). It now uses
+`scripts/_linkFile.mjs`, exactly as the bootstrap: real-path repository check
+before and after creation, an existing file or any symbolic link refused,
+exclusive 0600 creation before the invitation is written, the partial file
+removed on a failed write. A link file that cannot be written **after** the
+invitation committed now exits **3**, names the invitation and says how to
+recover: a Company Admin's *Resend* (emailed fresh link; the lost one dies),
+or *Revoke* in the Team page and run the script again. A plain re-run is
+refused (`invite-pending`); the script never rotates and never creates a
+second invitation. `set-member-projects.mjs` is unchanged.
+
+### Local emulators and credentials (limitation, unchanged)
+
+Observed in the launcher end-to-end run (24 November 2026, `--debug`): the
+Firebase CLI makes one authenticated metadata request for the emulator project
+id (`GET firebase.googleapis.com/v1beta1/projects/constrapp-rules-test/adminSdkConfig`
+→ **403**, the operator has no access to that id; no production project is
+read), and firebase-tools hands the operator's **CLI login** to the Functions
+emulator as Application Default Credentials (it writes
+`~/.config/firebase/<user>_application_default_credentials.json`). Storage
+and Pub/Sub are not emulated, so a non-emulated call from function code would
+reach Google with those credentials; nothing in the launcher's flows makes
+one (the file-link worker is scheduled and never fires there). The same holds
+for `npm run test:functions`. A `demo-` emulator project id would remove both;
+that is a separate change (the `.env` file, the harness and the suites).
+
+### Acceptance still required
+
+- Architect review and Git integration; Azure `main` green.
+- No production dry run is needed for this review (architect, 24 November
+  2026). No production `--apply` is needed to accept this change.
