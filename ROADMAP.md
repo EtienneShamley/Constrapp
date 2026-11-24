@@ -348,9 +348,35 @@ of the work still to do:
     (TESTING.md §42, §64).
   - **C1-D — Monitoring:** a test of alert notification delivery (TESTING.md
     §65; no alert has fired on a real condition).
+  - **L4 acceptance — CLOSED with recorded evidence limitations; M2-A2 Stage A
+    internal-role regression — CLOSED within its applicable scope (REPORTED by
+    the Lead Architect, 25 November 2026).** Production run 25 November 2026
+    NZDT (24 November 19:00–19:42 UTC) (TESTING.md §71; tracker B7). In the isolated test company, on a new retained GBP fixture:
+    L4 **T9** (server stale-review refusal), the **Quant step of T16** and
+    **T14 as `subcontractor`** PASSED, with the drawing → quantity → BOQ →
+    working budget → approved version 1 chain equal to independent
+    expectations to the cent; Stage A **M3, M4, M8** PASSED with the Company
+    Admin, Project Manager and QS (M5 page load only; M1, M2 and the
+    stale-bundle part of M7 superseded — never verified, not reproducible);
+    §61 **W2–W4** PASSED; the **F16 restricted notice was observed in
+    production**. Not run: T14 as `client` in a live session, a real
+    disconnection, the M5 currency pin — accepted as recorded limitations
+    (T14 as `client` on earlier production and emulator evidence). The Project
+    Manager, QS and external test identities stay deactivated; all fixtures
+    are retained. Findings D3 #27–#29 form a **P2 external-role UI correction
+    bundle**; an external purchase order create was confirmed refused by the
+    Rules (no authorisation defect).
+  - **Next milestone (Lead Architect, 25 November 2026): C1-C GANTT
+    production acceptance.** *As written before the run:*
   - **Next milestone (Lead Architect, 25 November 2026):** L4 remaining
     acceptance (T9, T14, the Quant step of T16 — §67) and the M2-A2 Stage A
     internal-role regression (§68).
+  - **Also open (after the 25 November closure):** L3 Stage 2 E1–E10 (§66);
+    Product Owner confirmation of the GST boundary hotfix and Premium
+    Dashboard v2 production state. **Recorded limitations of closed items, not
+    open acceptance work:** L4 T14 as `client` in a live session and a real
+    disconnection (§67, §71); the M5 currency pin, emulator-only (§68).
+    *As written before the run:*
   - **Also open:** L3 Stage 2 E1–E10 (§66); L4 T9, T14 and the Quant step of
     T16 (§67); M2-A2 Stage A internal regression M1, M2, M4, M5, M7, M8 (§68);
     L2-B Stage A smoke checks W2–W4 (§61); Product Owner confirmation of the

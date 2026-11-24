@@ -8605,7 +8605,9 @@ a posted receipt and a posted payment.
 spreadsheet application behaviour, and the production rules path (the report
 adds no read the financial roles did not already make on other tabs).
 
-## 61. L2-B Stage A — Firestore Rules Capacity Recovery 3 (ADR-76, 19 November 2026) — LIVE since 18 November 2026 21:57 UTC; automated checks PASS; live ruleset VERIFIED byte-identical to `main` (read-only, 19 November 2026); browser smoke checks W2–W4 NOT RECORDED
+## 61. L2-B Stage A — Firestore Rules Capacity Recovery 3 (ADR-76, 19 November 2026) — LIVE since 18 November 2026 21:57 UTC; automated checks PASS; live ruleset VERIFIED byte-identical to `main` (read-only, 19 November 2026); browser smoke checks W2–W4 PASSED in production, 25 November 2026 (§71) and accepted with display findings (Lead Architect, 25 November 2026 — REPORTED)
+
+*Heading as written before the 25 November 2026 run:* … browser smoke checks W2–W4 NOT RECORDED
 
 **What changed.** Leading spaces in `frontend/firestore.rules` only: every
 non-blank line indented 16 or more spaces loses exactly 8 (1,631 of 4,122
@@ -8645,7 +8647,9 @@ published).**
 | W3 | Financial role saves one ordinary edit (for example a forecast line note) | Accepted |
 | W4 | A deactivated or non-financial account opens a financial tab | Still refused |
 
-## 62. L2-B Stage B — Final Account (ADR-77, 19 November 2026) — DEPLOYED; production acceptance: F1–F15 and F17 PASSED (F1–F2 Product Owner, 20 November; F3, F4, F7–F13, F17 on 22 November — §62b; F5, F6, F14 native PDF, F15 and Project Manager approval on 24 November — §62c); F16 accepted on combined evidence (production access denial and the unit test; the restricted notice NOT observed in production) — **C1-A CLOSED** (Lead Architect, 25 November 2026 — REPORTED)
+**Result, 25 November 2026 (§71; tracker B7).** W2 **PASS** (Project Manager and QS), W3 **PASS** (QS forecast save), W4 **PASS** (a signed-in `subcontractor`: no figure on any financial tab, Rules denials from the same session; after deactivation the session was signed out). W1 stands on the 19 November read-only verification; the live ruleset is now 236,737 bytes (later releases) and was again byte-identical to `main`. Two display findings on the Budget and Purchase Orders tabs: tracker D3 #27, #28 (P2 external-role UI correction bundle; server-side refusal of an external purchase order create established in §71).
+
+## 62. L2-B Stage B — Final Account (ADR-77, 19 November 2026) — DEPLOYED; production acceptance: F1–F15 and F17 PASSED (F1–F2 Product Owner, 20 November; F3, F4, F7–F13, F17 on 22 November — §62b; F5, F6, F14 native PDF, F15 and Project Manager approval on 24 November — §62c); F16 accepted on combined evidence (production access denial and the unit test; the restricted notice NOT observed in production at closure — **OBSERVED in production on 25 November 2026, §71**) — **C1-A CLOSED** (Lead Architect, 25 November 2026 — REPORTED)
 
 *Heading as written before the 24 November revision:* L2-B Stage B — Final Account (ADR-77, 19 November 2026) — DEPLOYED — PRODUCTION ACCEPTANCE PENDING; automated tests PASS (emulators); production acceptance PARTIAL (F1 and F2 confirmed by the Product Owner, 20 November 2026; F3–F17 NOT RUN)
 
@@ -8838,6 +8842,14 @@ on stored-state evidence and the zero-only client-side and cash figures.
 Fixture Z, its supplier contact, the two counters and the approved revision
 are retained; the findings (tracker D3 #22–#26) are deferred to the UX and
 reporting correction bundle; self-approval remains a documented policy gap.
+
+**Update, 25 November 2026 (§71; tracker B7).** The carried-forward browser
+check was run in the external-role session: a signed-in `subcontractor`
+assigned to fixture Z opened the Final Account URL and saw *Final Account is
+restricted*, with no figure and no control; `finalAccounts` was
+`permission-denied` from the same session. **The F16 notice is now observed in
+production.** Fixture Z and revision 2 were not changed by that run. The text
+below keeps the wording of 24 November.
 
 **Run (10:21–10:53 UTC; `main` `2561344`; Hosting `index-BOg2hoYg.js`; callable
 `approvefinalaccount-00003-jad`).** Isolated company `constrap-acceptance-test`
@@ -9364,7 +9376,9 @@ ESLint: clean. Production build: succeeds. `git diff --check`: clean. The Rules 
 
 **Remaining write sites (not changed).** 42 files with 58 hand-rolled `setSaving(true)` states (pinned in `writeOutcome.test.js`), plus `setBusy` in Team Settings, Accept Invite and the PULSE acknowledgement panel. They behave as before: a plain write made offline leaves the dialog on *Saving…*, and raw SDK text can appear. Suggested order for a later rollout: Supplier Invoices, Purchase Orders, Progress Claims and Variations (create and edit); Retention Releases and Cash Flow lines; Budget and Forecast; then documents, RFIs, programme and settings. Dialogs built on the `*Actions.js` modules already map errors but still wait without limit.
 
-## 67. L4 — BOQ → working budget transfer (ADR-81, 21 November 2026) — CLOSED: LIVE and production-accepted (REPORTED by the Lead Architect, 22 November 2026); acceptance UX correction LIVE and PASSED; browser gaps T9, T14, the Quant step of T16 and a real disconnection remain (emulator coverage retained)
+## 67. L4 — BOQ → working budget transfer (ADR-81, 21 November 2026) — CLOSED: LIVE and production-accepted (REPORTED by the Lead Architect, 22 November 2026); acceptance UX correction LIVE and PASSED; **T9, T14 (as `subcontractor`) and the Quant step of T16 PASSED in production on 25 November 2026 (§71) — remaining acceptance CLOSED with recorded limitations (Lead Architect, 25 November 2026 — REPORTED)**; T14 as `client` accepted on earlier production and emulator evidence, not re-run; a real disconnection not tested (emulator coverage retained)
+
+*Heading as written before the 25 November 2026 run:* … acceptance UX correction LIVE and PASSED; browser gaps T9, T14, the Quant step of T16 and a real disconnection remain (emulator coverage retained)
 
 *As written before closure:* DEPLOYED (`main` `a30699e`; REPORTED by the Lead Architect); production browser acceptance 22 November 2026: 13 of 16 PASS, T16 partly exercised, T9 and T14 NOT TESTED in production; acceptance UX correction IMPLEMENTED on `fix/l4-transfer-acceptance` (uncommitted), NOT DEPLOYED.
 
@@ -9445,6 +9459,8 @@ To accept the correction after its Hosting release: in the sandbox, open *Transf
 | Coverage of those gaps | The existing Functions-emulator and Rules-emulator tests are RETAINED as the evidence; no production run covers them |
 | L4 Acceptance Sandbox (`3OyBieoY4QHAfQsxBH8T`) | **RETAINED in production**; it contributes to the company Portfolio totals. Do not delete or modify it without a separate authorisation |
 
+**Remaining acceptance — 25 November 2026 (§71; tracker B7).** Run in the isolated test company on a new retained fixture (`gdaYQYRD7cc0yUTkK0cD`, GBP), not in the Apex sandbox, which was not touched. **T9 PASS** — a held request made stale by a second user's BOQ edit was refused by the server (`boq-transfer-stale-review`), the dialog showed the stale message and nothing was written. **T16 Quant step PASS** — a measured 96.006 m² was applied to a BOQ item and flowed through the transfer to an approved version 1 of 12,565.34, equal to independent `Decimal` expectations. **T14 PASS as `subcontractor`** — no BOQ tab or button, *The BOQ is restricted* by URL, Rules denials and the callable's `boq-transfer-forbidden`; **`client` not re-run** (earlier production evidence: §68 X1–X3, §63 P20). A real disconnection (T15) is still not tested.
+
 **Manual acceptance (after all three release steps; a TEST project, not customer data).**
 
 - [ ] T1 — As `qs`, on a project with no budget lines, add BOQ items on three cost codes: two fully priced (one with a rate of 0 on one item), one with an unpriced item. Open *Transfer to budget*: two codes *Create*, one *Blocked* naming the unpriced item; totals match the BOQ page.
@@ -9468,7 +9484,9 @@ To accept the correction after its Hosting release: in the sandbox, open *Transf
 
 ---
 
-## 68. M2-A2 Stage A — External Project Isolation (ADR-83, 23 November 2026) — STAGE A LIVE — CLOSED and production-accepted 23 November 2026; paired create / edit and directory PASSED in production; external-role checks X1–X7 PASSED in production 23–24 November 2026 (Stage B run, §69); internal regression M1, M2, M4, M5, M7, M8 NOT RECORDED; automated tests PASS (emulators)
+## 68. M2-A2 Stage A — External Project Isolation (ADR-83, 23 November 2026) — STAGE A LIVE — CLOSED and production-accepted 23 November 2026; paired create / edit and directory PASSED in production; external-role checks X1–X7 PASSED in production 23–24 November 2026 (Stage B run, §69); internal regression: **M3, M4, M8 PASSED in production on 25 November 2026 (§71)**, M5 and M7 in part, M1, M2 and the stale-bundle part of M7 SUPERSEDED (never verified; not reproducible) — **regression CLOSED within its applicable scope (Lead Architect, 25 November 2026 — REPORTED)**; automated tests PASS (emulators)
+
+*Heading as written before the 25 November 2026 run:* … internal regression M1, M2, M4, M5, M7, M8 NOT RECORDED; automated tests PASS (emulators)
 
 **Scope.** Rules, Storage Rules, the projects provider, the directory hook,
 the role-filtered navigation and the backfill script (ADR-83). §63 P19–P20
@@ -9531,7 +9549,13 @@ per-commit limit (measured 23 November 2026). The first production project
 create and edit after the Hosting step are the real check (M3 below).
 
 **Manual acceptance — internal regression (after DEPLOYMENT.md → *M2-A2
-Stage A* steps 1–4; a TEST project, not customer data). NOT RUN.**
+Stage A* steps 1–4; a TEST project, not customer data). RUN on 25 November
+2026 with the TEST Company Admin, Project Manager and QS — results in §71
+(tracker B7): M3 PASS (Project Manager edit included), M4 PASS (the lock
+engaged by a BOQ item, not a budget line), M5 page load PASS / pin not run,
+M6 PASS again (17 in sync), M7 repeat PASS / stale-bundle part superseded,
+M8 PASS; M1 and M2 superseded — the Stage-1 ruleset and the old bundle no
+longer exist. The boxes below are left as written.** *As written before:* NOT RUN.
 
 - [ ] M1 — After step 1 (Stage-1 Rules, old bundle): as each internal role, Dashboard, Projects, a project Overview, a drawing and a document open as before.
 - [ ] M2 — After step 1: create and edit a project with the OLD bundle — both succeed.
@@ -9752,3 +9776,171 @@ the link:
 **Not covered.** The lock behaviour on production Firestore (emulator only;
 production expiry may differ); a real full disk; another OS user racing for the
 link folder.
+
+---
+
+## 71. L4 remaining acceptance, M2-A2 Stage A internal regression, §61 W2–W4 and the F16 notice — consolidated production run (25 November 2026 NZDT; 24 November 2026 19:00–19:42 UTC) — **CLOSED** (Lead Architect, 25 November 2026 — REPORTED): T9, the Quant step of T16, T14 (subcontractor), M3, M4, M8, W2–W4 and the F16 notice PASSED in production; M5 and M7 in part; M1, M2 SUPERSEDED; recorded evidence limitations stand
+
+**Architect decision (25 November 2026 — REPORTED).** GO — **the L4 acceptance is CLOSED with the evidence limitations recorded here, and the Stage A regression is CLOSED within its applicable scope.** T14 as `client` is accepted on the existing production and emulator evidence (§68 X1–X3, §63 P20, the Functions emulator) — it was not run in a live session. M1, M2 and the stale-bundle part of M7 are classified **superseded**. The M4 currency-lock check is accepted in its BOQ-item form; the literal budget-line variant was **not run**. The M5 currency pin remains **emulator-only**. T15, a real disconnection, was **not executed**. The F16 notice is recorded as **observed in production**. W2–W4 are accepted with the display findings. D3 #27–#29 go to a **P2 external-role UI correction bundle**. The GBP fixture and every earlier regression fixture are retained; the Project Manager, QS and external test accounts stay deactivated; the TEST Company Admin is retained. Limitations that stand: token replay after deactivation not tested; Apex Storage objects not compared; the Apex comparison is by document path and update time, not content; the Hosting bundle not re-compared with a build. Next milestone: **C1-C GANTT production acceptance.**
+
+*Heading as written before the decision:* … RUN: T9, the Quant step of T16, T14 (subcontractor), M3, M4, M8, W2–W4 and the F16 notice PASSED in production; M5 and M7 in part; M1, M2 SUPERSEDED; awaiting architect review
+
+**Scope.** The items carried forward by §61 (W2–W4), §62c (the F16 notice),
+§67 (T9, T14, the Quant step of T16) and §68 (M1–M8). Run by the engineer in
+the isolated company `constrap-acceptance-test`; nothing was done in Apex
+Builders. Documentation only on `docs/l4-stage-a-acceptance` (uncommitted); no
+application code, Rules, Functions or deployment changed. Evidence classes as
+in [SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md); the full
+record is tracker **B7**.
+
+**Pre-flight (read-only, 19:00–19:03 UTC).** `main` `0cf17e6` clean and equal
+to `origin/main` (VERIFIED in Git; Azure `main` green and the C1-A integration
+are REPORTED by the Product Owner). Deployed Firestore ruleset `67b6425a…`
+236,737 bytes and Storage ruleset `2f3a4788…` 10,323 bytes, each byte-identical
+to `main`; `transferboqtobudget-00001-zol` with `BOQ_BUDGET_TRANSFER_ENABLED=true`.
+The Hosting bundle was **not** re-compared with a build of `main` in this run.
+Since the C1-A run, production differed only by the revocation worker's marker
+in each company.
+
+**What each carried-forward item is, and how it was classified.**
+
+| Item | Classification before the run | Result |
+|---|---|---|
+| §67 T9 — server stale-review refusal | Outstanding production acceptance; needs a production mutation | **PASS** |
+| §67 T14 — `subcontractor` and `client`: no *Transfer to budget*, BOQ restricted | Outstanding for a live external session; the `client` half previously evidenced at Rules and tab level (§68 X1–X3, §63 P20 — tracker B2b) and by the Functions emulator | **PASS as `subcontractor`**; `client` **not re-run** (Product Owner decision, one reactivation) |
+| §67 T16 — *apply a Quant quantity* | Outstanding production acceptance; needs a drawing and a takeoff | **PASS** |
+| §67 T15 — a real network disconnection | Requires tooling the session does not have (no DevTools offline) | **NOT RUN** — unchanged |
+| §68 M1, M2 — Stage-1 Rules with the old bundle | Obsolete release-stage requirement: that deployment state ended on 23 November and is not recreated | **SUPERSEDED — never verified, not reproducible** |
+| §68 M3 — admin creates, Project Manager edits five fields | Outstanding (the Project Manager half) | **PASS** |
+| §68 M4 — QS lists, cannot create or edit; currency lock | Outstanding | **PASS**; the lock was engaged by a priced BOQ item, not a budget line (below) |
+| §68 M5 — Company Settings loads; currency pin | Outstanding; pin step emulator-only | **Loads: PASS. Pin: NOT RUN** — nothing to pin in the test company |
+| §68 M6 — directory dry run | Previously accepted (23 November) | Re-run: 17 projects, 17 in sync |
+| §68 M7 — repeat M3 on FINAL Rules; stale tab fails until reloaded | The repeat is M3 (FINAL is the only live ruleset); the stale-bundle part is an obsolete release-stage requirement | **Repeat: PASS. Stale-bundle part: SUPERSEDED — never verified** |
+| §68 M8 — Portfolio, Commercial Report, Final Account, GANTT for internal roles | Outstanding (GANTT; Commercial Report as Project Manager and QS) | **PASS** for all three roles |
+| §61 W2, W3 | Outstanding | **PASS** |
+| §61 W4 | Outstanding; needs a live non-financial session | **PASS** (no figure reaches the account) with two display findings |
+| §62 F16 — *Final Account is restricted* | Accepted on combined evidence; notice not observed | **Notice OBSERVED in production** |
+
+**Fixture (new, RETAINED).** One additional synthetic project, authorised by
+the Product Owner: **L4 `gdaYQYRD7cc0yUTkK0cD`** — *TEST GBP-1 — L4
+BOQ-to-budget acceptance*, GBP, *In Progress*. GBP so that it forms its own
+Portfolio currency group and changes no existing subtotal. Cost code CT-100
+reused. Records, all created through the application:
+
+| Record | Detail |
+|---|---|
+| Drawing | TL4-001 `7keEbCKSQZOopNBCRJjh`, revision A `XoSnxRQ7ubl4FcQ3wdYv` — a generated 881-byte one-page PDF (a 600 × 400 unit rectangle and a 500 unit scale bar); stored object md5 equals the local file; no download token after the sweep |
+| Quant | Takeoff page `…_XoSnxRQ7ubl4FcQ3wdYv_1`, calibration 10,000 mm over 500 page units; area measurement `LgBMG4MJqiL42cJjEbvu` on CT-100, linked to item 1.1 |
+| BOQ | Item 1.1 `er81HxyVHoCHp2gMisrE` — 96.006 m2 × 123.45 = 11,851.94; item 1.2 `vB8FVZJbdvzFLwcc3y7R` — 41 lm × 17.40 = 713.40 |
+| Working budget | Line `boq-Ixk3c3hJ0zUnL3tKp68a` — 12,565.34, BOQ-sourced, `transferCount` 2 |
+| Approved budget | Version 1 `OBAF1CduuHAff610rXd2` — 12,565.34; one-entry snapshot; pointer `approvedBudget/current` |
+| Forecast | CT-100 uncommitted cost to complete 12,000.00 (with a note) |
+
+**Independent expectations (exact `Decimal` arithmetic from the stored source
+records, read through the Firestore REST API; half-up to the stated places).**
+
+| Figure | Calculation | Expected | Stored / shown |
+|---|---|---|---|
+| Metres per page unit | 10 m ÷ 500.0000000000001 | 0.02 | 0.0200000 (dialog) |
+| Measured area | shoelace of the four stored points × 0.02² | 96.006026459 → 96.006 m² | 96.006 (Quant, apply dialog, BOQ item, `quantApplied.quantity`) |
+| Item 1.1 before the apply | 90 × 123.45 | 11,110.50 | 11,110.50 |
+| Item 1.1 after the apply | 96.006 × 123.45 = 11,851.9407 | 11,851.94 | 11,851.94 |
+| Item 1.2 (as created; after the rate edit; after the quantity edit) | 40 × 17.35; 40 × 17.40; 41 × 17.40 | 694.00; 696.00; 713.40 | 694.00; 696.00; 713.40 |
+| First transfer (create) | 11,851.94 + 694.00 | 12,545.94 | line, dialog, audit event |
+| Proposal reviewed and then refused as stale | 11,851.94 + 696.00 | 12,547.94 | dialog only — never written |
+| Second transfer (refresh) | 11,851.94 + 713.40 | 12,565.34 | line, dialog, audit event |
+| Approved budget version 1 | the one working line | 12,565.34 | header, snapshot, Budget, Forecast, Commercial Report, Portfolio |
+| Forecast final cost; variance | 0 + 0 + 12,000.00; 12,565.34 − 12,000.00 | 12,000.00; 565.34 | Forecast, Commercial Report, Portfolio |
+
+No amount was chosen on an exact half-cent boundary; a BOQ amount there follows
+the IEEE product by design (`lib/boq.js` → `boqLineAmount`) and was not probed.
+
+**Results — L4 (§67).**
+
+| Check | Result | Evidence |
+|---|---|---|
+| Drawing → Quantity | **PASS** | Project Manager uploaded TL4-001 rev A, calibrated the page and saved the area measurement (19:07–19:08). The project stayed currency-unlocked — a measurement is not monetary |
+| T16 — apply a Quant quantity | **PASS** | QS linked the measurement to item 1.1 (only the m2 item was offered; the lm item was not) and applied it on the BOQ tab after ticking the review box: 90 → 96.006 m2, 11,110.50 → 11,851.94 (19:21:12). Item 1.2 untouched |
+| Transfer as QS (T1–T3 path, first time as a non-admin) | **PASS** | *Create* 0 → 12,545.94; *Apply* disabled until ticked; one line, the currency already locked, audit `PjdCFrfOUxGhCrFT4lAb` `boq_budget.transferred` in the same commit (19:21:57.735005Z); BOQ-vs-budget variance 0 |
+| **T9 — stale review** | **PASS** | QS dialog open and ticked on a pending refresh (12,545.94 → 12,547.94). The `transferBoqToBudget` request was held in the page before sending (19:23:57.014); the Company Admin, in another session, saved item 1.2 quantity 40 → 41 (commit 19:24:04.986673Z); the request was released (19:24:07.579). **Server: HTTP 400 `FAILED_PRECONDITION`, `boq-transfer-stale-review`** (19:24:07.80). Dialog: *The BOQ or the working budget changed since you reviewed this transfer. Nothing was written…*, tick cleared, list at the current position (12,545.94 → 12,565.34). Server state: budget line update time unchanged (19:21:57), no audit event, audit count unchanged at 45 |
+| Transfer after re-review | **PASS** | *Refresh* 12,545.94 → 12,565.34 (19:25:15.179408Z); `first` kept at 12,545.94, `latest` 12,565.34, `transferCount` 2; audit `MKAfTZs76mp1YtP7SXaZ` |
+| Budget approval authority | **PASS** | QS captured the draft (19:25:46). QS review dialog: no *Approve*, *Approval is reserved for Company Admin and Project Manager roles*. **Rules:** the application's own approve transaction (header → `approved`, pointer created) sent from the QS session → `permission-denied`; draft unchanged. Company Admin approved it as version 1 (19:27:04.182849Z, header and pointer in one commit; `createdBy` QS, `approvedBy` admin; snapshot not rewritten) |
+| Downstream reporting (T11) | **PASS** | Budget, Forecast, Commercial Report and Portfolio (GBP group) show *Approved version 1* 12,565.34; after the forecast save, FFC 12,000.00 and variance 565.34 on all three reports |
+| **T14 — restricted role** (`subcontractor`, assigned to L4 and Z) | **PASS** | **UI:** tabs Overview and Documents only; `/boq` → *The BOQ is restricted*, no *Transfer to budget*, no figure. **Rules** (the member's own session, Web SDK): directory L4 and Z and the L4 drawing list allowed; 18 denials — L4 `boqItems`, `budgetLines`, `budgetApprovals`, `budgetApprovalSnapshots`, `forecastLines`, `takeoffMeasurements`, `takeoffPages`, `purchaseOrders`, `approvedBudget/current`, the project document; Z `finalAccounts`, `budgetLines`, `purchaseOrders`, `supplierInvoices`, `forecastLines`; unassigned project A's directory entry; `costCodes`; a BOQ item create. **Callable:** `transferBoqToBudget` called from that session with a real App Check token → HTTP 403, `permission-denied` / `boq-transfer-forbidden` (19:39:04) |
+
+Callable log for the run: four `POST` requests — 200, 400, 200, 403; two audit
+events. *Duplicate-operation protection* was not re-exercised (T4, T15 and the
+T16 double-click stand from 22 November).
+
+**Results — Stage A internal regression (§68).**
+
+| Check | Result | Evidence |
+|---|---|---|
+| M3 / M7 repeat | **PASS** | Company Admin created L4: project and directory entry in one commit (19:04:27.399505Z), five equal fields. **Project Manager** changed name, status, location, start date and progress: both documents in one commit (19:05:41.228204Z), five equal fields, no other key |
+| M4 | **PASS** | QS: Projects lists all 7; no *Edit*. *+ Add New Project* is shown (D3 #5) and a submit was refused: *Missing or insufficient permissions.* **Rules** (QS session): the paired create, the paired edit and a single-field edit → `permission-denied`; the read control succeeded. **Currency lock:** the QS's first priced BOQ item committed with `currencyLocked` false → true in the same commit (19:19:08.545102Z), the directory entry untouched. *As written the check names a budget line;* with one cost code in the test company a manual line would have blocked the transfer, so a BOQ item was used (Product Owner decision) — the same ratchet and the same QS-only Rules path; the budget-line variant was **not run** |
+| M5 | **In part** | Company Settings loads for the Company Admin (country, base currency, 7 projects, each with its stored currency). The pin step was **not run**: every project already carries an explicit currency and nothing was saved. Emulator evidence only (`projectDirectory.rules.test.js`) |
+| M6 | PASS (re-run) | Dry run 17 projects · in sync 17 · missing 0 · mismatch 0 · orphan 0 |
+| M8 | **PASS** | Portfolio, Commercial Report, Final Account and GANTT opened with figures and no restricted or unavailable state for the Company Admin, the Project Manager (fixture Z) and the QS (L4 and Z). GANTT showed *+ Add activity* to the Project Manager and not to the QS |
+| M1, M2, stale-bundle part of M7 | **SUPERSEDED** | The Stage-1 ruleset and the pre-M2-A2 bundle are no longer deployed. No record of these checks exists from the release; they are neither passed nor failed |
+
+**Results — §61 and §62.**
+
+| Check | Result | Evidence |
+|---|---|---|
+| W2 | **PASS** | Project Manager on Z and QS on L4: Budget, Purchase Orders and the Commercial Report load with figures; nothing reads *Unavailable* |
+| W3 | **PASS** | QS saved a forecast line with a note on L4 (19:27:40) — *Saved*; also the BOQ, apply and capture writes above |
+| W4 | **PASS** | Signed-in `subcontractor`: BOQ, Reports, Forecast, Commercial and Final Account show their restricted notices, `/portfolio` *The Portfolio Report is restricted*; no figure on any of them; Rules denials as under T14. After deactivation the open session was signed out to `/login` within 5 s (no persisted user). Budget and Purchase Orders show no figure but no restricted notice either — findings below |
+| **F16** | **PASS — notice OBSERVED** | Signed-in `subcontractor` on assigned fixture Z, `/commercial/final-account`: ***Final Account is restricted** — The Final Account is visible to Company Admin, Project Manager, and QS roles only.* No figure, no button; `finalAccounts` on Z `permission-denied` from the same session. No control was weakened to reach it |
+
+**External session.** One existing identity (`R5SbTZ…`) was re-provisioned
+with the hardened flow: dry run (19:29:40, nothing written), then `--apply
+--no-link` (19:30:41 — invitation `Ex7dAVpluJujF0RFL9FR`, `subcontractor`,
+`[Z, L4]`; no link produced), Team *Resend* by the TEST Company Admin
+(19:31:57), acceptance by the Product Owner (19:35:13). The same uid was
+re-enabled and reused — 9 user profiles before and after, 9 Auth accounts after; role
+`subcontractor`, exactly the two assignments. P1–P14 and X1–X7 were not repeated.
+
+**Final account states (19:40–19:41 UTC; Team page, TEST Company Admin).**
+Subcontractor `R5SbTZ…` (19:40:05), QS `PvzTgu…` (19:40:28) and Project Manager
+`KSC9zf…` (19:40:48) **deactivated**: Auth disabled with tokens valid only
+since the deactivation second; profile company and role cleared; the
+subcontractor's `projectIds` removed; three `member.deactivated`, three
+`file_links.revocation_requested` (seq 17–19, urgent) and three
+`member.auth_synced` events; one worker pass (19:41:02 — seq 19, scanned 6,
+removed 1, failed 0). `reconcile-membership.mjs` report-only: **no
+inconsistencies**, for the company and for the whole project; `--fix` not used.
+The TEST Company Admin stays active; the `client` identity stays deactivated.
+
+**Integrity (path and update time of every Firestore document, before 19:00:50
+and after 19:41:52).** Apex Builders: 258 documents, identical (no difference at
+all). Test company: 116 → 148 documents; the only pre-existing documents changed
+are the three member records and the two `system` markers; nothing under
+projects A, B, C, X, Y or Z changed. New: the L4 project and its 11 records,
+its directory entry, one invitation, 16 audit events, two rate-limit records.
+Storage: the five earlier fixtures unchanged (md5, metageneration, no token);
+one new object. Portfolio after the run: NZD subtotal margin **26%**, USD group
+unchanged, Z's Final Account revision 2 *agrees with the current records*.
+**Not compared:** Apex Storage objects (no test touched them); document
+contents beyond update times.
+
+**Findings (no figure was exposed; tracker D3 #27–#29 — P2 external-role UI correction bundle, architect, 25 November 2026).**
+
+1. Budget tab opened by URL as an external role: no restricted notice; the
+   page reports *Some commercial records could not be loaded* and reads
+   *Unavailable* throughout.
+2. Purchase Orders tab opened by URL as an external role: no restricted notice;
+   the refused read is shown as *No purchase orders yet* with *+ New Purchase
+   Order* offered (not pressed; the Rules deny the read and would deny a create).
+3. A `/commercial/…` URL shows the Commercial sub-navigation (Margin, Client
+   Invoices, Client Receipts, Supplier Payments, Cash Flow, Retention, Final
+   Account) to an external role; each page behind it is restricted.
+
+**D3 #28 — is an external purchase order create refused by the server? YES (inspection, 25 November 2026; no production write).** *Mechanism:* `frontend/firestore.rules`, block `purchaseOrders` (line 865): `allow read` (line 986), `allow create` (line 988) and `allow update` each require `financialMember(companyId)` — the caller's own `users/{uid}` profile must name this company and a role in `company_admin`, `project_manager`, `qs` (lines 21–26); `allow delete: if false` (line 1044). A project assignment (`projectIds`) is not consulted, so an assigned `client` or `subcontractor` is refused exactly as an unassigned one; no wildcard rule exists that could grant it. The application's create also reads and advances `companies/{c}/counters/purchaseOrders` and reads the cost-code library, each limited to the same three roles. *Emulator tests (existing; the three suites re-run locally on 25 November — 12 selected cases PASS):* `tests/rules/purchaseOrders.rules.test.js` → *subcontractor and client can neither read nor write* (a read, a create with the hook's own payload, a draft edit and a send, each refused) and *delete is blocked for every role in every status*; `tests/rules/externalRoles.rules.test.js` → *… still CANNOT create a purchaseOrders document* for a `subcontractor` and a `client` that are **assigned to that project**, with the same payload the three financial roles are shown to create successfully — so the refusal is the role, not the shape; `tests/rules/externalIsolation.rules.test.js` → *no financial collection of the ASSIGNED project is readable*. *Production:* the deployed ruleset is byte-identical to that source (§71 pre-flight) and the `subcontractor` session's `purchaseOrders` reads on L4 and Z were `permission-denied`; **a purchase order create by an external role was not attempted in production** — that half rests on the ruleset identity and the emulator. *In the page:* `ProjectPurchaseOrders.jsx` disables *+ New Purchase Order* when the cost-code read fails (line 528), but the empty-state button (line 563) is not disabled and the register ignores its own read error, which is why a refused read reads *No purchase orders yet*. **Classification: a display and gating defect (P2), not an authorisation defect and not cosmetic** — the empty state can be untrue on a project that has orders. **Test requirement for the correction:** no further Rules test is needed; the fix must add a unit test that the page shows the restricted notice to a non-financial role and never the empty register after a refused read (none exists — the unit runner has no DOM, so it follows the `finalAccountPage.test.js` pattern).
+
+**Still not covered.** T14 as `client` in a live session; a real network
+disconnection (T15); the M5 currency pin; M1, M2 and the stale-bundle part of
+M7; M4 with a budget line; a Project Manager approving a budget on this
+fixture; replay of a deactivated account's old token (only the session
+sign-out was observed); any browser other than Chrome on macOS. Budget
+approvals, BOQ edits and forecast saves are client-SDK writes and leave no
+`auditEvents` entry — the record itself carries the actor and time.
