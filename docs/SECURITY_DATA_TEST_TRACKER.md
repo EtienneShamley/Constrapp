@@ -8,7 +8,9 @@ accepted risks in [SECURITY.md](SECURITY.md); decisions in
 [DEPLOYMENT.md](DEPLOYMENT.md); order of work in [../ROADMAP.md](../ROADMAP.md);
 the operational checkpoint in [CHATGPT_HANDOVER.md](CHATGPT_HANDOVER.md).
 
-**Last updated:** 24 November 2026 (C1-B final targeted acceptance, 07:15–07:37 UTC — section B5: P7, P9, P18 PASS in production on retained NZD commercial fixtures in the isolated test company; P15 PASS locally only. Earlier the same day: C1-B read-only run, 05:14–05:27 UTC — section B4; operator tooling safety INTEGRATED — merged as `bc64487`, merge `62e824a`). Prepared on `docs/c1b-portfolio-acceptance` (uncommitted, documentation only). Earlier the same day: M2-A2 final closeout — Stage A, Stage B and DC20 CLOSED by the Lead Architect.
+**Last updated:** 25 November 2026 — **C1-A CLOSED** (Lead Architect decision, 25 Nov 2026 — REPORTED; F16 accepted on combined evidence, its restricted notice not observed in production; next milestone L4 remaining acceptance and Stage A internal-role regression). Run of 24 November 2026 (C1-A Final Account remaining acceptance, 10:21–10:53 UTC — section B6: F5, F6, F15, Project Manager approval, F14 native PDF and R5 PASS in production on a dedicated USD fixture in the isolated test company; F16 PARTLY — the restricted notice was not observed in production. **C1-B CLOSED** — closeout merged as `c236bd9`, merge `2561344`; Azure `main` CI GREEN — both REPORTED by the Lead Architect). Prepared on `docs/c1a-final-account-acceptance` (uncommitted, documentation only).
+`main` `2561344`, equal to `origin/main` (fetched 24 Nov 2026 — VERIFIED).
+*As written for the previous revision (C1-B):* 24 November 2026 (C1-B final targeted acceptance, 07:15–07:37 UTC — section B5: P7, P9, P18 PASS in production on retained NZD commercial fixtures in the isolated test company; P15 PASS locally only. Earlier the same day: C1-B read-only run, 05:14–05:27 UTC — section B4; operator tooling safety INTEGRATED — merged as `bc64487`, merge `62e824a`). Prepared on `docs/c1b-portfolio-acceptance` (uncommitted, documentation only). Earlier the same day: M2-A2 final closeout — Stage A, Stage B and DC20 CLOSED by the Lead Architect.
 `main` `62e824a`, equal to `origin/main` (fetched 24 Nov 2026 — VERIFIED).
 *As written for the previous revision:* operator tooling safety, D3 #1–#3 and #16 — IMPLEMENTED — PENDING INTEGRATION on `feature/operator-tooling-safety`; `main` `2e48a2a`.
 
@@ -33,11 +35,11 @@ All times are UTC unless marked otherwise.
 
 | Item | State |
 |---|---|
-| Current milestone | **C1-B — L2-C Portfolio acceptance — final targeted run COMPLETE (24 Nov 2026), awaiting architect closure decision** — P7, P9, P18 PASS in production (B5); P15 PASS on local emulators only; financial parity ACCEPTED by the architect (B4). *As written after the read-only run:* read-only production run COMPLETE; NOT closed (P18 blocked on internal-role sessions — section B4). **Operator tooling safety (D3 #1–#3, #16, #18, R-6) — INTEGRATED** (merged as `bc64487`, merge `62e824a`; no deployment required). Last closed: **M2-A2 External Project Isolation** — Stage A (ADR-83) and Stage B (ADR-84) **LIVE and CLOSED**; **Deferred Control 20 CLOSED** (Lead Architect, 24 Nov 2026) |
+| Current milestone | **None in progress. C1-A — L2-B Final Account: CLOSED** (Lead Architect decision, 25 Nov 2026 — REPORTED; B6) — F5, F6, F15, Project Manager approval, F14 native PDF and R5 PASS in production (24 Nov); F16 **accepted on combined evidence** (no figure reaches a signed-out, deactivated or non-financial account in production; the restricted notice itself was **not** observed in production — unit test only; its browser check is carried forward to the external-role session of L4 T14 / §61 W4). **C1-B — L2-C Portfolio: CLOSED** (Lead Architect, 24 Nov 2026 — REPORTED; closeout merged `c236bd9` / `2561344`; Azure `main` GREEN — REPORTED). *As written for the previous revision:* **C1-B — L2-C Portfolio acceptance — final targeted run COMPLETE (24 Nov 2026), awaiting architect closure decision** — P7, P9, P18 PASS in production (B5); P15 PASS on local emulators only; financial parity ACCEPTED by the architect (B4). *As written after the read-only run:* read-only production run COMPLETE; NOT closed (P18 blocked on internal-role sessions — section B4). **Operator tooling safety (D3 #1–#3, #16, #18, R-6) — INTEGRATED** (merged as `bc64487`, merge `62e824a`; no deployment required). Last closed: **M2-A2 External Project Isolation** — Stage A (ADR-83) and Stage B (ADR-84) **LIVE and CLOSED**; **Deferred Control 20 CLOSED** (Lead Architect, 24 Nov 2026) |
 | Release status | Stage B merged as `cddfca8`, `main` `bd9021c`. Three callables live since 23 Nov 2026 ~09:11 UTC — `acceptinvitation-00005-mol`, `deactivatemember-00005-suy`, `resendinvitation-00005-mer`; source identical to `main`; other eight services unchanged; Firestore `67b6425a…`, Storage `2f3a4788…`, Hosting `index-BOg2hoYg.js` unchanged (PROD-VERIFIED 23–24 Nov) |
 | Acceptance | **Complete (24 Nov 2026 00:50 UTC):** S1–S3, R1–R3, P1–P14 PASS; §68 X1–X7 PASS (X1–X3, X6 for both external roles); §63 P19–P20 PASS for both roles with the network-payload limitation; reconcile 0 findings; directory 13 / 13; Apex unchanged. Recorded in TESTING.md §63, §68, §69 (closeout branch `docs/m2-a2-stage-b-closeout`) |
 | Documentation | Closeout merged to `main` (`a219deb`, merge `2e48a2a`; VERIFIED in Git 24 Nov). *As written:* closeout on `docs/m2-a2-stage-b-closeout` (uncommitted): ROADMAP, PROJECT_DECISIONS (ADR-83 / ADR-84 closure records), SECURITY (DC20, Stage A / B), TESTING, DEPLOYMENT (release record), DATA_MODEL, ARCHITECTURE, CHATGPT_HANDOVER, this file |
-| Next step | Architect decision on **C1-B closure** (B5 — recommended GO with P15 local-only and the measurement limits recorded) and on the final state of the two internal test identities (PM and QS, both active). Then the next C1 item — C1-A Final Account role checks can reuse the same PM / QS identities. *As written after the read-only run:* a decision on P18 — not to be run in Apex Builders (architect, 24 Nov) |
+| Next step | **L4 remaining acceptance and M2-A2 Stage A internal-role regression** (Lead Architect, 25 Nov 2026; C4) — needs its own brief. Git integration of `docs/c1a-final-account-acceptance` is authorised by the closure decision and not yet done (uncommitted). The TEST Project Manager and QS stay **active** (architect, 25 Nov). *As written before the decision:* Architect decision on C1-A closure (B6, C4 — recommended GO with the F16 notice recorded as not observed in production, or one external-session check first). *As written for the previous revision:* Architect decision on **C1-B closure** (B5 — recommended GO with P15 local-only and the measurement limits recorded) and on the final state of the two internal test identities (PM and QS, both active). Then the next C1 item — C1-A Final Account role checks can reuse the same PM / QS identities. *As written after the read-only run:* a decision on P18 — not to be run in Apex Builders (architect, 24 Nov) |
 | Real customer external onboarding | **BLOCKED** pending a readiness decision. The residual risks in D1 are tracked, **not** accepted for a customer release by the M2-A2 closure |
 
 ### Isolated test environment (production project `constrapp-69b5d`)
@@ -64,12 +66,21 @@ delete any record below without approval.
 | Commercial regression fixture X (NZD) | `xDi4s4wnEXUC6q6dEdxX` — *TEST NZD-1 — Commercial regression (large)*: OCV 200,000; budget line CT-100 150,000; **approved version 1** (`sX5XWlgS9XTi49WjIThd`) 150,000; forecast CTC 160,000 → FFC 160,000, variance −10,000, GP 40,000, margin 20.00%. Planning. **Retained** |
 | Commercial regression fixture Y (NZD) | `5jSw0R9QVWizCwWqJZyU` — *TEST NZD-2 — Commercial regression (small)*: OCV 50,000; budget line CT-100 30,000; **approved version 1** (`e3XQDi0sWR8XyWYtB21J`) 30,000; forecast CTC 25,000 → FFC 25,000, variance 5,000, GP 25,000, margin 50.00%. Planning (Completed 07:30 → restored 07:31). **Retained** |
 | Company cost code (shared by X and Y) | `Ixk3c3hJ0zUnL3tKp68a` — *CT-100 Synthetic regression works (TEST)*, active (cost codes cannot be deleted). **Retained** |
+| Final Account fixture Z (USD) — **new for C1-A** | `5hmVvUCoOIEPrzdeowYK` — *TEST USD-1 — Final Account acceptance*: OCV 120,000; budget line CT-100 90,000; **approved version 1** (`MCZAWTGUppOCDpnZOgUJ`); PO-0001 `SeVdS0hBqDVP1MdqltyC` Sent, 84,321.50 ex-GST; SI-0001 `ErpD5Uu0oRNFLYNXl2fF` Posted, 84,321.50 + GST 8,432.15 = 92,753.65; forecast CT-100 saved 0. Final Accounts: revision 1 withdrawn; **revision 2 approved and current** (QS-prepared, PM-approved; audit event `LIjIrpnKz00G6rDyiqeH`). Planning. **Retained** — revision 2 is immutable; any record later posted to this project shows as drift against it |
+| Supplier contact (used by Z) | `b7k4hVAvbJoLEIVuDE1F` — *TEST Supplier (synthetic, not a real company)*; supplier, active, linked to Z only. **Retained** |
+| Company counters (created by Z's PO and invoice) | `counters/purchaseOrders` and `counters/supplierInvoices`, each `next` = 2 |
+| Internal identities after C1-A | TEST Company Admin (`oOANhA…`), Project Manager (`KSC9zf…`) and QS (`PvzTgu…`) — all **active**, retained for the remaining internal-role tests (Product Owner, 24 Nov) |
 
 The NZD fixtures are deliberately **not AUD**: Projects A, B and C are open AUD
 projects with no contract value, so an AUD group could never show a contract or
 margin subtotal (Product Owner decision, 24 Nov). They hold no PO, claim,
 invoice, variation, receipt or adjustment. Do not modify A, B or C to make an
 AUD margin render.
+
+Fixture Z is deliberately **USD**: a third NZD project would change the NZD
+subtotals that X and Y exist to pin (26.00%), and an AUD project would join the
+A–C group. The test company's Portfolio therefore reads 6 open projects in
+three currency groups, with the USD group equal to Z alone.
 
 Origins: `app.constrap.com` is the Product Owner's Apex session (never used by
 tests); `constrapp-69b5d.web.app` the TEST admin; `constrapp-69b5d.firebaseapp.com`
@@ -253,7 +264,7 @@ Status as recorded in the linked section; class shown where the record states it
 | DC46-A/B/C (ADR-73–75) | Authenticated downloads; token revocation; periodic reconciliation (2 h); external access follows status. **DC46 CLOSED 18 Nov with accepted risks** | PROD-VERIFIED + PROD-REPORTED | §51–§59 |
 | L2-A Commercial Report | Read-only report, CSV, print | PROD-REPORTED (19 Nov) | §60 |
 | L2-B Stage A — capacity recovery 3 (ADR-76) | Live ruleset byte-identical to `main` | PROD-VERIFIED (19 Nov) | §61 |
-| L2-B Final Account (ADR-77) + C1-A | F3, F4, F7–F13, F17 PASS in sandbox; forecast-readiness correction live; retest R1, R2, R4 PASS, R3 blocking PASS | PROD-VERIFIED (22 Nov) | §62, §62b |
+| L2-B Final Account (ADR-77) + C1-A | F3, F4, F7–F13, F17 PASS in sandbox; forecast-readiness correction live; retest R1, R2, R4 PASS, R3 blocking PASS. **24 Nov (B6):** F5, F6, F15, Project Manager approval, F14 native PDF, R5 PASS; F16 partly | PROD-VERIFIED (22 Nov; 24 Nov) | §62, §62b, §62c; B6 |
 | L2-C Portfolio (ADR-78) | Visual, CSV, PDF acceptance | PROD-REPORTED (20 Nov) | §63 |
 | C1-B Portfolio | P4 row parity to the cent; M2 load timings | PROD-VERIFIED (22 Nov) — report to architect; superseded as the recorded parity evidence by the 24 Nov run (B4) | §63 |
 | C1-B Portfolio (24 Nov) | P1–P8, P12, P13, P21, P22; M1, M4; CSV = screen; P4 on five rows (55 figures) | PROD-VERIFIED (24 Nov) — read-only, Company Admin; P18 blocked | §63; B4 |
@@ -430,6 +441,147 @@ subcontractor and client profiles unchanged. Auth: `ct-sub` and `ct-client`
   Company Admin, not the PM; signed out and the PM signed in again. Test
   procedure only (D3 #15).
 
+### B6. C1-A — Final Account remaining acceptance in `constrap-acceptance-test` (24 November 2026, PROD-VERIFIED unless marked)
+
+**Architect decision (25 November 2026 — REPORTED).** **GO — C1-A is CLOSED.** F16 is
+accepted on the combined evidence: production access denial (signed out,
+Auth-disabled accounts, Rules 403 for both external roles) plus the unit test
+of the restricted notice. The notice is **not** recorded as observed in
+production; its browser check is carried forward to the external-role session
+that L4 T14 and §61 W4 need. Every limitation below stands, including R5 on
+stored-state evidence and the zero-only client-side and cash figures. Project
+Z, its supplier contact, the two counters and the approved revision are
+retained; the TEST Project Manager and QS stay active. D3 #22–#26 go to the
+deferred UX and reporting correction bundle. Self-approval remains a
+documented policy gap for a future approval-segregation implementation. Next
+milestone: L4 remaining acceptance and M2-A2 Stage A internal-role regression.
+
+**Scope.** The items left open by the 22 November run: F5, F6, F15, F16, the
+native print / PDF part of F14, Project Manager approval and retest R5
+(TESTING.md §62, §62b). Run 10:21–10:53 UTC on `main` `2561344` (= `origin/main`,
+fetched — VERIFIED); Hosting bundle `index-BOg2hoYg.js`; callable
+`approvefinalaccount-00003-jad` (both unchanged since the 22–23 November
+records). Isolated company only. Every commercial write went through the
+application (TEST Company Admin on `constrapp-69b5d.web.app`; QS, then Project
+Manager, on `constrapp-69b5d.firebaseapp.com`; session uid verified in the page
+before each role's tests). No Admin SDK write; nothing written to Apex Builders,
+Projects A–C or fixtures X / Y. Full record: TESTING.md §62c.
+
+**Reused, not repeated.** F3, F4, F7–F13, F17 and R1–R4 (22 November, sandbox
+`oeqHCgEM…`); the print rules observed in the live page (22 November); P20 —
+`finalAccounts` unreadable to both external roles (B2a, B2b); the Rules suite
+(81 tests) and the approval emulator suite (65+ tests) for contention, forged
+drafts and concurrency, which a browser cannot reach.
+
+**Dedicated fixture Z (retained).** `5hmVvUCoOIEPrzdeowYK` — *TEST USD-1 — Final
+Account acceptance*, **USD**, Planning. USD rather than NZD so the NZD group
+stays exactly X + Y (26.00%) as a Portfolio regression fixture; the AUD group is
+untouched. Records: baseline OCV 120,000; budget line CT-100 90,000; approved
+budget version 1 (`MCZAWTGUppOCDpnZOgUJ`); supplier contact
+`b7k4hVAvbJoLEIVuDE1F` (*TEST Supplier (synthetic, not a real company)*);
+PO-0001 `SeVdS0hBqDVP1MdqltyC` Sent, one CT-100 line 84,321.50 ex-GST (gross
+92,753.65); SI-0001 `ErpD5Uu0oRNFLYNXl2fF` *C1A-TEST-USD-INV-1* Posted,
+84,321.50 + GST 8,432.15 = 92,753.65, no retention; forecast CT-100 saved 0.
+No claim, credit note, variation, client invoice, receipt, payment, retention
+release or budget adjustment.
+
+**Independent expectations** (Python `Decimal` over the stored records read by
+REST — baseline, approval snapshot, PO, posted invoice, forecast line; figure
+definitions from `lib/finalAccount.js`):
+
+| Figure | Expected | Stored rev 2 | Screen (approved) | Reports tab | Portfolio row | CSV | Native PDF |
+|---|---|---|---|---|---|---|---|
+| Original contract sum | 120,000.00 | 120000 | ✓ | ✓ | — | ✓ | ✓ |
+| Approved client variations | 0.00 | 0 | ✓ | ✓ | — | ✓ | ✓ |
+| Final adjusted contract sum | 120,000.00 | 120000 | ✓ | ✓ (*Current contract sum*) | ✓ | ✓ | ✓ |
+| Invoiced to client / remaining to invoice | 0.00 / 120,000.00 | 0 / 120000 | ✓ | — | — | ✓ | ✓ |
+| Approved budget | 90,000.00 | 90000 | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Approved supplier variations | 0.00 | 0 | ✓ | ✓ | — | ✓ | ✓ |
+| Actual cost | 84,321.50 | 84321.5 | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Cost to complete | 0.00 (commitment 84,321.50 − invoiced 84,321.50, + uncommitted 0) | 0 | ✓ | ✓ | ✓ (*Rem. committed* 0) | ✓ | ✓ |
+| Final cost | 84,321.50 | 84321.5 | ✓ | ✓ (*Forecast final cost*) | ✓ | ✓ | ✓ |
+| Variance to budget | 5,678.50 | 5678.5 | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Final gross profit | 35,678.50 | 35678.5 | ✓ | ✓ (*Forecast*) | ✓ | ✓ | ✓ |
+| Final margin | 29.732083…% → **29.73** by `marginPercent` (2 dp) | 29.73 | 29.7% | 29.7% | 29.7% | 29.73 | 29.7% |
+| Client gross figures (invoiced, received, outstanding, cash received, unallocated) | 0.00 each | 0 | ✓ | ✓ (cash, outstanding) | ✓ (receivables) | ✓ | ✓ |
+| Cash paid / unallocated supplier payments / retention held | 0.00 each | 0 | ✓ | ✓ (cash paid) | — | ✓ | ✓ |
+| Supplier invoices unpaid | 92,753.65 | 92753.65 | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Cost-code row CT-100 (budget / actual / variance) | 90,000.00 / 84,321.50 / 5,678.50 | same | ✓ | ✓ | — | ✓ | ✓ |
+
+All 22 stored figures equal the expectations in whole cents (margin at the
+implemented 2-decimal rounding). *Forecast* and *final* figures are the same
+numbers here by construction — approval requires cost to complete = 0, so
+final cost = actual cost; the difference is the label and that revision 2 is
+frozen while the Reports tab and Portfolio stay live. The Portfolio NZD group
+read 250,000 / 180,000 / 185,000 / −5,000 / 65,000 / 26% and the AUD group
+3 projects *Incomplete* — both as recorded in B5.
+
+| # | Result | Evidence |
+|---|---|---|
+| F5 — QS opens the draft | **PASS** | QS session `PvzTgu…` (*Zac · QS / Office*) on draft revision 1 (prepared by the Company Admin): no *Approve*, no *Withdraw draft* (not the preparer), no Export / Print; *Approval is by a Company Admin or Project Manager.* shown. Beyond the hidden control: the callable called as the QS with a real App Check token → `permission-denied` / `not-approver` (twice — another user's draft and the QS's own; log *final account call refused*, HTTP 403); seven direct writes denied by Rules (below) |
+| F6 — second user prepares another draft | **PASS** | QS opened *Prepare* while no draft existed; the Company Admin then prepared revision 1 (10:29:38); the QS's still-open dialog (now titled *Revision 2*) submitted → *A draft revision is already open. Approve or withdraw it before preparing another.* — refused by the action's fresh server read. One document only. Rules level: a forged `finalAccounts/2` with a complete valid draft shape → `permission-denied` for the QS and the Company Admin while revision 1 was open; the same shape was accepted through the app once revision 1 was withdrawn (positive control) |
+| F15 — `updateDoc(finalAccounts/N, { status: 'approved' })` as Company Admin | **PASS** | `oOANhA…` on draft revision 1 → `permission-denied`. Also denied: a complete forged approval (stamps, approver, revision + 1), editing a draft figure, delete, a second draft, creating an `approved` document directly. Revision 1 unchanged (`updateTime` = its create time until the real withdrawal) |
+| Project Manager approval | **PASS** | Revision 2 prepared by the QS (10:32:46), approved by `KSC9zf…` (*Drdre · Project Manager*) through the app at 10:43:11. *Approve revision* disabled until the acknowledgement was ticked; no self-approval note. Stored: `approvedBy` = PM uid, `approvedByRole` `project_manager`, `selfApproved` false, `createdBy` = QS uid, `approvedAt` 10:43:11.437, `sourcesReadAt` 10:43:11.109, `revision` 2, figures = expectations. One audit event `LIjIrpnKz00G6rDyiqeH` `final_account.approved` (actor = PM, `source: callable`, before draft / 1, after approved / 2, contract 120,000, cost 84,321.50, budget approval id) — same commit time as the revision (10:43:11.461357Z); audit events 43 → 44. Log: *final account approval* `replay: false`, `attempts: 1`, HTTP 200 |
+| — before approval, as PM | **PASS** | Direct `status: 'approved'`, complete forged approval, figure edit, delete → `permission-denied` ×4: the Project Manager can approve only through the callable |
+| — repeated approval | **PASS** | Same request again as the PM → `alreadyApproved: true`, revision still 2, no second audit event, document `updateTime` unchanged (log `replay: true`). `expectedRevision: 2` → `final-account-not-draft`; the withdrawn revision 1 → `final-account-not-draft`; a request carrying an amount key → `invalid-argument`; another company's project id → `not-found` (looked up under the caller's company only — no Apex read) |
+| — protection after approval | **PASS** | As the PM, on approved revision 2: figure edit, withdraw, back to draft, change approver name, delete → `permission-denied` ×5; on withdrawn revision 1: reopen, delete → denied ×2. Revision 2 SHA-256(fields) `74cc8f7a0f0a78a3…`, `updateTime` 10:43:11.461357Z before and after. UI: no Approve or Withdraw on an approved revision |
+| F14 — native print / PDF | **PASS** (two cosmetic observations) | Product Owner clicked *Print / Save as PDF* in the TEST admin tab and saved from Chrome's dialog with nothing changed. File: Chrome 157 / Skia PDF, **3 pages, A4 landscape** (841.92 × 594.96 pt), text (no raster image — not a screenshot). Project, revision, *Approved* / *Current*, currency USD, disclaimer (header and footnote), prepared / basis / reference / budget source / approved (time · approver) / records read, all four figure groups (22 figures) and the cost-code table present and equal to the screen and the expectations; no sidebar, tabs, sub-tabs, buttons, readiness checklist, live position or revision history; white background; right-most amount ends 54 pt inside the page edge — no clipped column. Observations: D3 #22 (a section heading left alone at the foot of page 1), #23 (Chrome's default header / footer prints the page URL). File deleted after checking |
+| F16 — deactivated or non-financial account opens the URL | **PARTLY** — no figure: PASS; the notice: NOT RUN in production. **Accepted for closure on this combined evidence (architect, 25 Nov); the browser check is carried forward** | Signed out on the test origin, the Final Account URL → `/login`, no figure; `finalAccounts/2`, the project and the baseline → `permission-denied` (10:33:35). Deactivated: both external test accounts are Auth-disabled (read today) and cannot hold a session; a live session was signed out within ~5 s of deactivation (B2, 24 Nov 00:49). Non-financial: `finalAccounts` → 403 for the subcontractor and the client on assigned projects (B2a, B2b). **Not observed:** the *Final Account is restricted* card for a signed-in non-financial account — unit test only (`finalAccountPage.test.js`); it needs an active external session, and both external accounts stay disabled under this brief |
+| R5 (§62b) | **PASS — stored state** (read-only) | Apex sandbox `oeqHCgEM…` read over REST and compared with the 22 November capture: revision 4 withdrawn (17:35:07 UTC, 21 Nov UTC date), forecast 0300 restored to 0 (17:34:46), revisions 1–3 `updateTime` and SHA-256 identical (rev 2 `dbbd94a6…`). The on-screen *all Met* reading was not re-observed in the sandbox (no Apex session is used by tests); the same end state was observed on fixture Z — 19 requirements Met after approval, *Prepare revision 3* enabled |
+| Readiness on a new project (not an open item) | Observed | Before the forecast was saved: *Every cost code has a saved forecast — Not met — 1 of 1 not forecast: CT-100…*, *Prepare* disabled; after saving 0: 19 Met |
+
+**Where each control is enforced (production observations, 24 November).**
+
+| Action | Company Admin | Project Manager | QS | Enforced by |
+|---|---|---|---|---|
+| Read revisions | allowed | allowed | allowed | Rules (`financialMember`); signed out → denied; external roles → 403 (B2a / B2b) |
+| Prepare a draft | allowed (rev 1) | not exercised (Rules + unit) | allowed (rev 2) | Rules `draftValid`; one open draft: action server read + Rules |
+| Withdraw a draft | allowed (own, rev 1) | control shown (not used) | another user's: no control, write denied; own: control shown (not used) | Rules |
+| Approve | 22 Nov (sandbox) | **allowed (rev 2)** | no control; callable `not-approver` | Callable only — every direct write to `approved` denied for all three roles |
+| Change or delete an approved or withdrawn revision | denied (emulator; draft-stage writes denied today) | **denied** | denied (emulator) | Rules; Admin SDK / console bypass remains (D2) |
+
+24 distinct direct-write shapes denied (QS 7, Company Admin 6, Project Manager
+11) and 3 signed-out reads. Probes used the Firebase Web SDK loaded in each
+role's own tab on the persisted session — no token was read or exported. The
+callable probes carried a reCAPTCHA Enterprise App Check token obtained by the
+SDK; a callable request *without* App Check was not tested today. Every
+callable answer was 2xx / 4xx — nothing the L3 failure alert counts.
+
+**Writes made (complete list, UTC).** 10:24:08 project + directory entry;
+10:25:03 baseline (+ currency lock); 10:25:35 budget line; 10:25:46 budget
+approval draft and snapshot; 10:26:05 approval version 1 (header, pointer);
+10:26:31 supplier contact; 10:27:02 PO-0001 draft (+ `counters/purchaseOrders`);
+10:27:09 Sent; 10:27:35 SI-0001 draft (+ `counters/supplierInvoices`), approved,
+10:27:50 Posted; 10:28:23 forecast line; 10:29:38 Final Account revision 1
+draft (Company Admin); 10:32:24 withdrawn; 10:32:46 revision 2 draft (QS);
+10:43:11 revision 2 approved (callable) + one audit event. The QS was signed
+out through the user menu (10:33); the Product Owner signed in as the PM
+(10:42:16). No invitation, email, role change, deactivation or Storage write.
+
+**Data integrity (read-only snapshots 10:21–10:23 and 10:50–10:53).** Apex
+Builders: 258 of 258 lines identical (no sweep fell in the window; the 09:14
+periodic pass is the only change since B5). `users`: identical. Auth: `ct-sub`
+and `ct-client` **disabled**; `ct-admin`, `ct-pm`, `ct-qs` enabled; only the
+PM's last sign-in time moved. Storage: five fixtures byte-identical (MD5,
+metageneration), no token. Test company: 100 → 116 documents — exactly the 16
+listed above (project, directory entry, 10 project sub-documents, contact, two
+counters, one audit event); Projects A, B, C, X, Y, CT-100, members,
+invitations and system documents unchanged. Directory **6 / 6 in sync**.
+
+**Final retained state.** Fixture Z: revision 1 withdrawn, **revision 2
+approved and current** (QS-prepared, PM-approved), project Planning; its
+contact, PO, invoice and counters retained — do not delete or modify. Portfolio
+now reads 6 open projects in three currency groups (USD = Z alone). TEST PM and
+QS remain **active**; the testing profile holds the TEST admin (`web.app`) and
+the PM (`firebaseapp.com`) sessions; test tabs closed.
+
+**Limits.** F16 notice not observed in production (above). Client invoices,
+receipts, payments, retention and variations were exercised at zero only on Z
+(non-zero payables only). Production serializable behaviour under contention,
+forged-draft refusal by the callable and the 5xx paths remain emulator-only.
+The PDF was produced by Chrome on macOS only; no physical print. App Check is
+not enforced on Firestore (R-4), so the Rules probes needed no App Check.
+
 ---
 
 ## C. Remaining tests
@@ -481,8 +633,8 @@ approved); its IDs below are the Lead Architect's.
 
 | ID | Area | Remaining | Already done (do not reopen) | Needs | Record |
 |---|---|---|---|---|---|
-| C1-A | L2-B Final Account | Role checks F5, F6, F15, F16 and Project Manager approval; F14 native print dialog and a PDF file; retest R5 | Positive path F3, F4, F7–F13, F17 PASS in production (22 Nov); forecast-readiness correction live and retested (R1, R2, R4, R3 blocking) | PM / QS / second-user sessions on a test project | §62, §62b |
-| C1-B | L2-C Portfolio | **None blocking — architect closure decision** (B5). Limits kept: P15 local only; P10, P11, P14, P16, P17 rest on the REPORTED visual / export acceptance; M3, M5 not measurable; P19 payloads not decoded; REST-level cross-company probe as PM / QS not run. Deferred UX: D3 #9, #19, #20, #21 | Visual, CSV, PDF (REPORTED 20 Nov); P19–P20 PASS for both external roles (24 Nov; payloads not decoded); **read-only run 24 Nov (B4): P1–P6, P8, P12, P13, P21, P22 PASS, P7 partial, P4 five rows to the cent, M1, M4 measured** | — (PM / QS identities and NZD fixtures now exist in the test company) | §63; B4; B5 |
+| C1-A | L2-B Final Account | **CLOSED** (Lead Architect, 25 Nov 2026 — REPORTED; B6). **Carried forward, not blocking:** the F16 *Final Account is restricted* notice for a signed-in non-financial account — still not observed in production (the property behind it — no figure, Rules denial — is proven); to be checked in the external-role session of L4 T14 / §61 W4. Limits kept: R5 on stored-state evidence only; client invoices, receipts, payments, retention and variations at zero on the accepted Final Accounts; contention, forged-draft refusal by the callable and 5xx paths emulator-only; D3 #10, #22–#26 (deferred bundle) | Positive path F3, F4, F7–F13, F17 (22 Nov); correction retested R1–R4; **24 Nov (B6): F5, F6, F15, Project Manager approval, repeated approval, protection after approval, F14 native PDF, R5** | For the F16 notice only: one active external session on an assigned project — the session L4 T14 also needs | §62, §62b, §62c; B6 |
+| C1-B | L2-C Portfolio | **CLOSED** (Lead Architect, 24 Nov 2026 — REPORTED; closeout merged `c236bd9` / `2561344`). *As written:* None blocking — architect closure decision (B5). Limits kept: P15 local only; P10, P11, P14, P16, P17 rest on the REPORTED visual / export acceptance; M3, M5 not measurable; P19 payloads not decoded; REST-level cross-company probe as PM / QS not run. Deferred UX: D3 #9, #19, #20, #21 | Visual, CSV, PDF (REPORTED 20 Nov); P19–P20 PASS for both external roles (24 Nov; payloads not decoded); **read-only run 24 Nov (B4): P1–P6, P8, P12, P13, P21, P22 PASS, P7 partial, P4 five rows to the cent, M1, M4 measured** | — (PM / QS identities and NZD fixtures now exist in the test company) | §63; B4; B5 |
 | C1-C | GANTT | Baseline scenarios not exercised in the browser; no per-step record for ADR-79 | 1A1 / 1A2 / 1B / PULSE 1C live bundle VERIFIED; GANTT core completion PO-accepted (REPORTED) | A test project with a programme | §42, §64 |
 | C1-D | Monitoring | A notification-delivery test of the L3 alert policies; no alert has fired on a real condition | Policies and uptime check created (VERIFIED read-only 21 Nov); DC46 policy email path REPORTED | An authorised synthetic trigger | §65; DEPLOYMENT.md |
 | L3 | Stage 2 error recovery | E1–E10 browser acceptance | Live through the L4 Hosting release (REPORTED) | Browser session; controlled offline | §66 |
@@ -490,6 +642,28 @@ approved); its IDs below are the Lead Architect's.
 | M2-A2 A | Stage A internal regression | M1, M2, M4, M5, M7, M8 (M3 run as Company Admin only; M6 PASS) | External X1–X7 PASS | Internal-role sessions | §68 |
 | L2-B A | Rules capacity recovery 3 smoke | W2–W4 | Live ruleset byte-identical (VERIFIED 19 Nov) | Financial-role session | §61 |
 | Evidence | Production state unconfirmed | GST boundary hotfix (merged `ea2eea8`); Premium Dashboard v2 (merged `ba52821`) | Both VERIFIED merged | Product Owner confirmation, or a read-only bundle check | §44, §22; handover F |
+
+**Next milestone (Lead Architect, 25 Nov 2026):** L4 remaining acceptance (T9,
+T14, the Quant step of T16 — row *L4*) and the M2-A2 Stage A internal-role
+regression (M3–M5, M7, M8 — row *M2-A2 A*). The external-role session T14
+needs also carries the F16 notice check (C1-A) and §61 W4.
+
+**What the retained test identities can serve (assessed 24 Nov, B6 — not executed).**
+TEST Company Admin, Project Manager and QS are active in the isolated company;
+both external test accounts are disabled.
+
+| Open item | Reusable now? | Note |
+|---|---|---|
+| M2-A2 A — M3 / M7 (admin creates a project; PM edits name, status, location, start date, progress; directory entry has five equal fields) | **Yes** — Company Admin + PM | A new throw-away project in the test company, or Z's non-financial fields; the stale-bundle part of M7 can no longer be reproduced |
+| M2-A2 A — M4 (QS lists every project, cannot create or edit; a budget line engages the currency lock) | **Yes** — QS | The currency-lock step needs an unlocked project (a new one; X, Y, Z are locked) |
+| M2-A2 A — M5 (Company Settings loads; currency pin) | **Yes** — Company Admin | The pin step only if the test company is not already pinned |
+| M2-A2 A — M8 (Portfolio, Commercial Report, Final Account, GANTT open for the internal roles) | **Yes** — all three | Partly evidenced already: Portfolio for all three (B5), Final Account for all three (B6), Commercial Report as Company Admin (B6); GANTT and the Commercial Report as PM / QS remain |
+| M2-A2 A — M1, M2 | No | They describe the transitional release stage (old bundle on Stage-1 Rules), which no longer exists |
+| L2-B A — W2, W3 | **Yes** — any internal role | Incidental today as Company Admin on Z (Budget, Purchase Orders and the Commercial Report loaded; a forecast save was accepted) — not recorded as the W-checks |
+| L2-B A — W4; L4 — T14 | **No** — need an active `client` or `subcontractor` session | Both external accounts are disabled; one operator re-provisioning + Product Owner sign-in would serve W4, T14 and the F16 notice together |
+| L4 — T9 (server stale-review refusal) | **Yes** — Company Admin or PM, with a transfer sandbox in the test company | The browser cannot reach it through the UI; today's method (the callable called from the role's own session with the SDK's App Check token) can send a deliberately stale request |
+| L4 — Quant step of T16 | Yes — Company Admin | Needs a drawing with a takeoff in a test-company project |
+| L3 Stage 2 — E1–E10 | Yes for the online steps | The offline steps need a controlled disconnection the extension cannot simulate |
 
 ---
 
@@ -521,7 +695,12 @@ neither can change the role or the assignment (Lead Architect, 24 Nov 2026).
 - Copied download URLs and the 2-hour periodic interval (ADR-75) — see R-1.
 - Final Account: an approved revision can be altered by the Admin SDK /
   console; production serializable behaviour proven on the emulator only
-  (SECURITY.md item 47).
+  (SECURITY.md item 47). Client-side immutability of approved and withdrawn
+  revisions and the callable-only path to `approved` are PROD-VERIFIED for
+  all three internal roles (B6, 24 Nov). Creator ≠ approver segregation is
+  **not implemented** — self-approval is permitted and labelled; that is a
+  documented policy gap for a future approval-segregation implementation
+  (Lead Architect, 25 Nov 2026), not a defect.
 - Firestore recovery: counts and one hash compared, not every document;
   Storage objects are outside Firestore backups (7-day soft delete only).
 - Client-only controls (uniqueness, cumulative caps, some concurrency):
@@ -532,7 +711,7 @@ neither can change the role or the assignment (Lead Architect, 24 Nov 2026).
 - Rules capacity: `firestore.rules` 236,737 of 245,000 bytes; the
   1000-expression ceiling; one project / directory pair per commit.
 
-### D3. Defect and finding register (#1–#3, #16, #18 integrated in `62e824a`; #9 assessed, #19–#21 recorded by C1-B, 24 Nov; #9 and #19 deferred by the architect)
+### D3. Defect and finding register (#1–#3, #16, #18 integrated in `62e824a`; #9 assessed, #19–#21 recorded by C1-B, 24 Nov; #9 and #19 deferred by the architect; #22–#26 recorded by C1-A, 24 Nov, and placed in the deferred UX and reporting correction bundle by the architect, 25 Nov)
 
 Priority: **P1** before customer external onboarding; **P2** next
 convenient milestone; **P3** backlog.
@@ -557,17 +736,22 @@ convenient milestone; **P3** backlog.
 | 16 | `provision-external-member.mjs --link-file` checks the repository boundary on the typed path; a folder that is a symbolic link into the working tree is not caught (final-component and existing-file checks are sound) | Operator safety | **COMPLETE — INTEGRATED** (`62e824a`) — the hole demonstrated on `main` `2e48a2a` (exit 0, link file created in the repository; emulator); now `_linkFile.mjs` (real path, O_EXCL + O_NOFOLLOW, 0600, reserved before the write); exit 3 on a post-commit delivery failure with Resend recovery; no rotation, no duplicate (EMULATOR: §70 OT15–OT16) | P1 (raised by the architect) | — | Operator tooling safety — done | Operator tooling safety |
 | 17 | `npm run test:team` / `test:functions`: the Firebase CLI makes one authenticated metadata request for the emulator project id (403 — no access; no production project read) and hands the operator's CLI login to the Functions emulator as credentials; Storage and Pub/Sub are not emulated there | Local tooling / security | Open — limitation recorded | P3 | Design | Use a `demo-` emulator project id (separate change: `.env`, harness, suites) | Launcher end-to-end run, 24 Nov |
 | 19 | Reports tab (L2-A) shows a working budget under its *Approved budget* card, with the sub-label *Working budget (not approved)*; the Portfolio shows the same value as *Not approved* with the working amount beneath | UX — wording (observation; values identical; pre-dates L2-C) | Open — **deferred** (architect) | P3 | — | UX fix bundle, if accepted | C1-B (24 Nov; B4) |
-| 20 | Forecast tab: after the first *Save all changes* on a project, the page kept showing *Not forecast* / FFC 0 although the forecast line was written (REST-verified); a reload showed the saved figure. Seen once in two saves, not reproduced | Reliability / UX — display only (stored value and every other surface correct) | Open — needs a reproduction | P3 | Reproduction | UX / reliability bundle | C1-B B5 (fixture X, 07:18) |
+| 20 | Forecast tab: after the first *Save all changes* on a project, the page kept showing *Not forecast* / FFC 0 although the forecast line was written (REST-verified); a reload showed the saved figure. Seen once in two saves, not reproduced | Reliability / UX — display only (stored value and every other surface correct) | Open — needs a reproduction (not reproduced on fixture Z's first save, 24 Nov 10:28) | P3 | Reproduction | UX / reliability bundle | C1-B B5 (fixture X, 07:18) |
 | 21 | Portfolio status line reads *All N projects have been read.* when every read failed (offline); the coverage notice below it is correct | UX — wording | Open | P3 | — | UX fix bundle (with #9) | C1-B B5 (P15, local) |
 | 18 | `npm run test:team` did not wait for the Auth emulator (first-run bootstrap `ECONNREFUSED :9099`) and probed Vite on `127.0.0.1` while Vite 8 bound `::1` only (*Starting Vite… failed*) | Local tooling | **COMPLETE — INTEGRATED** (`62e824a`) — bounded readiness for Auth, Firestore, Functions and the CLI ready signal; Vite `--host 127.0.0.1`; bounded shutdown wait. End-to-end PASS, four fresh runs (§70) | P2 | — | Operator tooling safety — done | First implementation report |
+| 22 | Final Account PDF: the *COST (EX-GST)* group heading prints as the last line of page 1 while its figures start on page 2; the single figures card runs across all three pages | UX — print layout (cosmetic; every figure present, legible and unclipped) | Open — **deferred** (architect, 25 Nov) | P3 | — | Deferred UX and reporting correction bundle (Hosting-only): keep a group heading with its first row of figures | C1-A B6 (native PDF, Chrome 157, macOS) |
+| 23 | Final Account PDF: Chrome's default *Headers and footers* option prints the date, the tab title (*Constrap* — not the project or revision) and the full page URL, project id included, on every page | Observation — a browser option the user can untick; not application content | Recorded — **deferred** (architect, 25 Nov) | P3 | Decision | Deferred UX and reporting correction bundle — optional: a project / revision document title while printing; user guidance | C1-A B6 |
+| 24 | Final Account status line reads *No Final Account has been prepared for this project.* when the only revision is a withdrawn draft (the revision history below lists it) | UX — wording | Open — **deferred** (architect, 25 Nov) | P3 | — | Deferred UX and reporting correction bundle | C1-A B6 (fixture Z, after revision 1 was withdrawn) |
+| 25 | The approver's role is stored on an approved revision (`approvedByRole`), but no surface shows it — screen, CSV and PDF give the approver's name and the time only | Observation — audit presentation | Recorded — **deferred** (architect, 25 Nov) | P3 | Architect decision | Deferred UX and reporting correction bundle | C1-A B6 |
+| 26 | Final margin precision differs by surface: stored value and CSV two decimals (29.73), screen, PDF and Portfolio one decimal (29.7%) | Observation — presentation only; one stored value | Recorded — **deferred** (architect, 25 Nov) | P3 | — | Deferred UX and reporting correction bundle (no change proposed yet) | C1-A B6 |
 
 ### D4. Implementation roadmap (strategic order unchanged)
 
 | State | Items |
 |---|---|
-| **Implemented and production-accepted** | Commercial foundations; M1, M2-A, M2-B1/B2/B3, M3-A/B1/B2; SHIELD 2A / 2B1 / 2B2; L1 Team Management; DC46 (closed with accepted risks); L2-A; L2-B Stage A; L4 (closed with listed gaps); **M2-A2 Stage A and B (DC20 closed)**. *Integrated, no production acceptance required:* operator tooling safety (`62e824a`) |
-| **Implemented, not fully accepted** | L2-B Final Account (C1-A); L2-C Portfolio (C1-B — all checks run; **awaiting the architect's closure decision**); GANTT 1A1 / 1A2 / 1B and core completion (C1-C); L3 Stage 1 alerting (C1-D) and Stage 2 (E1–E10); GST boundary hotfix and Premium Dashboard v2 (production evidence) |
-| **Known defects requiring fixes** | D3 #4–#9, #19, #21 (UX; #9, #19, #21 wording only), #20 (needs reproduction), #17 (local tooling). D3 #1–#3, #16, #18 complete (`62e824a`) |
+| **Implemented and production-accepted** | Commercial foundations; M1, M2-A, M2-B1/B2/B3, M3-A/B1/B2; SHIELD 2A / 2B1 / 2B2; L1 Team Management; DC46 (closed with accepted risks); L2-A; L2-B Stage A; L4 (closed with listed gaps); **M2-A2 Stage A and B (DC20 closed)**; **L2-C Portfolio (C1-B CLOSED, 24 Nov — REPORTED)**; **L2-B Final Account (C1-A CLOSED, 25 Nov — REPORTED; F16 notice not observed in production and carried forward; R5 on stored-state evidence; zero-only client-side and cash scenarios — B6)**. *Integrated, no production acceptance required:* operator tooling safety (`62e824a`) |
+| **Implemented, not fully accepted** | GANTT 1A1 / 1A2 / 1B and core completion (C1-C); L3 Stage 1 alerting (C1-D) and Stage 2 (E1–E10); GST boundary hotfix and Premium Dashboard v2 (production evidence) |
+| **Known defects requiring fixes** | D3 #4–#9, #19, #21 (UX; #9, #19, #21 wording only), #22 and #24 (Final Account print layout and wording — deferred bundle with #23, #25, #26), #20 (needs reproduction), #17 (local tooling). D3 #1–#3, #16, #18 complete (`62e824a`) |
 | **Security hardening** | D1 R-1 … R-6; general App Check enforcement; DC46 follow-ups (Storage audit logs, faster revocation, drawing-revision policy, load testing at triggers); billing-account administration |
 | **Not yet implemented** | Real customer external onboarding (gated); self-serve company signup; billing and subscriptions; client portal; client credit notes and client retention; estimating; creator ≠ approver segregation on Final Account; company legal / tax identity; client-side error reporting; external availability monitor |
 | **Deferred (order per ROADMAP → *Approved development order (post-L4)*)** | 1 remaining core functionality and acceptance (C1) → 2 SaaS readiness and international foundations → 3 mobile / PWA → 4 Xero (ADR-82 PROPOSED) → 5 Constrap IQ → 6 Quant AI → 7 final production audit. Stage 8 advanced modules unscoped |
@@ -609,6 +793,9 @@ Newest first. Add one row per test or step; keep detail in the linked record.
 
 | ID / milestone | Objective | Environment | Result | Evidence | Date | Open issues | Follow-up |
 |---|---|---|---|---|---|---|---|
+| Closeout / C1-A | C1-A CLOSED; F16 accepted on combined evidence; next milestone set | Repository (docs only) | Architect decision recorded | ROADMAP, TESTING, CHATGPT_HANDOVER, this file on `docs/c1a-final-account-acceptance` (uncommitted) | 25 Nov 2026 | F16 notice not observed in production (carried forward); D3 #22–#26 deferred; self-approval policy gap | L4 remaining acceptance and Stage A internal-role regression |
+| C1-A / L2-B (remaining) | F5, F6, F15, F16, F14 native PDF, Project Manager approval, R5 | Prod, isolated test company (dedicated USD fixture Z; TEST admin, QS, PM sessions); R5 read-only on the Apex sandbox | F5, F6, F15, PM approval, F14, R5 PASS; F16 PARTLY | B6; TESTING.md §62c; independent Decimal expectations; stored revision, audit event `LIjIrpnK…`, callable logs; PDF properties and text; snapshot diffs (Apex unchanged) | 24 Nov 10:21–10:53 | F16 notice not observed in production; D3 #22–#26 | **CLOSED** (architect, 25 Nov); F16 notice check carried to the L4 T14 / W4 external session |
+| Integration / C1-B closeout | Merge; CI; closure | Git; Azure | Merged `c236bd9` / `2561344` (VERIFIED in Git); Azure green and C1-B CLOSED (REPORTED) | `git log`; Lead Architect | 24 Nov 2026 | — | — |
 | C1-B / L2-C (final) | P7 weighted margin and incomplete budget; P9 completed filter; P18 three roles; P15 offline | Prod, isolated test company (NZD fixtures, TEST admin, new PM, re-activated QS); P15 local emulators + headless Chrome | P7, P9, P18 PASS; P15 PASS (local only) | B5; independent Decimal expectations; CSV fingerprints; snapshot diffs (Apex unchanged) | 24 Nov 07:15–07:37 | D3 #20, #21; REST cross-company probe not run | Architect closure decision |
 | C1-B / L2-C | Portfolio read-only acceptance: P1–P22 where read-only, M1–M5 | Prod, read-only, Company Admin (Apex), dedicated tab | P1–P6, P8, P12, P13, P21, P22 PASS; P4 5 rows / 55 figures; P7 partial; P9 not exercisable; P15 not run; P18 BLOCKED; M1 10; M4 136 reads | B4; TESTING.md §63; Monitoring read / write / delete counts; worker log | 24 Nov 05:14–05:27 | P18 needs PM / QS (writes); D3 #9, #19 wording | Architect decision on P18 |
 | Integration / operator tooling safety | Merge; CI | Git; Azure | Merged `bc64487` / `62e824a`; Azure green (REPORTED) | `git log`; Lead Architect | 24 Nov 2026 | D3 #17; production cleanup untested | — |
@@ -646,8 +833,8 @@ Newest first. Add one row per test or step; keep detail in the linked record.
 | M2-A2 Stage A (ADR-83) | Yes | Yes | Yes | **Yes — CLOSED** (23 Nov); external X1–X7 PASSED (24 Nov); internal regression M1, M2, M4, M5, M7, M8 not recorded | — | — |
 | M2-A2 Stage B (ADR-84) | Yes | Yes (3 callables) | Yes | **Yes — CLOSED** (24 Nov): S1–S3, R1–R3, P1–P14 PASS; **DC20 CLOSED** | Real customer external onboarding (readiness decision) | — |
 | Operator tooling safety (D3 #1–#3, #16, #18) | Yes — **merged** `62e824a` | Not applicable (scripts and local launcher only; no deployment) | Yes (§70); `test:team` end-to-end PASS ×4; Azure green (REPORTED) | Not required (architect); production cleanup never exercised | — | D3 #17 |
-| L2-B Final Account (ADR-77) | Yes | Yes | Yes | **Partly** — positive path; role checks open | — | — |
-| L2-C Portfolio (ADR-78) | Yes | Yes | Yes (unit) | **Yes, pending the architect's closure** — B4 read-only run, B5 P7 / P9 / P18 PASS; P19–P20 PASSED; P15 local only; M1, M4 measured | — | — |
+| L2-B Final Account (ADR-77) | Yes | Yes | Yes | **Yes — CLOSED** (25 Nov, REPORTED) — positive path (22 Nov); role checks, Project Manager approval, native PDF, R5 (24 Nov, B6); the F16 restricted notice not observed in production (accepted on combined evidence; browser check carried forward) | — | — |
+| L2-C Portfolio (ADR-78) | Yes | Yes | Yes (unit) | **Yes — CLOSED** (24 Nov, REPORTED) — B4 read-only run, B5 P7 / P9 / P18 PASS; P19–P20 PASSED; P15 local only; M1, M4 measured | — | — |
 | L4 transfer (ADR-81) | Yes | Yes | Yes | Yes (CLOSED) with listed gaps | — | — |
 | L3 Stage 2 (ADR-80) | Yes | Yes | Yes | Not recorded (E1–E10) | — | — |
 | DC46 (ADR-73–75) | Yes | Yes | Yes | Yes — CLOSED 18 Nov | — | Stage 4 volume |

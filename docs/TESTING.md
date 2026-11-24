@@ -8645,7 +8645,9 @@ published).**
 | W3 | Financial role saves one ordinary edit (for example a forecast line note) | Accepted |
 | W4 | A deactivated or non-financial account opens a financial tab | Still refused |
 
-## 62. L2-B Stage B — Final Account (ADR-77, 19 November 2026) — DEPLOYED — PRODUCTION ACCEPTANCE PENDING; automated tests PASS (emulators); production acceptance PARTIAL (F1 and F2 confirmed by the Product Owner, 20 November 2026; F3–F17 NOT RUN)
+## 62. L2-B Stage B — Final Account (ADR-77, 19 November 2026) — DEPLOYED; production acceptance: F1–F15 and F17 PASSED (F1–F2 Product Owner, 20 November; F3, F4, F7–F13, F17 on 22 November — §62b; F5, F6, F14 native PDF, F15 and Project Manager approval on 24 November — §62c); F16 accepted on combined evidence (production access denial and the unit test; the restricted notice NOT observed in production) — **C1-A CLOSED** (Lead Architect, 25 November 2026 — REPORTED)
+
+*Heading as written before the 24 November revision:* L2-B Stage B — Final Account (ADR-77, 19 November 2026) — DEPLOYED — PRODUCTION ACCEPTANCE PENDING; automated tests PASS (emulators); production acceptance PARTIAL (F1 and F2 confirmed by the Product Owner, 20 November 2026; F3–F17 NOT RUN)
 
 **What changed.** A `finalAccounts` collection (one Rules block), the
 `approveFinalAccount` callable, the generated server calculation, and a Final
@@ -8767,6 +8769,8 @@ whole page and the CSV; the two corrected notes; draft views labelled
 worded in forecast-cost terms.
 ### 62b. C1-A production acceptance and the forecast-readiness correction (22 November 2026) — positive-path acceptance PASSED in production (Lead Architect); correction IMPLEMENTED on `fix/c1a-final-account-forecast-readiness`, automated tests PASS (emulators), NOT DEPLOYED, production retest PENDING
 
+*Status, 24 November 2026:* the correction is deployed and was retested in the browser (R1, R2, R4 PASS; R3 blocking PASS — REPORTED by the Lead Architect, 23 November; CHATGPT_HANDOVER.md). R5 and the remaining role checks are recorded in §62c. The heading above and the *NOT RUN* / *NOT DONE* notes below keep the wording of their date.
+
 **Production acceptance (22 November 2026; sandbox *C1-A Final Account
 Acceptance — TEST*, `oeqHCgEM3GsB9ZKtifZb`, Company Admin session).** F3, F4,
 F7, F8 (approved by a Company Admin — Project Manager approval NOT TESTED in
@@ -8822,6 +8826,66 @@ refuses the approval.
 | R3 | Restore 0 on 0300; prepare revision 4; clear 0300 again; open the draft | *Approve* disabled: the current records do not meet the readiness requirements |
 | R4 | (Server proof, optional — needs a client that still sends the request) | `final-account-not-ready` with `forecastIncomplete`; emulator coverage otherwise |
 | R5 | Restore 0 on 0300; withdraw or approve revision 4 | Readiness all Met; revisions 2 and 3 unchanged (compare `updateTime`) |
+
+### 62c. C1-A remaining production acceptance (24 November 2026) — F5, F6, F15, Project Manager approval, F14 native PDF and R5 PASSED in production; F16 PARTLY (no figure reaches a signed-out, deactivated or non-financial account — PROD-VERIFIED; the *Final Account is restricted* notice itself NOT observed in production) — **C1-A CLOSED** (Lead Architect, 25 November 2026 — REPORTED; F16 accepted on combined evidence, its browser check carried forward)
+
+**Architect decision (25 November 2026 — REPORTED).** GO — **C1-A is CLOSED.** F16 is accepted on
+the combined evidence (production access denial plus the unit test of the
+notice); the notice is **not** recorded as observed in production, and its
+browser check is carried forward to the external-role session that L4 T14
+(§67) and W4 (§61) need. The limitations in this section stand, including R5
+on stored-state evidence and the zero-only client-side and cash figures.
+Fixture Z, its supplier contact, the two counters and the approved revision
+are retained; the findings (tracker D3 #22–#26) are deferred to the UX and
+reporting correction bundle; self-approval remains a documented policy gap.
+
+**Run (10:21–10:53 UTC; `main` `2561344`; Hosting `index-BOg2hoYg.js`; callable
+`approvefinalaccount-00003-jad`).** Isolated company `constrap-acceptance-test`
+only. One dedicated synthetic project, created and driven through the
+application and **retained**: Z `5hmVvUCoOIEPrzdeowYK` *TEST USD-1 — Final
+Account acceptance* (USD; OCV 120,000; approved budget v1 90,000 on `CT-100`;
+PO-0001 Sent and SI-0001 Posted for 84,321.50 ex-GST, gross 92,753.65; forecast
+saved 0). Sessions: TEST Company Admin, QS, then Project Manager (the Product
+Owner signed in; uid verified in the page each time). No Admin SDK write; Apex
+Builders, Projects A–C and the NZD fixtures X / Y untouched. Full record,
+figures, enforcement matrix and integrity diffs:
+[SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md) → B6.
+
+Not repeated (accepted 22 November, §62b): F3, F4, F7–F13, F17, R1–R4.
+
+| # | Result |
+|---|---|
+| F5 | **PASS** — as QS on a draft prepared by the Company Admin: no *Approve*, no *Withdraw draft*, no Export / Print; *Approval is by a Company Admin or Project Manager.* shown. The callable called as the QS (real App Check token) → `permission-denied` / `not-approver`; direct writes to `approved` → `permission-denied` |
+| F6 | **PASS** — the QS's *Prepare* dialog, opened before the Company Admin prepared revision 1 and submitted after → *A draft revision is already open. Approve or withdraw it before preparing another.*; one document only. A forged second draft with a complete valid shape → `permission-denied` (QS and Company Admin) |
+| F8 — the Project Manager part | **PASS** — revision 2 prepared by the QS, approved by the Project Manager through the app: *Approved* / *Current*, approver name, time and *Records read* shown; stored `approvedByRole` `project_manager`, `selfApproved` false; one `final_account.approved` audit event (actor = the PM) in the revision's own commit; log line `replay: false`, `attempts: 1`. Revision 1 stays *Withdrawn* in the history |
+| Repeated approval | **PASS** — the same request again → `alreadyApproved: true`, no write, no second audit event; a later revision number → `final-account-not-draft`; a request carrying an amount → `invalid-argument`; another company's project id → `not-found` |
+| After approval | **PASS** — as the PM: figure edit, withdraw, back to draft, change of approver, delete on the approved revision, and reopen / delete on the withdrawn one → `permission-denied` (7); `updateTime` and SHA-256 of revision 2 unchanged |
+| F14 — native print / PDF | **PASS** — *Print / Save as PDF* → Chrome's dialog → *Save as PDF* (Product Owner, nothing changed in the dialog): 3 pages, **A4 landscape**, text PDF; header block, all 22 figures in four groups, cost-code table, disclaimer; no sidebar, tabs, sub-tabs, buttons, checklist, live position or history; light background; no clipped column; every amount equal to the screen. Cosmetic: the *COST (EX-GST)* heading is the last line of page 1 with its figures on page 2 (tracker D3 #22); Chrome's own header / footer (date, tab title *Constrap*, page URL, page n / N) is printed unless the user unticks it (D3 #23). File deleted after checking |
+| F15 | **PASS** — as Company Admin, `updateDoc(finalAccounts/1, { status: 'approved' })` → `permission-denied`; so are a complete forged approval, a figure edit, delete, and creating an `approved` document directly. As Project Manager on revision 2 before approving: the same four → denied |
+| F16 | **PARTLY** — signed out: the URL → `/login`, no figure, direct reads `permission-denied`. Deactivated: the external test accounts are Auth-disabled (read 24 November) and hold no session. Non-financial: `finalAccounts` 403 for both external roles (§63 P20; tracker B2a, B2b). **The *Final Account is restricted* notice was NOT observed in production** — it needs a signed-in non-financial account and the external test accounts stay disabled in this run; covered by `finalAccountPage.test.js` only. Accepted for closure on this combined evidence (architect, 25 November); the browser check is carried forward |
+| R5 (§62b) | **PASS — stored state, read-only** — sandbox `oeqHCgEM…`: revision 4 withdrawn, forecast 0300 back to a saved 0, revisions 1–3 `updateTime` and SHA-256 identical to the 22 November capture. The on-screen readiness was not re-read in the sandbox; on Z all 19 requirements read Met after approval |
+
+**Financial parity (independent `Decimal` expectations from the stored baseline,
+approval snapshot, PO, posted invoice and forecast line).** Contract 120,000.00;
+approved budget 90,000.00; actual cost = final cost 84,321.50; cost to complete
+0.00; variance 5,678.50; final gross profit 35,678.50; final margin 29.732083…%
+→ stored **29.73** (`marginPercent` rounds to two decimals; the screen, PDF and
+Portfolio show 29.7%, the CSV 29.73); supplier invoices unpaid 92,753.65 gross;
+every client-side and cash figure 0.00. The stored revision (22 of 22 figures),
+the screen, the project Reports tab, the Portfolio row and USD subtotal, the
+CSV and the PDF agree to the cent. Final and forecast figures coincide by
+construction (approval requires cost to complete = 0); the approved revision is
+frozen, the Reports tab and Portfolio stay live.
+
+**Data integrity.** Apex Builders unchanged (258 / 258); `users` unchanged;
+external test accounts still disabled; Storage fixtures byte-identical;
+Projects A–C, X, Y and `CT-100` unchanged; directory 6 / 6 in sync; the test
+company gained exactly 16 documents, all listed in tracker B6.
+
+**Still not covered.** The F16 notice in production; non-zero client invoices,
+receipts, payments, retention and variations on a Final Account (zero on Z);
+production transaction behaviour under contention and the 5xx paths (emulator
+only); a physical print or a browser other than Chrome on macOS.
 
 ---
 
