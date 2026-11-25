@@ -5498,7 +5498,9 @@ not a render test.
       "only platform" or "100% Australian-owned" claims.
 - [ ] "No account?" guidance is plain text, not a link.
 
-## 22. Premium Dashboard v2 (ADR-45)
+## 22. Premium Dashboard v2 (ADR-45) — DEPLOYED (VERIFIED read-only, 25 November 2026 — §74.1); check 1 PASSED in production without throttling (§74.5) — tested financial calculations ACCEPTED (Lead Architect, §74.10); checks 2 and 3 NOT RUN — OPEN
+
+*Heading as written before 25 November 2026:* Premium Dashboard v2 (ADR-45)
 
 Automated: `tests/unit/dashboardV2.test.js` (78 tests) — every new figure equals
 its selector (`projectForecastTotals` / `computeMargin`), per-figure loading /
@@ -7248,7 +7250,9 @@ logins, two browser tabs.
    dot and its Pause control behave as in §24.
 
 
-## 44. GST boundary hotfix — `fix/gst-boundary-pins` (findings F2 / F3 of the SHIELD inspection of 3 November 2026) — implemented, NOT YET DEPLOYED
+## 44. GST boundary hotfix — `fix/gst-boundary-pins` (findings F2 / F3 of the SHIELD inspection of 3 November 2026) — DEPLOYED, Rules and Hosting (VERIFIED read-only, 25 November 2026 — §74.1; the release dates are not recorded); calculations verified independently (§74.4) — calculation compatibility ACCEPTED (Lead Architect, §74.10); manual acceptance 1–3 NOT RUN in production — OUTSTANDING, retained for the relevant financial implementation milestone; precision concern tracker D3 #35
+
+*Heading as written before 25 November 2026:* … — implemented, NOT YET DEPLOYED
 
 **Root causes.** *F2:* `roundMoney(x × 0.1)` computes in binary floating point
 and on some half-cent boundaries rounds DOWN (40.15 → 4.01 where half-up gives
@@ -9340,7 +9344,11 @@ that is not a whole minute, and has no default database.
 returns 200; any count differs; the delete names anything but the temporary
 database; or cleanup fails (ops/recovery/README.md → *If cleanup fails*).
 
-## 66. L3 Stage 2 — application error recovery (ADR-80, 21 November 2026) — LIVE (released with the L4 Hosting deploy from `main` `a30699e`, which contains `b7f825f`; REPORTED, 22 November 2026); automated tests PASS; E1–E10 browser acceptance NOT RECORDED
+## 66. L3 Stage 2 — application error recovery (ADR-80, 21 November 2026) — LIVE (released with the L4 Hosting deploy from `main` `a30699e`, which contains `b7f825f`; REPORTED, 22 November 2026); automated tests PASS; **E1–E10 RUN 25 November 2026 (§74.3); NOT closed (Lead Architect, 25 November 2026 — §74.10):** E1 (production) and E3–E10 (local emulators only) ACCEPTED with their evidence limitations; **E2 OPEN** — not passed as written (tracker D3 #32, #34)
+
+*Heading as written at the run:* … **E1–E10 RUN 25 November 2026 (§74.3), awaiting architect review:** E1 PASSED in production; E3–E10 PASSED on local emulators only; **E2 NOT PASSED as written** (tracker D3 #32, #34)
+
+*Heading as written before 25 November 2026:* … automated tests PASS; E1–E10 browser acceptance NOT RECORDED
 
 *As written on 21 November 2026:* IMPLEMENTED on `fix/l3-application-error-recovery` (uncommitted); automated tests PASS; NOT DEPLOYED; browser behaviour NOT VERIFIED.
 
@@ -9365,7 +9373,7 @@ ESLint: clean. Production build: succeeds. `git diff --check`: clean. The Rules 
 
 **Not covered by automation.** Interaction (clicking *Try again*, the acknowledgement, *Dismiss*), real connectivity loss, and the visual result. The unit runner has no DOM.
 
-**Manual acceptance (after a Hosting deploy; a test project, not customer data).**
+**Manual acceptance (after a Hosting deploy; a test project, not customer data).** *Run on 25 November 2026 — results, evidence classes and limits in §74.3. The boxes below are left unticked: only E1 was executed in production; E3–E10 passed on local emulators; E2 did not pass as written.*
 
 - [ ] E1 — Open a project normally: header and tabs as before. Open `/projects/<an id that does not exist>`: *Project not found.*
 - [ ] E2 — DevTools → Network → Offline, then reload a project URL: *Waiting for the server* (not *Project not found*). Back online: the project appears without a reload.
@@ -10321,3 +10329,369 @@ No application code changed, so the other suites were not re-run.
 - exact email arrival times;
 - any policy firing on its real failure condition;
 - behaviour during a billing suspension.
+
+## 74. L3 Stage 2 E1–E10, GST boundary hotfix and Premium Dashboard v2 — consolidated regression acceptance (25 November 2026 NZDT; 00:32–01:08 UTC) — **E1 and E3–E10 ACCEPTED with evidence limitations; E2 OPEN (tracker D3 #32) — L3 NOT closed; GST calculation compatibility and Dashboard tested calculations ACCEPTED, their unexecuted checks still open** (Lead Architect, 25 November 2026 — REPORTED; §74.10)
+
+*Heading as written at the run:* … — **RUN, awaiting architect review**
+
+Documentation only, on `docs/l3-regression-acceptance` (uncommitted). No
+application code, Rules, Functions, Hosting or monitoring change; no
+deployment; no production business-data write. Tracker section B10.
+
+**Baseline.** `main` `875910e` (*Merge C1-D monitoring acceptance closeout*;
+documentation commit `6e00f98`), equal to `origin/main` and clean — VERIFIED in
+Git. Azure `main` GREEN — REPORTED by the Product Owner; not read here.
+
+**What "passed" means below.** Three evidence classes are kept apart:
+
+| Class | Meaning in this section |
+|---|---|
+| PROD-VERIFIED | Read from production read-only (REST with the operator's own login, or the TEST Company Admin's browser session on `constrapp-69b5d.web.app`) |
+| LOCAL (EMULATOR) | The application source of `main` `875910e` served by the Vite development server against local Auth and Firestore emulators (project id `demo-constrap-l3`, so no production contact), with the repository `firestore.rules`; driven in headless Chrome 158 in a throwaway profile over the DevTools Protocol. **Simulated** — it says nothing about production behaviour beyond the fact that the same source and the same Rules are deployed |
+| UNIT | `npm run test:unit` and the pure / emulator suites |
+
+### 74.1 Release state — PROD-VERIFIED (read-only, 25 November 2026 00:35 UTC)
+
+| Item | Reading |
+|---|---|
+| Hosting, all three origins (`app.constrap.com`, `constrapp-69b5d.web.app`, `constrapp-69b5d.firebaseapp.com`) | `index-BOg2hoYg.js`, SHA-256 `5bf43ffc…ef4e`, **identical to a clean build of `main` `875910e`** (`index.html` and the stylesheet identical too); `last-modified` 23 November 2026 02:43:14 GMT |
+| Firestore ruleset | `67b6425a…`, released 23 November 2026 02:50:09, 236,737 bytes — **byte-identical to `frontend/firestore.rules`**; it contains the shared `gstPinned()` (nine occurrences, its one definition included) |
+| Storage ruleset | `2f3a4788…`, 10,323 bytes — byte-identical to `frontend/storage.rules` |
+| Ancestry | `ea2eea8` (GST boundary hotfix), `ba52821` (Premium Dashboard v2) and `b7f825f` (L3 Stage 2) are ancestors of `main` `875910e` |
+
+**Consequence.** The GST boundary hotfix (Rules step and Hosting step),
+Premium Dashboard v2 and L3 Stage 2 are **deployed**: the live Rules and the
+live bundle are the ones `main` builds, and `main` contains all three. This
+replaces the "production state unconfirmed" entries for the GST hotfix and
+Dashboard v2. It is a statement about deployed content. The original release
+dates of those two items are still not recorded anywhere.
+
+### 74.2 Requirement classification
+
+| Requirement | Source | Classification before this run | After this run |
+|---|---|---|---|
+| L3 E1 | §66 | Outstanding production check | **PASS — PROD-VERIFIED** and LOCAL |
+| L3 E2 | §66 | Outstanding; needs a controlled disconnection | **NOT PASSED as written** — the written step cannot reach the application; one new defect (D3 #32); the designed state PASS under injection, LOCAL only |
+| L3 E3 | §66 | Outstanding; needs a refused or failed read | **PASS — LOCAL** (refused read); the *could not be loaded* variant UNIT only |
+| L3 E4–E7, E7a–E7c, E8, E10 | §66 | Requires production mutation (drafts, posts, issues, voids) or a disconnection | **PASS — LOCAL**; not run in production |
+| L3 E9 | §66 | Requires a role session without write access (no reactivation authorised) | **PASS — LOCAL**, the refusal simulated by an emulator-only Rules variant |
+| GST hotfix — deployed | §44; DEPLOYMENT.md; handover F | Unconfirmed | **PROD-VERIFIED** (74.1) |
+| GST hotfix — manual acceptance 1–3 | §44 | Requires production mutation | **NOT RUN in production**; covered by the Rules emulator suite, the unit suite and an independent exact-decimal check (74.4) |
+| Dashboard v2 — deployed | §22; handover F | Unconfirmed | **PROD-VERIFIED** (74.1) |
+| Dashboard v2 — figures, chart labels and switching | §22 check 1 | Outstanding production check | **PASS — PROD-VERIFIED** without network throttling (74.5) |
+| Dashboard v2 — roles and states | §22 check 2 | Needs an external session (deactivated) | NOT RUN; UNIT only |
+| Dashboard v2 — layout at 375 / 768 / 1280 / ≥1600 px | §22 check 3 | Outstanding | NOT RUN |
+| Monitoring | §73 | Already accepted (C1-D) | Reused; the five policies re-read and unchanged (74.6) |
+
+### 74.3 L3 Stage 2 — E1–E10
+
+**Production (PROD-VERIFIED, TEST Company Admin on `web.app`, 01:04 UTC).**
+E1 only. `/projects/<fixture X>` opened the project with its header and all
+18 tabs; `/projects/l3e1DoesNotExist` showed *Project not found.*
+(`data-project-state="not-found"`). No console message was recorded on either
+page. Nothing was written.
+
+**Local method.** A throwaway company, one Company Admin, two projects, a
+client and a supplier contact, one sent purchase order, one posted supplier
+invoice and a contract baseline were seeded into the emulators with the
+emulator's rules-bypassing owner token. Every write under test went through
+the application's own dialogs and the repository Rules. Failure injection:
+
+- *Browser offline:* `Network.emulateNetworkConditions { offline: true }`.
+- *Backend unreachable, page reachable:* `Network.setBlockedURLs` on the
+  emulator's address.
+- *Connection lost between two reads:* `Fetch` interception failing the
+  request that opens the projects listener and every later backend request.
+- *Server refusal:* an emulator-only copy of `firestore.rules` with one
+  `allow` line changed, loaded through the emulator's REST endpoint and
+  restored afterwards. The repository file was never edited.
+
+Server state after each step was read from the emulator directly, not from
+the page.
+
+| ID | Result | Class | What was observed |
+|---|---|---|---|
+| E1 | **PASS** | PROD-VERIFIED; LOCAL | As above; locally the same two states |
+| E2 | **NOT PASSED as written** | LOCAL; one public production Hosting observation | See *E2 in detail* below |
+| E3 | **PASS** (refused read) | LOCAL | With project reads refused, a reload of the project URL showed *You do not have access to this company's projects* with *Try again*, never *Project not found*. *Try again* while still refused kept the notice; after the Rules were restored, *Try again* loaded the project. Not exercised: the *This project could not be loaded* (non-permission failure) notice — UNIT only; a real deactivated or wrong-company session |
+| E4 | **PASS** | LOCAL | The dialog closed; exactly one draft, `CR-0001`, 100.00 |
+| E5 | **PASS** | LOCAL | Offline: *Saving…* for 8.1 s, then the amber *Could not reach the server, so this was not confirmed as saved…* message; submit disabled; client and amount kept; server unchanged. *I have checked the list — it was not saved. Let me try again.* re-enabled submit. Online: one new draft, `CR-0002`, 200.00 — two drafts in total |
+| E6 | **PASS** | LOCAL | Offline post of `CR-0001`: *Posting…* for 15.2 s, then *Waiting for confirmation…* with *Close* enabled. *Close*: the page notice read *Client receipt posting has not been confirmed by the server yet…*; server still `draft`. Online: the notice changed to *was saved. The server has now confirmed it.* within 0.3 s; `CR-0001` posted once |
+| E7 | **PASS** | LOCAL | Same on `CR-0003` with the dialog left open: it closed by itself 0.1 s after the connection returned; posted once; no page notice |
+| E7a | **PASS** | LOCAL | During E6, with the notice still unconfirmed, *Post* on `CR-0002` showed the red *An earlier attempt at this has not been confirmed by the server … This new attempt was not sent.*; server unchanged. After *was saved*, the same post succeeded |
+| E7b | **PASS** | LOCAL | Dialog closed on the amber uncertain message: the page notice read *could not be confirmed by the server: it may or may not have been saved*. A reopened *New Client Receipt* was refused with the red message; nothing written. *I have checked the list* cleared the notice; the next submit created exactly one draft, `CR-0003` |
+| E7c | **PASS** | LOCAL | Console captured from E4 to E7: 0 React state-update warnings, 0 unhandled promise rejections, 0 window errors. 50 Firestore SDK transport warnings, expected while offline |
+| E8 | **PASS** | LOCAL | Two synchronous clicks on *Create draft receipt*: one draft. Two synchronous clicks on *Issue* (`CI-0003`): one write message carrying one invoice mutation, one record, status `issued`. *Observation:* the two synthetic clicks raised two native confirmations — the page's own `locked` check had not re-rendered — and the controller refused the second run. A person cannot produce this: the first confirmation is modal |
+| E9 | **PASS** (simulated) | LOCAL | With client-receipt create and update refused by the Rules while the dialog was open: a create (transaction) and a post (plain write) each showed the red *You do not have permission to do this. Nothing was saved.*; no SDK text, error code or `FirebaseError` anywhere on the page; nothing written. Not exercised: a real role change in a second session (no reactivation authorised) |
+| E10 | **PASS** | LOCAL | Client Invoices: create, issue, void. Supplier Payments: create with *Allocate oldest first*, post, void. Stored and displayed figures equal the independent arithmetic below. No console error |
+
+**E10 figures — independent arithmetic (Python `Decimal`, half-up).**
+
+| Record | Entered (ex-GST) | Expected GST / gross | Stored |
+|---|---|---|---|
+| `CI-0001` | 1,234.55 | 123.46 / 1,358.01 | 123.46 / 1,358.01 |
+| `CI-0002` | 803.00 | 80.30 / 883.30 | 80.30 / 883.30 |
+| `CI-0003` | 10.05 | 1.01 / 11.06 | 1.01 / 11.06 |
+| Issued, after `CI-0002` was voided | 1,244.60 ex-GST; 1,369.07 gross; 48,755.40 available of 50,000 | — | shown as $1,245, $1,369, $48,755 (the page shows whole currency units) |
+| `SP-0001` | 6,600.00 against `SI-0001` (payable 6,600.00) | Remaining payable 0 after posting; 6,600 after the void | $0, then $6,600 |
+
+**E2 in detail.**
+
+1. *The step as written cannot reach the application.* With the browser
+   offline, a reload of a project URL returns the browser's own error page
+   (`ERR_INTERNET_DISCONNECTED`). The same was observed on production
+   Hosting, unauthenticated, on the public sign-in page: no service worker is
+   registered; an offline reload fails; an offline navigation to a URL loaded
+   within the hour is served from the HTTP cache (`cache-control:
+   max-age=3600`).
+2. *Backend unreachable from the start of the load, page reachable — a new
+   defect (tracker D3 #32).* The application showed **No active membership —
+   This account is signed in but is not a member of a company…** with a
+   *Sign out* button, within a second, and kept showing it for the 20 s
+   observed. It never showed *Waiting for the server*. When the backend
+   became reachable the project appeared by itself in 0.8 s, without a reload
+   and without a sign-out. Cause, read from the code: with an unreachable
+   backend the SDK answers the `users/{uid}` listener from its empty cache
+   with a document that "does not exist"; `ProfileProvider`
+   (`hooks/useProfile.jsx`) does not read `metadata.fromCache`, and
+   `membershipGate` (`lib/team.js`) treats a settled null profile as *no
+   membership*. The gate (ADR-72) sits above the project route, so the L3
+   state below it is never reached on a cold load. **Not observed in
+   production with a signed-in session.** It is expected there because the
+   same source is deployed and item 1 shows the page can be served offline
+   from the HTTP cache — an inference.
+3. *The designed state — PASS under injection.* With the membership and
+   company reads answered and the connection cut before the projects read:
+   *Loading project…* for 11–12 s, then **Waiting for the server** with no
+   *Try again* button and never *Project not found*. When the connection was
+   restored the project appeared without a reload in 1.1 s.
+
+**Not covered by this run.** Any E2–E10 step in production; Safari and
+Firefox; the minified production bundle (the local run used the development
+build of the same source); a real mobile network; a reply lost after a
+commit; the 58 older write sites (D3 #11), which are unchanged and outside
+ADR-80.
+
+### 74.4 GST boundary hotfix
+
+**The defect and the fix** are as recorded in §44 and PROJECT_DECISIONS.md →
+*ADR-40 / ADR-57 Correction*: F2, two exact 10% pins refused the
+application's own rounding on a half-cent boundary; F3, a claim-sourced
+invoice recomputed GST per line instead of apportioning the certified figure.
+
+**Scope of the tax behaviour verified.** The application applies a flat 10%
+GST on a `gst` tax code and nothing on `gst_free` or `input_taxed`, on every
+project **whatever its currency** (fixture Z is USD and carries 10%). That is
+the documented behaviour (*Australian GST only*); international tax is
+deferred. **This section verifies the software against its own specification.
+It is not a statement of tax compliance in any country.**
+
+| Check | Class | Result |
+|---|---|---|
+| Deployed (Rules and Hosting) | PROD-VERIFIED | 74.1 |
+| Fixture Z, `SI-0001` (read-only) | PROD-VERIFIED | Stored 84,321.50 + GST 8,432.15 = 92,753.65; independent `Decimal`: 8,432.15 and 92,753.65. Not a boundary amount; retention 0. Actual cost 84,321.50 is ex-GST and the payable 92,753.65 is gross on the Dashboard (74.5), as accepted for the Final Account and the Portfolio in §62c and §63. **No production record exercises F2 or F3:** the test company holds no retention, no claim and no claim-sourced invoice |
+| The application's `roundMoney(x × 0.1)` against exact half-up | Independent arithmetic (the app's function in Node; the expectation in Python `Decimal`; no shared code) | Every whole-cent amount from 0.00 to 100,000.00 (10,000,001 values): equal for all but 26,208, each **exactly one cent low** and each on a half-cent boundary (2.62% of the 1,000,000 boundary amounts); none high; none off a boundary; **1,632 within 0–10,000**, the figure in §44; first case 40.15 → 4.01 (exact 4.02) |
+| `gstPinned()` restated from the Rules text | Independent arithmetic | Accepts the application's figure for all 10,000,001 amounts; never accepts exact + 1; never accepts exact − 1 off a boundary. The Rules helper `floor((c + 5) / 10)` equals `Decimal` half-up for every amount |
+| Retention release delta, `roundMoney(next × 0.1) − roundMoney(prev × 0.1)` | Independent arithmetic | 2,000,000 sampled (previous, amount) pairs, half forced onto boundaries: the delta is exact, one low or one high (1,949,300 / 22,503 / 28,197) and the release rule's two alternatives accept every one. 40.15 + 40.15 + 19.70 gives 4.01 + 4.02 + 1.97 = 10.00 |
+| `allocateGstCents` (the application's function, bundled unmodified) against an independent largest-remainder implementation | Independent arithmetic | 20,000 generated cases, 1–8 lines, some non-taxable, target varied by up to ±3 cents: identical output in all 20,000 (5,885 refusals among them, each more than two cents from 10% of the taxable lines); every accepted result sums to the target; no GST on a non-taxable line. 3 × 10.05 with 3.02 certified gives 1.01 / 1.01 / 1.00 |
+| Rules emulator suite | EMULATOR | `npm run test:rules`: 39 files, 2,492 tests PASS, including the §44 boundary cases in `supplierInvoices.rules.test.js` and `retentionReleases.rules.test.js` |
+| Unit suite | UNIT | 101 files, 5,244 tests PASS, including `claimSourcedGstAllocation.test.js` |
+| Local browser | LOCAL | The three client invoices of 74.3 E10 only; 10.05 → 1.01 is the app's own half-up result |
+| §44 manual acceptance 1–3 | — | **NOT RUN in production** — each needs new financial records |
+
+**If the architect wants §44 steps 1–3 in production**, the smallest scope
+is one new synthetic project in the isolated test company, in a currency no
+fixture uses (to keep the NZD, USD, GBP and CAD subtotals pinned), holding:
+one sent purchase order; one direct-PO supplier invoice of 803.00 with
+retention 40.15, approved and posted; one or two retention releases; one
+progress claim of three lines at 10.05, approved; one claim-sourced invoice
+created, header-edited and posted. About nine documents plus the company
+counters for claims and releases, and a ninth project and sixth currency
+group on the Portfolio. Not authorised and not done.
+
+### 74.5 Premium Dashboard v2 — PROD-VERIFIED (TEST Company Admin, `web.app`, 01:02–01:05 UTC)
+
+**Method.** Expected figures were calculated first from the raw production
+records of each project (read-only REST; Python `Decimal`; formulas restated
+from FINANCIAL_WORKFLOWS.md; no application code). The Dashboard was then
+read in the browser. While each project was selected, the snapshot was
+sampled on every animation frame and each frame checked for any figure or
+currency of the previously selected project. The Dashboard shows whole
+currency units, so agreement is to the displayed unit; agreement to the cent
+on the same records was established on the Forecast, Final Account and
+Portfolio surfaces in §62c, §63, §71 and is reused.
+
+**Portfolio counts.** Active 1, total 8; Planning 7, In Progress 1, the
+other three statuses 0 — equal to the eight project documents.
+
+| Project (currency) | Budget card | Forecast Final Cost · variance | Forecast gross profit · margin · movement | Remaining payable | Actual · remaining committed · uncommitted | Expected (independent) | Stale frames |
+|---|---|---|---|---|---|---|---|
+| GBP-1 (GBP) | Approved, version 1, GBP 12,565 | GBP 12,000 · within budget, GBP 565 | *Contract value not set* | GBP 0 | 0 · 0 · GBP 12,000 | 12,565.34; 12,000.00; 565.34; no contract; 0 | first load |
+| USD-1 Z (USD) | Approved, version 1, USD 90,000 | USD 84,322 · within budget, USD 5,679 | USD 35,679 · 29.7% · ▲ USD 5,679 | USD 92,754 | USD 84,322 · 0 · 0 | 90,000; 84,321.50; 5,678.50; 35,678.50; 29.73%; +5,678.50; 92,753.65 gross | 0 |
+| NZD-1 X (NZD) | Approved, version 1, NZD 150,000 | NZD 160,000 · over budget, −NZD 10,000 | NZD 40,000 · 20% · ▼ −NZD 10,000 | NZD 0 | 0 · 0 · NZD 160,000 | 150,000; 160,000; −10,000; 40,000; 20.00%; −10,000; 0 | 0 |
+| NZD-2 Y (NZD) | Approved, version 1, NZD 30,000 | NZD 25,000 · within budget, NZD 5,000 | NZD 25,000 · 50% · ▲ NZD 5,000 | NZD 0 | 0 · 0 · NZD 25,000 | 30,000; 25,000; 5,000; 25,000; 50.00%; +5,000; 0 | 0 |
+| CAD-1 (CAD) | Working, not approved, CAD 0 | CAD 0 · variance CAD 0 | *Contract value not set* | CAD 0 | 0 · 0 · 0 | No financial record: every figure a genuine zero; no contract | 0 |
+| A (AUD) | Working, not approved, $0 | $0 · variance $0 | *Contract value not set* | $0 | 0 · 0 · 0 | Headline 123,456 only (register: $123,456); no other record | 0 |
+
+- **Movement against the original plan** is (contract − Forecast Final Cost)
+  − (contract − original approved budget). The original approved budget is
+  the total of the original approved version (ADR-70), not the baseline's
+  legacy field, which is empty on these fixtures.
+- **Chart labels** (Current Contract Sum, Approved Budget, Forecast Final
+  Cost, Actual, Remaining Committed, Uncommitted Cost to Complete) equal the
+  cards on NZD-1 and NZD-2. With no figure at all (CAD-1, A) the chart reads
+  *No budget, cost or contract value recorded yet.* The bar geometry and the
+  budget marker were **not inspected visually**.
+- **Programme panel, CAD-1.** 11 activities; not started 6, in progress 2,
+  on hold 0, completed 1, cancelled 2; *Completed 1 of 11*; overdue 1; due in
+  14 days 3; milestones left 1; next milestone *C1C M01*, 2 December 2026,
+  due in 7 days. Equal to an independent reading of the 11 activity documents
+  for 25 November 2026 (overdue: T05; due: T02, T03, M01). The other projects
+  read *No programme activities yet.*
+- **Switching.** No frame showed a figure or a currency of the previous
+  project under the new project's heading (five switches sampled). A reload kept the selected project (`?project=` in the URL).
+- **Zero and unavailable.** A project with no financial record shows genuine
+  zeros and *Contract value not set*, not "—". A headline budget of 0 is
+  shown as "—" in the register and on the Overview (a truthiness check; 0
+  means none was entered). *Unavailable* (a failed source) was not produced
+  in production — UNIT only.
+- **Currency.** Each snapshot, its chart and its register row carried the
+  project's own currency; AUD is shown with "$", the others with their code.
+  No amount is summed across projects.
+
+**New observation (tracker D3 #33, P3).** For about a quarter of a second
+after a switch the budget card read **Working Budget — "—" — Not approved ·
+Σ budget lines** for a project whose budget *is* approved, then changed to
+*Approved Budget*. The value shown was "—", never a wrong number. The label
+is chosen from `budgetSource.approved`, which is false until the
+approved-budget pointer has loaded (`ProjectSnapshot.jsx` line 209).
+
+**Not run.** Network throttling (the first check of §22 asks for Slow 3G);
+the portfolio counts reading "—" before the first projects answer; a
+`subcontractor` or `client` session (test identities deactivated; UNIT
+only); the layout widths of §22 check 3; a failed source.
+
+### 74.6 Data integrity — scope of the comparison
+
+Read-only snapshots at 00:32–00:34 UTC and 01:05–01:08 UTC, compared with
+each other and with the end state of the C1-C run.
+
+| Scope | What was compared | Result |
+|---|---|---|
+| Test company `constrap-acceptance-test` | Path and `updateTime` of every document (167, recursive, invitations and audit events included) | Identical before and after. Against the C1-C end state, one difference: `system/fileLinkRevocation`, written by the reconciliation worker at 00:27:02, before this run began |
+| Apex Builders | Path and `updateTime` of every document (258) | Identical before and after. Against the C1-C end state, the same single worker document (00:27:02) |
+| `users` | 9 documents: `updateTime`, company, role, flags | Identical |
+| Test Auth accounts (5) | Disabled flag, verification, last sign-in, `validSince` | Project Manager, QS, `subcontractor` and `client` still **disabled**. One difference: the TEST Company Admin's last sign-in, 01:02:14 — the Product Owner's sign-in for this run |
+| Final Account, fixture Z | Status, revision and a SHA-256 of the fields of both revisions | Identical; revision 2 approved and current |
+| Projects and directory | 8 + 8 entries: name, currency, status, `updateTime` | Identical; directory in step |
+| Storage objects of the test company | 6 objects: MD5, metageneration, token presence | Identical |
+| Independent financial expectations, all 8 projects | The derived figures of 74.5 | Identical |
+| Monitoring | 5 alert policies, 2 channels, 1 uptime check | Each policy identical to its C1-D final state; all enabled; none created, edited or deleted |
+
+Not compared: field contents outside the items above (update times were
+compared, not bytes); root collections other than `users` and the two
+companies; Apex Storage objects; Cloud Run revisions.
+
+**Browser-isolation event.** The connected tab on
+`constrapp-69b5d.web.app` opened in the Product Owner's **personal Apex
+Builders session** — that origin held it, not the TEST Company Admin's. The
+Dashboard rendered once, read-only (portfolio counts only were read). Nothing
+was clicked and nothing was written; Apex is unchanged (above). The engineer
+stopped; the Product Owner signed out there and signed in as the TEST
+Company Admin; the session uid was checked in the page before any further
+step. `app.constrap.com` was not opened. The testing tab was closed at the
+end, and the local emulators, Vite server and throwaway browser were stopped.
+
+### 74.7 Automated results (local, 25 November 2026)
+
+| Suite | Command | Result |
+|---|---|---|
+| Unit | `npm run test:unit` | 101 files, 5,244 tests PASS |
+| Rules emulator | `npm run test:rules` | 39 files, 2,492 tests PASS |
+| Functions pure | `npm run functions:test` | 8 files, 179 tests PASS |
+| Lint | `npm run lint` | clean |
+| Production build | `vite build` to a scratch directory | succeeds; bundle hash equal to production |
+
+The Functions emulator suite was not run: no callable is in scope.
+
+### 74.8 Findings
+
+| Tracker | Finding | Priority proposed at the run (decided: §74.10) |
+|---|---|---|
+| D3 #32 | On a cold load with the Firestore backend unreachable, the membership gate states *No active membership*; *Waiting for the server* is unreachable on a reload | P2 |
+| D3 #33 | Dashboard budget card reads *Working Budget … Not approved* while the approved-budget pointer loads | P3 |
+| D3 #34 | §66 E2 cannot be executed as written (an offline reload never loads the page); procedure to be rewritten with the D3 #32 correction | Test procedure |
+
+### 74.9 Recommendation (as written at the run, before the decision — the decision is 74.10)
+
+- **L3 Stage 2:** the nine converted writes and the project route behave as
+  ADR-80 specifies in every executed step; E2 does not pass as written
+  because of D3 #32, which predates L3 and carries no data risk.
+  Recommended: close E1 and E3–E10 on the evidence above with its classes
+  recorded, and keep E2 open against a Hosting-only correction of D3 #32.
+- **GST boundary hotfix:** deployed and arithmetically verified; §44 steps
+  1–3 unexecuted in production. Recommended: accept on the deployment,
+  emulator and independent-arithmetic evidence, or authorise the scope in
+  74.4.
+- **Premium Dashboard v2:** recommended GO on §22 check 1 as far as executed;
+  checks 2 and 3 remain unexecuted.
+
+### 74.10 Architect decision (25 November 2026 — REPORTED)
+
+**GO for documentation integration. NO-GO for full L3 closure.** Nothing was
+executed for this decision, and no unexecuted test is marked passed by it.
+
+| Subject | Decision | Still open — not passed |
+|---|---|---|
+| L3 E1 | Accepted — PROD-VERIFIED | — |
+| L3 E3–E10 | Accepted with their actual evidence class: **local emulators only**, development build of the deployed source, Chrome 158 headless, simulated failures | Not executed in production; other browsers; the minified bundle |
+| L3 E2 | **OPEN** against tracker D3 #32 | E2, after the correction and with a corrected procedure |
+| GST boundary hotfix | Deployment verified; **calculation compatibility accepted** (74.4) | §44 manual steps 1–3 — outstanding, retained for the relevant financial implementation milestone |
+| Premium Dashboard v2 | Deployment verified; **tested financial calculations accepted** (74.5) | §22 checks 2 and 3 |
+
+**Defect triage.**
+
+- **D3 #32 — P2, the next implementation task.** Correct the
+  membership-state handling **without weakening authorisation**: a confirmed
+  missing or inactive membership must still be refused.
+- **D3 #33 — P3, deferred** UX correction.
+- **D3 #34 —** the E2 procedure is corrected alongside #32.
+- **No service worker and no PWA** in the upcoming correction.
+
+**Financial precision (tracker D3 #35).** The half-cent GST rounding
+discrepancy of 74.4 is kept as an explicit financial precision concern.
+
+- What 74.4 shows is **compatibility**: the Rules pins admit exactly what the
+  application computes. That is not the same as independent mathematical
+  correctness — on 26,208 of 10,000,001 amounts (1,632 per $10,000) the
+  application's GST is one cent below exact decimal round-half-up.
+- **Governing decision:** PROJECT_DECISIONS.md → *ADR-40 / ADR-57
+  Correction: GST Boundary Hotfix* (3 November 2026), *Limitations*:
+  `roundMoney` is unchanged, every rule admits its output, and replacing it
+  with exact decimal rounding "is a separate decision". The allowance was
+  first bounded in ADR-57 (decision 4); `roundMoney` as the money convention
+  dates from ADR-10.
+- An **assessment of rounding semantics** is tracked before client credit
+  notes and client retention are implemented.
+- **No calculation and no historical financial record changes now.**
+- The outstanding GST manual regression checks (§44 steps 1–3) are retained
+  for the relevant financial implementation milestone.
+
+**Order of work decided.** Each step needs its own brief.
+
+1. D3 #32 membership reliability fix.
+2. L3 E2 corrected acceptance.
+3. Client credit-note architecture assessment and ADR.
+4. Firestore Rules capacity assessment and any necessary capacity recovery.
+   Source-file size alone does not establish deployable Rules capacity.
+5. Client credit-note implementation.
+6. Client retention.
+
+Estimating, approval segregation and the remaining approved commercial
+roadmap are preserved.
+
+**Preserved as recorded:** the production / local distinction of every
+result above; the data-integrity comparison limits of 74.6 (update times and
+selected fields, not bytes); the browser-session event of 74.6; the retained
+regression fixtures; the deactivated test identities; the restriction on
+real customer external onboarding.

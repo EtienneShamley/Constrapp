@@ -1212,7 +1212,20 @@ regardless. Existing acknowledgement documents need no migration.
 
 ### GST boundary hotfix release order — `fix/gst-boundary-pins` — RULES FIRST, then Hosting; no transitional stage
 
-**Status: IMPLEMENTED — NOT YET DEPLOYED (Rules AND Hosting; TWO steps).**
+**Status: DEPLOYED — both steps VERIFIED read-only, 25 November 2026.** The
+live Firestore ruleset (`67b6425a…`, 236,737 bytes) is byte-identical to
+`frontend/firestore.rules` and carries the shared `gstPinned()` on both pins;
+the live Hosting bundle is SHA-256-identical to a clean build of `main`
+`875910e`, which contains the hotfix (`ea2eea8`). No release record was ever
+written, so the dates of the two steps are unknown. Manual acceptance 1–3 of
+TESTING.md §44 has not been run in production (TESTING.md §74.4).
+**Lead Architect, 25 November 2026 (REPORTED):** deployment verified and
+calculation compatibility accepted; steps 1–3 remain outstanding and are
+retained for the relevant financial implementation milestone. The half-cent
+rounding itself is tracked as a financial precision concern (tracker D3
+#35); no calculation changes now.
+
+*As written before 25 November 2026:* **Status: IMPLEMENTED — NOT YET DEPLOYED (Rules AND Hosting; TWO steps).**
 **⚠️ Status to be verified (documentation review, 16 November 2026).** The
 hotfix is merged to `main` (`ea2eea8`), and no release record for it exists
 in this file. Later sections record releases of rulesets that contain it
@@ -4680,6 +4693,17 @@ recorded where they were written: *Billing interruption* (12–13 November
 *As written 21 November 2026:* No entries yet.
 
 ## L3 Stage 2 — application error recovery — HOSTING ONLY (ADR-80; LIVE — released with the L4 Hosting deploy)
+
+**Status update (25 November 2026):** the live Hosting bundle is
+SHA-256-identical to a clean build of `main` `875910e` — VERIFIED read-only.
+TESTING.md §66 E1–E10 was run on 25 November 2026 (TESTING.md §74.3): E1
+passed in production, E3–E10 on local emulators only, and E2 did not pass as
+written (tracker D3 #32). **Lead Architect, 25 November 2026 (REPORTED):**
+E1 and E3–E10 accepted with their evidence limitations; **E2 open — L3
+Stage 2 is not closed.** The next release in this area is the D3 #32
+membership reliability fix (not yet briefed or implemented); it adds no
+service worker and no PWA. *As written at the run:* Awaiting the Lead
+Architect's decision.
 
 **Status (22 November 2026):** LIVE. Merged to `main` as `b7f825f`. It
 reached production in the L4 Hosting release, built from `main` `a30699e`,

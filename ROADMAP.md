@@ -410,6 +410,59 @@ of the work still to do:
     are retained. Findings D3 #27–#29 form a **P2 external-role UI correction
     bundle**; an external purchase order create was confirmed refused by the
     Rules (no authorisation defect).
+  - **L3 regression acceptance — decision (Lead Architect, 25 November
+    2026 — REPORTED): GO for documentation integration; NO-GO for full L3
+    closure** (TESTING.md §74.10; tracker B10).
+    - **L3 Stage 2 is not closed.** E1 (production) and E3–E10 (local
+      emulators only) are accepted with their evidence limitations; **E2 is
+      open** against tracker D3 #32.
+    - **GST boundary hotfix:** deployment verified; calculation
+      compatibility accepted; TESTING.md §44 manual steps 1–3 outstanding.
+    - **Premium Dashboard v2:** deployment verified; tested financial
+      calculations accepted; §22 checks 2 and 3 open.
+    - **Financial precision (tracker D3 #35):** the half-cent GST rounding
+      discrepancy is kept as an explicit concern; rounding semantics are
+      assessed before client credit notes and client retention. No
+      calculation or historical record changes now.
+    - **Next, in this order (each on its own brief):**
+      1. D3 #32 membership reliability fix (P2; authorisation not weakened;
+         no service worker or PWA).
+      2. L3 E2 corrected acceptance.
+      3. Client credit-note architecture assessment and ADR.
+      4. Firestore Rules capacity assessment and any necessary capacity
+         recovery (source-file size alone does not establish deployable
+         capacity).
+      5. Client credit-note implementation.
+      6. Client retention.
+    - Estimating, approval segregation and the remaining approved
+      commercial roadmap are preserved. The approved post-L4 order above is
+      unchanged.
+    *As written at the run:*
+  - **L3 Stage 2 E1–E10, GST boundary hotfix and Premium Dashboard v2 —
+    consolidated regression acceptance RUN 25 November 2026, awaiting the
+    Lead Architect's decision** (TESTING.md §74; tracker B10).
+    - **Deployed state VERIFIED read-only:** the live bundle is
+      SHA-256-identical to a build of `main` `875910e` and both live rulesets
+      are byte-identical to the repository, so the GST hotfix (Rules and
+      Hosting), Dashboard v2 and L3 Stage 2 are in production.
+    - **L3:** E1 PASSED in production; E3–E10 PASSED on local emulators
+      only; **E2 did not pass as written** — with the database unreachable
+      at load the app shows a false *No active membership* notice (tracker
+      D3 #32).
+    - **GST hotfix:** calculations equal an independent exact-decimal check;
+      the manual steps of TESTING.md §44 were not run in production.
+    - **Dashboard v2:** figures on six projects in five currencies equal
+      independent expectations, with no stale value while switching; the
+      role and layout checks of §22 were not run.
+    - The C1-D closeout is integrated (`main` `875910e`; Azure `main` GREEN —
+      REPORTED by the Product Owner).
+    - **Proposed next steps (PROPOSED at the run; the decided order is above):** a Hosting-only
+      correction of D3 #32, then E2 again; then **client credit notes** as
+      the next commercial milestone, after a Firestore Rules capacity
+      recovery (8,263 bytes of headroom). Status and dependencies of client
+      credit notes, client retention, estimating and approval segregation:
+      tracker D4a. The approved post-L4 order above is unchanged.
+    *As written before the run:*
   - **Next milestone (Lead Architect, 25 November 2026): L3 Stage 2 E1–E10
     remaining acceptance** (TESTING.md §66), after Git integration of
     `docs/c1d-monitoring-acceptance` (authorised). *As written at the C1-D
@@ -431,7 +484,11 @@ of the work still to do:
   - **Next milestone (Lead Architect, 25 November 2026):** L4 remaining
     acceptance (T9, T14, the Quant step of T16 — §67) and the M2-A2 Stage A
     internal-role regression (§68).
-  - **Also open (after the 25 November closure):** L3 Stage 2 E1–E10 (§66);
+  - **Also open — updated by the 25 November run and decision above:** L3
+    Stage 2 **E2 only** (tracker D3 #32); the manual steps of TESTING.md §44
+    (GST) and checks 2 and 3 of §22 (Dashboard), unexecuted; the
+    rounding-semantics assessment (tracker D3 #35); deployment of both is
+    VERIFIED. *As written after the 25 November closure:* L3 Stage 2 E1–E10 (§66);
     Product Owner confirmation of the GST boundary hotfix and Premium
     Dashboard v2 production state. **Recorded limitations of closed items, not
     open acceptance work:** L4 T14 as `client` in a live session and a real
