@@ -5879,7 +5879,19 @@ certification of links or snapshots (the DC41 / DC42 remediation).
 
 ## ADR-40 / ADR-57 Correction: GST Boundary Hotfix (`fix/gst-boundary-pins`, 3 November 2026)
 
-**Status: IMPLEMENTED — NOT YET DEPLOYED (Rules first, then Hosting; no
+**Status: DEPLOYED — Rules and Hosting VERIFIED read-only, 25 November 2026
+(TESTING.md §74.1; release dates not recorded).** **Financial precision
+concern recorded (Lead Architect, 25 November 2026 — REPORTED; tracker D3
+#35):** this record is the decision that governs the half-cent behaviour —
+`roundMoney` was left unchanged and the Rules pins were widened to admit its
+output (*Limitations*, below). That is compatibility between the application
+and the Rules, not independent mathematical correctness: an independent
+exact-decimal check finds the application's GST one cent below round-half-up
+on 1,632 amounts per $10,000 (TESTING.md §74.4). The "separate decision" on
+exact decimal rounding named under *Limitations* is now tracked: rounding
+semantics are to be assessed before client credit notes and client retention
+are implemented. No calculation and no historical financial record changes
+by this note. *As written:* **Status: IMPLEMENTED — NOT YET DEPLOYED (Rules first, then Hosting; no
 transitional stage).** Recorded as a correction to ADR-40 (the
 `supplierInvoices` retention-GST pin) and ADR-57 (which found the half-cent
 rounding for POs and claims and left the other two pins "flagged, not changed")
