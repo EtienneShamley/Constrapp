@@ -5,6 +5,8 @@
 // invite hand-off across sign-in, the membership gate decision and the
 // error → copy mapping. Everything is unit-tested in tests/unit/team.test.js.
 
+import { isKnownRole } from './formatters'
+
 // The three roles a Company Admin may invite or assign. super_admin /
 // subcontractor / client remain operator-provisioned (PRODUCT.md roles table;
 // external roles stay off until project-level scoping, SECURITY.md DC20).
@@ -108,20 +110,113 @@ export const passwordProblem = (pw, confirm) => {
   return null
 }
 
+// ── Membership resolution (tracker D3 #32) ───────────────────────────────────
+//
+// What the `users/{uid}` listener has established, folded one report at a
+// time. ONE rule carries the whole correction:
+//
+//   ONLY A SERVER-CONFIRMED SNAPSHOT DECIDES MEMBERSHIP.
+//
+// A snapshot answered from the local cache (`fromCache`), or one that carries
+// an unconfirmed local write (`hasPendingWrites`), decides NOTHING — in either
+// direction:
+//   · a cache-only MISSING document is not "no membership". With the backend
+//     unreachable the SDK answers at once from its empty cache with a document
+//     that "does not exist" (measured, TESTING.md §75) — the false *No active
+//     membership* of D3 #32;
+//   · a cache-only ACTIVE profile admits nobody. The cache can outlive a
+//     sign-out in the same tab, so it may describe a membership the server has
+//     since removed;
+//   · once the server has confirmed a profile, a later cache-only snapshot
+//     (the connection dropped) leaves that confirmed profile exactly as it is.
+//     An established session keeps working through a disconnection, as it did
+//     before — and the next server-confirmed snapshot replaces it, so a
+//     deactivation or role change made meanwhile takes effect on reconnection.
+//
+// The snapshot is tagged with the `key` of the listener it came from (the uid
+// and the attempt). A report under a new key starts from nothing, so no
+// confirmation is ever carried from one identity to another.
+//
+// A listener error is terminal for that listener (the SDK retries connectivity
+// by itself and never reports it as an error): the profile is dropped, and
+// `readCode` says why. ⚠️ UX only — Firestore rules decide every read.
+export const EMPTY_PROFILE_SNAPSHOT = { profile: null, confirmed: false, error: false, readCode: null, attempt: 0 }
+
+const sameProfile = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+
+export function foldProfileReport(snap, key, report) {
+  const base = snap.key === key
+    ? snap
+    : { ...EMPTY_PROFILE_SNAPSHOT, key, attempt: snap.attempt ?? 0 }
+  if (report.code) {
+    return { key, profile: null, confirmed: false, error: true, readCode: report.code, attempt: base.attempt }
+  }
+  // Not confirmed by the server: it only records that the listener has
+  // reported. Anything already confirmed for THIS key stands.
+  if (report.fromCache !== false || report.hasPendingWrites !== false) return base
+  // The server repeating what it already said (a reconnection) changes nothing
+  // — the same object is kept, so nothing downstream re-renders.
+  if (base.confirmed && !base.error && sameProfile(base.profile, report.profile)) return base
+  return { key, profile: report.profile ?? null, confirmed: true, error: false, readCode: null, attempt: base.attempt }
+}
+
 // ── Membership gate ──────────────────────────────────────────────────────────
 //
 // Decides whether a SIGNED-IN user may enter the protected shell. The profile
 // is `users/{uid}` (client-read-only); a missing document, a null companyId
 // or a deactivated status all mean "no membership". Legacy profiles carry no
 // `status`, and are active — exactly as the rules treat them.
-export const GATE = { LOADING: 'loading', ACTIVE: 'active', NONE: 'none', DEACTIVATED: 'deactivated', ERROR: 'error' }
+//
+// `profile` here is always SERVER-CONFIRMED (ProfileProvider hands out nothing
+// else), so NONE and DEACTIVATED are statements the server made. While the
+// server has not answered the gate is LOADING, or WAITING once the SDK has
+// reported that it is answering from its cache; a failed read is REFUSED
+// (permission denied) or ERROR (anything else). None of those four admits.
+//
+// THE MEMBERSHIP CONTRACT (architect, 25 November 2026). A server-confirmed
+// profile enters the shell only if ALL of these hold:
+//   · `status` is not 'deactivated' (absent = active, as the backend's
+//     isDeactivated and the rules treat it);
+//   · `companyId` is a string meeting the id contract (ID_RE: 1–64 of
+//     A–Z a–z 0–9 _ -), so it can only ever name ONE company document;
+//   · `role` is one of the six documented roles (lib/formatters.js →
+//     isKnownRole: super_admin, company_admin, project_manager, qs,
+//     subcontractor, client).
+// A profile that names a company but breaks the contract — a `companyId` that
+// is not a string or does not meet the id contract, or a missing, null, empty, non-string or unknown `role` —
+// is INVALID: a configuration fault somebody must correct, not "no
+// membership" and not a connection problem. It does not admit, and it does
+// not sign the user out (the listener stays open, so a corrected profile
+// admits by itself). A deactivated profile carries `role: null` by design
+// and is DEACTIVATED, never INVALID — the status is read first.
+// ⚠️ UX only. Every backend path writes `companyId` and a valid `role`
+// together (acceptInvitation, updateMemberRole), and the rules refuse an
+// unknown role everything role-gated; this stops the shell opening on it.
+export const GATE = {
+  LOADING: 'loading', WAITING: 'waiting', ACTIVE: 'active', NONE: 'none', DEACTIVATED: 'deactivated',
+  INVALID: 'invalid', REFUSED: 'refused', ERROR: 'error',
+}
 
-export function membershipGate({ profile, profileLoading, profileError }) {
+// The company a profile names, or null. Only a value that meets the id contract
+// (ID_RE above — the same one the backend's `isValidId` applies to every
+// company id it accepts) is a company at all, so nothing (CompanyProvider, and
+// through it every data hook) ever builds a document path from a malformed
+// `companyId`. Measured against the SDK: `doc(db, 'companies', 42)` and
+// `'a/b'` THROW; `'c1/'` silently resolves to `companies/c1`; `'a/b/c'`
+// resolves to a nested document. None of those reaches `doc()` now.
+export const profileCompanyId = (profile) =>
+  (typeof profile?.companyId === 'string' && ID_RE.test(profile.companyId) ? profile.companyId : null)
+
+export function membershipGate({ profile, profileLoading, profileError, profileErrorCode, profileWaiting }) {
+  if (profileWaiting) return GATE.WAITING
   if (profileLoading) return GATE.LOADING
-  if (profileError) return GATE.ERROR
+  if (profileError) return profileErrorCode === 'permission-denied' ? GATE.REFUSED : GATE.ERROR
   if (!profile) return GATE.NONE
   if (profile.status === MEMBER_STATUS.DEACTIVATED) return GATE.DEACTIVATED
-  if (typeof profile.companyId !== 'string' || profile.companyId.length === 0) return GATE.NONE
+  const { companyId } = profile
+  if (companyId === null || companyId === undefined || companyId === '') return GATE.NONE
+  if (profileCompanyId(profile) === null) return GATE.INVALID
+  if (!isKnownRole(profile.role)) return GATE.INVALID
   return GATE.ACTIVE
 }
 

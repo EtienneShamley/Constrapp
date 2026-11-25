@@ -6938,3 +6938,40 @@ was open during P12 itself (a live sign-out was observed at the final
 deactivation of the same account); no Project Manager target for P11; the
 internal regression §68 M1, M2, M4, M5, M7, M8. Residual risks stay open and
 tracked (SECURITY.md → *External Project Isolation — M2-A2 Stage B*).
+
+## ADR-72 / ADR-80 Correction: Membership Resolution (`fix/membership-resolution-state`, 25 November 2026)
+
+**Status:** IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION. Uncommitted; awaiting the Lead Architect's review. Hosting-only; not deployed. Tracker D3 #32 and #34; TESTING.md §75.
+
+**Context.** The membership gate (ADR-72) sits above every protected route. With the Firestore backend unreachable while the page loads, the SDK answers the `users/{uid}` listener at once from its empty in-memory cache with a document that "does not exist" (`fromCache: true`). `ProfileProvider` did not read snapshot metadata, so that answer settled as a null profile and the gate stated *No active membership* to a real member. ADR-80 had corrected the same class of fault on the project route (*Project not found*); the gate above it was not covered, so ADR-80's *Waiting for the server* could not be reached on a reload. Measured alongside: a listener opened without `includeMetadataChanges` is never told when the server confirms that a document is missing, because no data changes.
+
+**Decision 1 — only a server-confirmed snapshot decides membership.** A snapshot whose `fromCache` or `hasPendingWrites` is not exactly `false` decides nothing, in either direction: a cache-only missing document is not a denial, and a cache-only active profile is not an admission. Once the server has confirmed a profile, later cache-only snapshots leave it as it is; the next server-confirmed snapshot replaces it. The rule is one pure function, `lib/team.js → foldProfileReport`.
+
+**Decision 2 — the profile listener asks for metadata changes.** That is the SDK's own signal for the cache-to-server transition. No polling, no timer and no one-shot server read was added; the existing listener recovers by itself.
+
+**Decision 3 — states.** The provider keeps `profile`, `profileLoading` and `profileError`, and adds `profileWaiting`, `profileErrorCode` and `retryProfile`. `profileLoading` stays true for the whole unresolved window, so the eight pages that treat it as an authorisation gate (ADR-41) are unchanged. The gate gains `WAITING` and `REFUSED`; `NONE` and `DEACTIVATED` now mean the server said so.
+
+**Decision 4 — identity.** State is keyed by `uid|attempt`. A callback from a replaced listener is ignored, and closing a listener discards what it established — so nothing is carried to another uid, or to a later sign-in of the same uid in the same tab.
+
+**Decision 5 — the established offline behaviour is kept.** A confirmed session that loses its connection keeps its last server-confirmed profile and its screen; nobody is signed out for being offline; a deactivation or role change made meanwhile applies on reconnection. This is what the application did before. It was not broadened: a session that was never confirmed gets nothing from the cache.
+
+**Decision 6 — E2 is three checks (D3 #34).** E2-A, the application loaded and Firestore unreachable before membership is resolved; E2-B, membership confirmed and then data unavailable; E2-C, a full offline hard reload — a recorded limitation. Constrap has no service worker and does not start offline; that stays a requirement for a future PWA / offline-first increment and is not met by this correction.
+
+**Decision 7 — the membership contract (Lead Architect's correction, 25 November 2026; implemented 26 November).** The shell opens only for a server-confirmed profile whose `status` is not `deactivated`, whose `companyId` is a string meeting the id contract, and whose `role` is one of the six documented roles. The role set is the existing label table in `lib/formatters.js` (`KNOWN_ROLES`, `isKnownRole`) — no second registry; a test holds it equal to the backend's `INTERNAL_ROLES` + `OPERATOR_ROLES` and to DATA_MODEL.md. A profile that names a company and breaks the contract is `INVALID`: a notice, no shell, **no automatic sign-out** (a configuration fault is not a loss of membership), and the open listener admits it when the record is corrected. `status` is read first, because deactivation leaves `role: null` by design. `super_admin` is admitted as a documented role — the correction brief named five; the sixth may exist on an operator-provisioned production profile, so refusing it risks a lockout. **To be confirmed by the architect.** `CompanyProvider` now takes its target from `profileCompanyId`: a non-string `companyId` used to throw inside the SDK above the gate.
+
+**Decision 9 — release preflight (Lead Architect, 26 November 2026 — REPORTED: GO for integration).** `super_admin` stays a recognised role with no added permission. Legacy profiles without a `status` are preserved. The `CompanyProvider` guard is approved, and extended by the smallest correction the defensive check called for: `profileCompanyId` applies the existing id contract (`ID_RE`, identical to the backend's), because a `companyId` string containing `/` could throw inside `doc()` or resolve to a different document. A read-only production inventory found 9 profiles — 3 valid active, 6 deactivated, none malformed — and **none newly restricted** (TESTING.md §75.11). D3 #36 is P2, reliability hardening before customer onboarding; it does not block this release or the commercial roadmap.
+
+**Decision 8 — approved as they stand (Lead Architect, 25 November 2026).** The 22–25 ms waiting notice; the established-session connectivity behaviour; the local E2-A and E2-B results; E2-C as a future offline-first PWA requirement.
+
+**Security.** Presentation only. Firestore and Storage Rules decide every read and write and were not changed; no Function changed. The correction removes one path on which the gate could be decided by cached data (a cached active profile), and adds none.
+
+**Limits, stated plainly.**
+
+- Verified by unit tests and on local emulators only. Not deployed; not observed in production.
+- While disconnected, a deactivated member's already-open tab keeps showing what it had loaded, as before. The server refuses every new request.
+- **Accepted by the Lead Architect (25 November 2026): no delay, timer or debounce is to be added.** A same-tab sign-out and sign-in, online, shows the waiting notice for 22–25 ms before the shell: the surviving SDK cache answers first. Nothing in the snapshot separates that from a real outage, so removing it needs a presentation delay. Not decided.
+- **Superseded by Decision 7.** *As written at the first report:* The gate does not require a `role`. A confirmed profile with a `companyId` and no usable role still enters the shell and is refused everything by the Rules. Unchanged; a separate decision.
+- `CompanyProvider`, and the Dashboard, Projects and Portfolio pages, still do not read `fromCache` (ADR-80, *Limits*). **Tracked separately as D3 #36 (architect direction); not part of this correction.**
+- A production profile provisioned by hand with a missing or misspelt role would now see the *needs attention* notice. No supported path writes one; production was not read.
+
+**Alternatives rejected.** A one-shot `getDocFromServer` before listening (a second read path, and an error on every outage instead of the listener's own recovery). A timeout that turns "no answer" into a denial or an error (a timing dependency; the SDK already reports the cache state). Treating a cached active profile as good enough to enter (decides the gate without the server). Signing out when the connection drops (discards unsaved financial forms and breaks the ADR-80 uncertain-write workflow). Enabling persistence or adding a service worker (an offline-access policy change, outside this correction).

@@ -354,7 +354,11 @@ the two takeoff hooks and `useDrawings` read-only; the Quant workspace mounts `u
 ProtectedRoute (redirects to /login when signed out)
 └─ MembershipGate (ADR-72: enters the shell only while users/{uid} names a company and
    │               is not deactivated; otherwise a "no active membership" screen, and
-   │               signs out when an active membership is lost)
+   │               signs out when an active membership is lost. Decided ONLY by a
+   │               server-confirmed snapshot (D3 #32 correction): a cache-only answer is
+   │               "Waiting for the server", never a denial and never an admission.
+   │               Requires a string companyId and one of the six documented roles;
+   │               otherwise "Your membership needs attention" — no shell, no sign-out)
    └─ AppShell (Sidebar + TopBar)
    ├─ /settings/company        Company Settings (country & currency) · /settings/team  Team (ADR-72)
    ├─ /                        Dashboard

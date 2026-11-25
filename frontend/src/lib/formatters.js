@@ -88,3 +88,9 @@ const ROLE_LABELS = {
 }
 
 export const formatRole = (role) => ROLE_LABELS[role] ?? role ?? '—'
+
+// The six documented product roles (PRODUCT.md; DATA_MODEL.md → users/{uid}
+// .role) — the keys of the ONE table above, so a role cannot be "known" here
+// and unlabelled there. The membership gate (lib/team.js) admits no other.
+export const KNOWN_ROLES = Object.keys(ROLE_LABELS)
+export const isKnownRole = (role) => typeof role === 'string' && Object.hasOwn(ROLE_LABELS, role)

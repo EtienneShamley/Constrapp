@@ -52,7 +52,7 @@ describe('routing', () => {
 
 describe('membership gate', () => {
   it('renders the shell only for an active membership and signs out on loss', () => {
-    expect(GATE).toContain('membershipGate({ profile, profileLoading, profileError })')
+    expect(GATE).toContain('membershipGate({ profile, profileLoading, profileError, profileErrorCode, profileWaiting })')
     expect(GATE).toContain('if (gate === GATE.ACTIVE) return <Outlet />')
     expect(GATE).toMatch(/wasActive\.current && \(gate === GATE\.NONE \|\| gate === GATE\.DEACTIVATED\)[\s\S]*signOut\(\)/)
     expect(GATE).not.toMatch(/from\s*'firebase\//)
