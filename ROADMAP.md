@@ -410,7 +410,21 @@ of the work still to do:
     are retained. Findings D3 #27–#29 form a **P2 external-role UI correction
     bundle**; an external purchase order create was confirmed refused by the
     Rules (no authorisation defect).
-  - **D3 #32 membership resolution correction — IMPLEMENTED — PENDING
+  - **L3 Stage 2 — CLOSED within its accepted scope (26 November 2026
+    NZDT; TESTING.md §76; tracker B12).** The D3 #32 membership resolution
+    correction is **LIVE** (`main` `0bdca38`; Hosting release
+    `edc2bf6f34568d78`, 25 November 2026 20:32 UTC): the live bundle is
+    identical to a build of that commit; Rules, Functions and monitoring
+    are unchanged; no production account is newly restricted. In
+    production, as the TEST Company Admin: normal start-up, project access
+    and reload PASS; **E2-A and E2-B PASS** under a transport failure
+    injected in the page. **D3 #32 and D3 #34 are CLOSED.** Still open:
+    E2-C (offline start-up — a future offline-first PWA requirement);
+    D3 #33 (P3); D3 #35 (GST rounding assessment); D3 #36 (P2 reliability
+    hardening before customer onboarding); GST §44 steps 1–3 and Dashboard
+    §22 checks 2–3. **Next milestone: client credit-note architecture
+    assessment and ADR.**
+  - *As written before the release:* **D3 #32 membership resolution correction — IMPLEMENTED — PENDING
     INTEGRATION AND PRODUCTION VERIFICATION** (25 November 2026;
     `fix/membership-resolution-state`, uncommitted, awaiting architect
     review; TESTING.md §75; tracker B11). Only a server-confirmed profile

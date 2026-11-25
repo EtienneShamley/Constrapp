@@ -6941,7 +6941,7 @@ tracked (SECURITY.md → *External Project Isolation — M2-A2 Stage B*).
 
 ## ADR-72 / ADR-80 Correction: Membership Resolution (`fix/membership-resolution-state`, 25 November 2026)
 
-**Status:** IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION. Uncommitted; awaiting the Lead Architect's review. Hosting-only; not deployed. Tracker D3 #32 and #34; TESTING.md §75.
+**Status:** **LIVE and CLOSED** — released from `main` `0bdca38` (Hosting release `edc2bf6f34568d78`, 25 November 2026 20:32 UTC); live bundle verified; E2-A and E2-B passed in production under in-page transport injection; no account newly restricted (TESTING.md §76). Tracker D3 #32 and #34 closed; L3 Stage 2 closed within its accepted scope. *As written before the release:* IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION. Uncommitted; awaiting the Lead Architect's review. Hosting-only; not deployed. Tracker D3 #32 and #34; TESTING.md §75.
 
 **Context.** The membership gate (ADR-72) sits above every protected route. With the Firestore backend unreachable while the page loads, the SDK answers the `users/{uid}` listener at once from its empty in-memory cache with a document that "does not exist" (`fromCache: true`). `ProfileProvider` did not read snapshot metadata, so that answer settled as a null profile and the gate stated *No active membership* to a real member. ADR-80 had corrected the same class of fault on the project route (*Project not found*); the gate above it was not covered, so ADR-80's *Waiting for the server* could not be reached on a reload. Measured alongside: a listener opened without `includeMetadataChanges` is never told when the server confirms that a document is missing, because no data changes.
 

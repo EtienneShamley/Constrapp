@@ -9348,7 +9348,9 @@ database; or cleanup fails (ops/recovery/README.md → *If cleanup fails*).
 
 *Heading as written at the run:* … **E1–E10 RUN 25 November 2026 (§74.3), awaiting architect review:** E1 PASSED in production; E3–E10 PASSED on local emulators only; **E2 NOT PASSED as written** (tracker D3 #32, #34)
 
-**D3 #32 correction and the corrected E2 procedure: §75 (25 November 2026) — IMPLEMENTED on `fix/membership-resolution-state`, pending integration and production verification. E2 stays OPEN until then.**
+**L3 Stage 2 CLOSED within its accepted scope, 26 November 2026 (§76.6):** E1 in production; E2-A and E2-B in production under in-page injection (§76.3); E3–E10 on local emulators only. E2-C is a recorded limitation.
+
+*As written before the release:* D3 #32 correction and the corrected E2 procedure: §75 (25 November 2026) — IMPLEMENTED on `fix/membership-resolution-state`, pending integration and production verification. E2 stays OPEN until then.
 
 *Heading as written before 25 November 2026:* … automated tests PASS; E1–E10 browser acceptance NOT RECORDED
 
@@ -9378,9 +9380,9 @@ ESLint: clean. Production build: succeeds. `git diff --check`: clean. The Rules 
 **Manual acceptance (after a Hosting deploy; a test project, not customer data).** *Run on 25 November 2026 — results, evidence classes and limits in §74.3. The boxes below are left unticked: only E1 was executed in production; E3–E10 passed on local emulators; E2 did not pass as written.*
 
 - [ ] E1 — Open a project normally: header and tabs as before. Open `/projects/<an id that does not exist>`: *Project not found.*
-- [ ] E2 — **replaced on 25 November 2026 (tracker D3 #34; full procedure and local results in §75.7 and §75.6). OPEN until run in production after the D3 #32 correction is deployed.**
-  - [ ] E2-A — signed in on a project URL, block the Firestore host only (DevTools → Network request blocking), then reload: *Waiting for the server* from the membership gate; never *No active membership*; no project or company content. Remove the block: the project appears by itself.
-  - [ ] E2-B — with a project open, cut the connection: the page stays and nobody is signed out; back online it continues. (The project route's own *Waiting for the server* needs the connection to drop between the membership read and the projects read — by injection only, §75.6.)
+- [x] E2 — **replaced on 25 November 2026 (tracker D3 #34; full procedure and local results in §75.7 and §75.6). E2-A and E2-B PASSED in production on 26 November 2026 NZDT, under in-page transport injection (§76.3).**
+  - [x] E2-A — signed in on a project URL, block the Firestore host only (DevTools → Network request blocking), then reload: *Waiting for the server* from the membership gate; never *No active membership*; no project or company content. Remove the block: the project appears by itself.
+  - [x] E2-B — with a project open, cut the connection: the page stays and nobody is signed out; back online it continues. (The project route's own *Waiting for the server* needs the connection to drop between the membership read and the projects read — by injection only, §75.6.)
   - E2-C — full offline hard reload: the browser's own error page. **Offline start-up is not supported** (no service worker). A recorded limitation, kept for a future PWA / offline-first increment — not a check to pass.
   - *As written before 25 November 2026 (not executable — an offline reload never loads the page):* E2 — DevTools → Network → Offline, then reload a project URL: *Waiting for the server* (not *Project not found*). Back online: the project appears without a reload.
 - [ ] E3 — As a deactivated or wrong-company test member (or with the projects request blocked so the listener errors): *could not be loaded* or *do not have access*, with *Try again*; after access or connectivity is restored, *Try again* loads the project.
@@ -10702,7 +10704,9 @@ selected fields, not bytes); the browser-session event of 74.6; the retained
 regression fixtures; the deactivated test identities; the restriction on
 real customer external onboarding.
 
-## 75. D3 #32 — membership resolution reliability, and the corrected E2 procedure (D3 #34) — `fix/membership-resolution-state` (25 November 2026 NZDT; local runs 03:05–03:30 UTC) — **IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION**; uncommitted; automated tests PASS; local browser acceptance PASS (emulators only); NOT DEPLOYED; **L3 E2 stays OPEN**
+## 75. D3 #32 — membership resolution reliability, and the corrected E2 procedure (D3 #34) — **LIVE and CLOSED 26 November 2026** (`main` `0bdca38` (commit `893bed3`); Hosting release `edc2bf6f34568d78`, 25 November 2026 20:32:18 UTC; production verification §76)
+
+*Heading as written before the release:* … `fix/membership-resolution-state` (25 November 2026 NZDT; local runs 03:05–03:30 UTC) — **IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION**; uncommitted; automated tests PASS; local browser acceptance PASS (emulators only); NOT DEPLOYED; **L3 E2 stays OPEN**
 
 **Evidence classes.** MEASURED — the real Web SDK against the local Firestore
 emulator, in Node. UNIT — `npm run test:unit`. LOCAL — the development build
@@ -11190,3 +11194,125 @@ firebase deploy --only hosting --project constrapp-69b5d
 Hosting only — no `--only firestore:rules`, `storage` or `functions`.
 Rollback: the previous release in the Firebase Hosting console. Then the
 checks of §75.9 and §75.10.
+
+## 76. D3 #32 — production verification and L3 Stage 2 closeout (26 November 2026 NZDT; 25 November 2026 20:05–20:50 UTC) — **D3 #32 CLOSED; D3 #34 CLOSED; L3 Stage 2 CLOSED within its accepted scope** (recorded on the Lead Architect's closeout instruction; awaiting the architect's review of this record)
+
+**Evidence classes.** PROD-VERIFIED — read from production, read-only (REST
+`GET`, read RPCs, public Hosting). PROD-BROWSER — the released bundle on
+`constrapp-69b5d.web.app`, signed in as the TEST Company Admin, production
+data. PROD-BROWSER (injected) — the same, with a transport failure injected
+in the page (below). LOCAL — §75. Nothing was written to production. No
+account was reactivated. No malformed profile was created.
+
+### 76.1 Release verification — PROD-VERIFIED
+
+| Item | Reading |
+|---|---|
+| Repository | `main` clean and equal to `origin/main`: `0bdca38` *Merge membership resolution reliability fix* (commit `893bed3`). The release changed no Rules, Storage Rules, Functions, `ops/`, `firebase.json` or pipeline file |
+| Hosting, all three origins | `index-Cp40Ga_v.js`, SHA-256 `b9101cb1…44b5`; `index.html` and the stylesheet too — **identical to a build of `main` `0bdca38`** made to a scratch directory (with the installed dependencies, not a fresh `npm ci`). `last-modified` 25 November 2026 20:32:18 GMT |
+| Hosting release | `edc2bf6f34568d78`, type DEPLOY, FINALIZED, 25 November 2026 20:32:18 UTC. The previous release is `bb562d62c119df3c` (23 November) — the rollback target |
+| Firestore ruleset | `67b6425a…`, released 23 November 2026, 236,737 bytes — **byte-identical to `frontend/firestore.rules`**; the same ruleset as §74.1 |
+| Storage ruleset | `2f3a4788…`, 10,323 bytes — byte-identical to `frontend/storage.rules`; the same as §74.1 |
+| Functions (Cloud Run, 11 services) | Latest service update 23 November 2026 09:11 UTC; none since |
+| Monitoring | 5 alert policies, all enabled, latest mutation 20 November 2026; 2 channels; 1 uptime check — as §74.6 |
+
+**Membership preflight — repeated after the deploy (20:38 UTC).** 9 profiles:
+3 admitted by the corrected gate (all `company_admin`, 2 legacy without a
+`status`), 6 deactivated, none malformed, **none newly restricted** —
+identical to §75.11. Firebase Auth: 9 accounts, 6 disabled, 3 enabled, and
+**every enabled account has a profile** — which closes the "Auth accounts
+without a `users` document were not inventoried" note of §75.11: there are
+none.
+
+### 76.2 Browser isolation
+
+Only `constrapp-69b5d.web.app` was opened. `app.constrap.com` was not
+opened. Before any application page, the session was read on
+`/accept-invite` (which renders no company data): **the TEST Company Admin,
+uid prefix `oOANhA`**, running `index-Cp40Ga_v.js`. No sign-in was needed;
+no password or token was requested. The same uid was confirmed again at the
+end. The testing tab was closed.
+
+### 76.3 Production acceptance
+
+**How the failure was injected.** The extension cannot drive DevTools
+request blocking, so the application was loaded in a **same-origin frame**
+inside the testing tab, and the frame's `fetch` and `XMLHttpRequest` were
+replaced — before the application's script existed in the document
+(verified: 0 scripts at the moment of patching) — so that requests to
+`firestore.googleapis.com` fail as a network error while a flag is set. The
+page, Firebase Auth and Hosting were untouched; nothing outside that frame
+was affected; the network was not disconnected. A request counter and the
+frame's resource timings prove the block (requests blocked; **no** Firestore
+request completed while it was on). This is a failure injected at the
+browser's request API, not on the wire: it is production evidence for the
+application's behaviour, and not for any particular kind of real outage.
+
+| Check | Result | Class | What was observed |
+|---|---|---|---|
+| Normal authenticated start-up | **PASS** | PROD-BROWSER | `/projects`: the shell, the TEST company, 8 projects, *Company Admin*; no membership notice |
+| Existing project access | **PASS** | PROD-BROWSER | CAD fixture `V2Vj8jds7RUkBAmZ1jzm`: header and tabs. A project id of the other company: *Project not found*, as designed |
+| Reload | **PASS** | PROD-BROWSER | Twice: the project again, no notice; 0 console messages of any kind |
+| No unexpected membership notice | **PASS** | PROD-BROWSER | Two recorded normal loads, sampled from the first frame: spinner → shell. Never *waiting*, *needs attention* or a denial |
+| **E2-A** — application loaded, Firestore unreachable before membership is resolved | **PASS** | PROD-BROWSER (injected) | spinner → **Waiting for the server** after 0.7 s, held 26 s. Never *No active membership*. No project, company or navigation text. *Sign out* shown, no *Try again*. 8 requests blocked, 0 passed, 0 Firestore resource entries |
+| **E2-A** — automatic recovery | **PASS** | PROD-BROWSER (injected) | The shell 1.8 s after the block was lifted, then the project. No reload (one navigation entry), no sign-in |
+| **E2-B** — established session loses connectivity | **PASS** | PROD-BROWSER (injected) | With the project open, the six open Firestore streams were aborted and new ones blocked for 30 s (3 retries refused): **no screen change at all**, the project stayed, no notice, no sign-out, same uid. A request passed 3.4 s after the block was lifted; the page was unchanged |
+| **E2-B** — the project route's waiting state | **PASS** | PROD-BROWSER (injected) | Connection cut at the request that opens the projects listener, after the membership and company reads (two runs): *Loading project…*, then the project route's **Waiting for the server** after 6.0 s and 12.0 s. The shell stayed; no membership notice; no *Try again*. Released 3 s later: the project in 1.7 s, without a reload |
+| **E2-C** — full offline hard reload | **Not run — limitation stands** | LOCAL (§75.6) | Not attempted in production: it needs the browser offline. `navigator.serviceWorker` registrations in production: 0. **Offline start-up is not supported;** kept for a future offline-first PWA |
+| Console | **PASS** | PROD-BROWSER | No application error, no React warning, no uncaught exception, no unhandled rejection in any frame. 31 Firestore SDK transport warnings, all during the injected disconnections |
+
+**Not exercised in production, by design or by limit.** A non-member, a
+deactivated account, a refused read, an invalid profile, a role change and
+an identity switch (each needs a write, a reactivation or a second account —
+LOCAL evidence, §75.6 and §75.10). A real network outage. A top-level tab
+(the injected checks ran in a frame). Safari, Firefox, a mobile browser. The
+L3 uncertain-write path (it would write).
+
+### 76.4 Observation recorded against D3 #36 — PROD-BROWSER
+
+On **every** cold load of a project URL — three normal loads and the two
+E2-B runs — the page shows **Project not found.** for 55–100 ms between the
+membership read and the company read, then *Loading project…*, then the
+project. `CompanyProvider` is still unresolved for that moment, so every
+data hook is idle and the route reads an idle projects list as final. It is
+the mechanism described in D3 #36, now observed. It is **not introduced by
+this release** (`CompanyProvider`'s loading logic is unchanged, and the
+state is not a membership notice); whether it was visible before was not
+measured. No data or authorisation effect.
+
+### 76.5 Security and data integrity — PROD-VERIFIED (read-only snapshots before the browser run, about 20:35 UTC, and after it, about 20:48 UTC)
+
+| Scope | What was compared | Result |
+|---|---|---|
+| Both companies | Path and `updateTime` of every document (164 and 253 by this run's listing) | Identical before and after, except `system/fileLinkRevocation` in each — the reconciliation worker's own two-hourly write (20:42:03 UTC) |
+| Since the previous run (25 November 01:08 UTC) | Any document with a later `updateTime` | Only that worker document |
+| `users` | 9 documents: `updateTime` and a hash of `companyId`, `role`, `status`, `projectIds` | Identical; no membership change |
+| Auth accounts | Disabled flag, last sign-in, `validSince` (9) | Identical; **6 disabled, still disabled**; no new sign-in (the existing TEST session was used) |
+| Financial registers | 111 documents across budget lines, purchase orders, claims, invoices, receipts, payments, variations and final accounts | 0 changed; latest update 24 November 2026 |
+| Rules, Functions, monitoring | As 76.1, read again after the run | Unchanged |
+
+**Scope limits.** Update times and paths, not field bytes (membership fields
+excepted). This run's document counts (164 / 253) are not on the same basis
+as §74.6's (167 / 258) and are not compared with them; a deletion since
+§74.6 would not be detected by this run — none is expected, and no document
+carries a later update time. Storage objects were not listed.
+
+### 76.6 Closure
+
+- **D3 #32 — CLOSED.** Released, the live bundle verified, the corrected
+  behaviour observed in production under injection, no account newly
+  restricted.
+- **D3 #34 — CLOSED.** E2 is E2-A / E2-B / E2-C; E2-A and E2-B passed in
+  production; E2-C is a recorded limitation, not a check.
+- **L3 Stage 2 (ADR-80) — CLOSED within its accepted scope:** E1 in
+  production; E2-A and E2-B in production under in-page injection; E3–E10 on
+  local emulators only (§74.10).
+
+**Preserved, open.** E2-C — offline start-up, a future offline-first PWA
+requirement. D3 #33 (P3, deferred UX). D3 #35 — the GST rounding-semantics
+assessment, before client credit notes and client retention. D3 #36 (P2,
+reliability hardening before customer onboarding). GST §44 manual steps 1–3
+and Dashboard §22 checks 2 and 3. The 58 older write sites (D3 #11). Every
+evidence limit of §74 and §75.
+
+**Next milestone:** client credit-note architecture assessment and ADR.
