@@ -4518,6 +4518,38 @@ does not do, measured in the emulator:
 - **The client reacts:** the member's own `users/{uid}` listener receives the
   change, the membership gate unmounts the whole shell (and with it every
   protected listener) and signs the user out.
+- **Membership is resolved from the server only (tracker D3 #32 correction,
+  25 November 2026 — IMPLEMENTED on `fix/membership-resolution-state`, NOT
+  YET DEPLOYED; TESTING.md §75).** The profile listener asks for metadata
+  changes, and the gate acts only on a snapshot the server confirmed
+  (`fromCache` and `hasPendingWrites` both false):
+  - a cache-only answer — including the "document does not exist" the SDK
+    gives from its empty cache when the backend is unreachable — is *Waiting
+    for the server*: not a denial, not an admission, and no protected content;
+  - a cached active profile admits nobody, and nothing carries over from
+    another uid or from an earlier sign-in of the same uid;
+  - once confirmed, a dropped connection changes nothing: the session keeps
+    its last server-confirmed profile, nobody is signed out for being
+    offline, and a deactivation or role change made meanwhile applies on the
+    first server snapshot after reconnection. **While disconnected, a
+    deactivated member's open tab keeps showing what it had already loaded**
+    — as before this correction; the server refuses every new request;
+  - a refused profile read removes the shell and is shown as a refusal, with
+    *Try again*; it is never an authorised state;
+  - **the membership contract (architect correction):** the shell opens only
+    for a profile whose `status` is not `deactivated`, whose `companyId` is
+    a string meeting the id contract (`^[A-Za-z0-9_-]{1,64}$`, the
+    backend's own) and whose `role` is one of the six documented roles
+    (`lib/formatters.js → isKnownRole`). A profile that names a company but
+    has a missing, null, empty, non-string or unknown role, or a `companyId`
+    that is not a string or is outside the id contract, is shown *Your membership needs attention*: no
+    protected content, no automatic sign-out, and it is admitted by itself
+    when the server record is corrected. No backend path writes such a
+    profile. `super_admin` is admitted as a documented role and still has no
+    special power.
+
+  ⚠️ **Client-side presentation only.** The gate chooses a screen. Firestore
+  and Storage Rules decide every read and write, and were not changed.
 - **ID tokens already issued stay cryptographically valid until they expire
   (up to one hour).** Revoking refresh tokens stops renewal; it does not make
   Firestore reject the current token. That is harmless here only because every

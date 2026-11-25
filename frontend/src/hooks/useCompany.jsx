@@ -4,6 +4,7 @@ import { db } from '../lib/firebase'
 import { useAuth } from './useAuth'
 import { useProfile } from './useProfile'
 import { isCurrencyCodeShape, isKnownCountryCode, isKnownCurrencyCode } from '../lib/currency'
+import { profileCompanyId } from '../lib/team'
 
 // Firestore batches cap at 500 writes. Real project counts sit far below this;
 // chunking is defensive so a large company cannot silently lose writes.
@@ -14,6 +15,10 @@ const CompanyContext = createContext(null)
 export function CompanyProvider({ children }) {
   const { user }    = useAuth()
   const { profile } = useProfile()
+  // A string, or null. A malformed `companyId` (not a string) names no company:
+  // it must never reach `doc()`, which throws on it and would take the whole
+  // app down from above the membership gate (the gate shows the notice).
+  const companyId = profileCompanyId(profile)
   // Live subscription state, tagged with the target (`key`) it belongs to —
   // the keyed-snapshot pattern; the single-document reference is
   // useProjectCommercial. The effect is subscription-only: state is written
@@ -36,7 +41,6 @@ export function CompanyProvider({ children }) {
   const [snap, setSnap] = useState({ key: null, company: null, error: false })
 
   useEffect(() => {
-    const companyId = profile?.companyId
     if (!companyId) return undefined
 
     const key = companyId
@@ -52,9 +56,7 @@ export function CompanyProvider({ children }) {
       () => setSnap({ key, company: null, error: true }),
     )
     return unsubscribe
-  }, [profile?.companyId])
-
-  const companyId = profile?.companyId ?? null
+  }, [companyId])
 
   // Derived, at render time: no synchronous setState in the effect. With no
   // target we are idle (no company, not loading); with a target we are loading

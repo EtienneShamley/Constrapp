@@ -9348,6 +9348,8 @@ database; or cleanup fails (ops/recovery/README.md → *If cleanup fails*).
 
 *Heading as written at the run:* … **E1–E10 RUN 25 November 2026 (§74.3), awaiting architect review:** E1 PASSED in production; E3–E10 PASSED on local emulators only; **E2 NOT PASSED as written** (tracker D3 #32, #34)
 
+**D3 #32 correction and the corrected E2 procedure: §75 (25 November 2026) — IMPLEMENTED on `fix/membership-resolution-state`, pending integration and production verification. E2 stays OPEN until then.**
+
 *Heading as written before 25 November 2026:* … automated tests PASS; E1–E10 browser acceptance NOT RECORDED
 
 *As written on 21 November 2026:* IMPLEMENTED on `fix/l3-application-error-recovery` (uncommitted); automated tests PASS; NOT DEPLOYED; browser behaviour NOT VERIFIED.
@@ -9376,7 +9378,11 @@ ESLint: clean. Production build: succeeds. `git diff --check`: clean. The Rules 
 **Manual acceptance (after a Hosting deploy; a test project, not customer data).** *Run on 25 November 2026 — results, evidence classes and limits in §74.3. The boxes below are left unticked: only E1 was executed in production; E3–E10 passed on local emulators; E2 did not pass as written.*
 
 - [ ] E1 — Open a project normally: header and tabs as before. Open `/projects/<an id that does not exist>`: *Project not found.*
-- [ ] E2 — DevTools → Network → Offline, then reload a project URL: *Waiting for the server* (not *Project not found*). Back online: the project appears without a reload.
+- [ ] E2 — **replaced on 25 November 2026 (tracker D3 #34; full procedure and local results in §75.7 and §75.6). OPEN until run in production after the D3 #32 correction is deployed.**
+  - [ ] E2-A — signed in on a project URL, block the Firestore host only (DevTools → Network request blocking), then reload: *Waiting for the server* from the membership gate; never *No active membership*; no project or company content. Remove the block: the project appears by itself.
+  - [ ] E2-B — with a project open, cut the connection: the page stays and nobody is signed out; back online it continues. (The project route's own *Waiting for the server* needs the connection to drop between the membership read and the projects read — by injection only, §75.6.)
+  - E2-C — full offline hard reload: the browser's own error page. **Offline start-up is not supported** (no service worker). A recorded limitation, kept for a future PWA / offline-first increment — not a check to pass.
+  - *As written before 25 November 2026 (not executable — an offline reload never loads the page):* E2 — DevTools → Network → Offline, then reload a project URL: *Waiting for the server* (not *Project not found*). Back online: the project appears without a reload.
 - [ ] E3 — As a deactivated or wrong-company test member (or with the projects request blocked so the listener errors): *could not be loaded* or *do not have access*, with *Try again*; after access or connectivity is restored, *Try again* loads the project.
 - [ ] E4 — Client Receipts → create a draft online: the dialog closes and ONE draft appears, numbered as before.
 - [ ] E5 — Offline, create a draft receipt (a transaction): after some seconds an amber message says it was not confirmed; the submit button is disabled; the form keeps its contents. Check the list, use *I have checked…*, go online, submit: ONE draft exists.
@@ -10695,3 +10701,492 @@ result above; the data-integrity comparison limits of 74.6 (update times and
 selected fields, not bytes); the browser-session event of 74.6; the retained
 regression fixtures; the deactivated test identities; the restriction on
 real customer external onboarding.
+
+## 75. D3 #32 — membership resolution reliability, and the corrected E2 procedure (D3 #34) — `fix/membership-resolution-state` (25 November 2026 NZDT; local runs 03:05–03:30 UTC) — **IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION**; uncommitted; automated tests PASS; local browser acceptance PASS (emulators only); NOT DEPLOYED; **L3 E2 stays OPEN**
+
+**Evidence classes.** MEASURED — the real Web SDK against the local Firestore
+emulator, in Node. UNIT — `npm run test:unit`. LOCAL — the development build
+of this branch on the Auth and Firestore emulators, in a throwaway headless
+Chrome 158 profile. Nothing in this section was run against production; no
+production read or write was made.
+
+### 75.1 Root cause
+
+Three facts, in sequence:
+
+1. `ProfileProvider` (`hooks/useProfile.jsx`) opened the `users/{uid}`
+   listener without `includeMetadataChanges` and never read
+   `snapshot.metadata`.
+2. With the backend unreachable the SDK does not report an error and does not
+   stay silent: it answers the listener **at once from its local cache**. The
+   application uses the default in-memory cache, which is empty on every page
+   load, so the answer is a document that "does not exist", flagged
+   `fromCache: true` (measured — 75.2).
+3. The provider stored that as a settled `profile: null`, so
+   `profileLoading` became false, and `membershipGate` (`lib/team.js`) read a
+   settled null profile as `GATE.NONE` — *No active membership*.
+
+Two further facts were found while reproducing, both of the same kind (a
+cache answer treated as a server answer):
+
+- **A cached ACTIVE profile admitted without the server.** After a sign-out
+  and a new sign-in in the same tab the SDK still holds the document and
+  answers from the cache first (measured). The old provider did not read
+  `fromCache`, so it would enter the shell on that answer — read from the
+  code; not reproduced in a browser on `main`. Firestore Rules still decide
+  every read, so no data would be shown that the server would not serve; the
+  gate, however, would be decided by a cache.
+- **The provider kept its last answer under the uid.** Signing out and back
+  in as the same uid found the earlier confirmation still under its key.
+  Found by a unit test of the correction and closed in it (75.3).
+
+### 75.2 SDK behaviour — MEASURED (firebase 12.15.0, `@firebase/firestore` 4.16.0, document listener, through a TCP gate that makes the emulator unreachable)
+
+| Scenario | Snapshots delivered |
+|---|---|
+| Document missing; backend unreachable; **no** `includeMetadataChanges` | `exists: false, fromCache: true` after 40 ms. After the backend returned: **nothing, for the 45 s observed** — the server's confirmation changes no data, so it is never delivered |
+| Document missing; backend unreachable; **with** `includeMetadataChanges` | `exists: false, fromCache: true` after 25 ms; after the backend returned, a metadata-only `exists: false, fromCache: false` |
+| Document active; backend unreachable; either option | `exists: false, fromCache: true` at once; after the backend returned, `exists: true, fromCache: false` |
+| Confirmed online, then unreachable, deactivated on the server meanwhile, then reachable (metadata on) | `active, fromCache: false` → `active, fromCache: true` when the connection dropped → `deactivated, fromCache: false` on reconnection. Nothing while unreachable |
+| Online role change, then deletion | Each delivered with `fromCache: false` |
+| Read refused by the Rules | The error callback, `permission-denied`, once; no snapshot; nothing afterwards |
+| Same client: confirmed, unsubscribe, sign out, sign in, listen again while unreachable | `active, fromCache: true` after 2 ms (the cache survived the sign-out); `fromCache: false` after reconnection |
+| Unsubscribe while unreachable | No callback after the unsubscribe |
+
+`hasPendingWrites` was false throughout — no client code writes `users/{uid}`
+and the Rules refuse it. Reconnection took 4–20 s after the backend returned:
+that is the SDK's own back-off, not an application timer.
+
+### 75.3 The correction
+
+**One rule: only a server-confirmed snapshot decides membership.**
+
+- `lib/team.js → foldProfileReport` (pure). A snapshot with `fromCache` or
+  `hasPendingWrites` other than exactly `false` decides nothing. Before any
+  confirmation it leaves the profile null; after a confirmation it leaves the
+  confirmed profile exactly as it is. A server-confirmed snapshot replaces it.
+  A listener error drops the profile and records the code. State is tagged
+  with the listener's key (`uid|attempt`); a report under a new key starts
+  from nothing.
+- `hooks/useProfile.jsx`. The listener now asks for metadata changes.
+  `profileLoading` stays true until the server has answered for this uid or
+  the listener has failed. Three additive context fields:
+  `profileWaiting` (the SDK is answering from its cache), `profileErrorCode`
+  and `retryProfile`. A callback from a replaced listener is ignored, and
+  closing a listener discards what it had established.
+- `lib/team.js → membershipGate`. Two new states: `WAITING`, and `REFUSED`
+  (a `permission-denied` read; any other failed read stays `ERROR`).
+- `components/MembershipGate.jsx`. *Waiting for the server* for `WAITING`,
+  with *Sign out* and no retry control — the SDK reconnects by itself.
+  *Try again* (re-opens the listener; no page reload) replaces *Reload* on
+  the two failure notices.
+
+No timer, no polling, no one-shot read, no new dependency, no persistence
+change, no service worker. One listener per signed-in user, as before.
+
+**State flow.**
+
+| | Before | After |
+|---|---|---|
+| Listener has not reported | spinner | spinner |
+| Cache-only answer, document missing | **No active membership** | *Waiting for the server* |
+| Cache-only answer, profile active | **the application shell** | *Waiting for the server* |
+| Server: active | shell | shell |
+| Server: missing, or no `companyId` | No active membership | No active membership |
+| Server: deactivated | deactivated notice; sign-out if the session was active | the same |
+| Read refused | *Could not load your membership*, *Reload* | *Your membership could not be confirmed*, *Try again* |
+| Other failed read | *Could not load your membership*, *Reload* | the same title, *Try again* |
+| Confirmed, then the connection drops | shell, unchanged | shell, unchanged |
+
+### 75.4 Membership invariants
+
+| Invariant | Where it holds | Evidence |
+|---|---|---|
+| No session enters the shell before a server-confirmed active profile | `foldProfileReport`; `profile` is null unless confirmed | UNIT; LOCAL |
+| A cache-only missing document is not a denial | the same | UNIT (the regression test); LOCAL |
+| No profile from another uid, or from an earlier session of the same uid, grants access | key `uid|attempt`; reset on listener close; late callbacks ignored | UNIT; LOCAL |
+| A cached profile never overrides a server-confirmed deactivation or absence | cache snapshots change nothing after confirmation | UNIT |
+| A refused read is not an authorised state | error drops the profile; the shell unmounts | UNIT; LOCAL |
+| Deactivation and assignment revocation still take effect | server snapshots always apply; the sign-out effect is unchanged | UNIT; LOCAL |
+| Role changes still reach the application | the same | UNIT; LOCAL |
+| A profile without a `companyId` string does not admit | `membershipGate`, unchanged | UNIT; LOCAL |
+| Nobody is signed out, and no form is discarded, because the connection dropped | cache snapshots return the SAME state object: no re-render | UNIT; LOCAL |
+
+**These are client-side presentation controls.** Firestore and Storage Rules
+decide every read and write and were not changed. The gate decides only which
+screen is shown.
+
+**Superseded by the architect's correction — the gate now requires a
+documented role (§75.10).** *As written at the first report:* Not changed,
+and recorded as an observation: the gate does not require a
+`role`. A server-confirmed profile with a `companyId` and no usable role still
+enters the shell, where every role check and every Rule refuses it — as before
+this branch. Tightening it is a separate decision: production profiles cannot
+be inspected under this brief.
+
+### 75.5 Automated — PASS (local, 25 November 2026)
+
+| Suite | Command | Result |
+|---|---|---|
+| Unit | `npm run test:unit` | **103 files, 5,333 tests PASS after the architect corrections (§75.10)** — 89 new tests in two files. *At the first report:* 103 files, 5,315 tests PASS (was 101 / 5,244: two new files, 71 tests; one assertion in `teamSurface.test.js` updated for the gate's two added arguments) |
+| Rules emulator | `npm run test:rules` | 39 files, 2,492 tests PASS (unchanged; no Rules file changed) |
+| Functions emulator (team management) | `npm run test:functions` | 11 files, 367 tests PASS — invitation, acceptance, deactivation and reactivation lifecycle (no Functions file changed) |
+| Functions pure | `npm run functions:test` | 8 files, 179 tests PASS |
+| Lint | `npm run lint` | clean |
+| Production build | `npm run build` | succeeds |
+| `git diff --check` | | clean |
+
+- `tests/unit/membershipResolution.test.js` (61). The pure fold and the gate
+  decision; then the REAL `ProfileProvider` and `MembershipGate`, run by a
+  small hook runtime (state, effects with clean-up, refs; optional doubled
+  mount as in React Strict Mode) over a fake listener that reproduces 75.2,
+  including the non-delivery of a metadata-only change to a listener opened
+  without the option. Groups: A initial resolution; B metadata and
+  connectivity (metadata-only confirmation, temporary unavailability,
+  recovery without a reload, refused read, *Try again*, repeated
+  transitions); C security and identity lifecycle (cached active then
+  server deactivation, role and assignment changes, identity switch, late
+  callbacks, rapid changes, same-uid re-sign-in, sign-out while pending,
+  unmount, Strict Mode, invalid data, one listener); D existing workflows
+  (invitation acceptance, reactivation, reconnection, the write-outcome
+  helper and the three money registers untouched); source structure (no
+  timer, no polling, no persistence, no service worker).
+- `tests/unit/membershipGateRender.test.js` (10). The gate rendered for each
+  of the seven states: the shell only when active; *No active membership*
+  only on a server-confirmed absence; the waiting and failure notices; no SDK
+  text.
+
+**Regression evidence.** With `useProfile.jsx`, `MembershipGate.jsx` and
+`lib/team.js` restored to `main`, the test *D3 #32 REGRESSION — a cache-only
+missing profile is not "No active membership"* fails with `expected 'none'
+not to be 'none'`. With the correction it passes.
+
+**What the unit layer does not do.** It has no DOM and no Firebase. The fake
+listener encodes measured behaviour; it is not the SDK.
+
+### 75.6 Local browser acceptance — LOCAL only (25 November 2026, 03:05–03:30 UTC)
+
+**Reproduction first, on `main`'s source (before any change).** A seeded
+Company Admin, signed in, reloading a project URL with the Firestore address
+blocked: **No active membership** within one sample, held for the 25 s
+observed; the project appeared 4.3 s after the block was removed.
+
+**Injection used.** *Blocked URL* — `Network.setBlockedURLs` on the emulator
+address: new requests fail; **a stream that is already open is not cut**, so
+this is valid for cold loads only. *TCP cut* — the application pointed at a
+local TCP gate in front of the emulator; closing the gate destroys the open
+sockets (4 → 0, counted) and refuses new ones. *Cut after the membership
+read* — `Fetch` interception failing the request that opens the projects
+listener and every later backend request. *Refused read* — an emulator-only
+copy of the Rules with the `users/{uid}` read line changed, loaded through
+the emulator's REST endpoint and restored; the repository file was not
+edited. Server changes were written to the emulator directly.
+
+| ID | Result | What was observed |
+|---|---|---|
+| E2-A, member, blocked URL | **PASS** | *Waiting for the server* on the first sample, held 20 s. Screens: spinner → waiting. Never *No active membership*. No project, company or navigation text on the page. *Sign out* shown, no *Try again* |
+| E2-A, recovery | **PASS** | The project appeared 5.2 s after the block was removed. No reload, no sign-out |
+| E2-A, member, TCP cut | **PASS** | The same; recovery 4.9 s and 6.2 s (two runs) |
+| E2-A, repeated transitions on a cold load | **PASS** | Unreachable → reachable 1.5 s → unreachable 3 s → reachable: waiting, then the project; never a denial |
+| E2-A, non-member | **PASS** | Online: *No active membership* after 0.16 s. Unreachable: *Waiting for the server*, no denial for the 8 s observed. Reachable: *No active membership* after 5.5 s — the metadata-only confirmation. The shell never rendered |
+| E2-A, deactivated account | **PASS** | Unreachable: waiting. Reachable: *Your membership was deactivated* after 3.1 s |
+| E2-B, cut after the membership read | **PASS** | *Loading project…*, then the project route's own *Waiting for the server* after 13.1 s. The shell stayed; no gate notice; never *Project not found*. The project appeared 1.7 s after the connection returned |
+| E2-B, established session, TCP cut | **PASS** | Two disconnections of 21 s (open sockets 4 → 0): the project stayed on screen, no notice, no sign-out, same uid afterwards |
+| E2-C, full offline hard reload | **Recorded — a limitation, not a pass** | The browser's own error page (`chrome-error://chromewebdata/`, `ERR_INTERNET_DISCONNECTED`). No service worker is registered. The application does not start offline |
+| Role change, live | **PASS** | The sidebar role label changed within one sample; the shell stayed |
+| Role change while disconnected (TCP cut) | **PASS** | Changed on the server 3 s into the cut; the old role was still shown 15 s later; the new role 11 s after reconnection |
+| Deactivation, live | **PASS** | Deactivated notice, then the sign-in page within 0.1 s; no session left in the browser |
+| Deactivation while disconnected (TCP cut) | **PASS** | Deactivated on the server 3 s into the cut; the session was unchanged 15 s later; signed out 16 s after reconnection |
+| Refused read | **PASS** | *Your membership could not be confirmed*, *Try again*; no SDK text or code; no protected content. *Try again* while still refused: the same notice. After the Rules were restored, *Try again* showed the project in 0.1 s, without a reload |
+| Profile without a `companyId` | **PASS** | *No active membership* |
+| Same tab: sign out, then sign in with the backend unreachable | **PASS** | *Waiting for the server*; the shell never rendered; shell 3.0 s after the backend returned |
+| Identity switch in one tab, member → non-member | **PASS** | The non-member was denied after 0.1 s; the member's shell was never shown under the new identity |
+| L3 uncertain write (E5) through a TCP cut | **PASS** | *Create draft receipt* while disconnected: the amber *not confirmed as saved* message after 7.9 s; the amount kept; the shell stayed; 0 receipts on the server. Acknowledged, reconnected, submitted: exactly one draft, `CR-0001`, 100 |
+| Normal online reload | **PASS** | spinner → shell. No waiting notice |
+| Console, both runs | **PASS** | 0 React warnings, 0 uncaught errors, 0 unhandled rejections. SDK transport warnings while disconnected, expected |
+
+**One observation, not a failure.** Signing out and in again **in the same
+tab, online**, shows *Waiting for the server* for 22–25 ms (three runs)
+before the shell: the SDK answers from its surviving cache a moment before
+the server does. The statement is true for those milliseconds. Nothing in the
+snapshot distinguishes "online, not yet answered" from "unreachable" on that
+path, so removing the flash needs a delay — a presentation decision, not made
+here. A normal page load does not show it.
+
+**A harness note for the record.** The first run used the blocked URL for
+the established-session checks; a server change arrived through the still
+open stream, which is how the limit of that injection was found. Those checks
+were repeated with the TCP cut. The results above are the valid ones.
+
+### 75.7 Corrected E2 procedure (D3 #34)
+
+§66 E2 as written — *DevTools → Offline, then reload* — never reaches the
+application: the page itself cannot load. It is replaced by three checks.
+
+- **E2-A — the application loads, Firestore is unreachable before membership
+  is resolved.** Signed in on a project URL, block the Firestore host only
+  (DevTools → Network request blocking → `firestore.googleapis.com`; the page
+  and Auth stay reachable), then reload. Expect *Waiting for the server* from
+  the membership gate; never *No active membership*; no project or company
+  content. Remove the block: the project appears by itself, without a reload
+  or a new sign-in, after the SDK's reconnection delay (seconds).
+- **E2-B — membership confirmed, then project data unavailable.** With a
+  project open, cut the connection. The page stays; nobody is signed out.
+  The local run used a TCP cut. DevTools → Offline for 30 s is the proposed
+  step in a real browser; whether it severs a stream that is already open
+  was not verified here, so its effect is to be observed, not assumed. For the project route's own
+  waiting state, the connection has to drop between the membership read and
+  the projects read — reproducible only by injection (75.6); on a live
+  network it is a timing window.
+- **E2-C — full offline hard reload.** The browser shows its own error page.
+  **Offline start-up is not supported** — there is no service worker and no
+  offline-first build. This is a recorded limitation, kept as a requirement
+  for a future PWA / offline-first increment. It is not to be made to pass by
+  adding a service worker to this correction.
+
+A request-blocking step in a production browser session affects only that
+browser tab. It needs no change to the network or to production.
+
+### 75.8 Not covered, and limits
+
+- **Production.** Nothing here ran against production. The minified
+  production bundle, Safari, Firefox and a real mobile network were not
+  exercised.
+- **App Check.** The emulator skips it. A profile read refused for a missing
+  App Check token would present as the refused-read notice — not observed.
+- **The company read and three list pages — now tracker D3 #36 (§75.10).**
+  `CompanyProvider` has the same shape the profile
+  provider had: it does not read `fromCache`. If the connection drops after
+  the membership read and before the company read, the company is briefly
+  taken as missing. Not exercised separately; not changed (out of scope).
+  The Dashboard, Projects and Portfolio pages likewise still ignore
+  `fromCache` (ADR-80, *Limits*).
+- **The 22–25 ms waiting notice** on a same-tab re-sign-in (75.6) —
+  **ACCEPTED by the Lead Architect (§75.10); no delay, timer or debounce is
+  to be added.**
+- **Every reconnection re-evaluates the profile.** The listener now delivers
+  cache-state changes; they produce no re-render (the state object is kept).
+- **Reconnection speed** is the SDK's back-off, 4–20 s here after a long
+  outage. The waiting notice has no countdown and no retry button.
+- **58 older write sites** (D3 #11) are unchanged.
+
+### 75.9 Deployment and production verification
+
+**Hosting only.** No Firestore Rules, Storage Rules, Functions, index,
+monitoring, Auth-configuration or data change. No migration. Rollback is the
+previous Hosting release.
+
+Proposed checks after a Hosting deploy (TEST company only; no network
+change, no production write):
+
+1. Release identity: the live bundle equals a build of the released commit.
+2. Normal sign-in and reload as the TEST Company Admin: the shell, no waiting
+   notice.
+3. E2-A with DevTools request blocking on the Firestore host: *Waiting for
+   the server*, then recovery without a reload.
+4. E2-B: a project open, DevTools → Offline for 30 s, then online: the page
+   stays, nobody is signed out.
+5. A signed-in account without membership, if one is available: *No active
+   membership* online. No identity is to be reactivated for this.
+6. L3 E2 can be closed by the Lead Architect on 3 and 4.
+
+### 75.10 Architect corrections (Lead Architect, 25 November 2026 — REPORTED) — implemented 26 November 2026 NZDT; status unchanged: IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION
+
+**Decisions.**
+
+- The implementation is accepted in principle.
+- **The 22–25 ms waiting notice is accepted.** No presentation delay, timer or
+  debounce.
+- The established-session connectivity behaviour is preserved.
+- The local E2-A and E2-B results are accepted. E2-C stays a requirement for
+  a future offline-first PWA.
+- **The membership gate is to refuse a server-confirmed profile whose role is
+  missing, malformed or unsupported.**
+- The remaining `fromCache` handling is a separate tracked finding
+  (D3 #36), not part of D3 #32.
+
+**The membership contract.** A server-confirmed profile enters the shell only
+if all three hold:
+
+| Field | Requirement | Otherwise |
+|---|---|---|
+| `status` | not `'deactivated'` (absent means active — legacy profiles, as the backend and the Rules treat it) | *Your membership was deactivated* |
+| `companyId` | a non-empty string | absent, null or empty: *No active membership*. Any other type: **invalid** |
+| `role` | one of the six documented roles: `super_admin`, `company_admin`, `project_manager`, `qs`, `subcontractor`, `client` | **invalid** |
+
+`status` is read first: deactivation writes `role: null` and
+`companyId: null` by design, and that profile is *deactivated*, never
+*invalid*.
+
+**One role registry.** `lib/formatters.js` already held the one table naming
+all six roles (the labels). It now exports `KNOWN_ROLES` and `isKnownRole`
+from that table; `membershipGate` uses the predicate. No second list was
+written. A unit test holds the table equal to the trusted backend's
+`INTERNAL_ROLES` + `OPERATOR_ROLES` and to the enum in DATA_MODEL.md.
+
+**`super_admin` is admitted.** The correction brief names five roles. The
+sixth is a documented role (PRODUCT.md; DATA_MODEL.md; SECURITY.md →
+*Documented Roles vs Enforced Roles*: "treated as an ordinary company
+member"), operator-provisioned, and may exist on a production profile, which
+cannot be read under this brief. Refusing it could lock a legitimate account
+out. **For the architect to confirm or reverse** — one line either way.
+
+**The invalid state.** New gate state `INVALID`: *Your membership needs
+attention* — the record is incomplete or not recognised; not a connection
+problem; ask the Company Admin to contact support; the page continues by
+itself once the record is corrected. *Sign out* only — no *Try again* (the
+listener is open and a corrected profile admits by itself). **No automatic
+sign-out:** an invalid profile is a configuration fault, not a loss of
+membership. The stored value is never shown.
+
+**A fault found by the browser check and corrected.** A `companyId` that is
+not a string reached `doc(db, 'companies', 42)` in `CompanyProvider`, which
+sits above the gate; the SDK threw and the error boundary replaced the whole
+application. Protected content was not shown, but neither was the notice.
+`lib/team.js → profileCompanyId` now gives a non-empty string or null, and
+`CompanyProvider` takes its target from it and from nowhere else. No other
+behaviour of that provider changed; its `fromCache` handling is untouched
+(D3 #36).
+
+**Lifecycle compatibility — inspected in the source, not in production.**
+
+| Path | What it writes | Result |
+|---|---|---|
+| `acceptInvitation` (internal invitation; bootstrap of a first Company Admin; operator invitation for `client` / `subcontractor`, ADR-84) | `companyId`, `role` and `status: 'active'` in one commit; the role is re-validated at acceptance | admitted |
+| Reactivation (a deactivated member re-accepts) | the same write | admitted |
+| `updateMemberRole` | one of the three internal roles | admitted |
+| `deactivateMember` | `companyId: null`, `role: null`, `status: 'deactivated'` | *deactivated*; an admitted session is signed out, as before |
+| Legacy profile (no `status`) with a documented role | — | admitted |
+| A profile with a `companyId` and no documented role | written by no backend path | **invalid** |
+
+No supported path produces an invalid profile, and no data migration is
+needed by any path inspected. **Residual dependency:** a production profile
+provisioned by hand before ADR-72 with a missing or misspelt role would now
+see the notice instead of an application in which the Rules already refuse
+it every role-gated write. Whether one exists was not checked (no production
+read). The read-only `reconcile-membership.mjs` does not test roles.
+
+**Automated — PASS (26 November 2026 NZDT).**
+
+| Suite | Result |
+|---|---|
+| Unit | 103 files, **5,333** tests (89 new since `main`: `membershipResolution.test.js` 77, `membershipGateRender.test.js` 12) |
+| Functions emulator (team-management lifecycle) | 11 files, 367 tests |
+| Functions pure | 8 files, 179 tests |
+| Rules emulator | **Not re-run** — no Rules file changed since the 39 / 2,492 run of §75.5 |
+| Lint / production build / `git diff --check` | clean / succeeds / clean |
+
+New coverage (group E of `membershipResolution.test.js`, and the render
+file): each of the six roles, with and without a status; a missing, null,
+empty, blank, unknown, wrong-case, padded, numeric, boolean, array and object
+role, and inherited object keys (`toString`, `constructor`, `__proto__`); a
+malformed `companyId` of five types; an absent `companyId` still *no
+membership*; a deactivated profile never *invalid*; an unresolved or failed
+read never *invalid*; the real provider and gate for every supported role and
+every malformed profile, with no sign-out; a cached valid role not repairing
+a server-confirmed invalid one; the five member roles in turn on one session;
+server-confirmed invalidation and recovery without a reload or a new
+listener; invalid then deactivated; invitation acceptance for the five roles
+the backend can write; reactivation; the notice's words. **All D3 #32 tests
+are kept;** three assertions were updated for the eighth gate state.
+
+**Local browser check — LOCAL only (emulators; headless Chrome 158).**
+
+| Check | Result |
+|---|---|
+| Six roles and a legacy profile without a status | **PASS** — the shell, no notice (7 of 7) |
+| Role missing, null, empty, unknown, numeric; `companyId` numeric | **PASS** — the *needs attention* notice; no project, company or navigation text; still signed in (6 of 6). *The numeric `companyId` case failed on the first run with the application error screen — the fault described above — and passes after the guard* |
+| Live invalidation of an admitted session | **PASS** — the notice within 0.1 s; project content gone; not signed out |
+| Live recovery | **PASS** — the project back within 0.1 s with the corrected role, no reload |
+| Deactivation afterwards | **PASS** — signed out |
+| Console | 0 React warnings, 0 uncaught errors |
+
+**Remaining production verification** — §75.9, plus: after the deploy, the
+TEST Company Admin still enters the application (the role check on a real
+profile). No invalid profile is to be created in production to test the
+notice.
+
+### 75.11 Release preflight (Lead Architect decision, 26 November 2026 NZDT — REPORTED: GO for integration, subject to this preflight) — status unchanged: IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION
+
+**Decisions.** `super_admin` stays a recognised role, with no added
+permission. Legacy profiles without a `status` are preserved. The
+`CompanyProvider` guard is approved. **D3 #36 is P2 — reliability hardening
+before customer onboarding;** it blocks neither this release nor the
+upcoming commercial implementation. D3 #32 and D3 #34 stay pending
+production verification; L3 stays open until then.
+
+**Production membership inventory — PROD-VERIFIED, read-only (25 November
+2026 20:05 UTC; project `constrapp-69b5d`).** Firestore REST `GET` of
+`users`, field-masked to `companyId`, `role`, `status` and `projectIds` —
+names and email addresses were not fetched — and of the `companies` document
+ids. Operator credentials; no write, no `--fix`, no account change.
+Aggregates only.
+
+| Measure | Count |
+|---|---|
+| Membership profiles (`users` documents) | 9 |
+| Company documents | 2 |
+| **Admitted by the corrected gate (valid active)** | **3** — all `company_admin`; 2 and 1 per company; each names an existing company |
+| …of which legacy (no `status` field) | 2 |
+| Intentionally deactivated (`status: 'deactivated'`, `companyId` and `role` both null — the shape `deactivateMember` writes) | 6 |
+| Unassociated (no `companyId`, not deactivated) | 0 |
+| Missing, null, empty, non-string or unknown `role` on an active profile | 0 |
+| Malformed `companyId` (not a string, or outside the id contract) | 0 |
+| Unexpected `status` value | 0 |
+| Other roles in use (`super_admin`, `project_manager`, `qs`, `subcontractor`, `client`) | 0 active |
+| **Profiles newly restricted by the corrected gate** | **0** |
+
+Both company ids, and the `companyId` on all three active profiles, meet the
+id contract. **Not inventoried:** Firebase Auth accounts that have no
+`users` document. They are *No active membership* before and after — the
+correction changes nothing for them.
+
+**Compatibility.** Every active production profile enters the application
+under the corrected gate exactly as it does today. No migration and no
+profile correction is needed.
+
+**Defensive company-id check — a genuine gap, corrected.** The guard of
+§75.10 stopped non-strings only. Measured against the SDK (`doc(db,
+'companies', id)`, firebase 12.15.0):
+
+| `companyId` string | `doc()` |
+|---|---|
+| `a/b`, `a//b` | **throws** — the error screen, from above the gate |
+| `c1/`, `/c1` | **resolves to `companies/c1`** — a different document from the one the profile names |
+| `a/b/c`, `c1/projects/p1` | **resolves to a nested document** |
+| a space, leading or trailing whitespace, a tab or newline, `.`, `..`, `__x__`, non-ASCII | a reference is built; no exception |
+
+`users/{uid}` is server-managed, so only an operator error could store such
+a value, and the Rules compare the stored string exactly — the two
+"different document" cases would be refused by the server, not served. The
+fault was the crash and the unintended reference, not an exposure.
+
+*Correction (two lines):* `profileCompanyId` now requires the **existing**
+id contract — `ID_RE`, `^[A-Za-z0-9_-]{1,64}$`, already in `lib/team.js` and
+identical to the backend's (`functions/src/lib/validation.js`, applied by
+`isValidId` to every company id the callables accept). `membershipGate`
+calls the same helper, so such a profile is shown *Your membership needs
+attention*. Nothing new was defined, and no value that meets the contract is
+affected.
+
+**Automated — PASS.** Unit 103 files, **5,336** tests (92 new since `main`;
+three added here: eighteen malformed strings through the helper, the gate,
+and the real provider and gate; real id shapes still admitted; the client
+and backend patterns held identical). Lint clean; production build succeeds;
+`git diff --check` clean. Functions, Rules and their suites: no file changed
+since the runs of §75.10 and §75.5.
+
+**Hosting deployment — exact command.** Working directory: **`frontend/`**
+(it holds `firebase.json`; there is no `.firebaserc`, so the project is
+named on the command line). From the released commit on `main`:
+
+```
+cd frontend
+npm ci
+npm run lint && npm run test:unit && npm run build
+firebase deploy --only hosting --project constrapp-69b5d
+```
+
+Hosting only — no `--only firestore:rules`, `storage` or `functions`.
+Rollback: the previous release in the Firebase Hosting console. Then the
+checks of §75.9 and §75.10.

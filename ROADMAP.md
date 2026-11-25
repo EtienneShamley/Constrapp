@@ -410,6 +410,28 @@ of the work still to do:
     are retained. Findings D3 #27–#29 form a **P2 external-role UI correction
     bundle**; an external purchase order create was confirmed refused by the
     Rules (no authorisation defect).
+  - **D3 #32 membership resolution correction — IMPLEMENTED — PENDING
+    INTEGRATION AND PRODUCTION VERIFICATION** (25 November 2026;
+    `fix/membership-resolution-state`, uncommitted, awaiting architect
+    review; TESTING.md §75; tracker B11). Only a server-confirmed profile
+    decides membership; a cache-only answer shows *Waiting for the server*
+    instead of a false *No active membership*. Authorisation is not
+    weakened; Rules, Functions and data are untouched. Hosting-only, **not
+    deployed**. **Architect corrections implemented (26 November 2026):**
+    the 22–25 ms waiting notice accepted; the gate now also refuses a
+    profile with a missing, malformed or unsupported role (a notice, no
+    sign-out); the remaining cache handling in the company provider and on
+    Dashboard, Projects and Portfolio is tracked separately as D3 #36
+    (**P2** reliability hardening before customer onboarding, not started,
+    not blocking). **Release preflight (26 November 2026): GO for
+    integration; production membership inventory read-only — 3 valid
+    active profiles, 6 deactivated, none newly restricted.** Unit 103
+    files / 5,336 tests;
+    E2-A and E2-B PASS on local
+    emulators only. The E2 procedure is corrected (D3 #34): E2-C, a full
+    offline hard reload, is a recorded limitation — offline start-up is not
+    supported, and stays a requirement for a future PWA / offline-first
+    increment. **L3 stays open** until E2-A and E2-B are run in production.
   - **L3 regression acceptance — decision (Lead Architect, 25 November
     2026 — REPORTED): GO for documentation integration; NO-GO for full L3
     closure** (TESTING.md §74.10; tracker B10).
@@ -426,8 +448,10 @@ of the work still to do:
       calculation or historical record changes now.
     - **Next, in this order (each on its own brief):**
       1. D3 #32 membership reliability fix (P2; authorisation not weakened;
-         no service worker or PWA).
-      2. L3 E2 corrected acceptance.
+         no service worker or PWA). *Implemented 25 November 2026 — pending
+         integration, a Hosting deploy and production verification.*
+      2. L3 E2 corrected acceptance. *Procedure corrected; the production
+         run follows the deploy.*
       3. Client credit-note architecture assessment and ADR.
       4. Firestore Rules capacity assessment and any necessary capacity
          recovery (source-file size alone does not establish deployable

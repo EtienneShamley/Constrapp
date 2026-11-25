@@ -5325,3 +5325,24 @@ that is a separate change (the `.env` file, the harness and the suites).
 - Architect review and Git integration; Azure `main` green.
 - No production dry run is needed for this review (architect, 24 November
   2026). No production `--apply` is needed to accept this change.
+
+## D3 #32 membership resolution correction — Hosting only — NOT YET DEPLOYED (prepared 26 November 2026; `fix/membership-resolution-state`, pending integration)
+
+**Hosting only.** No Firestore Rules, Storage Rules, Functions, index,
+monitoring or Auth-configuration change; no data migration. Preflight
+complete: a read-only production membership inventory found no profile that
+the corrected gate would newly restrict (TESTING.md §75.11).
+
+From the released commit on `main`, working directory **`frontend/`**:
+
+```
+cd frontend
+npm ci
+npm run lint && npm run test:unit && npm run build
+firebase deploy --only hosting --project constrapp-69b5d
+```
+
+Then: TESTING.md §75.9 and §75.10 (release identity; normal sign-in as the
+TEST Company Admin; E2-A; E2-B). Rollback: the previous release in the
+Firebase Hosting console. D3 #32, D3 #34 and L3 E2 stay open until those
+checks are recorded.
