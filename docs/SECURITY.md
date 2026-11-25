@@ -4519,8 +4519,8 @@ does not do, measured in the emulator:
   change, the membership gate unmounts the whole shell (and with it every
   protected listener) and signs the user out.
 - **Membership is resolved from the server only (tracker D3 #32 correction,
-  25 November 2026 — IMPLEMENTED on `fix/membership-resolution-state`, NOT
-  YET DEPLOYED; TESTING.md §75).** The profile listener asks for metadata
+  LIVE since 25 November 2026 20:32 UTC — `main` `0bdca38`; production
+  verification TESTING.md §76; implementation record §75).** The profile listener asks for metadata
   changes, and the gate acts only on a snapshot the server confirmed
   (`fromCache` and `hasPendingWrites` both false):
   - a cache-only answer — including the "document does not exist" the SDK

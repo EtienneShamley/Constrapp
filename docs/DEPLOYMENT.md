@@ -5326,7 +5326,11 @@ that is a separate change (the `.env` file, the harness and the suites).
 - No production dry run is needed for this review (architect, 24 November
   2026). No production `--apply` is needed to accept this change.
 
-## D3 #32 membership resolution correction — Hosting only — NOT YET DEPLOYED (prepared 26 November 2026; `fix/membership-resolution-state`, pending integration)
+## D3 #32 membership resolution correction — Hosting only — **DEPLOYED 25 November 2026 20:32:18 UTC** (Hosting release `edc2bf6f34568d78`, from `main` `0bdca38`; deployed by the Product Owner — REPORTED; live bundle VERIFIED identical to a build of that commit, and production-accepted, TESTING.md §76)
+
+*Heading as written before the release:* … NOT YET DEPLOYED (prepared 26 November 2026; `fix/membership-resolution-state`, pending integration)
+
+Rollback target, if ever needed: Hosting release `bb562d62c119df3c` (23 November 2026). Rules, Storage Rules, Functions and monitoring were verified unchanged after the deploy.
 
 **Hosting only.** No Firestore Rules, Storage Rules, Functions, index,
 monitoring or Auth-configuration change; no data migration. Preflight
