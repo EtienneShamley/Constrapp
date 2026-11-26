@@ -39,6 +39,29 @@ export const AUDIT = {
   // `before` and `after` each carry the complete `projectIds` list. A request
   // that changes nothing writes no event.
   MEMBER_PROJECTS_CHANGED:            'member.projects_changed',
+  // ADR-89 — one event per committed posting or void of a client credit note
+  // or client retention release, in its transaction. `before` and `after`
+  // each carry the invoice ledger's totals; a repeated request writes none.
+  CLIENT_CREDIT_NOTE_POSTED:          'client_credit_note.posted',
+  CLIENT_CREDIT_NOTE_VOIDED:          'client_credit_note.voided',
+  CLIENT_RETENTION_RELEASE_POSTED:    'client_retention_release.posted',
+  CLIENT_RETENTION_RELEASE_VOIDED:    'client_retention_release.voided',
+  // ADR-89 — one event per committed posting or void of a client receipt, in
+  // its transaction: the amount, and what each allocation added to (or took
+  // back from) the received figure of its invoice's ledger.
+  CLIENT_RECEIPT_POSTED:              'client_receipt.posted',
+  CLIENT_RECEIPT_VOIDED:              'client_receipt.voided',
+  // ADR-89 — ONE event per project, ever, in the transaction that brings the
+  // receipts posted before the backend took over into the invoice ledgers.
+  // Counts and whole cents only.
+  CLIENT_RECEIPT_BASELINE_ESTABLISHED: 'client_receipt.baseline_established',
+  // ADR-89 — an operator switched client credit notes and retention releases
+  // on or off for ONE company (scripts/set-client-finance.mjs). `before` and
+  // `after` carry the flag only; a run that changes nothing writes no event.
+  COMPANY_CLIENT_FINANCE_SET:          'company.client_finance_set',
+  // ADR-89 (S6) — the same script with --receipts: trusted receipt processing
+  // for ONE company while receipts are not yet open to every company.
+  COMPANY_CLIENT_RECEIPTS_SET:         'company.client_receipts_set',
 }
 
 export const auditCollection = (db, companyId) =>

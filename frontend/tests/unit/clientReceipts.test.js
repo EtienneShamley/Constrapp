@@ -609,12 +609,11 @@ describe('isPastDueUnreconciled — past its due date AND still owing', () => {
 })
 
 describe('AR_RECONCILIATION_NOTICE — honest about what is NOT enforced', () => {
-  it('states that over-allocation is warned but not blocked', () => {
-    expect(AR_RECONCILIATION_NOTICE).toMatch(/warns but does not block/i)
-  })
-
-  it('states that concurrent allocation is unprotected', () => {
-    expect(AR_RECONCILIATION_NOTICE).toMatch(/concurrently/i)
+  it('states the policy as the server now enforces it: refused unless acknowledged (ADR-89 final pass)', () => {
+    expect(AR_RECONCILIATION_NOTICE).toMatch(/refused when a receipt is posted unless it is explicitly acknowledged/)
+    // Not a claim that over-allocation is impossible.
+    expect(AR_RECONCILIATION_NOTICE).toMatch(/acknowledged surplus is shown as owed to the client/)
+    expect(AR_RECONCILIATION_NOTICE).not.toMatch(/cannot over-allocate|always blocked|never possible/i)
   })
 
   it('states that unallocated receipts reduce no invoice balance', () => {

@@ -139,7 +139,7 @@ const safeAmount = (n) => {
 	const v = typeof n === "number" ? n : Number(n);
 	return Number.isFinite(v) ? v : 0;
 };
-const toCents$1 = (n) => Math.round(safeAmount(n) * 100);
+const toCents$2 = (n) => Math.round(safeAmount(n) * 100);
 const RECONCILIATION_STATE = {
 	UNRECONCILED: "unreconciled",
 	PARTLY: "partly_reconciled",
@@ -162,8 +162,8 @@ function remainingBalance(invoiceTotal, settled) {
 	return roundMoney(safeAmount(invoiceTotal) - safeAmount(settled));
 }
 function reconciliationState(invoiceTotal, settled) {
-	const total = toCents$1(invoiceTotal);
-	const paid = toCents$1(settled);
+	const total = toCents$2(invoiceTotal);
+	const paid = toCents$2(settled);
 	if (paid <= 0) return RECONCILIATION_STATE.UNRECONCILED;
 	if (paid < total) return RECONCILIATION_STATE.PARTLY;
 	if (paid === total) return RECONCILIATION_STATE.FULLY;
@@ -471,26 +471,26 @@ function creditTargetException(creditNote, invoiceById) {
 	if (!SI_COUNTING_STATUSES.includes(inv.status)) return `${inv.invoiceNumber} is ${inv.status} — a credit note only counts against a posted supplier invoice.`;
 	if (!(inv.supplierId || creditNote.supplierId ? inv.supplierId === creditNote.supplierId : normaliseName(inv.supplierName) === normaliseName(creditNote.supplierName))) return `${inv.invoiceNumber} belongs to a different supplier (${inv.supplierName || "unknown"}) than this credit note.`;
 	if (inv.currency !== creditNote.currency) return `${inv.invoiceNumber} is denominated in ${inv.currency || "an unknown currency"}, not ${creditNote.currency || "unknown"}.`;
-	if (toCents$1(safeAmount(inv.retentionTotal)) !== 0) return `${inv.invoiceNumber} now withholds retention (${roundMoney(safeAmount(inv.retentionTotal)).toFixed(2)}) — a retained invoice cannot carry a credit note in this foundation.`;
+	if (toCents$2(safeAmount(inv.retentionTotal)) !== 0) return `${inv.invoiceNumber} now withholds retention (${roundMoney(safeAmount(inv.retentionTotal)).toFixed(2)}) — a retained invoice cannot carry a credit note in this foundation.`;
 	const lines = creditNote?.lineItems;
 	if (!Array.isArray(lines) || lines.length === 0) return "The credit note carries no readable line items, so its stored totals cannot be verified.";
 	const targetCostCodeIds = new Set(targetInvoiceCostCodes(inv).map((cc) => cc.costCodeId));
 	for (let i = 0; i < lines.length; i++) {
 		const li = lines[i];
 		const amount = Number(li?.amount);
-		if (!Number.isFinite(amount) || toCents$1(amount) <= 0) return `Line ${i + 1} does not carry a positive ex-GST amount, so this credit note's totals cannot be trusted.`;
+		if (!Number.isFinite(amount) || toCents$2(amount) <= 0) return `Line ${i + 1} does not carry a positive ex-GST amount, so this credit note's totals cannot be trusted.`;
 		if (!TAX_CODES$2.includes(li?.taxCode)) return `Line ${i + 1} carries an unknown tax code, so its GST cannot be verified.`;
-		if (toCents$1(safeAmount(li.gstAmount)) !== toCents$1(gstForLine(amount, li.taxCode))) return `Line ${i + 1}'s stored GST does not match its ex-GST amount and tax code.`;
+		if (toCents$2(safeAmount(li.gstAmount)) !== toCents$2(gstForLine(amount, li.taxCode))) return `Line ${i + 1}'s stored GST does not match its ex-GST amount and tax code.`;
 		if (!li.costCodeId || !targetCostCodeIds.has(li.costCodeId)) return `Line ${i + 1} credits a cost code that is not on ${inv.invoiceNumber} — a credit may only reduce cost codes the invoice charged.`;
 	}
 	const totals = creditNoteTotals(lines);
-	if (toCents$1(totals.subtotal) !== toCents$1(safeAmount(creditNote.subtotal)) || toCents$1(totals.gstTotal) !== toCents$1(safeAmount(creditNote.gstTotal)) || toCents$1(totals.grossTotal) !== toCents$1(safeAmount(creditNote.grossTotal))) return `The stored totals (${roundMoney(safeAmount(creditNote.grossTotal)).toFixed(2)} gross) do not reconcile to the credit note's line items (${totals.grossTotal.toFixed(2)} gross).`;
-	if (toCents$1(safeAmount(creditNote.grossTotal)) > toCents$1(safeAmount(inv.payableTotal))) return `The credit note gross (${roundMoney(safeAmount(creditNote.grossTotal)).toFixed(2)}) exceeds ${inv.invoiceNumber}'s payable total (${roundMoney(safeAmount(inv.payableTotal)).toFixed(2)}).`;
+	if (toCents$2(totals.subtotal) !== toCents$2(safeAmount(creditNote.subtotal)) || toCents$2(totals.gstTotal) !== toCents$2(safeAmount(creditNote.gstTotal)) || toCents$2(totals.grossTotal) !== toCents$2(safeAmount(creditNote.grossTotal))) return `The stored totals (${roundMoney(safeAmount(creditNote.grossTotal)).toFixed(2)} gross) do not reconcile to the credit note's line items (${totals.grossTotal.toFixed(2)} gross).`;
+	if (toCents$2(safeAmount(creditNote.grossTotal)) > toCents$2(safeAmount(inv.payableTotal))) return `The credit note gross (${roundMoney(safeAmount(creditNote.grossTotal)).toFixed(2)}) exceeds ${inv.invoiceNumber}'s payable total (${roundMoney(safeAmount(inv.payableTotal)).toFixed(2)}).`;
 	return null;
 }
-const invoicesById = (invoices) => new Map((invoices ?? []).map((inv) => [inv.id, inv]));
+const invoicesById$1 = (invoices) => new Map((invoices ?? []).map((inv) => [inv.id, inv]));
 function creditedByInvoice(creditNotes, invoices) {
-	const byId = invoicesById(invoices);
+	const byId = invoicesById$1(invoices);
 	const map = {};
 	for (const cn of postedSupplierCreditNotes(creditNotes)) {
 		if (creditTargetException(cn, byId) !== null) continue;
@@ -499,7 +499,7 @@ function creditedByInvoice(creditNotes, invoices) {
 	return map;
 }
 function creditedByCostCode(creditNotes, invoices) {
-	const byId = invoicesById(invoices);
+	const byId = invoicesById$1(invoices);
 	const map = {};
 	for (const cn of postedSupplierCreditNotes(creditNotes)) {
 		if (creditTargetException(cn, byId) !== null) continue;
@@ -1796,7 +1796,7 @@ const BUDGET_INTEGRITY_PROBLEM_TEXT = {
 	[BUDGET_INTEGRITY_PROBLEM.ADJUSTED_NEGATIVE]: "A cost code's adjusted approved budget is below zero.",
 	[BUDGET_INTEGRITY_PROBLEM.ADJUSTMENT_POINTER]: "The pointer's last-adjustment reference does not name the latest approved adjustment of the active version."
 };
-const toCents = (n) => Math.round((Number(n) || 0) * 100);
+const toCents$1 = (n) => Math.round((Number(n) || 0) * 100);
 function validateBudgetSnapshot(snapshot, header = null, { currencyCode = null } = {}) {
 	const problems = [];
 	if (!snapshot) return [BUDGET_INTEGRITY_PROBLEM.SNAPSHOT_MISSING];
@@ -1818,9 +1818,9 @@ function validateBudgetSnapshot(snapshot, header = null, { currencyCode = null }
 	if (malformed) problems.push(BUDGET_INTEGRITY_PROBLEM.ENTRY_MALFORMED);
 	if (duplicate) problems.push(BUDGET_INTEGRITY_PROBLEM.ENTRY_DUPLICATE);
 	if (!malformed) {
-		const sum = toCents(approvedTotalOf(snapshot));
-		if (!isMoney$1(snapshot.total) || toCents(snapshot.total) !== sum) problems.push(BUDGET_INTEGRITY_PROBLEM.TOTAL_MISMATCH);
-		else if (header && (!isMoney$1(header.total) || toCents(header.total) !== sum)) problems.push(BUDGET_INTEGRITY_PROBLEM.TOTAL_MISMATCH);
+		const sum = toCents$1(approvedTotalOf(snapshot));
+		if (!isMoney$1(snapshot.total) || toCents$1(snapshot.total) !== sum) problems.push(BUDGET_INTEGRITY_PROBLEM.TOTAL_MISMATCH);
+		else if (header && (!isMoney$1(header.total) || toCents$1(header.total) !== sum)) problems.push(BUDGET_INTEGRITY_PROBLEM.TOTAL_MISMATCH);
 	}
 	const currencies = [
 		snapshot.currency,
@@ -1999,7 +1999,7 @@ const namesOf = (lines) => {
 };
 function adjustmentRows(approved, names) {
 	const moves = movementsByCostCode(approved);
-	return Object.keys(moves).filter((id) => toCents(moves[id]) !== 0).sort().map((id) => ({
+	return Object.keys(moves).filter((id) => toCents$1(moves[id]) !== 0).sort().map((id) => ({
 		id: `adjustment:${id}`,
 		costCodeId: id,
 		costCodeName: names[id] ?? "",
@@ -2025,10 +2025,10 @@ function reconcileAdjustments(list, pointer, snapshot, ledgerCount, ledgerNet) {
 	let byCostCode = {};
 	if (!malformed) {
 		net = roundMoney(approved.reduce((s, a) => s + adjustmentNet(a), 0));
-		if (toCents(net) !== toCents(ledgerNet)) problems.push(P.ADJUSTMENT_NET);
+		if (toCents$1(net) !== toCents$1(ledgerNet)) problems.push(P.ADJUSTMENT_NET);
 		if (isBudgetSnapshotUsable(snapshot)) {
 			byCostCode = applyMovements(approvedByCostCode(snapshot), approved);
-			if (Object.values(byCostCode).some((v) => toCents(v) < 0)) problems.push(P.ADJUSTED_NEGATIVE);
+			if (Object.values(byCostCode).some((v) => toCents$1(v) < 0)) problems.push(P.ADJUSTED_NEGATIVE);
 		}
 	}
 	return {
@@ -2051,6 +2051,14 @@ function approvedVersionCaption(source) {
 function originalApprovedBudgetFor(resolved) {
 	if (resolved?.kind === BUDGET_SOURCE.APPROVED && isMoney$1(resolved.originalTotal)) return resolved.originalTotal;
 }
+
+//#endregion
+//#region src/lib/money.js
+function toCents(amount) {
+	const n = typeof amount === "number" ? amount : Number(amount);
+	return Number.isFinite(n) ? Math.round(n * 100) : 0;
+}
+const fromCents = (cents) => cents / 100;
 
 //#endregion
 //#region src/lib/clientInvoices.js
@@ -2091,6 +2099,23 @@ const TAX_CODE_LABELS = {
 	[TAX_CODE.GST_FREE]: "GST-free",
 	[TAX_CODE.INPUT_TAXED]: "Input-taxed"
 };
+function invoiceRetention(invoice) {
+	const subtotalCents = toCents(invoice?.subtotal);
+	const gstCents = toCents(invoice?.gstTotal);
+	const retentionCents = toCents(invoice?.retention);
+	const retentionGstCents = toCents(invoice?.retentionGst);
+	const grossCents = toCents(invoice?.grossTotal);
+	return {
+		subtotalCents,
+		gstCents,
+		grossCents,
+		retentionCents,
+		retentionGstCents,
+		retentionTotalCents: retentionCents + retentionGstCents,
+		receivableCents: grossCents - retentionCents - retentionGstCents
+	};
+}
+const hasRetention = (invoice) => toCents(invoice?.retention) > 0;
 const issuedClientInvoices = (invoices) => (invoices ?? []).filter((inv) => CI_COUNTING_STATUSES.includes(inv.status));
 const draftClientInvoices = (invoices) => (invoices ?? []).filter((inv) => inv.status === CI_STATUS.DRAFT);
 function sumInvoices(invoices) {
@@ -2112,11 +2137,27 @@ function sumInvoices(invoices) {
 function availableToInvoice(currentContractSumValue, issuedExGst) {
 	return roundMoney((Number(currentContractSumValue) || 0) - (Number(issuedExGst) || 0));
 }
-function contractControl(invoices, currentContractSumValue) {
-	const issued = sumInvoices(issuedClientInvoices(invoices));
+function contractControl(invoices, currentContractSumValue, creditedTotals = null) {
+	const billed = sumInvoices(issuedClientInvoices(invoices));
 	const drafts = sumInvoices(draftClientInvoices(invoices));
+	const creditedSubtotal = roundMoney(Number(creditedTotals?.creditedSubtotal) || 0);
+	const creditedGst = roundMoney(Number(creditedTotals?.creditedGst) || 0);
+	const subtotal = roundMoney(billed.subtotal - creditedSubtotal);
+	const gstTotal = roundMoney(billed.gstTotal - creditedGst);
+	const issued = {
+		count: billed.count,
+		subtotal,
+		gstTotal,
+		grossTotal: roundMoney(subtotal + gstTotal)
+	};
 	return {
 		currentContractSum: roundMoney(Number(currentContractSumValue) || 0),
+		billed,
+		credited: {
+			subtotal: creditedSubtotal,
+			gstTotal: creditedGst,
+			grossTotal: roundMoney(creditedSubtotal + creditedGst)
+		},
 		issued,
 		drafts,
 		availableToInvoice: availableToInvoice(currentContractSumValue, issued.subtotal)
@@ -2135,42 +2176,70 @@ function receivedByInvoice(receipts) {
 	}
 	return map;
 }
-function remainingToReconcile(invoice, received) {
-	return remainingBalance(invoice?.grossTotal, received);
+function receivableBasis(invoice, position = null) {
+	if (position && Number.isFinite(position.receivableBasis)) return roundMoney(position.receivableBasis);
+	return roundMoney(invoiceRetention(invoice).receivableCents / 100);
 }
-function clientInvoiceReconciliationRows(invoices, receipts) {
+function remainingToReconcile(invoice, received, position = null) {
+	return remainingBalance(receivableBasis(invoice, position), received);
+}
+function stateOf(basis, received) {
+	if (toCents$2(basis) <= 0 && toCents$2(received) <= 0) return RECONCILIATION_STATE.FULLY;
+	return reconciliationState(basis, received);
+}
+function clientInvoiceReconciliationRows(invoices, receipts, positions = {}) {
 	const received = receivedByInvoice(receipts);
-	return (invoices ?? []).filter((inv) => inv.status === CI_STATUS.ISSUED).map((inv) => ({
-		id: inv.id,
-		invoiceNumber: inv.invoiceNumber,
-		clientId: inv.clientId ?? null,
-		clientName: inv.clientName || "",
-		invoiceDate: inv.invoiceDate || "",
-		dueDate: inv.dueDate || "",
-		grossTotal: roundMoney(safeAmount(inv.grossTotal)),
-		received: roundMoney(received[inv.id] || 0),
-		remaining: remainingToReconcile(inv, received[inv.id] || 0),
-		state: reconciliationState(inv.grossTotal, received[inv.id] || 0)
-	}));
+	return (invoices ?? []).filter((inv) => inv.status === CI_STATUS.ISSUED).map((inv) => {
+		const position = positions[inv.id] ?? null;
+		const basis = receivableBasis(inv, position);
+		const retention = invoiceRetention(inv);
+		return {
+			id: inv.id,
+			invoiceNumber: inv.invoiceNumber,
+			clientId: inv.clientId ?? null,
+			clientName: inv.clientName || "",
+			invoiceDate: inv.invoiceDate || "",
+			dueDate: inv.dueDate || "",
+			grossTotal: roundMoney(safeAmount(inv.grossTotal)),
+			credited: roundMoney(position?.credited || 0),
+			retentionTotal: roundMoney(retention.retentionTotalCents / 100),
+			releasedTotal: roundMoney(position?.releasedTotal || 0),
+			retentionHeld: roundMoney(position ? position.retentionHeld : retention.retentionTotalCents / 100),
+			receivableBasis: basis,
+			received: roundMoney(received[inv.id] || 0),
+			remaining: remainingToReconcile(inv, received[inv.id] || 0, position),
+			state: stateOf(basis, received[inv.id] || 0)
+		};
+	});
 }
-function receivablesSummary(invoices, receipts) {
-	const rows = clientInvoiceReconciliationRows(invoices, receipts);
+function receivablesSummary(invoices, receipts, positions = {}) {
+	const rows = clientInvoiceReconciliationRows(invoices, receipts, positions);
 	let issuedGross = 0;
 	let received = 0;
 	let remaining = 0;
 	let overReconciled = 0;
+	let credited = 0;
+	let retentionHeld = 0;
+	let receivable = 0;
 	for (const r of rows) {
 		issuedGross = roundMoney(issuedGross + r.grossTotal);
 		received = roundMoney(received + r.received);
-		if (toCents$1(r.remaining) > 0) remaining = roundMoney(remaining + r.remaining);
-		if (toCents$1(r.remaining) < 0) overReconciled = roundMoney(overReconciled + r.remaining);
+		credited = roundMoney(credited + r.credited);
+		retentionHeld = roundMoney(retentionHeld + r.retentionHeld);
+		receivable = roundMoney(receivable + r.receivableBasis);
+		if (toCents$2(r.remaining) > 0) remaining = roundMoney(remaining + r.remaining);
+		if (toCents$2(r.remaining) < 0) overReconciled = roundMoney(overReconciled + r.remaining);
 	}
 	return {
 		rows,
 		issuedGross,
 		received,
 		remaining,
-		overReconciled
+		overReconciled,
+		credited,
+		retentionHeld,
+		receivable,
+		owedToClient: roundMoney(0 - overReconciled)
 	};
 }
 function receiptSummary(receipts) {
@@ -2208,6 +2277,253 @@ function cashInRows(receipts, { projectId } = {}) {
 		allocatedTotal: roundMoney(safeAmount(r.allocatedTotal)),
 		unallocatedAmount: roundMoney(safeAmount(r.unallocatedAmount))
 	}));
+}
+
+//#endregion
+//#region src/lib/clientLedger.js
+const emptyLedger = () => ({
+	seq: 0,
+	creditedSubtotalCents: 0,
+	creditedGstCents: 0,
+	creditedRetentionCents: 0,
+	creditedRetentionGstCents: 0,
+	releasedRetentionCents: 0,
+	releasedRetentionGstCents: 0,
+	receivedCents: 0,
+	lines: {}
+});
+function ledgerPosition(invoice, ledger) {
+	const inv = invoiceRetention(invoice);
+	const L = ledger ?? emptyLedger();
+	const creditedGross = L.creditedSubtotalCents + L.creditedGstCents;
+	const creditedRetentionGross = L.creditedRetentionCents + L.creditedRetentionGstCents;
+	const releasedGross = L.releasedRetentionCents + L.releasedRetentionGstCents;
+	return {
+		...inv,
+		creditedSubtotalCents: L.creditedSubtotalCents,
+		creditedGstCents: L.creditedGstCents,
+		creditedGrossCents: creditedGross,
+		creditedRetentionGrossCents: creditedRetentionGross,
+		releasedGrossCents: releasedGross,
+		netIssuedSubtotalCents: inv.subtotalCents - L.creditedSubtotalCents,
+		netIssuedGrossCents: inv.grossCents - creditedGross,
+		retentionHeldExCents: inv.retentionCents - L.releasedRetentionCents - L.creditedRetentionCents,
+		retentionHeldGstCents: inv.retentionGstCents - L.releasedRetentionGstCents - L.creditedRetentionGstCents,
+		retentionHeldCents: inv.retentionTotalCents - releasedGross - creditedRetentionGross,
+		receivableBasisCents: inv.receivableCents + releasedGross - (creditedGross - creditedRetentionGross)
+	};
+}
+function creditNoteCents(creditNote) {
+	return {
+		subtotalCents: toCents(creditNote?.subtotal),
+		gstCents: toCents(creditNote?.gstTotal),
+		retentionCents: toCents(creditNote?.retentionAmount),
+		retentionGstCents: toCents(creditNote?.retentionGst),
+		lines: (creditNote?.lineItems ?? []).map((li) => ({
+			invoiceLineIndex: li?.invoiceLineIndex,
+			amountCents: toCents(li?.amount),
+			gstCents: toCents(li?.gstAmount)
+		}))
+	};
+}
+function expectedLedgerTotals(invoiceId, postedCreditNotes, postedReleases) {
+	const out = emptyLedger();
+	for (const cn of postedCreditNotes ?? []) {
+		if (cn?.clientInvoiceId !== invoiceId) continue;
+		const c = creditNoteCents(cn);
+		out.creditedSubtotalCents += c.subtotalCents;
+		out.creditedGstCents += c.gstCents;
+		out.creditedRetentionCents += c.retentionCents;
+		out.creditedRetentionGstCents += c.retentionGstCents;
+	}
+	for (const r of postedReleases ?? []) {
+		if (r?.clientInvoiceId !== invoiceId) continue;
+		out.releasedRetentionCents += toCents(r.amount);
+		out.releasedRetentionGstCents += toCents(r.gstAmount);
+	}
+	return out;
+}
+
+//#endregion
+//#region src/lib/clientCreditNotes.js
+const CCN_STATUS = {
+	DRAFT: "draft",
+	POSTED: "posted",
+	VOID: "void"
+};
+const CCN_STATUS_LABELS = {
+	[CCN_STATUS.DRAFT]: "Draft",
+	[CCN_STATUS.POSTED]: "Posted",
+	[CCN_STATUS.VOID]: "Void"
+};
+const CCN_BADGE_VARIANTS = {
+	[CCN_STATUS.DRAFT]: "soon",
+	[CCN_STATUS.POSTED]: "active",
+	[CCN_STATUS.VOID]: "danger"
+};
+const CCN_TRANSITIONS = {
+	[CCN_STATUS.DRAFT]: [CCN_STATUS.POSTED, CCN_STATUS.VOID],
+	[CCN_STATUS.POSTED]: [CCN_STATUS.VOID],
+	[CCN_STATUS.VOID]: []
+};
+const postedClientCreditNotes = (creditNotes) => (creditNotes ?? []).filter((cn) => cn?.status === CCN_STATUS.POSTED);
+const draftClientCreditNotes = (creditNotes) => (creditNotes ?? []).filter((cn) => cn?.status === CCN_STATUS.DRAFT);
+function clientCreditException(creditNote, invoiceById) {
+	const invoice = invoiceById?.get?.(creditNote?.clientInvoiceId) ?? null;
+	if (!invoice) return "The credited client invoice no longer exists or is not readable.";
+	if (invoice.status !== CI_STATUS.ISSUED) return `${invoice.invoiceNumber} is ${invoice.status} — a credit note only counts against an issued client invoice.`;
+	if ((invoice.clientId ?? null) !== (creditNote.clientId ?? null)) return `${invoice.invoiceNumber} belongs to a different client than this credit note.`;
+	if (invoice.currency !== creditNote.currency) return `${invoice.invoiceNumber} is denominated in ${invoice.currency || "an unknown currency"}, not ${creditNote.currency || "unknown"}.`;
+	const lines = creditNote?.lineItems;
+	if (!Array.isArray(lines) || lines.length === 0) return "The credit note carries no readable line items, so its stored totals cannot be verified.";
+	const sourceLines = Array.isArray(invoice.lineItems) ? invoice.lineItems : [];
+	const seen = /* @__PURE__ */ new Set();
+	let subtotalCents = 0;
+	let gstCents = 0;
+	for (let i = 0; i < lines.length; i += 1) {
+		const li = lines[i];
+		const source = sourceLines[li?.invoiceLineIndex];
+		if (!Number.isInteger(li?.invoiceLineIndex) || !source) return `Line ${i + 1} does not name a line of ${invoice.invoiceNumber}.`;
+		if (seen.has(li.invoiceLineIndex)) return `Line ${i + 1} credits an invoice line twice.`;
+		seen.add(li.invoiceLineIndex);
+		const amountCents = toCents(li.amount);
+		const lineGstCents = toCents(li.gstAmount);
+		if (!(amountCents > 0)) return `Line ${i + 1} does not carry a positive ex-GST amount.`;
+		if (amountCents > toCents(source.amount)) return `Line ${i + 1} credits more than the invoice line it names.`;
+		if (!TAX_CODES.includes(li.taxCode) || li.taxCode !== source.taxCode) return `Line ${i + 1}'s tax code does not match the invoice line it credits.`;
+		if (lineGstCents < 0 || lineGstCents > toCents(source.gstAmount)) return `Line ${i + 1}'s GST is not within the GST of the invoice line it credits.`;
+		if ((li.variationId ?? null) !== (source.variationId ?? null)) return `Line ${i + 1} names a different variation than the invoice line it credits.`;
+		subtotalCents += amountCents;
+		gstCents += lineGstCents;
+	}
+	const stored = creditNoteCents(creditNote);
+	if (stored.subtotalCents !== subtotalCents || stored.gstCents !== gstCents || toCents(creditNote.grossTotal) !== subtotalCents + gstCents) return "The stored totals do not reconcile to the credit note's own line items.";
+	const inv = invoiceRetention(invoice);
+	if (stored.subtotalCents > inv.subtotalCents || stored.gstCents > inv.gstCents) return `The credit note exceeds ${invoice.invoiceNumber}.`;
+	if (stored.retentionCents < 0 || stored.retentionGstCents < 0 || stored.retentionCents > Math.min(stored.subtotalCents, inv.retentionCents) || stored.retentionGstCents > inv.retentionGstCents) return "The retention part of this credit note is not within the credit or the retention withheld.";
+	return null;
+}
+const invoicesById = (invoices) => new Map((invoices ?? []).map((inv) => [inv.id, inv]));
+const countingClientCreditNotes = (creditNotes, invoices) => {
+	const byId = invoicesById(invoices);
+	return postedClientCreditNotes(creditNotes).filter((cn) => clientCreditException(cn, byId) === null);
+};
+function clientCreditExceptions(creditNotes, invoices) {
+	const byId = invoicesById(invoices);
+	const out = [];
+	for (const cn of postedClientCreditNotes(creditNotes)) {
+		const reason = clientCreditException(cn, byId);
+		if (!reason) continue;
+		out.push({
+			creditNoteId: cn.id,
+			creditNumber: cn.creditNumber,
+			invoiceNumber: cn.invoiceNumber || "—",
+			grossTotal: fromCents(toCents(cn.grossTotal)),
+			reason
+		});
+	}
+	return out;
+}
+function creditedByVariation(creditNotes, invoices) {
+	const map = {};
+	for (const cn of countingClientCreditNotes(creditNotes, invoices)) for (const li of cn.lineItems ?? []) {
+		if (!li.variationId) continue;
+		map[li.variationId] = (map[li.variationId] || 0) + toCents(li.amount);
+	}
+	return Object.fromEntries(Object.entries(map).map(([k, v]) => [k, fromCents(v)]));
+}
+
+//#endregion
+//#region src/lib/clientRetention.js
+const CRR_STATUS = {
+	DRAFT: "draft",
+	POSTED: "posted",
+	VOID: "void"
+};
+const CRR_STATUS_LABELS = {
+	[CRR_STATUS.DRAFT]: "Draft",
+	[CRR_STATUS.POSTED]: "Posted",
+	[CRR_STATUS.VOID]: "Void"
+};
+const CRR_BADGE_VARIANTS = {
+	[CRR_STATUS.DRAFT]: "soon",
+	[CRR_STATUS.POSTED]: "active",
+	[CRR_STATUS.VOID]: "danger"
+};
+const CRR_TRANSITIONS = {
+	[CRR_STATUS.DRAFT]: [CRR_STATUS.POSTED, CRR_STATUS.VOID],
+	[CRR_STATUS.POSTED]: [CRR_STATUS.VOID],
+	[CRR_STATUS.VOID]: []
+};
+const postedClientRetentionReleases = (releases) => (releases ?? []).filter((r) => r?.status === CRR_STATUS.POSTED);
+const draftClientRetentionReleases = (releases) => (releases ?? []).filter((r) => r?.status === CRR_STATUS.DRAFT);
+function clientReleaseExceptions(releases, invoices) {
+	const byId = new Map((invoices ?? []).map((inv) => [inv.id, inv]));
+	const out = [];
+	for (const r of postedClientRetentionReleases(releases)) {
+		const inv = byId.get(r?.clientInvoiceId);
+		const reason = !inv ? "The client invoice this release belongs to no longer exists or is not readable." : inv.status !== CI_STATUS.ISSUED ? `${inv.invoiceNumber} is ${inv.status} — retention can only be released on an issued client invoice.` : !hasRetention(inv) ? `${inv.invoiceNumber} withheld no retention, so this release has nothing to release.` : null;
+		if (!reason) continue;
+		out.push({
+			releaseId: r.id,
+			releaseNumber: r.releaseNumber,
+			invoiceNumber: r.invoiceNumber || inv?.invoiceNumber || "—",
+			releaseTotal: fromCents(toCents(r.releaseTotal)),
+			reason
+		});
+	}
+	return out;
+}
+const countingClientRetentionReleases = (releases, invoices) => {
+	const failing = new Set(clientReleaseExceptions(releases, invoices).map((e) => e.releaseId));
+	return postedClientRetentionReleases(releases).filter((r) => !failing.has(r.id));
+};
+
+//#endregion
+//#region src/lib/clientReceivables.js
+function receivablePositions(invoices, creditNotes = [], releases = []) {
+	const counting = countingClientCreditNotes(creditNotes, invoices);
+	const released = countingClientRetentionReleases(releases, invoices);
+	const map = {};
+	for (const invoice of issuedClientInvoices(invoices)) {
+		const p = ledgerPosition(invoice, expectedLedgerTotals(invoice.id, counting, released));
+		map[invoice.id] = {
+			subtotal: fromCents(p.subtotalCents),
+			grossTotal: fromCents(p.grossCents),
+			creditedSubtotal: fromCents(p.creditedSubtotalCents),
+			creditedGst: fromCents(p.creditedGstCents),
+			credited: fromCents(p.creditedGrossCents),
+			netIssuedSubtotal: fromCents(p.netIssuedSubtotalCents),
+			netIssuedGross: fromCents(p.netIssuedGrossCents),
+			retentionTotal: fromCents(p.retentionTotalCents),
+			releasedTotal: fromCents(p.releasedGrossCents),
+			creditedRetention: fromCents(p.creditedRetentionGrossCents),
+			retentionHeld: fromCents(p.retentionHeldCents),
+			retentionHeldExGst: fromCents(p.retentionHeldExCents),
+			receivableBasis: fromCents(p.receivableBasisCents)
+		};
+	}
+	return map;
+}
+function receivableTotals(positions) {
+	const sum = (key) => fromCents(Object.values(positions ?? {}).reduce((s, p) => s + Math.round((p[key] || 0) * 100), 0));
+	return {
+		creditedSubtotal: sum("creditedSubtotal"),
+		creditedGst: sum("creditedGst"),
+		credited: sum("credited"),
+		retentionTotal: sum("retentionTotal"),
+		releasedTotal: sum("releasedTotal"),
+		creditedRetention: sum("creditedRetention"),
+		retentionHeld: sum("retentionHeld")
+	};
+}
+function receivableContext(invoices, creditNotes = [], releases = []) {
+	const positions = receivablePositions(invoices, creditNotes, releases);
+	return {
+		positions,
+		totals: receivableTotals(positions),
+		creditedByVariation: creditedByVariation(creditNotes, invoices)
+	};
 }
 
 //#endregion
@@ -2269,8 +2585,8 @@ function payablesSummary(invoices, payments, creditNotes = [], releasedByInvoice
 		postedPayable = roundMoney(postedPayable + r.payableTotal);
 		paid = roundMoney(paid + r.paid);
 		credited = roundMoney(credited + r.credited);
-		if (toCents$1(r.remaining) > 0) remaining = roundMoney(remaining + r.remaining);
-		if (toCents$1(r.remaining) < 0) overReconciled = roundMoney(overReconciled + r.remaining);
+		if (toCents$2(r.remaining) > 0) remaining = roundMoney(remaining + r.remaining);
+		if (toCents$2(r.remaining) < 0) overReconciled = roundMoney(overReconciled + r.remaining);
 	}
 	return {
 		rows,
@@ -2408,7 +2724,7 @@ function releasedExGstByInvoiceId(releases) {
 function remainingRetentionExGst(invoice, releasedExGst) {
 	return Math.max(0, roundMoney(safeAmount(invoice?.retention) - safeAmount(releasedExGst)));
 }
-const retentionInvoices = (invoices) => (invoices ?? []).filter((inv) => isPayableInvoice(inv) && toCents$1(safeAmount(inv.retentionTotal)) > 0);
+const retentionInvoices = (invoices) => (invoices ?? []).filter((inv) => isPayableInvoice(inv) && toCents$2(safeAmount(inv.retentionTotal)) > 0);
 function retentionInvoiceRows(invoices, releases) {
 	const releasedGross = releasedByInvoiceId(releases);
 	const releasedExGst = releasedExGstByInvoiceId(releases);
@@ -2431,7 +2747,7 @@ function retentionInvoiceRows(invoices, releases) {
 			releasedTotal: relTotal,
 			retentionHeld: Math.max(0, roundMoney(retentionTotal - relTotal)),
 			remainingRetentionExGst: remainingRetentionExGst(inv, relExGst),
-			fullyReleased: toCents$1(retentionTotal - relTotal) <= 0,
+			fullyReleased: toCents$2(retentionTotal - relTotal) <= 0,
 			legacyNameMatch: isLegacyNameMatch(inv)
 		};
 	});
@@ -2698,12 +3014,16 @@ const CONTRACT_ROW_STATE = {
 const REPORT_SOURCES = [
 	...SNAPSHOT_SOURCES,
 	"clientInvoices",
-	"clientReceipts"
+	"clientReceipts",
+	"clientCreditNotes",
+	"clientRetentionReleases"
 ];
 const REPORT_SOURCE_LABELS = {
 	...SNAPSHOT_SOURCE_LABELS,
 	clientInvoices: "Client Invoices",
-	clientReceipts: "Client Receipts"
+	clientReceipts: "Client Receipts",
+	clientCreditNotes: "Client Credit Notes",
+	clientRetentionReleases: "Client Retention Releases"
 };
 const REPORT_DEPENDENCIES = {
 	costToComplete: FIGURE_DEPENDENCIES.forecastFinalCost,
@@ -2715,7 +3035,17 @@ const REPORT_DEPENDENCIES = {
 	cashIn: ["clientReceipts"],
 	cashOut: ["supplierPayments"],
 	netCash: ["clientReceipts", "supplierPayments"],
-	receivables: ["clientInvoices", "clientReceipts"]
+	receivables: [
+		"clientInvoices",
+		"clientReceipts",
+		"clientCreditNotes",
+		"clientRetentionReleases"
+	],
+	clientRetentionHeld: [
+		"clientInvoices",
+		"clientCreditNotes",
+		"clientRetentionReleases"
+	]
 };
 const FIGURE_KIND = {
 	MONEY: "money",
@@ -2756,7 +3086,7 @@ function budgetSourceCaption(budgetSource) {
 	return "Unavailable";
 }
 function buildCommercialReport({ project = null, currencyCode, sources = {}, sourceStates = {} } = {}) {
-	const { budgetLines = [], approvedBudget = null, purchaseOrders = [], progressClaims = [], supplierInvoices = [], supplierCreditNotes = [], variations = [], forecastLines = [], baseline = null, supplierPayments = [], retentionReleases = [], clientInvoices = [], clientReceipts = [], costCodes = [] } = sources;
+	const { budgetLines = [], approvedBudget = null, purchaseOrders = [], progressClaims = [], supplierInvoices = [], supplierCreditNotes = [], variations = [], forecastLines = [], baseline = null, supplierPayments = [], retentionReleases = [], clientInvoices = [], clientReceipts = [], clientCreditNotes = [], clientRetentionReleases = [], costCodes = [] } = sources;
 	const snapshot = projectSnapshot({
 		currencyCode,
 		sources: {
@@ -3000,7 +3330,8 @@ function buildCommercialReport({ project = null, currencyCode, sources = {}, sou
 	const outRows = cashOutRows(supplierPayments, { projectId: project?.id ?? null });
 	const cashIn = totalActualCashIn(inRows);
 	const cashOut = totalActualCashOut(outRows);
-	const receivables = receivablesSummary(clientInvoices, clientReceipts);
+	const { positions } = receivableContext(clientInvoices, clientCreditNotes, clientRetentionReleases);
+	const receivables = receivablesSummary(clientInvoices, clientReceipts, positions);
 	const cashFigures = [
 		{
 			key: "cashIn",
@@ -3028,7 +3359,21 @@ function buildCommercialReport({ project = null, currencyCode, sources = {}, sou
 			label: "Client invoices outstanding",
 			kind: FIGURE_KIND.MONEY,
 			figure: gated(REPORT_DEPENDENCIES.receivables, receivables.remaining, sourceStates),
-			note: "Issued client invoices not yet matched to a receipt, gross — not cash"
+			note: "Issued client invoices, less posted credit notes and retention still held, not yet matched to a receipt, gross — not cash"
+		},
+		{
+			key: "clientRetentionHeld",
+			label: "Client retention held",
+			kind: FIGURE_KIND.MONEY,
+			figure: gated(REPORT_DEPENDENCIES.clientRetentionHeld, receivables.retentionHeld, sourceStates),
+			note: "Client retention held — billed, not receivable until released, gross"
+		},
+		{
+			key: "owedToClient",
+			label: "Owed to client",
+			kind: FIGURE_KIND.MONEY,
+			figure: gated(REPORT_DEPENDENCIES.receivables, receivables.owedToClient, sourceStates),
+			note: "Received beyond what is now receivable on an invoice (a credit note after receipt, or an over-allocation), gross — not netted against other invoices"
 		},
 		{
 			key: "remainingPayable",
@@ -3793,7 +4138,14 @@ const FINAL_ACCOUNT_FIGURES = [
 		group: FIGURE_GROUP.CONTRACT,
 		basis: FIGURE_BASIS.EX_GST,
 		label: "Invoiced to client",
-		note: "Issued client invoices — an invoice is not a certificate and not cash"
+		note: "Issued client invoices less posted client credit notes — an invoice is not a certificate and not cash"
+	},
+	{
+		key: "creditedToClient",
+		group: FIGURE_GROUP.CONTRACT,
+		basis: FIGURE_BASIS.EX_GST,
+		label: "Credited to client",
+		note: "Posted client credit notes — already deducted from invoiced to client; not cash and not a change to the contract sum"
 	},
 	{
 		key: "remainingToInvoice",
@@ -3865,7 +4217,7 @@ const FINAL_ACCOUNT_FIGURES = [
 		group: FIGURE_GROUP.BALANCES,
 		basis: FIGURE_BASIS.GROSS,
 		label: "Invoiced to client (gross)",
-		note: "Issued client invoices incl. GST"
+		note: "Issued client invoices less posted client credit notes, incl. GST"
 	},
 	{
 		key: "receivedAgainstInvoices",
@@ -3879,7 +4231,23 @@ const FINAL_ACCOUNT_FIGURES = [
 		group: FIGURE_GROUP.BALANCES,
 		basis: FIGURE_BASIS.GROSS,
 		label: "Client invoices outstanding",
-		note: "Issued and not yet matched to a receipt — not cash",
+		note: "Issued, less credit notes and retention still held, and not yet matched to a receipt — not cash",
+		open: true
+	},
+	{
+		key: "clientRetentionHeld",
+		group: FIGURE_GROUP.BALANCES,
+		basis: FIGURE_BASIS.GROSS,
+		label: "Client retention held",
+		note: "Billed and withheld by the client — not receivable until released",
+		open: true
+	},
+	{
+		key: "owedToClient",
+		group: FIGURE_GROUP.BALANCES,
+		basis: FIGURE_BASIS.GROSS,
+		label: "Owed to client",
+		note: "Received beyond what is now receivable — a client credit balance",
 		open: true
 	},
 	{
@@ -3948,7 +4316,9 @@ const FINAL_ACCOUNT_COUNTED_SOURCES = [
 	"supplierPayments",
 	"retentionReleases",
 	"clientInvoices",
-	"clientReceipts"
+	"clientReceipts",
+	"clientCreditNotes",
+	"clientRetentionReleases"
 ];
 const BLOCKER = {
 	SOURCES: "sources",
@@ -3965,6 +4335,10 @@ const BLOCKER = {
 	DRAFT_PAYMENTS: "draftPayments",
 	DRAFT_CREDIT_NOTES: "draftCreditNotes",
 	DRAFT_RELEASES: "draftReleases",
+	DRAFT_CLIENT_CREDIT_NOTES: "draftClientCreditNotes",
+	DRAFT_CLIENT_RELEASES: "draftClientRetentionReleases",
+	CLIENT_CREDIT_EXCEPTIONS: "clientCreditExceptions",
+	CLIENT_RELEASE_EXCEPTIONS: "clientReleaseExceptions",
 	OVER_ALLOCATED: "overAllocatedInvoices",
 	FORECAST_INCOMPLETE: "forecastIncomplete",
 	COST_TO_COMPLETE: "costToComplete",
@@ -4039,13 +4413,33 @@ const READINESS_CHECKS = [
 	},
 	{
 		code: BLOCKER.DRAFT_RELEASES,
-		label: "No draft retention releases",
-		fix: "Post or void each draft retention release."
+		label: "No draft supplier retention releases",
+		fix: "Post or void each draft supplier retention release."
+	},
+	{
+		code: BLOCKER.DRAFT_CLIENT_CREDIT_NOTES,
+		label: "No draft client credit notes",
+		fix: "Post or void each draft client credit note."
+	},
+	{
+		code: BLOCKER.DRAFT_CLIENT_RELEASES,
+		label: "No draft client retention releases",
+		fix: "Post or void each draft client retention release."
+	},
+	{
+		code: BLOCKER.CLIENT_CREDIT_EXCEPTIONS,
+		label: "Every posted client credit note passes its integrity check",
+		fix: "A posted client credit note failed a read-time integrity check, so it reduces no figure. Investigate it on the Client Invoices tab; where the credit note itself is wrong, void it and record a new one."
+	},
+	{
+		code: BLOCKER.CLIENT_RELEASE_EXCEPTIONS,
+		label: "Every posted client retention release has an issued invoice that withheld retention",
+		fix: "A posted client retention release names an invoice that is not issued, is not readable or withheld no retention, so it releases nothing. Investigate it; where the release itself is wrong, void it."
 	},
 	{
 		code: BLOCKER.OVER_ALLOCATED,
 		label: "No over-allocated issued client invoices",
-		fix: "An issued client invoice has more receipt allocated to it than its gross value. Correct the receipt allocation on the Client Receipts tab (void the receipt and re-enter it) so no invoice is over-allocated. Nothing is reallocated automatically."
+		fix: "An issued client invoice has more receipt allocated to it than is now receivable on it (its gross value less posted credit notes and retention still held). Correct the receipt allocation on the Client Receipts tab (void the receipt and re-enter it) so no invoice is over-allocated. Nothing is reallocated automatically."
 	},
 	{
 		code: BLOCKER.FORECAST_INCOMPLETE,
@@ -4079,8 +4473,11 @@ const pick = (items, key) => {
 	return f && f.state === FIGURE_STATE.READY && f.value !== void 0 ? f.value : null;
 };
 const countWhere = (list, test) => (list ?? []).filter(test).length;
+const namedList = (names, word) => `${names.length} ${word}: ${names.slice(0, 5).join(", ")}${names.length > 5 ? ", …" : ""}`;
+const ISSUED_SOURCES = ["clientInvoices", "clientCreditNotes"];
+const RECEIVED_SOURCES = ["clientInvoices", "clientReceipts"];
 function computeFinalAccount({ project = null, currencyCode, sources = {}, sourceStates = {} } = {}) {
-	const { budgetLines = [], approvedBudget = null, purchaseOrders = [], progressClaims = [], supplierInvoices = [], supplierCreditNotes = [], variations = [], forecastLines = [], supplierPayments = [], retentionReleases = [], clientInvoices = [], clientReceipts = [], costCodes = [] } = sources;
+	const { budgetLines = [], approvedBudget = null, purchaseOrders = [], progressClaims = [], supplierInvoices = [], supplierCreditNotes = [], variations = [], forecastLines = [], supplierPayments = [], retentionReleases = [], clientInvoices = [], clientReceipts = [], clientCreditNotes = [], clientRetentionReleases = [], costCodes = [] } = sources;
 	const report = buildCommercialReport({
 		project,
 		currencyCode,
@@ -4117,8 +4514,10 @@ function computeFinalAccount({ project = null, currencyCode, sources = {}, sourc
 		costCodeName: String(r.costCodeName ?? "")
 	})).sort((a, b) => a.costCodeName.localeCompare(b.costCodeName));
 	const finalContractSum = pick(report.summary, "currentContractSum");
-	const control = contractControl(clientInvoices, finalContractSum);
-	const receivables = receivablesSummary(clientInvoices, clientReceipts);
+	const receivable = receivableContext(clientInvoices, clientCreditNotes, clientRetentionReleases);
+	const control = contractControl(clientInvoices, finalContractSum, receivable.totals);
+	const receivables = receivablesSummary(clientInvoices, clientReceipts, receivable.positions);
+	const known = (dependencies, value) => figureState(dependencies, sourceStates).state === FIGURE_STATE.READY ? value : null;
 	const receipts = receiptSummary(clientReceipts);
 	const payments = paymentSummary(supplierPayments);
 	const retention = retentionSummary(supplierInvoices, retentionReleases);
@@ -4126,8 +4525,9 @@ function computeFinalAccount({ project = null, currencyCode, sources = {}, sourc
 		originalContractValue: pick(report.summary, "originalContractValue"),
 		approvedClientVariations: pick(report.variations, "approvedClientVariations"),
 		finalContractSum,
-		invoicedToClient: control.issued.subtotal,
-		remainingToInvoice: finalContractSum === null ? null : control.availableToInvoice,
+		invoicedToClient: known(ISSUED_SOURCES, control.issued.subtotal),
+		creditedToClient: known(ISSUED_SOURCES, control.credited.subtotal),
+		remainingToInvoice: finalContractSum === null ? null : known(ISSUED_SOURCES, control.availableToInvoice),
 		approvedBudget: budgetApproved ? pick(report.summary, "approvedBudget") : null,
 		approvedSupplierVariations: pick(report.variations, "approvedSupplierVariations"),
 		actualCost: pick(report.summary, "actual"),
@@ -4136,9 +4536,11 @@ function computeFinalAccount({ project = null, currencyCode, sources = {}, sourc
 		varianceToBudget: budgetApproved ? pick(report.summary, "varianceToBudget") : null,
 		finalProfit: pick(report.summary, "forecastGrossProfit"),
 		finalMarginPct: pick(report.summary, "forecastMarginPct"),
-		invoicedToClientGross: control.issued.grossTotal,
-		receivedAgainstInvoices: receivables.received,
+		invoicedToClientGross: known(ISSUED_SOURCES, control.issued.grossTotal),
+		receivedAgainstInvoices: known(RECEIVED_SOURCES, receivables.received),
 		receivablesOutstanding: pick(report.cash, "receivablesOutstanding"),
+		clientRetentionHeld: pick(report.cash, "clientRetentionHeld"),
+		owedToClient: pick(report.cash, "owedToClient"),
 		cashReceived: pick(report.cash, "cashIn"),
 		unallocatedReceipts: receipts.unallocated,
 		cashPaid: pick(report.cash, "cashOut"),
@@ -4156,7 +4558,7 @@ function computeFinalAccount({ project = null, currencyCode, sources = {}, sourc
 		actualCost: r.actual,
 		variance: r.varianceToBudget ?? null
 	})) : [];
-	const rowsOpen = table.state === FIGURE_STATE.READY ? table.rows.filter((r) => toCents$1(r.costToComplete) !== 0).length : 0;
+	const rowsOpen = table.state === FIGURE_STATE.READY ? table.rows.filter((r) => toCents$2(r.costToComplete) !== 0).length : 0;
 	const counts = {
 		clientVariations: countWhere(variations, (v) => v.variationType === VARIATION_TYPE.CLIENT && VARIATION_PENDING_STATUSES.includes(v.status)),
 		supplierVariations: countWhere(variations, (v) => v.variationType === VARIATION_TYPE.SUPPLIER && VARIATION_PENDING_STATUSES.includes(v.status)),
@@ -4172,9 +4574,13 @@ function computeFinalAccount({ project = null, currencyCode, sources = {}, sourc
 		draftReceipts: receipts.draftCount,
 		draftPayments: payments.draftCount,
 		draftCreditNotes: draftSupplierCreditNotes(supplierCreditNotes).length,
-		draftReleases: draftRetentionReleases(retentionReleases).length
+		draftReleases: draftRetentionReleases(retentionReleases).length,
+		draftClientCreditNotes: draftClientCreditNotes(clientCreditNotes).length,
+		draftClientReleases: draftClientRetentionReleases(clientRetentionReleases).length
 	};
-	const overAllocated = receivables.rows.filter((r) => toCents$1(r.received) > toCents$1(r.grossTotal));
+	const creditExceptions = clientCreditExceptions(clientCreditNotes, clientInvoices);
+	const releaseExceptions = clientReleaseExceptions(clientRetentionReleases, clientInvoices);
+	const overAllocated = receivables.rows.filter((r) => toCents$2(r.received) > toCents$2(r.receivableBasis));
 	const unapplied = pick(report.variations, "unappliedSupplierVariations");
 	const awaiting = roundMoney(totals.approvedClaimsAwaitingInvoice);
 	const blockers = [];
@@ -4188,15 +4594,19 @@ function computeFinalAccount({ project = null, currencyCode, sources = {}, sourc
 		if (!budgetApproved) block(BLOCKER.BUDGET, budgetSource.kind === BUDGET_SOURCE.WORKING ? "Working budget (not approved)" : "Approved budget unavailable");
 		if (counts.clientVariations > 0) block(BLOCKER.CLIENT_VARIATIONS, `${counts.clientVariations} open`);
 		if (counts.supplierVariations > 0) block(BLOCKER.SUPPLIER_VARIATIONS, `${counts.supplierVariations} open`);
-		if (unapplied === null || toCents$1(unapplied) !== 0) block(BLOCKER.UNAPPLIED_VARIATIONS);
+		if (unapplied === null || toCents$2(unapplied) !== 0) block(BLOCKER.UNAPPLIED_VARIATIONS);
 		if (counts.openClaims > 0) block(BLOCKER.OPEN_CLAIMS, `${counts.openClaims} open`);
-		if (toCents$1(awaiting) !== 0) block(BLOCKER.CLAIMS_AWAITING);
+		if (toCents$2(awaiting) !== 0) block(BLOCKER.CLAIMS_AWAITING);
 		if (counts.unpostedInvoices > 0) block(BLOCKER.UNPOSTED_INVOICES, `${counts.unpostedInvoices} unposted`);
 		if (counts.draftClientInvoices > 0) block(BLOCKER.DRAFT_CLIENT_INVOICES, `${counts.draftClientInvoices} draft`);
 		if (counts.draftReceipts > 0) block(BLOCKER.DRAFT_RECEIPTS, `${counts.draftReceipts} draft`);
 		if (counts.draftPayments > 0) block(BLOCKER.DRAFT_PAYMENTS, `${counts.draftPayments} draft`);
 		if (counts.draftCreditNotes > 0) block(BLOCKER.DRAFT_CREDIT_NOTES, `${counts.draftCreditNotes} draft`);
 		if (counts.draftReleases > 0) block(BLOCKER.DRAFT_RELEASES, `${counts.draftReleases} draft`);
+		if (counts.draftClientCreditNotes > 0) block(BLOCKER.DRAFT_CLIENT_CREDIT_NOTES, `${counts.draftClientCreditNotes} draft`);
+		if (counts.draftClientReleases > 0) block(BLOCKER.DRAFT_CLIENT_RELEASES, `${counts.draftClientReleases} draft`);
+		if (creditExceptions.length > 0) block(BLOCKER.CLIENT_CREDIT_EXCEPTIONS, namedList(creditExceptions.map((e) => e.creditNumber || e.creditNoteId), "failing"));
+		if (releaseExceptions.length > 0) block(BLOCKER.CLIENT_RELEASE_EXCEPTIONS, namedList(releaseExceptions.map((e) => e.releaseNumber || e.releaseId), "failing"));
 		if (overAllocated.length > 0) {
 			const names = overAllocated.slice(0, 5).map((r) => r.invoiceNumber || r.id).join(", ");
 			block(BLOCKER.OVER_ALLOCATED, `${overAllocated.length} over-allocated: ${names}${overAllocated.length > 5 ? ", …" : ""}`);
@@ -4205,7 +4615,7 @@ function computeFinalAccount({ project = null, currencyCode, sources = {}, sourc
 			const names = unforecast.slice(0, 5).map((r) => r.costCodeName || r.costCodeId).join(", ");
 			block(BLOCKER.FORECAST_INCOMPLETE, `${unforecast.length} of ${forecastRows.length} not forecast: ${names}${unforecast.length > 5 ? ", …" : ""}`);
 		}
-		if (raw.costToComplete === null || toCents$1(raw.costToComplete) !== 0 || rowsOpen > 0 || raw.finalCost === null || raw.actualCost === null || toCents$1(raw.finalCost) !== toCents$1(raw.actualCost)) block(BLOCKER.COST_TO_COMPLETE);
+		if (raw.costToComplete === null || toCents$2(raw.costToComplete) !== 0 || rowsOpen > 0 || raw.finalCost === null || raw.actualCost === null || toCents$2(raw.finalCost) !== toCents$2(raw.actualCost)) block(BLOCKER.COST_TO_COMPLETE);
 		if (!figuresValid) block(BLOCKER.FIGURES);
 		if (rows.length > FINAL_ACCOUNT_LIMITS.ROWS) block(BLOCKER.SIZE, `${rows.length} cost codes`);
 	}
@@ -4333,27 +4743,36 @@ function buildFinalAccountDraft({ computation, number, input, currencyCode, prep
 		bytes
 	};
 }
-const sameAmount = (a, b) => a === null || a === void 0 || b === null || b === void 0 ? (a ?? null) === (b ?? null) : toCents$1(a) === toCents$1(b);
+const sameAmount = (a, b) => a === null || a === void 0 || b === null || b === void 0 ? (a ?? null) === (b ?? null) : toCents$2(a) === toCents$2(b);
+const carries = (map, key) => map !== null && typeof map === "object" && Object.prototype.hasOwnProperty.call(map, key);
+const figureRecorded = (figures, key) => carries(figures, key);
+const NOT_COMPARABLE = {
+	comparable: false,
+	figures: [],
+	rows: [],
+	provenance: [],
+	newMetrics: [],
+	newSources: [],
+	changed: false
+};
 function finalAccountDifferences(stored, computation) {
-	if (!stored || !computation) return {
-		comparable: false,
-		figures: [],
-		rows: [],
-		provenance: [],
-		changed: false
-	};
-	if (!computation.sourcesReady) return {
-		comparable: false,
-		figures: [],
-		rows: [],
-		provenance: [],
-		changed: false
-	};
+	if (!stored || !computation) return { ...NOT_COMPARABLE };
+	if (!computation.sourcesReady) return { ...NOT_COMPARABLE };
 	const live = computation.partialFigures ?? {};
 	const figures = [];
+	const newMetrics = [];
 	for (const f of FINAL_ACCOUNT_FIGURES) {
-		const a = stored.figures?.[f.key];
 		const b = live[f.key];
+		if (!carries(stored.figures, f.key)) {
+			newMetrics.push({
+				key: f.key,
+				label: f.label,
+				basis: f.basis,
+				live: b ?? null
+			});
+			continue;
+		}
+		const a = stored.figures[f.key];
 		if (!sameAmount(a, b)) figures.push({
 			key: f.key,
 			label: f.label,
@@ -4379,17 +4798,27 @@ function finalAccountDifferences(stored, computation) {
 	const sp = stored.sources ?? {};
 	const lp = computation.provenance ?? {};
 	if ((sp.budgetApprovalId ?? null) !== (lp.budgetApprovalId ?? null) || (sp.budgetVersion ?? null) !== (lp.budgetVersion ?? null) || (sp.adjustmentCount ?? 0) !== (lp.adjustmentCount ?? 0)) provenance.push("budget");
-	for (const s of FINAL_ACCOUNT_COUNTED_SOURCES) if ((sp.counts?.[s] ?? null) !== (lp.counts?.[s] ?? null)) provenance.push(s);
+	const newSources = [];
+	for (const s of FINAL_ACCOUNT_COUNTED_SOURCES) {
+		if (!carries(sp.counts, s)) {
+			newSources.push(s);
+			continue;
+		}
+		if ((sp.counts[s] ?? null) !== (lp.counts?.[s] ?? null)) provenance.push(s);
+	}
 	return {
 		comparable: true,
 		figures,
 		rows,
 		provenance,
+		newMetrics,
+		newSources,
 		changed: figures.length > 0 || rows.length > 0
 	};
 }
 function draftAgreesWith(stored, computation) {
 	if (!stored || !computation?.figures) return false;
+	if (!FINAL_ACCOUNT_FIGURE_KEYS.every((k) => carries(stored.figures, k))) return false;
 	const d = finalAccountDifferences(stored, computation);
 	if (!d.comparable || d.changed) return false;
 	if ((stored.rows ?? []).length !== computation.rows.length) return false;
@@ -4419,4 +4848,4 @@ function finalAccountHistory(accounts) {
 const finalAccountRevisionLabel = (a) => `Revision ${a?.number ?? "—"}`;
 
 //#endregion
-export { BLOCKER, FIGURE_BASIS, FIGURE_GROUP, FIGURE_GROUP_LABELS, FINAL_ACCOUNT_APPROVE_ROLES, FINAL_ACCOUNT_COUNTED_SOURCES, FINAL_ACCOUNT_DISCLAIMER, FINAL_ACCOUNT_FIGURES, FINAL_ACCOUNT_FIGURE_KEYS, FINAL_ACCOUNT_LIMITS, FINAL_ACCOUNT_MAX_BYTES, FINAL_ACCOUNT_OPEN_KEYS, FINAL_ACCOUNT_PREPARE_ROLES, FINAL_ACCOUNT_ROW_KEYS, FINAL_ACCOUNT_STATUS, FINAL_ACCOUNT_STATUS_BADGE, FINAL_ACCOUNT_STATUS_LABELS, READINESS_CHECKS, blockerCodes, buildFinalAccountDraft, canApproveFinalAccount, canPrepareFinalAccount, canWithdrawFinalAccount, computeFinalAccount, draftAgreesWith, estimateFinalAccountBytes, finalAccountContent, finalAccountDifferences, finalAccountHistory, finalAccountRevisionLabel, isFinalAccountRecord, normaliseFinalAccountInput, openItemsOf, readinessChecklist, resolveProjectCurrency, settledSourceStates, validateFinalAccountInput, validateFinalAccountWithdrawReason };
+export { BLOCKER, FIGURE_BASIS, FIGURE_GROUP, FIGURE_GROUP_LABELS, FINAL_ACCOUNT_APPROVE_ROLES, FINAL_ACCOUNT_COUNTED_SOURCES, FINAL_ACCOUNT_DISCLAIMER, FINAL_ACCOUNT_FIGURES, FINAL_ACCOUNT_FIGURE_KEYS, FINAL_ACCOUNT_LIMITS, FINAL_ACCOUNT_MAX_BYTES, FINAL_ACCOUNT_OPEN_KEYS, FINAL_ACCOUNT_PREPARE_ROLES, FINAL_ACCOUNT_ROW_KEYS, FINAL_ACCOUNT_STATUS, FINAL_ACCOUNT_STATUS_BADGE, FINAL_ACCOUNT_STATUS_LABELS, READINESS_CHECKS, blockerCodes, buildFinalAccountDraft, canApproveFinalAccount, canPrepareFinalAccount, canWithdrawFinalAccount, computeFinalAccount, draftAgreesWith, estimateFinalAccountBytes, figureRecorded, finalAccountContent, finalAccountDifferences, finalAccountHistory, finalAccountRevisionLabel, isFinalAccountRecord, normaliseFinalAccountInput, openItemsOf, readinessChecklist, resolveProjectCurrency, settledSourceStates, validateFinalAccountInput, validateFinalAccountWithdrawReason };

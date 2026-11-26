@@ -13,6 +13,9 @@ import { projectSnapshot, FIGURE_STATE, MARGIN_NOT_ESTABLISHED, SNAPSHOT_SOURCES
 import { projectForecastTotals, computeMargin } from '../../src/lib/margin'
 import { resolveBudgetSource, budgetLinesFor, originalApprovedBudgetFor, BUDGET_SOURCE } from '../../src/lib/budgetApproval'
 import { claimedPendingByCostCode } from '../../src/lib/progressClaims'
+import { receivablesSummary } from '../../src/lib/clientReceipts'
+import { receivableContext } from '../../src/lib/clientReceivables'
+import { issuedInvoice, creditNoteFor, releaseFor } from '../fixtures/clientReceivableDocs'
 
 // ── L2-A Commercial Report ───────────────────────────────────────────────────
 //
@@ -397,10 +400,126 @@ describe('availability', () => {
     expect(fig(r, 'summary', 'forecastFinalCost').state).toBe(FIGURE_STATE.READY)
   })
 
-  it('the report declares every snapshot source plus the two cash sources', () => {
-    expect(REPORT_SOURCES).toEqual([...SNAPSHOT_SOURCES, 'clientInvoices', 'clientReceipts'])
+  it('the report declares every snapshot source plus the four receivable-side sources', () => {
+    expect(REPORT_SOURCES).toEqual([...SNAPSHOT_SOURCES, 'clientInvoices', 'clientReceipts', 'clientCreditNotes', 'clientRetentionReleases'])
     expect(REPORT_DEPENDENCIES.costCodeRows).toContain('progressClaims')
     expect(REPORT_DEPENDENCIES.netCash).toEqual(['clientReceipts', 'supplierPayments'])
+  })
+})
+
+// ── 5b. Receivables: the ONE receivable contract (ADR-87 / ADR-88) ───────────
+//
+// CI-0001 is 3,000 ex-GST / 3,300 gross with 1,100 received (the base fixture's
+// figures), here carrying its line so a credit note can credit it.
+
+describe('receivables follow the one receivable contract', () => {
+  const sourcesWith = ({ retention = 0, credit = null, release = null, creditOver = {}, releaseOver = {} } = {}) => {
+    const invoice = issuedInvoice({ subtotal: 3000, retention, clientName: 'Owner' })
+    return {
+      ...SOURCES,
+      clientInvoices: [invoice, clientInvoices[1]],
+      clientCreditNotes: credit === null ? [] : [creditNoteFor(invoice, credit, creditOver)],
+      clientRetentionReleases: release === null ? [] : [releaseFor(invoice, release, releaseOver)],
+    }
+  }
+  const cash = (report, key) => fig(report, 'cash', key)
+  const base = build()
+
+  it('with no credit note and no retention every figure is the pre-existing one', () => {
+    const r = build(sourcesWith())
+    expect(cash(r, 'receivablesOutstanding').value).toBe(2200)
+    expect(cash(r, 'clientRetentionHeld')).toEqual({ state: FIGURE_STATE.READY, failedSources: [], value: 0 })
+    expect(cash(r, 'owedToClient')).toEqual({ state: FIGURE_STATE.READY, failedSources: [], value: 0 })
+    expect(r.cash.map(i => i.key)).toEqual(['cashIn', 'cashOut', 'netCash', 'receivablesOutstanding', 'clientRetentionHeld', 'owedToClient', 'remainingPayable'])
+  })
+
+  it('a posted credit note reduces what is outstanding — and is not cash, revenue, cost or margin', () => {
+    const r = build(sourcesWith({ credit: 500 }))                 // 550 gross
+    expect(cash(r, 'receivablesOutstanding').value).toBe(1650)    // 3,300 − 550 − 1,100
+    for (const key of ['cashIn', 'cashOut', 'netCash', 'remainingPayable']) expect(cash(r, key), key).toEqual(cash(base, key))
+    expect(r.summary).toEqual(base.summary)                       // contract sum, forecast revenue, cost, profit, margin
+    expect(r.variations).toEqual(base.variations)
+    expect(r.costCodes).toEqual(base.costCodes)
+  })
+
+  it('a draft, void or gate-failing credit note reduces nothing', () => {
+    for (const creditOver of [{ status: 'draft' }, { status: 'void' }, { clientId: 'someone-else' }]) {
+      expect(cash(build(sourcesWith({ credit: 500, creditOver })), 'receivablesOutstanding').value, JSON.stringify(creditOver)).toBe(2200)
+    }
+  })
+
+  it('client retention held is billed but not receivable until a posted release', () => {
+    const held = build(sourcesWith({ retention: 300 }))           // 300 + 30 GST withheld
+    expect(cash(held, 'clientRetentionHeld').value).toBe(330)
+    expect(cash(held, 'receivablesOutstanding').value).toBe(1870) // 3,300 − 330 − 1,100
+    const released = build(sourcesWith({ retention: 300, release: 100 }))
+    expect(cash(released, 'clientRetentionHeld').value).toBe(220)
+    expect(cash(released, 'receivablesOutstanding').value).toBe(1980)
+    // A release is not cash.
+    expect(cash(released, 'cashIn')).toEqual(cash(base, 'cashIn'))
+    expect(cash(released, 'netCash')).toEqual(cash(base, 'netCash'))
+    expect(cash(build(sourcesWith({ retention: 300, release: 100, releaseOver: { status: 'draft' } })), 'clientRetentionHeld').value).toBe(330)
+  })
+
+  it('a credit after receipt is OWED TO THE CLIENT — shown, never clamped, never netted into outstanding', () => {
+    const r = build(sourcesWith({ credit: 2500 }))                // 2,750 gross → 550 receivable, 1,100 received
+    expect(cash(r, 'owedToClient').value).toBe(550)
+    expect(cash(r, 'receivablesOutstanding').value).toBe(0)
+    expect(cash(r, 'cashIn').value).toBe(1100)
+  })
+
+  it('the three figures are receivablesSummary over the contract\'s positions — no arithmetic of the report\'s own', () => {
+    const s = sourcesWith({ retention: 300, credit: 500, release: 100 })
+    const { positions } = receivableContext(s.clientInvoices, s.clientCreditNotes, s.clientRetentionReleases)
+    const summary = receivablesSummary(s.clientInvoices, s.clientReceipts, positions)
+    const r = build(s)
+    expect(cash(r, 'receivablesOutstanding').value).toBe(summary.remaining)
+    expect(cash(r, 'clientRetentionHeld').value).toBe(summary.retentionHeld)
+    expect(cash(r, 'owedToClient').value).toBe(summary.owedToClient)
+    const code = stripComments(read('lib/commercialReport.js'))
+    expect(code).toContain('receivableContext(clientInvoices, clientCreditNotes, clientRetentionReleases)')
+    expect(code).toContain('receivablesSummary(clientInvoices, clientReceipts, positions)')
+  })
+
+  it('a FAILED credit-note read makes the receivable figures Unavailable — never the figure "no credits" would give', () => {
+    const s = { ...sourcesWith({ credit: 500 }), clientCreditNotes: [] }   // what a failed listener hands over
+    const r = build(s, settled({ clientCreditNotes: { loading: false, error: true } }))
+    for (const key of ['receivablesOutstanding', 'clientRetentionHeld', 'owedToClient']) {
+      expect(cash(r, key), key).toEqual({ state: FIGURE_STATE.UNAVAILABLE, failedSources: ['clientCreditNotes'], value: null })
+    }
+    // Cash and every cost / contract figure do not read credit notes.
+    expect(cash(r, 'cashIn').value).toBe(1100)
+    expect(cash(r, 'netCash').value).toBe(600)
+    expect(fig(r, 'summary', 'currentContractSum').state).toBe(FIGURE_STATE.READY)
+    expect(r.failedSources).toEqual(['clientCreditNotes'])
+    const csv = commercialReportCsv(r, { generatedAt: new Date(2026, 10, 26, 9, 0) })
+    expect(csv).toContain('"Cash","Client invoices outstanding","UNAVAILABLE","AUD","Could not load: Client Credit Notes"')
+    expect(csv).toContain('"Cash","Owed to client","UNAVAILABLE","AUD","Could not load: Client Credit Notes"')
+  })
+
+  it('a FAILED release read does the same; a LOADING one is loading; a missing state entry is a failure', () => {
+    const failed = build(sourcesWith({ retention: 300 }), settled({ clientRetentionReleases: { loading: false, error: true } }))
+    for (const key of ['receivablesOutstanding', 'clientRetentionHeld', 'owedToClient']) {
+      expect(cash(failed, key), key).toEqual({ state: FIGURE_STATE.UNAVAILABLE, failedSources: ['clientRetentionReleases'], value: null })
+    }
+    const loading = build(sourcesWith(), settled({ clientCreditNotes: { loading: true, error: false } }))
+    expect(cash(loading, 'receivablesOutstanding')).toEqual({ state: FIGURE_STATE.LOADING, failedSources: [], value: null })
+    expect(isReportExportable(loading)).toBe(false)
+    const states = settled()
+    delete states.clientRetentionReleases
+    expect(cash(build(sourcesWith(), states), 'clientRetentionHeld').state).toBe(FIGURE_STATE.UNAVAILABLE)
+  })
+
+  it('dependencies: cash reads receipts and payments only; receivables read all four registers; held retention reads no receipt', () => {
+    expect(REPORT_DEPENDENCIES.cashIn).toEqual(['clientReceipts'])
+    expect(REPORT_DEPENDENCIES.receivables).toEqual(['clientInvoices', 'clientReceipts', 'clientCreditNotes', 'clientRetentionReleases'])
+    expect(REPORT_DEPENDENCIES.clientRetentionHeld).toEqual(['clientInvoices', 'clientCreditNotes', 'clientRetentionReleases'])
+  })
+
+  it('the export carries both new figures, gross, in the Cash section', () => {
+    const csv = commercialReportCsv(build(sourcesWith({ retention: 300, credit: 2500 })), { generatedAt: new Date(2026, 10, 26, 9, 0) })
+    expect(csv).toMatch(/"Cash","Client retention held",\d+\.\d\d,"AUD","Client retention held — billed, not receivable until released, gross"/)
+    expect(csv).toMatch(/"Cash","Owed to client",\d+\.\d\d,"AUD","Received beyond what is now receivable/)
   })
 })
 

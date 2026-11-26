@@ -10,6 +10,8 @@ import { roundMoney } from '../../lib/purchaseOrders'
 import { useProfile } from '../../hooks/useProfile'
 import { useClientReceipts } from '../../hooks/useClientReceipts'
 import { useClientInvoices } from '../../hooks/useClientInvoices'
+import { useClientCreditNotes } from '../../hooks/useClientCreditNotes'
+import { useClientRetentionReleases } from '../../hooks/useClientRetentionReleases'
 import { useContacts } from '../../hooks/useContacts'
 import { CONTACT_TYPE } from '../../lib/contacts'
 import { isFinancialRole } from '../../lib/margin'
@@ -25,6 +27,11 @@ import {
   receiptSummary, receivablesSummary, postBlockedReason, isFutureDatedReceipt,
   validateReceiptDraft,
 } from '../../lib/clientReceipts'
+import { CLIENT_RECEIPT_OVER_ALLOCATION_PREFIX } from '../../lib/clientLedgerActions'
+import { receivableContext } from '../../lib/clientReceivables'
+import { CLIENT_CREDIT_READ_UNAVAILABLE_NOTICE } from '../../lib/clientCreditNotes'
+import { CLIENT_RETENTION_READ_UNAVAILABLE_NOTICE } from '../../lib/clientRetention'
+import { OWED_TO_CLIENT_LABEL, OWED_TO_CLIENT_REMEDY } from './clientCredit/clientReconciliation'
 
 const inputCls = 'w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
 const labelCls = 'block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1.5'
@@ -39,6 +46,9 @@ function Metric({ label, value, help, danger }) {
     </div>
   )
 }
+
+// A figure whose inputs could not be read is UNKNOWN, never zero.
+const Unavailable = () => <span className="text-[12px] font-normal text-brand-muted">Unavailable</span>
 
 function ModalShell({ title, onClose, children, wide }) {
   return (
@@ -66,10 +76,10 @@ function ModalShell({ title, onClose, children, wide }) {
 const blankRow = () => ({ clientInvoiceId: '', allocatedAmount: '' })
 
 function ReceiptEditorModal({
-  receipt, clientContacts, clientInvoices, clientReceipts,
+  receipt, clientContacts, clientInvoices, clientReceipts, positions, allocationNotices,
   currencyCode, onClose, onSave,
 }) {
-  const money = (n) => formatCurrency(n, currencyCode)
+  const money = (n) => formatCurrency(n, currencyCode, { precise: true })
   const isEdit = !!receipt
 
   const [clientId, setClientId]     = useState(receipt?.clientId || '')
@@ -91,6 +101,12 @@ function ReceiptEditorModal({
   const [acknowledged, setAcknowledged] = useState(false)
   const write = useWriteAction('Client receipt draft')
 
+  // ⚠️ A FAILED READ IS UNKNOWN, NEVER ZERO. What an invoice is owed depends on
+  // posted credit notes and posted retention releases; when either could not
+  // be read, the remaining balances are unknown and allocating is disabled.
+  // The cash itself is still real: the receipt can be recorded unallocated.
+  const allocationUnavailable = allocationNotices.length > 0
+
   const client = clientContacts.find(c => c.id === clientId) ?? null
   const cash   = roundMoney(Number(amount) || 0)
 
@@ -98,8 +114,8 @@ function ReceiptEditorModal({
   // remaining balances. Excludes this receipt's own posted allocations so an
   // edit never double-counts itself.
   const targets = useMemo(
-    () => allocatableInvoices(clientInvoices, clientId, clientReceipts, { excludeReceiptId: receipt?.id ?? null }),
-    [clientInvoices, clientId, clientReceipts, receipt?.id],
+    () => allocatableInvoices(clientInvoices, clientId, clientReceipts, { excludeReceiptId: receipt?.id ?? null, positions }),
+    [clientInvoices, clientId, clientReceipts, receipt?.id, positions],
   )
   const targetById = useMemo(() => new Map(targets.map(t => [t.id, t])), [targets])
 
@@ -164,8 +180,10 @@ function ReceiptEditorModal({
   // Over-allocating an INVOICE is warned with an acknowledgement, never blocked:
   // it cannot be enforced anywhere (rules cannot sum sibling documents).
   const warnings = useMemo(
-    () => invoiceOverAllocationWarnings(builtAllocations, clientInvoices, clientReceipts, { excludeReceiptId: receipt?.id ?? null }),
-    [builtAllocations, clientInvoices, clientReceipts, receipt?.id],
+    () => (allocationUnavailable
+      ? []
+      : invoiceOverAllocationWarnings(builtAllocations, clientInvoices, clientReceipts, { excludeReceiptId: receipt?.id ?? null, positions })),
+    [allocationUnavailable, builtAllocations, clientInvoices, clientReceipts, receipt?.id, positions],
   )
   const needsAck = warnings.length > 0
 
@@ -179,7 +197,10 @@ function ReceiptEditorModal({
     })
     ?? validateAllocations(builtAllocations, cash, 'clientInvoiceId')
 
-  const valid = !validationError && (!needsAck || acknowledged)
+  // An allocation cannot be checked against an unknown balance, so a receipt
+  // carrying any is not saved while the balances are unavailable.
+  const allocationBlocked = allocationUnavailable && builtAllocations.length > 0
+  const valid = !validationError && !allocationBlocked && (!needsAck || acknowledged)
 
   function handleSubmit(e) {
     e.preventDefault()
@@ -289,12 +310,25 @@ function ReceiptEditorModal({
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <label className={labelCls}>Allocate to Client Invoices</label>
             <div className="flex flex-wrap gap-2 mb-1.5">
-              <Btn sm variant="ghost" type="button" onClick={allocateOldest} disabled={!clientId || cash <= 0 || targets.length === 0}>
+              <Btn sm variant="ghost" type="button" onClick={allocateOldest} disabled={allocationUnavailable || !clientId || cash <= 0 || targets.length === 0}>
                 Allocate oldest first
               </Btn>
-              <Btn sm variant="ghost" type="button" onClick={addRow} disabled={!clientId}>+ Add allocation</Btn>
+              <Btn sm variant="ghost" type="button" onClick={addRow} disabled={allocationUnavailable || !clientId}>+ Add allocation</Btn>
             </div>
           </div>
+
+          {allocationUnavailable && (
+            <div className="mb-2 flex flex-col gap-1" role="alert">
+              {allocationNotices.map((notice, i) => (
+                <p key={i} className="m-0 text-[12px] text-brand-amber">⚠ {notice}</p>
+              ))}
+              <p className="m-0 text-[12px] text-brand-amber">
+                Allocation is disabled until those records load: what each invoice is still owed is unknown. The
+                receipt can be recorded unallocated and allocated later
+                {builtAllocations.length > 0 ? ' — remove the allocations below to save it now.' : '.'}
+              </p>
+            </div>
+          )}
 
           {!clientId ? (
             <p className="m-0 text-[12px] text-brand-muted">Select a client to see their issued invoices.</p>
@@ -313,7 +347,9 @@ function ReceiptEditorModal({
                     <div className="grid grid-cols-1 sm:grid-cols-[1.6fr_1fr_auto_auto] gap-2 items-start">
                       <select
                         className={inputCls}
+                        aria-label={`Invoice for allocation ${idx + 1}`}
                         value={row.clientInvoiceId}
+                        disabled={allocationUnavailable}
                         onChange={e => setRow(idx, { clientInvoiceId: e.target.value })}
                       >
                         <option value="">Select an invoice…</option>
@@ -322,6 +358,11 @@ function ReceiptEditorModal({
                           .map(t => (
                             <option key={t.id} value={t.id}>
                               {t.invoiceNumber} — {t.invoiceDate || 'no date'}
+                              {allocationUnavailable
+                                ? ''
+                                : t.remaining < 0
+                                  ? ` — owed to client ${money(-t.remaining)}`
+                                  : ` — remaining ${money(t.remaining)} of ${money(t.receivableBasis)} receivable`}
                             </option>
                           ))}
                       </select>
@@ -329,10 +370,12 @@ function ReceiptEditorModal({
                         type="number" min="0" step="0.01"
                         className={inputCls}
                         placeholder="Allocate"
+                        aria-label={`Amount for allocation ${idx + 1}`}
                         value={row.allocatedAmount}
+                        disabled={allocationUnavailable}
                         onChange={e => setRow(idx, { allocatedAmount: e.target.value })}
                       />
-                      <Btn sm variant="ghost" type="button" onClick={() => allocateRemaining(idx)} disabled={!target}>
+                      <Btn sm variant="ghost" type="button" onClick={() => allocateRemaining(idx)} disabled={allocationUnavailable || !target}>
                         Allocate remaining
                       </Btn>
                       <button
@@ -344,12 +387,26 @@ function ReceiptEditorModal({
                         ×
                       </button>
                     </div>
-                    {target && (
+                    {/* The balance a receipt settles is the RECEIVABLE — billed,
+                        less posted credit notes and retention still held —
+                        never the gross. */}
+                    {target && allocationUnavailable && (
                       <p className="m-0 text-[11px] text-brand-muted">
-                        {target.invoiceNumber} invoiced {money(target.grossTotal)} (inc. GST) · received to date {money(target.received)} ·
-                        {' '}<span className={target.remaining < 0 ? 'text-brand-red font-semibold' : 'text-brand-text font-semibold'}>
-                          remaining to reconcile {money(target.remaining)}
-                        </span>
+                        {target.invoiceNumber} billed {money(target.grossTotal)} (inc. GST) · receivable and remaining
+                        {' '}<span className="font-semibold">unavailable</span>
+                        {target.dueDate ? ` · due ${target.dueDate}` : ''}
+                      </p>
+                    )}
+                    {target && !allocationUnavailable && (
+                      <p className="m-0 text-[11px] text-brand-muted">
+                        {target.invoiceNumber} receivable {money(target.receivableBasis)}
+                        {toCents(target.receivableBasis) !== toCents(target.grossTotal)
+                          ? ` (billed ${money(target.grossTotal)}, less credit notes and retention held)`
+                          : ' (inc. GST)'}
+                        {' '}· received to date {money(target.received)} ·
+                        {' '}{target.remaining < 0
+                          ? <span className="text-brand-red font-semibold">owed to client {money(-target.remaining)}</span>
+                          : <span className="text-brand-text font-semibold">remaining to reconcile {money(target.remaining)}</span>}
                         {target.dueDate ? ` · due ${target.dueDate}` : ''}
                       </p>
                     )}
@@ -386,8 +443,10 @@ function ReceiptEditorModal({
             <span>
               I understand this allocates more than the invoice&apos;s remaining balance and want to save it anyway.
               <span className="block text-brand-muted mt-0.5">
-                Constrap warns but never blocks over-allocation, and cannot prevent two users allocating the same
-                remaining balance at the same time.
+                The balance is checked again by the server when the receipt is posted; an over-allocation is
+                posted only with this acknowledgement. Once posted, the surplus is shown on that invoice as
+                {' '}<span className="font-semibold">{OWED_TO_CLIENT_LABEL}</span> — not as a settled invoice.
+                {' '}{OWED_TO_CLIENT_REMEDY}
               </span>
             </span>
           </label>
@@ -429,9 +488,40 @@ function ReceiptEditorModal({
 
 // ── Post ─────────────────────────────────────────────────────────────────────
 
-function PostModal({ receipt, currencyCode, onClose, onConfirm }) {
-  const money = (n) => formatCurrency(n, currencyCode)
+// THE SERVER DECIDES whether a receipt posts. Posting is status-only — the
+// amount and the allocations cannot be changed here — so when an allocation
+// exceeds what its invoice is NOW owed there are two ways forward: close this
+// dialog and edit the draft, or acknowledge the over-allocation and post.
+//
+// The acknowledgement is asked for in two cases, and sent with the write as
+// `{ acknowledgeOverAllocation }`:
+//   · this page's own records already show the over-allocation (a convenience
+//     over what is loaded — `invoiceOverAllocationWarnings`, the same check the
+//     editor uses); or
+//   · the server REFUSED the post because an invoice's balance changed since
+//     the receipt was prepared. Its message is shown by WriteFeedback, and the
+//     checkbox then appears so the user can post again with it ticked.
+// Recognised by contract: the refusal's message always STARTS with
+// CLIENT_RECEIPT_OVER_ALLOCATION_PREFIX (lib/clientLedgerActions.js, pinned by
+// its unit test) — never by matching its wording.
+
+function PostModal({
+  receipt, clientInvoices, clientReceipts, positions, balanceUnknown = false, currencyCode, onClose, onConfirm,
+}) {
+  const money = (n) => formatCurrency(n, currencyCode, { precise: true })
   const write = useWriteAction('Client receipt posting')
+  const [acknowledged, setAcknowledged] = useState(false)
+  const [serverRefused, setServerRefused] = useState(false)
+
+  // With a balance input unreadable the local check cannot be made; the server
+  // still makes its own.
+  const warnings = balanceUnknown
+    ? []
+    : invoiceOverAllocationWarnings(receipt.allocations ?? [], clientInvoices, clientReceipts, { excludeReceiptId: receipt.id, positions })
+  if (!serverRefused && typeof write.message === 'string' && write.message.startsWith(CLIENT_RECEIPT_OVER_ALLOCATION_PREFIX)) {
+    setServerRefused(true)
+  }
+  const needsAck = warnings.length > 0 || serverRefused
 
   // ⚠️ CLIENT-ENFORCED. Firestore rules validate only the 'YYYY-MM-DD' shape of
   // receiptDate — a direct SDK call can post a future-dated receipt.
@@ -439,8 +529,8 @@ function PostModal({ receipt, currencyCode, onClose, onConfirm }) {
 
   function submit(e) {
     e.preventDefault()
-    if (blocked) return
-    write.run(() => onConfirm(receipt), { onConfirmed: onClose })
+    if (blocked || (needsAck && !acknowledged)) return
+    write.run(() => onConfirm(receipt, { acknowledgeOverAllocation: needsAck && acknowledged }), { onConfirmed: onClose })
   }
 
   return (
@@ -459,10 +549,42 @@ function PostModal({ receipt, currencyCode, onClose, onConfirm }) {
           Received {receipt.receiptDate} · {paymentMethodLabel(receipt.paymentMethod, receipt.paymentMethodOther)}
         </p>
         {blocked && <p className="m-0 text-[12px] text-brand-red">{blocked}</p>}
+
+        {warnings.map((w, i) => (
+          <p key={i} className="m-0 text-[12px] text-brand-amber">⚠ {w.message}</p>
+        ))}
+        {needsAck && (
+          <div className="rounded-lg border border-brand-border p-3 flex flex-col gap-2">
+            <p className="m-0 text-[12px] text-brand-text">
+              <span className="font-semibold">This receipt allocates more to an invoice than it is currently owed</span>
+              {' '}— it was saved that way, or another receipt, a credit note or a retention release has since been
+              posted or voided against the invoice. The amount and the allocations cannot
+              be changed in this dialog: close it and edit the draft to allocate differently, or acknowledge below
+              and post it as it stands.
+            </p>
+            <label className="flex items-start gap-2 text-[12px] text-brand-text cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={acknowledged}
+                onChange={e => setAcknowledged(e.target.checked)}
+              />
+              <span>
+                I understand this receipt allocates more than the invoice&apos;s remaining balance and want to post it
+                anyway.
+                <span className="block text-brand-muted mt-0.5">
+                  The surplus becomes an amount <span className="font-semibold">{OWED_TO_CLIENT_LABEL}</span> on that
+                  invoice — it is not shown as settled. {OWED_TO_CLIENT_REMEDY}
+                </span>
+              </span>
+            </label>
+          </div>
+        )}
+
         <WriteFeedback write={write} />
         <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
           <Btn variant="ghost" type="button" onClick={onClose} sm disabled={write.busy}>{write.waiting ? 'Close' : 'Cancel'}</Btn>
-          <Btn type="submit" sm disabled={write.locked || !!blocked}>{write.busy ? 'Posting…' : write.waiting ? 'Waiting for confirmation…' : 'Post receipt'}</Btn>
+          <Btn type="submit" sm disabled={write.locked || !!blocked || (needsAck && !acknowledged)}>{write.busy ? 'Posting…' : write.waiting ? 'Waiting for confirmation…' : 'Post receipt'}</Btn>
         </div>
       </form>
     </ModalShell>
@@ -522,7 +644,7 @@ function DetailRow({ label, value }) {
 }
 
 function DetailModal({ receipt, clientInvoices, currencyCode, onClose }) {
-  const money = (n) => formatCurrency(n, currencyCode)
+  const money = (n) => formatCurrency(n, currencyCode, { precise: true })
   const byId = new Map((clientInvoices ?? []).map(inv => [inv.id, inv]))
 
   return (
@@ -548,7 +670,7 @@ function DetailModal({ receipt, clientInvoices, currencyCode, onClose }) {
           <table className="w-full border-collapse">
             <thead>
               <tr className="bg-brand-card border-b border-brand-border">
-                {['Invoice', 'Status', 'Invoice Total', 'Allocated'].map(h => (
+                {['Invoice', 'Status', 'Billed (inc. GST)', 'Allocated'].map(h => (
                   <th key={h} className={thCls}>{h}</th>
                 ))}
               </tr>
@@ -601,7 +723,7 @@ function DetailModal({ receipt, clientInvoices, currencyCode, onClose }) {
 export default function ProjectClientReceipts() {
   const navigate = useNavigate()
   const { projectId, currencyCode } = useOutletContext()
-  const money = (n) => formatCurrency(n, currencyCode)
+  const money = (n) => formatCurrency(n, currencyCode, { precise: true })
 
   const { profile, profileLoading } = useProfile()
 
@@ -615,6 +737,10 @@ export default function ProjectClientReceipts() {
     createClientReceipt, updateClientReceipt, postClientReceipt, voidClientReceipt,
   } = useClientReceipts(mid)
   const { clientInvoices, clientInvoicesLoading } = useClientInvoices(mid)
+  const { clientCreditNotes, clientCreditNotesLoading, clientCreditNotesError } = useClientCreditNotes(mid)
+  const {
+    clientRetentionReleases, clientRetentionReleasesLoading, clientRetentionReleasesError,
+  } = useClientRetentionReleases(mid)
   const { contacts } = useContacts()
 
   const [editing, setEditing] = useState(null)   // receipt | 'new' | null
@@ -632,9 +758,26 @@ export default function ProjectClientReceipts() {
   )
 
   const summary = useMemo(() => receiptSummary(clientReceipts), [clientReceipts])
+  // The ONE receivable contract (lib/clientReceivables.js): what each issued
+  // invoice is owed after posted credit notes and retention still held. The
+  // same positions feed the summary, the allocation picker and its warnings.
+  const positions = useMemo(
+    () => receivableContext(clientInvoices, clientCreditNotes, clientRetentionReleases).positions,
+    [clientInvoices, clientCreditNotes, clientRetentionReleases],
+  )
+  // ⚠️ A FAILED READ IS UNKNOWN, NEVER ZERO.
+  const allocationNotices = useMemo(
+    () => [
+      ...(clientCreditNotesError ? [CLIENT_CREDIT_READ_UNAVAILABLE_NOTICE] : []),
+      ...(clientRetentionReleasesError ? [CLIENT_RETENTION_READ_UNAVAILABLE_NOTICE] : []),
+    ],
+    [clientCreditNotesError, clientRetentionReleasesError],
+  )
+  const receivableUnknown = allocationNotices.length > 0
+  const balanceUnknown = receivableUnknown || clientReceiptsError
   const receivables = useMemo(
-    () => receivablesSummary(clientInvoices, clientReceipts),
-    [clientInvoices, clientReceipts],
+    () => receivablesSummary(clientInvoices, clientReceipts, positions),
+    [clientInvoices, clientReceipts, positions],
   )
   const exceptions = useMemo(
     () => allocationExceptions(clientReceipts, clientInvoices),
@@ -673,7 +816,7 @@ export default function ProjectClientReceipts() {
       </Card>
     )
   }
-  if (clientReceiptsLoading || clientInvoicesLoading) {
+  if (clientReceiptsLoading || clientInvoicesLoading || clientCreditNotesLoading || clientRetentionReleasesLoading) {
     return <div className="text-[13px] text-brand-muted">Loading receipts…</div>
   }
 
@@ -689,8 +832,8 @@ export default function ProjectClientReceipts() {
           <Metric label="Received to Date" value={money(receivables.received)} help="Against issued invoices" />
           <Metric
             label="Remaining to Reconcile"
-            value={money(receivables.remaining)}
-            help="Issued invoices, after posted receipts"
+            value={balanceUnknown ? <Unavailable /> : money(receivables.remaining)}
+            help="Issued invoices — after credit notes, retention held and posted receipts"
           />
         </div>
         <p className="m-0 mt-3 text-[11px] text-brand-muted">
@@ -700,19 +843,38 @@ export default function ProjectClientReceipts() {
         </p>
       </Card>
 
-      {/* ── Over-reconciled callout ────────────────────────────────────────── */}
-      {toCents(receivables.overReconciled) < 0 && (
+      {/* ── Unavailability, honestly ───────────────────────────────────────── */}
+      {receivableUnknown && (
         <Card className="mb-3.5">
-          <p className="text-[13px] font-bold text-brand-red m-0">Over-reconciled invoices</p>
+          <p className="text-[13px] font-bold text-brand-red m-0">Invoice balances are unavailable</p>
+          <ul className="m-0 mt-2 pl-4 text-[12px] text-brand-muted list-disc space-y-1">
+            {allocationNotices.map((notice, i) => <li key={i}>{notice}</li>)}
+          </ul>
+          <p className="m-0 mt-2 text-[11.5px] text-brand-muted">
+            Allocating a receipt to an invoice is disabled until those records load. Cash can still be recorded
+            unallocated.
+          </p>
+        </Card>
+      )}
+
+      {/* ── Owed to client ─────────────────────────────────────────────────── */}
+      {/* A negative balance is an amount OWED TO THE CLIENT — never clamped to
+          zero, never shown as a settled invoice, never netted off what other
+          invoices owe. */}
+      {!balanceUnknown && toCents(receivables.owedToClient) > 0 && (
+        <Card className="mb-3.5">
+          <p className="text-[13px] font-bold text-brand-red m-0">Owed to client — {money(receivables.owedToClient)}</p>
           <p className="m-0 mt-1 text-[12px] text-brand-muted">
-            More has been received against these invoices than was billed. The balances below are shown signed and
-            are never clamped, and they are deliberately excluded from ageing so they cannot offset genuine arrears.
+            More has been received against these invoices than they are now owed — a credit note or a voided
+            retention release after the money arrived, or an over-allocated receipt. The amounts are owed to the
+            client: they are excluded from ageing so they cannot offset genuine arrears, and the invoices are not
+            treated as settled. {OWED_TO_CLIENT_REMEDY}
           </p>
           <div className="flex flex-wrap gap-3 mt-2.5">
             {receivables.rows.filter(r => toCents(r.remaining) < 0).map(r => (
               <span key={r.id} className="text-[12px] text-brand-text">
                 <span className="font-semibold">{r.invoiceNumber}</span>{' '}
-                <span className="text-brand-red font-semibold">{money(r.remaining)}</span>
+                <span className="text-brand-red font-semibold">{OWED_TO_CLIENT_LABEL} {money(-r.remaining)}</span>
               </span>
             ))}
           </div>
@@ -862,10 +1024,9 @@ export default function ProjectClientReceipts() {
       </Card>
 
       <p className="m-0 mt-3 text-[11px] text-brand-muted">
-        Constrap records cash movements and their allocations. It cannot verify that money was genuinely received,
-        cannot block over-allocation, and cannot prevent two users allocating the same remaining balance
-        concurrently — Firestore rules cannot sum sibling documents. Bank reconciliation and accounting integrations
-        are future work.
+        Constrap records cash movements and their allocations. It cannot verify that money was genuinely received.
+        An allocation above what an invoice is owed is posted only when explicitly acknowledged. Bank
+        reconciliation and accounting integrations are future work.
       </p>
 
       {editing && (
@@ -875,6 +1036,8 @@ export default function ProjectClientReceipts() {
           clientContacts={clientContacts}
           clientInvoices={clientInvoices}
           clientReceipts={clientReceipts}
+          positions={positions}
+          allocationNotices={allocationNotices}
           currencyCode={currencyCode}
           onClose={() => setEditing(null)}
           onSave={editing === 'new'
@@ -886,6 +1049,10 @@ export default function ProjectClientReceipts() {
       {posting && (
         <PostModal
           receipt={posting}
+          clientInvoices={clientInvoices}
+          clientReceipts={clientReceipts}
+          positions={positions}
+          balanceUnknown={balanceUnknown}
           currencyCode={currencyCode}
           onClose={() => setPosting(null)}
           onConfirm={postClientReceipt}

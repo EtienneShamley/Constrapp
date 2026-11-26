@@ -27,6 +27,8 @@ export function projectStore(p) {
       retentionReleases: p.retentionReleases ?? [],
       clientInvoices: p.clientInvoices ?? [],
       clientReceipts: p.clientReceipts ?? [],
+      clientCreditNotes: p.clientCreditNotes ?? [],
+      clientRetentionReleases: p.clientRetentionReleases ?? [],
       budgetAdjustments: p.budgetAdjustments ?? [],
     },
     docs: {

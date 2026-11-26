@@ -3,7 +3,8 @@ import {
   collection, doc, onSnapshot, query, orderBy,
   runTransaction, updateDoc, serverTimestamp,
 } from 'firebase/firestore'
-import { db } from '../lib/firebase'
+import { httpsCallable } from 'firebase/functions'
+import { auth, db, functions } from '../lib/firebase'
 import { useAuth } from './useAuth'
 import { useCompany } from './useCompany'
 import { useProject } from './useProject'
@@ -15,6 +16,8 @@ import {
   CR_DOC_TYPE, CLIENT_RECEIPT_COUNTER_ID,
   formatClientReceiptNumber, validateReceiptDraft, postBlockedReason,
 } from '../lib/clientReceipts'
+import { clientReceiptTextError } from '../lib/clientEntryShape'
+import { runClientReceiptPost, runClientReceiptVoid, CLIENT_FINANCE_CALL_TIMEOUT_MS } from '../lib/clientLedgerActions'
 
 // ── Client Receipts (accounts receivable — money IN) ──────────────────────────
 //
@@ -28,12 +31,22 @@ import {
 // lines, purchase orders, progress claims, or supplier invoices — every
 // reconciliation figure is derived at read time in lib/clientReceipts.js.
 //
-// LIFECYCLE NOTE. Like clientInvoices (and unlike the older collections), the
-// receipt lifecycle is ALSO enforced by Firestore rules: create is draft-only,
-// draft edits cannot rewrite the receipt number/currency/creation stamps,
-// posting and voiding may touch only their own audit fields, and a posted
-// receipt is otherwise immutable. The checks below are the UX mirror — the rules
-// are the boundary.
+// WHAT THIS HOOK WRITES (ADR-89): DRAFTS ONLY — create, edit, and the void of a
+// draft. Firestore Rules allow a browser nothing more. POSTING a receipt, and
+// voiding a POSTED one, are the trusted callables `postClientReceipt` /
+// `voidClientReceipt`: the server re-derives the receipt's totals, checks every
+// allocated invoice, enforces the over-allocation acknowledgement, and records
+// what each allocation adds to its invoice's ledger. The checks below are the
+// UX mirror — the server and the Rules are the boundary.
+
+// One trusted callable by name; resolves to its result.
+const callClientFinance = async (name, data) =>
+  (await httpsCallable(functions, name, { timeout: CLIENT_FINANCE_CALL_TIMEOUT_MS })(data)).data
+
+// Whether the browser still holds a signed-in user — what tells an App Check
+// refusal from an ended session when a callable answers `unauthenticated`.
+const isSignedIn = () => auth.currentUser != null
+
 export function useClientReceipts(projectId) {
   const { user }    = useAuth()
   const { company } = useCompany()
@@ -101,7 +114,7 @@ export function useClientReceipts(projectId) {
     const validationError = validateReceiptDraft({
       clientId, clientName, receiptDate, amount,
       paymentMethod, paymentMethodOther, allocations, invoices,
-    })
+    }) ?? clientReceiptTextError({ paymentMethodOther, bankReference, externalReference, notes })
     if (validationError) throw new Error(validationError)
 
     const cash    = roundMoney(Number(amount))
@@ -200,7 +213,7 @@ export function useClientReceipts(projectId) {
     const validationError = validateReceiptDraft({
       clientId, clientName, receiptDate, amount,
       paymentMethod, paymentMethodOther, allocations, invoices,
-    })
+    }) ?? clientReceiptTextError({ paymentMethodOther, bankReference, externalReference, notes })
     if (validationError) throw new Error(validationError)
 
     const cash   = roundMoney(Number(amount))
@@ -226,14 +239,19 @@ export function useClientReceipts(projectId) {
   }, [companyId, projectId, user])
 
   // Posting is a SEPARATE operation performed after the draft is saved — it
-  // never carries content changes. Firestore rules permit this update to touch
-  // only status/postedAt/postedBy/updatedAt/updatedBy, require postedBy to be
-  // the calling user, and require postedAt to be the server request time.
+  // never carries content changes, and it is the trusted callable's: the
+  // request names the receipt and says whether over-allocating an invoice was
+  // acknowledged, nothing else.
+  //
+  // `acknowledgeOverAllocation` — the user ticked the acknowledgement. Whether
+  // one was NEEDED is decided by the server from each invoice's balance as it
+  // stands at posting; without it, a receipt that would over-allocate an
+  // invoice is refused and names the invoice.
   //
   // A FUTURE-DATED receipt cannot be posted: posting asserts money has actually
-  // been received. ⚠️ That check is CLIENT-ENFORCED — rules validate only the
-  // 'YYYY-MM-DD' shape of receiptDate, so a direct SDK call can bypass it.
-  const postClientReceipt = useCallback(async (receipt) => {
+  // been received. The check here is a hint; the server refuses a date more
+  // than a day ahead of its own.
+  const postClientReceipt = useCallback(async (receipt, { acknowledgeOverAllocation = false } = {}) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (!canTransition(receipt.status, PAYMENT_STATUS.POSTED)) {
       throw new Error(`Cannot post a ${receipt.status} receipt`)
@@ -241,39 +259,28 @@ export function useClientReceipts(projectId) {
     const blocked = postBlockedReason(receipt)
     if (blocked) throw new Error(blocked)
 
-    const ref = doc(db, 'companies', companyId, 'projects', projectId, 'clientReceipts', receipt.id)
-    await updateDoc(ref, {
-      status:    PAYMENT_STATUS.POSTED,
-      postedAt:  serverTimestamp(),
-      postedBy:  user.uid,
-      updatedAt: serverTimestamp(),
-      updatedBy: user.uid,
+    return runClientReceiptPost({
+      call: callClientFinance, isSignedIn, projectId, receiptId: receipt.id, acknowledgeOverAllocation,
     })
   }, [companyId, projectId, user])
 
   // Voiding is terminal and available from draft or posted. A non-empty reason
-  // is required — by this hook AND by Firestore rules. Financial records are
-  // never deleted (ADR-12); the receipt number is retained, so a voided receipt
-  // leaves a visible, intentional gap in the sequence.
+  // is required — here, by Firestore Rules (a draft) and by the server (a
+  // posted receipt). Financial records are never deleted (ADR-12); the receipt
+  // number is retained, so a voided receipt leaves a visible, intentional gap.
   //
-  // No reversal document is written: every invoice balance is derived at read
-  // time from posted receipts, so voiding restores those balances immediately.
+  // A DRAFT is voided by a direct write. A POSTED receipt is voided by the
+  // trusted callable, which takes its allocations back out of each invoice's
+  // ledger; no reversal document is written.
   const voidClientReceipt = useCallback(async (receipt, voidReason) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (!canTransition(receipt.status, PAYMENT_STATUS.VOID)) {
       throw new Error(`Cannot void a ${receipt.status} receipt`)
     }
-    const reason = (voidReason || '').trim()
-    if (!reason) throw new Error('Enter a reason for voiding this receipt')
-
-    const ref = doc(db, 'companies', companyId, 'projects', projectId, 'clientReceipts', receipt.id)
-    await updateDoc(ref, {
-      status:     PAYMENT_STATUS.VOID,
-      voidedAt:   serverTimestamp(),
-      voidedBy:   user.uid,
-      voidReason: reason,
-      updatedAt:  serverTimestamp(),
-      updatedBy:  user.uid,
+    return runClientReceiptVoid({
+      db, runTransaction, serverTimestamp, uid: user.uid,
+      receiptRef: doc(db, 'companies', companyId, 'projects', projectId, 'clientReceipts', receipt.id),
+      reason: voidReason, call: callClientFinance, isSignedIn, projectId,
     })
   }, [companyId, projectId, user])
 

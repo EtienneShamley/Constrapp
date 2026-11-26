@@ -21,6 +21,8 @@ import { useSupplierPayments } from '../../hooks/useSupplierPayments'
 import { useRetentionReleases } from '../../hooks/useRetentionReleases'
 import { useClientInvoices } from '../../hooks/useClientInvoices'
 import { useClientReceipts } from '../../hooks/useClientReceipts'
+import { useClientCreditNotes } from '../../hooks/useClientCreditNotes'
+import { useClientRetentionReleases } from '../../hooks/useClientRetentionReleases'
 import { resolveBudgetSource, budgetSourceState } from '../../lib/budgetApproval'
 import { FIGURE_STATE, MARGIN_NOT_ESTABLISHED } from '../../lib/projectSnapshot'
 import {
@@ -38,7 +40,7 @@ import { saveBlob } from '../../lib/fileBlob'
 // write callback is consumed — the report creates, changes and stores nothing.
 //
 // ⚠️ ROLE GATE. The outer component renders the report body — and so OPENS its
-// fourteen subscriptions — only for financial roles (isFinancialRole). That is
+// sixteen subscriptions — only for financial roles (isFinancialRole). That is
 // the UX mirror; Firestore Security Rules are the enforced boundary and would
 // deny these reads to a subcontractor or client anyway.
 //
@@ -191,8 +193,9 @@ function downloadCsv(text, filename) {
 function CommercialReport({ project, projectId, currencyCode }) {
   const fmt = useMemo(() => money(currencyCode), [currencyCode])
 
-  // ── Live subscriptions (14) — the Dashboard snapshot's eleven, plus client
-  // invoices and receipts (cash) and the company cost codes (names only). ──
+  // ── Live subscriptions (16) — the Dashboard snapshot's eleven, plus client
+  // invoices, receipts, credit notes and retention releases (cash and what is
+  // receivable) and the company cost codes (names only). ──
   const { budgetLines, budgetLinesLoading, budgetLinesError }                         = useBudgetLines(projectId)
   const { approvedBudget }                                                            = useApprovedBudget(projectId, { original: true })
   const budgetSource = useMemo(
@@ -212,6 +215,10 @@ function CommercialReport({ project, projectId, currencyCode }) {
   const { retentionReleases, retentionReleasesLoading, retentionReleasesError }       = useRetentionReleases(projectId)
   const { clientInvoices, clientInvoicesLoading, clientInvoicesError }                = useClientInvoices(projectId)
   const { clientReceipts, clientReceiptsLoading, clientReceiptsError }                = useClientReceipts(projectId)
+  const { clientCreditNotes, clientCreditNotesLoading, clientCreditNotesError }       = useClientCreditNotes(projectId)
+  const {
+    clientRetentionReleases, clientRetentionReleasesLoading, clientRetentionReleasesError,
+  } = useClientRetentionReleases(projectId)
 
   const report = useMemo(() => buildCommercialReport({
     project,
@@ -219,7 +226,7 @@ function CommercialReport({ project, projectId, currencyCode }) {
     sources: {
       budgetLines, approvedBudget, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
       variations, forecastLines, baseline, supplierPayments, retentionReleases,
-      clientInvoices, clientReceipts, costCodes,
+      clientInvoices, clientReceipts, clientCreditNotes, clientRetentionReleases, costCodes,
     },
     sourceStates: {
       budgetLines:         { loading: budgetLinesLoading,         error: budgetLinesError },
@@ -235,18 +242,22 @@ function CommercialReport({ project, projectId, currencyCode }) {
       retentionReleases:   { loading: retentionReleasesLoading,   error: retentionReleasesError },
       clientInvoices:      { loading: clientInvoicesLoading,      error: clientInvoicesError },
       clientReceipts:      { loading: clientReceiptsLoading,      error: clientReceiptsError },
+      clientCreditNotes:   { loading: clientCreditNotesLoading,   error: clientCreditNotesError },
+      clientRetentionReleases: { loading: clientRetentionReleasesLoading, error: clientRetentionReleasesError },
     },
   }), [
     project, currencyCode,
     budgetLines, approvedBudget, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
-    variations, forecastLines, baseline, supplierPayments, retentionReleases, clientInvoices, clientReceipts, costCodes,
+    variations, forecastLines, baseline, supplierPayments, retentionReleases, clientInvoices, clientReceipts,
+    clientCreditNotes, clientRetentionReleases, costCodes,
     budgetLinesLoading, budgetLinesError, approvedBudgetLoading, approvedBudgetError,
     purchaseOrdersLoading, purchaseOrdersError, progressClaimsLoading, progressClaimsError,
     supplierInvoicesLoading, supplierInvoicesError, supplierCreditNotesLoading, supplierCreditNotesError,
     variationsLoading, variationsError, forecastLinesLoading, forecastLinesError,
     baselineLoading, baselineError, supplierPaymentsLoading, supplierPaymentsError,
     retentionReleasesLoading, retentionReleasesError, clientInvoicesLoading, clientInvoicesError,
-    clientReceiptsLoading, clientReceiptsError,
+    clientReceiptsLoading, clientReceiptsError, clientCreditNotesLoading, clientCreditNotesError,
+    clientRetentionReleasesLoading, clientRetentionReleasesError,
   ])
 
   // When this view was opened, then refreshed at each print / export — the

@@ -76,14 +76,16 @@ const one = (snap) => (snap.exists() ? { id: snap.id, ...snap.data() } : null)
 // `queries` — one query per register, the SAME queries the listeners use:
 //   budgetLines, purchaseOrders, progressClaims, supplierInvoices,
 //   supplierCreditNotes, variations, forecastLines, supplierPayments,
-//   retentionReleases, clientInvoices, clientReceipts, costCodes
+//   retentionReleases, clientInvoices, clientReceipts, clientCreditNotes,
+//   clientRetentionReleases, costCodes
 // `refs` — baseline, pointer, and the factories header(id), snapshot(id),
 // adjustments(id) for the approved-budget trio.
 // Returns the `sources` object computeFinalAccount takes. Unreachable →
 // OFFLINE, denied → PERMISSION; never the cache, never a partial set.
 export const FINAL_ACCOUNT_QUERY_NAMES = [
   'budgetLines', 'purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes', 'variations',
-  'forecastLines', 'supplierPayments', 'retentionReleases', 'clientInvoices', 'clientReceipts', 'costCodes',
+  'forecastLines', 'supplierPayments', 'retentionReleases', 'clientInvoices', 'clientReceipts',
+  'clientCreditNotes', 'clientRetentionReleases', 'costCodes',
 ]
 
 export async function readFinalAccountSourcesFromServer({ queries, refs, getDocsFromServer, getDocFromServer }) {

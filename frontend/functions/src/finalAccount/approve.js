@@ -49,6 +49,9 @@ const millis = (t) => (t && typeof t.toMillis === 'function' ? t.toMillis() : 0)
 const ORDERED = [
   'budgetLines', 'purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes',
   'variations', 'supplierPayments', 'retentionReleases', 'clientInvoices', 'clientReceipts',
+  // The receivable contract (ADR-87 / ADR-88): invoiced, receivable, retention
+  // held and owed-to-client figures are derived from these two as well.
+  'clientCreditNotes', 'clientRetentionReleases',
 ]
 
 // The most documents ONE register may hold for an approval. The transaction

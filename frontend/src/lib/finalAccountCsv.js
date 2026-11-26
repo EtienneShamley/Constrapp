@@ -1,8 +1,9 @@
 import { csvRows, csvMoney, filenameSlug } from './csv'
 import {
   FINAL_ACCOUNT_STATUS, FINAL_ACCOUNT_FIGURES, FIGURE_BASIS, FIGURE_GROUP_LABELS, FINAL_ACCOUNT_DISCLAIMER,
+  figureRecorded,
 } from './finalAccount'
-import { figurePresentation, FIGURE_VIEW } from './finalAccountDisplay'
+import { figurePresentation, FIGURE_VIEW, NOT_RECORDED_NOTE } from './finalAccountDisplay'
 
 // ── Final Account → CSV (pure; APPROVED revisions only) ──────────────────────
 //
@@ -11,6 +12,10 @@ import { figurePresentation, FIGURE_VIEW } from './finalAccountDisplay'
 // withdrawn revision is REFUSED: an unapproved Final Account must not leave
 // the app looking like a finalised financial document. Text goes through
 // lib/csv.js (formula-injection protection); money is a 2-decimal number.
+//
+// A figure introduced AFTER the revision was approved is absent from its
+// stored figures. It is exported as NOT RECORDED — never as a zero, never as
+// "not calculable", and never filled in from live records.
 
 const iso = (t) => {
   if (!t) return ''
@@ -55,13 +60,15 @@ export function finalAccountCsv(account, { projectName = '', superseded = false 
     ['Amounts', `${ccy}. Ex-GST and gross figures are listed separately and are never added together. GST is the Australian 10% model only.`],
     [],
     ['Section', 'Figure', 'Value', 'Unit', 'Basis', 'Notes'],
-    ...FINAL_ACCOUNT_FIGURES.map(def => ({ def, text: figurePresentation(def, FIGURE_VIEW.REVISION) })).map(({ def, text }) => [
+    ...FINAL_ACCOUNT_FIGURES.map(def => ({ def, text: figurePresentation(def, FIGURE_VIEW.REVISION), recorded: figureRecorded(f, def.key) })).map(({ def, text, recorded }) => [
       FIGURE_GROUP_LABELS[def.group],
       text.label,
-      amount(f[def.key]),
+      recorded ? amount(f[def.key]) : 'NOT RECORDED',
       def.basis === FIGURE_BASIS.PERCENT ? '%' : ccy,
       BASIS_LABEL[def.basis],
-      [def.open ? 'OUTSTANDING BALANCE — acknowledged at approval' : '', text.note].filter(Boolean).join('; '),
+      recorded
+        ? [def.open ? 'OUTSTANDING BALANCE — acknowledged at approval' : '', text.note].filter(Boolean).join('; ')
+        : NOT_RECORDED_NOTE,
     ]),
     [],
     ['Cost code breakdown (ex-GST)'],

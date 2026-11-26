@@ -1,4 +1,6 @@
 import { NavLink, Outlet, useOutletContext } from 'react-router-dom'
+import { useCompany } from '../hooks/useCompany'
+import { clientFinanceActivated, clientFinanceTabs } from '../lib/clientFinanceActivation'
 
 // The Commercial tab is the project's REVENUE-AND-CASH workspace. It hosts the
 // Project Margin view (index), the Client Invoices / Accounts Receivable
@@ -29,7 +31,12 @@ const SUB_TABS = [
   { to: 'receipts',          label: 'Client Receipts',   end: false },
   { to: 'supplier-payments', label: 'Supplier Payments', end: false },
   { to: 'cash-flow',         label: 'Cash Flow',         end: false },
-  { to: 'retention',         label: 'Retention',         end: false },
+  { to: 'retention',         label: 'Supplier Retention', end: false },
+  // ADR-88: retention the CLIENT withholds on client invoices, and its
+  // releases — the receivable-side mirror, beside its payable counterpart.
+  // `clientFinance`: offered only to a company activated for client credit
+  // notes and client retention (lib/clientFinanceActivation.js).
+  { to: 'client-retention',  label: 'Client Retention',  end: false, clientFinance: true },
   // L2-B (ADR-77): the last stage of the commercial lifecycle. A sub-tab, not
   // a new project tab — same audience, same subject.
   { to: 'final-account',     label: 'Final Account',     end: false },
@@ -37,6 +44,10 @@ const SUB_TABS = [
 
 export default function ProjectCommercialLayout() {
   const context = useOutletContext()
+  // UX only — the Rules and the backend are the enforcement. While the company
+  // is loading or unreadable it is null, which reads as NOT activated.
+  const { company } = useCompany()
+  const tabs = clientFinanceTabs(SUB_TABS, clientFinanceActivated(company))
 
   return (
     <div>
@@ -46,7 +57,7 @@ export default function ProjectCommercialLayout() {
       {/* data-print-hide: an approved Final Account prints without the sub-nav
           (the L2-A print rules hide it only while a printable report is shown). */}
       <nav data-print-hide className="flex gap-1.5 mb-4 overflow-x-auto sm:overflow-x-visible sm:flex-wrap">
-        {SUB_TABS.map(({ to, label, end }) => (
+        {tabs.map(({ to, label, end }) => (
           <NavLink
             key={label}
             to={to}

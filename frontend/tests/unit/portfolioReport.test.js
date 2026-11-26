@@ -19,6 +19,7 @@ import { INDICATOR, PULSE_STATE } from '../../src/lib/pulse'
 import { loadProjectSources } from '../../src/lib/portfolioSources'
 import { readyProject, sourcesOf, EXPECTED_FIGURES } from '../fixtures/finalAccountProject'
 import { fakeReader, projectStore } from '../fixtures/portfolioReader'
+import { issuedInvoice, creditNoteFor } from '../fixtures/clientReceivableDocs'
 
 // ── L2-C Portfolio Report — the model and its export (ADR-78) ────────────────
 //
@@ -489,6 +490,53 @@ describe('a failed source is Unavailable and suppresses the subtotals that need 
     expect(row.completeness).toBe(COMPLETENESS.INCOMPLETE)
     expect(row.indicators.counts[RISK.NOT_EVALUATED]).toBe(PORTFOLIO_INDICATORS.length)
     expect(row.indicators.counts[RISK.CLEAR]).toBe(0)
+  })
+})
+
+// ── 8b. Receivables read the client credit notes and retention releases ──────
+
+describe('the Receivables column follows the one receivable contract (ADR-87 / ADR-88)', () => {
+  const credited = () => {
+    const p = readyProject()
+    p.clientInvoices[0] = issuedInvoice({ retention: 500 })                       // 9,900 gross, 550 retention held
+    p.clientCreditNotes = [creditNoteFor(p.clientInvoices[0], 1000)]              // 1,100 gross credited
+    return p
+  }
+
+  it('a posted credit note and held client retention reduce the row — through the report, by key', async () => {
+    const p = credited()
+    const result = await resultOf(p)
+    const row = portfolioRow({ project: proj('p1'), company: COMPANY, result, now: NOW })
+    const report = buildCommercialReport({
+      project: proj('p1'), currencyCode: 'AUD', sources: { ...sourcesOf(p), approvedBudget: result.sources.approvedBudget },
+      sourceStates: Object.fromEntries(REPORT_SOURCES.map(s => [s, { loading: false, error: false }])),
+    })
+    const expected = report.cash.find(i => i.key === 'receivablesOutstanding').figure.value
+    expect(row.figures.receivablesOutstanding.value).toBe(expected)
+    expect(expected).toBeLessThan(READY.receivablesOutstanding)
+    // No contract, cost or margin column moves.
+    expect({ ...valuesOf(row), receivablesOutstanding: READY.receivablesOutstanding }).toEqual(READY)
+  })
+
+  it.each(['clientCreditNotes', 'clientRetentionReleases'])('a failed %s read makes Receivables Unavailable, naming it — never the uncredited figure', async (name) => {
+    const row = portfolioRow({ project: proj('f'), company: COMPANY, result: await resultOf(credited(), { fail: c => c.collection === name }), now: NOW })
+    expect(row.figures.receivablesOutstanding).toEqual({ state: FIGURE_STATE.UNAVAILABLE, failedSources: [name], value: null })
+    expect(row.failedSources).toEqual([name])
+    expect(row.completeness).toBe(COMPLETENESS.INCOMPLETE)
+    // Every other column still renders.
+    expect(row.figures.currentContractSum.value).toBe(12000)
+    expect(row.figures.remainingPayable.value).toBe(1490)
+
+    const portfolio = build([proj('a'), proj('f')], { a: await resultOf(readyProject()), f: await resultOf(credited(), { fail: c => c.collection === name }) })
+    expect(group(portfolio, 'AUD').subtotals.receivablesOutstanding).toMatchObject({ state: SUBTOTAL_STATE.INCOMPLETE, value: null, included: 1, total: 2, affected: 1 })
+    expect(group(portfolio, 'AUD').subtotals.currentContractSum).toMatchObject({ state: SUBTOTAL_STATE.COMPLETE, value: 24000 })
+  })
+
+  it('no column was added: client retention held and owed-to-client are on the project\'s Reports tab', () => {
+    expect(PORTFOLIO_FIGURE_KEYS).toEqual([
+      'currentContractSum', 'approvedBudget', 'actual', 'remainingCommitted', 'forecastFinalCost', 'varianceToBudget',
+      'forecastGrossProfit', 'forecastMarginPct', 'remainingPayable', 'receivablesOutstanding', 'pendingClientVariations',
+    ])
   })
 })
 

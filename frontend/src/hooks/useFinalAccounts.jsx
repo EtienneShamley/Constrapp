@@ -89,6 +89,8 @@ export function useFinalAccounts(projectId) {
         retentionReleases: ordered('retentionReleases'),
         clientInvoices: ordered('clientInvoices'),
         clientReceipts: ordered('clientReceipts'),
+        clientCreditNotes: ordered('clientCreditNotes'),
+        clientRetentionReleases: ordered('clientRetentionReleases'),
         costCodes: query(collection(db, 'companies', companyId, 'costCodes'), orderBy('code', 'asc')),
       },
       refs: {

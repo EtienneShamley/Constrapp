@@ -5350,3 +5350,398 @@ Then: TESTING.md §75.9 and §75.10 (release identity; normal sign-in as the
 TEST Company Admin; E2-A; E2-B). Rollback: the previous release in the
 Firebase Hosting console. D3 #32, D3 #34 and L3 E2 stay open until those
 checks are recorded.
+
+## Rules capacity recovery 3 release order — ADR-85 — RULES ONLY (IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION, 26 November 2026; NOT PUBLISHED)
+
+On `feature/commercial-finance-phase-1` (uncommitted). Part of Commercial
+Finance Phase 1; it can be integrated and published on its own, ahead of the
+rest of the phase.
+
+**What changes.** `frontend/firestore.rules` only (236,737 → 228,289 bytes),
+with both generated transitional files regenerated. No Hosting, Functions,
+Storage Rules, index or data change.
+
+**Dependencies.** None. Every request is allowed or refused exactly as
+before, so there is no ordering against Hosting or Functions. It must be live
+before — or published in the same ruleset as — the client credit-note and
+client retention rules (ADR-87, ADR-88, proposed), which are written against
+its helpers.
+
+**Preflight, from `frontend/` (JDK 21+).**
+
+    npm run lint && npm run test:unit
+    npm run rules:transitional:check
+    node scripts/verify-rules-helper-hoist.mjs --base 8702728
+    npm run test:rules
+
+Expected: lint clean; unit 104 files / 5,357 tests; both generated files up to
+date; three `OK` lines (55 call sites each); rules 39 files / 2,492 tests.
+
+**Publish (Product Owner, on explicit authorisation).**
+`firebase deploy --only firestore:rules --project constrapp-69b5d`. A refusal
+for compiled size (HTTP 400) leaves the previous ruleset active and is the
+only evidence available of the 250 KB compiled limit — record the outcome
+either way.
+
+**Verify.** Read the released ruleset back and compare it byte for byte with
+the repository file (*Verifying which rules version is published*); 228,289
+bytes.
+
+**Rollback.** Republish the previous ruleset (`67b6425a…`, 236,737 bytes). No
+data was written under the new rules that the old rules would refuse.
+
+**Production acceptance.** A read-only identity check of the ruleset, plus the
+existing internal-role regression on the isolated acceptance company: create,
+post and void one supplier payment or client receipt, and void one draft
+client invoice — the paths whose conjuncts moved into helpers. No new
+behaviour exists to accept.
+
+## Commercial Finance Phase 1 release order — ADR-86 / ADR-87 / ADR-88 / ADR-89 — SEVEN callables, then RULES, then HOSTING; staged activation (IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION, 26 November 2026; NOTHING DEPLOYED)
+
+On `feature/commercial-finance-phase-1` (uncommitted). Every step needs its own
+authorisation. Nothing here has been run against production. *This section
+replaces the two earlier release orders written for designs that were not
+integrated.*
+
+### What changes
+
+- **Functions** — six new callables: `postClientCreditNote`,
+  `voidClientCreditNote`, `postClientRetentionRelease`,
+  `voidClientRetentionRelease`, `postClientReceipt`, `voidClientReceipt`; and a
+  changed `approveFinalAccount` (calc bundle, read set). `transferBoqToBudget`
+  and the team callables are unchanged.
+- **Firestore Rules** — three new blocks (reads and drafts; the ledger admits
+  no client write); retention pins and a void condition on `clientInvoices`;
+  **`clientReceipts`: a client can no longer post a receipt or void a posted
+  one**; retention and draft credit notes / releases only for a company the
+  backend activated; range bounds on invoices and receipts; the ADR-85
+  helpers. 236,120 bytes.
+- **Hosting.**
+- No Storage Rules, index or monitoring change. **No migration and no
+  rewrite of any historical document.** Two kinds of new server-written data
+  appear after cutover: a per-project receipt-baseline marker with the ledger
+  figures it establishes (written automatically on first use — ADR-89 S1), and
+  the company activation flags (written by the operator script at steps F1, G and
+  I).
+
+### Configuration and IAM for the six new callables
+
+- **No new service account, IAM role, secret or API.** They run as the same
+  runtime identity as `approveFinalAccount`, with the same options: the one
+  region, `enforceAppCheck: true`, 512 MiB, 120 s, `maxInstances: 5`.
+- **Invocation** is public at the Cloud Run layer exactly as for the existing
+  callables; the callable protocol, App Check and the function's own
+  authorisation are the gate. Confirm after deploy (read-only) that each new
+  service has the same invoker binding as `approvefinalaccount`.
+- **Parameters** — three, in `frontend/functions/.env.constrapp-69b5d`
+  (committed; not secrets), **all `false` at cutover**: the two switches
+  `CLIENT_RECEIPT_POSTING_ENABLED` and `CLIENT_FINANCE_POSTING_ENABLED`, and
+  the receipt scope `CLIENT_RECEIPT_ALL_COMPANIES` (`false` = receipts only
+  for a company the operator activated; ADR-89 S6). All fail closed: anything
+  other than an explicit `true` is off.
+- **Company activation** — `companies/{companyId}.clientFinanceEnabled`,
+  written only by `functions/scripts/set-client-finance.mjs` (dry run unless
+  `--apply`; audited). Absent on every company at cutover.
+- **App Check:** enforced; the production web app's existing registration
+  covers the new callables.
+
+### Two-commit integration plan (exact; the working tree is never swapped)
+
+Nothing is committed today. Commit 1 is built from a **temporary index**, so
+the working tree — the complete implementation — is not touched at any point.
+`H` is the directory holding the three hoist-only rules files (the recorded
+hoist applied to `8702728`; kept outside the repository by the engineer and
+re-proved against `8702728`). From the repository root, on
+`feature/commercial-finance-phase-1`:
+
+    # 0. Safety copy of the whole working tree (tracked changes and new files)
+    git diff HEAD --binary > ~/cf1-working-tree.patch
+    git ls-files -o --exclude-standard -z | xargs -0 tar -czf ~/cf1-untracked.tgz
+
+    # 1. Commit 1 — ADR-85 hoist only, from a temporary index
+    export GIT_INDEX_FILE="$(git rev-parse --git-dir)/index.adr85"
+    git read-tree HEAD
+    for f in firestore.rules firestore.transitional.rules firestore.m2a2-transitional.rules; do
+      git update-index --cacheinfo 100644,"$(git hash-object -w "$H/$f")",frontend/$f
+    done
+    for f in frontend/scripts/verify-rules-helper-hoist.mjs frontend/tests/unit/rulesHelperHoist.test.js; do
+      git update-index --add --cacheinfo 100644,"$(git hash-object -w "$f")","$f"
+    done
+    git write-tree        # must print ddce71bab1f1770e2d2c64dd5607964fbb39154d
+    git commit -m "refactor(rules): hoist lifecycle helpers for capacity (ADR-85)"
+    unset GIT_INDEX_FILE
+    rm "$(git rev-parse --git-dir)/index.adr85"
+    git reset             # index = the new HEAD; working tree untouched
+
+    # 2. Commit 2 — everything else
+    git add -A
+    git diff --cached --check
+    git commit -m "feat(finance): client credit notes, client retention and trusted posting (ADR-86..89)"
+
+*Verified without committing:* the tree `ddce71b…` was built exactly this way,
+exported to a scratch directory, and passed `rules:transitional:check`, the
+hoist prover (three `OK`, 55 call sites each), the unit suite (104 files /
+5,357 tests) and the rules suite (TESTING.md §81.1). If `git write-tree`
+prints anything else, stop: `unset GIT_INDEX_FILE`, delete the temporary
+index, and nothing has changed.
+
+Merge to `main` on authorisation; **Azure `main` green before any deploy.**
+Three further one-line commits are prepared at cutover, each merged in the
+normal way: **F** (`CLIENT_RECEIPT_POSTING_ENABLED=true`), **F3**
+(`CLIENT_RECEIPT_ALL_COMPANIES=true`, only after architect acceptance of the
+TEST baseline) and **G** (`CLIENT_FINANCE_POSTING_ENABLED=true`).
+
+### Preflight, from `frontend/` (JDK 21+)
+
+    npm ci
+    npm run lint && npm run functions:lint
+    npm run test:unit && npm run functions:test
+    npm run rules:transitional:check
+    npm run functions:calc:check && npm run functions:transfer-calc:check && npm run functions:finance-calc:check
+    npm run test:rules
+    npm run test:functions
+    npm run build
+
+Expected counts: TESTING.md §80.1.
+
+### Cutover — exact sequence (Product Owner; each step on authorisation)
+
+All commands from `frontend/` at the merged `main` commit, unless stated.
+**There is no moment at which both the old direct receipt posting and the new
+trusted receipt posting work.**
+
+**Before — announce a maintenance restriction.** *"Client receipts cannot be
+posted or voided until further notice — expected to be a few hours. Drafts can
+be prepared. Everything else is unaffected."* It begins at step B. It ends for
+the acceptance company at step F1 and **for every other company at step F3**,
+which waits for the architect's acceptance of the TEST baseline (step F2); its
+length for the production customer is therefore the time that acceptance
+takes, not a fixed figure. Announce the end when F3 is verified.
+
+**Step 0 — read-only inventory (record the output).** From the repository root:
+
+    node ops/cutover/client-receipt-inventory.mjs --project constrapp-69b5d > inventory-before.json
+
+Aggregates only. At 26 November 2026: 9 posted receipts, 9 allocations on them,
+5 invoices with historical allocations, 0 retained invoices, 0 ledgers, 0
+baseline markers, 0 companies activated.
+
+**Release prerequisite — a historical receipt in the acceptance company
+(architect ruling, 27 November 2026).** The production customer's company is
+not a test environment, and the acceptance company holds no historical receipt
+today. **Before step B**, in the acceptance company, through the released
+build (an ordinary user action there): issue a client invoice and post one
+receipt allocating part of it. Record the invoice total and the allocated
+amount. The step D inventory must then show that receipt (10 posted receipts,
+10 allocations on them, 6 invoices with historical allocations, two companies
+holding receipts).
+
+**Step A — the six new callables, both switches OFF.**
+
+    firebase deploy --project constrapp-69b5d --only functions:postClientReceipt,functions:voidClientReceipt,functions:postClientCreditNote,functions:voidClientCreditNote,functions:postClientRetentionRelease,functions:voidClientRetentionRelease
+
+Verify (read-only): six services from the merged commit; both parameters
+`false`. Nothing calls them; they would refuse if called. The released build
+is unaffected.
+
+**Step B — restrictive Rules. The maintenance restriction begins.**
+
+    firebase deploy --project constrapp-69b5d --only firestore:rules
+
+**A refusal for compiled size (HTTP 400) leaves the previous ruleset active —
+stop and report; the restriction has not begun.** From now on no browser build
+can post a receipt or void a posted one, and the callables are still off.
+
+**Step C — verify the restriction, then wait.**
+
+1. The published ruleset reads back byte-identical to
+   `frontend/firestore.rules` (236,120 bytes).
+2. **Wait 10 minutes** from the publish (Firebase's stated propagation time
+   for rules to reach every active listener). Requests in flight at the publish
+   either committed under the old Rules — and are then part of the history the
+   baseline reads — or were refused.
+3. Probe, in the acceptance company only: with the released build, prepare a
+   draft receipt and try to post it → *"You do not have permission to do this.
+   Nothing was saved."* The draft stays a draft.
+
+**Step D — historical baseline check (read-only).**
+
+    node ops/cutover/client-receipt-inventory.mjs --project constrapp-69b5d > inventory-frozen.json
+
+This is the history the baseline must reproduce; it cannot change any more.
+**Stop if any of these is not true:** `postedCarryingAllocatedInvoiceIds` is 0;
+`allocationAmountsNotWholeCents` is 0; one field shape per receipt status;
+`referencingMissingInvoice` reviewed; `retainedGreaterThanZero` is 0;
+`receiptBaselineMarkers.total` is 0. Record posted receipts, allocations on
+posted receipts and invoices with posted allocations.
+
+**Step E — Final Account callable, then Hosting, back to back.**
+
+    firebase deploy --project constrapp-69b5d --only functions:approveFinalAccount
+    npm run build && firebase deploy --project constrapp-69b5d --only hosting
+
+Verify the live bundle against a build of the merged commit. In the minutes
+between the two commands a Final Account draft prepared by the released build
+is refused approval (never wrongly granted). Receipts still cannot be posted:
+the new build says *"Posting and voiding client receipts is temporarily
+unavailable. Nothing was changed."*
+
+**Step F1 — trusted receipt processing for the TEST company only.** From
+`frontend/functions/`, first without `--apply` (dry run), then with:
+
+    node scripts/set-client-finance.mjs --project constrapp-69b5d --company <acceptance company id> --receipts --enable --apply
+
+then, at the merged commit **F** (`CLIENT_RECEIPT_POSTING_ENABLED=true`;
+`CLIENT_RECEIPT_ALL_COMPANIES` still `false`), from `frontend/`:
+
+    firebase deploy --project constrapp-69b5d --only functions:postClientReceipt,functions:voidClientReceipt
+
+Verify (read-only): both services at commit F; the inventory shows exactly one
+company `receipts-activated`. The maintenance restriction has ended for the
+acceptance company **only**. Every other company still gets *"Posting and
+voiding client receipts is temporarily unavailable. Nothing was changed."*
+from the callables, the Rules still refuse a direct post, and **no baseline is
+written for any of its projects**.
+
+**Step F2 — exercise the non-zero baseline in the acceptance company.**
+
+1. In the acceptance project that holds the historical receipt, post a second
+   receipt against the same invoice. The first call establishes the baseline.
+2. Re-run the inventory (read-only): `receiptBaselineMarkers.total` is 1, with
+   `legacyPostedReceipts` 1, `legacyAllocations` 1, `invoices` 1; **no marker
+   and no ledger in the production customer's company**.
+3. Reconcile exactly, on screen and in the Firestore console (read-only): the
+   invoice's ledger `receivedCents` = historical allocation + new allocation,
+   in whole cents; `receiptBaseline.legacyCents` = the historical allocation;
+   the invoice's outstanding figure in the app = receivable − that total.
+4. Void the **historical** receipt: the ledger falls by exactly its
+   allocation; repeat the void → no change.
+5. With a production-customer account (the Product Owner's own), try to post a
+   draft receipt → *temporarily unavailable*; the draft stays a draft; the
+   inventory still shows no marker for that company.
+
+Report the figures. **Stop for architect acceptance.** If anything does not
+reconcile: leave `CLIENT_RECEIPT_ALL_COMPANIES` false, set
+`CLIENT_RECEIPT_POSTING_ENABLED=false` and redeploy the two functions; nothing
+of the production customer's has been touched.
+
+**Step F3 — receipts for every company, after architect acceptance. The
+maintenance restriction ends.** At the merged commit **F3**
+(`CLIENT_RECEIPT_ALL_COMPANIES=true`):
+
+    firebase deploy --project constrapp-69b5d --only functions:postClientReceipt,functions:voidClientReceipt
+
+The first receipt operation in each remaining project establishes that
+project's baseline, in the same request. When it next happens naturally in the
+production customer's project, re-run the inventory: one marker per project
+that has had an operation, and across the markers `legacyPostedReceipts`,
+`legacyAllocations` and `invoices` equal the figures recorded at step D for
+those projects (less the acceptance company's voided receipt). **A user is
+never asked to do anything for the baseline, and no operator performs it.**
+The company receipt flag is not consulted from here on.
+
+**Step G — activate the TEST company only.** At the merged commit **G**
+(`CLIENT_FINANCE_POSTING_ENABLED=true`):
+
+    firebase deploy --project constrapp-69b5d --only functions:postClientCreditNote,functions:voidClientCreditNote,functions:postClientRetentionRelease,functions:voidClientRetentionRelease
+
+then, from `frontend/functions/`, first without `--apply` (dry run), then with:
+
+    node scripts/set-client-finance.mjs --project constrapp-69b5d --company <acceptance company id> --enable --apply
+
+Verify (read-only): the inventory shows exactly one company activated. The
+production customer's company has no flag: its users see no retention editor
+and no credit-note action; the Rules refuse a retained invoice and a draft
+credit note or release; the callables refuse *"…not yet available for this
+company."*
+
+**Step H — production acceptance** (below), in the acceptance company.
+
+**Step I — general availability, after architect acceptance.** The same script
+with the production customer's company id. No deploy.
+
+**Why this order.** The Rules go before Hosting and before receipts are
+enabled so that the history the baseline reads is frozen and verified first,
+and so that no old tab can post a receipt directly once trusted posting
+exists. The cost is the maintenance restriction, which is fail-closed and
+announced.
+
+### Activation states
+
+| After step | Receipts | Credit notes, releases, retention | Who |
+|---|---|---|---|
+| A | Old direct posting | Do not exist in the released build | everyone |
+| B–E | **None — maintenance restriction** | Not available | everyone |
+| F1–F2 | Trusted posting for the **TEST company only**; none for every other company (restriction continues) | Not available | — |
+| F3 | Trusted posting | Not available (switch off; no company activated) | everyone |
+| G–H | Trusted posting | Available | **TEST company only** |
+| I | Trusted posting | Available | each activated company |
+| Brake, at any time | set a switch to `false`, redeploy those functions | Posting and voiding stop with a clear message; drafts, reads and records unaffected | everyone |
+
+With the global finance switch off after activation, an activated company can
+still issue a retained invoice; its release waits for the switch. That is a
+pause, not an inconsistent state.
+
+### Mutation paths at each stage
+
+| Path | Enforced by | Released build after B | New build, not activated | New build, activated |
+|---|---|---|---|---|
+| Invoice draft, edit, issue | Rules | works | works; retention refused | works |
+| Invoice void | Rules | works unless credits or releases stand | same | same |
+| Receipt draft, edit, draft void | Rules | works | works | works |
+| Receipt post, posted void | Callable (switch; baseline) | **refused** | after F | after F |
+| Credit note / release draft | Rules (activation) | no UI; refused | refused | works |
+| Credit note / release post, void | Callable (switch; activation; baseline) | no UI | refused | after G |
+| Final Account approval | Callable | refused E¹→E² only | works | works |
+
+### Mixed states — all fail closed (TESTING.md §80.7, §81.4)
+
+| Browser build | Backend state | Behaviour |
+|---|---|---|
+| Released (old), or a tab left open | New Rules | Cannot post a receipt or void a posted one (refused, nothing saved); knows nothing of the new records; everything else unchanged. It must be reloaded to post receipts after F |
+| New | Old Rules (cannot occur in this order) | New registers unreadable → figures *Unavailable*, never zero |
+| New | Callables not deployed (cannot occur in this order) | Posting fails with nothing written |
+| New | A switch off | *"… is temporarily unavailable. Nothing was changed."* |
+| New | Company not activated | No retention or credit-note actions; a forged request is refused by the Rules and the callables |
+| Any | App Check token missing or invalid | Refused before the handler; clear message; a reload recovers |
+| Any direct SDK caller | New Rules | Direct posting, any ledger or marker write, any change to a posted document, setting the activation flag: refused |
+
+### Recovery — forward, not back
+
+| Situation | Action |
+|---|---|
+| Steps A–E, before F | Fully reversible: previous Rules; previous Hosting; previous `approveFinalAccount`. The restriction ends when the previous Rules are live |
+| **After F (a receipt may have been posted through the server; a baseline may exist)** | **Never restore the previous Rules:** direct posting would bypass the ledgers and make every baseline wrong. Fix forward; the receipt switch is the brake |
+| **After any credit note, release or retained invoice exists** | Never restore the previous Hosting or Rules. Fix forward |
+| A baseline refusal in production (`inconsistent`, `invalid`, `too large`) | Receipts stay unpostable **in that project only**; nothing was written. Report the code and the receipt it names; do not edit data without a decision |
+| Posting must stop now | The brake |
+
+Recovery of last resort is the Firestore point-in-time / backup route already
+documented — a data operation, not part of this plan.
+
+### Production acceptance plan (step H; acceptance company only; new records; no account reactivation)
+
+1. **Release identity** — the seven callables, the ruleset (byte-identical)
+   and the Hosting bundle, each against the merged commit; both parameters;
+   one company activated.
+2. **Receipts** — post and void a receipt; the audit events; the project's
+   baseline marker (zeros for a project with no history); a stale-tab receipt
+   refused without acknowledgement; an acknowledged surplus shown as owed to
+   the client.
+3. **Direct-write probes, refused:** draft receipt → posted; a ledger write;
+   a marker read or write; the activation flag.
+4. **Credit notes and retention** — TESTING.md §80.5 scenarios on new records,
+   including the named void refusals, the invoice-void lock, the printed
+   credit note and the CSV figures.
+5. **Not activated** — from the production customer's side nothing is done by
+   the engineer or the Product Owner in that company; the evidence is the
+   inventory (flag absent) and the emulator and browser tests of the refusal.
+6. **Final Account** — a draft prepared and approved on a fixture with a credit
+   note and a retained invoice; an existing approved revision opened: no false
+   difference.
+7. **Unchanged figures (GST §44 step 3b)** — an existing regression fixture
+   recorded before step A and compared after step E.
+8. **GST §44 steps 1 and 2** in production — still NOT RUN; run here if the
+   architect wants them at this release.
+
+Evidence classes as in the tracker; nothing above is claimed until it is run.

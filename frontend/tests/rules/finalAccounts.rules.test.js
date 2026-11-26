@@ -94,6 +94,7 @@ function serverReads(db, c = COMPANY_A, p = PROJECT_A) {
       supplierInvoices: ordered('supplierInvoices'), supplierCreditNotes: ordered('supplierCreditNotes'), variations: ordered('variations'),
       forecastLines: sub('forecastLines'), supplierPayments: ordered('supplierPayments'), retentionReleases: ordered('retentionReleases'),
       clientInvoices: ordered('clientInvoices'), clientReceipts: ordered('clientReceipts'),
+      clientCreditNotes: ordered('clientCreditNotes'), clientRetentionReleases: ordered('clientRetentionReleases'),
       costCodes: query(collection(db, `companies/${c}/costCodes`), orderBy('code', 'asc')),
     },
     refs: {

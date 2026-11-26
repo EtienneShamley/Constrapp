@@ -204,3 +204,40 @@ acceptance steps added, negative-path checked); §5 security checklist passes; a
 collection/field has a rules block and SECURITY.md reflects reality; client-only
 controls are labelled deferred (§7); and the diff is scoped to the task with anything
 else flagged, not silently fixed.
+
+## 9. Permanent engineering principles (ADR-89 — binding on every phase)
+
+1. Build for long-term scalability.
+2. Prefer trusted backend processing for complex financial mutations.
+3. Preserve existing customer data.
+4. Evolve components incrementally.
+5. Avoid wholesale application rebuilds.
+6. Avoid unnecessary database migrations.
+7. Maintain measurable capacity headroom.
+8. Pay for justified infrastructure.
+9. Avoid unnecessary operating costs.
+10. Never compromise security or financial integrity to reduce cost.
+
+**How they apply when you build.**
+
+- **Where a mutation goes.** If it reads an array or a register, holds a
+  cumulative or cross-document invariant, or derives stored financial figures,
+  it is a trusted callable (ARCHITECTURE.md → *Trusted transaction boundary*):
+  identifiers in, the server re-derives and validates, one transaction, one
+  audit event, typed errors, idempotent. Otherwise it stays a client write with
+  scalar Rules. **§1's "client-SDK backend for all financial data" is read
+  with this rule from ADR-89 on.**
+- **Rules are for access, not arithmetic.** Do not add financial mutation
+  validation to `firestore.rules`. Before any Rules change, measure all three
+  files against the budget; a change that leaves less than 5,000 bytes on the
+  binding file needs the architect's agreement.
+- **No formula in the Functions package.** Domain logic is a pure module under
+  `src/lib/`, bundled into `functions/src/generated/` and checked for
+  freshness; the callable composes it.
+- **Data.** Additive fields, absent-reads-as-default, no migration unless the
+  architect approves one. Never rewrite an issued, posted or approved record.
+- **Cost.** No new service, database, scheduler or dependency without a stated
+  need. Prefer usage-billed components that idle at zero. Bound every
+  transaction and every query; refuse by name above a limit, never truncate.
+- **Evidence.** Do not describe something as scalable, enforced or accepted
+  beyond what was measured; say what was not.

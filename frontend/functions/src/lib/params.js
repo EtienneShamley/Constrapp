@@ -82,6 +82,58 @@ export const FINAL_ACCOUNT_APPROVAL_ENABLED = defineBoolean('FINAL_ACCOUNT_APPRO
 // project file states it explicitly (functions/test/boqBudget.test.js).
 export const BOQ_BUDGET_TRANSFER_ENABLED = defineBoolean('BOQ_BUDGET_TRANSFER_ENABLED', { default: false })
 
+// ADR-89 — the four client-finance callables (postClientCreditNote,
+// voidClientCreditNote, postClientRetentionRelease, voidClientRetentionRelease)
+// share ONE switch, which governs those four ONLY. `false` + a redeploy of
+// those functions makes each answer `client-finance-disabled` before any read
+// or write; drafts, posted entries and every ledger are unaffected (and, the
+// Rules giving no client a path to post, nothing can be posted or un-posted
+// while it is off). It is the global BRAKE. With it on, each COMPANY must
+// still be activated (`companies/{id}.clientFinanceEnabled === true`, written
+// only by scripts/set-client-finance.mjs) before these four do anything for it.
+//
+// CUTOVER ORDER (production starts with BOTH switches off):
+//   1. the six callables deployed, both switches `false`;
+//   2. the restrictive Rules published (no browser can post or void directly);
+//   3. verified;
+//   4. Hosting;
+//   5. CLIENT_RECEIPT_POSTING_ENABLED=true with CLIENT_RECEIPT_ALL_COMPANIES
+//      still false — receipts for the TEST company only (activated with the
+//      operator script, --receipts); the first call on each of ITS projects
+//      establishes that project's historical receipt baseline; verified;
+//   6. after architect acceptance, CLIENT_RECEIPT_ALL_COMPANIES=true —
+//      receipts for every company;
+//   7. CLIENT_FINANCE_POSTING_ENABLED=true, then the TEST company activated
+//      with the operator script;
+//   8. acceptance; 9. general availability, company by company.
+// The default is FALSE — fail closed, exactly as the two flags above — and every
+// project file states it explicitly (functions/test/clientFinance.test.js).
+export const CLIENT_FINANCE_POSTING_ENABLED = defineBoolean('CLIENT_FINANCE_POSTING_ENABLED', { default: false })
+
+// ADR-89 — the two client-RECEIPT callables (postClientReceipt,
+// voidClientReceipt), under their OWN switch. Receipts are an existing, live
+// workflow: once the Rules refuse a browser's direct posting, this switch is
+// what lets a receipt be posted at all. The cutover starts with it OFF (step 1
+// above) and turns it on at step 5 — between steps 2 and 5 no receipt can be
+// posted or voided. `false` + a redeploy of those two functions makes each
+// answer `client-receipt-disabled` before any read or write (no receipt
+// baseline is established while it is off). The default is FALSE — fail closed — and every project file
+// states it explicitly (functions/test/clientFinance.test.js).
+export const CLIENT_RECEIPT_POSTING_ENABLED = defineBoolean('CLIENT_RECEIPT_POSTING_ENABLED', { default: false })
+
+// ADR-89 (S6) — the SCOPE of the receipt switch above. While this is `false`
+// the two receipt callables act only for a company whose document carries
+// `clientReceiptsEnabled === true` (written only by
+// scripts/set-client-finance.mjs --receipts); every other company gets the
+// same `client-receipt-disabled` answer as with the switch off, before any
+// read of project data and before any baseline is written. `true` + a redeploy
+// of those two functions opens receipts to every company — the normal state
+// after the cutover. It never widens anything on its own: with
+// CLIENT_RECEIPT_POSTING_ENABLED off, nobody posts. Independent of
+// `clientFinanceEnabled` in both directions. The default is FALSE — fail
+// closed — and every project file states it explicitly.
+export const CLIENT_RECEIPT_ALL_COMPANIES = defineBoolean('CLIENT_RECEIPT_ALL_COMPANIES', { default: false })
+
 // One region, matching the Firestore location (docs/DEPLOYMENT.md → Functions).
 export const REGION = 'australia-southeast1'
 

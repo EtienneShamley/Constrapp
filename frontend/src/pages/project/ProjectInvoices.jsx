@@ -52,8 +52,12 @@ function todayIso() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
+// Transaction forms and detail views show CENTS (`precise`): a form in which a
+// financial transaction is authored or confirmed must show the actual amounts.
+// The register table and summary cards further down keep the page's whole-unit
+// convention. Presentation only — no figure is computed differently.
 function TotalsFooter({ totals, currencyCode }) {
-  const money = (n) => formatCurrency(n, currencyCode)
+  const money = (n) => formatCurrency(n, currencyCode, { precise: true })
 
   const hasRetention = totals.retention > 0
   return (
@@ -131,7 +135,7 @@ function SupplierInvoiceEditorModal({ onShowInvoice = () => {}, legacyClaimCount
   invoiceablePOs, invoiceableClaims, purchaseOrders, progressClaims = [], supplierInvoices, contacts,
   currencyCode, onClose, onSave,
 }) {
-  const money  = (n) => formatCurrency(n, currencyCode)
+  const money  = (n) => formatCurrency(n, currencyCode, { precise: true })
   const isEdit = !!invoice
   // Claim-sourced drafts author no line values at all.
   const claimSourced = isEdit && isClaimSourced(invoice)
@@ -554,7 +558,7 @@ function SupplierInvoiceEditorModal({ onShowInvoice = () => {}, legacyClaimCount
                   const over = overLineIdx.has(idx)
                   const readOnlyAmount = claimSourced || (!isEdit && !!claim)
                   return (
-                    <div key={idx} className="grid grid-cols-2 sm:grid-cols-[2fr_2fr_1fr_1.2fr] gap-2 items-center">
+                    <div key={idx} className="grid grid-cols-2 sm:grid-cols-[2fr_2fr_1fr_1fr_1.2fr] gap-2 items-center">
                       <p className="m-0 text-[12px] text-brand-text truncate">
                         {isVariationOriginLine(line) && (
                           <span className="text-brand-accent font-semibold" title="New-scope work from a committed supplier variation line — recognised against that line, never a PO line (ADR-63)">
@@ -577,6 +581,12 @@ function SupplierInvoiceEditorModal({ onShowInvoice = () => {}, legacyClaimCount
                           onChange={setAmount(idx)}
                         />
                       )}
+                      {/* The GST this line will be STORED with — the built line's
+                          own gstAmount (for a claim, the certified GST as
+                          apportioned), never re-derived for display. */}
+                      <p className="m-0 text-[12px] text-brand-muted whitespace-nowrap tabular-nums">
+                        GST {money(line.gstAmount || 0)}
+                      </p>
                       {claimSourced ? (
                         <p className="m-0 text-[12px] text-brand-muted truncate">
                           {TAX_CODE_LABELS[line.taxCode] ?? (line.taxCode || '—')}
@@ -693,7 +703,7 @@ function DetailRow({ label, value }) {
 // invoice document is ever written with a balance, a payment status, a credited
 // total, or any back-reference (ADR-24/ADR-31).
 function InvoiceDetailModal({ invoice, reconciliation, allocatedPayments, creditNotes, creditStateUnknown = false, currencyCode, onClose }) {
-  const money = (n) => formatCurrency(n, currencyCode)
+  const money = (n) => formatCurrency(n, currencyCode, { precise: true })
   const hasRetention = (invoice.retentionTotal || 0) > 0
   // From the reconciliation row (derived), never from the invoice document —
   // no release total is ever stored on an invoice.
@@ -951,7 +961,7 @@ function RowActions({ invoice, onTransition, onEdit, onRecordPayment, onRecordCr
 const blankCreditRow = () => ({ costCodeId: '', description: '', amount: '', taxCode: TAX_CODE.GST })
 
 function CreditNoteModal({ invoice, creditNote, creditNotes, currencyCode, onClose, onSave }) {
-  const money = (n) => formatCurrency(n, currencyCode)
+  const money = (n) => formatCurrency(n, currencyCode, { precise: true })
   const isEdit = !!creditNote
 
   const [supplierCreditReference, setSupplierCreditReference] = useState(creditNote?.supplierCreditReference || '')

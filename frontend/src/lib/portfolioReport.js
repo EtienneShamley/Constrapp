@@ -99,7 +99,7 @@ export const PORTFOLIO_FIGURE_NOTES = {
   forecastGrossProfit:     'Current Contract Sum − Forecast Final Cost',
   forecastMarginPct:       'Forecast Gross Profit ÷ Current Contract Sum',
   remainingPayable:        'Posted supplier invoices still payable, gross — an invoice balance, not a payment',
-  receivablesOutstanding:  'Issued client invoices not yet matched to a receipt, gross — not cash',
+  receivablesOutstanding:  'Issued client invoices, less posted credit notes and client retention still held, not yet matched to a receipt, gross — not cash',
   pendingClientVariations: 'Submitted, not approved — NOT included in any contract, revenue or margin figure',
 }
 

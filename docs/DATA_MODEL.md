@@ -22,6 +22,9 @@ companies/{companyId}
     progressClaims/{claimId}
     supplierInvoices/{invoiceId}
     clientInvoices/{invoiceId}
+    clientInvoiceLedgers/{invoiceId}      (ADR-87 — one per invoice, id = the invoice id)
+    clientCreditNotes/{creditNoteId}      (ADR-87)
+    clientRetentionReleases/{releaseId}   (ADR-88)
     clientReceipts/{receiptId}
     supplierPayments/{paymentId}
     variations/{variationId}
@@ -112,6 +115,8 @@ nothing else** — `name` and every other field remain immutable from the client
 | `name` | string | Read-only from the client |
 | `countryCode` | string | **ISO 3166-1 alpha-2** (`NZ`, `AU`, `ZA`, `US`, `GB`). **Absent = never configured.** Suggests a currency; never forces one |
 | `baseCurrency` | string | **ISO 4217** (`NZD`, `AUD`, `ZAR`, `USD`, `GBP`, `EUR`). The default inherited by **new** projects. Absent ⇒ display falls back to `AUD` and the setup banner shows; **nothing is auto-written** |
+| `clientFinanceEnabled` | bool | **Server-written only** (`functions/scripts/set-client-finance.mjs`, audited; no client can set it — the update Rule admits four other keys). `true` activates client credit notes, client retention and retention releases for the company (ADR-89 S3): read by the Rules, by the four credit-note / release callables and, for presentation only, by the browser. Absent ⇒ not activated |
+| `clientReceiptsEnabled` | bool | **Server-written only** (the same script with `--receipts`, audited; no client can set it). Consulted by the two receipt callables **only while `CLIENT_RECEIPT_ALL_COMPANIES` is false** (the cutover, ADR-89 S6): `true` lets them act for the company. Independent of `clientFinanceEnabled`. Not read by the Rules or the browser. Absent ⇒ not activated |
 | `currencyUpdatedAt` / `currencyUpdatedBy` | timestamp / uid | Stamped on every currency configuration save |
 
 Other fields (e.g. `createdAt`, `plan`) are incidental. Changing `baseCurrency`
@@ -326,7 +331,8 @@ next save. Embedding (not a `contactAssignments` subcollection) follows ADR-16.
 
 Company-wide sequential numbering. Documents: `purchaseOrders`, `progressClaims`,
 `supplierInvoices`, `variationsClient`, `variationsSupplier`, `clientInvoices`,
-`clientReceipts`, `supplierPayments`, `supplierCreditNotes`, `tenderPackages`.
+`clientReceipts`, `supplierPayments`, `supplierCreditNotes`, `tenderPackages`,
+`clientCreditNotes` (`CCN-0001`), `clientRetentionReleases` (`CRR-0001`).
 
 | Field | Type | Notes |
 |---|---|---|
@@ -882,7 +888,7 @@ transaction as the write.
 |---|---|---|
 | `invoiceNumber` | string | `CI-0001` — from the company-wide counter |
 | `status` | string | `draft` \| `issued` \| `void`; `sent` **reserved** (no delivery mechanism exists, so nothing transitions into it). There is deliberately **no** `paid`/`partially_paid` — not even reserved |
-| `docType` | string | `invoice`; `credit_note` reserved |
+| `docType` | string | `invoice`; the reserved `credit_note` value is **SUPERSEDED, never activated** — Client Credit Notes live in their own `clientCreditNotes` collection (ADR-87) |
 | `adjustsInvoiceId` | string \| null | **Reserved** — Credit Note target |
 | `clientId` | string \| null | → company contact (type `client`) |
 | `clientName` | string | **Frozen snapshot** of the contact's `displayName` at creation |
@@ -942,6 +948,116 @@ not to the commercial baseline, not to variations, not to Budget Lines. Voided
 invoices retain their number, so a void leaves an intentional, visible gap in the
 sequence. **No migration** — a project with no `clientInvoices` loads normally.
 
+## Client retention fields on `clientInvoices` (ADR-88)
+
+Four fields, added by Commercial Finance Phase 1. **All four present, or all
+four absent**: an invoice written before ADR-88 (or by an older build) carries
+none and reads as zero retention. No migration.
+
+| Field | Type | Notes |
+|---|---|---|
+| `retention` | number | Ex-GST amount the client withholds on this invoice. Authored (a percentage in the editor only proposes it). `0 ≤ retention ≤ subtotal`, whole cents |
+| `retentionGst` | number | `round-half-up(gstTotal × retention ÷ subtotal)` in integer cents — the invoice's own GST in proportion. **Rules-pinned** |
+| `retentionTotal` | number | `retention + retentionGst`. Rules-pinned |
+| `receivableTotal` | number | `grossTotal − retentionTotal` — receivable on issue. Rules-pinned |
+
+Editable while `draft`; frozen at issue by the lifecycle key allow-lists. When
+the fields are present the Rules also pin `grossTotal == subtotal + gstTotal`
+and whole cents on all seven money headers; `retentionGst` is pinned to within
+half a cent of the proportional share (no size limit), and the trusted backend
+requires the exact figure before anything is posted against the invoice. Nothing is ever written back onto an issued invoice: held,
+released and credited retention are derived.
+
+## …/projects/{projectId}/clientCreditNotes/{creditNoteId}
+
+A reduction against **one issued client invoice** (ADR-87). Financial-role
+reads. Lifecycle `draft → posted → void`. **A client creates, edits and voids a
+DRAFT only; posting, and voiding a posted note, are done by the trusted backend
+(ADR-89: `postClientCreditNote`, `voidClientCreditNote`), which re-derives
+every figure below and refuses a draft that differs.** A posted or void note
+admits no client write. Never deleted.
+
+| Field | Type | Notes |
+|---|---|---|
+| `creditNumber` | string | `CCN-0001`, company counter. Immutable |
+| `status` | string | `draft` · `posted` · `void` |
+| `docType` | string | `credit_note`. Immutable |
+| `clientInvoiceId` | string | The target. **Frozen at creation**; Rules `get()` it: must be `issued`, same `clientId` and `currency` |
+| `invoiceNumber`, `clientId`, `clientName` | snapshots | Frozen from the invoice |
+| `creditDate` | string | `YYYY-MM-DD` |
+| `reason` | string | Required, non-whitespace, ≤ 1000 |
+| `clientCreditReference`, `notes` | string | Optional |
+| `lineItems[]` | array (1–100) | `invoiceLineIndex`, `description`, `amount` (ex-GST, > 0), `taxCode`, `gstAmount`, `variationId`, `variationNumber`, `costCodeId`, `costCodeName` — tax code and variation copied from the source line. **Not Rules-inspectable** (read-time validity gate) |
+| `subtotal`, `gstTotal`, `grossTotal` | number | Whole cents; `gross == subtotal + gst`; `subtotal > 0`. Rules-pinned |
+| `retentionAmount`, `retentionGst` | number | The part of this credit that reduces retention **still held** (ex-GST and GST). `≤ subtotal` / `≤ gstTotal`. Stored, never recomputed |
+| `retentionTotal`, `receivableTotal` | number | Convenience: the retained part and the rest, gross |
+| `ledgerSeq` | int | The ledger `seq` this draft was computed against — a hint for the UI. The backend does not rely on it: it re-derives the draft against the current ledger |
+| `currency`, `revision` | | Immutable |
+| `postedAt/By`, `voidedAt/By`, `voidReason` | stamps | Caller and server time, Rules-verified |
+| `createdAt/By`, `updatedAt/By` | stamps | Rules-verified |
+
+## …/projects/{projectId}/clientRetentionReleases/{releaseId}
+
+An authorisation that makes retention withheld on **one issued client invoice**
+receivable (ADR-88). Same audience and lifecycle as credit notes: drafts by
+the client, posting and voiding a posted release by the trusted backend
+(ADR-89: `postClientRetentionRelease`, `voidClientRetentionRelease` — the void
+also reads the project's posted receipts). Not an invoice, a credit note or a
+receipt.
+
+| Field | Type | Notes |
+|---|---|---|
+| `releaseNumber` | string | `CRR-0001`, company counter. Immutable |
+| `status`, `docType` | string | `draft` · `posted` · `void`; `client_retention_release` |
+| `clientInvoiceId`, `invoiceNumber`, `clientId`, `clientName` | | Target and snapshots, frozen |
+| `releaseDate` | string | `YYYY-MM-DD` — the date the release was agreed |
+| `reason`, `notes` | string | Reason required |
+| `amount` | number | Ex-GST retention released. > 0, whole cents, ≤ the invoice's `retention` |
+| `gstAmount` | number | Cumulative share of the invoice's stored `retentionGst`; the final release takes the remainder |
+| `releaseTotal` | number | `amount + gstAmount`. Rules-pinned |
+| `ledgerSeq` | int | As on a credit note |
+| `currency`, `revision`, stamps | | As on a credit note |
+
+## …/projects/{projectId}/clientInvoiceLedgers/{invoiceId}
+
+**The document id is the client invoice id.** Running totals of everything
+posted against that invoice (ADR-87 / ADR-88), and — from the ADR-89 final
+pass — of what posted receipts have allocated to it. Created by the first
+posting; never deleted or reset. **An enforcement device and a cross-check —
+no displayed figure is read from it.** Financial-role reads; **written only by
+the trusted backend (ADR-89, Admin SDK)**, in the transaction that posts or
+voids exactly one entry or receipt. Rules: `allow write: if false`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `seq` | int | +1 per movement (backend) |
+| `creditedSubtotalCents`, `creditedGstCents` | int | Posted credit notes. **Whole cents** |
+| `creditedRetentionCents`, `creditedRetentionGstCents` | int | The retention part of those credits |
+| `releasedRetentionCents`, `releasedRetentionGstCents` | int | Posted releases |
+| `receivedCents` | int | **Exact**: Σ allocations to this invoice by posted receipts — the historical ones through the project's one-time baseline, every later one through `postClientReceipt` / `voidClientReceipt`. A missing ledger, or an absent field, means zero **only because** the project's baseline marker exists; without the marker nothing is read as zero and every finance operation is refused. The decisions that read it: a receipt's over-allocation check and the voiding of a retention release |
+| `receiptBaseline` | map | `{ legacyCents, legacyReceipts, establishedAt }` — written once, on the ledgers of invoices that had receipts before the backend took over; a permanent record, never changed by later movements |
+| `lines` | map | `{ "<invoiceLineIndex>": { amountCents, gstCents } }` credited per source line, maintained by the backend |
+| `lastEntryId`, `lastEntryKind` | string | The entry of the last movement: `credit` · `credit_void` · `release` · `release_void` · `receipt` · `receipt_void` |
+| `createdAt/By`, `updatedAt/By` | stamps | Server time and the calling member's uid |
+
+Invariants: [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md) → *The client invoice
+ledger*.
+
+## …/projects/{projectId}/clientFinanceState/receiptBaseline
+
+**Server-only** (no Rules block: every client read and write is denied).
+One document per project, created by the first finance operation on the
+project, in the transaction that brings the project's historical receipts into
+the invoice ledgers (ADR-89 S1). Its presence is what makes a ledger's
+`receivedCents` exact. Never changed or deleted.
+
+| Field | Type | Notes |
+|---|---|---|
+| `version` | int | `1` |
+| `establishedAt`, `establishedBy` | timestamp, string | Server time; the member whose request established it |
+| `legacyPostedReceipts`, `legacyAllocations`, `invoices` | int | What the baseline read and wrote — counts |
+| `legacyCents` | int | Σ of the historical allocations, whole cents |
+
 ## …/projects/{projectId}/clientReceipts/{receiptId}
 
 **Cash actually received** from the head-contract client, with **embedded
@@ -959,7 +1075,8 @@ incremented in the same transaction as the write.
 | Field | Type | Notes |
 |---|---|---|
 | `receiptNumber` | string | `CR-0001` — from the company-wide counter |
-| `status` | string | `draft` \| `posted` \| `void`. **No `cleared`, no `reconciled`** — reconciliation is a derived state of an *invoice*, never a receipt status |
+| `status` | string | `draft` \| `posted` \| `void`. **No `cleared`, no `reconciled`** — reconciliation is a derived state of an *invoice*, never a receipt status. **From the ADR-89 final pass, `draft → posted` and `posted → void` are written only by the trusted backend** (`postClientReceipt`, `voidClientReceipt`); a client creates, edits and voids a **draft** |
+| `allocatedInvoiceIds` | array<string> | **Server-written at posting**: the sorted ids of the allocated invoices, so the receipts of one invoice are found by an indexed lookup. Absent on drafts and on receipts posted before the final pass |
 | `docType` | string | `receipt`; `refund` **reserved** (money moving *back* to a client is a different event from voiding a mis-keyed receipt) |
 | `clientId` | string | **REQUIRED non-empty** → company contact (type `client`). Unlike every other counterparty link in the app this is **never null**: a receipt with no client is not a record (rules-enforced) |
 | `clientName` | string | **REQUIRED non-empty frozen snapshot** of the contact's `displayName` at creation |
