@@ -89,14 +89,14 @@ export function useClientInvoices(projectId) {
     clientRef, externalInvoiceReference,
     description, periodEnding,
     invoiceDate, dueDate, paymentTerms,
-    lineItems, notes,
+    lineItems, notes, retention = 0,
   }) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
 
-    const validationError = validateInvoiceDraft({ clientId, clientName, invoiceDate, lineItems })
+    const validationError = validateInvoiceDraft({ clientId, clientName, invoiceDate, lineItems, retention })
     if (validationError) throw new Error(validationError)
 
-    const totals = invoiceTotals(lineItems)
+    const totals = invoiceTotals(lineItems, retention)
 
     const counterRef = doc(db, 'companies', companyId, 'counters', CLIENT_INVOICE_COUNTER_ID)
     const invoiceRef = doc(collection(db, 'companies', companyId, 'projects', projectId, 'clientInvoices'))
@@ -154,12 +154,16 @@ export function useClientInvoices(projectId) {
         paymentTerms: paymentTerms ?? null,
 
         // Money — ex-GST canonical, per-line GST; headers derive from the lines.
-        // No retention and no payable/gross split on the client side in this
-        // foundation (client retention is a separate future foundation).
+        // Client retention (ADR-88) is authored per invoice and frozen at
+        // issue: withheld from what is receivable, never from what is billed.
         lineItems,
         subtotal:   totals.subtotal,
         gstTotal:   totals.gstTotal,
         grossTotal: totals.grossTotal,
+        retention:       totals.retention,
+        retentionGst:    totals.retentionGst,
+        retentionTotal:  totals.retentionTotal,
+        receivableTotal: totals.receivableTotal,
 
         // Audit snapshot of the currency this document was raised in. The
         // PROJECT currency remains the display authority — this field is never
@@ -199,15 +203,15 @@ export function useClientInvoices(projectId) {
     clientRef, externalInvoiceReference,
     description, periodEnding,
     invoiceDate, dueDate, paymentTerms,
-    lineItems, notes,
+    lineItems, notes, retention = 0,
   }) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (invoice.status !== CI_STATUS.DRAFT) throw new Error('Only draft client invoices can be edited')
 
-    const validationError = validateInvoiceDraft({ clientId, clientName, invoiceDate, lineItems })
+    const validationError = validateInvoiceDraft({ clientId, clientName, invoiceDate, lineItems, retention })
     if (validationError) throw new Error(validationError)
 
-    const totals = invoiceTotals(lineItems)
+    const totals = invoiceTotals(lineItems, retention)
     const ref = doc(db, 'companies', companyId, 'projects', projectId, 'clientInvoices', invoice.id)
 
     await updateDoc(ref, {
@@ -234,6 +238,10 @@ export function useClientInvoices(projectId) {
       subtotal:   totals.subtotal,
       gstTotal:   totals.gstTotal,
       grossTotal: totals.grossTotal,
+      retention:       totals.retention,
+      retentionGst:    totals.retentionGst,
+      retentionTotal:  totals.retentionTotal,
+      receivableTotal: totals.receivableTotal,
       notes:      notes?.trim() || '',
       updatedAt:  serverTimestamp(),
       updatedBy:  user.uid,

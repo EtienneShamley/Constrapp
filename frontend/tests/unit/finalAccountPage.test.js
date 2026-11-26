@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createElement as h } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { readyProject, sourcesOf } from '../fixtures/finalAccountProject'
+import { issuedInvoice, creditNoteFor } from '../fixtures/clientReceivableDocs'
 import { computeFinalAccount, settledSourceStates, finalAccountContent, FINAL_ACCOUNT_DISCLAIMER } from '../../src/lib/finalAccount'
 
 // ── The Final Account PAGE — static render smoke (ADR-77) ────────────────────
@@ -14,7 +15,7 @@ import { computeFinalAccount, settledSourceStates, finalAccountContent, FINAL_AC
 // than in the browser. Interaction (dialogs opening, focus, print) is NOT
 // covered — see TESTING.md §62 manual acceptance.
 
-const S = vi.hoisted(() => ({ role: 'project_manager', uid: 'u_pm', data: null, accounts: [], accountsError: false, loading: false, failInvoices: false }))
+const S = vi.hoisted(() => ({ role: 'project_manager', uid: 'u_pm', data: null, accounts: [], accountsError: false, loading: false, failInvoices: false, failCredits: false }))
 
 vi.mock('react-router-dom', () => ({ useOutletContext: () => ({ project: { id: 'p1', name: 'Harbour Road Units' }, projectId: 'p1', currencyCode: 'AUD' }) }))
 vi.mock('../../src/lib/fileBlob', () => ({ saveBlob: () => {} }))
@@ -35,6 +36,8 @@ vi.mock('../../src/hooks/useSupplierPayments', () => ({ useSupplierPayments: () 
 vi.mock('../../src/hooks/useRetentionReleases', () => ({ useRetentionReleases: () => list('retentionReleases') }))
 vi.mock('../../src/hooks/useClientInvoices', () => ({ useClientInvoices: () => list('clientInvoices') }))
 vi.mock('../../src/hooks/useClientReceipts', () => ({ useClientReceipts: () => list('clientReceipts') }))
+vi.mock('../../src/hooks/useClientCreditNotes', () => ({ useClientCreditNotes: () => (S.failCredits ? { clientCreditNotes: [], clientCreditNotesLoading: false, clientCreditNotesError: true } : list('clientCreditNotes')) }))
+vi.mock('../../src/hooks/useClientRetentionReleases', () => ({ useClientRetentionReleases: () => list('clientRetentionReleases') }))
 vi.mock('../../src/hooks/useFinalAccounts', () => ({
   useFinalAccounts: () => ({
     finalAccounts: S.accountsError ? [] : S.accounts, finalAccountsLoading: false, finalAccountsError: S.accountsError,
@@ -58,7 +61,7 @@ const revision = (number, status, over = {}) => ({
 const render = () => renderToStaticMarkup(h(ProjectFinalAccount))
 const use = (mutate = (p) => p) => { const p = readyProject(); mutate(p); S.data = sourcesOf(p) }
 
-beforeEach(() => { Object.assign(S, { role: 'project_manager', uid: 'u_pm', accounts: [], accountsError: false, loading: false, failInvoices: false }); use() })
+beforeEach(() => { Object.assign(S, { role: 'project_manager', uid: 'u_pm', accounts: [], accountsError: false, loading: false, failInvoices: false, failCredits: false }); use() })
 
 describe('ProjectFinalAccount renders every state', () => {
   it('a non-financial role sees the restricted notice and no figure', () => {
@@ -269,6 +272,63 @@ describe('ProjectFinalAccount renders every state', () => {
   it('a self-approved revision says so', () => {
     S.accounts = [revision(1, 'approved', { selfApproved: true, approvedBy: 'u_pm', createdBy: 'u_pm' })]
     expect(render()).toContain('self-approval (also prepared this revision)')
+  })
+
+  // ── Commercial Finance Phase 1 (ADR-87 / ADR-88) ───────────────────────────
+  const NEW_FIGURES = ['creditedToClient', 'clientRetentionHeld', 'owedToClient']
+  const legacy = (number, status) => {
+    const r = revision(number, status)
+    return {
+      ...r,
+      figures: Object.fromEntries(Object.entries(r.figures).filter(([k]) => !NEW_FIGURES.includes(k))),
+      sources: { ...r.sources, counts: Object.fromEntries(Object.entries(r.sources.counts).filter(([k]) => !k.startsWith('clientCreditNotes') && !k.startsWith('clientRetentionReleases'))) },
+    }
+  }
+
+  it('a failed client credit-note read: the invoiced and receivable figures are Unavailable, the register is named, nothing can be prepared', () => {
+    S.failCredits = true
+    const html = render()
+    expect(html).toContain('Could not load: Client Credit Notes')
+    expect(html).toContain('Unavailable')
+    expect(html).not.toContain('$9,000.00')                    // Invoiced to client is NOT shown as though no credits exist
+    expect(html).toContain('$12,000.00')                       // the contract sum does not read credit notes
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Prepare Final Account<\/button>/)
+  })
+
+  it('a revision approved BEFORE the new figures existed: no drift alert, "agree", and the three figures are Not recorded', () => {
+    S.accounts = [legacy(1, 'approved')]
+    const html = render()
+    expect(html).not.toContain('The current project records differ from this approved revision')
+    expect(html).toContain('The current project records agree with this approved revision on every figure it records.')
+    expect(html).toContain('3 figures were not recorded when this revision was approved (Credited to client, Client retention held, Owed to client).')
+    const article = html.slice(html.indexOf('<article'), html.indexOf('</article>'))
+    expect(article.match(/Not recorded</g)).toHaveLength(3)
+    expect(article).not.toContain('Unavailable')
+  })
+
+  it('…and a credit note posted since IS drift on the figures that revision carries', () => {
+    S.accounts = [legacy(1, 'approved')]
+    use(p => { p.clientInvoices[0] = issuedInvoice(); p.clientCreditNotes.push(creditNoteFor(p.clientInvoices[0], 1000)) })
+    const html = render()
+    expect(html).toMatch(/role="alert">The current project records differ from this approved revision in 4 figures/)
+    expect(html).toContain('$9,000.00')                        // stored: invoiced to client
+    expect(html).toContain('Current records: $8,000.00')       // live, net of the credit
+    expect(html).toContain('3 figures were not recorded when this revision was approved')
+  })
+
+  it('a current-schema approved revision says nothing about unrecorded figures', () => {
+    S.accounts = [revision(1, 'approved')]
+    const html = render()
+    expect(html).not.toContain('not recorded when this revision was approved')
+    expect(html).not.toContain('Not recorded<')
+  })
+
+  it('a DRAFT written before the new figures existed cannot be approved, and the page says why before any call', () => {
+    S.accounts = [legacy(1, 'draft')]
+    const html = render()
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Approve<\/button>/)
+    expect(html).toContain('This draft was prepared before figures that a Final Account now records were introduced. Withdraw it and prepare a new draft.')
+    expect(html).toContain('Withdraw draft')
   })
 
   it('a failed revision read is Unavailable — never "no Final Account", and nothing can be prepared', () => {

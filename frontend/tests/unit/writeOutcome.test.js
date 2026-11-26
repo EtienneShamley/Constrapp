@@ -495,6 +495,13 @@ const APPLIED = {
   'pages/project/ProjectClientInvoices.jsx':   ['Client invoice draft', 'Client invoice void', 'Client invoice issue'],
   'pages/project/ProjectClientReceipts.jsx':   ['Client receipt draft', 'Client receipt posting', 'Client receipt void'],
   'pages/project/ProjectSupplierPayments.jsx': ['Supplier payment draft', 'Supplier payment posting', 'Supplier payment void'],
+  // Commercial Finance Phase 1 (ADR-87 / ADR-88): one dialog per file.
+  'pages/project/clientCredit/ClientCreditNoteModal.jsx':     ['Client credit note draft'],
+  'pages/project/clientCredit/ClientCreditPostModal.jsx':     ['Client credit note posting'],
+  'pages/project/clientCredit/ClientCreditVoidModal.jsx':     ['Client credit note void'],
+  'pages/project/clientRetention/ClientReleaseModal.jsx':     ['Client retention release draft'],
+  'pages/project/clientRetention/ClientReleasePostModal.jsx': ['Client retention release posting'],
+  'pages/project/clientRetention/ClientReleaseVoidModal.jsx': ['Client retention release void'],
 }
 
 describe('the helper is pure and never writes or retries by itself', () => {
@@ -528,22 +535,37 @@ describe('the three money registers use the helper for every write they start', 
       expect(src).not.toMatch(/setSaving|\bsaving\b|setError\(|err\?\.message/)
       // No write is awaited by the page: success is only ever onConfirmed.
       expect(src).not.toMatch(/await on(Save|Confirm)\(/)
-      expect(src.match(/\{ onConfirmed: onClose \}/g)).toHaveLength(labels.filter((l) => !l.endsWith('issue')).length)
+      expect(src.match(/\{ onConfirmed: onClose \}/g)).toHaveLength(labels.length)
     })
 
     it(`${file}: submit is disabled by write.locked and Cancel stays usable once waiting`, () => {
       const src = stripComments(read(file))
-      const dialogs = labels.filter((l) => !l.endsWith('issue')).length
+      const dialogs = labels.length
       expect(src.match(/disabled=\{write\.locked \|\| /g)).toHaveLength(dialogs)
       expect(src.match(/disabled=\{write\.busy\}>\{write\.waiting \? 'Close' : 'Cancel'\}/g)).toHaveLength(dialogs)
       expect(src.match(/<WriteFeedback write=\{write\} \/>/g)).toHaveLength(dialogs)
     })
   }
 
-  it('the page-level Issue action refuses a second click while one is unanswered', () => {
+  // Issue used to be a page-level action behind a native window.confirm. It is
+  // now a dialog like the others, so the per-dialog contract above covers it
+  // (submit disabled by write.locked — a second click while one is unanswered
+  // is refused); what is pinned here is that no native dialog is left.
+  it('Issue is confirmed in a dialog of the page, never a native confirm', () => {
     const src = stripComments(read('pages/project/ProjectClientInvoices.jsx'))
-    expect(src).toContain('if (issueWrite.locked) return')
-    expect(src).toContain('issueWrite.run(() => issueClientInvoice(invoice))')
+    expect(src).not.toMatch(/window\.confirm|\bconfirm\(/)
+    expect(src).not.toContain('issueWrite')
+    expect(src).toContain("const write = useWriteAction('Client invoice issue')")
+    expect(src).toContain('write.run(() => onConfirm(invoice), { onConfirmed: onClose })')
+    expect(src).toContain('onConfirm={issueClientInvoice}')
+  })
+
+  it('posting a client receipt sends the over-allocation acknowledgement and uses no native confirm', () => {
+    const src = stripComments(read('pages/project/ProjectClientReceipts.jsx'))
+    expect(src).toContain('onConfirm(receipt, { acknowledgeOverAllocation: needsAck && acknowledged })')
+    expect(src).toContain('disabled={write.locked || !!blocked || (needsAck && !acknowledged)}')
+    const post = src.slice(src.indexOf('function PostModal('), src.indexOf('function VoidModal('))
+    expect(post).not.toMatch(/window\.confirm/)
   })
 
   it('the data hooks behind them were not changed: same transactions, no retry loop', () => {

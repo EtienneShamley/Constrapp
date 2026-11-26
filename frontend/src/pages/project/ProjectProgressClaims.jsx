@@ -28,13 +28,18 @@ const labelCls = 'block text-[11px] font-bold text-brand-muted uppercase trackin
 const thCls    = 'text-left px-3.5 py-[10px] text-brand-muted text-[11px] font-bold uppercase tracking-[0.4px]'
 const infoCls  = 'm-0 text-[13px] text-brand-text font-semibold'
 
+// The claim editor and the assessment dialog show CENTS (`precise`): a form in
+// which a financial transaction is authored or confirmed must show the actual
+// amounts. The register table keeps the page's whole-unit convention.
+// Presentation only — every figure is still `claimTotals`' own.
 function TotalsFooter({ totals, heading, currencyCode }) {
-  const money = (n) => formatCurrency(n, currencyCode)
+  const money = (n) => formatCurrency(n, currencyCode, { precise: true })
 
   return (
     <div className="flex flex-col items-end gap-1 text-[13px] text-brand-text border-t border-brand-border pt-3">
       <p className="m-0">{heading} <span className="font-semibold ml-2">{money(totals.subtotal)}</span></p>
       <p className="m-0 text-brand-muted">Retention <span className="ml-2">−{money(totals.retention)}</span></p>
+      <p className="m-0 text-brand-muted">Net (ex-GST) <span className="ml-2">{money(totals.net)}</span></p>
       <p className="m-0 text-brand-muted">GST 10% <span className="ml-2">{money(totals.gst)}</span></p>
       <p className="m-0 font-bold">Total payable <span className="ml-2">{money(totals.total)}</span></p>
     </div>
@@ -59,7 +64,7 @@ function TotalsFooter({ totals, heading, currencyCode }) {
 // PO line, variation line or cost code. Line building and validation are the
 // shared pure helpers in lib/progressClaims.js so the two modes cannot drift.
 function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, progressClaims, supplierInvoices = [], variations = [], adjustmentsByPoLine = {}, currencyCode, onClose, onSave }) {
-  const money  = (n) => formatCurrency(n, currencyCode)
+  const money  = (n) => formatCurrency(n, currencyCode, { precise: true })
   const isEdit = !!claim
 
   const [poId, setPoId]                 = useState('')
@@ -358,7 +363,7 @@ function ProgressClaimEditorModal({ claim = null, livePo = null, claimablePOs, p
 }
 
 function AssessProgressClaimModal({ claim, currencyCode, onClose, onTransition }) {
-  const money = (n) => formatCurrency(n, currencyCode)
+  const money = (n) => formatCurrency(n, currencyCode, { precise: true })
 
   const [approvedAmounts, setApprovedAmounts] = useState(
     (claim.lineItems ?? []).map(li => String(li.claimedThisPeriod ?? 0))

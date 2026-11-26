@@ -79,20 +79,26 @@ export const readyProject = () => ({
     { id: 'cr1', receiptNumber: 'CR-0001', status: 'posted', clientId: 'c1', clientName: 'Owner Pty Ltd', receiptDate: '2026-10-10',
       amount: 7700, allocatedTotal: 7700, unallocatedAmount: 0, allocations: [{ clientInvoiceId: 'ci1', invoiceNumber: 'CI-0001', allocatedAmount: 7700 }] },
   ],
+  // No client credit note and no client retention: the receivable figures are
+  // the invoice's own (ADR-87 / ADR-88 change nothing for such a project).
+  clientCreditNotes: [],
+  clientRetentionReleases: [],
 })
 
 // The project-level collections whose documents are listed above.
 export const FA_PROJECT_COLLECTIONS = [
   'budgetLines', 'budgetApprovals', 'budgetApprovalSnapshots', 'purchaseOrders', 'progressClaims', 'supplierInvoices',
   'supplierCreditNotes', 'variations', 'forecastLines', 'supplierPayments', 'retentionReleases', 'clientInvoices', 'clientReceipts',
+  'clientCreditNotes', 'clientRetentionReleases',
 ]
 
 export const EXPECTED_FIGURES = {
   originalContractValue: 10000, approvedClientVariations: 2000, finalContractSum: 12000,
-  invoicedToClient: 9000, remainingToInvoice: 3000,
+  invoicedToClient: 9000, creditedToClient: 0, remainingToInvoice: 3000,
   approvedBudget: 7000, approvedSupplierVariations: 0, actualCost: 6000, costToComplete: 0, finalCost: 6000, varianceToBudget: 1000,
   finalProfit: 6000, finalMarginPct: 50,
-  invoicedToClientGross: 9900, receivedAgainstInvoices: 7700, receivablesOutstanding: 2200, cashReceived: 7700, unallocatedReceipts: 0,
+  invoicedToClientGross: 9900, receivedAgainstInvoices: 7700, receivablesOutstanding: 2200, clientRetentionHeld: 0, owedToClient: 0,
+  cashReceived: 7700, unallocatedReceipts: 0,
   cashPaid: 5200, payablesOutstanding: 1490, unallocatedPayments: 200, retentionHeld: 110,
 }
 
@@ -109,6 +115,7 @@ export function sourcesOf(p) {
     supplierInvoices: p.supplierInvoices, supplierCreditNotes: p.supplierCreditNotes, variations: p.variations,
     forecastLines: p.forecastLines, baseline: p.baseline, supplierPayments: p.supplierPayments,
     retentionReleases: p.retentionReleases, clientInvoices: p.clientInvoices, clientReceipts: p.clientReceipts,
+    clientCreditNotes: p.clientCreditNotes ?? [], clientRetentionReleases: p.clientRetentionReleases ?? [],
     costCodes: p.costCodes,
     approvedBudget: {
       ...settled,

@@ -15,7 +15,11 @@ import {
   peakFunding, peakFundingSuppression,
   gstSuggestedGross, coverageOverWarning, validateCashFlowLineDraft,
 } from '../../src/lib/cashFlow'
-import { cashInRows } from '../../src/lib/clientReceipts'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { cashInRows, clientInvoiceReconciliationRows } from '../../src/lib/clientReceipts'
+import { receivableContext } from '../../src/lib/clientReceivables'
+import { issuedInvoice, creditNoteFor, releaseFor } from '../fixtures/clientReceivableDocs'
 import { cashOutRows } from '../../src/lib/supplierPayments'
 
 // ── Actual Cash Flow — pure-arithmetic unit tests ────────────────────────────
@@ -1303,5 +1307,120 @@ describe('forecast purity — inputs never mutated', () => {
     expect(() => sumRetentionHeld(ap)).not.toThrow()
     expect(ar[0].remaining).toBe(1100)
     expect(lines[0].amount).toBe(1100)
+  })
+})
+
+// ── Commercial Finance Phase 1: the AR layer follows the ONE receivable contract ──
+//
+// lib/cashFlow.js is HANDED rows and needed no formula change: the rows now
+// carry `receivableBasis − received` (lib/clientReceipts.js over the positions
+// of lib/clientReceivables.js), so credited amounts and client retention still
+// held are in no month, released retention is, and an amount owed to the
+// client is over-reconciled — excluded from every month and never netted.
+describe('AR forecast rows carry the receivable contract (ADR-87 / ADR-88)', () => {
+  const NOW_MONTH = '2026-09'
+  const invoice = (over = {}) => issuedInvoice({ subtotal: 1000, ...over })   // 1,100 gross, due 2026-10-01
+  const rowsFor = (invoices, receipts = [], creditNotes = [], releases = []) =>
+    clientInvoiceReconciliationRows(invoices, receipts, receivableContext(invoices, creditNotes, releases).positions)
+  const received = (clientInvoiceId, amount) => receipt({ amount, allocatedTotal: amount, unallocatedAmount: 0, allocations: [{ clientInvoiceId, allocatedAmount: amount }] })
+
+  it('with no credit and no retention the forecast is the invoice balance, as before', () => {
+    const inv = invoice()
+    expect(classifyInvoiceBalances(rowsFor([inv]), NOW_MONTH)).toEqual({ byMonth: { '2026-10': 1100 }, pastDue: 0, noDueDate: 0, overReconciled: 0 })
+    expect(rowsFor([inv])).toEqual(clientInvoiceReconciliationRows([inv], [], {}).map(r => ({ ...r })))
+  })
+
+  it('a posted credit note reduces Forecast Cash In by its gross amount', () => {
+    const inv = invoice()
+    const rows = rowsFor([inv], [], [creditNoteFor(inv, 200)])                  // 220 gross
+    expect(classifyInvoiceBalances(rows, NOW_MONTH).byMonth).toEqual({ '2026-10': 880 })
+  })
+
+  it('client retention HELD is in no month; a posted release moves it into the invoice balance — and nothing is counted twice', () => {
+    const inv = invoice({ retention: 100 })                                      // 110 withheld
+    const held = rowsFor([inv])
+    expect(classifyInvoiceBalances(held, NOW_MONTH).byMonth).toEqual({ '2026-10': 990 })
+    expect(receivableContext([inv], [], []).totals.retentionHeld).toBe(110)
+
+    const release = releaseFor(inv, 40)                                          // 44 gross
+    const released = rowsFor([inv], [], [], [release])
+    expect(classifyInvoiceBalances(released, NOW_MONTH).byMonth).toEqual({ '2026-10': 1034 })
+    expect(receivableContext([inv], [], [release]).totals.retentionHeld).toBe(66)
+    // held + forecast = the gross billed, exactly once.
+    expect(1034 + 66).toBe(1100)
+    // The same sum the AP side reports for supplier retention reads the row field.
+    expect(sumRetentionHeld(released)).toBe(66)
+  })
+
+  it('a credit after receipt is OVER-RECONCILED: excluded from every month, never offsetting another invoice', () => {
+    const a = invoice()
+    const b = invoice({ id: 'ci2', invoiceNumber: 'CI-0002' })
+    const rows = rowsFor([a, b], [received('ci1', 1100)], [creditNoteFor(a, 500)])   // 550 gross credited after full payment
+    const c = classifyInvoiceBalances(rows, NOW_MONTH)
+    expect(c.overReconciled).toBe(-550)                                          // owed to the client
+    expect(c.byMonth).toEqual({ '2026-10': 1100 })                               // CI-0002 in full — NOT 550
+  })
+
+  it('actual cash is untouched by a credit note or a release', () => {
+    const inv = invoice({ retention: 100 })
+    const receipts = [received('ci1', 300)]
+    expect(totalActualCashIn(cashInRows(receipts, { projectId: 'p1' }))).toBe(300)
+    // cashInRows takes receipts only: there is no parameter a credit or release could enter through.
+    expect(cashInRows.length).toBe(1)
+    expect(rowsFor([inv], receipts, [creditNoteFor(inv, 100)], [releaseFor(inv, 50)])[0].received).toBe(300)
+  })
+})
+
+describe('ProjectCashFlow wires the receivable contract and never shows a failed read as zero', () => {
+  const src = readFileSync(fileURLToPath(new URL('../../src/pages/project/ProjectCashFlow.jsx', import.meta.url)), 'utf8')
+  const code = src.replace(/\{\/\*[\s\S]*?\*\/\}/g, '').replace(/^\s*\/\/.*$/gm, '')
+
+  it('mounts both registers behind the role gate and builds the positions once', () => {
+    expect(src).toMatch(/const \{ clientCreditNotes, clientCreditNotesLoading, clientCreditNotesError \} = useClientCreditNotes\(mid\)/)
+    expect(code).toMatch(/clientRetentionReleases, clientRetentionReleasesLoading, clientRetentionReleasesError,\s*\} = useClientRetentionReleases\(mid\)/)
+    expect(code.match(/receivableContext\(/g)).toHaveLength(1)
+    expect(code).toContain('receivableContext(clientInvoices, clientCreditNotes, clientRetentionReleases)')
+    expect(code).toContain('clientInvoiceReconciliationRows(clientInvoices, clientReceipts, receivable.positions)')
+    expect(code).toContain('contractControl(clientInvoices, m.currentContractSum, receivable.totals).availableToInvoice')
+  })
+
+  it('the loading gate waits for both registers', () => {
+    const gate = code.slice(code.indexOf('clientReceiptsLoading || supplierPaymentsLoading'), code.indexOf('Loading cash and forecast records…'))
+    expect(gate).toContain('clientCreditNotesLoading')
+    expect(gate).toContain('clientRetentionReleasesLoading')
+  })
+
+  it('a failed credit-note or release read makes the AR layer unavailable — named, and shown as "—"', () => {
+    expect(code).toContain('const arUnavailable = clientInvoicesError || clientCreditNotesError || clientRetentionReleasesError')
+    expect(code).toMatch(/clientCreditNotesError && 'Client Credit Notes — /)
+    expect(code).toMatch(/clientRetentionReleasesError && 'Client Retention Releases — /)
+    // Both join the list that makes every forecast figure unavailable.
+    const list = code.slice(code.indexOf('const forecastSourceErrors = ['), code.indexOf('const costBasisErrors'))
+    expect(list).toContain('clientCreditNotesError')
+    expect(list).toContain('clientRetentionReleasesError')
+    expect(code).toContain("{arUnavailable ? '—' : money(arClass.noDueDate)}")
+    expect(code).toContain("{arUnavailable ? '—' : money(arClass.pastDue)}")
+    expect(code).toContain("{arUnavailable ? '—' : money(clientRetentionHeld)}")
+    // Remaining-to-invoice depends on credits, so revenue coverage is unavailable too.
+    expect(code).toContain('if (variationsError || baselineError || clientCreditNotesError) return { pct: null, state: \'source_error\' }')
+  })
+
+  it('client retention held is a labelled line of its own, from the contract, beside the supplier line', () => {
+    expect(code).toContain('const clientRetentionHeld = receivable.totals.retentionHeld')
+    expect(code).toContain('Supplier retention held (not released — not payable)')
+    expect(code).toContain('Client retention held (not released — not receivable)')
+    expect(src).toContain('is excluded from Forecast Cash In')
+  })
+
+  it('the over-reconciled callout names the amount owed to the client', () => {
+    const callout = code.slice(code.indexOf('Balances settled beyond what is owed'), code.indexOf('Ex-GST source value, not yet timed'))
+    expect(callout).toContain('!arUnavailable && arClass.overReconciled < 0')
+    expect(callout).toContain('owed to the client')
+    expect(callout).toContain('never netted against what other invoices owe')
+  })
+
+  it('lib/cashFlow.js imports nothing from the receivable modules — it is handed rows', () => {
+    const lib = readFileSync(fileURLToPath(new URL('../../src/lib/cashFlow.js', import.meta.url)), 'utf8')
+    expect(lib).not.toMatch(/from '\.\/client(Receivables|CreditNotes|Retention|Ledger)'/)
   })
 })

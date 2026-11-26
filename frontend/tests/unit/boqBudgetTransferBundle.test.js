@@ -124,7 +124,7 @@ describe('the trusted backend surface', () => {
     expect(opts).toMatch(/enforceAppCheck:\s*true/)
     expect(opts).toMatch(/region:\s*REGION/)
     expect(opts).not.toMatch(/secrets|serviceAccount/)
-    expect((index.match(/onCall\(/g) || []).length).toBe(3)   // the team wrapper, approveFinalAccount, this one
+    expect((index.match(/onCall\(/g) || []).length).toBe(4)   // the team wrapper, approveFinalAccount, this one and the client-finance wrapper (ADR-89)
     expect(index).not.toMatch(/onRequest\(/)
   })
   it('the request schema is identifiers and guards only', () => {

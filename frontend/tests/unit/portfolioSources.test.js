@@ -326,7 +326,7 @@ describe('loadApprovedBudget — pointer, header, snapshot, original, adjustment
 // ── 4. One project ───────────────────────────────────────────────────────────
 
 describe('loadProjectSources — every register, whole, with failures kept', () => {
-  it('reads the eleven registers, the baseline and the approved budget', async () => {
+  it('reads the thirteen registers, the baseline and the approved budget', async () => {
     const p = readyProject()
     const reader = fakeReader(storeOf(p))
     const { sources, readStates, reads } = await loadProjectSources(reader, SCOPE)
@@ -358,23 +358,40 @@ describe('loadProjectSources — every register, whole, with failures kept', () 
     }
   })
 
-  it('the documented read count is the real one: 13 with no approved budget, 17 at most', async () => {
+  it('the documented read count is the real one: 15 with no approved budget, 19 at most', async () => {
     const none = readyProject()
     none.pointer = null
     const a = fakeReader(storeOf(none))
-    expect((await loadProjectSources(a, SCOPE)).reads).toBe(13)
+    expect((await loadProjectSources(a, SCOPE)).reads).toBe(15)
     expect(a.calls.length).toBe(PORTFOLIO_READS_PER_PROJECT.min)
 
     const full = withVersion2()
     full.pointer = { ...full.pointer, adjustmentCount: 1, adjustmentNet: 500, lastAdjustmentId: 'adj1' }
     full.budgetAdjustments = [adjustment({ baseApprovalId: 'ba2', baseVersion: 2 })]
     const b = fakeReader(storeOf(full))
-    expect((await loadProjectSources(b, SCOPE)).reads).toBe(17)
+    expect((await loadProjectSources(b, SCOPE)).reads).toBe(19)
     expect(b.calls.length).toBe(PORTFOLIO_READS_PER_PROJECT.max)
 
     // The common case — one approved version, no adjustments.
     const c = fakeReader(storeOf(readyProject()))
-    expect((await loadProjectSources(c, SCOPE)).reads).toBe(15)
+    expect((await loadProjectSources(c, SCOPE)).reads).toBe(17)
+  })
+
+  it('the client credit notes and client retention releases are read like every other register, and a failed one is kept as failed', async () => {
+    for (const name of ['clientCreditNotes', 'clientRetentionReleases']) {
+      const spec = PORTFOLIO_LIST_SOURCES.find(s => s.source === name)
+      expect(spec, name).toMatchObject({ collection: name, orderBy: ['createdAt', 'desc'] })
+      const p = readyProject()
+      p[name] = [{ id: 'x1', status: 'posted', clientInvoiceId: 'ci1' }]
+      expect((await loadProjectSources(fakeReader(storeOf(p)), SCOPE)).sources[name]).toEqual(p[name])
+      const failed = await loadProjectSources(fakeReader(storeOf(p), { fail: c => c.collection === name }), SCOPE)
+      // Empty AND flagged: the model must not read the empty list as "none posted".
+      expect(failed.sources[name]).toEqual([])
+      expect(failed.readStates[name]).toEqual({ loading: false, error: true })
+      expect(failed.readStates.clientInvoices).toEqual({ loading: false, error: false })
+    }
+    // The per-invoice ledger is an enforcement device and is never read here.
+    expect(PORTFOLIO_LIST_SOURCES.map(s => s.collection)).not.toContain('clientInvoiceLedgers')
   })
 
   it('a large register is returned whole', async () => {

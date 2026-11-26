@@ -6,9 +6,30 @@ Decision rationale: [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md).
 
 All amounts are in the **project's currency** (`project.currency` →
 `company.baseCurrency` → `AUD`) — see *Currency & tax* below. Budget figures, PO
-line totals, retention, and claim line amounts are **ex-GST**. Every money figure
-passes through `roundMoney()` (round-half-up to cents) so totals reconcile
-against accounting exports later.
+line totals, retention, and claim line amounts are **ex-GST**.
+
+**Rounding — two behaviours, deliberately (ADR-86; tracker D3 #35).**
+
+- **Sums and differences** of cent amounts pass through `roundMoney()`
+  (`lib/purchaseOrders.js`) and are exact to the cent.
+- **The payable side (LEGACY, unchanged):** GST on purchase orders, progress
+  claims, supplier invoices, variations and supplier retention releases is
+  `roundMoney(x × 0.1)` in binary floating point. It is round-half-up **except**
+  on some half-cent boundaries, where it is **one cent low** (40.15 → 4.01;
+  exact half-up is 4.02): 2.1% of half-cent boundaries, never high, never off a
+  boundary. The Rules admit exactly that output (`gstPinned()`, GST boundary
+  hotfix). It is not changed in Commercial Finance Phase 1, because four
+  read-time comparisons on that side recompute a GST figure and compare it
+  with a stored one; a version-aware correction is a recorded future decision.
+- **The receivable side (EXACT, from Commercial Finance Phase 1):** client
+  invoice line GST, client retention, client credit notes and client retention
+  releases use integer cents (`lib/money.js`): 40.15 → 4.02. A client invoice
+  draft authored or edited after that release carries exact GST; an **issued**
+  invoice, and a draft nobody re-saves, keep the figure they store — nothing is
+  recomputed on read and nothing is migrated. Credit notes and releases never
+  apply a rate at all: they take their GST as a share of the invoice's
+  **stored** figures, so a full credit reverses exactly what the invoice
+  stores, whichever rule produced it.
 
 ## Currency & tax
 
@@ -710,9 +731,9 @@ gstTotal   = Σ line gstAmount
 grossTotal = subtotal + gstTotal  ← what the client was billed
 ```
 
-There is **no retention and no payable/gross split** on the client side in this
-foundation (client retention is a separate future foundation), so `grossTotal` is
-unambiguous. GST remains a flat **Australian 10%** regardless of the project's
+**Client retention (ADR-88)** is authored per invoice — see *Client Retention &
+Release* below. An invoice written before it carries no retention fields and
+reads as zero retention, so its `grossTotal` is its receivable. GST remains a flat **Australian 10%** regardless of the project's
 currency; a non-AU company sees the standard tax-limitation notice. The project
 currency is snapshotted as **audit context** and never read for display, and a
 client invoice is monetary data, so creating one **locks the project currency in
@@ -758,10 +779,11 @@ The pre-Receipts disclaimer ("Constrapp has no Receipt records, so every issued
 invoice stays here until it is voided") is **removed**, replaced by the limits
 that genuinely remain:
 
-> Balances reflect posted receipts allocated to each invoice. Constrap warns but
-> does not block over-allocation, and cannot prevent two users allocating the
-> same balance concurrently. Unallocated receipts are shown separately and do not
-> reduce any invoice balance.
+> Balances reflect posted receipts allocated to each invoice. Allocating more
+> than an invoice is owed is refused when a receipt is posted unless it is
+> explicitly acknowledged; an acknowledged surplus is shown as owed to the
+> client. Unallocated receipts are shown separately and do not reduce any
+> invoice balance.
 
 ### No writes to any other document
 
@@ -774,15 +796,249 @@ client invoices are revenue-side and touch no cost figure.
 ### Deferred
 
 Printable invoice, PDF, email, branding · **"Tax Invoice" labelling and company
-legal/tax identity** (see [SECURITY.md](SECURITY.md)) · **client** credit notes
-(supplier credit notes have since shipped — see *Supplier Credit Notes*; the
-client-side `docType`/`adjustsInvoiceId` fields stay reserved, and a future
-client credit note must never subtract from revenue a second time, because
-negative approved client variations already reduce the Current Contract Sum) ·
-client retention · revenue recognition · client progress claims ·
-client portal access. (Receipts, allocations, partial settlement, overpayments,
+legal/tax identity** (see [SECURITY.md](SECURITY.md)) · revenue recognition ·
+client progress claims · client portal access · a client **refund** workflow
+(`clientReceipts.docType: 'refund'` stays reserved — see *Client Credit Notes →
+Credit after receipt*) · a contract-level retention percentage and cap,
+retention due dates and defects-liability dates. (**Client credit notes** and
+**client retention** have since shipped — see the two sections below; the
+client-side `docType: 'credit_note'` / `adjustsInvoiceId` fields are superseded,
+never activated.) (Receipts, allocations, partial settlement, overpayments,
 payment date/method/bank reference, and the invoice balance after receipts have
 since **shipped** — see *Client Receipts* below.)
+
+## Client Credit Notes (ADR-87 — reductions against an issued client invoice)
+
+A **Client Credit Note** (`CCN-0001`, company counter) records a reduction
+against **exactly one issued client invoice**, frozen at creation. It is the
+third document kind on the receivable side: the invoice is what was *billed*,
+the receipt is *cash*, the credit note is a *reduction of billing*.
+
+### The four things that never blur
+
+| | What it is | What moves |
+|---|---|---|
+| Contract adjustment | An approved client variation (positive or negative) | Current Contract Sum, Forecast Revenue, Margin |
+| Invoice correction | A client credit note | Net Issued, Available to Invoice, the receivable |
+| Revenue | The Current Contract Sum (ADR-20) | Never moved by an invoice, a credit note or a receipt |
+| Cash | A posted client receipt | Actual Cash In — never moved by a credit note |
+
+A credit note **never changes the Current Contract Sum**: a reduction in what
+the client owes for the job is a negative client variation, which already
+reduces that figure, and the credit must not subtract it a second time.
+
+### Lifecycle
+
+`draft → posted → void` (void terminal, non-whitespace reason; posted content
+immutable; never deleted) — Rules-enforced. A draft has no financial effect.
+
+### Lines and GST
+
+A credit note credits **source lines** of its invoice
+(`lineItems[].invoiceLineIndex`); description, tax code, variation and cost-code
+snapshots are copied from the source line and cannot differ. GST is **not**
+computed from a rate:
+
+```
+line GST (this credit) = share(stored line GST, credited after, line amount)
+                       − GST already credited on that line
+```
+
+and when a line is fully credited its cumulative credited GST **is** the stored
+`gstAmount`. Partial credits therefore never each round their own share, and a
+full credit reverses exactly what the invoice stores — including an older
+invoice whose line GST is one cent below exact half-up.
+
+### Financial effects (posted credit that passes the validity gate)
+
+```
+net issued (ex-GST)  = issued − credited            → "Issued Client Invoices"
+Available to Invoice = Current Contract Sum − net issued
+per-variation invoiced falls by the variation-linked credit lines
+receivable basis     = grossTotal − credited − retention still held
+```
+
+The credit **re-opens** the same ex-GST amount for invoicing, inside the
+existing limits (over-invoicing is still warned, never blocked). It creates no
+new entitlement: Available to Invoice can never exceed the contract sum less
+what remains billed. Actual Cash In, every cost figure, Forecast Revenue and
+Margin are unchanged. Nothing is written onto the invoice; voiding a credit
+restores every figure with no reversal document.
+
+### Credit after receipt
+
+A credit that takes the receivable basis below what has been received leaves a
+**negative remaining balance, shown as an amount owed to the client**. It is
+never clamped to zero, never netted against other invoices, never shown as a
+settled invoice, and it leaves ageing and the cash forecast. **No refund record
+is invented** — `clientReceipts.docType: 'refund'` stays reserved and a refund
+workflow is a recorded future requirement. The remedy today is to void the
+receipt and re-record it with the surplus unallocated.
+
+### Posting — the trusted backend decides (ADR-89)
+
+A client drafts; **`postClientCreditNote` posts**. The server reads the draft,
+the invoice and the invoice's ledger in one transaction, takes from the draft
+only *which lines and how much*, **re-derives every line, GST, total and the
+retention split**, and requires the stored draft to equal that derivation to
+the cent. A draft prepared before another posting on the same invoice, or a
+document altered outside the app, is refused and nothing is written — the user
+re-saves the draft (*Refresh figures*) and posts again. Total posted credits
+can never exceed the invoice's stored `subtotal` and `gstTotal`, under any
+ordering or concurrency (see *The client invoice ledger*). **An entry whose
+lines are invalid cannot be persisted as posted.** `voidClientCreditNote`
+voids a posted note and moves the ledger back; a draft is voided directly.
+
+### Read-time validity gate (defence in depth)
+
+`lib/clientCreditNotes.js → clientCreditException` still checks, at read time, that a posted credit's
+target is issued and matches its client and currency, that every line names a
+real source line with the same tax code and variation and no more than its
+amount and GST, and that the stored headers reconcile to the lines. A failing
+credit counts **zero** everywhere (the amount billed and receivable stay as the
+invoice states them — the safe direction) and is listed as an exception.
+
+## Client Retention & Release (ADR-88)
+
+### The figures that never blur (per invoice)
+
+| Figure | Meaning |
+|---|---|
+| Gross invoice value (`grossTotal`) | What was billed, inc. GST — never reduced by anything |
+| Net issued (`subtotal − credited`, ex-GST) | What counts as Issued |
+| Retention withheld (`retentionTotal`) | The part of the gross the client keeps back — **billed and issued, not receivable** |
+| Retention held | Withheld, less released, less the retention part of credits |
+| Receivable basis | `grossTotal − credited − retention held` — owed **now**, before receipts |
+| Cash received | Posted receipt allocations |
+| Owed to client | Received beyond the receivable basis (never clamped) |
+
+**Withheld retention is not lost or deferred revenue** in Constrap's figures:
+Issued and Available to Invoice count the full subtotal.
+
+### On the invoice
+
+`retention` is an authored **ex-GST amount** per invoice (the editor's
+percentage field only *proposes* an amount; no percentage is stored, and there
+is no contract-level percentage or cap). Frozen at issue.
+
+```
+retentionGst    = round-half-up(gstTotal × retention ÷ subtotal)   — integer cents
+retentionTotal  = retention + retentionGst
+receivableTotal = grossTotal − retentionTotal
+```
+
+The GST withheld is the invoice's **own GST in proportion** — never a flat 10%.
+A GST-free invoice withholds no GST; a mixed invoice withholds its blended
+share. (The supplier formula, flat 10% of retention, is deliberately not
+mirrored: it yields a negative payable on a GST-free invoice — Deferred Control
+30.) There is **no upper limit** on an invoice that withholds retention: the
+share is computed in arbitrary-precision integers (the 20,000,000.00 limit of
+the first design, an artefact of 64-bit arithmetic in Rules, was removed by
+ADR-89). This states how Constrap splits a
+withheld amount between its ex-GST and GST parts; it is not tax advice on when
+GST on retention is attributable.
+
+### Release
+
+A **Client Retention Release** (`CRR-0001`) is an authorisation that makes
+withheld retention **receivable**. It is not an invoice, a credit note or a
+receipt and moves no cash. `draft → posted → void`. Its GST follows the one
+rule that governs the retained slice (below): after the release, the retention
+GST still held is the retained fraction of the GST still billed, and the
+release takes the rest; the release that takes the retention held to zero
+releases **all** the retention GST still held, so any split reconciles exactly
+to the invoice's stored `retentionGst`. The cumulative cap is Rules-enforced through the ledger.
+Released retention joins the invoice balance and is settled by an ordinary
+receipt; "retention received" is not reported (an allocation settles one
+balance — ADR-30). It ages from the invoice due date; release due dates are not
+modelled.
+
+### A credit note against a retained invoice
+
+The credit takes the same fraction of the retention **still held** as it takes
+of the amount **still billed**:
+
+```
+retention part       = share(retention held, this credit, billed and not yet credited)
+retention GST held'  = min( retention GST held,
+                            share(GST still billed, retention held', amount still billed) )
+retention GST part   = retention GST held − retention GST held'
+```
+
+(`'` = after the credit; held' is nil once no ex-GST retention is held.)
+
+Before any release that is the proportion the invoice withheld
+(`retention ÷ subtotal`). The split is stored on the credit note
+(`retentionAmount`, `retentionGst`) and shown before posting. Released
+retention is never clawed back and never "caught up": after a full release a
+credit falls entirely on the receivable, and after a partial release each
+credit takes only its fraction of what is left. The credit that takes
+everything still billed takes **all** the retention still held, and the entry
+that takes the last ex-GST retention takes **all** the retention GST still
+held — none can be stranded. After any credit the retention GST still held is
+the **retained fraction of the GST still billed**: crediting a GST-free line of
+a mixed-tax invoice frees no retention GST, crediting a taxable line frees its
+retained share, and **a credit never raises what is receivable** (beyond a
+single cent of rounding on very small amounts — measured: twice in about
+258,000 randomised credits, never more than one cent).
+
+**The retained-share invariant.** After every movement:
+
+```
+retention GST held ≤ share(GST still billed, retention held, amount still billed)
+```
+
+Credits and releases preserve it by construction. A **void** may not: voiding
+an entry after later entries were calculated on top of it can leave the slice
+carrying GST at a stale proportion. Such a void is **refused**, and the later
+entry is voided first — e.g. a credit note cannot be voided while a release
+posted after it still stands on a mixed-tax invoice. On a single-tax invoice
+entries void in any order. A release cannot be voided while a later credit depends on it — the
+credit is voided first.
+
+## The client invoice ledger (ADR-87 / ADR-88)
+
+`…/clientInvoiceLedgers/{invoiceId}` — one document per invoice, created by the
+first posting against it. Running totals in **whole cents**: credited subtotal
+and GST, the retention part of credits (ex-GST and GST), released retention
+(ex-GST and GST), a sequence number, and the last entry.
+
+- **It is the enforcement device, not the source of figures.** Every figure
+  above is derived at read time from the documents; a ledger that disagrees
+  with them is reported as an exception.
+- **It is written only by the trusted backend (ADR-89).** No client can
+  create, change or delete a ledger. Posting or voiding a credit note or a
+  release, the ledger write and one audit event are one server transaction;
+  the ledger moves by exactly that entry, `seq` + 1.
+- **Invariants after every movement** (`lib/clientLedger.js →
+  ledgerInvariantError`, run by the backend from the generated copy of that
+  module): credited ≤ subtotal and GST; a
+  full credit reverses the stored GST exactly; retention credited + released ≤
+  retention withheld (and GST); retention held ≤ the amount still billed;
+  retention GST held ≤ the retained share of the GST still billed (which also
+  means none is held once no ex-GST retention is held, and the receivable
+  basis is never negative).
+- **No ledger means nothing was ever posted** — guaranteed by the boundary:
+  only the backend posts, it always writes the ledger with the entry, and the
+  ledger is never deleted or reset.
+- **Invoice void.** An invoice carrying a posted credit note or release cannot
+  be voided (Rules); they are voided first. *This intentionally changes the
+  earlier policy, under which an issued invoice could always be voided.*
+- **Receipts and the ledger (ADR-89 final pass).** The ledger carries
+  `receivedCents` — what posted receipts have allocated to the invoice —
+  maintained by the backend when a receipt is posted or voided. The one thing
+  receipts can make unsafe, voiding a release that receipts already rely on,
+  is decided from that figure: the void is refused unless the receivable basis
+  after it still covers `receivedCents`. No receipt register is read, so the
+  decision costs the same on a project of any age or size.
+- **Rounding direction of a credit's retention part.** Where half-up rounding
+  would make the retention part of a credit (with its GST) exceed the credit
+  itself — which would *raise* the receivable — the ex-GST retention part is
+  rounded down a cent instead; the cent stays held and is taken by a later
+  credit or the final one. A credit never raises the receivable (proven; ADR-89
+  A5).
+- **Supported range.** 999,999,999,999.99 per client invoice, ex-GST (ADR-89
+  A6); the editor refuses more.
 
 ## Client Receipts (cash received — accounts receivable settlement)
 
@@ -841,8 +1097,24 @@ Unallocated Amount  = Receipt Amount − Allocated Total
 - Allocating **more than the receipt amount is hard-blocked** (the money does not
   exist) — and the scalar arithmetic is rules-enforced.
 - Allocating **more than an invoice's remaining balance is warned with an
-  explicit acknowledgement, never blocked** — it cannot be enforced anywhere
-  (rules cannot sum sibling documents).
+  explicit acknowledgement**. *From the ADR-89 final pass the server enforces
+  the same policy at posting:* it re-reads the invoice and its ledger and
+  refuses an over-allocation that was not acknowledged — naming the invoice,
+  what remains and the excess — so a receipt prepared before a credit note or
+  a release void cannot over-allocate silently. With the acknowledgement it
+  posts, and the surplus is an amount owed to the client. Receipts recorded
+  before the backend took over are included exactly: the first finance
+  operation on a project brings them into the invoice ledgers once (ADR-89
+  S1), and voiding one of them reduces the ledger exactly once.
+- **Availability by company.** Credit notes, retention on invoices and
+  retention releases exist only for a company the backend has activated
+  (`clientFinanceEnabled`); receipts are available to every company.
+- **Posting a receipt and voiding a posted receipt are backend operations**
+  (`postClientReceipt`, `voidClientReceipt`): the server validates the whole
+  draft, that each allocated invoice exists, is issued and belongs to the
+  receipt's client and currency, and that the receipt is not dated more than a
+  day ahead; it writes the receipt, each allocated invoice's ledger and one
+  audit event together. Drafts stay client writes.
 
 ### Unallocated receipts are permitted and normal
 
@@ -861,12 +1133,16 @@ editable proposal, and runs only when pressed.
 ```
 Received Against Invoice = Σ allocatedAmount across POSTED, non-void receipts
                              referencing that invoice
-Remaining to Reconcile   = clientInvoice.grossTotal − Received Against Invoice   (SIGNED)
+Receivable basis         = grossTotal − credited − retention still held          (ADR-87 / ADR-88)
+Remaining to Reconcile   = Receivable basis − Received Against Invoice            (SIGNED)
 ```
 
-Measured against **gross** (inc. GST), because gross is what the client was
-billed — client invoices carry no retention and no payable/gross split (ADR-22).
-The balance is **signed and never clamped**.
+Measured against the **receivable basis** (gross, inc. GST): what the client
+owes now. For an invoice with no retention and no credit notes that is its
+`grossTotal`, exactly as before ADR-87. ONE selector derives it for every
+surface — `lib/clientReceivables.js → receivablePositions()`, handed to
+`lib/clientReceipts.js` by the caller. The balance is **signed and never
+clamped**: a negative balance is an amount **owed to the client**.
 
 Derived reconciliation state — **never an authored invoice status**:
 
@@ -920,8 +1196,8 @@ Forecast Final Cost, and every margin figure are **completely unchanged**.
 
 ### Deferred (Client Receipts)
 
-Refunds and reversal records (`docType: 'refund'` reserved) · client credit
-notes · bank reconciliation and bank feeds · accounting integrations ·
+Refunds and reversal records (`docType: 'refund'` reserved — a credit after
+receipt shows an amount owed to the client; no refund is recorded) · bank reconciliation and bank feeds · accounting integrations ·
 attachments · printable remittance · email · automatic allocation policies ·
 financial periods and period locking. (**Supplier Payments have since shipped** —
 see below; the **Actual Cash Flow foundation** now consumes posted receipts —
@@ -1443,8 +1719,12 @@ releaseTotal  = amount + gstAmount
 ```
 
 This **telescopes**: across contiguous releases
-`Σ gstAmount == invoice.retentionGst` and
-`Σ releaseTotal == invoice.retentionTotal`, **exactly**, for any split.
+`Σ gstAmount == roundMoney(retention × 10%)` and so equals
+`invoice.retentionGst` and `invoice.retentionTotal` **as the application itself
+computed them**, for any split. (Both sides of that equality use the legacy
+`roundMoney(x × 0.1)`; on a half-cent boundary each is one cent below exact
+half-up — see *Rounding* at the top of this document. The client-side release,
+ADR-88, telescopes to the invoice's stored figure instead and applies no rate.)
 
 > ⚠️ **Firestore Rules and JavaScript disagree on `math.round` — proven in the
 > emulator.** Rules integer `/` truncates (`10005 / 10` → `1000`) where JS

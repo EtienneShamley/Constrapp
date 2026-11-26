@@ -172,7 +172,11 @@ async function main() {
       VITE_FIREBASE_AUTH_DOMAIN: `${PROJECT_ID}.firebaseapp.com`,
       VITE_FIREBASE_STORAGE_BUCKET: `${PROJECT_ID}.appspot.com`,
       VITE_FIREBASE_MESSAGING_SENDER_ID: '1',
+      // App Check in this stack is the browser's unsigned EMULATOR-ONLY token
+      // (src/lib/firebase.js). Blank both real-project inputs so a value left
+      // in .env.local can neither start reCAPTCHA nor arm the debug provider.
       VITE_FIREBASE_APPCHECK_SITE_KEY: '',
+      VITE_FIREBASE_APPCHECK_DEBUG_TOKEN: '',
     },
   })
   vite.stdout.on('data', () => {})
@@ -185,7 +189,8 @@ async function main() {
   console.log(`  ${c.cyan(link ?? '(link file not written — see bootstrap output above)')}`)
   console.log(`\n  ${c.dim('Register as')} ${adminEmail} ${c.dim('(any 12+ character password), then Company Settings → Team.')}`)
   console.log(`  ${c.dim('Invitation emails land in Firestore at companies/demo-builders/devOutbox/{inviteId} (field "link").')}`)
-  console.log(`  ${c.dim('App Check is skipped by the Functions emulator; production enforces it.')}`)
+  console.log(`  ${c.dim('App Check stays ENFORCED on every callable here: the emulator requires a token but only decodes it (no')}`)
+  console.log(`  ${c.dim('signature check), so this browser build sends an unsigned emulator-only token. Production verifies it.')}`)
   console.log(`\n  ${c.dim('Ctrl+C stops everything.')}\n`)
 }
 

@@ -24,7 +24,7 @@ export const PORTFOLIO_PROJECT_CONCURRENCY = 3
 
 const CREATED_DESC = ['createdAt', 'desc']
 
-// The eleven registers, each read once per project.
+// The thirteen registers, each read once per project.
 export const PORTFOLIO_LIST_SOURCES = [
   { source: 'budgetLines',         collection: 'budgetLines',         orderBy: CREATED_DESC, hook: 'useBudgetLines.jsx' },
   { source: 'purchaseOrders',      collection: 'purchaseOrders',      orderBy: CREATED_DESC, hook: 'usePurchaseOrders.jsx' },
@@ -38,6 +38,11 @@ export const PORTFOLIO_LIST_SOURCES = [
   { source: 'retentionReleases',   collection: 'retentionReleases',   orderBy: CREATED_DESC, hook: 'useRetentionReleases.jsx' },
   { source: 'clientInvoices',      collection: 'clientInvoices',      orderBy: CREATED_DESC, hook: 'useClientInvoices.jsx' },
   { source: 'clientReceipts',      collection: 'clientReceipts',      orderBy: CREATED_DESC, hook: 'useClientReceipts.jsx' },
+  // The receivable contract (ADR-87 / ADR-88): what a client owes is derived
+  // from the invoices AND these two registers, so a row that did not read them
+  // would overstate receivables wherever a credit or held retention exists.
+  { source: 'clientCreditNotes',       collection: 'clientCreditNotes',       orderBy: CREATED_DESC, hook: 'useClientCreditNotes.jsx' },
+  { source: 'clientRetentionReleases', collection: 'clientRetentionReleases', orderBy: CREATED_DESC, hook: 'useClientRetentionReleases.jsx' },
 ]
 
 // The single documents, as path segments below the project document.
@@ -183,7 +188,7 @@ export function failedProjectResult() {
 // The reads ONE project costs: the fixed part, and the conditional part of the
 // approved budget. Documented from this plan, not estimated.
 export const PORTFOLIO_READS_PER_PROJECT = {
-  // 11 registers + the commercial baseline + the approved-budget pointer.
+  // 13 registers + the commercial baseline + the approved-budget pointer.
   min: PORTFOLIO_LIST_SOURCES.length + 2,
   // + active header + active snapshot + original snapshot + adjustments.
   max: PORTFOLIO_LIST_SOURCES.length + 2 + 4,

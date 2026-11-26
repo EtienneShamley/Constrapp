@@ -169,6 +169,66 @@ service cloud.firestore {
           && request.resource.data.voidReason is string
           && request.resource.data.voidReason.trim().size() > 0;
     }
+    // ── Receivable helpers (ADR-86 / ADR-87 / ADR-88 / ADR-89).
+    function ciPath(companyId, projectId, id) {
+      return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/clientInvoices/$(id);
+    }
+    // Company-scoped activation of client credit notes and client retention: a
+    // boolean only the trusted backend writes (a client's company update is held
+    // to four other keys). Absent means not activated.
+    function ciActive(companyId) {
+      return get(/databases/$(database)/documents/companies/$(companyId)).data.get('clientFinanceEnabled', false) == true;
+    }
+    function ciLedgerPath(companyId, projectId, id) {
+      return /databases/$(database)/documents/companies/$(companyId)/projects/$(projectId)/clientInvoiceLedgers/$(id);
+    }
+    // A number carrying no fraction of a cent.
+    function centExact(v) {
+      return v is number && cents(v) / 100.0 == v;
+    }
+    // A DRAFT entry against a client invoice (credit note / retention release), as a
+    // client may store it: the target is an ISSUED invoice of the same client and
+    // currency. Its FIGURES are not validated here — a draft has no financial
+    // effect, and the trusted backend re-derives every figure when it posts (ADR-89).
+    function ciDraft(companyId, projectId, docType, numberKey) {
+      let d = request.resource.data;
+      let inv = get(ciPath(companyId, projectId, d.clientInvoiceId)).data;
+      return d.status == 'draft'
+          && ciActive(companyId)
+          && d.docType == docType
+          && d[numberKey] is string
+          && d.revision is number
+          && d.clientInvoiceId is string && d.clientInvoiceId.size() > 0
+          && inv.status == 'issued'
+          && inv.currency == d.currency
+          && inv.get('clientId', null) == d.clientId
+          && d.invoiceNumber is string
+          && d.clientName is string
+          && d.reason is string && d.reason.trim().size() > 0 && d.reason.size() <= 1000
+          && d.notes is string
+          && d.get('lineItems', []) is list && d.get('lineItems', []).size() <= 100
+          && currencyShaped()
+          && updateStamped();
+    }
+    // What a client may do to an entry: edit it while DRAFT (target and number
+    // frozen) or void a DRAFT. POSTED and VOID entries admit NO client write —
+    // posting, and voiding a posted entry, are trusted-backend operations.
+    function ciDraftUpdate(companyId, projectId, docType, numberKey) {
+      return resource.data.status == 'draft'
+          && request.resource.data[numberKey] == resource.data[numberKey]
+          && request.resource.data.clientInvoiceId == resource.data.clientInvoiceId
+          && request.resource.data.invoiceNumber == resource.data.invoiceNumber
+          && request.resource.data.clientId == resource.data.clientId
+          && request.resource.data.clientName == resource.data.clientName
+          && docCoreFrozen()
+          && updateStamped()
+          && ((ciDraft(companyId, projectId, docType, numberKey)
+                && lifecycleStampsFrozen()
+              ) || (
+                request.resource.data.status == 'void'
+                && voidedWithReason()
+              ));
+    }
 
 
     // Membership documents — a user may READ THEIR OWN PROFILE AND NOTHING ELSE.
@@ -2117,10 +2177,45 @@ service cloud.firestore {
         return request.resource.data.invoiceNumber == resource.data.invoiceNumber
             && docCoreFrozen();
       }
+      // Client retention (ADR-88): the four fields are ALL absent (an invoice written
+      // before it, or by an older build) or all pinned — retention within the subtotal,
+      // its GST the invoice's own GST in proportion (to within half a cent: doubles
+      // carry the product exactly enough at ANY size, so there is no upper limit;
+      // the backend requires the exact figure before posting against the invoice),
+      // gross and receivable reconciling. Frozen at issue by the key lists below.
+      function retentionValid() {
+        let d = request.resource.data;
+        // Supported range (lib/money.js): 999,999,999,999.99 ex-GST.
+        return d.get('subtotal', 0) <= 999999999999.99
+            && (!d.keys().hasAny(['retention', 'retentionGst', 'retentionTotal', 'receivableTotal'])
+                || retentionPinned(d, cents(d.subtotal), cents(d.gstTotal), cents(d.retention)));
+      }
+      function retentionPinned(d, s, g, r) {
+        return centExact(d.subtotal) && centExact(d.gstTotal) && centExact(d.grossTotal)
+            && centExact(d.retention) && centExact(d.retentionGst)
+            && centExact(d.retentionTotal) && centExact(d.receivableTotal)
+            && s >= 0 && g >= 0 && r >= 0 && r <= s
+            // Retention only for a company activated for client finance.
+            && (r == 0 || ciActive(companyId))
+            && cents(d.grossTotal) == s + g
+            && (r == 0 ? cents(d.retentionGst) == 0
+                       : math.abs(cents(d.retentionGst) - g * 1.0 * r / s) <= 0.5)
+            && cents(d.retentionGst) >= 0 && cents(d.retentionGst) <= g
+            && cents(d.retentionTotal) == r + cents(d.retentionGst)
+            && cents(d.receivableTotal) == s + g - cents(d.retentionTotal);
+      }
+      // ADR-87: an invoice carrying a posted credit note or retention release cannot
+      // be voided — those are voided first. No ledger: nothing was ever posted.
+      function ledgerClear() {
+        return !exists(ciLedgerPath(companyId, projectId, invoiceId))
+            || (get(ciLedgerPath(companyId, projectId, invoiceId)).data.get('creditedSubtotalCents', 0) == 0
+                && get(ciLedgerPath(companyId, projectId, invoiceId)).data.get('releasedRetentionCents', 0) == 0);
+      }
 
       allow read: if financialMember(companyId);
 
       allow create: if financialMember(companyId)
+          && retentionValid()
           && request.resource.data.status == 'draft'
           && request.resource.data.docType == 'invoice'
           && request.resource.data.invoiceNumber is string
@@ -2139,6 +2234,7 @@ service cloud.firestore {
             (
               resource.data.status == 'draft'
               && request.resource.data.status == 'draft'
+              && retentionValid()
               && request.resource.data.issuedAt == resource.data.issuedAt
               && request.resource.data.issuedBy == resource.data.issuedBy
               && request.resource.data.voidedAt == resource.data.voidedAt
@@ -2160,9 +2256,49 @@ service cloud.firestore {
             (
               (resource.data.status == 'draft' || resource.data.status == 'issued')
               && voidedWithReason()
+              && ledgerClear()
             )
           );
 
+      allow delete: if false;
+    }
+
+    // Client invoice LEDGERS (ADR-87 / ADR-88) — ONE document per invoice (the id IS
+    // the invoice id): running totals, in whole cents, of everything posted against
+    // it. Written ONLY by the trusted backend (ADR-89, Admin SDK), in the transaction
+    // that posts or voids one entry. No client can create, change or delete one.
+    match /companies/{companyId}/projects/{projectId}/clientInvoiceLedgers/{invoiceId} {
+      allow read: if financialMember(companyId);
+      allow write: if false;
+    }
+
+    // Client Credit Notes (ADR-87) — reductions against ONE ISSUED Client Invoice;
+    // CCN-#### from the company counters. A client drafts, edits a draft and voids
+    // a DRAFT. POSTING and voiding a POSTED note are the trusted backend's
+    // (ADR-89): it re-derives every line and total and moves the ledger with it.
+    match /companies/{companyId}/projects/{projectId}/clientCreditNotes/{creditNoteId} {
+      allow read: if financialMember(companyId);
+      allow create: if financialMember(companyId)
+          && ciDraft(companyId, projectId, 'credit_note', 'creditNumber')
+          && createStamped()
+          && lifecycleUnstamped();
+      allow update: if resource != null && financialMember(companyId)
+          && ciDraftUpdate(companyId, projectId, 'credit_note', 'creditNumber');
+      allow delete: if false;
+    }
+
+    // Client Retention Releases (ADR-88) — authorisations making retention ALREADY
+    // WITHHELD on ONE issued Client Invoice receivable; CRR-#### from the company
+    // counters. Same split as credit notes: drafts by the client, posting and
+    // voiding a posted release by the trusted backend (ADR-89).
+    match /companies/{companyId}/projects/{projectId}/clientRetentionReleases/{releaseId} {
+      allow read: if financialMember(companyId);
+      allow create: if financialMember(companyId)
+          && ciDraft(companyId, projectId, 'client_retention_release', 'releaseNumber')
+          && createStamped()
+          && lifecycleUnstamped();
+      allow update: if resource != null && financialMember(companyId)
+          && ciDraftUpdate(companyId, projectId, 'client_retention_release', 'releaseNumber');
       allow delete: if false;
     }
 
@@ -2192,6 +2328,8 @@ service cloud.firestore {
             && request.resource.data.paymentMethod.size() <= 40
             && request.resource.data.allocations is list
             && request.resource.data.allocations.size() <= 100
+            // Supported range (lib/money.js): ten maximum invoices.
+            && request.resource.data.amount <= 9999999999999.9
             && amountInvariant();
       }
 
@@ -2205,27 +2343,22 @@ service cloud.firestore {
           // Lifecycle stamps cannot be forged at creation.
           && lifecycleUnstamped();
 
-      allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
+      // ADR-89: a client edits a DRAFT or voids a DRAFT. POSTING a receipt, and
+      // voiding a POSTED one, are the trusted backend's — it records what each
+      // allocation adds to its invoice's ledger, so a decision that depends on
+      // receipts never has to scan them. A posted or void receipt admits no client write.
+      allow update: if resource != null && financialMember(companyId) && corePreserved() && updateStamped()
+          && resource.data.status == 'draft' && (
             // (a) DRAFT EDIT — content only; the status and lifecycle stamps cannot move.
             (
-              resource.data.status == 'draft'
-              && request.resource.data.status == 'draft'
+              request.resource.data.status == 'draft'
               && shapeValid()
               && lifecycleStampsFrozen()
             )
             ||
-            // (b) DRAFT -> POSTED — no content change; the reviewed amount, date and
-            //     allocations are the ones committed.
+            // (b) DRAFT -> VOID (terminal) — no money moved, no ledger.
             (
-              resource.data.status == 'draft'
-              && postedHere()
-            )
-            ||
-            // (c) DRAFT|POSTED -> VOID (terminal) — the only update a POSTED receipt
-            //     admits, touching nothing else; balances are derived, so voiding needs
-            //     no reversal document.
-            (
-              (resource.data.status == 'draft' || resource.data.status == 'posted')
+              request.resource.data.status == 'void'
               && voidedWithReason()
             )
           );

@@ -7,6 +7,7 @@ import {
   computeFinalAccount, settledSourceStates, buildFinalAccountDraft, finalAccountDifferences,
 } from '../../src/lib/finalAccount'
 import { readyProject, sourcesOf, EXPECTED_FIGURES, FA_PROJECT_COLLECTIONS } from '../fixtures/finalAccountProject'
+import { issuedInvoice, creditNoteFor, releaseFor } from '../fixtures/clientReceivableDocs'
 
 // ── approveFinalAccount against the Auth + Firestore (+ Functions) emulators ──
 // (ADR-77)
@@ -283,6 +284,9 @@ describe('readiness is judged from the records the server reads', () => {
     ['the contract value removed', 'contract', async () => base().collection('commercial').doc('baseline').delete()],
     ['a receipt over-allocating an issued client invoice by one cent', 'overAllocatedInvoices', async () => base().collection('clientReceipts').doc('r8').set({ status: 'posted', receiptDate: '2026-10-20', amount: 2200.01, allocatedTotal: 2200.01, unallocatedAmount: 0, allocations: [{ clientInvoiceId: 'ci1', invoiceNumber: 'CI-0001', allocatedAmount: 2200.01 }], createdAt: A.Timestamp.now() })],
     ['a draft client receipt', 'draftReceipts', async () => base().collection('clientReceipts').doc('r9').set({ status: 'draft', amount: 5, allocations: [], createdAt: A.Timestamp.now() })],
+    ['a draft client credit note', 'draftClientCreditNotes', async () => base().collection('clientCreditNotes').doc('n9').set({ status: 'draft', clientInvoiceId: 'ci1', lineItems: [], createdAt: A.Timestamp.now() })],
+    ['a draft client retention release', 'draftClientRetentionReleases', async () => base().collection('clientRetentionReleases').doc('q9').set({ status: 'draft', clientInvoiceId: 'ci1', amount: 5, createdAt: A.Timestamp.now() })],
+    ['a posted client credit note that fails the validity gate', 'clientCreditExceptions', async () => base().collection('clientCreditNotes').doc('n8').set({ status: 'posted', creditNumber: 'CCN-0008', clientInvoiceId: 'gone', lineItems: [], subtotal: 10, gstTotal: 1, grossTotal: 11, createdAt: A.Timestamp.now() })],
   ]
   it.each(cases)('%s → final-account-not-ready naming "%s"; nothing is approved', async (_label, blocker, change) => {
     await seedDraft(await seedProject())
@@ -299,6 +303,41 @@ describe('readiness is judged from the records the server reads', () => {
     await seedDraft(data)
     expect((await call('u_pm', ok())).status).toBe('approved')
     expect((await faDoc(1)).figures.receivablesOutstanding).toBe(0)
+  })
+
+  it('client credit notes and client retention are READ BY THE SERVER and recomputed (ADR-87 / ADR-88)', async () => {
+    // 9,000.00 + 900.00 GST, 450.00 retained (45.00 GST). A 1,000.00 credit takes
+    // 50.00 + 5.00 of the retention; a 100.00 release frees 100.00 + 10.00.
+    const invoice = issuedInvoice({ subtotal: 9000, retention: 450 })
+    const credit = creditNoteFor(invoice, 1000)
+    const release = releaseFor(invoice, 100, { id: 'crr1' })
+    const withReceivables = (p) => {
+      p.clientInvoices = [invoice]
+      p.clientCreditNotes = [credit]
+      p.clientRetentionReleases = [release]
+      // gross 9,900 − credit 1,100 − held (495 − 55 − 110 = 330) = 8,470 receivable.
+      p.clientReceipts = [{ id: 'cr1', receiptNumber: 'CR-0001', status: 'posted', clientId: 'c1', clientName: 'Owner Pty Ltd', receiptDate: '2026-10-20', amount: 8470, allocatedTotal: 8470, unallocatedAmount: 0, allocations: [{ clientInvoiceId: 'ci1', invoiceNumber: 'CI-0001', allocatedAmount: 8470 }] }]
+    }
+    const data = await seedProject(withReceivables)
+    await seedDraft(data)
+    expect((await call('u_pm', ok())).status).toBe('approved')
+    const stored = await faDoc(1)
+    expect(stored.figures).toMatchObject({
+      creditedToClient: 1000, invoicedToClient: 8000, invoicedToClientGross: 8800,
+      clientRetentionHeld: 330, receivablesOutstanding: 0, owedToClient: 0, receivedAgainstInvoices: 8470,
+    })
+    expect(stored.sources.counts).toMatchObject({ clientCreditNotes: 1, clientRetentionReleases: 1 })
+  })
+
+  it('a credit note posted AFTER the draft changes the figures the approver reviewed: refused as changed or not ready, never approved', async () => {
+    const invoice = issuedInvoice({ subtotal: 9000 })
+    const data = await seedProject((p) => { p.clientInvoices = [invoice]; p.clientReceipts = [] })
+    await seedDraft(data)
+    const { id, ...credit } = creditNoteFor(invoice, 1000)
+    await base().collection('clientCreditNotes').doc(id).set({ ...credit, createdAt: A.Timestamp.now() })
+    await expect(call('u_pm', ok())).rejects.toBeTruthy()
+    expect((await faDoc(1)).status).toBe('draft')
+    expect(await audits()).toHaveLength(0)
   })
 
   it('records that are still ready but DIFFERENT from the draft are refused as changed (the approver reviewed other figures)', async () => {

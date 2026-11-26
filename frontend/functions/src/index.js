@@ -2,12 +2,13 @@ import { onCall } from 'firebase-functions/https'
 import { onSchedule } from 'firebase-functions/scheduler'
 import * as logger from 'firebase-functions/logger'
 import { getDb, getAdminAuth, getBucket } from './lib/firebaseAdmin.js'
-import { EMAIL_API_KEY, REGION, FILE_LINK_WORKER_SERVICE_ACCOUNT, FINAL_ACCOUNT_APPROVAL_ENABLED, BOQ_BUDGET_TRANSFER_ENABLED, readConfig, readFileLinkConfig } from './lib/params.js'
+import { EMAIL_API_KEY, REGION, FILE_LINK_WORKER_SERVICE_ACCOUNT, FINAL_ACCOUNT_APPROVAL_ENABLED, BOQ_BUDGET_TRANSFER_ENABLED, CLIENT_FINANCE_POSTING_ENABLED, CLIENT_RECEIPT_POSTING_ENABLED, CLIENT_RECEIPT_ALL_COMPANIES, readConfig, readFileLinkConfig } from './lib/params.js'
 import { runScheduledWorker } from './lib/fileLinkRevocation.js'
 import { selectEmailAdapter } from './lib/email.js'
 import { createTeamHandlers, HANDLER_NAMES } from './team/handlers.js'
 import { createFinalAccountHandlers } from './finalAccount/handlers.js'
 import { createBoqBudgetHandlers } from './boqBudget/handlers.js'
+import { createClientFinanceHandlers } from './clientFinance/handlers.js'
 
 // ── Constrapp trusted backend — team management (ADR-72) ─────────────────────
 //
@@ -154,6 +155,55 @@ export const transferBoqToBudget = onCall(BOQ_TRANSFER_CALL_OPTIONS, async (requ
     throw err
   }
 })
+
+// ── Client finance posting (ADR-89) — SIX financial callables ────────────────
+//
+// The trusted transaction boundary for client finance: a client credit note,
+// client retention release or client receipt is posted, and a posted one
+// voided, only by these six, and the per-invoice ledger is written only by
+// them (clientFinance/transactions.js, clientFinance/receipts.js). Security
+// Rules leave a browser drafts and nothing else. TWO switches: one for the
+// four credit-note / release callables, one for the two receipt callables. Each request carries identifiers and a reason — never an
+// amount — and every figure is re-derived by the generated copy of the
+// browser's own modules. Same region, App Check enforcement, memory and time
+// as the Final Account approval; NO secret is bound; the default runtime
+// service account, as every other callable. Authorisation is in the handler:
+// an active company_admin, project_manager or qs of the project's company.
+export const CLIENT_FINANCE_CALL_OPTIONS = {
+  region: REGION,
+  enforceAppCheck: true,
+  maxInstances: 5,
+  memory: '512MiB',
+  timeoutSeconds: 120,
+}
+
+let clientFinanceHandlers = null
+
+const clientFinanceCall = (name) => onCall(CLIENT_FINANCE_CALL_OPTIONS, async (request) => {
+  clientFinanceHandlers ??= createClientFinanceHandlers({
+    db: getDb(),
+    now: () => new Date(),
+    log: logger,
+    config: () => ({ finance: CLIENT_FINANCE_POSTING_ENABLED.value(), receipts: CLIENT_RECEIPT_POSTING_ENABLED.value(), receiptsAllCompanies: CLIENT_RECEIPT_ALL_COMPANIES.value() }),
+  })
+  try {
+    return await clientFinanceHandlers[name](request)
+  } catch (err) {
+    if (err?.details?.code) {
+      logger.info('client finance call refused', { fn: name, code: err.details.code, uid: request.auth?.uid ?? null })
+    } else {
+      logger.error('client finance call failed', { fn: name, uid: request.auth?.uid ?? null, message: err?.message, stack: err?.stack })
+    }
+    throw err
+  }
+})
+
+export const postClientCreditNote       = clientFinanceCall('postClientCreditNote')
+export const voidClientCreditNote       = clientFinanceCall('voidClientCreditNote')
+export const postClientRetentionRelease = clientFinanceCall('postClientRetentionRelease')
+export const voidClientRetentionRelease = clientFinanceCall('voidClientRetentionRelease')
+export const postClientReceipt          = clientFinanceCall('postClientReceipt')
+export const voidClientReceipt          = clientFinanceCall('voidClientReceipt')
 
 // ── Scheduled worker: legacy file-link revocation (ADR-74, DC46-B) ───────────
 //

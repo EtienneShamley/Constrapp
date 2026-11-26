@@ -19,6 +19,9 @@ import { useSupplierCreditNotes } from '../../hooks/useSupplierCreditNotes'
 import { useVariations } from '../../hooks/useVariations'
 import { useForecastLines } from '../../hooks/useForecastLines'
 import { useRetentionReleases } from '../../hooks/useRetentionReleases'
+import { useClientCreditNotes } from '../../hooks/useClientCreditNotes'
+import { useClientRetentionReleases } from '../../hooks/useClientRetentionReleases'
+import { receivableContext } from '../../lib/clientReceivables'
 import { releasedByInvoiceId } from '../../lib/retention'
 import {
   isFinancialRole, isBaselineEstablished, projectForecastTotals, computeMargin,
@@ -52,8 +55,9 @@ import LineVoidModal from './cashFlow/LineVoidModal'
 //
 // Three read-time layers, none stored (ADR-3/ADR-4):
 //   1 · ACTUAL — posted receipts (receiptDate) and payments (paymentDate)
-//   2 · NEAR-TERM FORECAST — open invoice balances by due date (AR gross,
-//       AP payableTotal net of retention)
+//   2 · NEAR-TERM FORECAST — open invoice balances by due date (AR gross, net
+//       of posted client credit notes and client retention still held; AP
+//       payableTotal net of retention)
 //   3 · LONGER-TERM FORECAST — manually timed cashFlowLines (gross cash,
 //       ex-GST source coverage tracked separately)
 //
@@ -111,6 +115,10 @@ export default function ProjectCashFlow() {
   const { variations, variationsLoading, variationsError }             = useVariations(mid)
   const { forecastLines, forecastLinesLoading, forecastLinesError }       = useForecastLines(mid)
   const { retentionReleases, retentionReleasesLoading, retentionReleasesError } = useRetentionReleases(mid)
+  const { clientCreditNotes, clientCreditNotesLoading, clientCreditNotesError } = useClientCreditNotes(mid)
+  const {
+    clientRetentionReleases, clientRetentionReleasesLoading, clientRetentionReleasesError,
+  } = useClientRetentionReleases(mid)
 
   const nowMonth = currentMonthKey()
 
@@ -124,10 +132,25 @@ export default function ProjectCashFlow() {
   const paymentTotals = useMemo(() => paymentSummary(supplierPayments), [supplierPayments])
 
   // ── Layer 2: open invoice balances by due month ────────────────────────────
-  const arRows = useMemo(
-    () => clientInvoiceReconciliationRows(clientInvoices, clientReceipts),
-    [clientInvoices, clientReceipts],
+  // ⚠️ The AR rows carry the ONE receivable contract (lib/clientReceivables.js,
+  // ADR-87 / ADR-88): each balance is what the client owes NOW — gross, less
+  // posted credit notes, less client retention still HELD, less receipts.
+  // Retention held is billed but not receivable, so it is in no month; a
+  // posted release moves it into the invoice balance. A failed credit-note or
+  // release read is never "none posted" — the AR layer is marked unavailable
+  // below (`arUnavailable`), exactly as a failed supplier release read is.
+  const receivable = useMemo(
+    () => receivableContext(clientInvoices, clientCreditNotes, clientRetentionReleases),
+    [clientInvoices, clientCreditNotes, clientRetentionReleases],
   )
+  const arRows = useMemo(
+    () => clientInvoiceReconciliationRows(clientInvoices, clientReceipts, receivable.positions),
+    [clientInvoices, clientReceipts, receivable],
+  )
+  const arUnavailable = clientInvoicesError || clientCreditNotesError || clientRetentionReleasesError
+  // Client retention HELD — never retentionTotal: released retention is inside
+  // each row's `remaining` and already timed by arClass (the ADR-30 rule).
+  const clientRetentionHeld = receivable.totals.retentionHeld
   // ⚠️ The AP rows carry the DERIVED payable basis: net of retention still HELD,
   // inclusive of retention RELEASED (ADR-30). A failed release read is never
   // treated as "nothing released" — that would understate Forecast Cash Out.
@@ -174,9 +197,11 @@ export default function ProjectCashFlow() {
     [baseline, variations, forecastTotals.forecastFinalCost, purchaseOrders],
   )
   const established = isBaselineEstablished(baseline)
+  // Posted client credit notes reduce net issued, so they RE-OPEN the same
+  // ex-GST amount for invoicing; the Current Contract Sum is untouched.
   const availableToInvoice = useMemo(
-    () => contractControl(clientInvoices, m.currentContractSum).availableToInvoice,
-    [clientInvoices, m.currentContractSum],
+    () => contractControl(clientInvoices, m.currentContractSum, receivable.totals).availableToInvoice,
+    [clientInvoices, m.currentContractSum, receivable],
   )
 
   // Per-cost-code balances for the editor pickers and the claim breakdown.
@@ -210,11 +235,12 @@ export default function ProjectCashFlow() {
 
   // ── Coverage, completeness, untimed, peak funding ──────────────────────────
   // ⚠️ A variations read failure understates the Current Contract Sum, so the
-  // revenue basis is treated as unavailable — not as a smaller number.
+  // revenue basis is treated as unavailable — not as a smaller number. A
+  // credit-note read failure understates what remains to invoice the same way.
   const revCov = useMemo(() => {
-    if (variationsError || baselineError) return { pct: null, state: 'source_error' }
+    if (variationsError || baselineError || clientCreditNotesError) return { pct: null, state: 'source_error' }
     return revenueCoverage({ baselineEstablished: established, availableToInvoice, lines: cashFlowLines })
-  }, [variationsError, baselineError, established, availableToInvoice, cashFlowLines])
+  }, [variationsError, baselineError, clientCreditNotesError, established, availableToInvoice, cashFlowLines])
 
   const costBasisSourceError = budgetLinesError || purchaseOrdersError || progressClaimsError
     || supplierInvoicesError || supplierCreditNotesError || forecastLinesError
@@ -303,6 +329,10 @@ export default function ProjectCashFlow() {
     || budgetLinesLoading || forecastLinesLoading || purchaseOrdersLoading
     || progressClaimsLoading || variationsLoading || supplierInvoicesLoading
     || supplierCreditNotesLoading || retentionReleasesLoading || baselineLoading
+    // Commercial Finance Phase 1: unsettled, no credits yet → open AR and
+    // Forecast Cash In overstated; no releases yet → released retention absent
+    // from AR and client retention held overstated.
+    || clientCreditNotesLoading || clientRetentionReleasesLoading
   ) {
     return <div className="text-[13px] text-brand-muted">Loading cash and forecast records…</div>
   }
@@ -325,6 +355,12 @@ export default function ProjectCashFlow() {
   // AP layers and the manual register are each blocked by their own source.
   const forecastSourceErrors = [
     clientInvoicesError && 'Client Invoices — Forecast Cash In and open AR are unavailable',
+    // Missing credit data is NOT "no credits": every credited balance would be
+    // forecast as cash still to come.
+    clientCreditNotesError && 'Client Credit Notes — open AR balances may be overstated, so Forecast Cash In, open AR and the revenue still to invoice are unavailable',
+    // Missing release data is NOT "nothing released": released retention would
+    // be missing from open AR and still counted as held.
+    clientRetentionReleasesError && 'Client Retention Releases — open AR may be understated and client retention held overstated, so Forecast Cash In and both figures are unavailable',
     supplierInvoicesError && 'Supplier Invoices — Forecast Cash Out and open AP are unavailable',
     supplierCreditNotesError && 'Supplier Credit Notes — open AP balances may be overstated, so Forecast Cash Out is unavailable',
     // Missing release data is NOT "nothing released": it would understate every
@@ -392,7 +428,7 @@ export default function ProjectCashFlow() {
               <Metric label="Actual Net Cash" value={money(netCash)} help="Cash In − Cash Out" danger={netCash < 0} />
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 mt-4 pt-4 border-t border-brand-border">
-              <Metric label="Forecast Cash In" value={forecastUnavailable ? '—' : money(forecastIn)} help="Open client invoice balances by due date + manual timing · gross" />
+              <Metric label="Forecast Cash In" value={forecastUnavailable ? '—' : money(forecastIn)} help="Open client invoice balances by due date + manual timing · gross, net of credit notes and client retention held" />
               <Metric label="Forecast Cash Out" value={forecastUnavailable ? '—' : money(forecastOut)} help="Open supplier invoice payables by due date + manual timing · gross, net of retention held" />
               <Metric
                 label="Forecast Net"
@@ -549,10 +585,10 @@ export default function ProjectCashFlow() {
                 <p className={labelCls}>Gross cash, not yet timed</p>
                 <div className="space-y-1">
                   <p className="m-0 text-[11.5px] text-brand-text flex justify-between gap-2">
-                    <span>AR — no due date</span><span className="tabular-nums">{clientInvoicesError ? '—' : money(arClass.noDueDate)}</span>
+                    <span>AR — no due date</span><span className="tabular-nums">{arUnavailable ? '—' : money(arClass.noDueDate)}</span>
                   </p>
                   <p className="m-0 text-[11.5px] text-brand-text flex justify-between gap-2">
-                    <span>Past due — expected recovery not retimed</span><span className="tabular-nums">{clientInvoicesError ? '—' : money(arClass.pastDue)}</span>
+                    <span>Past due — expected recovery not retimed</span><span className="tabular-nums">{arUnavailable ? '—' : money(arClass.pastDue)}</span>
                   </p>
                   <p className="m-0 text-[11.5px] text-brand-text flex justify-between gap-2">
                     <span>AP — no due date</span><span className="tabular-nums">{supplierInvoicesError || retentionReleasesError ? '—' : money(apClass.noDueDate)}</span>
@@ -561,13 +597,24 @@ export default function ProjectCashFlow() {
                     <span>Past due — expected payment not retimed</span><span className="tabular-nums">{supplierInvoicesError || retentionReleasesError ? '—' : money(apClass.pastDue)}</span>
                   </p>
                   <p className="m-0 text-[11.5px] text-brand-text flex justify-between gap-2">
-                    <span>Retention held (not released — not payable)</span><span className="tabular-nums">{supplierInvoicesError || retentionReleasesError ? '—' : money(retentionHeld)}</span>
+                    <span>Supplier retention held (not released — not payable)</span><span className="tabular-nums">{supplierInvoicesError || retentionReleasesError ? '—' : money(retentionHeld)}</span>
+                  </p>
+                  <p className="m-0 text-[11.5px] text-brand-text flex justify-between gap-2">
+                    <span>Client retention held (not released — not receivable)</span><span className="tabular-nums">{arUnavailable ? '—' : money(clientRetentionHeld)}</span>
                   </p>
                 </div>
                 {(arClass.overReconciled < 0 || apClass.overReconciled < 0) && (
                   <p className="m-0 mt-2 text-[11px] text-brand-amber">
-                    Over-reconciled balances ({money(roundMoney(arClass.overReconciled + apClass.overReconciled))}) are
-                    excluded from every month and never offset expected amounts.
+                    Balances settled beyond what is owed ({money(roundMoney(arClass.overReconciled + apClass.overReconciled))} —
+                    supplier invoices over-reconciled, and amounts owed to the client) are excluded from every month and
+                    never offset expected amounts.
+                    {!arUnavailable && arClass.overReconciled < 0 && (
+                      <>
+                        {' '}Of this, {money(arClass.overReconciled)} is on client invoices: more was received than is
+                        now receivable on them (a credit note after the receipt, or an over-allocation) — an amount
+                        owed to the client, never netted against what other invoices owe.
+                      </>
+                    )}
                   </p>
                 )}
               </div>
@@ -832,6 +879,13 @@ export default function ProjectCashFlow() {
             carries no due date of its own, it is timed at the original invoice due date and normally lands in
             &ldquo;past due — expected payment not retimed&rdquo;; add a manual Cash Out line if you expect it in a
             known month.
+          </li>
+          <li className="text-[11.5px] text-brand-muted">
+            Client retention <span className="font-semibold">held</span> ({arUnavailable ? 'unavailable' : money(clientRetentionHeld)})
+            is excluded from Forecast Cash In — it was billed, but it is not receivable until it is released, and no
+            release date is invented. Client retention that HAS been released is receivable and is already counted
+            above inside the open client-invoice balances, timed at the original invoice due date. Posted client
+            credit notes reduce an invoice&apos;s open balance; they move no cash.
           </li>
           <li className="text-[11.5px] text-brand-muted">
             Forecast timing is authored, not enforced: an active line can be edited after being reported, and

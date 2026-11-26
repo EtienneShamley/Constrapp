@@ -1,12 +1,15 @@
 import { roundMoney } from './purchaseOrders'
 import { toCents } from './payments'
 import { buildCommercialReport, REPORT_SOURCES, REPORT_SOURCE_LABELS } from './commercialReport'
-import { FIGURE_STATE } from './projectSnapshot'
+import { FIGURE_STATE, figureState } from './projectSnapshot'
 import { projectForecastRows } from './margin'
 import { forecastRollups } from './forecast'
 import { resolveBudgetSource, budgetLinesFor, approvedVersionCaption, BUDGET_SOURCE } from './budgetApproval'
 import { contractControl, draftClientInvoices } from './clientInvoices'
 import { receivablesSummary, receiptSummary } from './clientReceipts'
+import { receivableContext } from './clientReceivables'
+import { draftClientCreditNotes, clientCreditExceptions } from './clientCreditNotes'
+import { draftClientRetentionReleases, clientReleaseExceptions } from './clientRetention'
 import { paymentSummary } from './supplierPayments'
 import { retentionSummary, draftRetentionReleases } from './retention'
 import { draftSupplierCreditNotes } from './supplierCreditNotes'
@@ -85,11 +88,21 @@ export const FIGURE_GROUP_LABELS = {
 
 // Reading order. `open: true` marks a recognised outstanding balance: shown and
 // acknowledged, never a blocker and never treated as zero.
+//
+// THE SET GROWS, AND A REVISION KEEPS THE SET IT WAS APPROVED WITH. A revision
+// approved before a figure existed does not carry its key, is never rewritten
+// to gain it, and is compared on its own keys only (finalAccountDifferences).
+// Added with Commercial Finance Phase 1 (ADR-87 / ADR-88): `creditedToClient`,
+// `clientRetentionHeld`, `owedToClient` — and from then on the invoiced,
+// received and outstanding figures follow the ONE receivable contract
+// (lib/clientReceivables.js): invoiced is NET of posted valid client credit
+// notes; outstanding excludes credits and client retention still held.
 export const FINAL_ACCOUNT_FIGURES = [
   { key: 'originalContractValue',     group: FIGURE_GROUP.CONTRACT, basis: FIGURE_BASIS.EX_GST, label: 'Original contract sum', note: 'From the Commercial baseline' },
   { key: 'approvedClientVariations',  group: FIGURE_GROUP.CONTRACT, basis: FIGURE_BASIS.EX_GST, label: 'Approved client variations', note: 'Approved only — pending variations block approval' },
   { key: 'finalContractSum',          group: FIGURE_GROUP.CONTRACT, basis: FIGURE_BASIS.EX_GST, label: 'Final adjusted contract sum', note: 'Original contract sum + approved client variations' },
-  { key: 'invoicedToClient',          group: FIGURE_GROUP.CONTRACT, basis: FIGURE_BASIS.EX_GST, label: 'Invoiced to client', note: 'Issued client invoices — an invoice is not a certificate and not cash' },
+  { key: 'invoicedToClient',          group: FIGURE_GROUP.CONTRACT, basis: FIGURE_BASIS.EX_GST, label: 'Invoiced to client', note: 'Issued client invoices less posted client credit notes — an invoice is not a certificate and not cash' },
+  { key: 'creditedToClient',          group: FIGURE_GROUP.CONTRACT, basis: FIGURE_BASIS.EX_GST, label: 'Credited to client', note: 'Posted client credit notes — already deducted from invoiced to client; not cash and not a change to the contract sum' },
   { key: 'remainingToInvoice',        group: FIGURE_GROUP.CONTRACT, basis: FIGURE_BASIS.EX_GST, label: 'Remaining to invoice', note: 'Final adjusted contract sum − invoiced to client (negative = over-invoiced)', open: true },
   { key: 'approvedBudget',            group: FIGURE_GROUP.COST,     basis: FIGURE_BASIS.EX_GST, label: 'Approved budget', note: 'The approved version and its approved adjustments' },
   { key: 'approvedSupplierVariations', group: FIGURE_GROUP.COST,    basis: FIGURE_BASIS.EX_GST, label: 'Approved supplier variations', note: 'Gross approved value — already inside the cost below' },
@@ -99,9 +112,11 @@ export const FINAL_ACCOUNT_FIGURES = [
   { key: 'varianceToBudget',          group: FIGURE_GROUP.COST,     basis: FIGURE_BASIS.EX_GST, label: 'Variance to budget', note: 'Approved budget − final cost (negative = over budget)' },
   { key: 'finalProfit',               group: FIGURE_GROUP.RESULT,   basis: FIGURE_BASIS.EX_GST, label: 'Final gross profit', note: 'Final adjusted contract sum − final cost' },
   { key: 'finalMarginPct',            group: FIGURE_GROUP.RESULT,   basis: FIGURE_BASIS.PERCENT, label: 'Final margin', note: 'Final gross profit ÷ final adjusted contract sum', nullable: true },
-  { key: 'invoicedToClientGross',     group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Invoiced to client (gross)', note: 'Issued client invoices incl. GST' },
+  { key: 'invoicedToClientGross',     group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Invoiced to client (gross)', note: 'Issued client invoices less posted client credit notes, incl. GST' },
   { key: 'receivedAgainstInvoices',   group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Received against invoices', note: 'Posted client receipts allocated to issued invoices' },
-  { key: 'receivablesOutstanding',    group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Client invoices outstanding', note: 'Issued and not yet matched to a receipt — not cash', open: true },
+  { key: 'receivablesOutstanding',    group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Client invoices outstanding', note: 'Issued, less credit notes and retention still held, and not yet matched to a receipt — not cash', open: true },
+  { key: 'clientRetentionHeld',       group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Client retention held', note: 'Billed and withheld by the client — not receivable until released', open: true },
+  { key: 'owedToClient',              group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Owed to client', note: 'Received beyond what is now receivable — a client credit balance', open: true },
   { key: 'cashReceived',              group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Cash received', note: 'All posted client receipts' },
   { key: 'unallocatedReceipts',       group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Unallocated client receipts', note: 'Received but not matched to an invoice', open: true },
   { key: 'cashPaid',                  group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Cash paid', note: 'All posted supplier payments' },
@@ -118,6 +133,7 @@ export const FINAL_ACCOUNT_OPEN_KEYS = FINAL_ACCOUNT_FIGURES.filter(f => f.open)
 export const FINAL_ACCOUNT_COUNTED_SOURCES = [
   'purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes', 'variations',
   'forecastLines', 'supplierPayments', 'retentionReleases', 'clientInvoices', 'clientReceipts',
+  'clientCreditNotes', 'clientRetentionReleases',
 ]
 
 // ── Readiness ────────────────────────────────────────────────────────────────
@@ -137,6 +153,10 @@ export const BLOCKER = {
   DRAFT_PAYMENTS:       'draftPayments',
   DRAFT_CREDIT_NOTES:   'draftCreditNotes',
   DRAFT_RELEASES:       'draftReleases',
+  DRAFT_CLIENT_CREDIT_NOTES: 'draftClientCreditNotes',
+  DRAFT_CLIENT_RELEASES: 'draftClientRetentionReleases',
+  CLIENT_CREDIT_EXCEPTIONS: 'clientCreditExceptions',
+  CLIENT_RELEASE_EXCEPTIONS: 'clientReleaseExceptions',
   OVER_ALLOCATED:       'overAllocatedInvoices',
   FORECAST_INCOMPLETE:  'forecastIncomplete',
   COST_TO_COMPLETE:     'costToComplete',
@@ -159,8 +179,12 @@ export const READINESS_CHECKS = [
   { code: BLOCKER.DRAFT_RECEIPTS,       label: 'No draft client receipts',                 fix: 'Post or void each draft receipt.' },
   { code: BLOCKER.DRAFT_PAYMENTS,       label: 'No draft supplier payments',               fix: 'Post or void each draft payment.' },
   { code: BLOCKER.DRAFT_CREDIT_NOTES,   label: 'No draft supplier credit notes',           fix: 'Post or void each draft credit note.' },
-  { code: BLOCKER.DRAFT_RELEASES,       label: 'No draft retention releases',              fix: 'Post or void each draft retention release.' },
-  { code: BLOCKER.OVER_ALLOCATED,       label: 'No over-allocated issued client invoices', fix: 'An issued client invoice has more receipt allocated to it than its gross value. Correct the receipt allocation on the Client Receipts tab (void the receipt and re-enter it) so no invoice is over-allocated. Nothing is reallocated automatically.' },
+  { code: BLOCKER.DRAFT_RELEASES,       label: 'No draft supplier retention releases',     fix: 'Post or void each draft supplier retention release.' },
+  { code: BLOCKER.DRAFT_CLIENT_CREDIT_NOTES, label: 'No draft client credit notes',        fix: 'Post or void each draft client credit note.' },
+  { code: BLOCKER.DRAFT_CLIENT_RELEASES, label: 'No draft client retention releases',      fix: 'Post or void each draft client retention release.' },
+  { code: BLOCKER.CLIENT_CREDIT_EXCEPTIONS, label: 'Every posted client credit note passes its integrity check', fix: 'A posted client credit note failed a read-time integrity check, so it reduces no figure. Investigate it on the Client Invoices tab; where the credit note itself is wrong, void it and record a new one.' },
+  { code: BLOCKER.CLIENT_RELEASE_EXCEPTIONS, label: 'Every posted client retention release has an issued invoice that withheld retention', fix: 'A posted client retention release names an invoice that is not issued, is not readable or withheld no retention, so it releases nothing. Investigate it; where the release itself is wrong, void it.' },
+  { code: BLOCKER.OVER_ALLOCATED,       label: 'No over-allocated issued client invoices', fix: 'An issued client invoice has more receipt allocated to it than is now receivable on it (its gross value less posted credit notes and retention still held). Correct the receipt allocation on the Client Receipts tab (void the receipt and re-enter it) so no invoice is over-allocated. Nothing is reallocated automatically.' },
   { code: BLOCKER.FORECAST_INCOMPLETE,  label: 'Every cost code has a saved forecast',     fix: 'Save an Uncommitted Cost to Complete for each cost code named here on the Forecast tab. Enter 0 where no further cost is expected — a saved 0 is a forecast; a blank is not.' },
   { code: BLOCKER.COST_TO_COMPLETE,     label: 'Cost to complete is zero',                 fix: 'Close out remaining commitment (a closing supplier variation on each under-run purchase order line) and set every uncommitted cost to complete to zero on the Forecast tab.' },
   { code: BLOCKER.FIGURES,              label: 'Every figure is a valid amount',           fix: 'A figure could not be calculated from the records. Check SHIELD for integrity findings.' },
@@ -181,6 +205,13 @@ const pick = (items, key) => {
 
 const countWhere = (list, test) => (list ?? []).filter(test).length
 
+// "3 failing: CCN-0001, CCN-0002, CCN-0003" — the count exact, five named.
+const namedList = (names, word) => `${names.length} ${word}: ${names.slice(0, 5).join(', ')}${names.length > 5 ? ', …' : ''}`
+
+// The registers the invoiced / received figures computed in this module read.
+const ISSUED_SOURCES = ['clientInvoices', 'clientCreditNotes']
+const RECEIVED_SOURCES = ['clientInvoices', 'clientReceipts']
+
 // ── THE computation ──────────────────────────────────────────────────────────
 //
 // `sources` / `sourceStates` exactly as buildCommercialReport takes them (the
@@ -193,7 +224,8 @@ export function computeFinalAccount({ project = null, currencyCode, sources = {}
   const {
     budgetLines = [], approvedBudget = null, purchaseOrders = [], progressClaims = [],
     supplierInvoices = [], supplierCreditNotes = [], variations = [], forecastLines = [],
-    supplierPayments = [], retentionReleases = [], clientInvoices = [], clientReceipts = [], costCodes = [],
+    supplierPayments = [], retentionReleases = [], clientInvoices = [], clientReceipts = [],
+    clientCreditNotes = [], clientRetentionReleases = [], costCodes = [],
   } = sources
 
   const report = buildCommercialReport({ project, currencyCode, sources, sourceStates })
@@ -231,8 +263,16 @@ export function computeFinalAccount({ project = null, currencyCode, sources = {}
     .sort((a, b) => a.costCodeName.localeCompare(b.costCodeName))
 
   const finalContractSum = pick(report.summary, 'currentContractSum')
-  const control = contractControl(clientInvoices, finalContractSum)
-  const receivables = receivablesSummary(clientInvoices, clientReceipts)
+  // The ONE receivable contract (lib/clientReceivables.js): posted valid credit
+  // notes reduce what counts as invoiced; credits and client retention still
+  // held reduce what is receivable. Neither touches the contract sum or cash.
+  const receivable = receivableContext(clientInvoices, clientCreditNotes, clientRetentionReleases)
+  const control = contractControl(clientInvoices, finalContractSum, receivable.totals)
+  const receivables = receivablesSummary(clientInvoices, clientReceipts, receivable.positions)
+  // A figure computed HERE from a register that did not load is unknown, never
+  // the figure an empty register would give (a failed credit-note read is not
+  // "no credits"). The report's own figures arrive already gated.
+  const known = (dependencies, value) => (figureState(dependencies, sourceStates).state === FIGURE_STATE.READY ? value : null)
   const receipts = receiptSummary(clientReceipts)
   const payments = paymentSummary(supplierPayments)
   const retention = retentionSummary(supplierInvoices, retentionReleases)
@@ -241,8 +281,9 @@ export function computeFinalAccount({ project = null, currencyCode, sources = {}
     originalContractValue:     pick(report.summary, 'originalContractValue'),
     approvedClientVariations:  pick(report.variations, 'approvedClientVariations'),
     finalContractSum,
-    invoicedToClient:          control.issued.subtotal,
-    remainingToInvoice:        finalContractSum === null ? null : control.availableToInvoice,
+    invoicedToClient:          known(ISSUED_SOURCES, control.issued.subtotal),
+    creditedToClient:          known(ISSUED_SOURCES, control.credited.subtotal),
+    remainingToInvoice:        finalContractSum === null ? null : known(ISSUED_SOURCES, control.availableToInvoice),
     approvedBudget:            budgetApproved ? pick(report.summary, 'approvedBudget') : null,
     approvedSupplierVariations: pick(report.variations, 'approvedSupplierVariations'),
     actualCost:                pick(report.summary, 'actual'),
@@ -251,9 +292,11 @@ export function computeFinalAccount({ project = null, currencyCode, sources = {}
     varianceToBudget:          budgetApproved ? pick(report.summary, 'varianceToBudget') : null,
     finalProfit:               pick(report.summary, 'forecastGrossProfit'),
     finalMarginPct:            pick(report.summary, 'forecastMarginPct'),
-    invoicedToClientGross:     control.issued.grossTotal,
-    receivedAgainstInvoices:   receivables.received,
+    invoicedToClientGross:     known(ISSUED_SOURCES, control.issued.grossTotal),
+    receivedAgainstInvoices:   known(RECEIVED_SOURCES, receivables.received),
     receivablesOutstanding:    pick(report.cash, 'receivablesOutstanding'),
+    clientRetentionHeld:       pick(report.cash, 'clientRetentionHeld'),
+    owedToClient:              pick(report.cash, 'owedToClient'),
     cashReceived:              pick(report.cash, 'cashIn'),
     unallocatedReceipts:       receipts.unallocated,
     cashPaid:                  pick(report.cash, 'cashOut'),
@@ -288,13 +331,23 @@ export function computeFinalAccount({ project = null, currencyCode, sources = {}
     draftPayments:       payments.draftCount,
     draftCreditNotes:    draftSupplierCreditNotes(supplierCreditNotes).length,
     draftReleases:       draftRetentionReleases(retentionReleases).length,
+    draftClientCreditNotes: draftClientCreditNotes(clientCreditNotes).length,
+    draftClientReleases: draftClientRetentionReleases(clientRetentionReleases).length,
   }
-  // Issued client invoices whose posted receipt allocations EXCEED the invoice's
-  // gross value — the rows of the existing receivables selector, compared in
-  // whole cents. Such an invoice's negative balance is never netted into
-  // Client invoices outstanding (lib/clientReceipts.js), so the receivables
-  // position does not reconcile until the allocation is corrected.
-  const overAllocated = receivables.rows.filter(r => toCents(r.received) > toCents(r.grossTotal))
+  // Posted client credit notes and retention releases that FAIL their read-time
+  // gate count toward no figure (the safe direction: the debt stays visible).
+  // A Final Account must not freeze figures that silently leave a posted
+  // document out, so each is a blocker of its own, named.
+  const creditExceptions = clientCreditExceptions(clientCreditNotes, clientInvoices)
+  const releaseExceptions = clientReleaseExceptions(clientRetentionReleases, clientInvoices)
+  // Issued client invoices whose posted receipt allocations EXCEED what is now
+  // RECEIVABLE on the invoice (`receivableBasis`: gross less posted credits and
+  // retention still held) — the rows of the existing receivables selector,
+  // compared in whole cents. Such an invoice's negative balance is never netted
+  // into Client invoices outstanding (lib/clientReceipts.js); it is the amount
+  // shown as Owed to client, and the receivables position does not reconcile
+  // until the allocation is corrected.
+  const overAllocated = receivables.rows.filter(r => toCents(r.received) > toCents(r.receivableBasis))
   const unapplied = pick(report.variations, 'unappliedSupplierVariations')
   const awaiting = roundMoney(totals.approvedClaimsAwaitingInvoice)
 
@@ -315,6 +368,10 @@ export function computeFinalAccount({ project = null, currencyCode, sources = {}
     if (counts.draftPayments > 0) block(BLOCKER.DRAFT_PAYMENTS, `${counts.draftPayments} draft`)
     if (counts.draftCreditNotes > 0) block(BLOCKER.DRAFT_CREDIT_NOTES, `${counts.draftCreditNotes} draft`)
     if (counts.draftReleases > 0) block(BLOCKER.DRAFT_RELEASES, `${counts.draftReleases} draft`)
+    if (counts.draftClientCreditNotes > 0) block(BLOCKER.DRAFT_CLIENT_CREDIT_NOTES, `${counts.draftClientCreditNotes} draft`)
+    if (counts.draftClientReleases > 0) block(BLOCKER.DRAFT_CLIENT_RELEASES, `${counts.draftClientReleases} draft`)
+    if (creditExceptions.length > 0) block(BLOCKER.CLIENT_CREDIT_EXCEPTIONS, namedList(creditExceptions.map(e => e.creditNumber || e.creditNoteId), 'failing'))
+    if (releaseExceptions.length > 0) block(BLOCKER.CLIENT_RELEASE_EXCEPTIONS, namedList(releaseExceptions.map(e => e.releaseNumber || e.releaseId), 'failing'))
     if (overAllocated.length > 0) {
       const names = overAllocated.slice(0, 5).map(r => r.invoiceNumber || r.id).join(', ')
       block(BLOCKER.OVER_ALLOCATED, `${overAllocated.length} over-allocated: ${names}${overAllocated.length > 5 ? ', …' : ''}`)
@@ -449,19 +506,40 @@ export function buildFinalAccountDraft({ computation, number, input, currencyCod
 // ways: the callable refuses a draft that disagrees with its own figures; the
 // page marks a draft STALE; and an approved revision shows what has moved in
 // the live records since — the frozen figures themselves are never changed.
+//
+// VERSION-AWARE. A revision is compared on ITS OWN schema: only the figure
+// keys its `figures` map carries and only the registers its `sources.counts`
+// map carries. A key the revision does not carry at all (absent — a stored
+// null is a value and IS compared) did not exist when it was written; it is
+// listed in `newMetrics` / `newSources` and is never a difference, so an
+// approved revision shows no drift merely because a metric was added later.
+// A genuine movement in a key the revision does carry is still reported.
+// Approved revisions are never rewritten or migrated to gain a key.
 
 const sameAmount = (a, b) => (a === null || a === undefined || b === null || b === undefined)
   ? (a ?? null) === (b ?? null)
   : toCents(a) === toCents(b)
 
+const carries = (map, key) => map !== null && typeof map === 'object' && Object.prototype.hasOwnProperty.call(map, key)
+
+// True when a stored figure set carries `key` (see VERSION-AWARE above).
+export const figureRecorded = (figures, key) => carries(figures, key)
+
+const NOT_COMPARABLE = { comparable: false, figures: [], rows: [], provenance: [], newMetrics: [], newSources: [], changed: false }
+
 export function finalAccountDifferences(stored, computation) {
-  if (!stored || !computation) return { comparable: false, figures: [], rows: [], provenance: [], changed: false }
-  if (!computation.sourcesReady) return { comparable: false, figures: [], rows: [], provenance: [], changed: false }
+  if (!stored || !computation) return { ...NOT_COMPARABLE }
+  if (!computation.sourcesReady) return { ...NOT_COMPARABLE }
   const live = computation.partialFigures ?? {}
   const figures = []
+  const newMetrics = []
   for (const f of FINAL_ACCOUNT_FIGURES) {
-    const a = stored.figures?.[f.key]
     const b = live[f.key]
+    if (!carries(stored.figures, f.key)) {
+      newMetrics.push({ key: f.key, label: f.label, basis: f.basis, live: b ?? null })
+      continue
+    }
+    const a = stored.figures[f.key]
     if (!sameAmount(a, b)) figures.push({ key: f.key, label: f.label, basis: f.basis, stored: a ?? null, live: b ?? null })
   }
   const rows = []
@@ -479,16 +557,24 @@ export function finalAccountDifferences(stored, computation) {
   const lp = computation.provenance ?? {}
   if ((sp.budgetApprovalId ?? null) !== (lp.budgetApprovalId ?? null) || (sp.budgetVersion ?? null) !== (lp.budgetVersion ?? null)
     || (sp.adjustmentCount ?? 0) !== (lp.adjustmentCount ?? 0)) provenance.push('budget')
+  const newSources = []
   for (const s of FINAL_ACCOUNT_COUNTED_SOURCES) {
-    if ((sp.counts?.[s] ?? null) !== (lp.counts?.[s] ?? null)) provenance.push(s)
+    if (!carries(sp.counts, s)) { newSources.push(s); continue }
+    if ((sp.counts[s] ?? null) !== (lp.counts?.[s] ?? null)) provenance.push(s)
   }
-  return { comparable: true, figures, rows, provenance, changed: figures.length > 0 || rows.length > 0 }
+  return { comparable: true, figures, rows, provenance, newMetrics, newSources, changed: figures.length > 0 || rows.length > 0 }
 }
 
 // The strict agreement the callable requires before it finalises a draft: the
 // same figures, the same rows in the same order, the same budget version.
+//
+// STRICT ON THE SCHEMA, unlike the comparison above: a draft must carry EVERY
+// current figure key. A draft written by an older client lacks the newer keys;
+// its approver reviewed a smaller figure set than the one approval would
+// freeze, so it never agrees — it is withdrawn and prepared again.
 export function draftAgreesWith(stored, computation) {
   if (!stored || !computation?.figures) return false
+  if (!FINAL_ACCOUNT_FIGURE_KEYS.every(k => carries(stored.figures, k))) return false
   const d = finalAccountDifferences(stored, computation)
   if (!d.comparable || d.changed) return false
   if ((stored.rows ?? []).length !== computation.rows.length) return false

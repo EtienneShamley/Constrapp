@@ -1,7 +1,7 @@
 import { formatCurrency } from '../../../lib/formatters'
-import { figureText, figurePresentation, FIGURE_VIEW } from '../../../lib/finalAccountDisplay'
+import { figureText, figurePresentation, FIGURE_VIEW, NOT_RECORDED_NOTE } from '../../../lib/finalAccountDisplay'
 import {
-  FINAL_ACCOUNT_FIGURES, FIGURE_GROUP, FIGURE_GROUP_LABELS,
+  FINAL_ACCOUNT_FIGURES, FIGURE_GROUP, FIGURE_GROUP_LABELS, figureRecorded,
 } from '../../../lib/finalAccount'
 
 // ── Final Account figures and cost-code rows (presentation only) ─────────────
@@ -12,6 +12,9 @@ import {
 // "Unavailable" (never a zero), a figure that cannot be calculated is "Not
 // calculable", and a genuine zero is a formatted zero. Ex-GST and gross
 // figures sit in separate, labelled groups and are never totalled together.
+// A figure a stored revision does not carry (it was introduced after the
+// revision was written) is "Not recorded" — not Unavailable, not an
+// outstanding balance, and never filled from live records.
 //
 // `differences` (optional) is finalAccountDifferences output: figures and
 // rows that differ from a comparison set are marked and the other value shown.
@@ -39,7 +42,8 @@ export function FinalAccountFigures({ figures, currencyCode, differences = null,
             <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
               {items.map(def => {
                 const value = figures?.[def.key]
-                const missing = !pending && (value === null || value === undefined) && !def.nullable
+                const unrecorded = !pending && Boolean(figures) && !figureRecorded(figures, def.key)
+                const missing = !pending && !unrecorded && (value === null || value === undefined) && !def.nullable
                 const negative = typeof value === 'number' && value < 0
                 const diff = changed.get(def.key)
                 const text = figurePresentation(def, view)
@@ -47,17 +51,17 @@ export function FinalAccountFigures({ figures, currencyCode, differences = null,
                   <div key={def.key} className="report-figure min-w-0 border-b border-brand-border pb-2">
                     <dt className="text-[11px] font-bold uppercase tracking-[0.4px] text-brand-muted">
                       {text.label}
-                      {def.open && <span className="ml-2 normal-case tracking-normal font-semibold text-brand-amber">Outstanding balance</span>}
+                      {def.open && !unrecorded && <span className="ml-2 normal-case tracking-normal font-semibold text-brand-amber">Outstanding balance</span>}
                     </dt>
-                    <dd className={`m-0 mt-0.5 text-[17px] font-bold tabular-nums ${missing ? 'text-brand-amber' : negative ? 'text-brand-red' : 'text-brand-text'}`}>
-                      {figureText(value, def.basis, currencyCode, { nullable: def.nullable, pending })}
+                    <dd className={`m-0 mt-0.5 text-[17px] font-bold tabular-nums ${unrecorded ? 'text-brand-muted' : missing ? 'text-brand-amber' : negative ? 'text-brand-red' : 'text-brand-text'}`}>
+                      {figureText(value, def.basis, currencyCode, { nullable: def.nullable, pending, unrecorded })}
                     </dd>
                     {diff && (
                       <dd className="m-0 mt-0.5 text-[12px] font-semibold text-brand-amber">
                         {comparisonLabel}: {figureText(diff.live, def.basis, currencyCode, { nullable: def.nullable })}
                       </dd>
                     )}
-                    <dd className="m-0 mt-0.5 text-[11px] text-brand-muted">{text.note}</dd>
+                    <dd className="m-0 mt-0.5 text-[11px] text-brand-muted">{unrecorded ? NOT_RECORDED_NOTE : text.note}</dd>
                   </div>
                 )
               })}

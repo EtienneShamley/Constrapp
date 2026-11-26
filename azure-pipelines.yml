@@ -87,6 +87,14 @@ steps:
     displayName: Transitional rules up to date
     workingDirectory: $(workingDirectory)
 
+  # ADR-89: the server copy of the client-finance domain (the four posting
+  # callables) must be the committed output of its source. The unit suite
+  # asserts the same; this step names the failure. The Final Account and BOQ
+  # transfer bundles are checked by their unit tests.
+  - script: npm run functions:finance-calc:check
+    displayName: Client finance bundle up to date
+    workingDirectory: $(workingDirectory)
+
   # Auth + Firestore + Functions emulators: handler, real-callable, revocation
   # and operator-script tests (ADR-72). Runs the functions on the CI Node
   # (24.x) while production pins nodejs22 in firebase.json; the pure suite and

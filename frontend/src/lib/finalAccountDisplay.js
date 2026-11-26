@@ -4,9 +4,16 @@ import { FIGURE_BASIS, BLOCKER } from './finalAccount'
 // The text ONE Final Account figure renders as (ADR-24 display states):
 // loading "—"; a missing amount "Unavailable" — never a zero; a figure that
 // legitimately cannot be calculated (margin on non-positive revenue) "Not
-// calculable"; a genuine zero a formatted zero. Formatting only.
-export function figureText(value, basis, currencyCode, { nullable = false, pending = false } = {}) {
+// calculable"; a genuine zero a formatted zero. A figure the revision does not
+// carry at all — one introduced after it was written — is "Not recorded": the
+// revision is complete as approved, and nothing about it is missing or failed.
+// Formatting only.
+export const NOT_RECORDED_TEXT = 'Not recorded'
+export const NOT_RECORDED_NOTE = 'This figure was not recorded when this revision was written. The revision is unchanged.'
+
+export function figureText(value, basis, currencyCode, { nullable = false, pending = false, unrecorded = false } = {}) {
   if (pending) return '—'
+  if (unrecorded) return NOT_RECORDED_TEXT
   if (value === null || value === undefined) return nullable ? 'Not calculable' : 'Unavailable'
   if (typeof value !== 'number' || !Number.isFinite(value)) return 'Unavailable'
   return basis === FIGURE_BASIS.PERCENT ? percent(value) : formatCurrency(value, currencyCode, { precise: true })
@@ -37,7 +44,7 @@ const SUPPLIER_VARIATIONS_REVISION =
 const SUPPLIER_VARIATIONS_LIVE =
   'Total approved value, ex-GST. Only the part applied to a purchase order or committed as new scope is inside forecast final cost. Any approved value not yet applied is outside it and blocks approval'
 const RECEIVABLES_OUTSTANDING =
-  'Sum of the positive balances of issued invoices (invoice gross − receipts allocated to it). An over-allocated invoice does not reduce it, so it can exceed invoiced − received. Not cash'
+  'Sum of the positive balances of issued invoices (invoice gross − posted credit notes − client retention still held − receipts allocated to it). An over-allocated invoice does not reduce it, so it can exceed invoiced − received. Not cash'
 
 const REVISION_TEXT = {
   approvedSupplierVariations: { note: SUPPLIER_VARIATIONS_REVISION },

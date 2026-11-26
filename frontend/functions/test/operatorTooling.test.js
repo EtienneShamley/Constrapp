@@ -232,6 +232,31 @@ describe('operator scripts — tooling-safety source pins', () => {
     expect(cli).not.toMatch(/retry|attempt/i)
   })
 
+  it('set-client-finance: one company, one field, dry-run by default, no process.exit, Firestore terminated', () => {
+    const code = stripComments(read('scripts/set-client-finance.mjs'))
+    expect(code).not.toMatch(/process\.exit\(/)
+    expect(code).toMatch(/^runOperatorScript\(main, \{/m)
+    expect(code).toContain('releaseOnExit(() => db.terminate())')
+    expect(code).not.toMatch(/main\(\)\.catch/)
+    // Explicit project and ONE explicit company; no way to name them all.
+    expect(code).toContain("'project': { required: true,")
+    expect(code).toContain("'company': { required: true,")
+    expect(code).not.toMatch(/--all|'all'|collection\('companies'\)\.get\(|collectionGroup/)
+    // The dry-run return comes BEFORE the only transaction; that transaction writes the one field, merged, and one audit event.
+    expect(code.indexOf("if (!apply) {")).toBeGreaterThan(0)
+    expect(code.indexOf("if (!apply) {")).toBeLessThan(code.indexOf('db.runTransaction('))
+    expect((code.match(/db\.runTransaction\(/g) || []).length).toBe(1)
+    expect((code.match(/tx\.(set|update|create|delete)\(/g) || []).length).toBe(1)
+    expect(code).toContain('tx.set(companyRef, { [FIELD]: target }, { merge: true })')
+    expect(code).toContain("const FIELD = receipts ? 'clientReceiptsEnabled' : 'clientFinanceEnabled'")
+    expect(code).toContain('type: receipts ? AUDIT.COMPANY_CLIENT_RECEIPTS_SET : AUDIT.COMPANY_CLIENT_FINANCE_SET')
+    expect((code.match(/auditInTx\(/g) || []).length).toBe(1)
+    // Never a company name: the document is read for the one field only.
+    expect(code).not.toMatch(/\.name\b|companyName/)
+    expect((code.match(/\.data\(\)\[FIELD\]/g) || []).length).toBe(2)
+    expect(code.match(/\.data\(\)/g)).toHaveLength(2)
+  })
+
   it('bootstrap is dry-run by default and writes nothing before the read-only plan and the link-file reservation', () => {
     const code = stripComments(read('scripts/bootstrap-company.mjs'))
     expect(code).toMatch(/const apply = !!args\.apply/)

@@ -131,6 +131,24 @@ body {
   .commercial-report * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 
+/* ── Client Credit Note — print / Save as PDF ─────────────────────────────────
+   One credit note as a document. Like the GANTT programme report below it exists only for
+   printing: the Client Invoices page mounts it while a print is in progress
+   and it is never shown on screen. It carries `.commercial-report` as well, so
+   every L2-A rule above (ink palette, hidden app chrome, repeated table header, no
+   row split across pages) applies unchanged; the rules below only un-hide it
+   and give it its own A4 PORTRAIT page. Every selector names
+   `.commercial-report`, so nothing here can reach a page that is not a report. */
+.commercial-report.credit-note-print { display: none; }
+@media print {
+  @page credit-note { size: A4 portrait; margin: 14mm; }
+  .commercial-report.credit-note-print { display: flex !important; page: credit-note; }
+  .commercial-report.credit-note-print .report-header,
+  .commercial-report.credit-note-print .report-card { break-inside: avoid; page-break-inside: avoid; }
+  .commercial-report.credit-note-print .report-card:has(.report-table) { break-inside: auto; page-break-inside: auto; }
+  .commercial-report.credit-note-print .report-table { table-layout: auto; width: 100%; }
+}
+
 /* ── GANTT™ Programme Report (ADR-79) — print / Save as PDF ───────────────────
    The printed programme is a schedule TABLE that exists only for printing: it
    is mounted by the GANTT tab while a print is in progress and is never shown

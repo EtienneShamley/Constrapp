@@ -844,6 +844,161 @@ describe('set-member-projects.mjs', () => {
   })
 })
 
+describe('set-client-finance.mjs (ADR-89 — company activation of client credit notes and retention releases)', () => {
+  const base = ['--project', PROJECT_ID, '--company', COMPANY_A]
+  const companyDoc = (c = COMPANY_A) => A.db.collection('companies').doc(c).get().then(s => s.data())
+  const events = (c = COMPANY_A) => A.db.collection('companies').doc(c).collection('auditEvents').get().then(s => s.docs.map(d => d.data()))
+  const SEEDED = { name: 'Acme Builders', countryCode: 'AU', baseCurrency: 'AUD' }
+  beforeEach(async () => {
+    await seedCompany(COMPANY_A, 'Acme Builders')
+    await seedCompany('companyB', 'Apex Constructions')
+  })
+
+  it('validates its arguments: an explicit project, ONE company, exactly one of --enable / --disable — and there is no way to name every company', async () => {
+    const usageCases = [
+      [],
+      ['--company', COMPANY_A, '--enable'],                 // no --project
+      ['--project', PROJECT_ID, '--enable'],                // no --company
+      base,                                                 // neither --enable nor --disable
+      [...base, '--enable', '--disable'],
+      [...base, '--enable', '--all'],
+      ['--project', PROJECT_ID, '--all', '--enable'],
+      ['--project', PROJECT_ID, '--company', 'bad id', '--enable'],
+      ['--project', PROJECT_ID, '--company', 'a/b', '--enable'],
+      ['--project', PROJECT_ID, '--company-id', COMPANY_A, '--enable'],
+      [...base, '--enable', '--bogus'],
+    ]
+    for (const args of usageCases) {
+      const r = run('set-client-finance.mjs', args)
+      expect(r.code, args.join(' ')).toBe(2)
+      expect(r.out, args.join(' ')).toContain('Usage: node scripts/set-client-finance.mjs')
+    }
+    expect(run('set-client-finance.mjs', [...base, '--enable', '--apply'], { GOOGLE_APPLICATION_CREDENTIALS: '/tmp/key.json' }).code).toBe(1)
+    expect(await companyDoc()).toEqual(SEEDED)
+    expect(await auditTypes(COMPANY_A)).toEqual([])
+  })
+
+  it('is DRY-RUN BY DEFAULT: it prints the current and the new value, ids only, and writes nothing', async () => {
+    const dry = run('set-client-finance.mjs', [...base, '--enable'])
+    expect(dry.code).toBe(0)
+    expect(dry.out).toContain(`[DRY RUN — read only] Project ${PROJECT_ID} (EMULATORS) · company ${COMPANY_A}`)
+    expect(dry.out).toContain('clientFinanceEnabled now:   not enabled (field absent)')
+    expect(dry.out).toContain('clientFinanceEnabled after: ENABLED (true)')
+    expect(dry.out).toContain('Dry run — nothing written. Re-run with --apply.')
+    // Name-free: the company's name is never printed.
+    expect(dry.out).not.toContain('Acme')
+    expect(await companyDoc()).toEqual(SEEDED)
+    expect(await auditTypes(COMPANY_A)).toEqual([])
+  })
+
+  it('--enable --apply writes ONLY clientFinanceEnabled (merged) and one audit event; a repeat changes nothing; the other company is untouched', async () => {
+    const applied = run('set-client-finance.mjs', [...base, '--enable', '--apply'])
+    expect(applied.code, applied.out).toBe(0)
+    expect(applied.out).toContain('[APPLY]')
+    expect(applied.out).toContain(`Applied, with one audit event (company.client_finance_set). Company ${COMPANY_A}: clientFinanceEnabled is now true.`)
+    expect(applied.out).not.toContain('Acme')
+    expect(await companyDoc()).toEqual({ ...SEEDED, clientFinanceEnabled: true })
+    const written = await events()
+    expect(written).toHaveLength(1)
+    expect(written[0]).toMatchObject({
+      type: 'company.client_finance_set', actorUid: 'operator', source: 'operator',
+      before: { clientFinanceEnabled: null }, after: { clientFinanceEnabled: true },
+    })
+    // A second run, dry or applied: no change, no second event.
+    for (const extra of [[], ['--apply']]) {
+      const again = run('set-client-finance.mjs', [...base, '--enable', ...extra])
+      expect(again.code).toBe(0)
+      expect(again.out).toContain('clientFinanceEnabled now:   ENABLED (true)')
+      expect(again.out).toContain('No change: the company already holds exactly that value. Nothing written.')
+    }
+    expect(await events()).toHaveLength(1)
+    // "Apex" was never named and never touched.
+    expect(await companyDoc('companyB')).toEqual({ name: 'Apex Constructions', countryCode: 'AU', baseCurrency: 'AUD' })
+    expect(await auditTypes('companyB')).toEqual([])
+  })
+
+  it('--disable --apply records the explicit false with its own audit event and the honest warning; only a strict true counts as enabled', async () => {
+    run('set-client-finance.mjs', [...base, '--enable', '--apply'])
+    const off = run('set-client-finance.mjs', [...base, '--disable', '--apply'])
+    expect(off.code, off.out).toBe(0)
+    expect(off.out).toContain('clientFinanceEnabled is now false')
+    expect(off.out).toContain('Nothing already posted was undone.')
+    expect(await companyDoc()).toEqual({ ...SEEDED, clientFinanceEnabled: false })
+    expect((await events()).map(e => [e.before.clientFinanceEnabled, e.after.clientFinanceEnabled]).sort()).toEqual([[null, true], [true, false]].sort())
+    // A value that is not a boolean is reported as it is, and --enable replaces it with true.
+    await A.db.collection('companies').doc(COMPANY_A).update({ clientFinanceEnabled: 'true' })
+    const odd = run('set-client-finance.mjs', [...base, '--enable'])
+    expect(odd.out).toContain('clientFinanceEnabled now:   not enabled ("true")')
+    expect(run('set-client-finance.mjs', [...base, '--enable', '--apply']).code).toBe(0)
+    expect((await companyDoc()).clientFinanceEnabled).toBe(true)
+  })
+
+  it('--receipts switches ONLY clientReceiptsEnabled, with its own audit event — independent of clientFinanceEnabled in both directions', async () => {
+    const dry = run('set-client-finance.mjs', [...base, '--receipts', '--enable'])
+    expect(dry.code).toBe(0)
+    expect(dry.out).toContain('clientReceiptsEnabled now:   not enabled (field absent)')
+    expect(dry.out).toContain('Dry run — nothing written. Re-run with --apply.')
+    expect(await companyDoc()).toEqual(SEEDED)
+    const applied = run('set-client-finance.mjs', [...base, '--receipts', '--enable', '--apply'])
+    expect(applied.code, applied.out).toBe(0)
+    expect(applied.out).toContain(`Applied, with one audit event (company.client_receipts_set). Company ${COMPANY_A}: clientReceiptsEnabled is now true.`)
+    expect(applied.out).toContain('CLIENT_RECEIPT_POSTING_ENABLED must also be on')
+    expect(applied.out).not.toContain('Acme')
+    expect(await companyDoc()).toEqual({ ...SEEDED, clientReceiptsEnabled: true })
+    expect(await events()).toEqual([expect.objectContaining({
+      type: 'company.client_receipts_set', actorUid: 'operator', source: 'operator',
+      before: { clientReceiptsEnabled: null }, after: { clientReceiptsEnabled: true },
+    })])
+    // The credit-note flag, set afterwards, leaves the receipt flag alone — and the reverse.
+    expect(run('set-client-finance.mjs', [...base, '--enable', '--apply']).code).toBe(0)
+    expect(await companyDoc()).toEqual({ ...SEEDED, clientReceiptsEnabled: true, clientFinanceEnabled: true })
+    expect(run('set-client-finance.mjs', [...base, '--receipts', '--disable', '--apply']).code).toBe(0)
+    expect(await companyDoc()).toEqual({ ...SEEDED, clientReceiptsEnabled: false, clientFinanceEnabled: true })
+    expect((await events()).map(e => e.type).sort()).toEqual(['company.client_finance_set', 'company.client_receipts_set', 'company.client_receipts_set'])
+    expect(await companyDoc('companyB')).toEqual({ name: 'Apex Constructions', countryCode: 'AU', baseCurrency: 'AUD' })
+  })
+
+  it('refuses an unknown company — exit 1, nothing created, with or without --apply', async () => {
+    for (const extra of [[], ['--apply']]) {
+      const r = run('set-client-finance.mjs', ['--project', PROJECT_ID, '--company', 'nope', '--enable', ...extra])
+      expect(r.code).toBe(1)
+      expect(r.out).toContain(`Refused: company nope does not exist in project ${PROJECT_ID}. Nothing written.`)
+    }
+    expect((await A.db.collection('companies').get()).docs.map(d => d.id).sort()).toEqual([COMPANY_A, 'companyB'].sort())
+    expect((await A.db.collection('companies').doc('nope').collection('auditEvents').get()).empty).toBe(true)
+  })
+
+  it('a failure inside its transaction: reported once, exit 1, nothing written, not retried — and the company document is free at once', async () => {
+    const r = run('set-client-finance.mjs', [...base, '--enable', '--apply'], { NODE_OPTIONS: `--import=${REFUSE_TRANSACTION}` })
+    expect(r.code).toBe(1)
+    expect(r.out).toContain('simulated refusal inside the transaction')
+    expect((r.stderr.match(/\[fixture\] transaction 1 attempt/g) ?? []).length).toBe(1)
+    expect(r.stderr).not.toContain('did not shut down')
+    expect(await companyDoc()).toEqual(SEEDED)
+    expect(await auditTypes(COMPANY_A)).toEqual([])
+    expect(await writableAtOnce(A.db.collection('companies').doc(COMPANY_A))).toBe(true)
+  })
+
+  it('what it switches is what the callables read: enabled → the four act; disabled → client-finance-not-activated', async () => {
+    const { createClientFinanceHandlers } = await import('../../functions/src/clientFinance/handlers.js')
+    const H = createClientFinanceHandlers({ db: A.db, now: () => new Date(), log: { info() {}, warn() {}, error() {} }, config: () => ({ finance: true, receipts: true, receiptsAllCompanies: true }) })
+    await seedUser({ uid: 'u_admin', email: 'admin@acme.test', role: 'company_admin', companyId: COMPANY_A })
+    await seedProjects(COMPANY_A, ['p1'])
+    // The pause lets the refused transaction's rollback leave this process before
+    // spawnSync blocks its event loop — otherwise the company document it read stays locked.
+    const call = async () => {
+      const code = await H.voidClientCreditNote(req('u_admin', { projectId: 'p1', creditNoteId: 'nope', reason: 'x' })).then(() => 'ok', e => e.details?.code)
+      await new Promise(r => setTimeout(r, 500))
+      return code
+    }
+    expect(await call()).toBe('client-finance-not-activated')
+    expect(run('set-client-finance.mjs', [...base, '--enable', '--apply']).code).toBe(0)
+    expect(await call()).toBe('client-entry-not-found')   // past the gate: the entry simply does not exist
+    expect(run('set-client-finance.mjs', [...base, '--disable', '--apply']).code).toBe(0)
+    expect(await call()).toBe('client-finance-not-activated')
+  })
+})
+
 describe('reconcile-membership.mjs — project assignments (ADR-84)', () => {
   it('reports an assignment held by an internal or removed profile and a broken external one; --fix removes only the first two kinds', async () => {
     await seedCompany(COMPANY_A, 'Acme Builders')

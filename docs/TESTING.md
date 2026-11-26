@@ -7302,6 +7302,57 @@ hoisted to the shared helpers, the two pins, the release block's type/balance
 split); transitional **230,974**; `npm run rules:transitional:check` clean;
 lint 0 / 0; build clean; `git diff --check` clean.
 
+**Manual acceptance — CORRECTED PROCEDURE (Commercial Finance Phase 1 final pass, 26 November 2026).** The procedure as first written could not be executed (§79.5): step 1 asked for a second release on an invoice whose retention the first release had exhausted; step 2 read figures the dialog showed only in whole units; step 3 named a comparison with no defined baseline. **No expected financial outcome is changed** — the supplier-side calculation is the one this section accepted (legacy `roundMoney(x × 0.1)`, one cent low on a half-cent boundary), and every figure below was recomputed from it. The original wording follows under *As first written*.
+
+1. **Boundary retention (F2).**
+   - **1a — the boundary itself.** Raise a direct-PO supplier invoice with one
+     line of $803.00 and retention $40.15 (5%): the create succeeds (previously
+     *permission-denied*) and the stored retention GST reads **$4.01**. Approve
+     and post it. Post a Retention Release of $40.15: it succeeds with GST
+     **$4.01**, release total $44.16. The retention is now fully released —
+     *Release* is disabled on that invoice. Remaining Payable, Retention Held /
+     Released and Cash Flow move exactly as for a non-boundary retention.
+   - **1b — a release AFTER a boundary cumulative.** Raise, approve and post a
+     second direct-PO invoice with one line of $2,000.00 and retention $100.00
+     (retention GST $10.00). Post three releases in order: $40.15 → GST
+     **$4.01**; $10.01 → GST **$1.01**; $49.84 → GST **$4.98**. Each succeeds;
+     the three GST figures sum to **$10.00**, the invoice's stored retention
+     GST, and nothing remains held.
+2. **Cent-level claim (F3).** Approve a progress claim with three lines
+   certified at $10.05 each (claim GST $3.02). *Raise invoice from claim*: the
+   dialog — which shows amounts **to the cent** and the GST of each line since
+   the final pass — previews line GST **$1.01 / $1.01 / $1.00**, GST total
+   **$3.02**, payable total **$33.17**, with no reconciliation warning; saving
+   succeeds (previously *does not reconcile … 3.03 vs 3.02*). Edit the draft's
+   header (reference, dates, notes) and save — accepted; the lines are
+   unchanged. Post it: Actual shows $30.15 once across the three cost codes,
+   the claim leaves *awaiting invoice*, Remaining Committed is unchanged from
+   before posting, AP shows $33.17.
+3. **Regression.**
+   - **3a — behaviour.** A whole-dollar claim (e.g. 300 + 200) still invoices
+     with the same per-line GST as before; a direct-PO invoice with retention 0
+     and with retention $100.00 is unchanged; a claim-sourced create with one
+     line switched to *GST-free* is still refused by the reconciliation guard
+     (it is never silently matched); a subcontractor or client login still
+     cannot read or write supplier invoices or releases; a posted invoice still
+     cannot be edited or cancelled.
+   - **3b — figures unchanged for existing documents (a defined comparison).**
+     Choose a project that already holds documents and is not written to
+     during the check (locally: the seeded fixture of `scripts/seed-emulator.mjs`;
+     in production: an existing regression fixture of the isolated acceptance
+     company). **Before** the build under test is in use, record from that
+     project: Budget (Budgeted, Committed, Actual, Remaining — totals), Forecast
+     (Forecast Final Cost, Variance to Budget), Commercial (Current Contract
+     Sum, Forecast Gross Profit, Margin %), Cash Flow (Actual Cash In / Out, net),
+     the Dashboard snapshot figures for the project, and the SHIELD finding
+     counts. **After**, read the same figures on the build under test. Every
+     figure must be identical to the cent. Record both sets and the build
+     identities. Locally the "before" build is `main` at the release's base
+     commit, served from a separate working copy against the same emulator data.
+
+*As first written (kept as the record; superseded by the corrected procedure above):*
+
+
 **Manual acceptance (maximum three):**
 
 1. **Boundary retention (F2).** Raise a direct-PO supplier invoice with one
@@ -11316,3 +11367,859 @@ and Dashboard §22 checks 2 and 3. The 58 older write sites (D3 #11). Every
 evidence limit of §74 and §75.
 
 **Next milestone:** client credit-note architecture assessment and ADR.
+
+## 77. Commercial Finance Phase 1 — repository assessment, Rules capacity recovery 3 (ADR-85) and the rounding assessment (D3 #35) — **CF3 IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION; CF1 and CF2 ASSESSED, decisions PROPOSED (ADR-86, ADR-87, ADR-88) and awaiting the Lead Architect; CF4, CF5 and CF6 NOT STARTED** (26 November 2026 NZDT; `feature/commercial-finance-phase-1` from `main` at `8702728`, uncommitted)
+
+Evidence class for everything in this section: **EMULATOR / local**. Nothing was
+deployed; production was neither read nor written.
+
+### 77.1 Baseline, before any change
+
+- `main` clean and identical to `origin/main` at `8702728`.
+- Unit: **103 files / 5,336 tests** passed.
+- Rules (Firestore and Storage, one run): **39 files / 2,492 tests** passed.
+- `firestore.rules` 236,737 bytes; `firestore.transitional.rules` 237,417;
+  `firestore.m2a2-transitional.rules` 237,176. The 245,000-byte budget is
+  applied to all three, so the binding headroom was **7,582 bytes**.
+
+### 77.2 Rules capacity recovery 3 (ADR-85)
+
+| Check | Result |
+|---|---|
+| `node scripts/verify-rules-helper-hoist.mjs --base 8702728` | **OK** for all three files: 55 call sites expand to the original text, compared line for line (4,232 / 4,237 / 4,238 lines) |
+| `npm run rules:transitional:check` | both generated files up to date |
+| `npm run test:unit` | **104 files / 5,357 tests** passed (+1 file, +21: `rulesHelperHoist.test.js`) |
+| `npm run test:rules` on the hoisted files | **39 files / 2,492 tests** passed — the same count as the baseline, no test changed |
+| `npm run lint` | 0 errors / 0 warnings |
+| Sizes | `firestore.rules` **228,289**; transitional **228,969**; m2a2-transitional **228,728**. Binding headroom **16,031** |
+
+**Expression-ceiling comparison.** The emulator debug log of a full rules run
+was captured twice — on the `8702728` rules and on the hoisted rules — and the
+"maximum of 1000 expressions" messages counted per rule:
+
+| Rule (block) | `8702728` | hoisted |
+|---|---|---|
+| `variations` update | 1,688 | 1,688 |
+| `progressClaims` update | 1,130 | 1,130 |
+| `supplierInvoices` update | 668 | 668 |
+| `rfis` update | 532 | 532 |
+| `tenderPackages` update | 320 | 320 |
+| `supplierCreditNotes` update | 260 | 260 |
+| `variations` create | 100 | 100 |
+| `progressClaims` create | 22 | 22 |
+| `supplierInvoices` create | 16 | 16 |
+| **Total** | **4,560** | **4,560** |
+
+The hoist changed none of them. **The messages themselves are a finding
+(tracker D3 #37):** they are present on `main`. Each belongs to a request the
+suite expects to be refused, and it is refused; the suite passes. But ADR-40
+D10 records "zero evaluation errors" as the regression signal, and that is no
+longer the state of the ruleset: six blocks reach the 1,000-expression ceiling
+on some refused requests. Whether any request that should be **allowed** is
+near the ceiling is not established by this count. It bounds how the client
+credit-note and retention blocks may be written (bind repeated reads once,
+guard `allow update` with `resource != null`) and it is the reason source
+bytes are not the capacity measure.
+
+### 77.3 Rounding assessment (D3 #35)
+
+- Sweep of every half-cent boundary from $0.05 to $2,000,000.00 (20,000,000
+  amounts) through `roundMoney(x × 0.1)`: **419,426 one cent below exact
+  half-up; none above.** 20,000,001 non-boundary and boundary cent amounts to
+  $200,000.00: no deviation off a boundary. The integer form
+  `floor((cents + 5) / 10)` agrees with exact half-up on every amount tested.
+  This reproduces §74.4 on a wider range.
+- The deviation is produced at seven call sites and nowhere else (ADR-86,
+  Finding 1). Four read-time comparisons would report a one-cent difference
+  on legacy boundary documents if the payable formulas changed (Finding 3).
+- **No calculation changed.** GST §44 manual steps 1–3 remain NOT RUN; they are
+  scheduled for the local integrated acceptance (CF6) and keep their class.
+
+### 77.4 Not done
+
+- No client credit-note, client retention or ledger code, Rules or tests.
+- No Functions suite run (nothing under `functions/` or the calc bundles
+  changed): the recorded 8 files / 179 pure and 11 files / 367 emulator tests
+  stand from §75.
+- No browser acceptance; no production step.
+- The compiled-ruleset limit (250 KB) is not measurable locally and is
+  unmeasured.
+
+## 78. Commercial Finance Phase 1, FIRST DESIGN (Rules-paired ledger) — money precision (ADR-86), client credit notes and the invoice ledger (ADR-87), client retention (ADR-88), the D3 #37 investigation and the integrated local acceptance — **NOT INTEGRATED: Lead Architect NO-GO, 26 November 2026; enforcement replaced by ADR-89 — see §79. Kept as the record of what was built and measured; §78.2 (D3 #37) and the hoist evidence stand** (26 November 2026 NZDT; `feature/commercial-finance-phase-1` from `main` at `8702728`, uncommitted)
+
+Evidence class for everything in this section: **EMULATOR / LOCAL**. Nothing was
+deployed; production was neither read nor written; no production account was
+used or reactivated. The browser run used a disposable account on the local
+Auth emulator. **None of this is production acceptance.**
+
+### 78.1 Automated results — final state of the branch
+
+| Suite | Command | Result |
+|---|---|---|
+| Unit | `npm run test:unit` | **111 files / 5,789 tests** passed (baseline 103 / 5,336) |
+| Rules (Firestore + Storage) | `npm run test:rules` | **40 files / 2,548 tests** passed (baseline 39 / 2,492; +56 in `clientLedger.rules.test.js`) |
+| Functions, pure | `npm run functions:test` | **8 files / 179 tests** passed |
+| Functions, emulator | `npm run test:functions` | **11 files / 372 tests** passed (baseline 367; +5 in `finalAccount.approve.test.js`) |
+| Lint | `npm run lint`, `npm run functions:lint` | 0 errors / 0 warnings |
+| Generated files | `rules:transitional:check`, `functions:calc:check`, `functions:transfer-calc:check` | all up to date (the BOQ transfer bundle is unchanged) |
+| Build | `npm run build` | succeeds |
+| `git diff --check` | | clean |
+| Hoist equivalence (ADR-85) | `verify-rules-helper-hoist.mjs <8702728 file> <hoist-only file>` | OK × 3, 55 call sites each — run against the hoist-only rules files, which are the first of the two commits recommended in DEPLOYMENT.md |
+
+Rules source: `firestore.rules` **243,104** bytes; `firestore.transitional.rules`
+**243,784** (binding; **1,216** under the 245,000 budget);
+`firestore.m2a2-transitional.rules` 243,543.
+
+### 78.2 D3 #37 — expression headroom (method and results)
+
+`scripts/rules-expression-headroom.mjs <source> <out> <K>` writes a copy of a
+ruleset in which every `allow` statement must also evaluate K trivially-true
+comparisons **after** its real condition has passed. A refused request never
+reaches the padding. The emulator suite is run against the padded files (in a
+copy of the tree — the padded files are never placed in the repository).
+
+*Calibration.* A ruleset whose only rule is the padding passes with **196**
+comparisons and fails with 197. (A single `&&` chain of several hundred terms
+is refused at compile time, so the padding is grouped into nested helpers.)
+
+*Existing rules (`8702728` + ADR-85 hoist), full suite, 2,492 tests:*
+
+| K | Allowed cases that fail | Where |
+|---|---|---|
+| 0 | 0 | — |
+| 4, 8, 12 | 0 (four tightest suites) | — |
+| 16 | 3 | `variations` create with an originating RFI |
+| 20 | 5 | + `supplierInvoices` claim-sourced create with a boundary retention |
+| 30 | 32 | + claim-to-invoice pairing, `progressClaims` |
+| 45 | 57 | same four suites |
+| 60 | 137 | ten suites |
+| 120 | 472 | twenty-five suites |
+| 160 | 804 | thirty-five suites |
+
+*New blocks (final rules), `clientLedger` + `clientInvoices` + `clientReceipts`
+suites:* 0 failures at K = 0, 20, 40 and 60; 2 at K = 80 (a credit-note draft
+edit; the stale-draft posting sequence); 43 at K = 100.
+
+*Refused requests.* A full suite run logs 4,560 "maximum of 1000 expressions"
+messages, all on refused requests in six pre-existing blocks; the count is the
+same on `8702728`, after ADR-85 and on the final rules. **The new blocks log
+none.**
+
+*Reading.* No legitimate request fails today. Three pre-existing blocks run
+within roughly 6–10% of the ceiling on allowed requests; the new blocks keep at
+least 30% in hand. Exact expression counts are not established and are not
+claimed. *Access calls:* posting an entry reads five distinct documents across
+its two writes (limit 20); a draft create or edit reads two (limit 10).
+
+### 78.3 Independent reconciliation
+
+- `tests/unit/money.test.js` — a BigInt decimal oracle that shares no code with
+  `lib/money.js`: every cent from 0.00 to 100,000.00 and a spread to
+  20,000,000.00 for `gstOfCents` / `gstExact` / `toCents` / `fromCents`;
+  `shareOfCents` near the 64-bit cap and beyond 2^53. The supplier-side
+  `gstForLine(40.15)` is pinned at 4.01 (unchanged, deliberately).
+- `tests/unit/clientLedger.test.js` — zero-tax, fully taxable and mixed-tax
+  invoices; a legacy invoice whose stored line GST is one cent low (a full
+  credit reverses 4.01, not 4.02); partial credits and releases in 1 / 2 / 3 /
+  7 pieces summing exactly to the stored figures; credit before, after a
+  partial and after a full release; full credit of a retained invoice; voids.
+  **Property test:** 500 seeded random sequences of credits, releases and voids
+  with retention from 0 to 100% of the subtotal; after every step every
+  invariant holds, the ledger equals the oracle's sums of the applied
+  documents, and the receivable basis is never negative.
+- **Extended runs (temporary, not committed):** two further seeds × 30,000
+  sequences — 188,352 and 187,850 applied steps (credits, releases and voids);
+  5,227 and 5,328 voids refused by the invariant (legitimate); **no accepted
+  allocation produced an invariant error or a negative basis**, and every
+  sequence closed with credited GST equal to invoice GST and nothing held.
+- `tests/unit/commercialFinanceReconciliation.test.js` — the integrated
+  lifecycle (contract → invoice with a half-cent-boundary line and a GST-free
+  line → 5% retention → issue → partial credit → receipt → partial release →
+  second credit → final release) with every stage compared to the oracle;
+  zero-value line; full credit; credit of a fully received invoice (owed to
+  client); two currencies as labels, never summed; a historical invoice with
+  no retention fields.
+- **Two defects found by these tests and corrected before this record:** (1)
+  on a mixed-tax invoice, a release followed by a credit of a GST-free line
+  left retention GST held with no ex-GST retention behind it; (2) an accepted
+  credit could take the receivable basis below zero on a mixed-tax invoice with
+  very high retention or after a release void. Both came from letting retention
+  GST follow cumulative shares of the original figures; the allocation now
+  takes shares of what is **still held**, bounded by the GST **still billed**
+  (ADR-88, *As implemented*). The ledger invariants in the library and the
+  Rules were tightened with it.
+
+### 78.4 Security and concurrency (emulator, real Rules)
+
+`tests/rules/clientLedger.rules.test.js` — 56 tests, two kinds: what the app
+writes (through the real transaction functions of `lib/clientLedgerActions.js`)
+and what an attacker writes (direct SDK calls and hand-built batches).
+
+| Property | Evidence |
+|---|---|
+| Roles | company_admin, project_manager and qs draft, post and void; subcontractor, client, another company and an unauthenticated caller read and write nothing; nothing is deleted |
+| Credit-only / ledger-only | each refused without the other |
+| Forged ledger | wrong totals, wrong `seq`, wrong kind, non-integer, extra key, forged stamps — 15 variants refused, the correct pair accepted |
+| Reuse | an already-posted credit cannot justify a second ledger movement |
+| Duplicate submission | the same draft posted three times concurrently: one success, one financial effect |
+| Concurrency | two postings prepared against one state: exactly one lands; a credit and a release together: one; two full releases: one; a posting racing the invoice void: never both |
+| One commit | two credits against one ledger write refused, with one or two ledger writes |
+| Substitution | another invoice's ledger, another company's path — refused |
+| Stale draft | refused by the application and, independently, by the Rules |
+| Exact reversal | a full credit of a legacy 40.15 / 4.01 invoice posts with 4.01; 4.02 and 4.00 are refused |
+| Ledger permanence | no delete, no reset, no rewind, no in-place rewrite |
+| Voids | a draft voids with no ledger; a posted entry only with the ledger moved back by exactly it; a ledger cannot be moved back by a never-posted entry; posted and void entries immutable |
+| Retention pins | taxable, GST-free, mixed, zero and absent retention accepted; a flat 10% on a mixed or GST-free invoice refused; out-of-range, fractional and partial field sets refused; frozen at issue |
+| Releases | partial releases telescope to the stored GST; over-release, double release and a short final release refused |
+| Credit × retention | before, after partial and after full release; full credit clears the retention held; held never negative; no stranded retention GST; a release cannot be voided while a later credit depends on it |
+| Invoice void | allowed with no ledger or only draft entries; refused while a credit note or release is posted, for every role; allowed again once they are voided; nothing can be posted against a void invoice |
+
+Client-only, stated in SECURITY.md → Deferred Control 49: the line array, the
+proportion inside the caps, the invoice's own headers, receipts.
+
+`tests/functions/finalAccount.approve.test.js` (+5): the callable reads the two
+new registers and recomputes credited, net invoiced, retention held and
+outstanding itself; draft credit notes, draft releases and a failing posted
+credit note each block approval by name; a credit note posted after a draft was
+prepared prevents approval.
+
+### 78.5 Browser acceptance — LOCAL, targeted
+
+Chrome against `npm run test:team` (Auth, Firestore and Functions emulators;
+Vite on 127.0.0.1), signed in as a disposable `company_admin` created on the
+Auth emulator. One project (AUD), one client contact, contract value
+100,000.00.
+
+| Step | Expected (computed independently) | Observed |
+|---|---|---|
+| Invoice editor: 1,000.00 GST + 40.15 GST + 500.00 GST-free; 10% helper | subtotal 1,540.15; GST 104.02 (40.15 → 4.02); billed 1,644.17; retention 154.02 + 10.40 = 164.42; receivable 1,479.75 | identical |
+| Issue | row: billed 1,644.17, retention held 164.42, receivable 1,479.75 | identical |
+| Credit note editor: 200.00 on line 1 | 200.00 + 20.00 = 220.00; reduces retention held 21.35; reduces receivable 198.65 | identical |
+| Post credit note | Issued 1,340.15; Credited 200.00; Available to Invoice 98,659.85; contract sum 100,000.00 unchanged; retention held 143.07; receivable 1,281.10 | identical |
+| Invoice Void after the posting | disabled, with the reason | disabled, with the reason |
+| Release editor: 50.00 | GST 3.38; becomes receivable 53.38 | identical |
+| Post release | withheld 164.42 = released 53.38 + credited 21.35 + held 89.69 | identical |
+| Final Account (live view) | invoiced 1,340.15 / 1,424.17 gross; credited 200.00; client retention held 89.69; outstanding 1,334.48 | identical |
+| Portfolio | Client Invoices Outstanding 1,334.48 | identical |
+| Cash Flow | client retention held excluded from Forecast Cash In, stated | stated ($90, whole-unit display) |
+
+No console error on the pages read. **Not exercised in the browser:** receipts
+and the *Owed to client* presentation, a second (stale) draft and *Refresh
+figures*, credit-note and release voids, the Client Receipts allocation picker,
+the Reports page text, CSV and print output, PM / QS / subcontractor / client
+sessions (roles are covered by the Rules suite), narrow-screen layout. The
+application's native *Issue?* confirmation blocked the automation once; it was
+then auto-accepted in the page.
+
+### 78.6 GST §44 manual steps 1–3
+
+**NOT RUN as browser-manual steps — still outstanding.** They exercise the
+supplier side (purchase order → supplier invoice with a boundary retention →
+releases; a cent-level claim → invoice from claim), which this phase did not
+change. Their emulator equivalents ran as part of the rules suite and pass —
+`retentionReleases.rules.test.js` (*GST boundary hotfix — the delta the client
+actually computes is accepted, nothing else*, including the 40.15 first release
+and the 10.01 follow-on) and `supplierInvoices.rules.test.js` (*accepts BOTH
+boundary alternatives for 40.15*; *the claim-sourced invoice the app now builds
+passes the rules*, including the 803.00 at 5% case) — and
+`tests/unit/money.test.js` pins the supplier `gstForLine(40.15)` at 4.01. That
+is EMULATOR evidence of an unchanged calculation; it is not the manual run.
+
+### 78.7 Manual acceptance steps (for the production acceptance, when authorised)
+
+A–G as recorded for the UI: (A) retention on an invoice — proportional GST and
+the receivable; (B) a partial credit note; (C) a stale draft, *Refresh figures*
+and a full credit; (D) a credit after receipt — *Owed to client*, never zero;
+(E) a release, and a refused void of a release that receipts rely on; (F) the
+refused invoice void, including the two-tab race; (G) a failed read shows
+*Unavailable*. Run on the isolated acceptance company only, on new records.
+
+## 79. Commercial Finance Phase 1 — authoritative backend correction (ADR-89): trusted callables for posting and voiding, reduced Rules, the corrected allocation rule and the completed local acceptance — **IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION** (26 November 2026 NZDT; `feature/commercial-finance-phase-1` from `main` at `8702728`, uncommitted)
+
+Evidence class for everything in this section: **EMULATOR / LOCAL**. Nothing was
+deployed; production was neither read nor written; no production account was
+used. **None of this is production acceptance.** Supersedes §78.1, §78.4, §78.5
+and §78.6; §78.2 and §78.3's method stand.
+
+### 79.1 Automated results — final state of the branch
+
+| Suite | Command | Result |
+|---|---|---|
+| Unit | `npm run test:unit` | **113 files / 5,935 tests** passed (baseline 103 / 5,336) |
+| Rules (Firestore + Storage) | `npm run test:rules` | **40 files / 2,597 tests** passed (baseline 39 / 2,492; `clientLedger.rules.test.js` 105) |
+| Functions, pure | `npm run functions:test` | **9 files / 241 tests** passed (baseline 8 / 179) |
+| Functions, emulator | `npm run test:functions` | **12 files / 497 tests** passed (baseline 11 / 367; `clientFinance.test.js` 125, `finalAccount.approve.test.js` +5) |
+| Lint | `npm run lint`, `npm run functions:lint` | 0 errors / 0 warnings |
+| Generated files | `rules:transitional:check`, `functions:calc:check`, `functions:transfer-calc:check`, `functions:finance-calc:check` | all up to date (the BOQ transfer bundle is unchanged) |
+| Build | `npm run build` | succeeds |
+| `git diff --check` | | clean |
+| Hoist equivalence (ADR-85) | prover against the hoist-only files | OK × 3, 55 call sites each |
+
+Rules source: `firestore.rules` **235,387** bytes; `firestore.transitional.rules`
+**236,067** (binding; **8,933** under the 245,000 budget);
+`firestore.m2a2-transitional.rules` 235,826. Before the phase: 236,737 /
+237,417 / 237,176. First design: 243,104 / 243,784 / 243,543.
+
+Expression headroom of the reduced client rules (method §78.2):
+`clientLedger` + `clientInvoices` suites pass at 60 padding comparisons, 1
+failure at 100 (a retained draft-invoice edit), 63 at 140. The first design
+failed at 80. A full suite run still logs 4,560 ceiling messages on refused
+requests, all in the six pre-existing blocks (D3 #37, unchanged).
+
+### 79.2 The trusted boundary (Functions emulator, `tests/functions/clientFinance.test.js`, 125 tests)
+
+Handlers called directly with injected dependencies, and through the deployed
+callable in the Functions emulator. Drafts in the suite are written by the
+app's own draft functions.
+
+| Property | Evidence |
+|---|---|
+| Authorisation | Unauthenticated, no membership, deactivated member, subcontractor and client refused; company_admin, project_manager and qs succeed; another company's admin gets *not found* for this project's identifiers; the kill switch refuses before anything is read |
+| Input contract | Any key beyond the identifiers and a reason — an `amount`, a `subtotal`, a `companyId` — is refused; malformed identifiers; blank or over-long reason |
+| Exact effects | For each of the four operations: the exact ledger document afterwards (six totals, `seq`, last entry, per-line map), the entry stamps, and exactly one audit event with the totals before and after |
+| **Blocker A — line validation** | A draft whose line GST is not the derived share, whose line exceeds the invoice line, repeats or names a non-existent line, changes the tax code or variation, whose headers do not sum to its lines, whose retention split is not the derived one, or whose subtotal exceeds the invoice — refused, nothing written (entry still draft, no ledger, no audit event) |
+| Untrusted draft document | Unknown key, missing key, snapshot not equal to the invoice's, malformed number, bad date, pre-set `voidReason` or `postedBy`, a line with an extra key or a description differing from the invoice's — refused |
+| Stale draft | Two drafts on one ledger state: the first posts, the second is refused as figures-changed, and posts after being rebuilt |
+| Source invoice | Draft, void, missing, other client, other currency refused; an invoice whose retention figures are one cent off (as the Rules' half-cent tolerance admits at a tie) refused as inconsistent |
+| Caps and invariants | Over-credit across two entries; a full credit of a legacy 40.15 / 4.01 invoice reverses 4.01 exactly; retention held never negative; release above held |
+| Concurrency | Two postings that cannot both fit: exactly one lands; two that can: both land, `seq` 1 and 2, exact totals; a credit and a release together; the same draft posted by two callers: one write, one audit event; a posting racing an invoice void: never both |
+| **Blocker B — receipts** | A release void refused when posted receipts allocated to the invoice exceed the basis after the void; allowed when they do not; a receipt written concurrently with the void never yields "void committed and received above basis"; a receipts register over the read limit (5,000) refused by name, not truncated |
+| Idempotency | All four operations: the same caller repeating gets the same answer, one ledger movement, one audit event; a different caller gets a typed refusal |
+| Void ordering | A release that a later credit depends on cannot be voided until that credit is voided |
+| Blast radius | Each operation writes the entry, the ledger and the audit event and no other document |
+
+Pure tests (`functions/test/clientFinance.test.js`, 62): the input contracts
+and the stored-versus-derived comparison. `tests/unit/clientFinanceBundle.test.js`
+(18): the generated bundle is byte-fresh and the callable source contains no
+arithmetic of its own.
+
+### 79.3 Rules (emulator, `tests/rules/clientLedger.rules.test.js`, 105 tests)
+
+Client paths only — the file imports no posting function. Covered: the role
+and tenancy matrix for read (get and list), draft create, draft edit, draft
+void and delete; every clause of the draft shape; frozen fields on edit;
+**direct bypass attempts, all denied for every financial role** — draft →
+posted alone, in a batch with a *correct* ledger write, and in a transaction
+(the pair the first design accepted); creating an entry already posted; posted
+→ void with and without the correct ledger reversal; posted → draft; any edit
+of a posted or void entry; **any ledger create, update or delete, including
+the exact body the backend would write**; the invoice void against a seeded
+ledger (denied while credited or released, allowed at zero, a malformed ledger
+fails closed); the retention pins including a 250,000,000.00 invoice and a
+half-cent tie; and **the honest gaps** — a draft with nonsensical figures or
+unknown fields is accepted *as a draft* (the backend, not the Rules, refuses
+it at posting).
+
+### 79.4 Independent reconciliation and the edge-case evidence
+
+- BigInt decimal oracle sharing no code with the libraries (`money.test.js`,
+  `clientLedger.test.js`, `commercialFinanceReconciliation.test.js`); the
+  supplier `gstForLine(40.15)` pinned at 4.01.
+- **Property test (committed, 500 seeded sequences; retention 0–100% of the
+  subtotal, mixed tax codes, voids):** after every applied step — invariants
+  hold; ledger totals equal the oracle's sums of the applied documents; the
+  retained-share invariant computed independently from the documents; basis
+  never negative; no credit raises the basis by more than one cent.
+- **Extended runs (temporary, not committed), 2 seeds × 30,000 sequences:**
+  217,539 and 218,308 applied steps; 10,548 and 10,861 voids refused by an
+  invariant (legitimate — about one in five of these adversarial random
+  voids); **0** invariant errors after an accepted allocation; **0** negative
+  bases; **0** differences from the oracle; **0** basis rises above one cent;
+  2 rises of exactly one cent in about 258,000 credits; every sequence closed
+  with credited GST equal to invoice GST, nothing held and basis 0.
+- **The mixed-tax, high-retention case** (the credit that raised the
+  receivable): 1,000.00 taxable (GST 100.00) + 1,000.00 GST-free, retention
+  2,000.00 (GST 100.00), basis at issue 0.00. *Before correction:* crediting
+  the GST-free line raised the basis from 0.00 to 50.00. *Now:* credit B
+  (1,000.00 + 0.00) → retention part 1,000.00 + 0.00, basis 0.00 → 0.00, held
+  1,000.00 + 100.00; then credit A (1,000.00 + 100.00) → retention part
+  1,000.00 + 100.00, basis 0.00, nothing held. In the other order: credit A
+  takes 1,000.00 + 100.00, leaving 1,000.00 + 0.00 held; credit B takes
+  1,000.00 + 0.00. Also tested at 50%, 91% and 100% retention, with a release
+  before the credit, with release → release-void → credit, and a three-line
+  invoice in all six credit orders — each table asserted literal = oracle =
+  library, with the basis never rising. Finding: **incorrect semantics in the
+  earlier rule, corrected** (ADR-88, *Corrections*); reconciliation had held
+  throughout and was not accepted as evidence.
+- **Large invoices** (the removed 20,000,000.00 limit): 250,000,000.00,
+  9,999,999,999.99 and a 7,500,000,000.00 mixed-tax invoice at 91% retention;
+  releases in 2, 3, 7 and 13 pieces, partial credits with releases between,
+  and a final full credit — all equal the oracle.
+- **Negative figures, distinguished:** the receivable *basis* is never
+  negative (an error if it were — forbidden by the invariants); *remaining*
+  = basis − received is legitimately negative when receipts exceed the basis,
+  and is reported as **owed to the client**, never clamped and never netted
+  across invoices.
+
+### 79.5 Browser acceptance — LOCAL (Auth, Firestore and Functions emulators; disposable emulator identities)
+
+Chrome against `npm run test:team`. Users created directly on the Auth
+emulator with membership documents written to the Firestore emulator: a
+`company_admin`, a `qs`, a `subcontractor`, and an admin of a second company.
+Every expected figure was computed independently before the screen was read.
+
+**Limitation that qualifies every "posted from the UI" result below (tracker
+D3 #38).** The callables enforce App Check, and the dev launcher starts the
+browser build with no App Check key, so out of the box the Functions emulator
+refuses every callable from the browser (`app: MISSING`) and the dialog shows
+*"Your session has ended…"* — a misleading message for that cause. The run
+proceeded by adding, in the tab, the same unsigned emulator token the automated
+harness uses. The posting path exercised is therefore the real browser code and
+the real callable, with an injected test token.
+
+| | Scenario | Result | Observed |
+|---|---|---|---|
+| A | Setup: AUD project, client, contract 100,000.00 | PASS | |
+| B | Invoice 1,000.00 GST + 40.15 GST + 500.00 GST-free, 10% retention; issue | PASS | 1,540.15 / GST 104.02 / billed 1,644.17 / retention 154.02 + 10.40 = 164.42 / receivable 1,479.75 — editor and issued row |
+| C | Credit 200.00 on line 1: draft, post (server) | PASS | 220.00; retention part 22.00, receivable part 198.00; held 142.42, receivable 1,281.75; ledger `seq` 1 (20000 / 2000 / 2000 / 200); one `client_credit_note.posted` audit event |
+| D | Stale draft | PASS | Post disabled with *Refresh figures*; after refresh the post succeeded. A direct server call on another stale draft: `client-entry-figures-changed`, no ledger change, no audit event |
+| E | Receipt, then a credit → owed to client | PASS | Allocation picker: *remaining $1,182.75 of $1,182.75 receivable*. After a 100.00 GST-free credit: row *Owed to client $90.00*, callout on Client Invoices and Client Receipts, every ageing bucket empty, Final Account blocker *1 over-allocated: CI-0001* |
+| F | Credit-note voids | PASS | Posted void restored every figure (ledger `seq` 4 → 5, one `voided` event). Draft void: no callable, `seq` unchanged, audit count unchanged |
+| G | Release 50.00; release void with dependent receipts | PASS | GST 2.98 → 52.98; withheld 164.42 = released 52.98 + credited 33.00 + held 78.44. Void **refused by the server** while a receipt depended on it; succeeded after that receipt was voided. (A second receipt of 52.98 was posted to create the dependency) |
+| H | Invoice void lock | PASS | Button disabled with its reason |
+| I | Direct Firestore writes with the signed-in admin's token, through the Rules | PASS | Refused (403): patching a ledger total; draft → posted; editing a posted note; creating a ledger; plus client-side void of a posted note, ledger delete, direct invoice void. Control: a draft `notes` edit with a server-time transform was accepted |
+| J | Roles | PASS, one limit | QS drafted and posted. Subcontractor: *Project not found*, 403 on every read, `client-finance-forbidden` on the callable. Other company's admin: 403 on reads, 404 on the callable. Repeating a post: `alreadyApplied: true`, audit count unchanged. *Not run:* PM and client sessions; a subcontractor assigned to the project |
+| K | Parity | PASS | Net issued 1,240.15, credited 300.00, retention held 78.44, outstanding 52.98, owed 0.00 agree wherever a surface shows them (Client Invoices, Client Retention, Cash Flow in whole units, Reports, Portfolio, Final Account live view) |
+| L | CSV and print | PASS | Commercial Report CSV: outstanding 52.98, retention held 78.44, owed 0.00. Portfolio CSV: 52.98. Printable credit note read from the print DOM for a draft, a posted and a void note; "Tax Invoice" appears in none. *Not run:* a real print preview |
+| M | GST §44 manual steps 1–3 (supplier side, unchanged code) | PARTIAL | Below |
+
+Refusal messages as shown — stale draft: *"Another credit note or retention
+release has been posted or voided on this invoice since this draft was
+prepared. Re-open and save the draft to refresh its figures, then post it."*
+Release void: *"Receipts are already allocated against this released
+retention, so the server refused to void it. Void or re-allocate those
+receipts before voiding the release."* Invoice void tooltip: *"This invoice
+has a posted credit note or a posted retention release, so it cannot be
+voided. Void those first."* No console error on any page read.
+
+**GST §44 steps 1–3 — run locally; class EMULATOR, not production.**
+
+- *Step 1 (boundary retention).* Performed. **The step as written is
+  internally inconsistent:** an invoice with retention 40.15 cannot take a
+  40.15 release and then a 10.01 release — after the first, *Release* is
+  disabled (*All retention on this invoice has been released*). Supplementary
+  check, labelled as such: on an invoice with retention 100.00, releases of
+  40.15 (GST 4.01) and then 10.01 (GST 1.01) both posted. The supplier-side
+  one-cent-low GST is unchanged, as intended (ADR-86).
+- *Step 2 (cent-level claim).* The stored invoice raised from the claim, read
+  from the emulator, carries 1.01 / 1.01 / 1.00, GST 3.02, payable 33.17 — as
+  the step expects. **The preview the step describes is not observable as
+  written:** the *Raise invoice from claim* dialog shows no per-line GST and
+  whole-unit totals ($30 / $3 / $33); supplier-side pages display whole units.
+- *Step 3 (regression).* Subcontractor reads of supplier invoices, releases,
+  claims and POs refused. **Not run:** "figures unchanged for every existing
+  document" (the emulator holds no prior documents); Forecast, Dashboard and
+  SHIELD were not read; no client-role session.
+
+§44's manual steps are therefore **exercised locally with the two wording
+defects above recorded**; they remain NOT RUN in production.
+
+**Other observations.** For 6–9 seconds after a full page load, `/projects`
+showed *No projects yet* and a project URL *Project not found* (the known D3
+#36 behaviour, slower on the emulator). Final Account readiness showed *Every
+figure is a valid amount — NOT MET* on this project, which has only a working
+budget (not investigated; pre-existing readiness item).
+
+**Not exercised in a browser at all:** PM and client sessions; two-tab races
+(covered by the emulator concurrency tests); failed-read states; narrow-screen
+layout; a real print preview; voiding a credit note while a later release
+still stands (covered by unit and Functions tests).
+
+*Note on §78.5.* The figures recorded there (21.35 / 198.65 / 143.07 /
+1,281.10; release GST 3.38) were produced by the second allocation rule,
+since corrected; under the rule in force the same steps give 22.00 / 198.00 /
+142.42 / 1,281.75 and 2.98, as this run observed.
+
+### 79.6 Deployment compatibility (what was tested, and how)
+
+| Combination | Evidence | Class |
+|---|---|---|
+| Obsolete client (this branch's first design: direct posting with a correct ledger write) against the final Rules | Refused — §79.3, the batch and transaction bypass tests | EMULATOR |
+| Any client writing a ledger or changing a posted entry | Refused — §79.3 | EMULATOR |
+| The released (`main`) build's writes against the final Rules | The full pre-existing rules suite passes unchanged (39 files / 2,492 tests are the released build's contract); the new invoice fields are optional | EMULATOR |
+| The released build's writes against `firestore.transitional.rules` and the m2a2 transitional file | The transitional suites pass; both files are regenerated from the final file | EMULATOR |
+| New client, callables refusing (kill switch) | Typed *temporarily unavailable*; nothing written | EMULATOR |
+| New client, callable endpoint absent | Mapped to a definite *not available* message on 404 and to *uncertain* on a bare network failure (unit tests of the error mapping); **not observed against a real undeployed endpoint** | LOCAL (unit) |
+| New client against the OLD (released) Rules | Not run as a suite: the new collections have no block there, so reads are refused and the pages show *Unavailable* (the pages' failed-read handling is unit-tested) | REASONED, not run |
+| A browser tab left open across the release | Not simulated | NOT RUN |
+| Historical records | Invoices without retention fields read as zero retention and reproduce pre-phase figures (unit tests); an approved Final Account revision of the old schema shows no false difference and still reports a later credit note (unit tests). **No production record was read** | LOCAL |
+
+---
+
+## 80. Commercial Finance Phase 1 — final release-readiness pass (ADR-89 final-pass amendments A1–A9): scalable receipt dependency, server-posted receipts, named void refusals, the rounding-direction correction, the supported monetary range, the App Check development correction and release compatibility — **IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION** (26 November 2026 NZDT; `feature/commercial-finance-phase-1` from `main` at `8702728`, uncommitted)
+
+Evidence class throughout: **LOCAL / EMULATOR**. Nothing deployed; production
+not read or written. §79 records the branch as it stood at the previous gate;
+where a figure differs, this section governs.
+
+### 80.1 Automated results — final state of the branch
+
+| Check | Result |
+|---|---|
+| `npm run test:unit` | **115 files / 6,019 tests passed** |
+| `npm run test:rules` (Firestore + Storage emulators) | **40 files / 2,621 tests passed** |
+| `npm run functions:test` (pure) | **9 files / 249 tests passed** |
+| `npm run test:functions` (Auth, Firestore, Functions emulators) | **13 files / 552 tests passed** |
+| `npm run lint`, `npm run functions:lint` | clean, zero warnings |
+| `rules:transitional:check`, `functions:calc:check`, `functions:transfer-calc:check`, `functions:finance-calc:check` | all up to date |
+| `npm run build` | passes |
+| `git diff --check` | clean |
+| ADR-85 hoist prover, hoist-only copies against `8702728` | three `OK`, 55 call sites each (236,737 → 228,289; 237,417 → 228,969; 237,176 → 228,728) |
+
+Rules source: `firestore.rules` **235,321** bytes; `firestore.transitional.rules`
+**236,001** (binding; **8,999** under the 245,000 budget);
+`firestore.m2a2-transitional.rules` 235,760. **Compiled size: not measurable
+locally — a production release prerequisite** (a refused publish leaves the
+previous ruleset active).
+
+### 80.2 Receipt dependency and large-project evidence (Functions emulator, `tests/functions/clientReceipts.test.js` and `clientFinance.test.js`, 180 tests together)
+
+**Measured** by a recording database proxy that lists every document each
+transaction read, on a project with an empty receipt register and on the same
+project with **5,200 unrelated posted receipts**:
+
+| Operation | Documents read (empty / 5,200) | Queries | Time, one run on this machine |
+|---|---|---|---|
+| Post a receipt (one allocation) | 6 / 6 | 0 | 13 ms / 10 ms |
+| Void a credit note | 6 / 6 | 0 | 11 ms / 8 ms |
+| Void a retention release | 6 / 6 | 0 | 10 ms / 9 ms |
+| Void a receipt (one allocation) | 5 / 5 | 0 | 11 ms / 10 ms |
+
+The test asserts the two path lists are identical (caller, company, project,
+the entry, the invoice, its ledger) and that no unrelated receipt is read. All
+four operations succeed on the large project. The timings are emulator
+figures on one machine and say nothing about production latency.
+
+**Concurrency** (each race run with both requests in flight, and the forbidden
+end state asserted whichever order the database chose):
+
+| Race | Outcome observed | Forbidden state |
+|---|---|---|
+| Receipt post ∥ release void (receipt relies on the release) | Exactly one lands; the other is refused (receipt: over-allocation without acknowledgement; void: names the receipt) | Both landing |
+| Amended draft receipt post ∥ release void | Either order seen across runs; never both | Both landing |
+| Receipt that fits without the release ∥ release void | Both land | — |
+| Receipt void ∥ release void | Receipt void lands; the release void succeeds once it is ordered after it | A void decided on a stale figure |
+| Credit-note post ∥ receipt post | Credit first, receipt then refused without acknowledgement | Silent over-allocation |
+| Two receipts that cannot both fit | Exactly one lands | Both without acknowledgement |
+| Two receipts that fit | Both land, ledger sequence 1 and 2 | A lost update |
+
+*Stated limits of this evidence.* Two orderings were written and asserted but
+not hit in the recorded runs (credit ∥ receipt with the receipt first; the
+plain receipt ∥ void race with the receipt first). Serialisation rests on
+Firestore's transactions as the emulator implements them; it has not been
+exercised in production.
+
+Also covered: a stale-tab receipt after a credit note and after a release void
+(refused, invoice named, nothing written; posts with the acknowledgement); a
+legitimate client credit balance (acknowledged surplus → owed to client, never
+clamped); legacy receipts (no ledger movement on void); both kill switches
+independently; idempotent retries of both receipt operations (one movement,
+one audit event); nothing written outside the receipt, the allocated ledgers
+and the audit event; blocking-document identification with its fall-back
+wording.
+
+**Rules** (`tests/rules/clientReceipts.rules.test.js`, 70;
+`clientLedger.rules.test.js`, 105): a client cannot post a receipt or void a
+posted one, for every financial role; drafts and draft-voids still work; the
+invoice-void lock reads a missing ledger total as zero and a wrong-typed one
+fails closed.
+
+### 80.3 Monetary edge cases
+
+*The one-cent rises.* The two cases from the earlier randomised run (seed
+987654321, sequences 13986 and 24918) and a minimal case (1.00 taxable,
+retention 0.55 / 0.06, credit of 0.01) are reproduced as fixed tests, each with
+its figures under the old rule and the new:
+
+| | Minimal | Sequence 13986 | Sequence 24918 (after a void) |
+|---|---|---|---|
+| Receivable basis, old rule | 0.49 → **0.50** | 767,021,600.99 → **767,021,601.00** | 103,193.25 → **103,193.26** |
+| Receivable basis, new rule | 0.49 → 0.48 | 767,021,600.99 → 767,021,600.98 | 103,193.25 → 103,193.24 |
+| Credit's retention part / its GST, old → new | 0.01 / 0.01 → 0.00 / 0.00 | same | same |
+
+Each sequence still closes exactly (credited GST = invoice GST, nothing held,
+basis 0). Classification, proof and its limits: ADR-89 A5.
+
+*Strict property runs* (basis may not rise by any amount; retention part gross
+≤ credit gross for every credit), voids on, retention 0–100 %, mixed tax:
+
+| | Seed 31415926 (tiny amounts) | Seed 27182818 (tiny amounts) | Seed 987654321 (standard) |
+|---|---|---|---|
+| Sequences / applied steps | 30,000 / 222,297 | 30,000 / 222,004 | 30,000 / 218,308 |
+| Credits / releases | 130,750 / 46,914 | 130,500 / 46,824 | 129,209 / 46,553 |
+| Any rise of the basis | 0 | 0 | 0 |
+| Invariant errors, oracle mismatches, close-out failures | 0 | 0 | 0 |
+| Credits where the rounding step applied | 34 | 40 | 2 |
+| Voids refused of attempted (dependency order) | 8,950 of 53,583 | 8,848 of 53,528 | 10,861 of 53,407 |
+
+The extended runs were made once and are not part of the suite; two
+500-sequence strict runs (standard and tiny profiles) are. **Randomised
+evidence is not proof**; the proof is the written argument in ADR-89 A5 and
+`tests/unit/clientLedger.test.js`.
+
+*Range.* `tests/unit/money.test.js`, `moneyRange.test.js`, `clientLedger.test.js`:
+conversion exact for every tested amount to 10^13 (first failure at 2^45);
+share arithmetic exact at 10^13–10^15 cents; the full lifecycle at
+999,999,999,999.99 and one cent below, single- and mixed-tax, retention 5–100 %;
+the editor accepts the maximum and refuses one cent more. Firestore's 64-bit
+integer and double storage is relied on as documented behaviour, not tested.
+
+### 80.4 App Check in local development (D3 #38)
+
+`tests/unit/emulatorAppCheck.test.js` (12): the emulator-only provider sits
+inside the emulator guard and nowhere else; reCAPTCHA Enterprise and the debug
+token are never armed in emulator mode; every `onCall` has the literal
+`enforceAppCheck: true` and `functions/src` has no switch that weakens it; the
+launcher blanks both App Check inputs and never names the production project;
+no token literal exists in the repository. **Build evidence:** a normal build
+and an adversarial build with all three emulator flags forced contain neither
+the provider nor its marker. **Browser (LOCAL):** with no manual step, the Team
+page and an invitation arrived at the emulator as `app: VALID, auth: VALID`; a
+request with a valid ID token and no App Check header was refused 401
+(`app: MISSING`).
+
+### 80.5 Browser acceptance — LOCAL (emulator launcher `npm run test:team`; disposable emulator identities; **no manual App Check token**)
+
+Fixture created through the UI as a company admin: an AUD project, one client,
+one supplier. Functions emulator log for the session: 31 callable requests
+`app: VALID, auth: VALID`; 3 `app: MISSING`, all deliberate probes (80.6).
+
+| # | Scenario | Result | Observed |
+|---|---|---|---|
+| A | Launcher: post a receipt, a credit note and a retention release, and void each, from the UI | **PASS** | Console banner ends *"App Check: unsigned emulator-only token."*; every request verified |
+| B1 | Invoice 1,000.00 + GST; receipt 600.00 posted by the server | **PASS** | Received 600.00, Remaining 500.00, *Partly reconciled* |
+| B2 | Over-allocation known when the draft is saved (600.00 against 500.00) | **PASS** | Post disabled until the acknowledgement is ticked; then posted; *Owed to client $100.00* |
+| B3 | Stale request: receipt fits 390.00 when its dialog opens; a credit note (50.00 + 5.00) is posted from a second tab before the request arrives | **PASS** | Refused: *"The balance of an invoice changed since this receipt was prepared. CI-0001 has 335.00 remaining and this receipt allocates 55.00 more than that. Nothing was posted. Review the allocations, or tick the over-allocation acknowledgement to post anyway."* Draft unchanged; the checkbox appears; ticked → posted; *Owed to client $55.00* |
+| B4 | Void a posted receipt with a reason | **PASS** | Void; balance restored |
+| B5 | Receipt dated in the future | **PASS** | Dialog blocks posting with the reason; the server refuses a direct call (`client-receipt-future-dated`), draft unchanged |
+| C1 | Void a credit note that a later release was calculated on (taxable 1,000.00 + GST-free 1,000.00, retention 100.00; credit of the whole taxable line; release 50.00) | **PASS** | *"CCN-0003 cannot be voided while CRR-0001, posted after it, still stands. Void CRR-0001 first."* Stays posted |
+| C2 | Void a release that a receipt relies on (2,000.00 + GST, retention 100.00 + 10.00, full release, receipt 2,200.00) | **PASS** | Refused naming receipt CR-0006; after voiding the receipt the release void succeeds (retention held 110.00, receivable 2,090.00) |
+| C3 | The same refusal from a tab whose void dialog was already open | **PASS** | *"CRR-0003 cannot be voided: receipts CR-0009 and CR-0007 have allocated 2200.00 to this invoice, more than the 2090.00 it would be owed without this release. Void or re-allocate them first."* |
+| C4 | A release draft and a credit-note draft post after an unrelated receipt on the same invoice | **PASS** | No false *figures changed* message |
+
+*How B3 was staged.* Open tabs update live, so a tab that is merely old shows
+the warning before the click. To reach the server refusal the request from the
+first tab was delayed seven seconds by a wrapper in the page; no application
+change.
+
+*Corrected after the run (unit-tested, not re-run in the browser):* the
+single-receipt refusal in C2 read *"has allocated 2200.00 against this released
+retention"* — the released retention was 110.00; it now uses the same accurate
+form as C3. The acknowledgement panel said the balance *had changed* even when
+the draft was knowingly saved over-allocated (B2); it now says the receipt
+allocates more than the invoice is currently owed, for either reason.
+
+*Recorded, not changed:* amounts inside server refusal messages are plain
+(`2200.00`), not formatted as the rest of the page; the server accepts a
+receipt dated up to one day after its own UTC date (a time-zone allowance)
+while the dialog says *today or earlier*; the first console banner of the
+launcher still says *"Auth is real"* (the second, correct, banner follows);
+one page reload during the session could not be attributed.
+
+### 80.6 GST §44 — corrected procedure, run LOCALLY (production acceptance remains NOT RUN and is a separate evidence class)
+
+| Step | Expected | Observed | Result |
+|---|---|---|---|
+| 1a | Invoice 803.00, retention 40.15 → retention GST 4.01; one release of 40.15 → GST 4.01, payable 44.16; Release then unavailable | Editor: *Retention withheld −$44.16 (ex-GST $40.15 + GST $4.01)*, net payable 839.14. Release 40.15 / 4.01 / 44.16; the button is disabled (*All retention on this invoice has been released*) | **PASS** |
+| 1b | Invoice 2,000.00, retention 100.00 (GST 10.00); releases 40.15 → 4.01, 10.01 → 1.01, 49.84 → 4.98 | Exactly those three; GST sums to 10.00; held 0.00 | **PASS** |
+| 2 | Claim of three lines of 10.05: claim GST 3.02; invoice dialog line GST 1.01 / 1.01 / 1.00, GST 3.02, payable 33.17, no warning; header edit accepted; posting counts Actual once and leaves Committed unchanged | As expected, shown to the cent in both dialogs; stored totals 3.02 / 33.17 / 33.17; Budget Committed and Actual identical before and after posting, only Invoiced moved; claim leaves *Not yet invoiced* | **PASS** |
+| 3a | Unchanged behaviour on ordinary figures | Whole-dollar claim 300 + 200 → GST 30.00 / 20.00, 550.00, no warning; a GST-free switch on a claim line blocks creation with the reconciliation message; external roles refused list and create on supplier invoices and retention releases; a posted invoice admits no direct edit | **PASS** |
+| 3b | The listed figures identical between the released build (`main` at `8702728`) and this build on the same data | Both builds served against the same emulators and seed fixture, same user: every figure on Dashboard, Budget, Forecast, Commercial and SHIELD identical; Cash Flow identical apart from the new *client retention held* line | **PASS, with a stated limit** |
+
+*Limit of 3b.* The seed fixture is small and whole-dollar and most compared
+pages show whole dollars, so this comparison could not reveal a one-cent
+difference; SHIELD shows cents and matched. The production form of 3b (a
+regression fixture recorded before and after the release) remains to be run.
+
+*Precision.* The supplier-invoice and claim dialogs, the Supplier Retention
+page and every client-side page show cents. Register **tables** for supplier
+invoices, progress claims, budget, supplier payments and cash flow still show
+whole dollars (33.17 reads *$33*) — unchanged, pre-existing presentation.
+
+### 80.7 Release compatibility — LOCAL
+
+| # | State | Result | Observed |
+|---|---|---|---|
+| 1 | Released build (`main`) against the new callables and new Rules | **PASS** | Posting a draft receipt, voiding a posted receipt and voiding an issued invoice that carries credits: *"You do not have permission to do this. Nothing was saved."*, document unchanged. Every other page loads. It shows old-model balances for invoices with credits or releases (it does not know them) |
+| 2 | Obsolete direct writes under the new Rules, with the signed-in user's own SDK session | **PASS** | Draft receipt → posted; posted receipt → void; draft credit note → posted; ledger create, update, delete: all `permission-denied`. Positive controls (a notes edit on each draft) accepted |
+| 3 | Kill switches | **PASS (staged)** | Finance off: *"Posting and voiding credit notes and retention releases is temporarily unavailable. Nothing was changed."*, receipts still post. Receipts off: *"Posting and voiding client receipts is temporarily unavailable. Nothing was changed."*, credit notes still post. Both on: normal |
+| 4 | App Check refusal and recovery | **PASS** | No header: HTTP 401, `app: MISSING, auth: VALID`, nothing written. In the UI: *"The server could not verify this app (App Check), so the request was refused. Nothing was changed — reload the page and try again."*; the next attempt succeeded |
+| 5 | Idempotent retries | **PASS** | Replays answer `alreadyApplied: true`; ledger sequence, `receivedCents` and the audit count unchanged. A true concurrent double submit: one applied, one already applied; ledger and audit moved once |
+| 6 | A tab left open | Recorded | Registers update live; an open Post dialog gained the over-allocation warning by itself |
+| — | New build against the **old** Rules; new build with the callables **not deployed** | **NOT RUN in a browser** | By construction and by the rules suite: the old Rules have no block for the three new collections (reads refused → *Unavailable*, never zero); a missing callable writes nothing. The exact message for a missing endpoint was not observed |
+
+*How 3 was staged.* The Functions emulator applies its env files over the
+process environment, so a flag cannot be turned off without editing a file.
+Two extra Functions emulators were run from scratch copies of the working
+tree's `functions/` directory with one flag off each, against the same Auth and
+Firestore emulators, and the tab's requests pointed at them. The messages are
+the real code path with the flag off; the routing is test staging. A retention
+release was not tried with the finance switch off (same switch, same wrapper).
+
+Cleanup confirmed: every emulator, dev server and test tab stopped or closed;
+ports free; scratch copies deleted; the working tree unchanged by the run.
+
+---
+
+## 81. Commercial Finance Phase 1 — final integration safeguards (ADR-89 S1–S5): exact historical receipt baseline, cutover with no dual posting path, company-scoped activation, authoritative monetary range — **IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION** (27 November 2026 NZDT; `feature/commercial-finance-phase-1` from `main` at `8702728`, uncommitted)
+
+Evidence class: **LOCAL / EMULATOR**, except 81.2, which is a **read-only
+production inventory** (aggregate counts; authorised by the Lead Architect).
+Nothing deployed; production not written. §77–§80 stand as recorded; where a
+statement there differs (the "lower bound" for historical receipts; receipts
+enabled at release; legacy receipt voids moving no ledger), this section
+governs.
+
+### 81.1 Automated results — final state of the branch
+
+| Check | Result |
+|---|---|
+| `npm run test:unit` | **116 files / 6,085 tests passed** |
+| `npm run test:rules` | **40 files / 2,632 tests passed** |
+| `npm run functions:test` (pure) | **9 files / 256 tests passed** |
+| `npm run test:functions` (emulators) | **14 files / 616 tests passed** |
+| `npm run lint`, `npm run functions:lint`, four generated-file checks, `npm run build`, `git diff --check` | clean |
+| **Commit 1 tree** (`ddce71b…`, ADR-85 hoist only; built from a temporary index and exported, working tree untouched) | prover three `OK`, 55 call sites each; `rules:transitional:check`; unit **104 / 5,357**; rules **39 / 2,492** |
+
+Rules source: `firestore.rules` **236,120** bytes; `firestore.transitional.rules`
+**236,800** (binding; **8,200** under the 245,000 budget);
+`firestore.m2a2-transitional.rules` 236,559. Compiled size: not measurable
+locally — a production release prerequisite.
+
+*An unexplained slow run, recorded.* In one full Functions emulator run made
+overnight, two existing concurrency tests took 1,025 s and 789 s and timed
+out. They passed in isolation, in a full-file run (3.5 s and 9.8 s) and in two
+later full-suite runs, including the final one above. The cause was not
+established (the run spanned a period in which the machine may have been
+suspended); a rare contention path in the emulator is not ruled out.
+
+### 81.2 Production inventory — READ-ONLY, aggregate (`ops/cutover/client-receipt-inventory.mjs`, 26 November 2026 10:05 UTC)
+
+Collection-group reads through the Firestore REST API as the operator; counts
+and field **names** only — no value, name, number or amount was printed or
+kept.
+
+| Quantity | Count |
+|---|---|
+| Companies | 2 (neither activated for client finance) |
+| Client invoices | 18 — draft 3, issued 10, void 5; all in one company; AUD 17, ZAR 1 |
+| Client invoices with a retention field / with retention > 0 | 0 / 0 |
+| Client receipts | 12 — draft 1, **posted 9**, void 2; all in the same company |
+| Receipt allocations — all statuses / on posted receipts | 11 / **9** |
+| Posted receipts with no allocation | 1 |
+| Most allocations on one receipt | 2 |
+| **Invoices with historical (posted) allocations** | **5**, all issued; none referencing a missing invoice |
+| Posted receipts already carrying `allocatedInvoiceIds` | 0 |
+| Allocation amounts that are not whole cents | 0 |
+| Receipt field shapes | one — the same 28 fields for every status; allocations `{allocatedAmount, clientInvoiceId, invoiceNumber}` |
+| Ledgers, credit notes, retention releases, baseline markers | 0, 0, 0, 0 |
+
+### 81.3 Historical receipt baseline and authoritative balances (Functions emulator, `tests/functions/clientReceiptBaseline.test.js`, 61 tests; historical receipts seeded in exactly the 28-field production shape)
+
+| Required case | Result |
+|---|---|
+| Historical partial receipt | The remainder posts with no acknowledgement; one cent more is refused without it |
+| Historical full receipt | Any new allocation needs the acknowledgement |
+| Historical over-allocation | Baseline exceeds the invoice (remaining −2,100.00); refused without acknowledgement, posts with it (−2,200.00); never clamped |
+| Mixed historical and new receipts | Ledger total exact against an independent sum of the posted receipts themselves (asserted in every baseline test) |
+| Historical receipt void | Ledger reduced exactly once; a repeat is *already applied* and changes nothing; also on an invoice that has new receipts |
+| A void that would take the figure below zero, or with no ledger | Refused, nothing written (all-or-nothing across two invoices) |
+| Concurrent initialisation | Eight parallel attempts: one established, seven found it; one marker, one audit event. A receipt post, a historical void and a credit-note post at once on a fresh project: all land, each ledger baselined once. Two posts on different invoices: both land |
+| Stale-tab receipt on a historical invoice; explicit surplus acknowledgement | Refused naming the invoice; posts with the acknowledgement |
+| Release void where the received figure includes history | Refused or allowed correctly (four tests) |
+| Missing marker inside an operation | Each of the six operations refuses (`client-receipt-baseline-missing`), nothing written |
+| A tracked receipt present with no marker | Refused as inconsistent, nothing written |
+| Malformed historical allocation (nine shapes) | Refused, the receipt named, nothing written — never skipped |
+| A switch off; a company not activated | Refused **before** any baseline is written |
+| A project with no receipts | Marker with zeros; operations proceed |
+| History above one transaction's reach | 448 invoices established; 449 refused explicitly |
+
+*Per-operation reads, measured* (identical with an empty register and with
+5,200 unrelated posted receipts; no query in any operation transaction): post
+receipt 7, void credit note 7, void release 7, void receipt 6 — the previous
+figures plus the marker. Each call also makes one single-document transaction
+that reads only the marker. *One-time baseline, measured on the emulator:* 300
+historical receipts over 34 invoices — 337 documents read in one query, 36
+written, 28 ms; every later call 1 read, 0 writes. Emulator figures, not
+production latency.
+
+*Monetary range (authoritative).* Invoice at 999,999,999,999.99 accepted and
+one cent above refused, by the server and by the Rules; receipt at ten times
+that accepted and one cent above refused, by both; nine maximum receipts
+accumulate exactly and the tenth is refused; a stored ledger figure that is
+negative, fractional or not a safe integer is refused on read (six shapes);
+ledger integers survive a Firestore round trip as integers. The allocation
+rule and its independent property tests are unchanged and pass.
+
+*Company activation.* Rules (`tests/rules/clientLedger.rules.test.js`): with
+the flag absent, `false`, `null` or a truthy non-boolean, no financial role
+can create a retained invoice, edit a draft to carry retention, or create or
+edit a draft credit note or release — and an unretained invoice still works;
+no role can set the flag by any shape of write, nor for another company;
+activation of one company does not open another; the baseline marker cannot be
+read or written by any client. Backend: the four callables refuse a
+non-activated company inside the transaction; a non-activated company's admin
+naming an activated company's project gets *not found*; one HTTP test through
+the Functions emulator. Operator script: seven tests (dry run by default,
+unknown company refused, audited).
+
+*Not proven.* The baseline against real Firestore (emulator only; production
+has 9 receipts on 5 invoices). The refusal branch of a deactivation racing a
+posting was written but not observed. Transaction serialisation is the
+emulator's.
+
+### 81.4 Browser acceptance — LOCAL (emulator launcher; no manual App Check token; two companies: T activated, X not activated with three historical posted receipts seeded in the 28-field shape)
+
+| # | Scenario | Result | Observed |
+|---|---|---|---|
+| 1a | X: no Client Retention tab; the route opened directly | **PASS** | *"Client retention is not available yet"* with *"Client credit notes and client retention are not yet available for this company."*; no actions |
+| 1b | X: invoice editor | **PASS** | No retention input or helper; totals Subtotal / GST / Invoice total only; invoices of 1,100.00 and 2,200.00 created and issued; stored retention figures 0 |
+| 1c | X: invoice rows and detail | **PASS** | No *Record credit note* action |
+| 1d | X: forged writes with the admin's own SDK session | **PASS** | Retained draft invoice, draft credit note, setting `clientFinanceEnabled`, reading the baseline marker: all `permission-denied`. Control: the same draft invoice with retention 0 created |
+| 1e | X: forged callables | **PASS** | `postClientCreditNote`, `postClientRetentionRelease`: *"Client credit notes and retention releases are not yet available for this company. Nothing was changed."*; no marker, ledger or audit event written. (Called with a non-existent draft id) |
+| 2a | X before any operation | **PASS** | Invoice 1: Received 600.00, Remaining 500.00; invoice 2 fully reconciled; no marker, no ledger |
+| 2b | X: post 500.00 to invoice 1 | **PASS** | No acknowledgement asked. Marker: 3 historical posted receipts, 2 allocations, 2 invoices, 280,000 cents. Ledger 1: received 110,000, baseline 60,000. Ledger 2: received 220,000, baseline 220,000. Exactly one `client_receipt.baseline_established` audit event |
+| 2c | X: over-allocation on historical invoices | **PASS, one limit** | Editor and Post dialog require the acknowledgement. Direct call without it on invoice 2 (paid only by a historical receipt): refused `client-receipt-over-allocated`, remaining 0, excess 10,000 cents, draft unchanged. With it: posted; *Owed to client $100.00* |
+| 2d | X: void the historical receipt of 600.00, then replay | **PASS** | Ledger 1 received 110,000 → 50,000; baseline record still 60,000; replay *already applied*, state byte-identical |
+| 2e | X: screen figures against the ledgers | **PASS** | Agree after each step |
+| 3 | T: tab, retention editor, retained invoice (2,000.00 + GST, retention 100.00), credit note 200.00, release 40.00 | **PASS** | All posted; baseline marker with zeros written by the first posting; 12 of 12 callable requests `app: VALID, auth: VALID` |
+| 4 | T's admin against X's data | **PASS** | Company, project, invoices, receipts, ledger, marker: `permission-denied`; `postClientReceipt` on X's project: *not found* |
+| 5 | Console | **PASS** | No errors |
+
+*Limit of 2c.* The on-screen form of the server's over-allocation refusal was
+not reached in this run (the dialog disables Post without the tick); it was
+observed on screen in §80.5 B3 and its text is unit-tested.
+
+*Recorded, not changed.* A non-activated company still sees zero-value figures
+and wording that mention the features (*Credited $0.00*, *Client retention
+held $0.00*, *"…lines, tax codes and retention freeze"*) — figures and copy,
+no action. Some refusals above are Rules *evaluation errors* rather than a
+clean false (the result is the required denial). A void replayed with a
+different reason answers *already void*, not *already applied*. An activated
+company's admin cannot read its own baseline marker (server-only, as
+designed).
+
+### 81.5 Receipt activation gate for the cutover (ADR-89 S6) — LOCAL / EMULATOR, 27 November 2026
+
+Added after the architect's instruction not to rely on a quiet-period
+deployment. Full suites re-run on the final tree: unit **116 / 6,085**; rules
+**40 / 2,632**; Functions pure **9 / 256**; Functions emulator **14 / 623**
+(616 + 7); lint, functions lint and build clean. `firestore.rules` unchanged
+(236,120 bytes). This supersedes the Functions emulator count in 81.1.
+
+| Case (`tests/functions/clientReceiptBaseline.test.js`, scope `false`) | Result |
+|---|---|
+| Company without the receipt flag (absent, `false`, `null`, `'true'`, `1`, `{}`), with posted history and the credit-note flag set | Post, post-with-acknowledgement and void refused `client-receipt-disabled` (`unavailable`); nothing written; no marker, no ledger, no audit event |
+| Scope value anything but `true` (absent, `false`, `null`, `'true'`, `1`) | Refused — fail closed |
+| Activated company with one historical receipt (600.00 on an 1,100.00 invoice) | First post (500.00) establishes the baseline (1 receipt, 1 allocation, 1 invoice, 60,000 cents); ledger 110,000 = independent sum of the posted receipts; one more cent needs the acknowledgement; historical void → 50,000, repeat → 50,000; the non-activated company stays refused and untouched throughout |
+| Receipt flag versus credit notes and releases | The four callables still refuse `client-finance-not-activated`; no baseline written |
+| Activated company naming another company's project | Not found; nothing read or written there |
+| Global receipt switch off, or the company deactivated again | Refused; no baseline |
+| General availability (scope `true`) | The held-back company posts with no flag; its baseline is established then, exactly |
+| Operator script `--receipts` (`tests/functions/scripts.test.js`) | Dry run by default; writes only `clientReceiptsEnabled` and one `company.client_receipts_set` event; independent of the other flag in both directions |
+| Rules (`tests/rules/clientLedger.rules.test.js`) | No role can set `clientReceiptsEnabled` by any shape of write |
+
+*Not proven.* Browser acceptance of the scoped state was not run (the refusal
+shown is the existing *temporarily unavailable* message, covered in §80.5).
+The gate has not run in production. The receipt company check is made by the
+handler and is not repeated inside the operation's transaction.

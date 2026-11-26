@@ -12,10 +12,10 @@ import {
   canPrepareFinalAccount, canApproveFinalAccount, canWithdrawFinalAccount,
 } from '../../src/lib/finalAccount'
 import { finalAccountCsv, finalAccountFilename } from '../../src/lib/finalAccountCsv'
-import { figureText, figurePresentation, FIGURE_VIEW, revisionView, readinessPresentation } from '../../src/lib/finalAccountDisplay'
+import { figureText, figurePresentation, FIGURE_VIEW, revisionView, readinessPresentation, NOT_RECORDED_NOTE } from '../../src/lib/finalAccountDisplay'
 import {
   runFinalAccountApprove, runFinalAccountPrepare, runFinalAccountWithdraw, finalAccountCallableErrorKind, FINAL_ACCOUNT_ERROR,
-  FINAL_ACCOUNT_ERROR_MESSAGES, APPROVE_CALL_TIMEOUT_MS,
+  FINAL_ACCOUNT_ERROR_MESSAGES, APPROVE_CALL_TIMEOUT_MS, FINAL_ACCOUNT_QUERY_NAMES,
 } from '../../src/lib/finalAccountActions'
 import { buildCommercialReport } from '../../src/lib/commercialReport'
 import { contractControl } from '../../src/lib/clientInvoices'
@@ -24,6 +24,8 @@ import { retentionSummary } from '../../src/lib/retention'
 import { FinalAccountFigures, FinalAccountRows } from '../../src/pages/project/finalAccount/FinalAccountSnapshot'
 import { ApproveFinalAccountModal, PrepareFinalAccountModal } from '../../src/pages/project/finalAccount/FinalAccountDialogs'
 import { readyProject, sourcesOf, EXPECTED_FIGURES, FA_CURRENCY } from '../fixtures/finalAccountProject'
+import { issuedInvoice, creditNoteFor, releaseFor } from '../fixtures/clientReceivableDocs'
+import { receivableContext } from '../../src/lib/clientReceivables'
 
 // ── L2-B Final Account — pure domain, export and presentation (ADR-77) ───────
 //
@@ -150,6 +152,12 @@ describe('the readiness gate', () => {
     [BLOCKER.DRAFT_PAYMENTS, p => p.supplierPayments.push({ id: 'pay2', status: 'draft', amount: 5, allocations: [] })],
     [BLOCKER.DRAFT_CREDIT_NOTES, p => p.supplierCreditNotes.push({ id: 'cn', status: 'draft', supplierInvoiceId: 'inv1', lineItems: [], subtotal: 1, gstTotal: 0.1, grossTotal: 1.1 })],
     [BLOCKER.DRAFT_RELEASES, p => p.retentionReleases.push({ id: 'rr', status: 'draft', supplierInvoiceId: 'inv1', amount: 10 })],
+    [BLOCKER.DRAFT_CLIENT_CREDIT_NOTES, p => p.clientCreditNotes.push({ id: 'ccn', status: 'draft', clientInvoiceId: 'ci1', lineItems: [], subtotal: 1, gstTotal: 0.1, grossTotal: 1.1 })],
+    [BLOCKER.DRAFT_CLIENT_RELEASES, p => p.clientRetentionReleases.push({ id: 'crr', status: 'draft', clientInvoiceId: 'ci1', amount: 10, gstAmount: 1, releaseTotal: 11 })],
+    // A posted credit note for ANOTHER client fails the read-time gate.
+    [BLOCKER.CLIENT_CREDIT_EXCEPTIONS, p => { p.clientInvoices[0] = issuedInvoice(); p.clientCreditNotes.push(creditNoteFor(p.clientInvoices[0], 100, { clientId: 'someone-else' })) }],
+    // A posted release against an invoice that withheld no retention.
+    [BLOCKER.CLIENT_RELEASE_EXCEPTIONS, p => p.clientRetentionReleases.push({ id: 'crr', releaseNumber: 'CRR-0009', status: 'posted', clientInvoiceId: 'ci1', amount: 10, gstAmount: 1, releaseTotal: 11 })],
     [BLOCKER.COST_TO_COMPLETE, p => p.forecastLines.push({ id: 'cc1', costCodeId: 'cc1', uncommittedCostToComplete: 100 })],
     [BLOCKER.OVER_ALLOCATED, p => p.clientReceipts.push({ id: 'cr2', receiptNumber: 'CR-0002', status: 'posted', clientId: 'c1', clientName: 'Owner Pty Ltd', receiptDate: '2026-10-20', amount: 2700, allocatedTotal: 2700, unallocatedAmount: 0, allocations: [{ clientInvoiceId: 'ci1', invoiceNumber: 'CI-0001', allocatedAmount: 2700 }] })],
   ]
@@ -304,7 +312,7 @@ describe('the readiness gate', () => {
     expect(c.ready).toBe(true)
     expect(c.openItems.map(i => i.key)).toEqual(FINAL_ACCOUNT_OPEN_KEYS)
     expect(Object.fromEntries(c.openItems.map(i => [i.key, i.value]))).toEqual({
-      remainingToInvoice: 3000, receivablesOutstanding: 2200, unallocatedReceipts: 0,
+      remainingToInvoice: 3000, receivablesOutstanding: 2200, clientRetentionHeld: 0, owedToClient: 0, unallocatedReceipts: 0,
       payablesOutstanding: 1490, unallocatedPayments: 200, retentionHeld: 110,
     })
   })
@@ -446,6 +454,217 @@ describe('forecast completeness is a readiness requirement of its own', () => {
   })
 })
 
+// ── 2c. The receivable contract (ADR-87 / ADR-88) ────────────────────────────
+//
+// The fixture: contract 12,000; CI-0001 9,000 ex-GST / 9,900 gross; 7,700
+// received. Every case replaces CI-0001 with the same invoice carrying its line
+// (a credit note credits a LINE) and, where stated, client retention.
+
+describe('client credit notes and client retention follow the ONE receivable contract', () => {
+  const withInvoice = (retention, fn) => mutate(p => { p.clientInvoices[0] = issuedInvoice({ retention }); fn(p, p.clientInvoices[0]) })
+
+  it('an invoice carrying its line and no credit or retention changes no figure', () => {
+    const r = compute(withInvoice(0, () => {}))
+    expect(r.ready).toBe(true)
+    expect(r.figures).toEqual(EXPECTED_FIGURES)
+  })
+
+  it('a posted credit note reduces NET invoiced and re-opens the same amount to invoice — never the contract sum, cost, margin or cash', () => {
+    const r = compute(withInvoice(0, (p, inv) => p.clientCreditNotes.push(creditNoteFor(inv, 1000))))
+    expect(r.ready).toBe(true)
+    expect(r.figures).toEqual({
+      ...EXPECTED_FIGURES,
+      invoicedToClient: 8000, creditedToClient: 1000, remainingToInvoice: 4000,   // ex-GST
+      invoicedToClientGross: 8800, receivablesOutstanding: 1100,                  // gross: 9,900 − 1,100 − 7,700
+    })
+    // Unchanged, stated: a credit is an invoice correction, not a contract adjustment and not cash.
+    for (const key of ['finalContractSum', 'approvedClientVariations', 'actualCost', 'finalCost', 'finalProfit', 'finalMarginPct', 'cashReceived', 'receivedAgainstInvoices']) {
+      expect(r.figures[key], key).toBe(EXPECTED_FIGURES[key])
+    }
+    expect(r.provenance.counts).toMatchObject({ clientCreditNotes: 1, clientRetentionReleases: 0 })
+  })
+
+  it('the figures ARE the contract\'s: contractControl over its totals, receivablesSummary over its positions', () => {
+    const p = withInvoice(500, (x, inv) => { x.clientCreditNotes.push(creditNoteFor(inv, 1000)); x.clientRetentionReleases.push(releaseFor(inv, 200)) })
+    const r = compute(p)
+    const context = receivableContext(p.clientInvoices, p.clientCreditNotes, p.clientRetentionReleases)
+    const control = contractControl(p.clientInvoices, 12000, context.totals)
+    const summary = receivablesSummary(p.clientInvoices, p.clientReceipts, context.positions)
+    expect(r.partialFigures.invoicedToClient).toBe(control.issued.subtotal)
+    expect(r.partialFigures.creditedToClient).toBe(control.credited.subtotal)
+    expect(r.partialFigures.invoicedToClientGross).toBe(control.issued.grossTotal)
+    expect(r.partialFigures.remainingToInvoice).toBe(control.availableToInvoice)
+    expect(r.partialFigures.receivedAgainstInvoices).toBe(summary.received)
+    expect(r.partialFigures.receivablesOutstanding).toBe(summary.remaining)
+    expect(r.partialFigures.clientRetentionHeld).toBe(summary.retentionHeld)
+    expect(r.partialFigures.owedToClient).toBe(summary.owedToClient)
+    // The module holds no receivable arithmetic of its own.
+    const src = stripComments(read('src/lib/finalAccount.js'))
+    expect(src).toContain('receivableContext(clientInvoices, clientCreditNotes, clientRetentionReleases)')
+    expect(src).toContain('contractControl(clientInvoices, finalContractSum, receivable.totals)')
+    expect(src).toContain('receivablesSummary(clientInvoices, clientReceipts, receivable.positions)')
+  })
+
+  it('client retention withheld is BILLED but not receivable: invoiced is unchanged, outstanding excludes it, and it is held', () => {
+    const r = compute(withInvoice(500, () => {}))        // 500 ex-GST + 50 GST withheld
+    expect(r.ready).toBe(true)
+    expect(r.figures).toEqual({ ...EXPECTED_FIGURES, receivablesOutstanding: 1650, clientRetentionHeld: 550 })
+    expect(r.figures.invoicedToClient).toBe(9000)        // retention is not a reduction in what was billed
+    expect(r.openItems.find(i => i.key === 'clientRetentionHeld')).toMatchObject({ value: 550, basis: FIGURE_BASIS.GROSS })
+  })
+
+  it('a posted release moves retention from held to receivable — and moves no cash', () => {
+    const r = compute(withInvoice(500, (p, inv) => p.clientRetentionReleases.push(releaseFor(inv, 200))))
+    expect(r.figures).toEqual({ ...EXPECTED_FIGURES, receivablesOutstanding: 1870, clientRetentionHeld: 330 })
+    expect(r.figures.cashReceived).toBe(7700)
+    // A draft or void release releases nothing.
+    for (const status of ['draft', 'void']) {
+      const other = compute(withInvoice(500, (p, inv) => p.clientRetentionReleases.push(releaseFor(inv, 200, { status }))))
+      expect(other.partialFigures.clientRetentionHeld, status).toBe(550)
+    }
+  })
+
+  it('a credit AFTER receipt leaves an amount OWED TO THE CLIENT: shown, never clamped to zero, never netted against another invoice', () => {
+    const r = compute(withInvoice(0, (p, inv) => {
+      p.clientCreditNotes.push(creditNoteFor(inv, 2500))                  // 2,750 gross: 9,900 − 2,750 = 7,150 receivable, 7,700 received
+      p.clientInvoices.push(issuedInvoice({ id: 'ci2', invoiceNumber: 'CI-0002', subtotal: 1000 }))   // 1,100 owing, untouched
+    }))
+    expect(r.partialFigures.owedToClient).toBe(550)
+    expect(r.partialFigures.receivablesOutstanding).toBe(1100)           // NOT 1,100 − 550
+    expect(r.partialFigures.receivedAgainstInvoices).toBe(7700)          // the cash stays the cash
+    expect(r.partialFigures.creditedToClient).toBe(2500)
+  })
+
+  it('OVER-ALLOCATED is measured against what is RECEIVABLE, not the gross: a credit or held retention can make a paid invoice over-allocated', () => {
+    // 9,900 gross, 7,700 received: not over-allocated on gross — but only 7,150 is receivable after the credit.
+    const credited = compute(withInvoice(0, (p, inv) => p.clientCreditNotes.push(creditNoteFor(inv, 2500))))
+    expect(blockerCodes(credited)).toEqual([BLOCKER.OVER_ALLOCATED])
+    expect(credited.blockers[0].detail).toBe('1 over-allocated: CI-0001')
+    // 9,900 gross with 2,500 + 250 retention held: 7,150 receivable, 7,700 received.
+    const retained = compute(withInvoice(2500, () => {}))
+    expect(blockerCodes(retained)).toEqual([BLOCKER.OVER_ALLOCATED])
+    expect(retained.partialFigures.owedToClient).toBe(550)
+    // Exactly paid to the receivable basis is NOT over-allocated (whole cents).
+    const exact = compute(withInvoice(2000, () => {}))                   // 9,900 − 2,200 = 7,700
+    expect(blockerCodes(exact)).toEqual([])
+    expect(exact.figures).toMatchObject({ receivablesOutstanding: 0, owedToClient: 0, clientRetentionHeld: 2200 })
+  })
+
+  it('a posted credit note that FAILS the validity gate reduces nothing and blocks by name', () => {
+    const r = compute(withInvoice(0, (p, inv) => p.clientCreditNotes.push(creditNoteFor(inv, 1000, { clientId: 'someone-else' }))))
+    expect(blockerCodes(r)).toEqual([BLOCKER.CLIENT_CREDIT_EXCEPTIONS])
+    expect(r.blockers[0].detail).toBe('1 failing: CCN-0001')
+    expect(r.partialFigures.invoicedToClient).toBe(9000)                 // the debt stays visible
+    expect(r.partialFigures.creditedToClient).toBe(0)
+    expect(r.partialFigures.receivablesOutstanding).toBe(2200)
+  })
+
+  it('a posted release that names no releasable invoice releases nothing and blocks by name', () => {
+    const r = compute(withInvoice(0, (p) => p.clientRetentionReleases.push({ id: 'x', releaseNumber: 'CRR-0007', status: 'posted', clientInvoiceId: 'ci1', amount: 10, gstAmount: 1, releaseTotal: 11 })))
+    expect(blockerCodes(r)).toEqual([BLOCKER.CLIENT_RELEASE_EXCEPTIONS])
+    expect(r.blockers[0].detail).toBe('1 failing: CRR-0007')
+    expect(r.partialFigures.receivablesOutstanding).toBe(2200)
+  })
+
+  it('a VOID credit note or release counts nothing and blocks nothing', () => {
+    const r = compute(withInvoice(500, (p, inv) => {
+      p.clientCreditNotes.push(creditNoteFor(inv, 1000, { status: 'void' }))
+      p.clientRetentionReleases.push(releaseFor(inv, 200, { status: 'void' }))
+    }))
+    expect(r.ready).toBe(true)
+    expect(r.figures).toEqual({ ...EXPECTED_FIGURES, receivablesOutstanding: 1650, clientRetentionHeld: 550 })
+  })
+
+  it('a FAILED credit-note read is UNKNOWN: every figure that depends on it is unavailable — not the figure "no credits" would give', () => {
+    const p = withInvoice(0, (x, inv) => x.clientCreditNotes.push(creditNoteFor(inv, 1000)))
+    // What a failed listener hands the page: an empty register and error: true.
+    p.clientCreditNotes = []
+    const r = compute(p, { ...settledSourceStates(), clientCreditNotes: { loading: false, error: true } })
+    expect(r.ready).toBe(false)
+    expect(blockerCodes(r)).toEqual([BLOCKER.SOURCES])
+    expect(r.blockers[0].detail).toContain('Client Credit Notes')
+    expect(r.figures).toBeNull()
+    for (const key of ['invoicedToClient', 'creditedToClient', 'remainingToInvoice', 'invoicedToClientGross', 'receivablesOutstanding', 'clientRetentionHeld', 'owedToClient']) {
+      expect(r.partialFigures[key], key).toBeNull()
+    }
+    // Figures that do not read credit notes are still shown.
+    expect(r.partialFigures.finalContractSum).toBe(12000)
+    expect(r.partialFigures.cashReceived).toBe(7700)
+    expect(r.partialFigures.receivedAgainstInvoices).toBe(7700)
+    expect(finalAccountDifferences(stored(), r).comparable).toBe(false)
+  })
+
+  it('a FAILED retention-release read makes outstanding, held and owed unavailable; invoiced does not read releases', () => {
+    const r = compute(withInvoice(500, () => {}), { ...settledSourceStates(), clientRetentionReleases: { loading: false, error: true } })
+    expect(blockerCodes(r)).toEqual([BLOCKER.SOURCES])
+    expect(r.blockers[0].detail).toContain('Client Retention Releases')
+    for (const key of ['receivablesOutstanding', 'clientRetentionHeld', 'owedToClient']) expect(r.partialFigures[key], key).toBeNull()
+    expect(r.partialFigures.invoicedToClient).toBe(9000)
+    expect(r.partialFigures.remainingToInvoice).toBe(3000)
+  })
+
+  it('a LOADING register is not ready and not zero; a missing state entry is a failure', () => {
+    const loading = compute(readyProject(), { ...settledSourceStates(), clientCreditNotes: { loading: true, error: false } })
+    expect(loading.loading).toBe(true)
+    expect(loading.figures).toBeNull()
+    expect(loading.partialFigures.invoicedToClient).toBeNull()
+    expect(compute(readyProject(), without(settledSourceStates(), 'clientRetentionReleases')).ready).toBe(false)
+  })
+
+  it('no figure adds an ex-GST amount to a gross one: the three new figures are basis-labelled like the rest', () => {
+    const def = (key) => FINAL_ACCOUNT_FIGURES.find(f => f.key === key)
+    expect(def('creditedToClient')).toMatchObject({ basis: FIGURE_BASIS.EX_GST, group: 'contract' })
+    expect(def('creditedToClient').note).toContain('Posted client credit notes')
+    expect(def('creditedToClient').open).toBeUndefined()
+    expect(def('clientRetentionHeld')).toMatchObject({ basis: FIGURE_BASIS.GROSS, group: 'balances', open: true, note: 'Billed and withheld by the client — not receivable until released' })
+    expect(def('owedToClient')).toMatchObject({ basis: FIGURE_BASIS.GROSS, group: 'balances', open: true, note: 'Received beyond what is now receivable — a client credit balance' })
+  })
+
+  it('the larger record still fits the Rules bounds on a draft (figures ≤ 40 keys, sources ≤ 10 keys)', () => {
+    const rules = read('firestore.rules')
+    const limit = (re) => Number(rules.match(re)[1])
+    const content = finalAccountContent(compute())
+    expect(FINAL_ACCOUNT_FIGURE_KEYS).toHaveLength(25)
+    expect(Object.keys(content.figures)).toHaveLength(25)
+    expect(Object.keys(content.figures).length).toBeLessThanOrEqual(limit(/d\.figures is map && d\.figures\.size\(\) <= (\d+)/))
+    // `sources` holds five keys; the register counts are ONE nested map.
+    expect(Object.keys(content.sources).sort()).toEqual(['adjustmentCount', 'budgetApprovalId', 'budgetCaption', 'budgetVersion', 'counts'])
+    expect(Object.keys(content.sources).length).toBeLessThanOrEqual(limit(/d\.sources is map && d\.sources\.size\(\) <= (\d+)/))
+    expect(Object.keys(content.sources.counts)).toHaveLength(12)
+  })
+})
+
+// ── 2d. The hand-mirrored source lists ───────────────────────────────────────
+
+describe('the two receivable registers are in every source list — and the ledger is in none', () => {
+  const NEW = ['clientCreditNotes', 'clientRetentionReleases']
+  const between = (src, from, to) => src.slice(src.indexOf(from), src.indexOf(to, src.indexOf(from)))
+
+  it('the report sources, the counted sources, the server-read names, the hook queries and the callable agree', () => {
+    for (const name of NEW) {
+      expect(Object.keys(settledSourceStates()), name).toContain(name)                       // REPORT_SOURCES
+      expect(Object.keys(compute().provenance.counts), name).toContain(name)                 // FINAL_ACCOUNT_COUNTED_SOURCES
+      expect(FINAL_ACCOUNT_QUERY_NAMES, name).toContain(name)
+      expect(between(read('src/hooks/useFinalAccounts.jsx'), 'queries: {', 'refs: {'), name).toContain(`${name}: ordered('${name}')`)
+      expect(between(read('functions/src/finalAccount/approve.js'), 'const ORDERED = [', ']'), name).toContain(`'${name}'`)
+    }
+  })
+
+  it('every list names the same project registers (cost codes and the unordered forecast lines apart)', () => {
+    const ordered = between(read('functions/src/finalAccount/approve.js'), 'const ORDERED = [', ']').match(/'(\w+)'/g).map(s => s.slice(1, -1))
+    const queries = FINAL_ACCOUNT_QUERY_NAMES.filter(n => n !== 'costCodes' && n !== 'forecastLines')
+    expect([...ordered].sort()).toEqual([...queries].sort())
+    const counted = Object.keys(compute().provenance.counts)
+    expect([...counted, 'budgetLines'].sort()).toEqual([...FINAL_ACCOUNT_QUERY_NAMES.filter(n => n !== 'costCodes')].sort())
+  })
+
+  it('the per-invoice ledger is an enforcement device, never a Final Account source', () => {
+    for (const f of ['src/lib/finalAccount.js', 'src/lib/finalAccountActions.js', 'src/hooks/useFinalAccounts.jsx', 'functions/src/finalAccount/approve.js', 'src/lib/commercialReport.js', 'src/lib/portfolioSources.js']) {
+      expect(stripComments(read(f)), f).not.toMatch(/clientInvoiceLedgers|useClientInvoiceLedgers/)
+    }
+  })
+})
+
 // ── 3. Draft payload and size ────────────────────────────────────────────────
 
 describe('the draft payload', () => {
@@ -557,6 +776,131 @@ describe('an approved revision is compared with live records, never recalculated
     expect(draftAgreesWith({ ...s, rows: [s.rows[1], s.rows[0]] }, compute())).toBe(false)
     expect(draftAgreesWith({ ...s, rows: [s.rows[0]] }, compute())).toBe(false)
     expect(draftAgreesWith({ ...s, figures: { ...s.figures, finalProfit: 999999 } }, compute())).toBe(false)
+  })
+})
+
+// ── 4b. Version-aware comparison (Commercial Finance Phase 1) ────────────────
+//
+// A revision approved BEFORE `creditedToClient`, `clientRetentionHeld` and
+// `owedToClient` existed carries 22 figure keys and 10 register counts. It is
+// never rewritten. It must show no drift merely because the app now computes
+// more — and must still show a real movement in a figure it does carry.
+
+describe('a revision is compared on its OWN schema', () => {
+  const NEW_FIGURES = ['creditedToClient', 'clientRetentionHeld', 'owedToClient']
+  const NEW_SOURCES = ['clientCreditNotes', 'clientRetentionReleases']
+  const strip = (obj, keys) => Object.fromEntries(Object.entries(obj).filter(([k]) => !keys.includes(k)))
+  const legacy = (over = {}) => {
+    const s = stored(over)
+    return { ...s, figures: strip(s.figures, NEW_FIGURES), sources: { ...s.sources, counts: strip(s.sources.counts, NEW_SOURCES) } }
+  }
+  const credited = () => compute(mutate(p => { p.clientInvoices[0] = issuedInvoice(); p.clientCreditNotes.push(creditNoteFor(p.clientInvoices[0], 1000)) }))
+
+  it('the legacy fixture really is the old schema', () => {
+    const s = legacy()
+    expect(Object.keys(s.figures)).toHaveLength(22)
+    expect(Object.keys(s.sources.counts)).toHaveLength(10)
+    for (const k of NEW_FIGURES) expect(k in s.figures, k).toBe(false)
+  })
+
+  it('an old-schema approved revision against unchanged records: NO change, NO provenance difference — the new metrics are listed apart', () => {
+    const d = finalAccountDifferences(legacy(), compute())
+    expect(d).toMatchObject({ comparable: true, changed: false, figures: [], rows: [], provenance: [] })
+    expect(d.newMetrics.map(n => n.key)).toEqual(NEW_FIGURES)
+    expect(d.newMetrics[0]).toEqual({ key: 'creditedToClient', label: 'Credited to client', basis: FIGURE_BASIS.EX_GST, live: 0 })
+    expect(d.newSources).toEqual(NEW_SOURCES)
+  })
+
+  it('…even when the live records now HOLD client retention: a metric the revision never recorded is not a change', () => {
+    // The live value of a new metric is non-zero; only keys the revision carries are compared.
+    const live = compute(mutate(p => { p.clientInvoices[0] = issuedInvoice({ retention: 500 }) }))
+    const d = finalAccountDifferences(legacy(), live)
+    expect(d.newMetrics.find(n => n.key === 'clientRetentionHeld').live).toBe(550)
+    expect(d.figures.map(f => f.key)).toEqual(['receivablesOutstanding'])   // a key it DOES carry moved: 2,200 → 1,650
+    expect(d.figures.map(f => f.key)).not.toContain('clientRetentionHeld')
+  })
+
+  it('an old-schema approved revision + a credit note posted later: the movement is reported — on the old keys only', () => {
+    const d = finalAccountDifferences(legacy(), credited())
+    expect(d.changed).toBe(true)
+    expect(d.figures.map(f => f.key)).toEqual(['invoicedToClient', 'remainingToInvoice', 'invoicedToClientGross', 'receivablesOutstanding'])
+    expect(d.figures.find(f => f.key === 'invoicedToClient')).toMatchObject({ stored: 9000, live: 8000 })
+    expect(d.figures.find(f => f.key === 'receivablesOutstanding')).toMatchObject({ stored: 2200, live: 1100 })
+    for (const k of NEW_FIGURES) expect(d.figures.map(f => f.key), k).not.toContain(k)
+    expect(d.newMetrics.find(n => n.key === 'creditedToClient').live).toBe(1000)
+    // The register did not exist in the revision's provenance, so its count is not a provenance difference.
+    expect(d.provenance).toEqual([])
+  })
+
+  it('a CURRENT-schema revision reports the same credit note on the new keys too', () => {
+    const d = finalAccountDifferences(stored(), credited())
+    expect(d.figures.map(f => f.key)).toEqual(['invoicedToClient', 'creditedToClient', 'remainingToInvoice', 'invoicedToClientGross', 'receivablesOutstanding'])
+    expect(d.provenance).toEqual(['clientCreditNotes'])
+    expect(d.newMetrics).toEqual([])
+    expect(d.newSources).toEqual([])
+  })
+
+  it('ABSENT is not NULL: a key the revision carries as null is a value and is compared', () => {
+    const s = stored()
+    s.figures = { ...s.figures, owedToClient: null }
+    const d = finalAccountDifferences(s, compute())
+    expect(d.figures.map(f => f.key)).toEqual(['owedToClient'])
+    expect(d.newMetrics).toEqual([])
+    // An explicitly undefined property is still carried (it cannot be stored, but it is not "absent").
+    s.figures = { ...s.figures, owedToClient: undefined }
+    expect(finalAccountDifferences(s, compute()).figures.map(f => f.key)).toEqual(['owedToClient'])
+  })
+
+  it('a not-comparable result carries the same empty lists', () => {
+    expect(finalAccountDifferences(null, compute())).toEqual({ comparable: false, figures: [], rows: [], provenance: [], newMetrics: [], newSources: [], changed: false })
+  })
+
+  it('DRAFT agreement stays STRICT: a draft written by an older client lacks the new keys and never agrees', () => {
+    expect(draftAgreesWith(stored({ status: 'draft' }), compute())).toBe(true)
+    const old = legacy({ status: 'draft' })
+    expect(finalAccountDifferences(old, compute()).changed).toBe(false)      // nothing it carries has moved…
+    expect(draftAgreesWith(old, compute())).toBe(false)                      // …and it is still refused
+    for (const key of FINAL_ACCOUNT_FIGURE_KEYS) {
+      const s = stored({ status: 'draft' })
+      expect(draftAgreesWith({ ...s, figures: without(s.figures, key) }, compute()), key).toBe(false)
+    }
+    // Missing register counts alone do not make a draft disagree (provenance is informational; budget apart).
+    const s = stored({ status: 'draft' })
+    expect(draftAgreesWith({ ...s, sources: { ...s.sources, counts: strip(s.sources.counts, NEW_SOURCES) } }, compute())).toBe(true)
+  })
+
+  it('the callable gates a draft through the strict function, and approval writes the server\'s full figure set', () => {
+    const approve = stripComments(read('functions/src/finalAccount/approve.js'))
+    expect(approve).toContain('if (!calc.draftAgreesWith(account, computation)) fail(CODE.FINAL_ACCOUNT_CHANGED)')
+    expect(Object.keys(finalAccountContent(compute()).figures).sort()).toEqual([...FINAL_ACCOUNT_FIGURE_KEYS].sort())
+  })
+
+  it('an old-schema revision renders and exports its missing figures as NOT RECORDED — never zero, Unavailable or an outstanding balance', () => {
+    const s = legacy()
+    const html = renderToStaticMarkup(h(FinalAccountFigures, { figures: s.figures, currencyCode: 'AUD', differences: finalAccountDifferences(s, compute()) }))
+    expect(html.match(/Not recorded</g)).toHaveLength(3)
+    expect(html).toContain(NOT_RECORDED_NOTE)
+    expect(html).not.toContain('Unavailable')
+    expect(html).not.toContain('Current records:')
+    expect(html).toContain('Credited to client')
+    const csv = finalAccountCsv(s, { projectName: 'Harbour Road Units' })
+    expect(csv).toContain(`"Credited to client","NOT RECORDED","AUD","ex-GST","${NOT_RECORDED_NOTE}"`)
+    expect(csv).toContain('"Client retention held","NOT RECORDED"')
+    expect(csv).toContain('"Owed to client","NOT RECORDED"')
+    expect(csv).toContain('"Client invoices outstanding",2200.00,"AUD","gross (incl. GST)"')
+    // A current-schema revision exports them as amounts.
+    const current = finalAccountCsv(stored(), { projectName: 'Harbour Road Units' })
+    expect(current).toContain('"Credited to client",0.00,"AUD","ex-GST"')
+    expect(current).toContain('"Client retention held",0.00,"AUD","gross (incl. GST)","OUTSTANDING BALANCE — acknowledged at approval; Billed and withheld by the client — not receivable until released"')
+    expect(current).not.toContain('NOT RECORDED')
+    expect(figureText(undefined, FIGURE_BASIS.GROSS, 'AUD', { unrecorded: true })).toBe('Not recorded')
+  })
+
+  it('the page states "not recorded" for an approved revision and refuses to offer approval of an old-schema draft', () => {
+    const page = read('src/pages/project/ProjectFinalAccount.jsx')
+    expect(page).toContain('not recorded when this revision was approved')
+    expect(page).toContain('not as a change')
+    expect(stripComments(page)).toMatch(/isDraft && unrecordedCount > 0 \? 'This draft was prepared before figures that a Final Account now records were introduced\. Withdraw it and prepare a new draft\.'/)
   })
 })
 

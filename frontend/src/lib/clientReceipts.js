@@ -1,5 +1,5 @@
 import { roundMoney } from './purchaseOrders'
-import { CI_STATUS, isPastDue } from './clientInvoices'
+import { CI_STATUS, isPastDue, invoiceRetention } from './clientInvoices'
 import {
   PAYMENT_STATUS, PAYMENT_COUNTING_STATUSES, MAX_ALLOCATIONS,
   allocatedTotal, allocationTotals, invoiceBalance, remainingBalance,
@@ -61,60 +61,109 @@ export function receivedByInvoice(receipts) {
   return map
 }
 
-// Remaining to Reconcile for ONE client invoice.
+// ── The receivable basis (ADR-87 / ADR-88) ───────────────────────────────────
 //
-// Measured against grossTotal (inc. GST), because gross is what the client was
-// actually billed and therefore what they pay. (Client invoices carry no
-// retention and no payable/gross split — ADR-22 — so gross is unambiguous.)
-// SIGNED and never clamped.
-export function remainingToReconcile(invoice, received) {
-  return remainingBalance(invoice?.grossTotal, received)
+// What the client owes on ONE invoice NOW, before receipts (gross):
+//
+//   receivableBasis = grossTotal − credited − retention still held
+//
+// `position` is that invoice's entry in the map built by
+// lib/clientReceivables.js → receivablePositions(), handed across the
+// calculation boundary by the caller (the ADR-30 pattern) — this module never
+// imports it. Without a position the basis is the invoice's own
+// `receivableTotal` (gross less the retention it withheld), which for an
+// invoice with no retention is `grossTotal`: every pre-ADR-87 figure is
+// reproduced when no map is supplied.
+export function receivableBasis(invoice, position = null) {
+  if (position && Number.isFinite(position.receivableBasis)) return roundMoney(position.receivableBasis)
+  return roundMoney(invoiceRetention(invoice).receivableCents / 100)
+}
+
+// Remaining to Reconcile for ONE client invoice: basis − received. SIGNED and
+// never clamped — a negative figure is an amount OWED TO THE CLIENT (a credit
+// note or a release void after the money was received, or an over-allocation).
+export function remainingToReconcile(invoice, received, position = null) {
+  return remainingBalance(receivableBasis(invoice, position), received)
+}
+
+// Reconciliation state against the basis. An invoice whose basis is nil and
+// that has received nothing owes nothing: fully reconciled, not "unreconciled".
+function stateOf(basis, received) {
+  if (toCents(basis) <= 0 && toCents(received) <= 0) return RECONCILIATION_STATE.FULLY
+  return reconciliationState(basis, received)
 }
 
 // One invoice's full derived AR position.
-export function invoiceReconciliation(invoice, receivedMap = {}) {
-  return invoiceBalance(invoice?.grossTotal, receivedMap[invoice?.id] || 0)
+export function invoiceReconciliation(invoice, receivedMap = {}, positions = {}) {
+  const basis = receivableBasis(invoice, positions[invoice?.id])
+  const balance = invoiceBalance(basis, receivedMap[invoice?.id] || 0)
+  return { ...balance, state: stateOf(basis, receivedMap[invoice?.id] || 0) }
 }
 
 // Reconciliation rows for the issued, non-void invoices of a project.
 //
 // Only ISSUED invoices can be reconciled: a draft has billed nothing, and a void
 // invoice is nothing forever. Both are excluded from every AR figure.
-export function clientInvoiceReconciliationRows(invoices, receipts) {
+export function clientInvoiceReconciliationRows(invoices, receipts, positions = {}) {
   const received = receivedByInvoice(receipts)
   return (invoices ?? [])
     .filter(inv => inv.status === CI_STATUS.ISSUED)
-    .map(inv => ({
-      id:             inv.id,
-      invoiceNumber:  inv.invoiceNumber,
-      clientId:       inv.clientId ?? null,
-      clientName:     inv.clientName || '',
-      invoiceDate:    inv.invoiceDate || '',
-      dueDate:        inv.dueDate || '',
-      grossTotal:     roundMoney(safeAmount(inv.grossTotal)),
-      received:       roundMoney(received[inv.id] || 0),
-      remaining:      remainingToReconcile(inv, received[inv.id] || 0),
-      state:          reconciliationState(inv.grossTotal, received[inv.id] || 0),
-    }))
+    .map(inv => {
+      const position = positions[inv.id] ?? null
+      const basis = receivableBasis(inv, position)
+      const retention = invoiceRetention(inv)
+      return {
+        id:             inv.id,
+        invoiceNumber:  inv.invoiceNumber,
+        clientId:       inv.clientId ?? null,
+        clientName:     inv.clientName || '',
+        invoiceDate:    inv.invoiceDate || '',
+        dueDate:        inv.dueDate || '',
+        // What was billed — never reduced by a credit, retention or a receipt.
+        grossTotal:     roundMoney(safeAmount(inv.grossTotal)),
+        credited:       roundMoney(position?.credited || 0),
+        retentionTotal: roundMoney(retention.retentionTotalCents / 100),
+        releasedTotal:  roundMoney(position?.releasedTotal || 0),
+        retentionHeld:  roundMoney(position ? position.retentionHeld : retention.retentionTotalCents / 100),
+        // What the client owes now, before receipts.
+        receivableBasis: basis,
+        received:       roundMoney(received[inv.id] || 0),
+        remaining:      remainingToReconcile(inv, received[inv.id] || 0, position),
+        state:          stateOf(basis, received[inv.id] || 0),
+      }
+    })
 }
 
 // Project-level receivables totals, all read-time.
-export function receivablesSummary(invoices, receipts) {
-  const rows = clientInvoiceReconciliationRows(invoices, receipts)
+export function receivablesSummary(invoices, receipts, positions = {}) {
+  const rows = clientInvoiceReconciliationRows(invoices, receipts, positions)
   let issuedGross = 0
   let received = 0
   let remaining = 0
   let overReconciled = 0
+  let credited = 0
+  let retentionHeld = 0
+  let receivable = 0
   for (const r of rows) {
     issuedGross = roundMoney(issuedGross + r.grossTotal)
     received    = roundMoney(received + r.received)
+    credited      = roundMoney(credited + r.credited)
+    retentionHeld = roundMoney(retentionHeld + r.retentionHeld)
+    receivable    = roundMoney(receivable + r.receivableBasis)
     // Only positive balances are receivable. A negative (over-reconciled)
     // balance is reported separately so it can never silently offset genuine
     // arrears in a single netted number.
     if (toCents(r.remaining) > 0) remaining = roundMoney(remaining + r.remaining)
     if (toCents(r.remaining) < 0) overReconciled = roundMoney(overReconciled + r.remaining)
   }
-  return { rows, issuedGross, received, remaining, overReconciled }
+  // `overReconciled` is negative: the total by which invoices have received
+  // more than they are now owed. `owedToClient` is the same amount, positive —
+  // a client credit balance, never netted against what other invoices owe.
+  return {
+    rows, issuedGross, received, remaining, overReconciled,
+    credited, retentionHeld, receivable,
+    owedToClient: roundMoney(0 - overReconciled),
+  }
 }
 
 export const overReconciledRows = (rows) =>
@@ -187,7 +236,7 @@ export function receiptsForInvoice(receipts, clientInvoiceId) {
 // received" figures, so editing a draft does not double-count its own
 // allocations (drafts contribute nothing anyway, but a posted-receipt edit path
 // must never silently misreport a balance).
-export function allocatableInvoices(invoices, clientId, receipts, { excludeReceiptId = null } = {}) {
+export function allocatableInvoices(invoices, clientId, receipts, { excludeReceiptId = null, positions = {} } = {}) {
   const others = (receipts ?? []).filter(r => r.id !== excludeReceiptId)
   const received = receivedByInvoice(others)
   return (invoices ?? [])
@@ -199,8 +248,9 @@ export function allocatableInvoices(invoices, clientId, receipts, { excludeRecei
       invoiceDate:   inv.invoiceDate || '',
       dueDate:       inv.dueDate || '',
       grossTotal:    roundMoney(safeAmount(inv.grossTotal)),
+      receivableBasis: receivableBasis(inv, positions[inv.id]),
       received:      roundMoney(received[inv.id] || 0),
-      remaining:     remainingToReconcile(inv, received[inv.id] || 0),
+      remaining:     remainingToReconcile(inv, received[inv.id] || 0, positions[inv.id]),
     }))
     .sort((a, b) => (a.invoiceDate || '').localeCompare(b.invoiceDate || '')
                  || (a.invoiceNumber || '').localeCompare(b.invoiceNumber || ''))
@@ -237,7 +287,7 @@ export function allocateOldestFirst(amount, rows) {
 // invoice. Two users can allocate the same remaining balance concurrently and
 // both writes succeed. These are advisory warnings requiring an explicit
 // acknowledgement — never a guarantee. See docs/SECURITY.md → Deferred Controls.
-export function invoiceOverAllocationWarnings(allocations, invoices, receipts, { excludeReceiptId = null } = {}) {
+export function invoiceOverAllocationWarnings(allocations, invoices, receipts, { excludeReceiptId = null, positions = {} } = {}) {
   const others = (receipts ?? []).filter(r => r.id !== excludeReceiptId)
   const received = receivedByInvoice(others)
   const byId = new Map((invoices ?? []).map(inv => [inv.id, inv]))
@@ -247,7 +297,7 @@ export function invoiceOverAllocationWarnings(allocations, invoices, receipts, {
     const inv = byId.get(a?.clientInvoiceId)
     if (!inv) continue
     const alreadyReceived = received[inv.id] || 0
-    const remaining = remainingToReconcile(inv, alreadyReceived)
+    const remaining = remainingToReconcile(inv, alreadyReceived, positions[inv.id])
     const excess = roundMoney(safeAmount(a.allocatedAmount) - remaining)
     if (toCents(excess) <= 0) continue
     warnings.push({
@@ -317,8 +367,8 @@ export const ALLOCATION_EXCEPTION_REMEDY =
 //     dedicated callout (a negative balance must never offset real arrears);
 //   · voiding a receipt restores the balance at the next render;
 //   · unallocated receipts reduce NO invoice balance and appear nowhere here.
-export function arAgeing(invoices, receipts, now = new Date()) {
-  const rows = clientInvoiceReconciliationRows(invoices, receipts)
+export function arAgeing(invoices, receipts, now = new Date(), positions = {}) {
+  const rows = clientInvoiceReconciliationRows(invoices, receipts, positions)
   return ageBalances(
     rows,
     { dueDateOf: (r) => r.dueDate, balanceOf: (r) => r.remaining },
@@ -337,9 +387,9 @@ export function isPastDueUnreconciled(invoice, remaining, now = new Date()) {
 
 // Replaces the pre-Receipts disclaimer. Still honest about what is NOT enforced.
 export const AR_RECONCILIATION_NOTICE =
-  'Balances reflect posted receipts allocated to each invoice. Constrap warns but does not block ' +
-  'over-allocation, and cannot prevent two users allocating the same balance concurrently. Unallocated ' +
-  'receipts are shown separately and do not reduce any invoice balance.'
+  'Balances reflect posted receipts allocated to each invoice. Allocating more than an invoice is owed ' +
+  'is refused when a receipt is posted unless it is explicitly acknowledged; an acknowledged surplus is ' +
+  'shown as owed to the client. Unallocated receipts are shown separately and do not reduce any invoice balance.'
 
 // ── Validation (client-enforced) ─────────────────────────────────────────────
 

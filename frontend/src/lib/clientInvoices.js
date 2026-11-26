@@ -1,4 +1,8 @@
-import { GST_RATE, roundMoney } from './purchaseOrders'
+import { roundMoney } from './purchaseOrders'
+import {
+  toCents, fromCents, gstOfCents, shareOfCents, isWholeCents,
+  MAX_SUPPORTED_AMOUNT_CENTS, MAX_SUPPORTED_AMOUNT_TEXT,
+} from './money'
 import { VARIATION_TYPE, VARIATION_APPROVED_STATUSES } from './variations'
 import { AGEING_BUCKETS, daysPastDue, ageBalances, remainingBalance } from './payments'
 
@@ -73,7 +77,8 @@ export const CI_EDITABLE_STATUSES = [CI_STATUS.DRAFT]
 
 export const CI_DOC_TYPE = {
   INVOICE:     'invoice',
-  CREDIT_NOTE: 'credit_note', // reserved — Credit Notes are a future module
+  CREDIT_NOTE: 'credit_note', // SUPERSEDED, never activated — client credit notes are
+                              // their own collection (lib/clientCreditNotes.js, ADR-87)
 }
 
 export const CLIENT_INVOICE_COUNTER_ID = 'clientInvoices'
@@ -107,19 +112,101 @@ export const TAX_CODE_LABELS = {
 }
 
 // GST for one line: 10% of the ex-GST amount for `gst`, otherwise zero.
+//
+// EXACT round-half-up in integer cents (ADR-86): 40.15 → 4.02. Until Commercial
+// Finance Phase 1 this was `roundMoney(amount × 0.1)`, which lands one cent low
+// on some half-cent boundaries (40.15 → 4.01; tracker D3 #35). It is called
+// ONLY when a draft is authored or edited — nothing recomputes a stored line —
+// so an issued invoice, and a draft nobody re-saves, keep the GST they store.
+// The supplier-side `gstForLine` functions are deliberately unchanged.
 export function gstForLine(amount, taxCode) {
-  const amt = Number(amount) || 0
-  return taxCode === TAX_CODE.GST ? roundMoney(amt * GST_RATE) : 0
+  return taxCode === TAX_CODE.GST ? fromCents(gstOfCents(toCents(amount))) : 0
 }
 
 // ── Header totals (derived from line items) ──────────────────────────────────
-// There is no retention and no payable/gross split on the client side in this
-// foundation, so the gross total IS the amount billed. (Client retention is a
-// separate future foundation.)
-export function invoiceTotals(lineItems) {
+//
+// CLIENT RETENTION (ADR-88). `retention` is the ex-GST amount the client
+// withholds from THIS invoice under the contract — authored per invoice, frozen
+// at issue. It is NOT a reduction in what was billed or earned: `subtotal` and
+// `grossTotal` stay the full value, and Issued / Available to Invoice keep
+// counting the full subtotal.
+//
+//   retentionGst    = round-half-up(gstTotal × retention ÷ subtotal)
+//   retentionTotal  = retention + retentionGst          (withheld, gross)
+//   receivableTotal = grossTotal − retentionTotal       (receivable now, gross)
+//
+// The GST withheld is the invoice's OWN GST in proportion — never a flat 10% —
+// so a GST-free invoice withholds no GST and a mixed invoice withholds its
+// blended share (the supplier formula's negative-payable defect, ADR-40 D9, is
+// not reproduced). Integer cents throughout (lib/money.js), exact at any size:
+// there is no upper limit on an invoice that withholds retention. Firestore
+// Rules pin `retentionGst` to within half a cent of the same share on a draft,
+// and the trusted backend requires it EXACTLY before anything is posted
+// against the invoice.
+//
+// Invoices written before ADR-88 carry none of the four fields and read as
+// zero retention (`invoiceRetention` below) — nothing is migrated.
+export function invoiceTotals(lineItems, retention = 0) {
   const subtotal = roundMoney((lineItems ?? []).reduce((sum, li) => sum + (Number(li.amount) || 0), 0))
   const gstTotal = roundMoney((lineItems ?? []).reduce((sum, li) => sum + (Number(li.gstAmount) || 0), 0))
-  return { subtotal, gstTotal, grossTotal: roundMoney(subtotal + gstTotal) }
+  const grossTotal = roundMoney(subtotal + gstTotal)
+  const retainedCents = Math.max(0, toCents(retention))
+  const retentionGstCents = shareOfCents(Math.max(0, toCents(gstTotal)), retainedCents, toCents(subtotal))
+  const retentionTotalCents = retainedCents + retentionGstCents
+  return {
+    subtotal, gstTotal, grossTotal,
+    retention:       fromCents(retainedCents),
+    retentionGst:    fromCents(retentionGstCents),
+    retentionTotal:  fromCents(retentionTotalCents),
+    receivableTotal: fromCents(toCents(grossTotal) - retentionTotalCents),
+  }
+}
+
+// The retention position an invoice STORES, in whole cents. A pre-ADR-88
+// invoice has no retention fields: zero withheld, the whole gross receivable.
+export function invoiceRetention(invoice) {
+  const subtotalCents = toCents(invoice?.subtotal)
+  const gstCents = toCents(invoice?.gstTotal)
+  const retentionCents = toCents(invoice?.retention)
+  const retentionGstCents = toCents(invoice?.retentionGst)
+  // The STORED gross is the billed figure every receivable is measured from
+  // (rules pin gross = subtotal + GST only on an invoice that withholds
+  // retention; an older document is read as it stands).
+  const grossCents = toCents(invoice?.grossTotal)
+  return {
+    subtotalCents,
+    gstCents,
+    grossCents,
+    retentionCents,
+    retentionGstCents,
+    retentionTotalCents: retentionCents + retentionGstCents,
+    receivableCents: grossCents - retentionCents - retentionGstCents,
+  }
+}
+
+export const hasRetention = (invoice) => toCents(invoice?.retention) > 0
+
+// Returns an error message, or null. Mirrors the Rules pins on the retention
+// scalars, so a draft the editor accepts is never refused for its retention.
+export function retentionError(retention, subtotal) {
+  if (retention === '' || retention == null) return null
+  const n = Number(retention)
+  if (!Number.isFinite(n)) return 'Retention must be a number.'
+  if (n < 0) return 'Retention cannot be negative.'
+  if (!isWholeCents(n)) return 'Retention cannot carry a fraction of a cent.'
+  if (toCents(n) > toCents(subtotal)) return 'Retention cannot exceed the invoice subtotal (ex-GST).'
+  return null
+}
+
+// The percentage helper of the editor: PROPOSES an amount from a percentage of
+// the subtotal. Only the amount is stored (ADR-88 Decision 3); there is no
+// contract-level percentage or cap in this foundation.
+export function retentionFromPercent(subtotal, percent) {
+  const p = Number(percent)
+  if (!Number.isFinite(p) || p <= 0) return 0
+  // percent to two decimals → basis points, so the product is an integer.
+  const basisPoints = Math.round(Math.min(p, 100) * 100)
+  return fromCents(shareOfCents(toCents(subtotal), basisPoints, 10000))
 }
 
 // ── Dates, payment terms, and past-due ───────────────────────────────────────
@@ -210,11 +297,30 @@ export function availableToInvoice(currentContractSumValue, issuedExGst) {
 // summary cards and the create/edit modal cannot drift apart.
 // `currentContractSumValue` comes from lib/margin.js (baseline + approved client
 // variations) — it is NOT recomputed here.
-export function contractControl(invoices, currentContractSumValue) {
-  const issued = sumInvoices(issuedClientInvoices(invoices))
+//
+// `creditedTotals` — { creditedSubtotal, creditedGst } from
+// lib/clientReceivables.js → receivableContext().totals, handed in by the
+// caller (ADR-87). Posted client credit notes reduce what counts as ISSUED:
+//
+//   issued.subtotal    = billed − credited          (net issued, ex-GST)
+//   availableToInvoice = Current Contract Sum − issued.subtotal
+//
+// so a credit re-opens the same ex-GST amount for invoicing. It does NOT touch
+// the Current Contract Sum: a reduction in what the job is worth is a negative
+// client variation, already inside that figure. `billed` keeps the uncredited
+// totals. With no credits every figure is the pre-ADR-87 one.
+export function contractControl(invoices, currentContractSumValue, creditedTotals = null) {
+  const billed = sumInvoices(issuedClientInvoices(invoices))
   const drafts = sumInvoices(draftClientInvoices(invoices))
+  const creditedSubtotal = roundMoney(Number(creditedTotals?.creditedSubtotal) || 0)
+  const creditedGst = roundMoney(Number(creditedTotals?.creditedGst) || 0)
+  const subtotal = roundMoney(billed.subtotal - creditedSubtotal)
+  const gstTotal = roundMoney(billed.gstTotal - creditedGst)
+  const issued = { count: billed.count, subtotal, gstTotal, grossTotal: roundMoney(subtotal + gstTotal) }
   return {
     currentContractSum: roundMoney(Number(currentContractSumValue) || 0),
+    billed,
+    credited: { subtotal: creditedSubtotal, gstTotal: creditedGst, grossTotal: roundMoney(creditedSubtotal + creditedGst) },
     issued,
     drafts,
     availableToInvoice: availableToInvoice(currentContractSumValue, issued.subtotal),
@@ -231,13 +337,20 @@ export const approvedClientVariations = (variations) =>
 
 // { variationId: Σ ex-GST line amount across ISSUED, non-void invoices }.
 // Drafts are excluded — a draft has billed nothing.
-export function invoicedByVariation(invoices) {
+//
+// `creditedByVariation` — { variationId: ex-GST credited } from
+// lib/clientCreditNotes.js, handed in by the caller: a credited variation line
+// is no longer billed, so its variation regains that amount to invoice.
+export function invoicedByVariation(invoices, creditedByVariation = {}) {
   const map = {}
   for (const inv of issuedClientInvoices(invoices)) {
     for (const li of inv.lineItems ?? []) {
       if (!li.variationId) continue
       map[li.variationId] = roundMoney((map[li.variationId] || 0) + (Number(li.amount) || 0))
     }
+  }
+  for (const [variationId, credited] of Object.entries(creditedByVariation ?? {})) {
+    map[variationId] = roundMoney((map[variationId] || 0) - (Number(credited) || 0))
   }
   return map
 }
@@ -265,8 +378,8 @@ export function resolveVariationCostCode(variation) {
 // Per approved client variation: approved / invoiced / remaining (all ex-GST).
 // `remaining` is signed — it goes negative when a variation has been
 // over-invoiced, which is warned, never hidden.
-export function variationInvoicingRows(variations, invoices) {
-  const invoiced = invoicedByVariation(invoices)
+export function variationInvoicingRows(variations, invoices, creditedByVariation = {}) {
+  const invoiced = invoicedByVariation(invoices, creditedByVariation)
   return approvedClientVariations(variations).map(v => {
     const approved = roundMoney(Number(v.approvedSubtotal) || 0)
     const billed   = roundMoney(invoiced[v.id] || 0)
@@ -293,9 +406,11 @@ export function variationInvoicingRows(variations, invoices) {
 //  · NEGATIVE approved client variations (omissions/credits) are NOT offered —
 //    a credit cannot be positively invoiced. They still reduce the Current
 //    Contract Sum (and therefore Available to Invoice) through the existing
-//    signed approvedClientVariationsTotal; a future Credit Note bills them.
-export function invoiceableClientVariations(variations, invoices) {
-  return variationInvoicingRows(variations, invoices).filter(r => r.approved > 0)
+//    signed approvedClientVariationsTotal, and are never billed. A Client
+//    Credit Note (ADR-87) is NOT how they are recorded: it corrects an issued
+//    invoice and must never subtract a contract reduction a second time.
+export function invoiceableClientVariations(variations, invoices, creditedByVariation = {}) {
+  return variationInvoicingRows(variations, invoices, creditedByVariation).filter(r => r.approved > 0)
 }
 
 // ── Read-time receivables ageing ─────────────────────────────────────────────
@@ -326,12 +441,22 @@ export { AGEING_BUCKETS }
 //
 // Balances are GROSS (inc. GST), because gross is what the client was billed and
 // therefore what they pay.
-export function ageingByDueDate(invoices, receivedByInvoice = {}, now = new Date()) {
+//
+// `positions` — the receivable map of lib/clientReceivables.js, handed in by the
+// caller. The balance aged is `receivableBasis − received`: credits and
+// retention still held are not owed and never age. Without it the basis is the
+// invoice's own `receivableTotal` (its gross when it withheld no retention).
+export function ageingByDueDate(invoices, receivedByInvoice = {}, now = new Date(), positions = {}) {
   return ageBalances(
     issuedClientInvoices(invoices),
     {
       dueDateOf: (inv) => inv.dueDate,
-      balanceOf: (inv) => remainingBalance(inv.grossTotal, receivedByInvoice[inv.id] || 0),
+      balanceOf: (inv) => remainingBalance(
+        Number.isFinite(positions[inv.id]?.receivableBasis)
+          ? positions[inv.id].receivableBasis
+          : invoiceRetention(inv).receivableCents / 100,
+        receivedByInvoice[inv.id] || 0,
+      ),
     },
     now,
   )
@@ -362,8 +487,8 @@ export function contractOverInvoiceWarning({ currentContractSum: ccs, issuedExGs
 
 // Warns per variation line when this invoice would bill more than a variation's
 // approved amount, counting what has already been issued against it.
-export function variationOverInvoiceWarnings(lineItems, variations, invoices) {
-  const rows = new Map(variationInvoicingRows(variations, invoices).map(r => [r.id, r]))
+export function variationOverInvoiceWarnings(lineItems, variations, invoices, creditedByVariation = {}) {
+  const rows = new Map(variationInvoicingRows(variations, invoices, creditedByVariation).map(r => [r.id, r]))
   const thisInvoiceByVariation = {}
   for (const li of lineItems ?? []) {
     if (!li.variationId) continue
@@ -394,7 +519,7 @@ export function variationOverInvoiceWarnings(lineItems, variations, invoices) {
 // Returns an error message, or null when the draft is saveable. Line totals,
 // number uniqueness, and the availability limits above are NOT rules-enforced —
 // only these shape checks and the lifecycle rules are.
-export function validateInvoiceDraft({ clientId, clientName, invoiceDate, lineItems }) {
+export function validateInvoiceDraft({ clientId, clientName, invoiceDate, lineItems, retention = 0 }) {
   if (!clientId) return 'Select the client this invoice is issued to.'
   if (!(clientName || '').trim()) return 'The selected client has no display name.'
   if (!invoiceDate) return 'Enter an invoice date.'
@@ -407,8 +532,13 @@ export function validateInvoiceDraft({ clientId, clientName, invoiceDate, lineIt
       return `Line ${i + 1}: enter a description.`
     }
     if (!Number.isFinite(amount)) return `Line ${i + 1}: amount must be a number.`
-    if (amount < 0) return `Line ${i + 1}: amount cannot be negative (credits are a future Credit Note).`
+    if (amount < 0) return `Line ${i + 1}: amount cannot be negative (raise a Credit Note against the issued invoice instead).`
     if (!TAX_CODES.includes(li.taxCode)) return `Line ${i + 1}: choose a tax code.`
   }
-  return null
+  const subtotal = roundMoney((lineItems ?? []).reduce((sum, li) => sum + (Number(li.amount) || 0), 0))
+  // The documented supported range (lib/money.js) — not a commercial rule.
+  if (toCents(subtotal) > MAX_SUPPORTED_AMOUNT_CENTS) {
+    return `An invoice cannot exceed ${MAX_SUPPORTED_AMOUNT_TEXT} (ex-GST) — the largest amount Constrap's arithmetic is verified for.`
+  }
+  return retentionError(retention, subtotal)
 }

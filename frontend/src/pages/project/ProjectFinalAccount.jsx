@@ -21,6 +21,8 @@ import { useSupplierPayments } from '../../hooks/useSupplierPayments'
 import { useRetentionReleases } from '../../hooks/useRetentionReleases'
 import { useClientInvoices } from '../../hooks/useClientInvoices'
 import { useClientReceipts } from '../../hooks/useClientReceipts'
+import { useClientCreditNotes } from '../../hooks/useClientCreditNotes'
+import { useClientRetentionReleases } from '../../hooks/useClientRetentionReleases'
 import { useFinalAccounts } from '../../hooks/useFinalAccounts'
 import { resolveBudgetSource, budgetSourceState } from '../../lib/budgetApproval'
 import {
@@ -47,6 +49,8 @@ import { PrepareFinalAccountModal, ApproveFinalAccountModal, WithdrawFinalAccoun
 //     itself and no client can write an approved revision.
 //   · An APPROVED revision is never recalculated. The live position is shown
 //     BESIDE it and any difference is named; a correction is a new revision.
+//     It is compared on the figures IT carries: a figure introduced after it
+//     was approved is "not recorded" on it, never a difference.
 //
 // ⚠️ ROLE GATE. The outer component renders the body — and so opens its
 // subscriptions — only for financial roles (isFinancialRole). That is the UX
@@ -129,7 +133,7 @@ function FinalAccount({ project, projectId, currencyCode, role }) {
   const { user } = useAuth()
   const currentUid = user?.uid ?? null
 
-  // ── Live subscriptions — the Commercial Report's fourteen, plus the revisions. ──
+  // ── Live subscriptions — the Commercial Report's sixteen, plus the revisions. ──
   const { budgetLines, budgetLinesLoading, budgetLinesError }                         = useBudgetLines(projectId)
   const { approvedBudget }                                                            = useApprovedBudget(projectId)
   const budgetSource = useMemo(
@@ -149,6 +153,10 @@ function FinalAccount({ project, projectId, currencyCode, role }) {
   const { retentionReleases, retentionReleasesLoading, retentionReleasesError }       = useRetentionReleases(projectId)
   const { clientInvoices, clientInvoicesLoading, clientInvoicesError }                = useClientInvoices(projectId)
   const { clientReceipts, clientReceiptsLoading, clientReceiptsError }                = useClientReceipts(projectId)
+  const { clientCreditNotes, clientCreditNotesLoading, clientCreditNotesError }       = useClientCreditNotes(projectId)
+  const {
+    clientRetentionReleases, clientRetentionReleasesLoading, clientRetentionReleasesError,
+  } = useClientRetentionReleases(projectId)
   const {
     finalAccounts, finalAccountsLoading, finalAccountsError,
     prepareFinalAccount, withdrawFinalAccount, approveFinalAccount,
@@ -162,7 +170,7 @@ function FinalAccount({ project, projectId, currencyCode, role }) {
     sources: {
       budgetLines, approvedBudget, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
       variations, forecastLines, baseline, supplierPayments, retentionReleases,
-      clientInvoices, clientReceipts, costCodes,
+      clientInvoices, clientReceipts, clientCreditNotes, clientRetentionReleases, costCodes,
     },
     sourceStates: {
       budgetLines:         { loading: budgetLinesLoading,         error: budgetLinesError },
@@ -178,19 +186,23 @@ function FinalAccount({ project, projectId, currencyCode, role }) {
       retentionReleases:   { loading: retentionReleasesLoading,   error: retentionReleasesError },
       clientInvoices:      { loading: clientInvoicesLoading,      error: clientInvoicesError },
       clientReceipts:      { loading: clientReceiptsLoading,      error: clientReceiptsError },
+      clientCreditNotes:   { loading: clientCreditNotesLoading,   error: clientCreditNotesError },
+      clientRetentionReleases: { loading: clientRetentionReleasesLoading, error: clientRetentionReleasesError },
       costCodes:           { loading: costCodesLoading,           error: Boolean(costCodesError) },
     },
   }), [
     project, currencyCode,
     budgetLines, approvedBudget, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
-    variations, forecastLines, baseline, supplierPayments, retentionReleases, clientInvoices, clientReceipts, costCodes,
+    variations, forecastLines, baseline, supplierPayments, retentionReleases, clientInvoices, clientReceipts,
+    clientCreditNotes, clientRetentionReleases, costCodes,
     budgetLinesLoading, budgetLinesError, approvedBudgetLoading, approvedBudgetError,
     purchaseOrdersLoading, purchaseOrdersError, progressClaimsLoading, progressClaimsError,
     supplierInvoicesLoading, supplierInvoicesError, supplierCreditNotesLoading, supplierCreditNotesError,
     variationsLoading, variationsError, forecastLinesLoading, forecastLinesError,
     baselineLoading, baselineError, supplierPaymentsLoading, supplierPaymentsError,
     retentionReleasesLoading, retentionReleasesError, clientInvoicesLoading, clientInvoicesError,
-    clientReceiptsLoading, clientReceiptsError, costCodesLoading, costCodesError,
+    clientReceiptsLoading, clientReceiptsError, clientCreditNotesLoading, clientCreditNotesError,
+    clientRetentionReleasesLoading, clientRetentionReleasesError, costCodesLoading, costCodesError,
   ])
 
   const history = useMemo(() => finalAccountHistory(finalAccounts), [finalAccounts])
@@ -209,12 +221,17 @@ function FinalAccount({ project, projectId, currencyCode, role }) {
     [selected, live],
   )
   const liveChanged = Boolean(differences?.comparable && (differences.changed || differences.provenance.includes('budget')))
+  // Figures the live records carry that this revision's own schema does not.
+  const unrecordedCount = differences?.comparable ? differences.newMetrics.length : 0
 
   const mayPrepare = canPrepareFinalAccount(role) && !finalAccountsLoading && !finalAccountsError && history.canPrepare
   const mayApprove = canApproveFinalAccount(role) && isDraft && Boolean(selected?.updatedAt)
   const mayWithdraw = canWithdrawFinalAccount(role, selected, currentUid)
+  // A draft must carry every current figure (the callable refuses one that
+  // does not — lib/finalAccount.js → draftAgreesWith); say so before the call.
   const approveBlocked = !live.ready ? 'The current records do not meet the readiness requirements.'
-    : liveChanged ? 'The current records differ from this draft. Withdraw it and prepare a new draft.' : null
+    : liveChanged ? 'The current records differ from this draft. Withdraw it and prepare a new draft.'
+    : isDraft && unrecordedCount > 0 ? 'This draft was prepared before figures that a Final Account now records were introduced. Withdraw it and prepare a new draft.' : null
 
   function handleExport() {
     setExportError(null)
@@ -325,7 +342,14 @@ function FinalAccount({ project, projectId, currencyCode, role }) {
             )}
             {isApproved && differences?.comparable && !liveChanged && (
               <p className="report-controls m-0 mt-3 text-[12.5px] text-brand-text-soft" role="status">
-                The current project records agree with this approved revision.
+                The current project records agree with this approved revision{unrecordedCount > 0 ? ' on every figure it records' : ''}.
+              </p>
+            )}
+            {isApproved && unrecordedCount > 0 && (
+              <p className="report-controls m-0 mt-3 text-[12.5px] text-brand-muted" role="status">
+                {unrecordedCount} figure{unrecordedCount === 1 ? ' was' : 's were'} not recorded when this revision was approved
+                ({differences.newMetrics.map(n => n.label).join(', ')}). {unrecordedCount === 1 ? 'It is' : 'They are'} shown
+                as “Not recorded” — not as a change — and this revision is not altered. A new revision records every current figure.
               </p>
             )}
             <div className="mt-4"><AuditBlock account={selected} currentUid={currentUid} /></div>

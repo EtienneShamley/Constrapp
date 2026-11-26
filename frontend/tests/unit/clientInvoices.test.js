@@ -182,7 +182,7 @@ describe('invoiceTotals — the §15i-iv mixed acceptance case', () => {
   })
 
   it('totals to subtotal 1700, GST 100, gross 1800', () => {
-    expect(invoiceTotals(mixed)).toEqual({ subtotal: 1700, gstTotal: 100, grossTotal: 1800 })
+    expect(invoiceTotals(mixed)).toEqual({ subtotal: 1700, gstTotal: 100, grossTotal: 1800, retention: 0, retentionGst: 0, retentionTotal: 0, receivableTotal: 1800 })
   })
 
   it('gross is subtotal + GST — there is no retention and no payable/gross split (ADR-22)', () => {
@@ -191,7 +191,7 @@ describe('invoiceTotals — the §15i-iv mixed acceptance case', () => {
   })
 
   it('returns zeroes for an empty, null or undefined line set', () => {
-    const zero = { subtotal: 0, gstTotal: 0, grossTotal: 0 }
+    const zero = { subtotal: 0, gstTotal: 0, grossTotal: 0, retention: 0, retentionGst: 0, retentionTotal: 0, receivableTotal: 0 }
     expect(invoiceTotals([])).toEqual(zero)
     expect(invoiceTotals(null)).toEqual(zero)
     expect(invoiceTotals(undefined)).toEqual(zero)
@@ -215,7 +215,7 @@ describe('invoiceTotals — the §15i-iv mixed acceptance case', () => {
 
   it('treats missing or non-numeric line values as zero', () => {
     expect(invoiceTotals([{ amount: 'abc' }, { amount: null }, {}])).toEqual({
-      subtotal: 0, gstTotal: 0, grossTotal: 0,
+      subtotal: 0, gstTotal: 0, grossTotal: 0, retention: 0, retentionGst: 0, retentionTotal: 0, receivableTotal: 0,
     })
   })
 
@@ -839,7 +839,7 @@ describe('validateInvoiceDraft', () => {
 
   it('rejects a NEGATIVE amount and names Credit Notes as the correct instrument', () => {
     const msg = validateInvoiceDraft({ ...ok, lineItems: [{ description: 'x', amount: -5, taxCode: TAX_CODE.GST }] })
-    expect(msg).toBe('Line 1: amount cannot be negative (credits are a future Credit Note).')
+    expect(msg).toBe('Line 1: amount cannot be negative (raise a Credit Note against the issued invoice instead).')
   })
 
   it('requires a valid tax code on every line', () => {

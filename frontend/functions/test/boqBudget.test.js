@@ -173,8 +173,8 @@ describe('release safety', () => {
   it('the function is exported under the exact name the deploy filter names, and no other export shares its prefix', () => {
     const index = src('index.js')
     expect(index.match(/^export const transferBoqToBudget = onCall\(/m)).not.toBeNull()
-    const names = [...index.matchAll(/^export const (\w+)\s+=\s+(wrap|onCall|onSchedule)\(/gm)].map(m => m[1])
-    expect(names).toHaveLength(11)
+    const names = [...index.matchAll(/^export const (\w+)\s+=\s+(wrap|onCall|onSchedule|clientFinanceCall)\(/gm)].map(m => m[1])
+    expect(names).toHaveLength(17)   // + the six client-finance callables (ADR-89)
     expect(names.filter(n => n === 'transferBoqToBudget' || n.startsWith('transferBoqToBudget-'))).toEqual(['transferBoqToBudget'])
   })
 })

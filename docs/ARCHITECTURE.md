@@ -117,6 +117,149 @@ enforcement) needs its own ADR; the controls that must accompany it are in
 [SECURITY.md](SECURITY.md) → Trusted-Backend Activation Requirements and
 [ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md) §6.
 
+## Permanent engineering principles (Product Owner and Lead Architect, 26 November 2026 — ADR-89)
+
+These hold for every future phase. A design that conflicts with one of them
+needs an explicit architect decision, not a workaround.
+
+1. Build for long-term scalability.
+2. Prefer trusted backend processing for complex financial mutations.
+3. Preserve existing customer data.
+4. Evolve components incrementally.
+5. Avoid wholesale application rebuilds.
+6. Avoid unnecessary database migrations.
+7. Maintain measurable capacity headroom.
+8. Pay for justified infrastructure.
+9. Avoid unnecessary operating costs.
+10. Never compromise security or financial integrity to reduce cost.
+
+## Trusted transaction boundary for complex commercial mutations (ADR-89)
+
+**The rule.** A mutation is processed by a trusted callable — not by a client
+transaction validated in Security Rules — when it must (a) read data Rules
+cannot iterate or aggregate (arrays, sibling documents, registers), (b) hold a
+cumulative or cross-document invariant under concurrency, or (c) derive stored
+financial figures. Simple single-document writes with scalar validation stay
+with the client SDK and Rules. Reads and drafts stay in the browser.
+
+**Why.** Security Rules are a finite resource (256 KB of source, 250 KB
+compiled, 1,000 expressions per request) and cannot see inside an array or sum
+a register. Spending them on financial mutation logic led to three capacity
+recoveries and to controls that lived only in the browser. Rules are for
+*access*: who may read, who may draft, what is immutable.
+
+**Shape of a finance callable** (`frontend/functions/src/clientFinance/`, and
+the model for the next ones):
+
+| Layer | Module | Responsibility |
+|---|---|---|
+| Input contract | `contracts.js` | Identifiers and a reason only; any other key — an amount above all — is refused |
+| Authentication and authorisation | `handlers.js` + `lib/authz.js` | Enabled-gate → authenticated → active membership → role; company from the membership, never the request |
+| Domain logic | `generated/clientFinanceCalc.js` | The **generated copy of the browser's own pure modules** (`src/lib/clientFinanceCalc.js`); no formula is written in the Functions package |
+| Transaction orchestration | the operation modules | One transaction that reads everything it depends on, re-derives every figure, checks every invariant |
+| Persistence | same transaction | The entry, the invoice ledger and one audit event — together or not at all |
+| Audit | `lib/audit.js` | `companies/{c}/auditEvents`, Admin-SDK only |
+| Errors | `lib/errors.js` | Typed, stable codes; an uncertain outcome is never reported as a refusal |
+
+The contracts are stable and client-agnostic: a mobile app or an integration
+calls the same functions. Today: `postClientCreditNote`,
+`voidClientCreditNote`, `postClientRetentionRelease`,
+`voidClientRetentionRelease`, `postClientReceipt`, `voidClientReceipt` (plus the earlier `approveFinalAccount`, ADR-77,
+and `transferBoqToBudget`, ADR-81).
+
+**Phase 2 architecture plan — next to move, in order (each its own decision
+and release; tracker D3 #37):** (1) `variations` create with an originating
+RFI; (2) claim-sourced `supplierInvoices` create; (3) `progressClaims` and the
+claim-to-invoice pairing — the three paths within about 6–10% of the
+1,000-expression ceiling on allowed requests. The payable-side rounding
+correction (D3 #35) is carried in (2) and (3). Nothing else is migrated ahead
+of need; none of these was touched in Phase 1.
+
+## Capacity and load-test plan (ADR-89, Decision 8) — designed for, NOT yet measured
+
+**Capacity targets that are measured today.**
+
+| Quantity | Limit | Budget | Now | Measured by |
+|---|---|---|---|---|
+| Rules source, each of the three files | 262,144 bytes | 245,000 | 236,800 (binding) | `tests/unit/rulesSize.test.js` and its two siblings |
+| Rules compiled | 250 KB | — | **unmeasured** | The publish itself (release prerequisite) |
+| Expressions per request | 1,000 | allowed requests pass with ≥ 16 padding comparisons of 196 | three blocks at 16–30 (D3 #37) | `scripts/rules-expression-headroom.mjs` + the suite |
+| Document reads per finance transaction | 500 writes / transaction | a fixed set per call — about 5 reads + 3 writes; a receipt adds 2 reads + 1 write per allocated invoice (≤ 100); **no register is read** | as designed | Functions emulator suite (read counts asserted against a >5,000-receipt project) |
+
+**Contention and growth.** One invoice's ledger is the only document two
+finance transactions contend on; there is no project-wide or company-wide
+contention point in posting or voiding. Ledger and entry documents are bounded
+by the lines of one invoice and do not grow with time. Known ceilings, recorded
+and unchanged: the company-wide number counters (about one draft creation per
+second per company and document type) and unpaginated register subscriptions.
+
+**Representative workloads — ESTIMATED operation counts, not measurements.**
+Assumptions are stated so they can be replaced by real figures; nothing here
+was observed in production or under load. A "finance call" is one trusted
+callable invocation. Reads and writes are Firestore document operations made
+by the callable itself (membership, project, entry, invoice, ledger; the
+entry, the ledger and one audit event) — the browser's own listeners are extra
+and are the same before and after this phase.
+
+| | Small company | Medium company | Large company |
+|---|---|---|---|
+| Active projects | 5 | 25 | 150 |
+| Client invoices issued / month | 10 | 100 | 900 |
+| Client receipts posted / month (1.1 per invoice) | 11 | 110 | 990 |
+| Credit notes posted / month (1 in 12 invoices) | 1 | 8 | 75 |
+| Retention releases posted / month (half of invoices retained, 2 releases each, spread over the job) | 5 | 50 | 450 |
+| Voids of posted entries or receipts / month (2%) | <1 | 4 | 30 |
+| **Finance calls / month** | **≈ 17** | **≈ 172** | **≈ 1,545** |
+| Callable document reads / month (≈ 5 per call; a receipt reads 2 per allocated invoice) | ≈ 100 | ≈ 1,000 | ≈ 9,000 |
+| Callable document writes / month (≈ 3 per call; a receipt writes 1 per allocated invoice + 2) | ≈ 55 | ≈ 550 | ≈ 5,000 |
+| Peak concurrent finance calls (month-end, assumed 20% of the month's calls in one working hour, 10 s apart at worst) | 1 | 1–2 | 5–10 |
+| Draft creations at peak, per document type (bounded by the company counter at about 1 / s) | ≪ 1 / s | ≪ 1 / s | < 0.1 / s |
+
+*Project-history growth.* No finance call reads a register: every call reads a
+fixed set of documents whatever the age or size of the project (the receipt
+scan of the first backend design is gone — the invoice ledger carries what
+receipts have allocated). A project with 100,000 receipts costs a release void
+the same five reads as a new one. What still grows with history is the
+*browser's* unpaginated register subscriptions — a read-side limit that
+pre-dates this phase.
+
+*Number-counter contention.* Each numbered document type has one counter
+document per company, incremented when a **draft** is created (not when it is
+posted). Firestore sustains roughly one write per second to one document, so a
+company can create about one draft per second per document type; a transaction
+that loses the race is retried by the SDK. At the large-company peak above
+(under 0.1 drafts a second) the margin is more than tenfold. It is a ceiling to
+revisit only for bulk import or very large tenants (a sharded or per-project
+counter would be the change), not for the workloads this product targets.
+
+*What is measured.* Per-call document counts and their independence from
+register size (Functions emulator tests, TESTING.md §80). *What is not.*
+Latency, cold starts, retry rates on a hot invoice, and cost. **Full commercial
+load testing is a Phase 3 release requirement.**
+
+**Load-test plan (not run; Phase 3).** On a disposable non-production project, with
+synthetic data only:
+
+1. *Independent invoices* — 50, 200 and 1,000 concurrent postings against
+   different invoices: expect no contention; record p50 / p95 / p99 latency,
+   error rate, cold-start share.
+2. *One hot invoice* — 5, 20 and 50 concurrent postings against one invoice:
+   expect serialisation with retries; record retry counts, latency and that
+   exactly the fitting set lands.
+3. *Growing history* — postings and voids on a project with 1,000, 10,000 and
+   100,000 receipts: confirm latency and read counts do not move with the
+   register size.
+4. *Draft creation* — sustained creation in one company to find the counter's
+   practical rate.
+5. *Cost* — read, write and invocation counts per operation from the usage
+   export, multiplied out for 10, 100 and 1,000 companies at the workload in
+   ADR-89 Decision 8, priced from the billing account.
+
+Proposed acceptance targets, to be confirmed by the architect before the run:
+p95 under 2 s for posting and voiding at step 1; no lost or duplicated
+movement at step 2; step 3 under 5 s at the limit. **Until this is run, the
+architecture is designed for scale; it has not been proven at scale.**
+
 ## Repository Layout
 
 ```
@@ -398,6 +541,9 @@ ProtectedRoute (redirects to /login when signed out)
    │        read-only; forecast and charts are later branches),
    │       `commercial/retention` = Supplier Retention register + Retention
    │        Release (ADR-30);
+   │       `commercial/client-retention` = Client Retention register + Client
+   │        Retention Release (ADR-88; client credit notes live inside
+   │        `commercial/client-invoices`, ADR-87);
    │       the `tenders` route renders the Tender register — packages, bids,
    │        Tender Comparison, the award decision record and, since ADR-61,
    │        "Raise purchase order…" on an awarded package (review dialog in
@@ -480,6 +626,7 @@ field detail: [DATA_MODEL.md](DATA_MODEL.md).
 | Supplier Payments (cash paid) | Implemented (foundation) — embedded allocations against each posted invoice's **derived payable basis** (stored `payableTotal` + posted retention released), read-time Paid to Date / Remaining Payable / AP ageing |
 | Supplier Credit Notes | Implemented (foundation) — reduction records against exactly one posted, retention-free supplier invoice; rules-enforced lifecycle **with target-invoice `get()` checks**; read-time subtraction from Invoiced/Actual/Remaining Payable; lives inside the Supplier Invoices view; **no client credit notes, no refunds** |
 | Supplier Retention & Retention Release | Implemented (foundation) — read-time register grouped by supplier; retention **held** derived from posted invoices, **released** from posted `retentionReleases`; partial releases with cumulative-snapshot GST; **no client retention, no retention due/DLP dates, no retention-paid attribution** (ADR-30) |
+| Client Credit Notes, Client Retention & the invoice ledger | **IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION (ADR-86 / ADR-87 / ADR-88, Commercial Finance Phase 1).** Client credit notes (`clientCreditNotes`) reduce what is billed on one issued client invoice; client retention is authored on the invoice and released by `clientRetentionReleases`; a per-invoice `clientInvoiceLedgers` document carries the cumulative caps; **posting, voiding a posted entry and every ledger write are trusted callables (ADR-89)** — the Rules give clients reads and drafts only. Pure libs `lib/money.js`, `lib/clientLedger.js`, `lib/clientCreditNotes.js`, `lib/clientRetention.js`, `lib/clientReceivables.js` (the ONE receivable contract every surface reads); draft writes and the callable calls in `lib/clientLedgerActions.js` (SDK injected); hooks `useClientCreditNotes`, `useClientRetentionReleases`, `useClientInvoiceLedgers`; backend `functions/src/clientFinance/` + `functions/src/generated/clientFinanceCalc.js`. No new dependency. `approveFinalAccount` reads two more registers (calc bundle regenerated) |
 | Cash Flow (actual + forecast) | Implemented (foundation) — read-time monthly actual, automatic invoice due-date forecast, manual `cashFlowLines` timing, projected cumulative/closing position, completeness, untimed reporting, peak funding with suppression, and a two-panel chart that consumes those derived rows without re-deriving them (ADR-26); **no date filtering, not a bank balance** |
 | Variations (client + supplier) | Implemented (foundation); **M3-B1 supplier-variation commitment integration (ADR-62) LIVE**; **M3-B2 new-scope claim & invoice integration (ADR-63) live in production, confirmed by the Product Owner** |
 | Tenders (packages, bids, comparison, award) | Implemented (foundation) — cost-code + free-text scope (BOQ-independent), manual bids, read-time comparison, award as a decision record; **no stored totals, closing date informational**; since M3-A (ADR-61, live in production, confirmed by the Product Owner) an award raises ONE linked **draft** PO through a reviewed, confirmed, guarded transaction — never sent automatically |

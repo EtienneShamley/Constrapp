@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useOutletContext, useNavigate } from 'react-router-dom'
 import Card from '../../components/Card'
 import Btn from '../../components/Btn'
@@ -7,8 +7,10 @@ import WriteFeedback from '../../components/WriteFeedback'
 import { useWriteAction } from '../../hooks/useWriteAction'
 import { formatCurrency } from '../../lib/formatters'
 import { roundMoney } from '../../lib/purchaseOrders'
+import { useAuth } from '../../hooks/useAuth'
 import { useProfile } from '../../hooks/useProfile'
 import { useCompany } from '../../hooks/useCompany'
+import { usePrintMoment } from '../../hooks/usePrintMoment'
 import { useClientInvoices } from '../../hooks/useClientInvoices'
 import { useProjectCommercial } from '../../hooks/useProjectCommercial'
 import { useVariations } from '../../hooks/useVariations'
@@ -26,11 +28,35 @@ import {
   gstForLine, invoiceTotals, suggestDueDate, paymentTermsLabel, daysPastDue,
   contractControl, ageingByDueDate, variationInvoicingRows, invoiceableClientVariations,
   resolveVariationCostCode, contractOverInvoiceWarning, variationOverInvoiceWarnings,
+  retentionError, retentionFromPercent, invoiceRetention, hasRetention,
 } from '../../lib/clientInvoices'
 import { useClientReceipts } from '../../hooks/useClientReceipts'
+import { useClientCreditNotes } from '../../hooks/useClientCreditNotes'
+import { useClientRetentionReleases } from '../../hooks/useClientRetentionReleases'
+import { useClientInvoiceLedgers } from '../../hooks/useClientInvoiceLedgers'
+import { fromCents } from '../../lib/money'
 import {
-  RECONCILIATION_LABELS, RECONCILIATION_BADGE_VARIANTS, paymentMethodLabel,
-} from '../../lib/payments'
+  clientFinanceActivated, retentionToSave, showClientFinanceRecords, CLIENT_FINANCE_NOT_ACTIVATED_TEXT,
+} from '../../lib/clientFinanceActivation'
+import { receivableContext, ledgerExceptions } from '../../lib/clientReceivables'
+import {
+  CCN_STATUS, CCN_STATUS_LABELS, CCN_BADGE_VARIANTS,
+  postedClientCreditNotes, creditNotesForInvoice, clientCreditExceptions,
+  CLIENT_CREDIT_NOTE_NOTICE, CLIENT_CREDIT_EXCEPTION_REMEDY, CLIENT_CREDIT_READ_UNAVAILABLE_NOTICE,
+} from '../../lib/clientCreditNotes'
+import {
+  CRR_STATUS_LABELS, CRR_BADGE_VARIANTS, postedClientRetentionReleases,
+  CLIENT_RETENTION_HELD_NOTICE, CLIENT_RETENTION_READ_UNAVAILABLE_NOTICE,
+} from '../../lib/clientRetention'
+import ClientCreditNoteModal from './clientCredit/ClientCreditNoteModal'
+import ClientCreditPostModal from './clientCredit/ClientCreditPostModal'
+import ClientCreditVoidModal from './clientCredit/ClientCreditVoidModal'
+import ClientCreditDetailModal from './clientCredit/ClientCreditDetailModal'
+import ClientCreditNotePrint from './clientCredit/ClientCreditNotePrint'
+import {
+  clientReconciliationLabel, owedToClientDescription, OWED_TO_CLIENT_REMEDY,
+} from './clientCredit/clientReconciliation'
+import { RECONCILIATION_BADGE_VARIANTS, paymentMethodLabel } from '../../lib/payments'
 import {
   AR_RECONCILIATION_NOTICE, ALLOCATION_EXCEPTION_REMEDY,
   receivedByInvoice, receivablesSummary, receiptsForInvoice,
@@ -56,6 +82,9 @@ function Metric({ label, value, help, danger }) {
     </div>
   )
 }
+
+// A figure whose inputs could not be read is UNKNOWN, never zero.
+const Unavailable = () => <span className="text-[12px] font-normal text-brand-muted">Unavailable</span>
 
 function ModalShell({ title, onClose, children, wide }) {
   return (
@@ -84,9 +113,10 @@ const blankLine = () => ({ variationId: '', description: '', amount: '', taxCode
 
 function InvoiceEditorModal({
   invoice, clientContacts, defaultClientId, variations, clientInvoices,
-  contractSum, issuedExGst, currencyCode, showTaxNotice, onClose, onSave,
+  contractSum, issuedExGst, availableNow, creditedByVariation, creditsUnknown,
+  currencyCode, showTaxNotice, financeActive, onClose, onSave,
 }) {
-  const money = (n) => formatCurrency(n, currencyCode)
+  const money = (n) => formatCurrency(n, currencyCode, { precise: true })
   const isEdit = !!invoice
 
   const [clientId, setClientId] = useState(invoice?.clientId || defaultClientId || '')
@@ -108,6 +138,13 @@ function InvoiceEditorModal({
         }))
       : [blankLine()],
   )
+  // Client retention (ADR-88): an authored ex-GST AMOUNT. The percentage is a
+  // helper only — while it is filled the amount is proposed from the current
+  // subtotal; the percentage itself is never stored.
+  const [retention, setRetention] = useState(
+    invoice && Number(invoice.retention) > 0 ? String(invoice.retention) : '',
+  )
+  const [retentionPct, setRetentionPct] = useState('')
   const [acknowledged, setAcknowledged] = useState(false)
   const write = useWriteAction('Client invoice draft')
 
@@ -117,8 +154,8 @@ function InvoiceEditorModal({
   // Approved client variations that may still be billed. Pending variations and
   // negative (credit) variations are excluded in lib/clientInvoices.js.
   const variationRows = useMemo(
-    () => invoiceableClientVariations(variations, clientInvoices),
-    [variations, clientInvoices],
+    () => invoiceableClientVariations(variations, clientInvoices, creditedByVariation),
+    [variations, clientInvoices, creditedByVariation],
   )
   const variationById = useMemo(
     () => new Map((variations ?? []).map(v => [v.id, v])),
@@ -151,7 +188,9 @@ function InvoiceEditorModal({
     setLine(idx, {
       variationId,
       description: row ? `${row.variationNumber} — ${row.title}`.trim() : lines[idx].description,
-      amount:      row ? String(row.remaining) : lines[idx].amount,
+      // With credit notes unreadable the remaining balance is unknown, so no
+      // amount is proposed.
+      amount:      row && !creditsUnknown ? String(row.remaining) : lines[idx].amount,
     })
   }
 
@@ -179,17 +218,49 @@ function InvoiceEditorModal({
     .filter(l => l.description.length > 0 || l.amount !== 0)
     .map((l, i) => ({ ...l, sortOrder: i }))
 
-  const totals = invoiceTotals(builtLines)
+  const lineTotals = invoiceTotals(builtLines)
+  // `financeActive` — the company is activated for client retention
+  // (lib/clientFinanceActivation.js). When it is not, no retention is offered
+  // and the draft is always saved with zero retention. UX only: the Rules
+  // refuse a retention amount from such a company whatever this editor sends.
+  const retentionInput = !financeActive
+    ? ''
+    : retentionPct !== ''
+      ? String(retentionFromPercent(lineTotals.subtotal, retentionPct))
+      : retention
+  const retentionAmount = retentionToSave(financeActive, retentionInput === '' ? 0 : Number(retentionInput))
+  const retentionProblem = retentionError(retentionInput === '' ? '' : retentionAmount, lineTotals.subtotal)
+  // A draft that already stores retention, opened by a company that is not
+  // activated (not reachable through the app): the amount is stated, never
+  // silently dropped.
+  const storedRetentionDropped = !financeActive && hasRetention(invoice)
+  // Subtotal, GST and gross are the FULL billed value; retention only splits
+  // the gross into what is withheld and what is receivable now.
+  const totals = retentionProblem ? lineTotals : invoiceTotals(builtLines, retentionAmount)
+
+  const changeRetentionPct = (e) => {
+    // Clearing the percentage keeps the amount it last proposed.
+    if (e.target.value === '') setRetention(retentionInput)
+    setRetentionPct(e.target.value)
+  }
+  const changeRetention = (e) => {
+    setRetentionPct('')
+    setRetention(e.target.value)
+  }
 
   // Contract control, live. Editing an existing DRAFT does not change the
   // issued total (drafts have billed nothing), so the comparison is always
   // "issued so far + this invoice".
-  const contractWarning = contractOverInvoiceWarning({
+  // Issued is NET of posted credit notes, so with credit notes unreadable
+  // neither warning can be evaluated — said below rather than computed wrongly.
+  const contractWarning = creditsUnknown ? null : contractOverInvoiceWarning({
     currentContractSum: contractSum,
     issuedExGst,
     thisInvoiceExGst: totals.subtotal,
   })
-  const variationWarnings = variationOverInvoiceWarnings(builtLines, variations, clientInvoices)
+  const variationWarnings = creditsUnknown
+    ? []
+    : variationOverInvoiceWarnings(builtLines, variations, clientInvoices, creditedByVariation)
   const warnings = [...(contractWarning ? [contractWarning] : []), ...variationWarnings]
   const needsAck = warnings.length > 0
 
@@ -197,7 +268,8 @@ function InvoiceEditorModal({
   const hasAmount = builtLines.some(l => l.amount !== 0)
   const allDescribed = builtLines.every(l => l.description.length > 0)
   const noNegative = builtLines.every(l => l.amount >= 0)
-  const valid = hasClient && !!invoiceDate && hasAmount && allDescribed && noNegative && (!needsAck || acknowledged)
+  const valid = hasClient && !!invoiceDate && hasAmount && allDescribed && noNegative
+    && !retentionProblem && (!needsAck || acknowledged)
 
   function handleSubmit(e) {
     e.preventDefault()
@@ -219,10 +291,9 @@ function InvoiceEditorModal({
       paymentTerms: terms,
       lineItems: builtLines,
       notes,
+      retention: retentionAmount,
     }), { onConfirmed: onClose })
   }
-
-  const availableNow = roundMoney(contractSum - issuedExGst)
 
   return (
     <ModalShell wide title={isEdit ? `Edit ${invoice.invoiceNumber}` : 'New Client Invoice'} onClose={onClose}>
@@ -283,8 +354,13 @@ function InvoiceEditorModal({
         <div className="rounded-lg border border-brand-border p-3">
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <Metric label="Current Contract Sum" value={money(contractSum)} help="Ex-GST" />
-            <Metric label="Issued Client Invoices" value={money(issuedExGst)} help="Ex-GST" />
-            <Metric label="Available to Invoice" value={money(availableNow)} danger={availableNow < 0} help="Before this invoice" />
+            <Metric label="Issued Client Invoices" value={creditsUnknown ? <Unavailable /> : money(issuedExGst)} help="Ex-GST · net of credit notes" />
+            <Metric
+              label="Available to Invoice"
+              value={creditsUnknown ? <Unavailable /> : money(availableNow)}
+              danger={!creditsUnknown && availableNow < 0}
+              help="Before this invoice"
+            />
             <Metric label="This Invoice" value={money(totals.subtotal)} help="Ex-GST" />
           </div>
         </div>
@@ -333,8 +409,13 @@ function InvoiceEditorModal({
                   </div>
                   {row && (
                     <p className="m-0 text-[11px] text-brand-muted">
-                      {row.variationNumber} approved {money(row.approved)} · invoiced {money(row.invoiced)} ·
-                      {' '}<span className={row.remaining < 0 ? 'text-brand-red font-semibold' : 'text-brand-text font-semibold'}>remaining {money(row.remaining)}</span>
+                      {row.variationNumber} approved {money(row.approved)} ·{' '}
+                      {creditsUnknown
+                        ? 'invoiced and remaining unavailable'
+                        : <>
+                            invoiced {money(row.invoiced)} ·
+                            {' '}<span className={row.remaining < 0 ? 'text-brand-red font-semibold' : 'text-brand-text font-semibold'}>remaining {money(row.remaining)}</span>
+                          </>}
                       {row.costCodeId
                         ? ` · cost code ${row.costCodeName}`
                         : ' · spans several cost codes — no cost code snapshotted'}
@@ -383,8 +464,58 @@ function InvoiceEditorModal({
           <input className={inputCls} placeholder="Optional" value={notes} onChange={e => setNotes(e.target.value)} />
         </div>
 
+        {/* Client retention — offered to an activated company only. */}
+        {storedRetentionDropped && (
+          <p className="m-0 text-[12px] text-brand-amber">
+            ⚠ This draft records {money(invoice.retentionTotal)} of client retention (inc. GST).
+            {' '}{CLIENT_FINANCE_NOT_ACTIVATED_TEXT} Saving this draft will remove the retention.
+          </p>
+        )}
+        {financeActive && (
+        <div className="rounded-lg border border-brand-border p-3">
+          <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_2fr] gap-3 items-start">
+            <div>
+              <label className={labelCls} htmlFor="ci-retention">Retention Withheld (ex-GST)</label>
+              <input
+                id="ci-retention"
+                type="number" min="0" step="0.01"
+                className={inputCls}
+                placeholder="0.00"
+                value={retentionInput}
+                onChange={changeRetention}
+              />
+            </div>
+            <div>
+              <label className={labelCls} htmlFor="ci-retention-pct">% of Subtotal (helper)</label>
+              <input
+                id="ci-retention-pct"
+                type="number" min="0" max="100" step="0.01"
+                className={inputCls}
+                placeholder="e.g. 5"
+                value={retentionPct}
+                onChange={changeRetentionPct}
+              />
+            </div>
+            <p className="m-0 text-[11px] text-brand-muted sm:pt-5">
+              Optional. The amount the client withholds from this invoice under the contract. Typing a percentage
+              proposes an amount from the subtotal; only the <span className="font-semibold">amount</span> is
+              stored, and it freezes when the invoice is issued. Retention is not a reduction in what is billed —
+              Issued and Available to Invoice count the full subtotal. The GST withheld is this invoice&apos;s own
+              GST in proportion.
+            </p>
+          </div>
+          {retentionProblem && <p className="m-0 mt-2 text-[12px] text-brand-red">{retentionProblem}</p>}
+        </div>
+        )}
+
         {showTaxNotice && (
           <p className="m-0 text-[12px] text-brand-amber">⚠ {TAX_LIMITATION_NOTICE}</p>
+        )}
+
+        {creditsUnknown && (
+          <p className="m-0 text-[12px] text-brand-amber">
+            ⚠ {CLIENT_CREDIT_READ_UNAVAILABLE_NOTICE} The over-invoicing warnings cannot be evaluated for this draft.
+          </p>
         )}
 
         {warnings.map((w, i) => (
@@ -413,7 +544,17 @@ function InvoiceEditorModal({
         <div className="flex flex-col items-end gap-1 text-[13px] text-brand-text border-t border-brand-border pt-3">
           <p className="m-0">Subtotal (ex-GST) <span className="font-semibold ml-2">{money(totals.subtotal)}</span></p>
           <p className="m-0 text-brand-muted">GST <span className="ml-2">{money(totals.gstTotal)}</span></p>
-          <p className="m-0 font-bold">Invoice total (inc. GST) <span className="ml-2">{money(totals.grossTotal)}</span></p>
+          <p className="m-0 font-bold">Invoice total — billed (inc. GST) <span className="ml-2">{money(totals.grossTotal)}</span></p>
+          {financeActive && (
+            <>
+              <p className="m-0 text-brand-muted">
+                Retention withheld{' '}
+                <span className="ml-1">{money(totals.retention)} + {money(totals.retentionGst)} GST =</span>
+                <span className="ml-2 text-brand-text">{money(totals.retentionTotal)}</span>
+              </p>
+              <p className="m-0 font-bold">Receivable now <span className="ml-2">{money(totals.receivableTotal)}</span></p>
+            </>
+          )}
         </div>
 
         <WriteFeedback write={write} />
@@ -469,21 +610,78 @@ function VoidModal({ invoice, onClose, onConfirm }) {
   )
 }
 
+// ── Issue ────────────────────────────────────────────────────────────────────
+//
+// The confirmation that used to be a native window.confirm: issuing is
+// irreversible (an issued invoice can only be voided), so it is confirmed in
+// the page's own dialog, where the write's outcome is shown as well.
+
+function IssueModal({ invoice, currencyCode, onClose, onConfirm }) {
+  const money = (n) => formatCurrency(n, currencyCode, { precise: true })
+  const write = useWriteAction('Client invoice issue')
+  // The dialog is handed the LIVE invoice: only a draft can be issued.
+  const notDraft = invoice.status !== CI_STATUS.DRAFT
+
+  function submit(e) {
+    e.preventDefault()
+    if (notDraft) return
+    write.run(() => onConfirm(invoice), { onConfirmed: onClose })
+  }
+
+  return (
+    <ModalShell title={`Issue ${invoice.invoiceNumber}`} onClose={onClose}>
+      <form onSubmit={submit} className="px-5 py-4 flex flex-col gap-3.5">
+        <p className="m-0 text-[12.5px] text-brand-muted">
+          Issuing counts this invoice as billed. An issued invoice cannot be edited — only voided — and its
+          lines, tax codes and retention freeze.
+        </p>
+        <div className="grid grid-cols-3 gap-3 rounded-lg border border-brand-border p-3">
+          <Metric label="Subtotal (ex-GST)" value={money(invoice.subtotal)} />
+          <Metric label="GST" value={money(invoice.gstTotal)} />
+          <Metric label="Billed (inc. GST)" value={money(invoice.grossTotal)} />
+        </div>
+        <p className="m-0 text-[12px] text-brand-muted">
+          {invoice.clientName || '—'} · dated {invoice.invoiceDate || '—'}
+          {hasRetention(invoice) ? ` · retention to withhold ${money(invoice.retentionTotal)}` : ''}
+        </p>
+        <WriteFeedback write={write} />
+        <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
+          <Btn variant="ghost" type="button" onClick={onClose} sm disabled={write.busy}>{write.waiting ? 'Close' : 'Cancel'}</Btn>
+          <Btn type="submit" sm disabled={write.locked || notDraft}>{write.busy ? 'Issuing…' : write.waiting ? 'Waiting for confirmation…' : 'Issue invoice'}</Btn>
+        </div>
+      </form>
+    </ModalShell>
+  )
+}
+
 // ── Read-only detail ─────────────────────────────────────────────────────────
 
 function DetailRow({ label, value }) {
   return (
     <div>
       <p className={labelCls}>{label}</p>
-      <p className="m-0 text-[13px] text-brand-text break-words">{value || '—'}</p>
+      <div className="m-0 text-[13px] text-brand-text break-words">{value || '—'}</div>
     </div>
   )
 }
 
-function DetailModal({ invoice, reconciliation, allocatedReceipts, currencyCode, onClose }) {
-  const money = (n) => formatCurrency(n, currencyCode)
+// `receivableUnknown` — credit notes or retention releases could not be read;
+// `receivedUnknown` — receipts could not be read. Either way the figures that
+// depend on them render Unavailable, never as though nothing had been posted.
+function DetailModal({
+  invoice, reconciliation, position, allocatedReceipts, creditNotes, releases,
+  creditsUnknown, receivableUnknown, receivedUnknown, currencyCode, financeActive, onClose, onOpenRetention,
+}) {
+  const money = (n) => formatCurrency(n, currencyCode, { precise: true })
   const addr = invoice.clientAddress ?? {}
   const addrText = [addr.street, addr.suburb, addr.state, addr.postcode].filter(Boolean).join(', ')
+  // The retention this invoice STORES (zero for an invoice written before
+  // client retention existed).
+  const stored = invoiceRetention(invoice)
+  const isIssued = invoice.status === CI_STATUS.ISSUED
+  const withheld = hasRetention(invoice)
+  const balanceUnknown = receivableUnknown || receivedUnknown
+  const owed = !balanceUnknown && reconciliation && reconciliation.remaining < 0
 
   return (
     <ModalShell wide title={`${invoice.invoiceNumber} — ${CI_STATUS_LABELS[invoice.status] ?? invoice.status}`} onClose={onClose}>
@@ -535,33 +733,161 @@ function DetailModal({ invoice, reconciliation, allocatedReceipts, currencyCode,
         <div className="flex flex-col items-end gap-1 text-[13px] text-brand-text border-t border-brand-border pt-3">
           <p className="m-0">Subtotal (ex-GST) <span className="font-semibold ml-2">{money(invoice.subtotal)}</span></p>
           <p className="m-0 text-brand-muted">GST <span className="ml-2">{money(invoice.gstTotal)}</span></p>
-          <p className="m-0 font-bold">Invoice total (inc. GST) <span className="ml-2">{money(invoice.grossTotal)}</span></p>
+          <p className="m-0 font-bold">Invoice total — billed (inc. GST) <span className="ml-2">{money(invoice.grossTotal)}</span></p>
+          <p className="m-0 text-brand-muted">
+            Retention withheld{' '}
+            <span className="ml-1">{money(fromCents(stored.retentionCents))} + {money(fromCents(stored.retentionGstCents))} GST =</span>
+            <span className="ml-2 text-brand-text">{money(fromCents(stored.retentionTotalCents))}</span>
+          </p>
+          <p className="m-0 font-bold">
+            Receivable now <span className="ml-2">{money(fromCents(stored.receivableCents))}</span>
+          </p>
+          {isIssued && (
+            <p className="m-0 text-[11px] text-brand-muted">
+              As issued — before any credit note or retention release. The live position is below.
+            </p>
+          )}
         </div>
 
-        {/* Reconciliation — derived at read time from posted receipts. Nothing
-            below is stored on this invoice document. */}
-        {invoice.status === CI_STATUS.ISSUED && reconciliation && (
+        {/* Client retention — derived at read time; the invoice's own retention
+            figures never change. */}
+        {isIssued && withheld && (
+          <div className="border-t border-brand-border pt-3">
+            <div className="flex flex-wrap items-baseline justify-between gap-2 mb-2.5">
+              <p className="text-[13px] font-bold text-brand-text m-0">Client retention</p>
+              {/* The register is offered to an activated company only; the
+                  figures below are shown regardless. */}
+              {financeActive && (
+                <Btn sm variant="ghost" type="button" onClick={onOpenRetention}>Open Client Retention</Btn>
+              )}
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
+              <DetailRow label="Withheld (inc. GST)" value={money(fromCents(stored.retentionTotalCents))} />
+              <DetailRow label="Released" value={receivableUnknown || !position ? <Unavailable /> : money(position.releasedTotal)} />
+              <DetailRow label="Reduced by Credit Notes" value={receivableUnknown || !position ? <Unavailable /> : money(position.creditedRetention)} />
+              <DetailRow label="Still Held" value={receivableUnknown || !position ? <Unavailable /> : money(position.retentionHeld)} />
+            </div>
+            <p className="m-0 mt-2 text-[11px] text-brand-muted">{CLIENT_RETENTION_HELD_NOTICE}</p>
+            {!receivableUnknown && releases.length > 0 && (
+              <div className="overflow-x-auto mt-3">
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr className="bg-brand-card border-y border-brand-border">
+                      {['Release', 'Release Date', 'Reason', 'Total (inc. GST)', 'Status'].map(h => (
+                        <th key={h} className={thCls}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {releases.map(r => (
+                      <tr key={r.id} className="border-b border-brand-border last:border-b-0">
+                        <td className="px-3.5 py-2.5 text-[13px] font-semibold text-brand-text whitespace-nowrap">{r.releaseNumber}</td>
+                        <td className="px-3.5 py-2.5 text-[12px] text-brand-muted whitespace-nowrap">{r.releaseDate || '—'}</td>
+                        <td className="px-3.5 py-2.5 text-[12px] text-brand-muted">{r.reason || '—'}</td>
+                        <td className="px-3.5 py-2.5 text-[13px] text-brand-text whitespace-nowrap">{money(r.releaseTotal)}</td>
+                        <td className="px-3.5 py-2.5">
+                          <Badge label={CRR_STATUS_LABELS[r.status] ?? r.status} variant={CRR_BADGE_VARIANTS[r.status]} sm />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Credit notes against this invoice. A company not activated for
+            client credit notes sees this only when there is a record (or the
+            read failed) — never an empty invitation. */}
+        {isIssued && (creditsUnknown || showClientFinanceRecords(financeActive, creditNotes.length)) && (
+          <div className="border-t border-brand-border pt-3">
+            <p className="text-[13px] font-bold text-brand-text m-0 mb-2.5">Credit notes against this invoice</p>
+            {creditsUnknown ? (
+              <p className="m-0 text-[12px] text-brand-amber">{CLIENT_CREDIT_READ_UNAVAILABLE_NOTICE}</p>
+            ) : creditNotes.length === 0 ? (
+              <p className="m-0 text-[12px] text-brand-muted">No credit note has been recorded against this invoice.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr className="bg-brand-card border-y border-brand-border">
+                      {['Credit Note', 'Credit Date', 'Reason', 'Ex-GST', 'Total (inc. GST)', 'Status'].map(h => (
+                        <th key={h} className={thCls}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {creditNotes.map(cn => (
+                      <tr key={cn.id} className="border-b border-brand-border last:border-b-0">
+                        <td className="px-3.5 py-2.5 text-[13px] font-semibold text-brand-text whitespace-nowrap">{cn.creditNumber}</td>
+                        <td className="px-3.5 py-2.5 text-[12px] text-brand-muted whitespace-nowrap">{cn.creditDate || '—'}</td>
+                        <td className="px-3.5 py-2.5 text-[12px] text-brand-muted">{cn.reason || '—'}</td>
+                        <td className="px-3.5 py-2.5 text-[13px] text-brand-muted whitespace-nowrap">{money(cn.subtotal)}</td>
+                        <td className="px-3.5 py-2.5 text-[13px] text-brand-text whitespace-nowrap">{money(cn.grossTotal)}</td>
+                        <td className="px-3.5 py-2.5">
+                          <Badge label={CCN_STATUS_LABELS[cn.status] ?? cn.status} variant={CCN_BADGE_VARIANTS[cn.status]} sm />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="m-0 mt-2 text-[11px] text-brand-muted">
+              Only posted credit notes reduce a figure. A credit note corrects this invoice; it does not change the
+              contract sum and moves no cash.
+            </p>
+          </div>
+        )}
+
+        {/* Reconciliation — derived at read time from the invoice, posted
+            credit notes, posted retention releases and posted receipts.
+            Nothing below is stored on this invoice document. */}
+        {isIssued && reconciliation && (
           <div className="border-t border-brand-border pt-3">
             <div className="flex flex-wrap items-baseline justify-between gap-2 mb-2.5">
               <p className="text-[13px] font-bold text-brand-text m-0">Reconciliation</p>
-              <Badge
-                label={RECONCILIATION_LABELS[reconciliation.state]}
-                variant={RECONCILIATION_BADGE_VARIANTS[reconciliation.state]}
-                sm
-              />
+              {/* Client-side wording: a negative balance is "Owed to client"
+                  (clientCredit/clientReconciliation.js). */}
+              {balanceUnknown
+                ? <Unavailable />
+                : <span title={owed ? owedToClientDescription(money(-reconciliation.remaining)) : undefined}>
+                    <Badge
+                      label={clientReconciliationLabel(reconciliation.state)}
+                      variant={RECONCILIATION_BADGE_VARIANTS[reconciliation.state]}
+                      sm
+                    />
+                  </span>}
             </div>
-            <div className="grid grid-cols-3 gap-3.5">
-              <DetailRow label="Invoiced (inc. GST)" value={money(reconciliation.total)} />
-              <DetailRow label="Received to Date" value={money(reconciliation.settled)} />
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3.5">
+              <DetailRow label="Billed (inc. GST)" value={money(reconciliation.grossTotal)} />
+              <DetailRow label="Credited" value={receivableUnknown ? <Unavailable /> : money(reconciliation.credited)} />
+              <DetailRow label="Retention Still Held" value={receivableUnknown ? <Unavailable /> : money(reconciliation.retentionHeld)} />
+              <DetailRow label="Receivable (before receipts)" value={receivableUnknown ? <Unavailable /> : money(reconciliation.receivableBasis)} />
+              <DetailRow label="Received to Date" value={receivedUnknown ? <Unavailable /> : money(reconciliation.received)} />
               <div>
-                <p className={labelCls}>Remaining to Reconcile</p>
-                <p className={`m-0 text-[13px] font-semibold ${reconciliation.remaining < 0 ? 'text-brand-red' : 'text-brand-text'}`}>
-                  {money(reconciliation.remaining)}
+                <p className={labelCls}>{owed ? 'Owed to Client' : 'Remaining to Reconcile'}</p>
+                <p className={`m-0 text-[13px] font-semibold ${owed ? 'text-brand-red' : 'text-brand-text'}`}>
+                  {balanceUnknown
+                    ? <Unavailable />
+                    : owed ? money(-reconciliation.remaining) : money(reconciliation.remaining)}
                 </p>
               </div>
             </div>
 
-            {allocatedReceipts.length > 0 ? (
+            {owed && (
+              <p className="m-0 mt-2.5 text-[12px] text-brand-red">
+                {money(-reconciliation.remaining)} is owed to the client: more has been received against this invoice
+                than it is now owed. This invoice is not simply settled. {OWED_TO_CLIENT_REMEDY}
+              </p>
+            )}
+
+            {receivedUnknown ? (
+              <p className="m-0 mt-2 text-[12px] text-brand-amber">
+                Client Receipts could not be loaded, so the receipts allocated to this invoice are unavailable.
+              </p>
+            ) : allocatedReceipts.length > 0 ? (
               <div className="overflow-x-auto mt-3">
                 <table className="w-full border-collapse">
                   <thead>
@@ -609,11 +935,35 @@ function DetailModal({ invoice, reconciliation, allocatedReceipts, currencyCode,
 
 export default function ProjectClientInvoices() {
   const navigate = useNavigate()
-  const { projectId, currencyCode } = useOutletContext()
-  const money = (n) => formatCurrency(n, currencyCode)
+  const { project, projectId, currencyCode } = useOutletContext()
+  const money = (n) => formatCurrency(n, currencyCode, { precise: true })
 
+  const { user } = useAuth()
   const { profile, profileLoading } = useProfile()
   const { company } = useCompany()
+  // Company-scoped activation of client credit notes and client retention.
+  // UX ONLY — Firestore Rules and the backend are the enforcement. A company
+  // that is loading or could not be read is null here, so NOT activated.
+  const financeActive = clientFinanceActivated(company)
+
+  // ── Printing ONE credit note (the ADR-79 print mechanism) ──────────────────
+  // The document is mounted only while a print is in progress — synchronously,
+  // see usePrintMoment — and only when a credit note has been chosen: by the
+  // row's or the detail's Print button, or because its detail is open when the
+  // browser's own Print command is used. With no credit note chosen, printing
+  // this page is unchanged. `afterprint` forgets the choice.
+  const { printAt, print } = usePrintMoment()
+  const [printCreditId, setPrintCreditId] = useState(null)
+  const [creditDetailId, setCreditDetailId] = useState(null)
+  useEffect(() => {
+    const forget = () => setPrintCreditId(null)
+    window.addEventListener('afterprint', forget)
+    return () => window.removeEventListener('afterprint', forget)
+  }, [])
+  const printCreditNote = (creditNote) => {
+    setPrintCreditId(creditNote.id)
+    print()
+  }
 
   const canView = isFinancialRole(profile?.role)
   // Non-financial roles never trigger the commercially-sensitive reads (rules
@@ -625,14 +975,29 @@ export default function ProjectClientInvoices() {
     createClientInvoice, updateClientInvoice, issueClientInvoice, voidClientInvoice,
   } = useClientInvoices(mid)
   const { baseline, baselineLoading } = useProjectCommercial(mid)
-  const { clientReceipts } = useClientReceipts(mid)
+  const { clientReceipts, clientReceiptsError } = useClientReceipts(mid)
+  const {
+    clientCreditNotes, clientCreditNotesLoading, clientCreditNotesError,
+    createClientCreditNote, updateClientCreditNote, postClientCreditNote, voidClientCreditNote,
+  } = useClientCreditNotes(mid)
+  const {
+    clientRetentionReleases, clientRetentionReleasesLoading, clientRetentionReleasesError,
+  } = useClientRetentionReleases(mid)
+  const {
+    clientInvoiceLedgers, clientInvoiceLedgersLoading, clientInvoiceLedgersError,
+  } = useClientInvoiceLedgers(mid)
   const { variations } = useVariations(mid)
   const { contacts } = useContacts()
 
   const [editing, setEditing] = useState(null)   // invoice | 'new' | null
   const [voiding, setVoiding] = useState(null)
+  const [issuing, setIssuing] = useState(null)
   const [detail, setDetail]   = useState(null)
-  const issueWrite = useWriteAction('Client invoice issue')
+  // Credit-note dialog targets are held as ids and resolved against the live
+  // lists, so a dialog always shows the record as it stands now.
+  const [crediting, setCrediting] = useState(null) // { invoiceId, creditNoteId? }
+  const [postingCreditId, setPostingCreditId] = useState(null)
+  const [voidingCreditId, setVoidingCreditId] = useState(null)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [clientFilter, setClientFilter] = useState('all')
@@ -653,16 +1018,38 @@ export default function ProjectClientInvoices() {
     () => pendingClientVariationExposureTotal(variations),
     [variations],
   )
-  const control = useMemo(
-    () => contractControl(clientInvoices, contractSum),
-    [clientInvoices, contractSum],
+  // ── The ONE receivable contract (lib/clientReceivables.js) ─────────────────
+  // Posted credit notes and posted retention releases, applied to the issued
+  // invoices ONCE; every derivation below is handed the same positions, totals
+  // and per-variation credits, so no two figures on this page can disagree.
+  const ctx = useMemo(
+    () => receivableContext(clientInvoices, clientCreditNotes, clientRetentionReleases),
+    [clientInvoices, clientCreditNotes, clientRetentionReleases],
   )
-  // ── Reconciliation, all derived at read time from posted receipts ──────────
+
+  // ⚠️ A FAILED READ IS UNKNOWN, NEVER ZERO.
+  //   creditsUnknown    — net Issued, Available to Invoice, Credited and the
+  //                       variation balances depend on posted credit notes;
+  //   receivableUnknown — retention held and what is receivable also depend on
+  //                       posted retention releases;
+  //   balanceUnknown    — a remaining balance also depends on posted receipts.
+  const creditsUnknown = clientCreditNotesError
+  const receivableUnknown = clientCreditNotesError || clientRetentionReleasesError
+  const receivedUnknown = clientReceiptsError
+  const balanceUnknown = receivableUnknown || receivedUnknown
+  // A credit note is prepared and posted against its invoice's CURRENT ledger.
+  const creditActionsUnavailable = receivableUnknown || clientInvoiceLedgersError || clientInvoiceLedgersLoading
+
+  const control = useMemo(
+    () => contractControl(clientInvoices, contractSum, ctx.totals),
+    [clientInvoices, contractSum, ctx.totals],
+  )
+  // ── Reconciliation, all derived at read time ───────────────────────────────
   // Nothing here is written onto a client invoice document.
   const received = useMemo(() => receivedByInvoice(clientReceipts), [clientReceipts])
   const receivables = useMemo(
-    () => receivablesSummary(clientInvoices, clientReceipts),
-    [clientInvoices, clientReceipts],
+    () => receivablesSummary(clientInvoices, clientReceipts, ctx.positions),
+    [clientInvoices, clientReceipts, ctx.positions],
   )
   const reconciliationById = useMemo(
     () => new Map(receivables.rows.map(r => [r.id, r])),
@@ -675,14 +1062,48 @@ export default function ProjectClientInvoices() {
 
   // Ageing now ages the REMAINING balance after posted receipts — fully
   // reconciled invoices drop out, partially reconciled invoices age only their
-  // remainder, and over-reconciled invoices are excluded into `overSettled`.
+  // remainder, and invoices with an amount owed to the client (a negative
+  // balance) are excluded into `overSettled`.
   const ageing = useMemo(
-    () => ageingByDueDate(clientInvoices, received),
-    [clientInvoices, received],
+    () => ageingByDueDate(clientInvoices, received, undefined, ctx.positions),
+    [clientInvoices, received, ctx.positions],
   )
   const variationRows = useMemo(
-    () => variationInvoicingRows(variations, clientInvoices),
-    [variations, clientInvoices],
+    () => variationInvoicingRows(variations, clientInvoices, ctx.creditedByVariation),
+    [variations, clientInvoices, ctx.creditedByVariation],
+  )
+
+  const invoiceById = useMemo(() => new Map(clientInvoices.map(inv => [inv.id, inv])), [clientInvoices])
+  const ledgerById = useMemo(() => new Map(clientInvoiceLedgers.map(l => [l.id, l])), [clientInvoiceLedgers])
+  const owedRows = useMemo(() => receivables.rows.filter(r => r.remaining < 0), [receivables.rows])
+
+  // Issued invoices that carry a posted credit note or a posted retention
+  // release. Firestore Rules refuse to void such an invoice (its ledger is not
+  // nil), so the Void action is disabled for them — the Rules are the boundary.
+  const encumbered = useMemo(
+    () => new Set([
+      ...postedClientCreditNotes(clientCreditNotes).map(cn => cn.clientInvoiceId),
+      ...postedClientRetentionReleases(clientRetentionReleases).map(r => r.clientInvoiceId),
+    ]),
+    [clientCreditNotes, clientRetentionReleases],
+  )
+
+  const creditProblems = useMemo(
+    () => (creditsUnknown ? [] : clientCreditExceptions(clientCreditNotes, clientInvoices)),
+    [creditsUnknown, clientCreditNotes, clientInvoices],
+  )
+  const ledgerProblems = useMemo(
+    () => (receivableUnknown || clientInvoiceLedgersError || clientInvoiceLedgersLoading
+      ? []
+      : ledgerExceptions(clientInvoices, clientInvoiceLedgers, clientCreditNotes, clientRetentionReleases)),
+    [receivableUnknown, clientInvoiceLedgersError, clientInvoiceLedgersLoading,
+      clientInvoices, clientInvoiceLedgers, clientCreditNotes, clientRetentionReleases],
+  )
+  const sortedCreditNotes = useMemo(
+    () => [...clientCreditNotes].sort(
+      (a, b) => (b.creditNumber || '').localeCompare(a.creditNumber || ''),
+    ),
+    [clientCreditNotes],
   )
 
   const established = isBaselineEstablished(baseline)
@@ -696,7 +1117,10 @@ export default function ProjectClientInvoices() {
     if (clientFilter !== 'all' && inv.clientName !== clientFilter) return false
     // Past due AND still owing — a fully reconciled invoice is not past due in
     // any sense that matters, even when its due date has passed.
-    if (pastDueOnly && !isPastDueUnreconciled(inv, reconciliationById.get(inv.id)?.remaining ?? 0)) return false
+    // With a balance input unreadable, "still owing" is unknown: the filter is
+    // disabled below rather than applied to a balance that may be wrong.
+    if (pastDueOnly && !balanceUnknown
+      && !isPastDueUnreconciled(inv, reconciliationById.get(inv.id)?.remaining ?? 0)) return false
     if (search.trim()) {
       const q = search.trim().toLowerCase()
       const hay = [
@@ -707,14 +1131,6 @@ export default function ProjectClientInvoices() {
     }
     return true
   })
-
-  // Issue has no dialog of its own, so the write state lives on the page. A
-  // second click while one issue is unanswered is refused (useWriteAction).
-  function handleIssue(invoice) {
-    if (issueWrite.locked) return
-    if (!window.confirm(`Issue ${invoice.invoiceNumber}? Issued invoices cannot be edited — only voided.`)) return
-    issueWrite.run(() => issueClientInvoice(invoice))
-  }
 
   // ── Gates ──────────────────────────────────────────────────────────────────
   if (profileLoading) {
@@ -731,7 +1147,9 @@ export default function ProjectClientInvoices() {
       </Card>
     )
   }
-  if (baselineLoading || clientInvoicesLoading) {
+  // Loading is not zero either: credit notes and releases change Issued and
+  // every receivable, so no figure renders until both have settled.
+  if (baselineLoading || clientInvoicesLoading || clientCreditNotesLoading || clientRetentionReleasesLoading) {
     return <div className="text-[13px] text-brand-muted">Loading client invoices…</div>
   }
   if (!established) {
@@ -747,26 +1165,104 @@ export default function ProjectClientInvoices() {
     )
   }
 
+  const fig = (unknown, value) => (unknown ? <Unavailable /> : money(value))
+  const goToRetention = () => navigate(`/projects/${projectId}/commercial/client-retention`)
+
+  const creditInvoice = crediting ? invoiceById.get(crediting.invoiceId) ?? null : null
+  const creditDraft = crediting?.creditNoteId
+    ? clientCreditNotes.find(cn => cn.id === crediting.creditNoteId) ?? null
+    : null
+  const postingCredit = postingCreditId ? clientCreditNotes.find(cn => cn.id === postingCreditId) ?? null : null
+  const voidingCredit = voidingCreditId ? clientCreditNotes.find(cn => cn.id === voidingCreditId) ?? null : null
+  const remainingOf = (invoiceId) => (balanceUnknown ? null : reconciliationById.get(invoiceId)?.remaining ?? null)
+
+  const creditDetail = creditDetailId ? clientCreditNotes.find(cn => cn.id === creditDetailId) ?? null : null
+  const printTargetId = printCreditId ?? creditDetailId
+  const printCredit = printAt && printTargetId ? clientCreditNotes.find(cn => cn.id === printTargetId) ?? null : null
+  // A credit note stores only the uid of who posted it. The signed-in user's
+  // own name is the one name this page can vouch for; anyone else's is stated
+  // as not recorded rather than guessed.
+  const people = user?.uid && profile?.name ? { [user.uid]: profile.name } : null
+
+  // "Refresh figures": the same lines and details, re-saved against the
+  // invoice's current ledger.
+  const refreshCreditNote = (cn) => updateClientCreditNote(cn, {
+    creditDate: cn.creditDate,
+    reason: cn.reason,
+    clientCreditReference: cn.clientCreditReference || '',
+    notes: cn.notes || '',
+    rows: (cn.lineItems ?? []).map(li => ({ invoiceLineIndex: li.invoiceLineIndex, amount: li.amount })),
+  })
+
   return (
-    <div>
+    <>
+    {/* The printed credit note: mounted only while printing, never shown on
+        screen. Everything else on the page is hidden in that print. */}
+    {printCredit && (
+      <ClientCreditNotePrint
+        creditNote={printCredit}
+        invoice={invoiceById.get(printCredit.clientInvoiceId) ?? null}
+        projectName={project?.name ?? ''}
+        currencyCode={currencyCode}
+        people={people}
+        generatedAt={printAt}
+      />
+    )}
+    <div data-print-hide>
+      {/* ── Unavailability, honestly ───────────────────────────────────────── */}
+      {/* The ledgers serve credit notes only, so a failed ledger read is said
+          only to a company that can record them. */}
+      {(receivableUnknown || receivedUnknown || (clientInvoiceLedgersError && financeActive)) && (
+        <Card className="mb-3.5">
+          <p className="text-[13px] font-bold text-brand-red m-0">Some receivable figures are unavailable</p>
+          <ul className="m-0 mt-2 pl-4 text-[12px] text-brand-muted list-disc space-y-1">
+            {clientCreditNotesError && <li>{CLIENT_CREDIT_READ_UNAVAILABLE_NOTICE}</li>}
+            {clientRetentionReleasesError && <li>{CLIENT_RETENTION_READ_UNAVAILABLE_NOTICE}</li>}
+            {clientReceiptsError && (
+              <li>
+                Client Receipts could not be loaded, so Received to Date and every remaining balance are shown as
+                Unavailable rather than as though nothing had been received.
+              </li>
+            )}
+            {clientInvoiceLedgersError && financeActive && (
+              <li>
+                The invoice ledgers could not be loaded. A credit note is prepared and posted against its
+                invoice&apos;s current ledger, so recording, editing and posting credit notes are disabled.
+              </li>
+            )}
+          </ul>
+        </Card>
+      )}
+
       {/* ── Contract control ───────────────────────────────────────────────── */}
       <Card className="mb-3.5">
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3.5">
           <Metric label="Current Contract Sum" value={money(control.currentContractSum)} help="Ex-GST · original + approved client variations" />
-          <Metric label="Issued Client Invoices" value={money(control.issued.subtotal)} help={`Ex-GST · ${control.issued.count} issued`} />
+          <Metric
+            label="Issued Client Invoices"
+            value={fig(creditsUnknown, control.issued.subtotal)}
+            help={`Ex-GST · ${control.issued.count} issued · net of posted credit notes`}
+          />
+          <Metric
+            label="Credited"
+            value={fig(creditsUnknown, control.credited.subtotal)}
+            help="Ex-GST · posted credit notes · re-opened under Available to Invoice"
+          />
           <Metric
             label="Available to Invoice"
-            value={money(control.availableToInvoice)}
+            value={fig(creditsUnknown, control.availableToInvoice)}
             help="Unbilled contract value (ex-GST)"
-            danger={control.availableToInvoice < 0}
+            danger={!creditsUnknown && control.availableToInvoice < 0}
           />
-          <Metric label="Issued (inc. GST)" value={money(control.issued.grossTotal)} help="What has been billed" />
+          <Metric label="Issued (inc. GST)" value={fig(creditsUnknown, control.issued.grossTotal)} help="Billed, net of posted credit notes" />
           <Metric label="Draft Client Invoices" value={money(control.drafts.subtotal)} help={`Ex-GST · ${control.drafts.count} draft · not counted above`} />
           <Metric label="Pending Client Variation Exposure" value={money(pendingClientExposure)} help="Not invoiceable · not in the contract sum" />
         </div>
         <p className="m-0 mt-3 text-[11px] text-brand-muted">
           All contract figures are ex-GST and derived at read time — nothing is written back to the commercial
-          baseline or to variations. Over-invoicing is <span className="font-semibold">warned, never blocked</span>,
+          baseline or to variations. Retention a client withholds is still billed, so it stays inside Issued; a
+          posted credit note is an invoice correction, so it leaves Issued and never changes the Current Contract Sum.
+          Over-invoicing is <span className="font-semibold">warned, never blocked</span>,
           and the limit cannot be enforced by Firestore rules (they cannot sum sibling documents), so two users can
           invoice the same remaining value at the same time.
         </p>
@@ -776,36 +1272,56 @@ export default function ProjectClientInvoices() {
       <Card className="mb-3.5">
         <div className="flex flex-wrap items-baseline justify-between gap-2 mb-2.5">
           <p className="text-[13px] font-bold text-brand-text m-0">Accounts Receivable — ageing by due date</p>
-          <p className="m-0 text-[11px] text-brand-muted">Gross (inc. GST) · remaining balance after posted receipts</p>
+          <p className="m-0 text-[11px] text-brand-muted">Gross (inc. GST) · after credit notes, retention held and posted receipts</p>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
-          <Metric label="Received to Date" value={money(receivables.received)} help="Posted receipts allocated to invoices" />
-          <Metric label="Remaining to Reconcile" value={money(ageing.total)} help="Issued invoices still owing" />
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
+          <Metric
+            label="Receivable"
+            value={fig(receivableUnknown, receivables.receivable)}
+            help="Billed, less credit notes and retention held — before receipts"
+          />
+          <Metric
+            label="Client Retention Held"
+            value={fig(receivableUnknown, ctx.totals.retentionHeld)}
+            help="Billed, not receivable until released"
+          />
+          <Metric label="Received to Date" value={fig(receivedUnknown, receivables.received)} help="Posted receipts allocated to invoices" />
+          <Metric label="Remaining to Reconcile" value={fig(balanceUnknown, ageing.total)} help="Issued invoices still owing" />
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5 mt-3.5">
           {AGEING_BUCKETS.map(b => (
             <Metric
               key={b.key}
               label={b.label}
-              value={money(ageing.buckets[b.key].amount)}
-              help={`${ageing.buckets[b.key].count} invoice${ageing.buckets[b.key].count === 1 ? '' : 's'}`}
-              danger={b.key === 'd61_90' || b.key === 'd90plus'}
+              value={fig(balanceUnknown, ageing.buckets[b.key].amount)}
+              help={balanceUnknown
+                ? 'Unavailable'
+                : `${ageing.buckets[b.key].count} invoice${ageing.buckets[b.key].count === 1 ? '' : 's'}`}
+              danger={!balanceUnknown && (b.key === 'd61_90' || b.key === 'd90plus')}
             />
           ))}
         </div>
 
-        {ageing.overSettled.length > 0 && (
+        {/* A negative balance is an amount OWED TO THE CLIENT — never clamped
+            to zero, never shown as a settled invoice, never netted off what
+            other invoices owe. */}
+        {!balanceUnknown && owedRows.length > 0 && (
           <div className="mt-3 pt-3 border-t border-brand-border">
-            <p className="m-0 text-[12px] font-bold text-brand-red">Over-reconciled invoices — excluded from ageing</p>
+            <p className="m-0 text-[12px] font-bold text-brand-red">
+              Owed to client — {money(receivables.owedToClient)}
+            </p>
             <p className="m-0 mt-1 text-[11px] text-brand-muted">
-              More has been received against these invoices than was billed. Their balances are shown signed and are
-              never clamped, and they are kept out of the buckets above so they cannot offset genuine arrears.
+              More has been received against these invoices than they are now owed — a credit note or a voided
+              retention release after the money arrived, or an over-allocated receipt. The amounts are owed to the
+              client: they are kept out of the ageing buckets above so they cannot offset genuine arrears, and the
+              invoices are not treated as settled. Constrap records no refund — the remedy is to void the receipt
+              and re-record it with the surplus unallocated.
             </p>
             <div className="flex flex-wrap gap-3 mt-2">
-              {ageing.overSettled.map(inv => (
-                <span key={inv.id} className="text-[12px] text-brand-text">
-                  <span className="font-semibold">{inv.invoiceNumber}</span>{' '}
-                  <span className="text-brand-red font-semibold">
-                    {money(reconciliationById.get(inv.id)?.remaining ?? 0)}
-                  </span>
+              {owedRows.map(r => (
+                <span key={r.id} className="text-[12px] text-brand-text">
+                  <span className="font-semibold">{r.invoiceNumber}</span>{' '}
+                  <span className="text-brand-red font-semibold">Owed to client {money(-r.remaining)}</span>
                 </span>
               ))}
             </div>
@@ -813,6 +1329,7 @@ export default function ProjectClientInvoices() {
         )}
 
         <p className="m-0 mt-3 text-[11px] text-brand-muted">{AR_RECONCILIATION_NOTICE}</p>
+        <p className="m-0 mt-1 text-[11px] text-brand-muted">{CLIENT_RETENTION_HELD_NOTICE}</p>
       </Card>
 
       {/* ── Allocation exceptions ──────────────────────────────────────────── */}
@@ -830,15 +1347,47 @@ export default function ProjectClientInvoices() {
         </Card>
       )}
 
+      {/* ── Credit note exceptions ─────────────────────────────────────────── */}
+      {creditProblems.length > 0 && (
+        <Card className="mb-3.5">
+          <p className="text-[13px] font-bold text-brand-amber m-0">Credit note exceptions</p>
+          <p className="m-0 mt-1 text-[12px] text-brand-muted">{CLIENT_CREDIT_EXCEPTION_REMEDY}</p>
+          <div className="flex flex-col gap-1 mt-2.5">
+            {creditProblems.map(x => (
+              <p key={x.creditNoteId} className="m-0 text-[12px] text-brand-text">
+                <span className="font-semibold">{x.creditNumber}</span> → {x.invoiceNumber} ({money(x.grossTotal)}) — {x.reason}
+              </p>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* ── Ledger exceptions ──────────────────────────────────────────────── */}
+      {ledgerProblems.length > 0 && (
+        <Card className="mb-3.5">
+          <p className="text-[13px] font-bold text-brand-red m-0">Invoice ledger exceptions</p>
+          <p className="m-0 mt-1 text-[12px] text-brand-muted">
+            This cannot arise through Constrap — it means a record was changed outside the app. The figures on this
+            page still follow the posted credit notes and retention releases themselves; new postings against these
+            invoices may be refused until it is investigated.
+          </p>
+          <div className="flex flex-col gap-1 mt-2.5">
+            {ledgerProblems.map(x => (
+              <p key={x.invoiceId} className="m-0 text-[12px] text-brand-text">{x.reason}</p>
+            ))}
+          </div>
+        </Card>
+      )}
+
       {/* ── Variation invoicing ────────────────────────────────────────────── */}
       {variationRows.length > 0 && (
         <Card className="mb-3.5" padding={false}>
           <div className="px-5 pt-4 pb-2">
             <p className="text-[13px] font-bold text-brand-text m-0">Approved client variations</p>
             <p className="m-0 mt-1 text-[11px] text-brand-muted">
-              Ex-GST, derived at read time from issued invoices. Variation documents are never modified by
-              invoicing. Negative (credit) variations reduce the Current Contract Sum but cannot be invoiced —
-              a future Credit Note bills them.
+              Ex-GST, derived at read time from issued invoices net of posted credit notes. Variation documents are
+              never modified by invoicing. Negative (credit) variations reduce the Current Contract Sum but cannot
+              be invoiced — and a Client Credit Note is not how they are billed: it corrects an issued invoice only.
             </p>
           </div>
           <div className="overflow-x-auto">
@@ -857,9 +1406,9 @@ export default function ProjectClientInvoices() {
                     <td className="px-3.5 py-2.5 text-[13px] text-brand-text">{r.title || '—'}</td>
                     <td className="px-3.5 py-2.5 text-[12px] text-brand-muted">{r.costCodeName || <span title="Spans several cost codes">—</span>}</td>
                     <td className="px-3.5 py-2.5 text-[13px] text-brand-text whitespace-nowrap">{money(r.approved)}</td>
-                    <td className="px-3.5 py-2.5 text-[13px] text-brand-muted whitespace-nowrap">{money(r.invoiced)}</td>
-                    <td className={`px-3.5 py-2.5 text-[13px] font-semibold whitespace-nowrap ${r.remaining < 0 ? 'text-brand-red' : 'text-brand-text'}`}>
-                      {money(r.remaining)}
+                    <td className="px-3.5 py-2.5 text-[13px] text-brand-muted whitespace-nowrap">{fig(creditsUnknown, r.invoiced)}</td>
+                    <td className={`px-3.5 py-2.5 text-[13px] font-semibold whitespace-nowrap ${!creditsUnknown && r.remaining < 0 ? 'text-brand-red' : 'text-brand-text'}`}>
+                      {fig(creditsUnknown, r.remaining)}
                     </td>
                   </tr>
                 ))}
@@ -882,7 +1431,6 @@ export default function ProjectClientInvoices() {
         </div>
       </div>
 
-      {issueWrite.message && <div className="mb-3"><WriteFeedback write={issueWrite} /></div>}
       {clientInvoicesError && (
         <p className="text-[12px] text-brand-amber mb-3">Couldn&apos;t load client invoices — check your connection and access.</p>
       )}
@@ -895,24 +1443,36 @@ export default function ProjectClientInvoices() {
           <input
             className={`${inputCls} max-w-[260px]`}
             placeholder="Search CI #, client, reference, variation…"
+            aria-label="Search client invoices"
             value={search}
             onChange={e => setSearch(e.target.value)}
           />
-          <select className={`${inputCls} max-w-[170px]`} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+          <select
+            className={`${inputCls} max-w-[170px]`} aria-label="Filter by status"
+            value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+          >
             <option value="all">All statuses</option>
             {[CI_STATUS.DRAFT, CI_STATUS.ISSUED, CI_STATUS.VOID].map(s => (
               <option key={s} value={s}>{CI_STATUS_LABELS[s]}</option>
             ))}
           </select>
           {clientNames.length > 0 && (
-            <select className={`${inputCls} max-w-[220px]`} value={clientFilter} onChange={e => setClientFilter(e.target.value)}>
+            <select
+              className={`${inputCls} max-w-[220px]`} aria-label="Filter by client"
+              value={clientFilter} onChange={e => setClientFilter(e.target.value)}
+            >
               <option value="all">All clients</option>
               {clientNames.map(n => (
                 <option key={n} value={n}>{n}</option>
               ))}
             </select>
           )}
-          <Btn sm variant={pastDueOnly ? 'success' : 'ghost'} onClick={() => setPastDueOnly(v => !v)}>
+          <Btn
+            sm variant={pastDueOnly && !balanceUnknown ? 'success' : 'ghost'}
+            disabled={balanceUnknown}
+            title={balanceUnknown ? 'Unavailable — remaining balances could not be loaded' : undefined}
+            onClick={() => setPastDueOnly(v => !v)}
+          >
             Past due date
           </Btn>
         </div>
@@ -937,16 +1497,20 @@ export default function ProjectClientInvoices() {
             <table className="w-full border-collapse">
               <thead>
                 <tr className="bg-brand-card border-b border-brand-border">
-                  {['CI #', 'Client', 'Client Ref', 'Invoice Date', 'Due', 'Ex-GST', 'Total', 'Received', 'Remaining', 'Reconciliation', 'Status', ''].map((h, i) => (
-                    <th key={i} className={thCls}>{h}</th>
+                  {['CI #', 'Client', 'Client Ref', 'Invoice Date', 'Due', 'Ex-GST', 'Billed (inc. GST)', 'Receivable', 'Received', 'Remaining', 'Reconciliation', 'Status'].map(h => (
+                    <th key={h} className={thCls}>{h}</th>
                   ))}
+                  <th className={thCls}><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map(inv => {
                   const recon = reconciliationById.get(inv.id) ?? null
-                  const pastDue = isPastDueUnreconciled(inv, recon?.remaining ?? 0)
+                  const isIssued = inv.status === CI_STATUS.ISSUED
+                  const pastDue = !balanceUnknown && isPastDueUnreconciled(inv, recon?.remaining ?? 0)
                   const days = pastDue ? daysPastDue(inv.dueDate) : null
+                  const owed = !balanceUnknown && recon && recon.remaining < 0
+                  const voidRefused = isIssued && encumbered.has(inv.id)
                   return (
                     <tr key={inv.id} className="border-b border-brand-border hover:bg-brand-card transition-colors">
                       <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">
@@ -969,25 +1533,56 @@ export default function ProjectClientInvoices() {
                           : <span className="text-brand-muted">—</span>}
                       </td>
                       <td className="px-3.5 py-3 text-[13px] text-brand-text whitespace-nowrap">{money(inv.subtotal)}</td>
-                      <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">{money(inv.grossTotal)}</td>
-                      {/* Received / Remaining / Reconciliation are DERIVED from
-                          posted receipts on every render — never stored here. */}
+                      {/* What was BILLED never changes. Credits and retention
+                          are stated beneath it rather than netted into it, so
+                          the row stays readable without two more columns. */}
+                      <td className="px-3.5 py-3 text-[13px] whitespace-nowrap">
+                        <span className="font-semibold text-brand-text">{money(inv.grossTotal)}</span>
+                        {isIssued && recon && (receivableUnknown ? (
+                          <span className="block text-[11px] text-brand-muted">Credited / retention held unavailable</span>
+                        ) : (
+                          <>
+                            {recon.credited > 0 && (
+                              <span className="block text-[11px] text-brand-muted">Credited {money(recon.credited)}</span>
+                            )}
+                            {recon.retentionHeld > 0 && (
+                              <span className="block text-[11px] text-brand-muted">Retention held {money(recon.retentionHeld)}</span>
+                            )}
+                          </>
+                        ))}
+                        {inv.status === CI_STATUS.DRAFT && hasRetention(inv) && (
+                          <span className="block text-[11px] text-brand-muted">Retention to withhold {money(inv.retentionTotal)}</span>
+                        )}
+                      </td>
+                      {/* Receivable / Received / Remaining / Reconciliation are
+                          DERIVED on every render — never stored here. */}
+                      <td className="px-3.5 py-3 text-[13px] text-brand-text whitespace-nowrap">
+                        {recon ? fig(receivableUnknown, recon.receivableBasis) : '—'}
+                      </td>
                       <td className="px-3.5 py-3 text-[13px] text-brand-muted whitespace-nowrap">
-                        {recon ? money(recon.received) : '—'}
+                        {recon ? fig(receivedUnknown, recon.received) : '—'}
                       </td>
                       <td className="px-3.5 py-3 text-[13px] font-semibold whitespace-nowrap">
-                        {recon
-                          ? <span className={recon.remaining < 0 ? 'text-brand-red' : 'text-brand-text'}>{money(recon.remaining)}</span>
-                          : <span className="text-brand-muted">—</span>}
+                        {!recon
+                          ? <span className="text-brand-muted">—</span>
+                          : balanceUnknown
+                            ? <Unavailable />
+                            : owed
+                              ? <span className="text-brand-red">Owed to client {money(-recon.remaining)}</span>
+                              : <span className="text-brand-text">{money(recon.remaining)}</span>}
                       </td>
                       <td className="px-3.5 py-3">
-                        {recon
-                          ? <Badge
-                              label={RECONCILIATION_LABELS[recon.state]}
-                              variant={RECONCILIATION_BADGE_VARIANTS[recon.state]}
-                              sm
-                            />
-                          : <span className="text-[12px] text-brand-muted">—</span>}
+                        {!recon
+                          ? <span className="text-[12px] text-brand-muted">—</span>
+                          : balanceUnknown
+                            ? <Unavailable />
+                            : <span title={owed ? owedToClientDescription(money(-recon.remaining)) : undefined}>
+                                <Badge
+                                  label={clientReconciliationLabel(recon.state)}
+                                  variant={RECONCILIATION_BADGE_VARIANTS[recon.state]}
+                                  sm
+                                />
+                              </span>}
                       </td>
                       <td className="px-3.5 py-3">
                         <Badge label={CI_STATUS_LABELS[inv.status] ?? inv.status} variant={CI_BADGE_VARIANTS[inv.status]} sm />
@@ -997,11 +1592,37 @@ export default function ProjectClientInvoices() {
                           {inv.status === CI_STATUS.DRAFT && (
                             <>
                               <Btn sm variant="ghost" onClick={() => setEditing(inv)}>Edit</Btn>
-                              <Btn sm variant="success" onClick={() => handleIssue(inv)}>Issue</Btn>
+                              <Btn sm variant="success" onClick={() => setIssuing(inv)}>Issue</Btn>
                             </>
                           )}
-                          {(inv.status === CI_STATUS.DRAFT || inv.status === CI_STATUS.ISSUED) && (
-                            <Btn sm variant="ghost" onClick={() => setVoiding(inv)}>Void</Btn>
+                          {isIssued && financeActive && (
+                            <Btn
+                              sm variant="ghost"
+                              disabled={creditActionsUnavailable}
+                              title={creditActionsUnavailable
+                                ? 'Unavailable — the records a credit note is prepared from could not be loaded'
+                                : 'Record a credit note correcting this invoice'}
+                              onClick={() => setCrediting({ invoiceId: inv.id })}
+                            >
+                              Record credit note
+                            </Btn>
+                          )}
+                          {isIssued && financeActive && hasRetention(inv) && (
+                            <Btn sm variant="ghost" title="Open the Client Retention register" onClick={goToRetention}>
+                              Client retention
+                            </Btn>
+                          )}
+                          {(inv.status === CI_STATUS.DRAFT || isIssued) && (
+                            <Btn
+                              sm variant="ghost"
+                              disabled={voidRefused}
+                              title={voidRefused
+                                ? 'This invoice has a posted credit note or a posted retention release, so it cannot be voided. Void those first.'
+                                : undefined}
+                              onClick={() => setVoiding(inv)}
+                            >
+                              Void
+                            </Btn>
                           )}
                         </div>
                       </td>
@@ -1013,6 +1634,116 @@ export default function ProjectClientInvoices() {
           </div>
         )}
       </Card>
+
+      {/* ── Client credit notes ────────────────────────────────────────────── */}
+      {/* A company not activated for client credit notes sees this register
+          only when it holds a record (or the read failed, which is said) —
+          existing records are never hidden. */}
+      {(clientCreditNotesError || showClientFinanceRecords(financeActive, sortedCreditNotes.length)) && (
+      <Card padding={false} className="mt-3.5">
+        <div className="px-5 py-4 border-b border-brand-border">
+          <h2 className="text-[14px] font-bold text-brand-text m-0">Client credit notes</h2>
+          <p className="m-0 mt-0.5 text-[11.5px] text-brand-muted">
+            {financeActive
+              ? 'Corrections against issued client invoices. Start one with “Record credit note” on an issued invoice above. A draft changes nothing until it is posted.'
+              : `Corrections against issued client invoices. ${CLIENT_FINANCE_NOT_ACTIVATED_TEXT}`}
+          </p>
+        </div>
+        {clientCreditNotesError ? (
+          <p className="px-5 py-6 m-0 text-[13px] text-brand-muted">Unavailable — client credit notes could not be loaded.</p>
+        ) : sortedCreditNotes.length === 0 ? (
+          <p className="px-5 py-6 m-0 text-[13px] text-brand-muted">No client credit notes have been recorded.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="bg-brand-card border-b border-brand-border">
+                  {['CCN #', 'Credit Date', 'Invoice', 'Reason', 'Total (inc. GST)', 'Status'].map(h => (
+                    <th key={h} className={thCls}>{h}</th>
+                  ))}
+                  <th className={thCls}><span className="sr-only">Actions</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedCreditNotes.map(cn => {
+                  const isDraft = cn.status === CCN_STATUS.DRAFT
+                  const isPosted = cn.status === CCN_STATUS.POSTED
+                  return (
+                    <tr key={cn.id} className="border-b border-brand-border last:border-b-0 hover:bg-brand-card transition-colors">
+                      <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => setCreditDetailId(cn.id)}
+                          className="text-brand-accent hover:underline cursor-pointer"
+                        >
+                          {cn.creditNumber}
+                        </button>
+                      </td>
+                      <td className="px-3.5 py-3 text-[12px] text-brand-muted whitespace-nowrap">{cn.creditDate || '—'}</td>
+                      <td className="px-3.5 py-3 text-[13px] text-brand-text whitespace-nowrap">
+                        {cn.invoiceNumber || '—'}
+                        {cn.clientCreditReference && (
+                          <span className="block text-[11px] text-brand-muted">{cn.clientCreditReference}</span>
+                        )}
+                      </td>
+                      <td className="px-3.5 py-3 text-[12px] text-brand-muted max-w-[280px]">
+                        {cn.reason || '—'}
+                        {cn.status === CCN_STATUS.VOID && cn.voidReason && (
+                          <span className="block text-[11px]">Voided: {cn.voidReason}</span>
+                        )}
+                      </td>
+                      <td className="px-3.5 py-3 text-[13px] font-semibold text-brand-text whitespace-nowrap">{money(cn.grossTotal)}</td>
+                      <td className="px-3.5 py-3">
+                        <Badge label={CCN_STATUS_LABELS[cn.status] ?? cn.status} variant={CCN_BADGE_VARIANTS[cn.status]} sm />
+                      </td>
+                      <td className="px-3.5 py-3">
+                        <div className="flex gap-1.5 justify-end">
+                          <Btn
+                            sm variant="ghost"
+                            title={`Print ${cn.creditNumber} or save it as a PDF`}
+                            onClick={() => printCreditNote(cn)}
+                          >
+                            Print
+                          </Btn>
+                          {isDraft && financeActive && (
+                            <>
+                              <Btn
+                                sm variant="ghost"
+                                disabled={creditActionsUnavailable || !invoiceById.has(cn.clientInvoiceId)}
+                                title={creditActionsUnavailable
+                                  ? 'Unavailable — the records a credit note is prepared from could not be loaded'
+                                  : undefined}
+                                onClick={() => setCrediting({ invoiceId: cn.clientInvoiceId, creditNoteId: cn.id })}
+                              >
+                                Edit
+                              </Btn>
+                              <Btn
+                                sm variant="success"
+                                disabled={receivableUnknown}
+                                title="Apply this credit to the invoice"
+                                onClick={() => setPostingCreditId(cn.id)}
+                              >
+                                Post
+                              </Btn>
+                            </>
+                          )}
+                          {(isDraft || isPosted) && (
+                            <Btn sm variant="ghost" onClick={() => setVoidingCreditId(cn.id)}>Void</Btn>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div className="px-5 py-4 border-t border-brand-border">
+          <p className="m-0 text-[11.5px] text-brand-muted">{CLIENT_CREDIT_NOTE_NOTICE}</p>
+        </div>
+      </Card>
+      )}
 
       <p className="m-0 mt-3 text-[11px] text-brand-muted">
         Constrap records what has been invoiced and what has been received against it. It does
@@ -1040,8 +1771,12 @@ export default function ProjectClientInvoices() {
           clientInvoices={clientInvoices}
           contractSum={contractSum}
           issuedExGst={control.issued.subtotal}
+          availableNow={control.availableToInvoice}
+          creditedByVariation={ctx.creditedByVariation}
+          creditsUnknown={creditsUnknown}
           currencyCode={currencyCode}
           showTaxNotice={showTaxNotice}
+          financeActive={financeActive}
           onClose={() => setEditing(null)}
           onSave={editing === 'new'
             ? createClientInvoice
@@ -1053,15 +1788,82 @@ export default function ProjectClientInvoices() {
         <VoidModal invoice={voiding} onClose={() => setVoiding(null)} onConfirm={voidClientInvoice} />
       )}
 
+      {issuing && invoiceById.has(issuing.id) && (
+        <IssueModal
+          invoice={invoiceById.get(issuing.id)}
+          currencyCode={currencyCode}
+          onClose={() => setIssuing(null)}
+          onConfirm={issueClientInvoice}
+        />
+      )}
+
       {detail && (
         <DetailModal
           invoice={detail}
           reconciliation={reconciliationById.get(detail.id) ?? null}
+          position={ctx.positions[detail.id] ?? null}
           allocatedReceipts={receiptsForInvoice(clientReceipts, detail.id)}
+          creditNotes={creditNotesForInvoice(clientCreditNotes, detail.id)}
+          releases={clientRetentionReleases.filter(r => r.clientInvoiceId === detail.id)}
+          creditsUnknown={creditsUnknown}
+          receivableUnknown={receivableUnknown}
+          receivedUnknown={receivedUnknown}
           currencyCode={currencyCode}
+          financeActive={financeActive}
           onClose={() => setDetail(null)}
+          onOpenRetention={goToRetention}
+        />
+      )}
+
+      {crediting && creditInvoice && (
+        <ClientCreditNoteModal
+          key={`${crediting.invoiceId}/${crediting.creditNoteId ?? 'new'}`}
+          invoice={creditInvoice}
+          creditNote={creditDraft}
+          ledgerDoc={ledgerById.get(creditInvoice.id) ?? null}
+          remaining={remainingOf(creditInvoice.id)}
+          currencyCode={currencyCode}
+          onClose={() => setCrediting(null)}
+          onSave={creditDraft
+            ? (input) => updateClientCreditNote(creditDraft, input)
+            : createClientCreditNote}
+        />
+      )}
+
+      {postingCredit && (
+        <ClientCreditPostModal
+          creditNote={postingCredit}
+          invoice={invoiceById.get(postingCredit.clientInvoiceId) ?? null}
+          ledgerDoc={ledgerById.get(postingCredit.clientInvoiceId) ?? null}
+          ledgerUnavailable={clientInvoiceLedgersError || clientInvoiceLedgersLoading}
+          remaining={remainingOf(postingCredit.clientInvoiceId)}
+          currencyCode={currencyCode}
+          onClose={() => setPostingCreditId(null)}
+          onConfirm={postClientCreditNote}
+          onRefresh={refreshCreditNote}
+        />
+      )}
+
+      {voidingCredit && (
+        <ClientCreditVoidModal
+          creditNote={voidingCredit}
+          currencyCode={currencyCode}
+          onClose={() => setVoidingCreditId(null)}
+          onConfirm={voidClientCreditNote}
+        />
+      )}
+
+      {creditDetail && (
+        <ClientCreditDetailModal
+          creditNote={creditDetail}
+          invoice={invoiceById.get(creditDetail.clientInvoiceId) ?? null}
+          currencyCode={currencyCode}
+          people={people}
+          onClose={() => setCreditDetailId(null)}
+          onPrint={() => printCreditNote(creditDetail)}
         />
       )}
     </div>
+    </>
   )
 }

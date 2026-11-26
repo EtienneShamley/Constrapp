@@ -424,6 +424,91 @@ of the work still to do:
     hardening before customer onboarding); GST §44 steps 1–3 and Dashboard
     §22 checks 2–3. **Next milestone: client credit-note architecture
     assessment and ADR.**
+  - **Commercial Finance Phase 1, authoritative backend correction (ADR-89)
+    — IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION (26
+    November 2026; TESTING.md §79).** The Lead Architect ruled NO-GO on
+    integrating the first design and directed that complex financial
+    mutations be processed by the trusted backend. Posting and voiding of
+    client credit notes and client retention releases, and every ledger
+    write, are now four trusted callables that re-derive every figure; the
+    Rules keep reads, drafts and immutability (235,387 bytes; 8,933 under
+    budget on the binding file). Both release blockers are closed (line
+    validation at posting; receipt-dependent release voids). The
+    mixed-tax allocation was corrected and the 20,000,000.00 retention limit
+    removed. Local evidence at that gate: unit 113 / 5,935, rules 40 / 2,597,
+    Functions 9 / 241 and 12 / 497, browser acceptance on emulators.
+    **Final release-readiness pass (26 November 2026; TESTING.md §80; ADR-89
+    A1–A9; ADR-89 APPROVED by the Lead Architect — REPORTED):** client receipt
+    posting and voiding moved to the backend as well (six new callables in
+    all), so a retention-release void reads one ledger document on a project
+    of any size — the 5,000-receipt limit is gone; refused voids name the
+    blocking document; a credit can no longer raise the receivable by a cent
+    (proven); supported range 999,999,999,999.99 per invoice; the emulator
+    launcher exercises App-Check-enforced callables (D3 #38). Rules 235,321
+    bytes (8,999 under budget on the binding file). Evidence: unit
+    115 / 6,019, rules 40 / 2,621, Functions 9 / 249 and 13 / 552, local
+    browser acceptance, corrected GST §44 and the compatibility matrix.
+    **Final integration safeguards (27 November 2026; TESTING.md §81; ADR-89
+    S1–S5):** historical receipts are brought into the invoice ledgers by an
+    exact one-time baseline per project (production inventory: 9 posted
+    receipts on 5 invoices) — never a lower bound, never silently zero;
+    credit notes and retention are activated per company by a server-written
+    flag enforced in Rules and backend (TEST company first); the monetary
+    range is enforced by the server and the Rules. Rules 236,120 bytes (8,200
+    under budget on the binding file). Evidence: unit 116 / 6,085, rules
+    40 / 2,632, Functions 9 / 256 and 14 / 623. Receipts are enabled for
+    the TEST company first and for every company only after architect
+    acceptance of the baseline there (ADR-89 S6).
+    Release (supersedes the order above): callables with both switches off →
+    restrictive Rules → verify and wait → baseline inventory → Hosting →
+    enable receipts → activate the TEST company → acceptance → general
+    availability (DEPLOYMENT.md).
+    **Permanent direction:** trusted backend for complex commercial
+    mutations; ten engineering principles (ENGINEERING_STANDARDS.md §9).
+    **Next backend migrations, each its own decision (D3 #37):** `variations`
+    create with an RFI; claim-sourced `supplierInvoices` create;
+    `progressClaims` and the claim-to-invoice pairing — with the payable-side
+    rounding correction (D3 #35) carried in the second and third. These are
+    the **Phase 2 architecture plan** and were not touched in Phase 1. (Client
+    receipt posting, formerly fourth, was done in the final pass.) **Full
+    commercial load testing is a Phase 3 release requirement.**
+    **Required before customer onboarding:** a client refund /
+    credit-settlement workflow (an amount owed to a client is shown and blocks
+    the Final Account, but cannot yet be settled in Constrap); the load test
+    (ARCHITECTURE.md → *Capacity and load-test plan*).
+  - *As written at the first gate (NO-GO on the enforcement design):* **Commercial Finance Phase 1 — IMPLEMENTED — PENDING INTEGRATION AND
+    PRODUCTION VERIFICATION (26 November 2026; `feature/commercial-finance-phase-1`,
+    uncommitted; TESTING.md §77–§78; ADR-85 to ADR-88, approved by the Lead
+    Architect — REPORTED).** **Client credit notes** (`CCN-0001`) correct what
+    was billed on one issued client invoice, line by line, reversing the
+    invoice's stored GST exactly; they reduce net Issued and re-open Available
+    to Invoice and never change the contract sum or move cash. **Client
+    retention** is an authored amount per invoice (percentage helper), with
+    GST in proportion to the invoice's own GST, released by a **Client
+    Retention Release** (`CRR-0001`). The cumulative caps are enforced by
+    Firestore Rules through a **per-invoice ledger**, including under
+    concurrency. Receivable-side GST is exact integer cents; the payable side
+    is unchanged (D3 #35 stays open for it). Every receivable figure on Client
+    Invoices, Receipts, Cash Flow, Reports, Portfolio and the Final Account
+    comes from one selector. Rules 243,104 bytes — **the next Rules change
+    needs a capacity recovery first**. Local evidence only: unit 111 / 5,789,
+    rules 40 / 2,548, Functions 8 / 179 and 11 / 372, targeted browser run on
+    emulators. **Not included:** refunds, a contract-level retention
+    percentage or cap, retention due dates, credit-note print / PDF, approval
+    segregation (Phase 2), GST §44 manual steps, any production step.
+  - *As written at the assessment checkpoint:* **Commercial Finance Phase 1 — IN PROGRESS (26 November 2026;
+    `feature/commercial-finance-phase-1`, uncommitted; TESTING.md §77).** The
+    phase carries the decided order of work as six workstreams: the
+    client credit-note architecture assessment and ADR (CF1), the D3 #35
+    rounding assessment (CF2), the Rules capacity assessment and recovery
+    (CF3), client credit notes (CF4), client retention (CF5) and a local
+    integrated acceptance (CF6). **CF3 — Rules capacity recovery 3
+    (ADR-85): IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION
+    VERIFICATION** (`firestore.rules` 236,737 → 228,289 bytes; binding
+    headroom 16,031; not published). **CF1 and CF2: assessed; ADR-86
+    (money precision), ADR-87 (client credit notes) and ADR-88 (client
+    retention) PROPOSED, awaiting the Lead Architect.** CF4, CF5 and CF6
+    NOT STARTED. D3 #37 recorded.
   - *As written before the release:* **D3 #32 membership resolution correction — IMPLEMENTED — PENDING
     INTEGRATION AND PRODUCTION VERIFICATION** (25 November 2026;
     `fix/membership-resolution-state`, uncommitted, awaiting architect

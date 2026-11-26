@@ -38,7 +38,8 @@ import { readFileSync } from 'node:fs'
 // frontend/tests/unit/recoveryEvidence.test.js.
 export const COLLECTION_GROUPS = [
   'activities', 'approvedBudget', 'auditEvents', 'boqItems', 'budgetAdjustments', 'budgetApprovalSnapshots',
-  'budgetApprovals', 'budgetLines', 'cashFlowLines', 'clientInvoices', 'clientReceipts',
+  'budgetApprovals', 'budgetLines', 'cashFlowLines', 'clientCreditNotes', 'clientFinanceState',
+  'clientInvoiceLedgers', 'clientInvoices', 'clientReceipts', 'clientRetentionReleases',
   'commercial', 'companies', 'contacts', 'costCodes', 'counters', 'devOutbox', 'documents',
   'drawings', 'fileLinkRevocationQueue', 'finalAccounts', 'forecastLines', 'invitations',
   'members', 'programmeBaselineSnapshots', 'programmeBaselines', 'progressClaims', 'projectDirectory',

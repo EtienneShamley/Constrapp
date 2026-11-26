@@ -4,6 +4,7 @@ import { forecastRollups } from './forecast'
 import { claimedPendingByCostCode } from './progressClaims'
 import { resolveBudgetSource, budgetLinesFor, originalApprovedBudgetFor, approvedVersionCaption, BUDGET_SOURCE } from './budgetApproval'
 import { cashInRows, receivablesSummary } from './clientReceipts'
+import { receivableContext } from './clientReceivables'
 import { cashOutRows } from './supplierPayments'
 import { totalActualCashIn, totalActualCashOut, actualNetCash } from './cashFlow'
 import {
@@ -28,7 +29,11 @@ import {
 //   Cash                           → lib/cashFlow.js actual totals over
 //                                    lib/clientReceipts.js cashInRows and
 //                                    lib/supplierPayments.js cashOutRows;
-//                                    receivables from receivablesSummary
+//                                    receivables from receivablesSummary over
+//                                    the ONE receivable contract
+//                                    (lib/clientReceivables.js receivableContext:
+//                                    issued invoices, posted valid client credit
+//                                    notes, posted client retention releases)
 //
 // What this module adds is AVAILABILITY (projectSnapshot's figureState rules:
 // failed → UNAVAILABLE, loading → LOADING, else READY with a value) and a
@@ -36,12 +41,16 @@ import {
 // across projects, and never fills a missing figure with zero: a figure that is
 // not READY carries `value: null`.
 
-export const REPORT_SOURCES = [...SNAPSHOT_SOURCES, 'clientInvoices', 'clientReceipts']
+export const REPORT_SOURCES = [
+  ...SNAPSHOT_SOURCES, 'clientInvoices', 'clientReceipts', 'clientCreditNotes', 'clientRetentionReleases',
+]
 
 export const REPORT_SOURCE_LABELS = {
   ...SNAPSHOT_SOURCE_LABELS,
   clientInvoices: 'Client Invoices',
   clientReceipts: 'Client Receipts',
+  clientCreditNotes: 'Client Credit Notes',
+  clientRetentionReleases: 'Client Retention Releases',
 }
 
 // Dependencies of the figures the report adds beside the snapshot's own.
@@ -50,7 +59,13 @@ export const REPORT_SOURCE_LABELS = {
 //     Forecast Final Cost sources (a superset; conservative by design)
 //   · costCodeRows — the forecast row union (FORECAST_ROW_SOURCES) plus the
 //     claims read for the Claimed column (already in the union)
-//   · cash — posted receipts / payments only; receivables also read invoices
+//   · cash — posted receipts / payments only. Credit notes and retention
+//     releases are NOT cash, so cashIn / netCash do not read them
+//   · receivables — what the client owes now: issued invoices less posted
+//     credit notes and retention still held, less receipts (ADR-87 / ADR-88).
+//     A failed credit-note or release read is UNKNOWN, never "none posted"
+//   · clientRetentionHeld — withheld less released less credited; no receipt
+//     reduces it, so receipts are not a dependency
 export const REPORT_DEPENDENCIES = {
   costToComplete:      FIGURE_DEPENDENCIES.forecastFinalCost,
   costCodeRows:        [...new Set([...FIGURE_DEPENDENCIES.forecastRows, ...FIGURE_DEPENDENCIES.claimedExposure])],
@@ -61,7 +76,8 @@ export const REPORT_DEPENDENCIES = {
   cashIn:              ['clientReceipts'],
   cashOut:             ['supplierPayments'],
   netCash:             ['clientReceipts', 'supplierPayments'],
-  receivables:         ['clientInvoices', 'clientReceipts'],
+  receivables:         ['clientInvoices', 'clientReceipts', 'clientCreditNotes', 'clientRetentionReleases'],
+  clientRetentionHeld: ['clientInvoices', 'clientCreditNotes', 'clientRetentionReleases'],
 }
 
 // Figure kinds — how a READY value is rendered and exported.
@@ -110,14 +126,15 @@ export function budgetSourceCaption(budgetSource) {
 // ── The report ───────────────────────────────────────────────────────────────
 //
 // `sources` / `sourceStates` exactly as projectSnapshot takes them, plus
-// `costCodes` (display names only — never a row or an amount), `clientInvoices`
-// and `clientReceipts`. `currencyCode` is the project's RESOLVED currency.
+// `costCodes` (display names only — never a row or an amount), `clientInvoices`,
+// `clientReceipts`, `clientCreditNotes` and `clientRetentionReleases`.
+// `currencyCode` is the project's RESOLVED currency.
 export function buildCommercialReport({ project = null, currencyCode, sources = {}, sourceStates = {} } = {}) {
   const {
     budgetLines = [], approvedBudget = null, purchaseOrders = [], progressClaims = [],
     supplierInvoices = [], supplierCreditNotes = [], variations = [], forecastLines = [],
     baseline = null, supplierPayments = [], retentionReleases = [],
-    clientInvoices = [], clientReceipts = [], costCodes = [],
+    clientInvoices = [], clientReceipts = [], clientCreditNotes = [], clientRetentionReleases = [], costCodes = [],
   } = sources
 
   // 1. The Dashboard's composition, unchanged.
@@ -278,7 +295,10 @@ export function buildCommercialReport({ project = null, currencyCode, sources = 
   const outRows = cashOutRows(supplierPayments, { projectId: project?.id ?? null })
   const cashIn = totalActualCashIn(inRows)
   const cashOut = totalActualCashOut(outRows)
-  const receivables = receivablesSummary(clientInvoices, clientReceipts)
+  // Credit notes and retention releases move no cash: they change what is
+  // RECEIVABLE, through the one receivable contract.
+  const { positions } = receivableContext(clientInvoices, clientCreditNotes, clientRetentionReleases)
+  const receivables = receivablesSummary(clientInvoices, clientReceipts, positions)
   const cashFigures = [
     { key: 'cashIn', label: 'Cash received (client receipts)', kind: FIGURE_KIND.MONEY,
       figure: gated(REPORT_DEPENDENCIES.cashIn, cashIn, sourceStates),
@@ -291,7 +311,15 @@ export function buildCommercialReport({ project = null, currencyCode, sources = 
       note: 'Cash received − cash paid on this project; not a bank balance' },
     { key: 'receivablesOutstanding', label: 'Client invoices outstanding', kind: FIGURE_KIND.MONEY,
       figure: gated(REPORT_DEPENDENCIES.receivables, receivables.remaining, sourceStates),
-      note: 'Issued client invoices not yet matched to a receipt, gross — not cash' },
+      note: 'Issued client invoices, less posted credit notes and retention still held, not yet matched to a receipt, gross — not cash' },
+    { key: 'clientRetentionHeld', label: 'Client retention held', kind: FIGURE_KIND.MONEY,
+      figure: gated(REPORT_DEPENDENCIES.clientRetentionHeld, receivables.retentionHeld, sourceStates),
+      note: 'Client retention held — billed, not receivable until released, gross' },
+    // A client credit balance. Always listed, so a non-zero amount can never be
+    // hidden, and never netted against what other invoices still owe.
+    { key: 'owedToClient', label: 'Owed to client', kind: FIGURE_KIND.MONEY,
+      figure: gated(REPORT_DEPENDENCIES.receivables, receivables.owedToClient, sourceStates),
+      note: 'Received beyond what is now receivable on an invoice (a credit note after receipt, or an over-allocation), gross — not netted against other invoices' },
     { key: 'remainingPayable', label: 'Supplier invoices unpaid', kind: FIGURE_KIND.MONEY,
       figure: availableFigure('remainingPayable', snapshot.remainingPayable.value, sourceStates),
       note: 'Posted supplier invoices still payable, gross — not cash' },

@@ -149,8 +149,8 @@ describe('release safety', () => {
     const firebaseJson = JSON.parse(readFileSync(join(DIR, '../firebase.json'), 'utf8'))
     expect(firebaseJson.functions.map(f => f.codebase)).toEqual(['team'])
     // No other export shares the prefix the CLI filter matches on (id === name || id.startsWith(name + '-')).
-    const names = [...index.matchAll(/^export const (\w+)\s+=\s+(wrap|onCall|onSchedule)\(/gm)].map(m => m[1])
-    expect(names).toHaveLength(11)   // + transferBoqToBudget (ADR-81)
+    const names = [...index.matchAll(/^export const (\w+)\s+=\s+(wrap|onCall|onSchedule|clientFinanceCall)\(/gm)].map(m => m[1])
+    expect(names).toHaveLength(17)   // + transferBoqToBudget (ADR-81) + the six client-finance callables (ADR-89)
     expect(names.filter(n => n === 'approveFinalAccount' || n.startsWith('approveFinalAccount-'))).toEqual(['approveFinalAccount'])
   })
 

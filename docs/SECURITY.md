@@ -174,6 +174,45 @@ Controls now in place:
   (membership, project, company, the predecessor revision). The 1,000-row,
   170-character-name draft was written through the rules in the emulator as
   one document.
+- **Rules capacity recovery 3 (ADR-85, 26 November 2026 — IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION; not published).**
+  The file had reached **236,737 bytes** (L4, ADR-81: 232,776; M2-A2, ADR-83:
+  236,737 — neither was entered in this list at the time). The budget is
+  applied to the two generated files as well, and the transitional file is the
+  largest, so the binding headroom was 7,582 bytes. Seven lifecycle helpers
+  (`createStamped`, `currencyShaped`, `docCoreFrozen`, `lifecycleUnstamped`,
+  `lifecycleStampsFrozen`, `postedHere`, `voidedWithReason`) now carry runs of
+  conjuncts that were byte-identical across the financial blocks, and the
+  per-project `counters` block calls the existing `financialMember(companyId)`:
+  FINAL **236,737 → 228,289 bytes**, transitional **228,969** (binding headroom
+  **16,031**), m2a2-transitional 228,728. No conjunct was reordered, added or
+  removed — `scripts/verify-rules-helper-hoist.mjs` expands every call back to
+  the previous text — and the emulator suite passed unchanged (39 files /
+  2,492 tests). **What governs a publish is four limits, not one:** 256 KB of
+  source, 250 KB compiled (reported only when a ruleset is created — not
+  measurable here), 1,000 expressions per request, and 10 / 20 document-access
+  calls. A full suite run logs 4,560 *maximum of 1000 expressions* messages on
+  **refused** requests across six blocks, on the previous rules and on these
+  alike (tracker D3 #37): every outcome is the intended denial, but "zero
+  evaluation errors" (ADR-40 D10) no longer describes the ruleset. A helper
+  call adds one expression per call site.
+- **Client credit notes, client retention and the invoice ledger (ADR-87 / ADR-88 / ADR-89, 26 November 2026 — IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION; not published).**
+  *First design:* a Rules-paired ledger took the FINAL file from 228,289 to
+  **243,104 bytes** (binding file 243,784 — 1,216 under the budget). The
+  architect ruled NO-GO on building towards recurring capacity exhaustion.
+  *As corrected (ADR-89):* posting, voiding a posted entry and every ledger
+  write moved to trusted callables; the Rules keep reads, drafts and
+  immutability; the final pass also removed client receipt posting and
+  posted-receipt voiding from the Rules. The final integration safeguards added the
+  company activation gate and the range bounds (+799 bytes). FINAL **236,120
+  bytes**, transitional **236,800** (binding — **8,200 under the budget**),
+  m2a2-transitional 236,559: 617 bytes *below*
+  what `main` carried before the phase, with three collections added. The
+  20,000,000.00 retention limit of the first design (64-bit integer
+  arithmetic in Rules) is gone. **Capacity is now managed by where logic
+  lives, not recovered by rewriting Rules:** complex financial mutations are
+  built in the backend, and the three near-ceiling blocks of D3 #37 are next
+  to move. Compiled size is unmeasured and remains an explicit release
+  prerequisite.
 - **Size compliance is not deployment proof.** The emulator suite proves the
   repo file; the size test proves it can be published; only the console shows
   what is live — see [DEPLOYMENT.md](DEPLOYMENT.md) → *Verifying which rules
@@ -3838,6 +3877,105 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
 The intended remediation is server-side enforcement (Cloud Functions and/or
 richer rules) — see [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) for why this
 is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.
+
+49. **Client credit notes, client retention and the invoice ledger — the
+    trusted boundary, and what remains outside it (ADR-87 / ADR-88 / ADR-89;
+    IMPLEMENTED — NOT DEPLOYED).** *As first written this control listed four
+    things left to the application under a Rules-paired ledger: the line array,
+    the proportion inside the caps, the invoice's own headers, and receipts.
+    ADR-89 moved posting to the trusted backend; three of the four are closed.*
+
+    **Enforced by the trusted backend** (`postClientCreditNote`,
+    `voidClientCreditNote`, `postClientRetentionRelease`,
+    `voidClientRetentionRelease`, and — from the final pass —
+    `postClientReceipt`, `voidClientReceipt`; Admin SDK, so each authorises
+    itself):
+    authenticated caller; **active** membership re-read inside the transaction;
+    company from that membership, never the request; project in that company;
+    role `company_admin` / `project_manager` / `qs`; identifiers and a reason
+    only as input. In one transaction the server checks the **invoice** before
+    trusting it (issued; same client and currency; headers reconciling to its
+    own lines; retention figures exactly as derived), requires the **draft** to
+    be exactly the document the app writes (exact key set, snapshots equal to
+    the invoice's, pristine lifecycle fields, bounded text), **re-derives every
+    line, GST figure, total and the retention split** and requires the stored
+    draft to equal them to the cent, moves the ledger by exactly that entry
+    under every invariant, and writes the entry, the ledger and one audit event
+    together. **A credit note whose lines are invalid cannot be persisted as
+    posted.** A posted release is voided only if the receivable basis after the
+    void still covers what posted receipts have allocated to the invoice — a
+    figure (`receivedCents`) the invoice's own ledger carries, maintained by
+    the two receipt callables in the same transaction that posts or voids a
+    receipt. **No register is read and no project-history limit exists.**
+    **A receipt is posted by the server:** it re-reads each allocated invoice
+    (exists, issued, same client and currency) and its ledger, re-derives the
+    totals, and refuses an allocation above what the invoice is currently owed
+    unless the request carries the explicit over-allocation acknowledgement —
+    so a tab that prepared a receipt before a credit note or a release void
+    cannot over-allocate silently. Repeats are idempotent. Every operation on
+    one invoice — credit, release, receipt, and their voids — is serialised on
+    its ledger. A refused void names the document that blocks it.
+
+    **Enforced by Firestore Rules:** financial-role reads; no client write to a
+    ledger; a client may create a draft, edit a draft and void a **draft**, and
+    nothing else — a posted or void entry admits no client write, and a client
+    cannot post; the entry's target is an issued invoice of the same client and
+    currency and is frozen; stamps are the caller and the server time; nothing
+    is deleted; the invoice retention scalars are pinned; an invoice carrying a
+    posted credit note or release cannot be voided; **a client receipt can be
+    created, edited and voided as a draft only — posting a receipt and voiding
+    a posted one admit no client write.** An obsolete browser build cannot
+    bypass the boundary: its direct posting writes are refused.
+
+    **Not enforced — the residue, never presented otherwise:**
+    - **A draft's figures and free fields are not validated by Rules.** A
+      financial-role account can store a draft with nonsensical totals or
+      extra fields by a direct call. It has no financial effect, appears in the
+      draft register, and cannot be posted. (Tested, both ways.)
+    - **Retention GST at an exact half-cent tie.** The Rules admit either
+      neighbouring cent on a draft invoice; the backend requires the exact
+      figure before anything is posted against it, so such an invoice can be
+      issued and shown but not credited or released.
+    - **The invoice's lines against its own headers at ISSUE.** Issuing an
+      invoice is still a client write (DC14): the Rules do not verify the
+      lines. The backend verifies them before posting against the invoice, not
+      when it is issued.
+    - **An ACKNOWLEDGED over-allocation is permitted** — the approved
+      warn-and-acknowledge policy (DC16), now enforced by the server rather
+      than the browser. The acknowledgement proves a flag was sent, not that
+      the consequence was understood. The result is an amount **owed to the
+      client**, shown and never clamped, and it blocks the Final Account. A
+      release void followed by an acknowledged receipt can therefore still
+      leave more received than the invoice is owed; only the unacknowledged
+      path is closed.
+    - **Historical receipts are in the ledgers through a one-time baseline,
+      and that baseline is exact only while no receipt is posted outside the
+      backend.** The first finance operation on a project reads its posted
+      receipts once, in one transaction, and writes what they allocated to
+      each invoice's ledger; nothing runs on a project without that marker
+      (never treated as zero). The Rules are what keep it exact afterwards:
+      republishing the earlier Rules, or an Admin SDK or console write of a
+      posted receipt, would bypass the ledgers. (Proven on the emulator; the
+      baseline has not run in production.)
+    - **Company activation is a server-written flag, not a licence check.**
+      `clientFinanceEnabled` is enforced by the Rules (retention; draft credit
+      notes and releases) and by the four callables; the browser's hiding of
+      the features is UX only. An operator with Admin access can set it for
+      any company; that write is audited by the script that makes it.
+    - **A draft receipt's figures are not validated by Rules beyond its
+      existing shape checks**; the server validates the whole document before
+      posting.
+    - **Number uniqueness** (DC6), **creator ≠ poster segregation** (DC7 —
+      Phase 2), and that an entry reflects a real agreement with the client.
+    - **The read-time validity gate** (`clientCreditException`) is defence in
+      depth for what this application renders; it protects nothing outside it.
+
+    Proven in `tests/functions/clientFinance.test.js` and
+    `tests/functions/clientReceipts.test.js` (the boundary, the invariants,
+    concurrency, idempotency, independence from register size) and
+    `tests/rules/clientLedger.rules.test.js` /
+    `tests/rules/clientReceipts.rules.test.js` (the restrictions and the
+    honest gaps).
 
 ## Quant™ 1A takeoff — two non-financial collections, `qs` is a full author
 
