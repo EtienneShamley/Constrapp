@@ -132,6 +132,49 @@ service cloud.firestore {
     function budgetApprover(companyId) {
       return sameCompany(companyId) && memberRole() in ['company_admin', 'project_manager'];
     }
+    // ── Lifecycle helpers (ADR-85) — byte-identical conjunct runs hoisted from the
+    // financial blocks; `node scripts/verify-rules-helper-hoist.mjs` expands them back.
+    function createStamped() {
+      return request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.createdAt == request.time;
+    }
+    function currencyShaped() {
+      return request.resource.data.currency is string
+          && request.resource.data.currency.matches('^[A-Z]{3}$');
+    }
+    function docCoreFrozen() {
+      return request.resource.data.currency == resource.data.currency
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.docType == resource.data.docType
+          && request.resource.data.revision == resource.data.revision;
+    }
+    function lifecycleUnstamped() {
+      return request.resource.data.postedAt == null
+          && request.resource.data.postedBy == null
+          && request.resource.data.voidedAt == null
+          && request.resource.data.voidedBy == null;
+    }
+    function lifecycleStampsFrozen() {
+      return request.resource.data.postedAt == resource.data.postedAt
+          && request.resource.data.postedBy == resource.data.postedBy
+          && request.resource.data.voidedAt == resource.data.voidedAt
+          && request.resource.data.voidedBy == resource.data.voidedBy;
+    }
+    function postedHere() {
+      return request.resource.data.status == 'posted'
+          && changedKeys().hasOnly(['status', 'postedAt', 'postedBy', 'updatedAt', 'updatedBy'])
+          && request.resource.data.postedBy == request.auth.uid
+          && request.resource.data.postedAt == request.time;
+    }
+    function voidedWithReason() {
+      return request.resource.data.status == 'void'
+          && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
+          && request.resource.data.voidedBy == request.auth.uid
+          && request.resource.data.voidedAt == request.time
+          && request.resource.data.voidReason is string
+          && request.resource.data.voidReason.trim().size() > 0;
+    }
 
 
     // Membership documents — a user may READ THEIR OWN PROFILE AND NOTHING ELSE.
@@ -433,8 +476,7 @@ service cloud.firestore {
           && pairedWithApproval()
           && request.resource.data.versionCount == 1
           && request.resource.data.originalApprovalId == request.resource.data.activeApprovalId
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time;
+          && createStamped();
 
       // (a) A later approval: the count moves by EXACTLY one, the active id
       // changes, the ledger resets, the original and provenance never move.
@@ -505,8 +547,7 @@ service cloud.firestore {
           && request.resource.data.withdrawnBy == null
           && request.resource.data.withdrawReason == ''
           && request.resource.data.revision == 1
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped()
           && getAfter(snapshotPath()).data.entryCount == request.resource.data.entryCount
           && getAfter(snapshotPath()).data.total == request.resource.data.total
@@ -662,8 +703,7 @@ service cloud.firestore {
           && request.resource.data.withdrawnBy == null
           && request.resource.data.withdrawReason == ''
           && request.resource.data.revision == 1
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped();
 
       // From DRAFT only; nothing captured moves (changedKeys):
@@ -791,8 +831,7 @@ service cloud.firestore {
             && request.resource.data.costCodeName is string
             && request.resource.data.costCodeName.size() > 0
             && request.resource.data.notes is string
-            && request.resource.data.currency is string
-            && request.resource.data.currency.matches('^[A-Z]{3}$');
+            && currencyShaped();
       }
       // Quant 1B provenance (ADR-52): the LATEST explicit application of a measured
       // total — preserved exactly as stored, or freshly caller-stamped with THIS write.
@@ -823,8 +862,7 @@ service cloud.firestore {
       allow create: if financialMember(companyId)
           && shapeValid()
           && request.resource.data.status == 'active'
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped()
           // Void stamps cannot be forged at creation.
           && request.resource.data.voidedAt == null
@@ -851,12 +889,7 @@ service cloud.firestore {
             //     immutable retained history.
             (
               resource.data.status == 'active'
-              && request.resource.data.status == 'void'
-              && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
-              && request.resource.data.voidedBy == request.auth.uid
-              && request.resource.data.voidedAt == request.time
-              && request.resource.data.voidReason is string
-              && request.resource.data.voidReason.trim().size() > 0
+              && voidedWithReason()
             )
           );
 
@@ -2071,8 +2104,7 @@ service cloud.firestore {
 
       allow create: if financialMember(companyId)
           && baselineShape()
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && legacyOriginalFrozen(null);
 
       allow update: if financialMember(companyId)
@@ -2089,11 +2121,7 @@ service cloud.firestore {
     match /companies/{companyId}/projects/{projectId}/clientInvoices/{invoiceId} {
       function corePreserved() {
         return request.resource.data.invoiceNumber == resource.data.invoiceNumber
-            && request.resource.data.currency      == resource.data.currency
-            && request.resource.data.createdAt     == resource.data.createdAt
-            && request.resource.data.createdBy     == resource.data.createdBy
-            && request.resource.data.docType       == resource.data.docType
-            && request.resource.data.revision      == resource.data.revision;
+            && docCoreFrozen();
       }
 
       allow read: if financialMember(companyId);
@@ -2102,11 +2130,9 @@ service cloud.firestore {
           && request.resource.data.status == 'draft'
           && request.resource.data.docType == 'invoice'
           && request.resource.data.invoiceNumber is string
-          && request.resource.data.currency is string
-          && request.resource.data.currency.matches('^[A-Z]{3}$')
+          && currencyShaped()
           && request.resource.data.revision is number
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped()
           // Lifecycle stamps cannot be forged at creation.
           && request.resource.data.issuedAt == null
@@ -2139,12 +2165,7 @@ service cloud.firestore {
             //     admits, and it touches nothing else.
             (
               (resource.data.status == 'draft' || resource.data.status == 'issued')
-              && request.resource.data.status == 'void'
-              && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
-              && request.resource.data.voidedBy == request.auth.uid
-              && request.resource.data.voidedAt == request.time
-              && request.resource.data.voidReason is string
-              && request.resource.data.voidReason.trim().size() > 0
+              && voidedWithReason()
             )
           );
 
@@ -2156,11 +2177,7 @@ service cloud.firestore {
     match /companies/{companyId}/projects/{projectId}/clientReceipts/{receiptId} {
       function corePreserved() {
         return request.resource.data.receiptNumber == resource.data.receiptNumber
-            && request.resource.data.currency      == resource.data.currency
-            && request.resource.data.createdAt     == resource.data.createdAt
-            && request.resource.data.createdBy     == resource.data.createdBy
-            && request.resource.data.docType       == resource.data.docType
-            && request.resource.data.revision      == resource.data.revision;
+            && docCoreFrozen();
       }
       // Shape required of every stored state (create and draft edit alike).
       function shapeValid() {
@@ -2173,8 +2190,7 @@ service cloud.firestore {
             && request.resource.data.clientId.size() > 0
             && request.resource.data.clientName is string
             && request.resource.data.clientName.size() > 0
-            && request.resource.data.currency is string
-            && request.resource.data.currency.matches('^[A-Z]{3}$')
+            && currencyShaped()
             && request.resource.data.receiptDate is string
             && request.resource.data.receiptDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
             && request.resource.data.paymentMethod is string
@@ -2190,14 +2206,10 @@ service cloud.firestore {
       allow create: if financialMember(companyId)
           && shapeValid()
           && request.resource.data.status == 'draft'
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped()
           // Lifecycle stamps cannot be forged at creation.
-          && request.resource.data.postedAt == null
-          && request.resource.data.postedBy == null
-          && request.resource.data.voidedAt == null
-          && request.resource.data.voidedBy == null;
+          && lifecycleUnstamped();
 
       allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
             // (a) DRAFT EDIT — content only; the status and lifecycle stamps cannot move.
@@ -2205,20 +2217,14 @@ service cloud.firestore {
               resource.data.status == 'draft'
               && request.resource.data.status == 'draft'
               && shapeValid()
-              && request.resource.data.postedAt == resource.data.postedAt
-              && request.resource.data.postedBy == resource.data.postedBy
-              && request.resource.data.voidedAt == resource.data.voidedAt
-              && request.resource.data.voidedBy == resource.data.voidedBy
+              && lifecycleStampsFrozen()
             )
             ||
             // (b) DRAFT -> POSTED — no content change; the reviewed amount, date and
             //     allocations are the ones committed.
             (
               resource.data.status == 'draft'
-              && request.resource.data.status == 'posted'
-              && changedKeys().hasOnly(['status', 'postedAt', 'postedBy', 'updatedAt', 'updatedBy'])
-              && request.resource.data.postedBy == request.auth.uid
-              && request.resource.data.postedAt == request.time
+              && postedHere()
             )
             ||
             // (c) DRAFT|POSTED -> VOID (terminal) — the only update a POSTED receipt
@@ -2226,12 +2232,7 @@ service cloud.firestore {
             //     no reversal document.
             (
               (resource.data.status == 'draft' || resource.data.status == 'posted')
-              && request.resource.data.status == 'void'
-              && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
-              && request.resource.data.voidedBy == request.auth.uid
-              && request.resource.data.voidedAt == request.time
-              && request.resource.data.voidReason is string
-              && request.resource.data.voidReason.trim().size() > 0
+              && voidedWithReason()
             )
           );
 
@@ -2243,11 +2244,7 @@ service cloud.firestore {
     match /companies/{companyId}/projects/{projectId}/supplierPayments/{paymentId} {
       function corePreserved() {
         return request.resource.data.paymentNumber == resource.data.paymentNumber
-            && request.resource.data.currency      == resource.data.currency
-            && request.resource.data.createdAt     == resource.data.createdAt
-            && request.resource.data.createdBy     == resource.data.createdBy
-            && request.resource.data.docType       == resource.data.docType
-            && request.resource.data.revision      == resource.data.revision;
+            && docCoreFrozen();
       }
       // Shape required of every stored state (create and draft edit alike).
       function shapeValid() {
@@ -2260,8 +2257,7 @@ service cloud.firestore {
             && request.resource.data.supplierId.size() > 0
             && request.resource.data.supplierName is string
             && request.resource.data.supplierName.size() > 0
-            && request.resource.data.currency is string
-            && request.resource.data.currency.matches('^[A-Z]{3}$')
+            && currencyShaped()
             && request.resource.data.paymentDate is string
             && request.resource.data.paymentDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
             && request.resource.data.paymentMethod is string
@@ -2277,14 +2273,10 @@ service cloud.firestore {
       allow create: if financialMember(companyId)
           && shapeValid()
           && request.resource.data.status == 'draft'
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped()
           // Lifecycle stamps cannot be forged at creation.
-          && request.resource.data.postedAt == null
-          && request.resource.data.postedBy == null
-          && request.resource.data.voidedAt == null
-          && request.resource.data.voidedBy == null;
+          && lifecycleUnstamped();
 
       allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
             // (a) DRAFT EDIT — content only; the status and lifecycle stamps cannot move.
@@ -2292,20 +2284,14 @@ service cloud.firestore {
               resource.data.status == 'draft'
               && request.resource.data.status == 'draft'
               && shapeValid()
-              && request.resource.data.postedAt == resource.data.postedAt
-              && request.resource.data.postedBy == resource.data.postedBy
-              && request.resource.data.voidedAt == resource.data.voidedAt
-              && request.resource.data.voidedBy == resource.data.voidedBy
+              && lifecycleStampsFrozen()
             )
             ||
             // (b) DRAFT -> POSTED — no content change; the reviewed amount, date and
             //     allocations are the ones committed.
             (
               resource.data.status == 'draft'
-              && request.resource.data.status == 'posted'
-              && changedKeys().hasOnly(['status', 'postedAt', 'postedBy', 'updatedAt', 'updatedBy'])
-              && request.resource.data.postedBy == request.auth.uid
-              && request.resource.data.postedAt == request.time
+              && postedHere()
             )
             ||
             // (c) DRAFT|POSTED -> VOID (terminal) — the only update a POSTED payment
@@ -2313,12 +2299,7 @@ service cloud.firestore {
             //     no reversal, refund or bank-reversal document.
             (
               (resource.data.status == 'draft' || resource.data.status == 'posted')
-              && request.resource.data.status == 'void'
-              && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
-              && request.resource.data.voidedBy == request.auth.uid
-              && request.resource.data.voidedAt == request.time
-              && request.resource.data.voidReason is string
-              && request.resource.data.voidReason.trim().size() > 0
+              && voidedWithReason()
             )
           );
 
@@ -2332,11 +2313,7 @@ service cloud.firestore {
       // supplier snapshots, so the get()-validated link is never silently repointed.
       function corePreserved() {
         return request.resource.data.creditNumber          == resource.data.creditNumber
-            && request.resource.data.currency              == resource.data.currency
-            && request.resource.data.createdAt             == resource.data.createdAt
-            && request.resource.data.createdBy             == resource.data.createdBy
-            && request.resource.data.docType               == resource.data.docType
-            && request.resource.data.revision              == resource.data.revision
+            && docCoreFrozen()
             && request.resource.data.supplierInvoiceId     == resource.data.supplierInvoiceId
             && request.resource.data.invoiceNumber         == resource.data.invoiceNumber
             && request.resource.data.supplierInvoiceNumber == resource.data.supplierInvoiceNumber
@@ -2395,8 +2372,7 @@ service cloud.firestore {
             && request.resource.data.reason is string
             && request.resource.data.reason.trim().size() > 0
             && request.resource.data.notes is string
-            && request.resource.data.currency is string
-            && request.resource.data.currency.matches('^[A-Z]{3}$')
+            && currencyShaped()
             && request.resource.data.lineItems is list
             && request.resource.data.lineItems.size() >= 1
             && request.resource.data.lineItems.size() <= 100
@@ -2409,14 +2385,10 @@ service cloud.firestore {
           && shapeValid()
           && targetValid()
           && request.resource.data.status == 'draft'
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped()
           // Lifecycle stamps cannot be forged at creation.
-          && request.resource.data.postedAt == null
-          && request.resource.data.postedBy == null
-          && request.resource.data.voidedAt == null
-          && request.resource.data.voidedBy == null;
+          && lifecycleUnstamped();
 
       allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
             // (a) DRAFT EDIT — content freely editable while draft; the frozen target must
@@ -2427,10 +2399,7 @@ service cloud.firestore {
               && request.resource.data.status == 'draft'
               && shapeValid()
               && targetValid()
-              && request.resource.data.postedAt == resource.data.postedAt
-              && request.resource.data.postedBy == resource.data.postedBy
-              && request.resource.data.voidedAt == resource.data.voidedAt
-              && request.resource.data.voidedBy == resource.data.voidedBy
+              && lifecycleStampsFrozen()
             )
             ||
             // (b) DRAFT -> POSTED — no content change; the validated target and totals are
@@ -2441,10 +2410,7 @@ service cloud.firestore {
             //     by a direct SDK call (Deferred Controls 1 and 2). One extra read per post.
             (
               resource.data.status == 'draft'
-              && request.resource.data.status == 'posted'
-              && changedKeys().hasOnly(['status', 'postedAt', 'postedBy', 'updatedAt', 'updatedBy'])
-              && request.resource.data.postedBy == request.auth.uid
-              && request.resource.data.postedAt == request.time
+              && postedHere()
               && targetValid()
             )
             ||
@@ -2453,12 +2419,7 @@ service cloud.firestore {
             //     needs no reversal document.
             (
               (resource.data.status == 'draft' || resource.data.status == 'posted')
-              && request.resource.data.status == 'void'
-              && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
-              && request.resource.data.voidedBy == request.auth.uid
-              && request.resource.data.voidedAt == request.time
-              && request.resource.data.voidReason is string
-              && request.resource.data.voidReason.trim().size() > 0
+              && voidedWithReason()
             )
           );
 
@@ -2507,8 +2468,7 @@ service cloud.firestore {
             && request.resource.data.description is string
             && request.resource.data.description.trim().size() > 0
             && request.resource.data.notes is string
-            && request.resource.data.currency is string
-            && request.resource.data.currency.matches('^[A-Z]{3}$');
+            && currencyShaped();
       }
 
       allow read: if financialMember(companyId);
@@ -2516,8 +2476,7 @@ service cloud.firestore {
       allow create: if financialMember(companyId)
           && shapeValid()
           && request.resource.data.status == 'active'
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped()
           // Void stamps cannot be forged at creation.
           && request.resource.data.voidedAt == null
@@ -2538,12 +2497,7 @@ service cloud.firestore {
             //     immutable retained history.
             (
               resource.data.status == 'active'
-              && request.resource.data.status == 'void'
-              && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
-              && request.resource.data.voidedBy == request.auth.uid
-              && request.resource.data.voidedAt == request.time
-              && request.resource.data.voidReason is string
-              && request.resource.data.voidReason.trim().size() > 0
+              && voidedWithReason()
             )
           );
 
@@ -2622,8 +2576,7 @@ service cloud.firestore {
       allow create: if financialMember(companyId)
           && shapeValid()
           && request.resource.data.status == 'draft'
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped()
           // Lifecycle stamps and award/cancel fields cannot be forged
           // at creation.
@@ -2782,8 +2735,7 @@ service cloud.firestore {
             && request.resource.data.lineItems is list
             && request.resource.data.lineItems.size() >= 1
             && request.resource.data.lineItems.size() <= 100
-            && request.resource.data.currency is string
-            && request.resource.data.currency.matches('^[A-Z]{3}$')
+            && currencyShaped()
             && request.resource.data.revision == 1;
       }
 
@@ -2792,8 +2744,7 @@ service cloud.firestore {
       allow create: if financialMember(companyId)
           && shapeValid()
           && request.resource.data.status == 'received'
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped()
           // Void stamps cannot be forged at creation.
           && request.resource.data.voidedAt == null
@@ -2827,12 +2778,7 @@ service cloud.firestore {
             //     void audit fields only, with a real reason.
             (
               resource.data.status == 'received'
-              && request.resource.data.status == 'void'
-              && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
-              && request.resource.data.voidedBy == request.auth.uid
-              && request.resource.data.voidedAt == request.time
-              && request.resource.data.voidReason is string
-              && request.resource.data.voidReason.trim().size() > 0
+              && voidedWithReason()
               && parentPackage(resource.data.tenderPackageId).status == 'issued'
             )
           );
@@ -2897,8 +2843,7 @@ service cloud.firestore {
           && request.resource.data.withdrawnBy == null
           && request.resource.data.withdrawReason == ''
           && request.resource.data.revision == 1
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped()
           && getAfter(snapshotPath()).data.activityCount == request.resource.data.activityCount
           && getAfter(snapshotPath()).data.capturedBy == request.auth.uid
@@ -3134,8 +3079,7 @@ service cloud.firestore {
       allow create: if programmeWriter()
           && shapeValid()
           && request.resource.data.revision == 1
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped()
           // Cancellation cannot be forged at creation.
           && request.resource.data.cancelReason == ''
@@ -3183,11 +3127,7 @@ service cloud.firestore {
       // would move money between suppliers with no audit trail).
       function corePreserved() {
         return request.resource.data.releaseNumber     == resource.data.releaseNumber
-            && request.resource.data.currency          == resource.data.currency
-            && request.resource.data.createdAt         == resource.data.createdAt
-            && request.resource.data.createdBy         == resource.data.createdBy
-            && request.resource.data.docType           == resource.data.docType
-            && request.resource.data.revision          == resource.data.revision
+            && docCoreFrozen()
             && request.resource.data.supplierInvoiceId == resource.data.supplierInvoiceId;
       }
       function targetInvoice() {
@@ -3248,8 +3188,7 @@ service cloud.firestore {
             && request.resource.data.supplierId.size() > 0))
             && request.resource.data.supplierName is string
             && request.resource.data.supplierName.size() > 0
-            && request.resource.data.currency is string
-            && request.resource.data.currency.matches('^[A-Z]{3}$')
+            && currencyShaped()
             // The date the release was AGREED — not a defects-liability date, a
             // contractual entitlement date, or a payment due date (ADR-30).
             && request.resource.data.releaseDate is string
@@ -3266,14 +3205,10 @@ service cloud.firestore {
           && shapeValid()
           && targetValid()
           && request.resource.data.status == 'draft'
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped()
           // Lifecycle stamps cannot be forged at creation.
-          && request.resource.data.postedAt == null
-          && request.resource.data.postedBy == null
-          && request.resource.data.voidedAt == null
-          && request.resource.data.voidedBy == null;
+          && lifecycleUnstamped();
 
       allow update: if financialMember(companyId) && corePreserved() && updateStamped() && (
             // (a) DRAFT EDIT — money, date, reason and notes editable while draft (re-saving
@@ -3284,10 +3219,7 @@ service cloud.firestore {
               && request.resource.data.status == 'draft'
               && shapeValid()
               && targetValid()
-              && request.resource.data.postedAt == resource.data.postedAt
-              && request.resource.data.postedBy == resource.data.postedBy
-              && request.resource.data.voidedAt == resource.data.voidedAt
-              && request.resource.data.voidedBy == resource.data.voidedBy
+              && lifecycleStampsFrozen()
             )
             ||
             // (b) DRAFT -> POSTED — no content change; the reviewed amount and GST are the
@@ -3310,12 +3242,7 @@ service cloud.firestore {
             //     withdrawing, and rules must never trap it in the posted state.
             (
               (resource.data.status == 'draft' || resource.data.status == 'posted')
-              && request.resource.data.status == 'void'
-              && changedKeys().hasOnly(['status', 'voidedAt', 'voidedBy', 'voidReason', 'updatedAt', 'updatedBy'])
-              && request.resource.data.voidedBy == request.auth.uid
-              && request.resource.data.voidedAt == request.time
-              && request.resource.data.voidReason is string
-              && request.resource.data.voidReason.trim().size() > 0
+              && voidedWithReason()
             )
           );
 
@@ -3361,8 +3288,7 @@ service cloud.firestore {
           && request.resource.data.withdrawnAt == null
           && request.resource.data.withdrawnBy == null
           && request.resource.data.withdrawReason == ''
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped();
 
       allow update: if drawingWriter() && masterCorePreserved() && updateStamped() && (
@@ -3481,8 +3407,7 @@ service cloud.firestore {
             && request.resource.data.withdrawnBy == null
             && request.resource.data.withdrawReason == ''
             && request.resource.data.revision == 1
-            && request.resource.data.createdBy == request.auth.uid
-            && request.resource.data.createdAt == request.time
+            && createStamped()
             && updateStamped();
 
         // Each branch is `hasOnly`-restricted to its own stamps, which is what
@@ -3590,8 +3515,7 @@ service cloud.firestore {
           && request.resource.data.withdrawnBy == null
           && request.resource.data.withdrawReason == ''
           && request.resource.data.revision == 1
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped();
 
       allow update: if internalMember() && docCorePreserved() && updateStamped() && (
@@ -3751,8 +3675,7 @@ service cloud.firestore {
           && questionShape(request.resource.data)
           && managementShape(request.resource.data)
           && noLifecycleStamps(request.resource.data)
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped();
 
       allow update: if rfiMember() && corePreserved() && updateStamped() && (
@@ -3903,8 +3826,7 @@ service cloud.firestore {
       allow create: if pulseWriter()
           && activeShape()
           && request.resource.data.revision == 1
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped();
 
       allow update: if pulseWriter() && corePreserved() && updateStamped() && nextRevision() && (
@@ -4008,8 +3930,7 @@ service cloud.firestore {
           && sourceLive(request.resource.data)
           && geometryValid(request.resource.data)
           && request.resource.data.revision == 1
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped()
           && (
                // (a) UNCALIBRATED BIRTH — made before the first count
@@ -4162,8 +4083,7 @@ service cloud.firestore {
           && request.resource.data.voidedAt == null
           && request.resource.data.voidedBy == null
           && request.resource.data.revision == 1
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
+          && createStamped()
           && updateStamped();
 
       allow update: if quantMember()
@@ -4207,10 +4127,7 @@ service cloud.firestore {
     // financial counters stay company-wide. Same audience and tenant gate as the
     // company counters; +1-only integrity is NOT enforced (DC6 / DC27). Delete blocked.
     match /companies/{companyId}/projects/{projectId}/counters/{counterId} {
-      allow read, create, update: if request.auth != null
-          && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-          && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId
-          && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['company_admin', 'project_manager', 'qs'];
+      allow read, create, update: if financialMember(companyId);
       allow delete: if false;
     }
 
