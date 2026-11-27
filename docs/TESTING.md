@@ -7250,7 +7250,7 @@ logins, two browser tabs.
    dot and its Pause control behave as in §24.
 
 
-## 44. GST boundary hotfix — `fix/gst-boundary-pins` (findings F2 / F3 of the SHIELD inspection of 3 November 2026) — DEPLOYED, Rules and Hosting (VERIFIED read-only, 25 November 2026 — §74.1; the release dates are not recorded); calculations verified independently (§74.4) — calculation compatibility ACCEPTED (Lead Architect, §74.10); manual acceptance 1–3 NOT RUN in production — OUTSTANDING, retained for the relevant financial implementation milestone; precision concern tracker D3 #35
+## 44. GST boundary hotfix — `fix/gst-boundary-pins` (findings F2 / F3 of the SHIELD inspection of 3 November 2026) — DEPLOYED, Rules and Hosting (VERIFIED read-only, 25 November 2026 — §74.1; the release dates are not recorded); calculations verified independently (§74.4) — calculation compatibility ACCEPTED (Lead Architect, §74.10); **corrected manual acceptance steps 1, 2 and the financial parts of 3 PASSED in production, 27 November 2026 (§82.7); the external-role checks of step 3a NOT RUN**; precision concern tracker D3 #35 (payable side OPEN). *As written before:* manual acceptance 1–3 NOT RUN in production — OUTSTANDING, retained for the relevant financial implementation milestone
 
 *Heading as written before 25 November 2026:* … — implemented, NOT YET DEPLOYED
 
@@ -11368,7 +11368,7 @@ evidence limit of §74 and §75.
 
 **Next milestone:** client credit-note architecture assessment and ADR.
 
-## 77. Commercial Finance Phase 1 — repository assessment, Rules capacity recovery 3 (ADR-85) and the rounding assessment (D3 #35) — **CF3 IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION; CF1 and CF2 ASSESSED, decisions PROPOSED (ADR-86, ADR-87, ADR-88) and awaiting the Lead Architect; CF4, CF5 and CF6 NOT STARTED** (26 November 2026 NZDT; `feature/commercial-finance-phase-1` from `main` at `8702728`, uncommitted)
+## 77. Commercial Finance Phase 1 — repository assessment, Rules capacity recovery 3 (ADR-85) and the rounding assessment (D3 #35) — **LIVE — production-accepted; Phase 1 CLOSED within its accepted scope (27 November 2026; §82).** *As written:* **CF3 IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION; CF1 and CF2 ASSESSED, decisions PROPOSED (ADR-86, ADR-87, ADR-88) and awaiting the Lead Architect; CF4, CF5 and CF6 NOT STARTED** (26 November 2026 NZDT; `feature/commercial-finance-phase-1` from `main` at `8702728`, uncommitted)
 
 Evidence class for everything in this section: **EMULATOR / local**. Nothing was
 deployed; production was neither read nor written.
@@ -11634,7 +11634,7 @@ and a full credit; (D) a credit after receipt — *Owed to client*, never zero;
 refused invoice void, including the two-tab race; (G) a failed read shows
 *Unavailable*. Run on the isolated acceptance company only, on new records.
 
-## 79. Commercial Finance Phase 1 — authoritative backend correction (ADR-89): trusted callables for posting and voiding, reduced Rules, the corrected allocation rule and the completed local acceptance — **IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION** (26 November 2026 NZDT; `feature/commercial-finance-phase-1` from `main` at `8702728`, uncommitted)
+## 79. Commercial Finance Phase 1 — authoritative backend correction (ADR-89): trusted callables for posting and voiding, reduced Rules, the corrected allocation rule and the completed local acceptance — **LIVE — production-accepted (27 November 2026; §82).** *As written:* **IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION** (26 November 2026 NZDT; `feature/commercial-finance-phase-1` from `main` at `8702728`, uncommitted)
 
 Evidence class for everything in this section: **EMULATOR / LOCAL**. Nothing was
 deployed; production was neither read nor written; no production account was
@@ -11846,7 +11846,7 @@ since corrected; under the rule in force the same steps give 22.00 / 198.00 /
 
 ---
 
-## 80. Commercial Finance Phase 1 — final release-readiness pass (ADR-89 final-pass amendments A1–A9): scalable receipt dependency, server-posted receipts, named void refusals, the rounding-direction correction, the supported monetary range, the App Check development correction and release compatibility — **IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION** (26 November 2026 NZDT; `feature/commercial-finance-phase-1` from `main` at `8702728`, uncommitted)
+## 80. Commercial Finance Phase 1 — final release-readiness pass (ADR-89 final-pass amendments A1–A9): scalable receipt dependency, server-posted receipts, named void refusals, the rounding-direction correction, the supported monetary range, the App Check development correction and release compatibility — **LIVE — production-accepted (27 November 2026; §82).** *As written:* **IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION** (26 November 2026 NZDT; `feature/commercial-finance-phase-1` from `main` at `8702728`, uncommitted)
 
 Evidence class throughout: **LOCAL / EMULATOR**. Nothing deployed; production
 not read or written. §79 records the branch as it stood at the previous gate;
@@ -12061,7 +12061,7 @@ ports free; scratch copies deleted; the working tree unchanged by the run.
 
 ---
 
-## 81. Commercial Finance Phase 1 — final integration safeguards (ADR-89 S1–S5): exact historical receipt baseline, cutover with no dual posting path, company-scoped activation, authoritative monetary range — **IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION** (27 November 2026 NZDT; `feature/commercial-finance-phase-1` from `main` at `8702728`, uncommitted)
+## 81. Commercial Finance Phase 1 — final integration safeguards (ADR-89 S1–S5): exact historical receipt baseline, cutover with no dual posting path, company-scoped activation, authoritative monetary range — **INTEGRATED (`main` `9e31bb0`) and LIVE — production cutover and acceptance in §82 (27 November 2026).** *As written:* **IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION** (27 November 2026 NZDT; `feature/commercial-finance-phase-1` from `main` at `8702728`, uncommitted)
 
 Evidence class: **LOCAL / EMULATOR**, except 81.2, which is a **read-only
 production inventory** (aggregate counts; authorised by the Lead Architect).
@@ -12223,3 +12223,283 @@ deployment. Full suites re-run on the final tree: unit **116 / 6,085**; rules
 shown is the existing *temporarily unavailable* message, covered in §80.5).
 The gate has not run in production. The receipt company check is made by the
 handler and is not repeated inside the operation's transaction.
+
+## 82. Commercial Finance Phase 1 — production cutover and acceptance (steps 0, A–I; ADR-85 to ADR-89) — **LIVE; Phase 1 (CF1–CF6) CLOSED within its accepted scope** (Lead Architect, 27 November 2026 NZDT — REPORTED)
+
+Production project `constrapp-69b5d`, 26 November 2026 22:00 UTC to
+27 November 2026 03:20 UTC. **Every commit, merge, push, deployment and
+operator script was executed by the Product Owner.** The engineer prepared the
+commands and verified each step read-only (REST and `gcloud` reads, deployed
+source archives, public Hosting files) and ran the browser work as the TEST
+Company Admin on `constrapp-69b5d.web.app` in the isolated acceptance company
+`constrap-acceptance-test`. No Apex Builders financial record was created,
+posted or voided by the engineer or the Product Owner. Times are UTC.
+Procedure: DEPLOYMENT.md → *Commercial Finance Phase 1 release order*.
+
+### 82.1 Release record (as executed)
+
+| Step | What | When (UTC) | Identifiers | Verification |
+|---|---|---|---|---|
+| Integration | ADR-85 hoist, then the finance work, merged | 26 Nov | `7730652`, `4a62fbe`, merge `9e31bb0` (tree `f0dff990…`); Azure `main` GREEN — REPORTED | VERIFIED in Git |
+| Preflight | Read-only inventory; F2 fixture created through the released build in the acceptance company | 22:00–22:10 | Project `cZEtvoFbr5jR7umM9jeg`: CI-0001 1,000.00 + GST 100.00 = 1,100.00; CR-0001 600.00 posted (legacy 28-field shape) | Inventory and 27-group fingerprint recorded |
+| A | Six new callables, all three parameters `false` | 22:30 | `post/voidClientReceipt`, `post/voidClientCreditNote`, `post/voidClientRetentionRelease`, each `-00001-*` | Source archives identical to `main`; parameters `false`; invoker as `approvefinalaccount`; refusal without App Check (401); 11 existing services unchanged |
+| A (first attempt) | **Failed: *No function matches given --only filters*** — the documented filter lacked the `team:` codebase prefix | before 22:30 | — | Nothing deployed (root cause proven from `firebase-tools` 15.36.0 and local SDK discovery). Corrected commands in DEPLOYMENT.md |
+| B | Restrictive Firestore Rules | 22:35:43 | Ruleset `0e228bd0-fc7e-407c-bb93-0728ba4457c0`, 236,120 bytes, byte-identical to `main` (previous `67b6425a…`, 236,737) | Publish accepted (compiled size is not exposed; no refusal); read back byte-identical |
+| C | Propagation wait (10 min), then probes in project AUD-3 `sMtmXPoVRKmR8qpEqimK` | from 22:45:43 | — | 82.2 |
+| D | Frozen inventory | after C | 19 invoices; 14 receipts (draft 1, posted 10, void 3); 10 posted allocations on 6 invoices; 0 ledgers, markers, credit notes, releases, activations | All stop conditions false; Apex identical to the 22:03 fingerprint |
+| E | `approveFinalAccount`, then Hosting | 22:52:25; 22:52:48 | `approvefinalaccount-00004-tiv`; Hosting version `2f85dee4071c61d6` (previous `edc2bf6f34568d78`); bundle `index-BEwVCddF.js`, `index-DqWvP0JF.css` | Source identical to `main`; all 8 live Hosting files byte-identical to a build of `main`; the three origins serve the same files; no development App Check code in the live bundle |
+| F1 config | Receipt switch `true`, TEST scope | 27 Nov | `f0c5f98`, merge `0f623c6` — two lines (env value and its release-safety pin) | Azure GREEN — REPORTED |
+| F1 deploy | Receipt callables only | 01:08 | `postclientreceipt-00002-gic`, `voidclientreceipt-00002-wod` | Effective parameters read from the services: receipt `true`, all-companies `false`, finance `false`; 15 other services unchanged |
+| F1 activation | `--receipts --enable --apply` on the TEST company | 01:20:14 | `clientReceiptsEnabled: true`; one `company.client_receipts_set` (operator) | The first verification found the flag absent (the script had not been applied); re-verified after the Product Owner applied it |
+| F2 | Non-zero historical baseline in TEST | 01:22–01:23 | 82.3 | Accepted by the Lead Architect |
+| F3 config / deploy | Receipts for all companies | 02:05:24 | `f7da7e2`, merge `4c54a45`; `-00003-vac`, `-00003-peb` | Effective parameters receipt `true`, all-companies `true`, finance `false`; source identical to `main`; 15 other services unchanged |
+| G config / deploy | Finance switch `true` | 02:43 | `88e2f6b`, merge `c9df38b`; `postclientcreditnote-00002-yif`, `voidclientcreditnote-00002-dox`, `postclientretentionrelease-00002-mix`, `voidclientretentionrelease-00002-rob` | Source identical to `main`; effective finance switch `true` on the four; receipt callables unchanged |
+| G activation | `--enable --apply` on the TEST company | 02:44:26 | `clientFinanceEnabled: true`; one `company.client_finance_set` | Apex flag absent |
+| H | Consolidated production acceptance in TEST | 02:48–03:12 | 82.5–82.7 | Accepted within its tested scope |
+| I | `--enable --apply` on the Apex Builders company | 03:19:15 | `clientFinanceEnabled: true`; one `company.client_finance_set` (operator, before `null`, after `true`) | 82.8 |
+
+Hosting, Firestore Rules (`0e228bd0…`) and Storage Rules (`2f3a4788…`) did
+not change after step E; the 17 services did not change after step G.
+
+### 82.2 Steps C–E — restriction and release identity
+
+- **Released build after the Rules (C):** *Post* on a draft receipt refused
+  (*"You do not have permission to do this. Nothing was saved."*); the draft
+  stayed a draft.
+- **Direct writes (C, REST as the TEST Company Admin):** post a draft receipt,
+  create a receipt as posted, create a ledger, create a marker — **403**.
+  Void of the F2 historical receipt and a write of the activation flag were
+  probed with a precondition that can never hold (`currentDocument.updateTime`
+  in the year 2000), calibrated on the probe draft: a write the Rules allow →
+  400 `FAILED_PRECONDITION`; a write they deny → 403. Both → **403**. Nothing
+  was applied. *Lesson:* `currentDocument.exists: false` makes the Rules
+  evaluate a **create**, so it cannot probe an update.
+- **New build (E):** dashboard and projects load without a membership error;
+  F2 figures unchanged (1,100.00 billed; 600.00 received; 500.00 remaining);
+  no Client Retention tab, no credit-note action and no retention editor
+  (company not activated); *Post* answered *"Posting and voiding client
+  receipts is temporarily unavailable. Nothing was changed."* (callable 503,
+  App Check and auth `VALID`); the probe draft was voided as a draft.
+- **Hosting entry point is cached for an hour.** `index.html` is served with
+  `cache-control: max-age=3600`. A browser that opened a URL in the hour
+  before the release keeps the previous bundle for that URL until it expires
+  or is reloaded; the first post attempt at E did exactly that and showed the
+  old *"You do not have permission…"* message. Fail closed (the Rules deny the
+  old path), but every browser check must first confirm the bundle name.
+
+### 82.3 F2 — the historical baseline in production (TEST)
+
+| Check | Expected (independent) | Observed |
+|---|---|---|
+| Before | CI-0001 1,100.00; CR-0001 600.00 posted; remaining 500.00; no ledger, no marker | As expected |
+| Post CR-0004, 500.00 → CI-0001 | No acknowledgement needed | Posted first attempt; `overAllocationAcknowledged: false` |
+| Marker | Exactly one: 1 receipt, 1 allocation, 1 invoice, `legacyCents` 60000 | As expected |
+| Ledger `receivedCents` | 110000; `receiptBaseline.legacyCents` 60000 | 110000; 60000 |
+| Independent sum of posted allocations to CI-0001 | 110000 | 110000; screen remaining 0.00 |
+| Void historical CR-0001 (trusted backend) | Ledger 50000; remaining 600.00; provenance kept | 50000; 600.00; marker unchanged; `receiptBaseline` unchanged |
+| Replay of the same void (the page's own request re-sent) | No effect | `alreadyApplied: true`; server log `replay: true, ledgerMoves: 0`; ledger update time unchanged |
+| Audit since F1 | One each of `company.client_receipts_set`, `client_receipt.baseline_established`, `client_receipt.posted`, `client_receipt.voided` | Exactly those four (60 → 64) |
+
+Apex during F2: no flag, no marker, no ledger, fingerprint unchanged, no call
+to a receipt callable. **No live refusal for an Apex account was observed**
+(the engineer does not use the Apex session); the scope denial rests on the
+emulator tests (§81.5), the effective `CLIENT_RECEIPT_ALL_COMPANIES=false` and
+the integrity evidence. The F2 fixture is now consumed and is retained as a
+record (CR-0001 void, CR-0004 posted, ledger 50000).
+
+### 82.4 F3 and G — verification
+
+- F3: receipts available to every company by configuration. A read-only run
+  of the callable's own summing function over Apex's posted receipts:
+  9 receipts, 9 allocations, 5 invoices in one project — **compatible** (no
+  problem, within the 448-invoice bound, safe-integer total). **Apex's baseline
+  is not initialised; it will be established by its first genuine receipt
+  operation.** (The same dry run reports the F2 project as *inconsistent*
+  because it now holds a backend-posted receipt; the callable never re-sums a
+  project that has a marker.)
+- G: as in 82.1. The four services previously carried the receipt switches as
+  `false` from their own deployment; the G redeploy aligned them.
+  `approveFinalAccount` still carries all three as `false`; it reads none.
+
+### 82.5 Stage H — consolidated financial acceptance (TEST; 02:48–03:12 UTC)
+
+**Method.** Expected figures were computed **before** each operation by an
+independent integer-cent calculator written from the documented rules (half-up
+integer division; never the application's output), kept with the evidence
+(`expected.py`, `expected2.py`; outside the repository). Every ledger was then
+reconciled against the sums of its own posted entry documents by a separate
+read-only script. Fixtures: project **H1** `z8ImerIFZ3VdZmjxH7Ve` ("TEST
+AUD-4", contract 50,000.00) and project **H2** `CBfsKnnZBJAvzLYZOdYg` ("TEST
+AUD-5", contract 10,000.00), both new; synthetic client and supplier contacts
+of the acceptance company.
+
+**Invoices as issued (all equal to the expectation).**
+
+| Invoice | Lines (ex-GST) | GST | Retention + GST | Receivable |
+|---|---|---|---|---|
+| A CI-0002 | 803.00 GST | 80.30 | 40.15 + **4.02** (exact half-up boundary) | 839.13 |
+| B CI-0003 | 1,000.00 GST; 1,000.00 GST-free; 10.05 GST | 101.01 (line GST 100.00 / 0 / 1.01) | 100.00 + 5.03 | 2,006.03 |
+| C CI-0004 | 500.00 GST-free | 0.00 | — | 500.00 |
+| D CI-0005 | 1,000.00 GST | 100.00 | — | 1,100.00 |
+| E CI-0007 | 1,000.00 GST; 1,000.00 GST-free | 100.00 | 100.00 + 5.00 | 1,995.00 |
+| F CI-0006 | 100.00 GST | 10.00 | — | 110.00 |
+| G CI-0008 (H2) | 4,000.00 GST; 1,000.00 GST-free | 400.00 | 250.00 + 20.00 | 5,130.00 |
+
+**Lifecycle (every amount equal to the expectation, on screen and in the ledger).**
+
+| # | Scenario | Result |
+|---|---|---|
+| H1 | Receipt 839.13 → A | Posted; zero-history baseline marker for H1 |
+| H2 | Partial release on A, 20.00 | GST 2.00; total 22.00 |
+| H3 | Final release on A, 20.15 | GST 2.02 (remainder); nothing held; *Release* unavailable |
+| H4 | Receipt against released retention, 44.17 → A | Posted; A fully reconciled |
+| H5 | Receipt-dependent void restriction: void the final release | **Refused** `client-receipts-depend-on-release`: *"CRR-0002 cannot be voided: receipts CR-0006 and CR-0005 have allocated 883.30 to this invoice, more than the 861.13 it would be owed without this release."* |
+| H6 | Dependency-ordered voiding | Receipt CR-0006 voided, then CRR-0002 voided; A back to 22.00 remaining |
+| H7 | Partial credit on B, line 1 300.00 | GST 30.00; retention reduced 14.93 + 1.50; receivable reduced 313.57 |
+| H8 | Second credit on B: GST-free 200.00 + the 10.05 line in full | GST 1.01; retention 10.45 + 0.05; receivable 200.56 |
+| H9 | Release on B after two credits, 50.00 | GST 2.33 |
+| H10 | Credit-note void while a later release stands (B, CCN-0002) | **Accepted** — the resulting position satisfies every invariant (82.9) |
+| H11 | Stale credit draft (B): drafted at ledger seq 4, a release posted in between | Dialog blocks *Post* and offers *Refresh figures*; a direct call was refused `client-entry-figures-changed`; after refresh: retention 1.47 + 0.15, receivable 108.38 — posted |
+| H12 | Receipt for B's remaining 1,646.57 | Posted; B fully reconciled |
+| H13 | Full credit of a GST-free invoice (C) | 500.00 + 0.00; C fully reconciled at 0.00 |
+| H14 | Credit after receipt (D, 200.00) | GST 20.00; **owed to client 220.00** |
+| H15 | Over-allocation (F, 150.00 against 110.00) | Draft needs the acknowledgement; a direct post without it refused `client-receipt-over-allocated` (draft unchanged); posted with it; **owed to client 40.00** |
+| H16 | Credit of E's whole taxable line, then release 50.00 | Credit 1,000.00 + 100.00, retention 50.00 + 5.00; release GST 0.00 |
+| H17 | Invariant-based void refusal (E, CCN-0006) | **Refused** `client-ledger-invariant`, naming CRR-0005: *"CCN-0006 cannot be voided while CRR-0005, posted after it, still stands."* |
+| H18 | Invoice void protection | *Void* disabled with the reason on every invoice carrying a posted credit or release; the direct write denied (82.6) |
+| H19 | Silent clamping | None: over-receipts show as *Owed to client*, never as 0 |
+
+**Not run:** an input-taxed line; a receipt made stale through a second tab
+(the server's over-allocation refusal was proven by a direct call instead);
+retention credited to zero by a final credit on a retained invoice with
+releases (emulator evidence only).
+
+**Ledger reconciliation (read-only, after the session).** All seven ledgers
+equal the sums of their posted entries: credited subtotal, GST, retention and
+retention GST; released retention and its GST; received.
+
+| Invoice | Ledger (credited ex / GST / ret / ret GST / released / rel GST / received, cents) |
+|---|---|
+| A | 0 / 0 / 0 / 0 / 2000 / 200 / 86113 |
+| B | 40000 / 4000 / 1640 / 165 / 6000 / 249 / 164657 |
+| C | 50000 / 0 / 0 / 0 / 0 / 0 / 0 |
+| D | 20000 / 2000 / 0 / 0 / 0 / 0 / 110000 |
+| E | 100000 / 10000 / 5000 / 500 / 5000 / 0 / 0 |
+| F | 0 / 0 / 0 / 0 / 0 / 0 / 15000 |
+| G (H2) | 40000 / 4000 / 2000 / 200 / 14000 / 1096 / 485217 |
+
+(A's received figure includes the 22.00 receipt CR-0010 used for the
+concurrency check in 82.6.) H1 end position: net issued 4,313.05; credited 2,100.00;
+available to invoice 45,686.95; received 3,757.70; outstanding 1,000.00; owed
+to client 260.00; client retention held 46.66.
+
+### 82.6 Stage H — security, concurrency, idempotency and audit
+
+**Direct-write probes** (REST, TEST Company Admin, unappliable precondition,
+calibrated: allowed → 400, denied → 403):
+
+| Write | Result |
+|---|---|
+| Void, edit, or create-as-posted a client credit note | 403 |
+| Void, edit, or create-as-posted a client retention release | 403 |
+| Update or create an invoice ledger | 403 |
+| Read or update the baseline marker | 403 |
+| Set `clientFinanceEnabled` or `clientReceiptsEnabled` | 403 |
+| Void a posted receipt directly | 403 |
+| Void a client invoice carrying a posted credit | 403 (calibration: void of an invoice without entries → 400) |
+| Edit a posted supplier invoice | 403 |
+
+No prohibited write succeeded. **Production probes cover the Company Admin
+only;** the role matrix (PM, QS, external roles) and the not-activated refusal
+for credit notes and releases remain **EMULATOR / LOCAL** evidence (§79–§81)
+— the test identities stay deactivated.
+
+**Concurrency.** Three simultaneous posts of one receipt: one applied, two
+`alreadyApplied`; one ledger movement; one audit event. Two server retries
+(`attempts` 2) were logged across the session; no error.
+
+**Idempotency.** Re-sending the page's own request for a release post, a
+credit-note post, a release void and a credit-note void each returned
+`alreadyApplied: true`, with no ledger change and no audit event.
+
+**Audit events since the G activation:** exactly 29 — 2
+`client_receipt.baseline_established` (one per new project, zero history),
+8 `client_receipt.posted`, 2 `client_receipt.voided`, 7
+`client_credit_note.posted`, 1 `client_credit_note.voided`, 7
+`client_retention_release.posted`, 1 `client_retention_release.voided`, 1
+`final_account.approved`. Drafts write no audit event. Callable logs: only
+the TEST administrator; no error.
+
+### 82.7 Stage H — Final Account, reporting and GST §44
+
+**Final Account (H2).**
+
+| Check | Result |
+|---|---|
+| Amount owed to the client blocks preparation | With a 4,900.00 receipt (owed 47.83), *No over-allocated issued client invoices* was the only requirement **NOT MET** and *Prepare* was disabled |
+| No invented settlement | The receipt was voided and re-entered for 4,852.17 (valid lifecycle) |
+| Revision 1 approved (callable 200) | Every figure equal to the expectation: original and final contract sum 10,000.00; invoiced 4,600.00; credited 400.00; remaining to invoice 5,400.00; approved budget 8,000.00; actual, cost to complete and final cost 0.00; variance 8,000.00; profit 10,000.00 (100%); invoiced gross 4,960.00; received 4,852.17; outstanding 0.00; client retention held 107.83; owed to client 0.00; cash received 4,852.17 |
+| Genuine movement after approval | A 10.00 release (GST 0.79) posted afterwards: *"differs … in 2 figures"* — current outstanding 10.79 and retention held 97.04 shown beside the approved figures, which are unchanged |
+| Historical approved revision (fixture Z `5hmVvUCoOIEPrzdeowYK`, revision 2) | No difference reported; the three new figures read *Not recorded* with the explanation; the stored revision was last written 24 November; withdrawn revision 1 unchanged |
+
+**Reporting and output parity (H1 unless stated).**
+
+| Surface | Result |
+|---|---|
+| Client Invoices, Client Receipts, Client Retention | Equal to the expectation to the cent (retention withheld 254.20, released 134.49, reduced by credits 73.05, still held 46.66) |
+| Commercial Report and its CSV | Equal: cash received 3,757.70; outstanding 1,000.00; client retention held 46.66; owed to client 260.00; actual cost 3,333.15 |
+| Portfolio (screen and CSV) | CSV receivables H1 1,000.00, H2 10.79, F2 600.00; fixture Z and NZD-1 equal to the figures recorded on 24–25 November |
+| Cash Flow | Consistent in whole dollars (cash in 3,758; owed −260; client retention 47) |
+| Dashboard | Loads without error; H1 and H2 snapshots consistent in whole dollars. It shows no client-receivable figure. **§22 checks 2 and 3 remain open** |
+| Printable credit note (CCN-0001) | **Content accepted** (300.00 / 30.00 / 330.00 / retention 16.43 / receivable 313.57, disclaimer). The print dialog was stubbed: **paper layout not viewed** |
+| Final Account CSV | **Not exported — untested** |
+
+**GST §44 — corrected procedure, production (supplier side; legacy rounding
+preserved).**
+
+| Step | Expected | Observed |
+|---|---|---|
+| 1a | SI 803.00, retention 40.15 → retention GST **4.01**, net payable 839.14; release 40.15 → GST 4.01, 44.16; *Release* then unavailable | As expected (stored 4.01 / 839.14 / 44.16) |
+| 1b | SI 2,000.00, retention 100.00 (GST 10.00); releases 40.15 → 4.01, 10.01 → 1.01, 49.84 → 4.98; sum 10.00; held 0.00 | As expected |
+| 2 | Claim 3 × 10.05: claim GST 3.02; invoice line GST 1.01 / 1.01 / 1.00; payable 33.17; header edit accepted; posting leaves Actual and Remaining Committed unchanged; claim leaves *awaiting invoice* | As expected; stored to the cent; Actual 2,833 and Committed 500 before and after (whole-dollar display) |
+| 3a | Whole-dollar claim 300 + 200 → GST 30.00 / 20.00, 550.00; a GST-free switch on a claim line blocked by the reconciliation guard; a posted invoice cannot be edited | As expected (the edit probe → 403) |
+| 3a (external roles) | A subcontractor or client cannot read or write supplier invoices or releases | **NOT RUN in production** — the external identities stay deactivated |
+| 3b | Existing figures unchanged | Fixture Z and NZD-1 equal to their recorded figures; no existing document changed (fingerprint) |
+
+Supplier-side rounding is **not** fixed: the payable side still produces 4.01
+where the receivable side produces the exact 4.02. **D3 #35 stays open.**
+
+### 82.8 Stage I and data integrity
+
+- **Stage I (read-only, 03:20 UTC):** Apex `clientFinanceEnabled: true`
+  (03:19:15); exactly one `company.client_finance_set` on Apex (operator;
+  before `null`, after `true`) — its only client-finance audit event; TEST
+  still has both flags; finance switch `true` on the four callables; receipts
+  open to all companies; 17 services, Hosting and both rulesets unchanged
+  since G.
+- **Apex records:** between the end of Stage H and the Stage I read, the only
+  Apex changes in the 27 measured collection groups are the company document
+  and that one audit event. No Apex user called a finance callable. No Apex
+  ledger or marker exists; Apex's receipt flag is absent and not needed
+  (all-companies scope). Through steps 0–H, every Apex group stayed identical
+  to the 22:03 UTC pre-fixture fingerprint.
+- **Fingerprint scope:** 27 collection groups by document path and update time
+  (per company); counts only for the rest of the 49 groups.
+- **Fixtures retained:** F2 `cZEtvoFbr5jR7umM9jeg`, AUD-3 probe project
+  `sMtmXPoVRKmR8qpEqimK` (void CR-0002, CR-0003), H1 and H2 — all in the
+  acceptance company.
+
+### 82.9 Architect decision (27 November 2026 — REPORTED)
+
+Stage H **accepted within its tested scope**; GO for Stage I (executed by the
+Product Owner). **The invariant-based void policy is approved:** strict reverse
+posting order is not required when the resulting position is valid; posted
+amounts, tax allocations, receipt dependencies and ledger integrity are
+preserved (ADR-89 → *Void policy*). Jurisdiction-specific tax compliance is
+retained for Phase 3. **Phase 1 (CF1–CF6) CLOSED within its accepted scope.**
+
+**Not passed — carried forward:** printable credit-note paper layout; the
+Final Account CSV; the external-role checks of §44 step 3a; the role matrix
+and the not-activated refusal in production; Dashboard §22 checks 2–3; an
+input-taxed line; console capture began late in the H session (no error
+shown in the interface).
