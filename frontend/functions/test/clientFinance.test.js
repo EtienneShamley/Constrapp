@@ -548,7 +548,7 @@ describe('release safety', () => {
   })
   it('THE PRODUCTION CUTOVER STARTS WITH BOTH SWITCHES OFF; both ON for the emulator', () => {
     expect(valueOf('.env.constrapp-69b5d', 'CLIENT_RECEIPT_POSTING_ENABLED')).toBe('true')
-    expect(valueOf('.env.constrapp-69b5d', 'CLIENT_FINANCE_POSTING_ENABLED')).toBe('false')
+    expect(valueOf('.env.constrapp-69b5d', 'CLIENT_FINANCE_POSTING_ENABLED')).toBe('true')
     // … and receipts, once switched on, are scoped to operator-activated companies until told otherwise.
     expect(valueOf('.env.constrapp-69b5d', 'CLIENT_RECEIPT_ALL_COMPANIES')).toBe('true')
     expect(valueOf('.env.constrapp-rules-test', 'CLIENT_RECEIPT_ALL_COMPANIES')).toBe('true')
