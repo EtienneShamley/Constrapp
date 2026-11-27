@@ -5351,7 +5351,7 @@ TEST Company Admin; E2-A; E2-B). Rollback: the previous release in the
 Firebase Hosting console. D3 #32, D3 #34 and L3 E2 stay open until those
 checks are recorded.
 
-## Rules capacity recovery 3 release order — ADR-85 — RULES ONLY (IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION, 26 November 2026; NOT PUBLISHED)
+## Rules capacity recovery 3 release order — ADR-85 — RULES ONLY (LIVE — integrated as `7730652` and published inside the Commercial Finance Phase 1 ruleset `0e228bd0…`, 26 November 2026 22:35 UTC; never published on its own. *As written:* IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION, 26 November 2026; NOT PUBLISHED)
 
 On `feature/commercial-finance-phase-1` (uncommitted). Part of Commercial
 Finance Phase 1; it can be integrated and published on its own, ahead of the
@@ -5396,9 +5396,14 @@ post and void one supplier payment or client receipt, and void one draft
 client invoice — the paths whose conjuncts moved into helpers. No new
 behaviour exists to accept.
 
-## Commercial Finance Phase 1 release order — ADR-86 / ADR-87 / ADR-88 / ADR-89 — SEVEN callables, then RULES, then HOSTING; staged activation (IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION, 26 November 2026; NOTHING DEPLOYED)
+## Commercial Finance Phase 1 release order — ADR-86 / ADR-87 / ADR-88 / ADR-89 — SEVEN callables, then RULES, then HOSTING; staged activation (**EXECUTED 26–27 November 2026 — LIVE; general availability for both companies; Phase 1 CLOSED.** *As written:* IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION, 26 November 2026; NOTHING DEPLOYED)
 
-On `feature/commercial-finance-phase-1` (uncommitted). Every step needs its own
+**Executed by the Product Owner, each step on its own authorisation, 26 November
+2026 22:30 UTC to 27 November 2026 03:19 UTC; verified read-only by the
+engineer. The record is *Release record (as executed)* below and TESTING.md
+§82. The commands below are corrected to what ran (the `team:` codebase
+prefix).** *As written before the cutover:* on
+`feature/commercial-finance-phase-1` (uncommitted). Every step needs its own
 authorisation. Nothing here has been run against production. *This section
 replaces the two earlier release orders written for designs that were not
 integrated.*
@@ -5486,10 +5491,19 @@ prints anything else, stop: `unset GIT_INDEX_FILE`, delete the temporary
 index, and nothing has changed.
 
 Merge to `main` on authorisation; **Azure `main` green before any deploy.**
-Three further one-line commits are prepared at cutover, each merged in the
-normal way: **F** (`CLIENT_RECEIPT_POSTING_ENABLED=true`), **F3**
+Three further configuration commits are prepared at cutover, each on its own
+branch, merged `--no-ff`, Azure green before its deploy: **F1**
+(`CLIENT_RECEIPT_POSTING_ENABLED=true`), **F3**
 (`CLIENT_RECEIPT_ALL_COMPANIES=true`, only after architect acceptance of the
-TEST baseline) and **G** (`CLIENT_FINANCE_POSTING_ENABLED=true`).
+TEST baseline) and **G** (`CLIENT_FINANCE_POSTING_ENABLED=true`). **Each is
+two lines, not one:** the value in `frontend/functions/.env.constrapp-69b5d`
+and its release-safety pin in `frontend/functions/test/clientFinance.test.js`
+(`expect(valueOf('.env.constrapp-69b5d', '<PARAM>')).toBe(...)`); the value
+alone fails the Functions predeploy tests and Azure. Guard each commit with
+`git diff --shortstat` = 2 files, 2 insertions, 2 deletions, and with a check
+that the other two values are unchanged. As executed: F1 `f0c5f98` / merge
+`0f623c6`; F3 `f7da7e2` / `4c54a45`; G `88e2f6b` / `c9df38b`.
+*As written before the cutover:* three further one-line commits.
 
 ### Preflight, from `frontend/` (JDK 21+)
 
@@ -5538,7 +5552,14 @@ holding receipts).
 
 **Step A — the six new callables, both switches OFF.**
 
-    firebase deploy --project constrapp-69b5d --only functions:postClientReceipt,functions:voidClientReceipt,functions:postClientCreditNote,functions:voidClientCreditNote,functions:postClientRetentionRelease,functions:voidClientRetentionRelease
+    firebase deploy --project constrapp-69b5d --only functions:team:postClientReceipt,functions:team:voidClientReceipt,functions:team:postClientCreditNote,functions:team:voidClientCreditNote,functions:team:postClientRetentionRelease,functions:team:voidClientRetentionRelease
+
+**Every targeted Functions deploy names the codebase.** This project's only
+Functions codebase is `team` (`frontend/firebase.json`). A filter without it
+(`functions:<name>`) is read by `firebase-tools` as the `default` codebase and
+fails with *No function matches given --only filters*; nothing is deployed.
+That is what happened at the first Step A attempt (26 November 2026, proven
+from `firebase-tools` 15.36.0). Never deploy all Functions as a workaround.
 
 Verify (read-only): six services from the merged commit; both parameters
 `false`. Nothing calls them; they would refuse if called. The released build
@@ -5577,10 +5598,15 @@ posted receipts and invoices with posted allocations.
 
 **Step E — Final Account callable, then Hosting, back to back.**
 
-    firebase deploy --project constrapp-69b5d --only functions:approveFinalAccount
+    firebase deploy --project constrapp-69b5d --only functions:team:approveFinalAccount
     npm run build && firebase deploy --project constrapp-69b5d --only hosting
 
-Verify the live bundle against a build of the merged commit. In the minutes
+Verify the live bundle against a build of the merged commit. **`index.html` is
+served with `cache-control: max-age=3600`:** a browser that opened a URL in the
+hour before the release keeps the previous bundle for that URL until it
+expires or is reloaded — fail closed, but it shows the old build's messages.
+Confirm the bundle name in the page (`document.scripts`) before any browser
+check, and expect users with old tabs to need a reload. In the minutes
 between the two commands a Final Account draft prepared by the released build
 is refused approval (never wrongly granted). Receipts still cannot be posted:
 the new build says *"Posting and voiding client receipts is temporarily
@@ -5594,7 +5620,7 @@ unavailable. Nothing was changed."*
 then, at the merged commit **F** (`CLIENT_RECEIPT_POSTING_ENABLED=true`;
 `CLIENT_RECEIPT_ALL_COMPANIES` still `false`), from `frontend/`:
 
-    firebase deploy --project constrapp-69b5d --only functions:postClientReceipt,functions:voidClientReceipt
+    firebase deploy --project constrapp-69b5d --only functions:team:postClientReceipt,functions:team:voidClientReceipt
 
 Verify (read-only): both services at commit F; the inventory shows exactly one
 company `receipts-activated`. The maintenance restriction has ended for the
@@ -5620,6 +5646,12 @@ written for any of its projects**.
    draft receipt → *temporarily unavailable*; the draft stays a draft; the
    inventory still shows no marker for that company.
 
+*As executed (27 November 2026 01:22–01:23 UTC):* items 1–4 passed exactly
+(TESTING.md §82.3); **item 5 was not run** — no refusal for a production-customer
+account was observed live; the scope rested on the emulator tests, the
+effective parameter and the integrity evidence, and the architect accepted F2
+on that basis.
+
 Report the figures. **Stop for architect acceptance.** If anything does not
 reconcile: leave `CLIENT_RECEIPT_ALL_COMPANIES` false, set
 `CLIENT_RECEIPT_POSTING_ENABLED=false` and redeploy the two functions; nothing
@@ -5629,7 +5661,7 @@ of the production customer's has been touched.
 maintenance restriction ends.** At the merged commit **F3**
 (`CLIENT_RECEIPT_ALL_COMPANIES=true`):
 
-    firebase deploy --project constrapp-69b5d --only functions:postClientReceipt,functions:voidClientReceipt
+    firebase deploy --project constrapp-69b5d --only functions:team:postClientReceipt,functions:team:voidClientReceipt
 
 The first receipt operation in each remaining project establishes that
 project's baseline, in the same request. When it next happens naturally in the
@@ -5643,7 +5675,7 @@ The company receipt flag is not consulted from here on.
 **Step G — activate the TEST company only.** At the merged commit **G**
 (`CLIENT_FINANCE_POSTING_ENABLED=true`):
 
-    firebase deploy --project constrapp-69b5d --only functions:postClientCreditNote,functions:voidClientCreditNote,functions:postClientRetentionRelease,functions:voidClientRetentionRelease
+    firebase deploy --project constrapp-69b5d --only functions:team:postClientCreditNote,functions:team:voidClientCreditNote,functions:team:postClientRetentionRelease,functions:team:voidClientRetentionRelease
 
 then, from `frontend/functions/`, first without `--apply` (dry run), then with:
 
@@ -5658,13 +5690,57 @@ company."*
 **Step H — production acceptance** (below), in the acceptance company.
 
 **Step I — general availability, after architect acceptance.** The same script
-with the production customer's company id. No deploy.
+with the production customer's company id. No deploy. *Executed 27 November
+2026 03:19:15 UTC for Apex Builders; one `company.client_finance_set` audit
+event; verified read-only (TESTING.md §82.8).* Apex's historical receipt
+baseline is established by its first genuine receipt operation, not by an
+operator.
+
+**Activating a later company** (no deploy; the switch is already on): from
+`frontend/functions/`, with your own application-default login,
+
+    node scripts/set-client-finance.mjs --project constrapp-69b5d --company <companyId> --enable
+    node scripts/set-client-finance.mjs --project constrapp-69b5d --company <companyId> --enable --apply
+
+Expect *"Applied, with one audit event (company.client_finance_set)"*, then
+verify read-only: the flag, exactly one event, nothing else changed.
+
+**Deactivating a company is a brake, not a rollback.** `--disable --apply`
+stops new retained invoices, credit-note and release drafts and their posting
+for that company. It does **not** remove or reverse anything: posted credit
+notes, releases, receipts, invoice ledgers, receipt-baseline markers and
+audit events stay, and every figure continues to include them. Historical
+financial records and ledgers must be preserved; never delete or edit them to
+"undo" an activation.
 
 **Why this order.** The Rules go before Hosting and before receipts are
 enabled so that the history the baseline reads is frozen and verified first,
 and so that no old tab can post a receipt directly once trusted posting
 exists. The cost is the maintenance restriction, which is fail-closed and
 announced.
+
+### Release record (as executed, 26–27 November 2026 UTC)
+
+| Step | When (UTC) | Release identifiers | Configuration |
+|---|---|---|---|
+| Integration | 26 Nov | `7730652` (ADR-85), `4a62fbe`, merge `9e31bb0` | All three parameters `false` |
+| A | 22:30 | Six callables `-00001-*` (first attempt failed on the filter; nothing deployed) | `false` / `false` / `false` |
+| B | 22:35:43 | Firestore ruleset `0e228bd0-fc7e-407c-bb93-0728ba4457c0` (236,120 bytes; previous `67b6425a…`) | — |
+| C / D | 22:45:43 onward | Probes and frozen inventory (TESTING.md §82.2) | — |
+| E | 22:52:25 / 22:52:48 | `approvefinalaccount-00004-tiv`; Hosting version `2f85dee4071c61d6` (previous `edc2bf6f34568d78`), bundle `index-BEwVCddF.js` | — |
+| F1 | 27 Nov 01:08; flag 01:20:14 | `postclientreceipt-00002-gic`, `voidclientreceipt-00002-wod`; TEST `clientReceiptsEnabled` | receipt `true`, all-companies `false`, finance `false` (`0f623c6`) |
+| F2 | 01:22–01:23 | TEST baseline reconciled (TESTING.md §82.3) | — |
+| F3 | 02:05:24 | `-00003-vac`, `-00003-peb` | receipt `true`, all-companies `true`, finance `false` (`4c54a45`) |
+| G | 02:43; flag 02:44:26 | `postclientcreditnote-00002-yif`, `voidclientcreditnote-00002-dox`, `postclientretentionrelease-00002-mix`, `voidclientretentionrelease-00002-rob`; TEST `clientFinanceEnabled` | all three `true` (`c9df38b`) |
+| H | 02:48–03:12 | Acceptance in TEST (TESTING.md §82.5–§82.7) | — |
+| I | 03:19:15 | Apex Builders `clientFinanceEnabled` | — |
+
+Final state: `main` `c9df38b`; 17 services; Hosting `2f85dee4071c61d6`;
+Firestore `0e228bd0…`; Storage `2f3a4788…` (unchanged). `approveFinalAccount`
+carries the three parameters as `false` from its own deployment; it reads none
+of them. The four credit-note and release callables carry all three `true`;
+the two receipt callables carry the finance switch `false`, which they do not
+read. Monitoring: **no alert policy covers the six new callables** (tracked).
 
 ### Activation states
 
@@ -5741,7 +5817,12 @@ documented — a data operation, not part of this plan.
    difference.
 7. **Unchanged figures (GST §44 step 3b)** — an existing regression fixture
    recorded before step A and compared after step E.
-8. **GST §44 steps 1 and 2** in production — still NOT RUN; run here if the
-   architect wants them at this release.
+8. **GST §44 steps 1 and 2** in production — *as written:* still NOT RUN; run
+   here if the architect wants them at this release. **Run at step H.**
 
 Evidence classes as in the tracker; nothing above is claimed until it is run.
+**Run 27 November 2026 02:48–03:12 UTC — TESTING.md §82.5–§82.7; accepted
+within its tested scope.** Items 1–4, 6–8 executed; item 5 rests on emulator
+evidence (the production customer was not used for a refusal test); not
+executed: the printed credit note's paper layout, the Final Account CSV, the
+external-role part of §44 step 3a.

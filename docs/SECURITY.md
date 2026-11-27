@@ -174,7 +174,7 @@ Controls now in place:
   (membership, project, company, the predecessor revision). The 1,000-row,
   170-character-name draft was written through the rules in the emulator as
   one document.
-- **Rules capacity recovery 3 (ADR-85, 26 November 2026 — IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION; not published).**
+- **Rules capacity recovery 3 (ADR-85) — LIVE: published inside the Phase 1 ruleset `0e228bd0…`, 26 November 2026 22:35 UTC.** *As written:* (26 November 2026 — IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION; not published).
   The file had reached **236,737 bytes** (L4, ADR-81: 232,776; M2-A2, ADR-83:
   236,737 — neither was entered in this list at the time). The budget is
   applied to the two generated files as well, and the transitional file is the
@@ -195,7 +195,7 @@ Controls now in place:
   alike (tracker D3 #37): every outcome is the intended denial, but "zero
   evaluation errors" (ADR-40 D10) no longer describes the ruleset. A helper
   call adds one expression per call site.
-- **Client credit notes, client retention and the invoice ledger (ADR-87 / ADR-88 / ADR-89, 26 November 2026 — IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION; not published).**
+- **Client credit notes, client retention and the invoice ledger (ADR-87 / ADR-88 / ADR-89) — LIVE since 26–27 November 2026; production-accepted (TESTING.md §82).** In production, as the Company Admin, every direct write to a posted credit note or release, a ledger, the baseline marker and either activation flag was refused (unappliable-precondition probes); the role matrix and the not-activated refusal rest on emulator tests. *As written:* (26 November 2026 — IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION; not published).
   *First design:* a Rules-paired ledger took the FINAL file from 228,289 to
   **243,104 bytes** (binding file 243,784 — 1,216 under the budget). The
   architect ruled NO-GO on building towards recurring capacity exhaustion.
@@ -3880,7 +3880,11 @@ is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.
 
 49. **Client credit notes, client retention and the invoice ledger — the
     trusted boundary, and what remains outside it (ADR-87 / ADR-88 / ADR-89;
-    IMPLEMENTED — NOT DEPLOYED).** *As first written this control listed four
+    LIVE since 27 November 2026 — TESTING.md §82; *as written:* IMPLEMENTED —
+    NOT DEPLOYED).** *Production notes:* no alert policy yet covers the six
+    client-finance callables (tracked); deactivating a company's activation
+    flag stops new entries but is **not** a data rollback — posted entries,
+    ledgers, baseline markers and audit events remain and must be preserved. *As first written this control listed four
     things left to the application under a Rules-paired ledger: the line array,
     the proportion inside the caps, the invoice's own headers, and receipts.
     ADR-89 moved posting to the trusted backend; three of the four are closed.*

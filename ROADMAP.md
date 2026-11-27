@@ -424,7 +424,62 @@ of the work still to do:
     hardening before customer onboarding); GST §44 steps 1–3 and Dashboard
     §22 checks 2–3. **Next milestone: client credit-note architecture
     assessment and ADR.**
-  - **Commercial Finance Phase 1, authoritative backend correction (ADR-89)
+  - **Commercial Finance Phase 1 (CF1–CF6) — LIVE and CLOSED within its
+    accepted scope (Lead Architect, 27 November 2026 NZDT — REPORTED;
+    TESTING.md §82; tracker B18).** Integrated as `main` `9e31bb0`; released
+    in stages by the Product Owner, 26 November 22:30 UTC to 27 November
+    03:19 UTC: six trusted callables and the changed `approveFinalAccount`,
+    restrictive Rules (`0e228bd0…`), Hosting (`2f85dee4071c61d6`), then three
+    configuration commits (`0f623c6`, `4c54a45`, `c9df38b`) switching receipts
+    on for TEST, receipts for every company, and client credit notes and
+    retention. The historical receipt baseline was reconciled exactly in
+    production (F2); the consolidated acceptance (Stage H) matched an
+    independent integer-cent calculation on every figure, refused every
+    direct write, and showed no duplicate effect under replay or concurrent
+    posts; GST §44 steps 1, 2 and the financial parts of 3 passed in
+    production. **General availability:** Apex Builders activated by the
+    operator script (no deployment); its receipt baseline will be set by its
+    first genuine receipt operation. **Void policy approved:**
+    invariant-based, not strict reverse order (ADR-89). *Carried forward, not
+    closed:* D3 #35 (payable-side GST precision), D3 #36 (cache handling), D3
+    #37 (near-ceiling Rules paths), D3 #39 (App Check wording); alert
+    coverage for the six new callables; the Hosting entry-point cache (an old
+    tab keeps the previous build for up to an hour); Dashboard §22 checks
+    2–3; the printed credit note's paper layout; the Final Account CSV; the
+    external-role checks of §44 step 3a; the production role matrix; the
+    refund and credit-settlement workflow; production load testing;
+    international tax compliance; CI/CD performance and cost.
+  - **Consolidated phase plan (Product Owner and Lead Architect, 27 November
+    2026 — REPORTED). Nothing here is authorised for implementation; each
+    workstream needs its own brief, assessment and approval.** Every phase
+    applies ADR-89 (complex commercial mutations in the trusted backend) and
+    the permanent engineering principles (ENGINEERING_STANDARDS.md §9).
+    - **Phase 1 — Commercial Finance: CLOSED** (above).
+    - **Phase 2 — Commercial Completion: NEXT, not started.**
+      1. **Estimating** — the Estimate stage of the commercial lifecycle
+         (between BOQ and Tender), on the cost-code spine.
+      2. **Approval segregation** — separation of preparer and approver on
+         financial approvals (self-approval is a documented policy gap today).
+      3. **Client refunds and credit settlement** — settle an amount owed to a
+         client inside Constrap (today it is shown, never clamped, and blocks
+         the Final Account; no refund record exists). Required before customer
+         onboarding.
+      4. **Remaining commercial lifecycle gaps** — the open items of D4a in the
+         tracker and of the *Development Order* below.
+      5. **Trusted backend migration of the three near-ceiling financial paths
+         (D3 #37)** — `variations` create with an originating RFI;
+         claim-sourced `supplierInvoices` create; `progressClaims` and the
+         claim-to-invoice pairing (ADR-89 Decision 9), each its own decision
+         and release; the payable-side rounding correction (D3 #35,
+         version-aware) rides with the second and third.
+    - **Phase 3 — scale and compliance (later):** production load testing
+      (ARCHITECTURE.md → *Capacity and load-test plan*); international tax
+      compliance, including the jurisdiction-specific treatment of credit
+      notes, retention and voids; CI/CD performance and cost optimisation.
+    - **Carried with every phase:** D3 #36 and #39, alert coverage for the
+      six client-finance callables, the outstanding Dashboard and browser
+      acceptance limits listed above.
+  - *As written at the integration gate:* **Commercial Finance Phase 1, authoritative backend correction (ADR-89)
     — IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION (26
     November 2026; TESTING.md §79).** The Lead Architect ruled NO-GO on
     integrating the first design and directed that complex financial
