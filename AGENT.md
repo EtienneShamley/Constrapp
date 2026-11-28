@@ -53,6 +53,32 @@ particular:
   docs/ENGINEERING_STANDARDS.md §9). Today: `approveFinalAccount`,
   `transferBoqToBudget`, and the six client-finance callables (credit notes,
   retention releases and — posting and voiding only — client receipts).
+  **Implemented, not deployed (ADR-90):** `createVariation`,
+  `updateVariationDraft`, `approveVariation` and `applyVariationCommitment` —
+  a variation is created, its draft edited, approved and applied to its
+  purchase-order commitment only by them; Rules keep the read and the
+  content-free submit / reject / withdraw. **Emulator suites and the
+  full-emulator dev launcher run only through the isolating launcher**
+  (`npm run test:rules`, `npm run test:functions`, `npm run test:team`;
+  `scripts/emulatorIsolation.mjs`) under the demo project
+  `demo-constrap-test` — never call `firebase emulators:exec` directly.
+  **Implemented, not deployed (ADR-93 / ADR-94 / ADR-95 / ADR-96):**
+  `progressClaimOperation`, `supplierInvoiceOperation`,
+  `supplierSettlementOperation`, the client refund / receipt-application /
+  invoice-void callables and `contractValueOperation`. Claims, supplier
+  invoices, supplier credit notes, retention releases and supplier payments
+  have NO client write except the content-free claim submit; the per-PO claim
+  ledger and the per-invoice supplier ledgers (server-only) hold the
+  cumulative caps. Approvals apply the company's approval-segregation policy
+  (`companies/{c}/approvalPolicy/current`, operator tool
+  `functions/scripts/set-approval-policy.mjs`); the original contract value is
+  changed only through an approved correction. The three older dev launchers
+  (`test:boq`, `test:quant`, `test:credit-notes`) refuse to start unless
+  `CONSTRAP_REAL_AUTH_LAUNCHER` names the real project (D3 #40).
+  Supplier-side figures are calculated under the document's stored
+  `calcVersion` (ADR-91, `src/lib/supplierCalc.js`): never recalculate a
+  document under a different version, and never take the version from a
+  request.
 
 ## Stack
 
@@ -800,15 +826,39 @@ Before starting any task, an agent must:
 
 ## Development Continuity — ChatGPT Handover (mandatory)
 
-[docs/CHATGPT_HANDOVER.md](docs/CHATGPT_HANDOVER.md) is the **mandatory
-operational handover** for ChatGPT development continuity: the one file a new
-architect conversation needs to resume work. It is a point-in-time snapshot and
-an index into this documentation, never a replacement for it or for checking
-production.
+[docs/CHATGPT_HANDOVER.md](docs/CHATGPT_HANDOVER.md) is the **mandatory,
+consolidated architectural handover** for ChatGPT continuity: the one file a
+new architect conversation needs to take over — product identity, lifecycle,
+modules, architecture, data and security model, decision index, history,
+current checkpoint, programme, roadmap, principles, governance, risks and the
+next action (sections A–P). It is a point-in-time snapshot and an index into
+this documentation, never a replacement for it or for checking production.
+Superseded revisions live verbatim in
+[docs/CHATGPT_HANDOVER_HISTORY.md](docs/CHATGPT_HANDOVER_HISTORY.md), an
+archive that is never authoritative.
 
-**At each significant milestone closeout** (and after a production deployment,
-a significant architecture decision or a roadmap change), the documentation
-closeout must:
+**Source-of-truth hierarchy.** Source code and reproducible test evidence
+establish behaviour; approved ADRs establish architectural intent and
+constraints; ROADMAP.md establishes planned direction; the progress registers
+(tracker, TESTING.md, DEPLOYMENT.md release records, the ROADMAP progress
+register) establish recorded delivery status; the handover consolidates them
+and never overrides them. Where they disagree, name the contradiction, record
+what is verified, correct stale documentation where the intended behaviour is
+established, and escalate genuine architectural or financial policy conflicts
+— never present an unresolved contradiction as fact.
+
+**Update the handover at meaningful checkpoints** — an approved architectural
+decision, a completed implementation workstream, an integration acceptance, a
+significant security finding or resolution, a material financial policy
+decision, a roadmap change, a production release, an infrastructure or
+deployment change, a session handover, or a change to the next authorised
+action — **not after every minor code change.** Updates are targeted (the
+header, section I, the affected rows elsewhere, section P), carry the
+last-updated date and the Git state, and mark any commit, merge, CI result or
+deployment the Product Owner controls as *pending* until evidence confirms it,
+reconciling it at the next checkpoint. Superseded wording moves to the archive
+rather than accumulating in the handover. At each such checkpoint the
+documentation closeout must:
 
 - Refresh the current checkpoint and the *Last updated* date.
 - Record the verified Git state (branch, HEAD) and the Azure CI status.
@@ -851,11 +901,22 @@ not by ADR.
   deployment authorisation → production acceptance → documentation closeout.
   Each stage and each production step is authorised separately. The mandatory
   implementation report and the release gates are preserved for every task.
+- **Programme authorisation (from Phase 2, 27 November 2026).** The architect
+  may authorise a consolidated programme once (Phase 2: ADR-92). Routine
+  implementation inside it then proceeds without per-step approval, through
+  meaningful integration checkpoints, and stops only at the programme's stop
+  conditions (unresolved financial policy, a failed invariant, a security
+  regression, incompatible historical data, an unavoidable migration, new
+  infrastructure, material scope expansion, an unbounded design, production
+  effects, or a checkpoint needing Product Owner action). Production steps are
+  never covered by a programme authorisation.
 - **Prompts.** The architect issues detailed, copyable plain-text prompts that
   carry the full task context, constraints and report list.
 - **Model and session.** The Claude model is chosen for the task's complexity
   from the models available at the time; no specific model is an engineering
-  requirement. Where practical, one Claude session continues through
+  requirement. Product Owner practice (27 November 2026): Opus for routine
+  work; Fable for complex architecture, security, financial integrity,
+  concurrency and difficult debugging. Where practical, one Claude session continues through
   assessment, implementation, corrections and release verification, and a
   fresh session starts at a completed milestone boundary. Model and session
   instructions are given outside the implementation prompt.

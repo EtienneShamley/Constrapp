@@ -1,4 +1,5 @@
 import { isReviewKeyShape, normaliseZeroChoices, TRANSFER_OUTCOME } from './boqBudgetTransfer'
+import { COMMERCIAL_NOT_ACTIVATED_CODE, COMMERCIAL_MAINTENANCE_TEXT } from './commercialActivation'
 
 // ── BOQ → working budget transfer: the CALL (ADR-81) ─────────────────────────
 //
@@ -45,6 +46,8 @@ export const BOQ_TRANSFER_MESSAGES = {
   notFound:   'This project could not be found for your company. Nothing was written.',
   notReady:   'BOQ to budget transfer is not available on the server yet. Nothing was written.',
   signedOut:  'Your session has ended or this browser could not be verified. Nothing was written — reload the page, sign in and try again.',
+  estimateDrift:   'The BOQ has changed since the approved estimate revision, so this transfer cannot be recorded as a transfer of that estimate. Nothing was written. Review the list — you can still transfer the BOQ as it stands, without the estimate reference.',
+  estimateInvalid: 'The estimate named as the source of this transfer is not an approved revision of this project. Nothing was written.',
   invalid:    'The transfer request was not valid. Nothing was written — reload the page and review it again.',
 }
 
@@ -56,6 +59,12 @@ const TYPED = {
   'boq-transfer-forbidden':    [BOQ_TRANSFER_ERROR.FAILED,       'permission-denied',   BOQ_TRANSFER_MESSAGES.forbidden],
   'boq-transfer-disabled':     [BOQ_TRANSFER_ERROR.FAILED,       'failed-precondition', BOQ_TRANSFER_MESSAGES.disabled],
   'boq-transfer-too-large':    [BOQ_TRANSFER_ERROR.FAILED,       'failed-precondition', BOQ_TRANSFER_MESSAGES.tooLarge],
+  'boq-transfer-estimate-drift':   [BOQ_TRANSFER_ERROR.STALE_REVIEW, 'failed-precondition', BOQ_TRANSFER_MESSAGES.estimateDrift],
+  'boq-transfer-estimate-invalid': [BOQ_TRANSFER_ERROR.FAILED,       'failed-precondition', BOQ_TRANSFER_MESSAGES.estimateInvalid],
+  // Phase 2 company activation (lib/commercialActivation.js): only the
+  // handover of an approved ESTIMATE is refused for a company not yet
+  // switched over — CERTAIN, nothing was written.
+  [COMMERCIAL_NOT_ACTIVATED_CODE]: [BOQ_TRANSFER_ERROR.FAILED,       'failed-precondition', COMMERCIAL_MAINTENANCE_TEXT],
   'not-found':                 [BOQ_TRANSFER_ERROR.FAILED,       'not-found',           BOQ_TRANSFER_MESSAGES.notFound],
   'no-membership':             [BOQ_TRANSFER_ERROR.FAILED,       'permission-denied',   BOQ_TRANSFER_MESSAGES.forbidden],
   'membership-inactive':       [BOQ_TRANSFER_ERROR.FAILED,       'permission-denied',   BOQ_TRANSFER_MESSAGES.forbidden],
@@ -105,13 +114,14 @@ const OUTCOMES = Object.values(TRANSFER_OUTCOME)
 // `call(data)` invokes transferBoqToBudget and resolves to its result. The
 // request names the project, the reviewed proposal and the set-to-zero
 // choices — NEVER an amount.
-export async function runBoqBudgetTransfer({ call, projectId, reviewKey, setToZero = [] }) {
+export async function runBoqBudgetTransfer({ call, projectId, reviewKey, setToZero = [], estimateId = null }) {
   if (!projectId || !isReviewKeyShape(reviewKey)) {
     throw new BoqTransferError(BOQ_TRANSFER_ERROR.FAILED, 'invalid-argument', BOQ_TRANSFER_MESSAGES.invalid)
   }
   let result
   try {
-    result = await call({ projectId, reviewKey, setToZero: normaliseZeroChoices(setToZero) })
+    // ADR-97: `estimateId` is sent ONLY when the reviewer recorded the transfer against an approved estimate.
+    result = await call({ projectId, reviewKey, setToZero: normaliseZeroChoices(setToZero), ...(estimateId ? { estimateId } : {}) })
   } catch (err) {
     throw describeTransferFailure(err)
   }

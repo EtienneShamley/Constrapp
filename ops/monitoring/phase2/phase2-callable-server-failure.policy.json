@@ -1,0 +1,43 @@
+{
+  "displayName": "Phase 2 financial callables: server failure (5xx)",
+  "combiner": "OR",
+  "enabled": true,
+  "severity": "ERROR",
+  "userLabels": {
+    "programme": "phase2",
+    "component": "financial-callables",
+    "policy": "callable-server-failure"
+  },
+  "conditions": [
+    {
+      "displayName": "Any 5xx response from a Phase 2 financial callable service (one incident per service)",
+      "conditionThreshold": {
+        "filter": "metric.type=\"run.googleapis.com/request_count\" AND resource.type=\"cloud_run_revision\" AND resource.labels.service_name=one_of(\"createvariation\",\"updatevariationdraft\",\"approvevariation\",\"applyvariationcommitment\",\"progressclaimoperation\",\"supplierinvoiceoperation\",\"suppliersettlementoperation\",\"postclientrefund\",\"voidclientrefund\",\"postclientreceiptapplication\",\"voidclientreceiptapplication\",\"voidclientinvoice\",\"contractvalueoperation\",\"estimateoperation\",\"postclientcreditnote\",\"voidclientcreditnote\",\"postclientretentionrelease\",\"voidclientretentionrelease\",\"postclientreceipt\",\"voidclientreceipt\",\"transferboqtobudget\") AND resource.labels.location=\"australia-southeast1\" AND metric.labels.response_code_class=\"5xx\"",
+        "aggregations": [
+          {
+            "alignmentPeriod": "60s",
+            "perSeriesAligner": "ALIGN_DELTA",
+            "crossSeriesReducer": "REDUCE_SUM",
+            "groupByFields": [
+              "resource.labels.service_name"
+            ]
+          }
+        ],
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 0,
+        "duration": "0s",
+        "trigger": {
+          "count": 1
+        }
+      }
+    }
+  ],
+  "alertStrategy": {
+    "autoClose": "3600s"
+  },
+  "documentation": {
+    "mimeType": "text/markdown",
+    "subject": "A Phase 2 financial callable returned a server error",
+    "content": "## What this means\n\nOne of the Phase 2 financial callables (or a Phase 1 client-finance callable or `transferBoqToBudget`, redeployed with them) answered at least one request with an HTTP 5xx. The service is named in the incident. `approveFinalAccount` has its own policy (L3) and is not counted here.\n\nRefusals that carry a code are 4xx and are NOT counted, with ONE exception: a global switch that is OFF answers `…-disabled` with **HTTP 503** (gRPC `unavailable`). This policy is created only after the switches are on (Stage F); while a brake is pulled on purpose, expect 503s from the braked services.\n\n**Effect on data:** every operation is one transaction (a baseline: fenced chunks and one completion). A failed call wrote nothing, or wrote the whole operation and lost only the reply. The user is told the outcome is uncertain and to reload.\n\n## Read the log first\n\nLogs Explorer (read only):\n\n`resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"<service from the incident>\" AND (severity>=ERROR OR httpRequest.status>=500)`\n\n| What you find | Meaning | Action |\n|---|---|---|\n| `Error: <family> call failed` with a `stack` field | Untyped exception in the handler (HTTP 500). The error text is in `jsonPayload.stack`; the logger overwrites the entry's own `message`. | Read the stack. Check the document (next section). Report it as a defect. |\n| Status 503 and a `<family> call refused` line with a `…-disabled` code | A switch is off. | Expected while a brake is pulled. Otherwise check the served revision's parameters. |\n| Status 503/500 with no handler line, or `Memory limit of … exceeded` in `run.googleapis.com/varlog/system` | The container failed, was killed or could not start. | `gcloud run services describe <service> --region australia-southeast1 --project constrapp-69b5d` (read only): latest revision Ready, 100% traffic. |\n| Status 504, or a request of about the function's timeout | Timeout (`DEADLINE_EXCEEDED`). | Check record volume (a first baseline reads whole registers) and Firestore status. Do not raise the limit without approval. |\n| `4 DEADLINE_EXCEEDED`, `14 UNAVAILABLE` or `8 RESOURCE_EXHAUSTED` in a stack | Firestore transport failure. | One is transient. Repeats raise the deadline policy. |\n\n## Was anything written?\n\nAsk the user to reload the register. The document is either unchanged (nothing written; they may retry: every operation is idempotent by state or by client-chosen id) or changed with one audit event (the call committed; only the reply was lost). Never edit a financial document, a ledger or a baseline marker in the console.\n\n## Escalate\n\nRepeated failures on one project, or any sign of a partly written operation, go to the Product Owner and the Lead Architect before anyone retries. Brake: set the family's switch to false and redeploy those functions, or deactivate the company with the operator tool. A brake stops new operations; it reverses nothing.\n\nNever paste a log entry, an amount, a customer name or a token into a ticket or chat: give the service, the time, the project and document ids, and the code.\n\nRunbook: `ops/monitoring/phase2/README.md`. Cutover and recovery: `docs/DEPLOYMENT.md`, section *Phase 2 — the complete cutover*."
+  }
+}

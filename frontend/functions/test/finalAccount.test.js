@@ -129,7 +129,7 @@ describe('release safety', () => {
 
   it('the feature flag DEFAULTS TO OFF in code (fail closed) and every project env file states it explicitly', () => {
     expect(src('lib/params.js')).toContain("export const FINAL_ACCOUNT_APPROVAL_ENABLED = defineBoolean('FINAL_ACCOUNT_APPROVAL_ENABLED', { default: false })")
-    expect(envFiles).toEqual(expect.arrayContaining(['.env.constrapp-69b5d', '.env.constrapp-rules-test']))
+    expect(envFiles).toEqual(expect.arrayContaining(['.env.constrapp-69b5d', '.env.demo-constrap-test']))
     // A non-interactive deploy refuses a parameter with no dotenv value, so the
     // key must be PRESENT in every project file, with a boolean value.
     for (const f of envFiles) expect(['true', 'false'], f).toContain(valueOf(f, 'FINAL_ACCOUNT_APPROVAL_ENABLED'))
@@ -150,7 +150,7 @@ describe('release safety', () => {
     expect(firebaseJson.functions.map(f => f.codebase)).toEqual(['team'])
     // No other export shares the prefix the CLI filter matches on (id === name || id.startsWith(name + '-')).
     const names = [...index.matchAll(/^export const (\w+)\s+=\s+(wrap|onCall|onSchedule|clientFinanceCall)\(/gm)].map(m => m[1])
-    expect(names).toHaveLength(17)   // + transferBoqToBudget (ADR-81) + the six client-finance callables (ADR-89)
+    expect(names).toHaveLength(24)   // + estimateOperation (ADR-97) + transferBoqToBudget (ADR-81) + the six client-finance callables (ADR-89) + five of Phase 2 step 5 + contractValueOperation (ADR-96; the supplier-finance and variation wrappers are not matched by this pattern)
     expect(names.filter(n => n === 'approveFinalAccount' || n.startsWith('approveFinalAccount-'))).toEqual(['approveFinalAccount'])
   })
 

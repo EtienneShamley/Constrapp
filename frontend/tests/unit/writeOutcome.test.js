@@ -569,11 +569,17 @@ describe('the three money registers use the helper for every write they start', 
   })
 
   it('the data hooks behind them were not changed: same transactions, no retry loop', () => {
-    for (const f of ['hooks/useClientInvoices.jsx', 'hooks/useClientReceipts.jsx', 'hooks/useSupplierPayments.jsx']) {
+    for (const f of ['hooks/useClientInvoices.jsx', 'hooks/useClientReceipts.jsx']) {
       const src = stripComments(read(f))
       expect(src, f).not.toMatch(/writeOutcome|useWriteAction|retry/i)
       expect(src.match(/runTransaction\(db/g), f).toHaveLength(1)
     }
+    // ADR-94: supplier payments are now written only by the trusted backend — the hook makes one
+    // callable request per action and still has no retry loop of its own.
+    const payments = stripComments(read('hooks/useSupplierPayments.jsx'))
+    expect(payments).not.toMatch(/writeOutcome|useWriteAction|retry/i)
+    expect(payments).not.toMatch(/runTransaction\(db/)
+    expect(payments).toContain('runSupplierFinance(callSupplierFinance, SF_CALLABLE.SETTLEMENT')
   })
 })
 
@@ -593,5 +599,17 @@ describe('remaining call sites are known', () => {
     expect(remaining.length).toBe(42)
     expect(remaining.reduce((a, [, n]) => a + n, 0)).toBe(58)
     for (const f of Object.keys(APPLIED)) expect(remaining.map(([p]) => p)).not.toContain(f)
+  })
+})
+
+describe('trusted-callable failures (ADR-90 / ADR-93 / ADR-94) — found in local browser acceptance, 28 Nov 2026', () => {
+  it('a typed refusal is CERTAIN and shows the server’s reason; an untyped transport failure is UNCERTAIN — never "nothing was saved"', async () => {
+    const { SupplierFinanceError, SF_ERROR, describeSupplierFinanceFailure } = await import('../../src/lib/supplierFinanceActions')
+    const refused = describeSupplierFinanceFailure({ details: { code: 'approval-segregation-required' }, message: 'Approval segregation is enabled for this company.' })
+    expect(refused).toBeInstanceOf(SupplierFinanceError)
+    expect(describeWriteError(refused)).toEqual({ certain: true, kind: WRITE_FAILURE.REJECTED, message: 'Approval segregation is enabled for this company.' })
+    const lost = describeSupplierFinanceFailure({ code: 'functions/deadline-exceeded', message: 'deadline-exceeded' })
+    expect(lost.kind).toBe(SF_ERROR.UNCERTAIN)
+    expect(describeWriteError(lost)).toMatchObject({ certain: false, kind: WRITE_FAILURE.NO_ANSWER })
   })
 })

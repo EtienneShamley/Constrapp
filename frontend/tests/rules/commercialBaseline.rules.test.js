@@ -25,7 +25,7 @@ import { doc, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, Timestamp }
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const COMPANY_B = 'companyB'
 const PROJECT_A = 'projectA'
@@ -196,9 +196,11 @@ describe('update — the hook\'s upsert, provenance immutable, shape re-validate
   beforeEach(async () => { await seedBaseline() })
 
   for (const u of WRITERS) {
+    // ADR-96 (G5): the hook re-sends the UNCHANGED original contract value;
+    // a change to it is refused (see the ADR-96 block below).
     it(`${u.role} saves the baseline again with the hook's fields (provenance preserved)`, async () => {
-      await assertSucceeds(updateDoc(ref(ctx(u)), fields(u, { originalContractValue: 260000, originalApprovedBudget: 210000, notes: 'revised' })))
-      expect(await readBaseline()).toMatchObject({ originalContractValue: 260000, originalApprovedBudget: 210000, createdBy: USERS.pm.uid, updatedBy: u.uid })
+      await assertSucceeds(updateDoc(ref(ctx(u)), fields(u, { originalContractValue: 250000, originalApprovedBudget: 210000, notes: 'revised' })))
+      expect(await readBaseline()).toMatchObject({ originalContractValue: 250000, originalApprovedBudget: 210000, notes: 'revised', createdBy: USERS.pm.uid, updatedBy: u.uid })
     })
   }
   for (const u of NON_WRITERS) {
@@ -233,7 +235,7 @@ describe('update — the hook\'s upsert, provenance immutable, shape re-validate
         createdAt: Timestamp.now(), createdBy: USERS.admin.uid, updatedAt: Timestamp.now(), updatedBy: USERS.admin.uid,
       })
     })
-    await assertSucceeds(updateDoc(ref(ctx(USERS.qs)), fields(USERS.qs, { originalApprovedBudget: null })))
+    await assertSucceeds(updateDoc(ref(ctx(USERS.qs)), fields(USERS.qs, { originalContractValue: 100000, originalApprovedBudget: null })))
   })
 
   it('delete is blocked for everyone', async () => {
@@ -255,8 +257,9 @@ describe('the legacy Original Approved Budget scalar freezes once a budget versi
     await assertFails(updateDoc(ref(ctx(USERS.pm)), fields(USERS.pm, { originalApprovedBudget: 150000 })))
     await assertFails(updateDoc(ref(ctx(USERS.pm)), fields(USERS.pm, { originalApprovedBudget: null })))
     // The live bundle re-sends the unchanged value with every save: accepted.
-    await assertSucceeds(updateDoc(ref(ctx(USERS.pm)), fields(USERS.pm, { originalApprovedBudget: 200000, originalContractValue: 300000 })))
-    expect(await readBaseline()).toMatchObject({ originalApprovedBudget: 200000, originalContractValue: 300000 })
+    // (ADR-96: the contract value is re-sent unchanged; another field moves.)
+    await assertSucceeds(updateDoc(ref(ctx(USERS.pm)), fields(USERS.pm, { originalApprovedBudget: 200000, notes: 'dates confirmed' })))
+    expect(await readBaseline()).toMatchObject({ originalApprovedBudget: 200000, originalContractValue: 250000, notes: 'dates confirmed' })
   })
 
   it('a baseline CREATED after a version is approved carries no legacy scalar (null); a value is refused', async () => {
@@ -269,5 +272,111 @@ describe('the legacy Original Approved Budget scalar freezes once a budget versi
     await seedBaseline({ originalApprovedBudget: 123 })
     await seedPointer()
     await assertSucceeds(updateDoc(ref(ctx(USERS.pm)), fields(USERS.pm, { originalApprovedBudget: 123 })))
+  })
+})
+
+// ── ADR-96 (G5) — the original contract value is established once ───────────
+//
+// After create, the original contract value and its four correction-provenance
+// keys change only through the trusted backend (contractValueOperation); the
+// rules require them UNCHANGED on every client update, while every other
+// baseline field stays editable. The create refuses the four keys outright.
+
+const PROVENANCE = () => ({
+  originalContractValueVersion: 2,
+  originalContractValueRevisedAt: Timestamp.fromDate(new Date('2026-06-01T00:00:00Z')),
+  originalContractValueRevisedBy: USERS.admin.uid,
+  originalContractValueRevisionId: 'rev1',
+})
+const PROVENANCE_KEYS = Object.keys(PROVENANCE())
+
+describe('ADR-96 — the create refuses the backend\'s correction-provenance keys', () => {
+  for (const key of PROVENANCE_KEYS) {
+    it(`a create carrying ${key} is refused (even null)`, async () => {
+      await assertFails(setDoc(ref(ctx(USERS.pm)), createDoc(USERS.pm, { [key]: PROVENANCE()[key] })))
+      await assertFails(setDoc(ref(ctx(USERS.pm)), createDoc(USERS.pm, { [key]: null })))
+      expect(await readBaseline()).toBeNull()
+    })
+  }
+  it('a create carrying all four is refused for every financial role', async () => {
+    for (const u of WRITERS) await assertFails(setDoc(ref(ctx(u)), createDoc(u, PROVENANCE())))
+    expect(await readBaseline()).toBeNull()
+  })
+})
+
+describe('ADR-96 — after create, the original contract value and its provenance are frozen; other fields stay editable', () => {
+  beforeEach(async () => { await seedBaseline() })
+
+  for (const u of WRITERS) {
+    it(`${u.role} edits notes, dates and client while re-sending the same contract value`, async () => {
+      await assertSucceeds(updateDoc(ref(ctx(u)), fields(u, {
+        originalContractValue: 250000, notes: `edited by ${u.role}`,
+        contractStartDate: Timestamp.fromDate(new Date('2026-03-01')), contractCompletionDate: Timestamp.fromDate(new Date('2027-03-01')),
+        clientId: 'contact2', clientName: 'Beta Holdings',
+      })))
+      expect(await readBaseline()).toMatchObject({ originalContractValue: 250000, notes: `edited by ${u.role}`, clientId: 'contact2', clientName: 'Beta Holdings', updatedBy: u.uid })
+    })
+    it(`${u.role} cannot change the original contract value (up, down or to zero); the stored baseline is unchanged`, async () => {
+      const before = await readBaseline()
+      for (const v of [260000, 249999.99, 0]) {
+        await assertFails(updateDoc(ref(ctx(u)), fields(u, { originalContractValue: v })))
+      }
+      expect(await readBaseline()).toEqual(before)
+    })
+  }
+
+  for (const key of PROVENANCE_KEYS) {
+    it(`adding ${key} is refused (a client cannot forge a correction's provenance)`, async () => {
+      const before = await readBaseline()
+      await assertFails(updateDoc(ref(ctx(USERS.pm)), fields(USERS.pm, { [key]: PROVENANCE()[key] })))
+      expect(await readBaseline()).toEqual(before)
+    })
+  }
+  it('a full overwrite with a new value and forged provenance is refused', async () => {
+    await assertFails(setDoc(ref(ctx(USERS.admin)), {
+      ...fields(USERS.admin, { originalContractValue: 300000 }), ...PROVENANCE(),
+      createdAt: (await readBaseline()).createdAt, createdBy: USERS.pm.uid,
+    }))
+    expect(await readBaseline()).toMatchObject({ originalContractValue: 250000 })
+  })
+})
+
+describe('ADR-96 — a baseline the backend has corrected (carrying the four keys) stays editable when they are re-sent unchanged', () => {
+  beforeEach(async () => { await seedBaseline({ originalContractValue: 275000, ...PROVENANCE() }) })
+
+  for (const u of WRITERS) {
+    it(`${u.role} edits notes, re-sending the four keys and the corrected value unchanged`, async () => {
+      await assertSucceeds(updateDoc(ref(ctx(u)), fields(u, { originalContractValue: 275000, notes: 'post-correction note', ...PROVENANCE() })))
+      expect(await readBaseline()).toMatchObject({ originalContractValue: 275000, notes: 'post-correction note', ...PROVENANCE() })
+    })
+  }
+  it('an update that leaves the four keys out of the merge keeps them and succeeds', async () => {
+    await assertSucceeds(updateDoc(ref(ctx(USERS.qs)), fields(USERS.qs, { originalContractValue: 275000, notes: 'merge' })))
+    expect(await readBaseline()).toMatchObject(PROVENANCE())
+  })
+  it('changing the corrected value back (or anywhere) is refused', async () => {
+    await assertFails(updateDoc(ref(ctx(USERS.pm)), fields(USERS.pm, { originalContractValue: 250000, ...PROVENANCE() })))
+    await assertFails(updateDoc(ref(ctx(USERS.pm)), fields(USERS.pm, { originalContractValue: 280000, ...PROVENANCE() })))
+  })
+  const CHANGED = {
+    originalContractValueVersion: 3,
+    originalContractValueRevisedAt: Timestamp.fromDate(new Date('2026-07-01T00:00:00Z')),
+    originalContractValueRevisedBy: USERS.pm.uid,
+    originalContractValueRevisionId: 'rev2',
+  }
+  for (const key of PROVENANCE_KEYS) {
+    it(`changing ${key} is refused, and so is clearing it to null`, async () => {
+      const before = await readBaseline()
+      await assertFails(updateDoc(ref(ctx(USERS.pm)), fields(USERS.pm, { originalContractValue: 275000, ...PROVENANCE(), [key]: CHANGED[key] })))
+      await assertFails(updateDoc(ref(ctx(USERS.pm)), fields(USERS.pm, { originalContractValue: 275000, ...PROVENANCE(), [key]: null })))
+      expect(await readBaseline()).toEqual(before)
+    })
+  }
+  it('a full overwrite that drops the four keys is refused', async () => {
+    const stored = await readBaseline()
+    await assertFails(setDoc(ref(ctx(USERS.pm)), {
+      ...fields(USERS.pm, { originalContractValue: 275000, notes: 'dropping provenance' }), createdAt: stored.createdAt, createdBy: stored.createdBy,
+    }))
+    expect(await readBaseline()).toMatchObject(PROVENANCE())
   })
 })

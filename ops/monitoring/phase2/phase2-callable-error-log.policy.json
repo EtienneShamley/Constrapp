@@ -1,0 +1,30 @@
+{
+  "displayName": "Phase 2 financial callables: error logged",
+  "combiner": "OR",
+  "enabled": true,
+  "severity": "ERROR",
+  "userLabels": {
+    "programme": "phase2",
+    "component": "financial-callables",
+    "policy": "callable-error-log"
+  },
+  "conditions": [
+    {
+      "displayName": "ERROR written by a Phase 2 financial callable container",
+      "conditionMatchedLog": {
+        "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.location=\"australia-southeast1\" AND resource.labels.service_name=(\"createvariation\" OR \"updatevariationdraft\" OR \"approvevariation\" OR \"applyvariationcommitment\" OR \"progressclaimoperation\" OR \"supplierinvoiceoperation\" OR \"suppliersettlementoperation\" OR \"postclientrefund\" OR \"voidclientrefund\" OR \"postclientreceiptapplication\" OR \"voidclientreceiptapplication\" OR \"voidclientinvoice\" OR \"contractvalueoperation\" OR \"estimateoperation\" OR \"postclientcreditnote\" OR \"voidclientcreditnote\" OR \"postclientretentionrelease\" OR \"voidclientretentionrelease\" OR \"postclientreceipt\" OR \"voidclientreceipt\" OR \"transferboqtobudget\" OR \"approvefinalaccount\") AND severity>=ERROR AND (log_id(\"run.googleapis.com/stderr\") OR log_id(\"run.googleapis.com/stdout\") OR log_id(\"run.googleapis.com/varlog/system\"))"
+      }
+    }
+  ],
+  "alertStrategy": {
+    "notificationRateLimit": {
+      "period": "3600s"
+    },
+    "autoClose": "86400s"
+  },
+  "documentation": {
+    "mimeType": "text/markdown",
+    "subject": "A Phase 2 financial callable logged an error",
+    "content": "## What this means\n\nA Phase 2 financial callable container (or a Phase 1 client-finance callable, `transferBoqToBudget` or `approveFinalAccount`) wrote a log line at ERROR level. Every TYPED refusal is logged at INFO and never reaches this policy. This notification is sent at most once an hour and does not contain the log line.\n\nLogs Explorer (read only):\n\n`resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"<service from the incident>\" AND severity>=ERROR`\n\n| Log message begins | Meaning | Action |\n|---|---|---|\n| `Error: variation call failed` / `supplier-finance call failed` / `client finance call failed` / `contract-value call failed` / `estimate call failed` / `boq transfer call failed` / `final account call failed` | An untyped exception. The caller received `internal` (HTTP 500) and policy A also fires. The original error is in `jsonPayload.stack`; `jsonPayload.fn` names the callable where the family has several. | Read the stack. Treat as a defect. |\n| `Unhandled error` | The Functions framework's own line for the same exception. | Same event as the line above. |\n| `Memory limit of … exceeded` (`varlog/system`) | The instance was killed; every request in flight on it failed. | Check concurrency and the operation (estimate builds, first baselines) in the minutes before. Report. |\n| Anything else | Unexpected. | Report with the service and time. |\n\nAn ERROR line with no 5xx is still a fault: for example a crash after the reply, or a failed release of a baseline run (the release error is swallowed; the run's lease then expires and the next request takes over).\n\nNever paste a log entry, an amount, a customer name or a token into a ticket or chat: give the service, the time, the project and document ids, and the code.\n\nRunbook: `ops/monitoring/phase2/README.md`. Cutover and recovery: `docs/DEPLOYMENT.md`, section *Phase 2 — the complete cutover*."
+  }
+}

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useOutletContext } from 'react-router-dom'
+import { useOutletContext, useLocation } from 'react-router-dom'
 import Card from '../../components/Card'
 import Btn from '../../components/Btn'
 import Badge from '../../components/Badge'
@@ -7,6 +7,10 @@ import { formatCurrency, percent, formatDate } from '../../lib/formatters'
 import { useAuth } from '../../hooks/useAuth'
 import { useProfile } from '../../hooks/useProfile'
 import { useProjectCommercial } from '../../hooks/useProjectCommercial'
+import { useContractValueRevisions } from '../../hooks/useContractValueRevisions'
+import { useCommercialActivation } from '../../hooks/useCommercialActivation'
+import CommercialMaintenanceNotice from '../../components/CommercialMaintenanceNotice'
+import { commercialFailureMessage } from '../../lib/commercialActivation'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
 import { useApprovedBudget } from '../../hooks/useApprovedBudget'
 import {
@@ -83,11 +87,13 @@ function ReconRow({ label, cell, op, strong, danger, muted }) {
 // form would otherwise open blank and an upsert would overwrite the stored
 // baseline with those blanks — and while contacts are still loading. The live
 // Approved Budget is offered only once budget lines have settled cleanly.
-function BaselineForm({ baseline, saveBaseline, clientContacts, contactsLoading, contactsError = false, currentApprovedBudget, budgetReady, budgetUnavailable, budgetApproved = false, originalApproved = null, budgetVersion = null, currencyCode, currentUserId, currentUserName, baselineError }) {
+function BaselineForm({ estimatePrefill = null, baseline, saveBaseline, clientContacts, contactsLoading, contactsError = false, currentApprovedBudget, budgetReady, budgetUnavailable, budgetApproved = false, originalApproved = null, budgetVersion = null, currencyCode, currentUserId, currentUserName, baselineError }) {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const [form, setForm] = useState(() => ({
-    ocv:        baseline?.originalContractValue != null ? String(baseline.originalContractValue) : '',
+    // ADR-97: an approved estimate's selling price may PREFILL this field for
+    // review — only while no value is stored; nothing is saved until Save.
+    ocv:        baseline?.originalContractValue != null ? String(baseline.originalContractValue) : (estimatePrefill ? String(estimatePrefill.value) : ''),
     oab:        baseline?.originalApprovedBudget != null ? String(baseline.originalApprovedBudget) : '',
     start:      tsToInput(baseline?.contractStartDate),
     completion: tsToInput(baseline?.contractCompletionDate),
@@ -157,6 +163,11 @@ function BaselineForm({ baseline, saveBaseline, clientContacts, contactsLoading,
     <Card>
       <div className="flex items-center justify-between gap-3 mb-3">
         <p className="text-[13px] font-bold text-brand-text m-0">Project commercial baseline</p>
+        {estimatePrefill && typeof baseline?.originalContractValue !== 'number' && (
+          <p className="m-0 w-full text-[11.5px] text-brand-amber" data-estimate-prefill="baseline">
+            Prefilled from approved estimate {estimatePrefill.number} (selling price). Review it against the executed contract — nothing is saved until you save the baseline.
+          </p>
+        )}
         {baseline?.updatedAt && (
           <p className="m-0 text-[11px] text-brand-muted">
             Last updated {formatDate(baseline.updatedAt)}{updatedBy ? ` · ${updatedBy}` : ''}
@@ -167,14 +178,28 @@ function BaselineForm({ baseline, saveBaseline, clientContacts, contactsLoading,
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
         <div>
           <label className={labelCls}>Original Contract Value (ex-GST) *</label>
-          <input
-            type="number" min="0" step="any"
-            className={`${inputCls} ${form.ocv.trim() !== '' && !ocvValid ? 'border-brand-red' : ''}`}
-            placeholder="0"
-            value={form.ocv}
-            onChange={setField('ocv')}
-          />
-          <p className="m-0 mt-1 text-[11px] text-brand-muted">The original head-contract sum. Required to calculate margin.</p>
+          {typeof baseline?.originalContractValue === 'number' ? (
+            <>
+              {/* ADR-96 (G5): established — corrected only through the audited
+                  process below, never edited in place. */}
+              <p className="m-0 text-[13px] font-semibold text-brand-text">{formatCurrency(baseline.originalContractValue, currencyCode, { precise: true })}</p>
+              <p className="m-0 mt-1 text-[11px] text-brand-muted">
+                Established{baseline.originalContractValueVersion ? ` · corrected ${baseline.originalContractValueVersion} time${baseline.originalContractValueVersion === 1 ? '' : 's'}` : ''}.
+                Changes of scope or price after award are client variations; a correction of this value is proposed and approved below.
+              </p>
+            </>
+          ) : (
+            <>
+              <input
+                type="number" min="0" step="any"
+                className={`${inputCls} ${form.ocv.trim() !== '' && !ocvValid ? 'border-brand-red' : ''}`}
+                placeholder="0"
+                value={form.ocv}
+                onChange={setField('ocv')}
+              />
+              <p className="m-0 mt-1 text-[11px] text-brand-muted">The original head-contract sum. Required to calculate margin. Once saved it can only be changed through an approved correction.</p>
+            </>
+          )}
         </div>
 
         <div>
@@ -286,6 +311,89 @@ function BaselineForm({ baseline, saveBaseline, clientContacts, contactsLoading,
   )
 }
 
+// ── Original contract value corrections (ADR-96, G5) ─────────────────────────
+//
+// A correction fixes the BASELINE (a value entered wrongly, or an amendment to
+// the executed contract sum). It is proposed, then approved — by another
+// member when the company's approval segregation is enabled — and only then
+// replaces the value everywhere it is read. Scope or price changes after award
+// are client variations, never corrections.
+function ContractValueCorrections({ projectId, baseline, currencyCode, currentUserId, estimatePrefill = null }) {
+  const money = (n) => formatCurrency(n, currencyCode, { precise: true })
+  const { revisions, revisionsError, propose, approve, withdraw } = useContractValueRevisions(projectId)
+  // Phase 2 activation (lib/commercialActivation.js): propose / approve /
+  // withdraw are withheld until the company is switched over; the pending
+  // proposal and the history stay visible. The baseline's first-time setup
+  // (above) is unaffected. UX only; the server refuses regardless.
+  const activation = useCommercialActivation()
+  const writable = activation.writable
+  // ADR-97: a reviewed PREFILL of the proposal form — never a proposal by
+  // itself; the confirmation tick and Propose stay with the user.
+  const [toValue, setToValue] = useState(() => (estimatePrefill ? String(estimatePrefill.value) : ''))
+  const [reason, setReason] = useState(() => (estimatePrefill ? `Selling price of approved estimate ${estimatePrefill.number}` : ''))
+  const [confirmed, setConfirmed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  if (typeof baseline?.originalContractValue !== 'number') return null
+  const pending = revisions.find(r => r.status === 'proposed') ?? null
+  const history = revisions.filter(r => r.status === 'approved')
+  const value = Number(toValue)
+  const valid = toValue.trim() !== '' && Number.isFinite(value) && value >= 0 && Math.round(value * 100) !== Math.round(baseline.originalContractValue * 100)
+    && reason.trim().length >= 10 && confirmed
+  const run = async (fn) => {
+    setBusy(true); setError('')
+    try { await fn() } catch (err) { setError(commercialFailureMessage(err, err?.message || 'The request did not complete. Reload and check before trying again.')) } finally { setBusy(false) }
+  }
+  return (
+    <Card>
+      <p className="text-[13px] font-bold text-brand-text m-0 mb-2">Original contract value — corrections</p>
+      {revisionsError && <p className="m-0 text-[12px] text-brand-amber">Corrections could not be loaded.</p>}
+      <CommercialMaintenanceNotice activation={activation} className="mb-3" />
+      {pending ? (
+        <div className="bg-brand-bg border border-brand-border rounded-lg p-3 mb-3">
+          <p className="m-0 text-[12.5px] text-brand-text">
+            Proposed: {money(pending.fromValue)} → <span className="font-semibold">{money(pending.toValue)}</span>
+            {pending.proposedBy === currentUserId ? ' (proposed by you)' : ''}
+          </p>
+          <p className="m-0 mt-1 text-[11.5px] text-brand-muted">{pending.reason}</p>
+          {writable && (
+            <div className="flex gap-2 mt-2">
+              <Btn sm variant="success" disabled={busy} onClick={() => run(() => approve(pending.id))}>Approve correction</Btn>
+              <Btn sm variant="ghost" disabled={busy} onClick={() => run(() => withdraw(pending.id, 'Withdrawn from the commercial page'))}>Withdraw</Btn>
+            </div>
+          )}
+        </div>
+      ) : !writable ? null : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className={labelCls}>Corrected value (ex-GST)</label>
+            <input type="number" min="0" step="any" className={inputCls} value={toValue} onChange={e => setToValue(e.target.value)} />
+          </div>
+          <div>
+            <label className={labelCls}>Reason (at least 10 characters)</label>
+            <input className={inputCls} value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. contract sum entered without the executed amendment" />
+          </div>
+          <label className="sm:col-span-2 flex items-start gap-2 text-[12px] text-brand-text cursor-pointer">
+            <input type="checkbox" className="mt-0.5" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />
+            <span>This corrects the original contract value itself. It is not a change of scope or price after award — those are recorded as client variations.</span>
+          </label>
+          <div className="sm:col-span-2">
+            <Btn sm disabled={busy || !valid} onClick={() => run(async () => { await propose({ fromValue: baseline.originalContractValue, toValue: value, reason }); setToValue(''); setReason(''); setConfirmed(false) })}>
+              Propose correction
+            </Btn>
+          </div>
+        </div>
+      )}
+      {error && <p className="m-0 mt-2 text-[12px] text-brand-red">{error}</p>}
+      {history.length > 0 && (
+        <ul className="m-0 mt-3 pl-4 text-[11.5px] text-brand-muted">
+          {history.map(r => <li key={r.id}>{money(r.fromValue)} → {money(r.toValue)} — {r.reason}</li>)}
+        </ul>
+      )}
+    </Card>
+  )
+}
+
 // ── Role gate ────────────────────────────────────────────────────────────────
 //
 // The workspace (and so every commercially-sensitive subscription, including
@@ -295,6 +403,12 @@ function BaselineForm({ baseline, saveBaseline, clientContacts, contactsLoading,
 export default function ProjectCommercial() {
   const { projectId, currencyCode } = useOutletContext()
   const { profile, profileLoading } = useProfile()
+  // ADR-97: the Estimate page may hand over an approved selling price as a
+  // PREFILL (router state — never a URL parameter, never a write).
+  const { state } = useLocation()
+  const candidate = state?.estimatePrefill
+  const estimatePrefill = candidate && typeof candidate.value === 'number' && Number.isFinite(candidate.value) && candidate.value >= 0 && typeof candidate.number === 'string'
+    ? { value: candidate.value, number: candidate.number } : null
 
   if (profileLoading) {
     return <div className="text-[13px] text-brand-muted">Loading…</div>
@@ -310,10 +424,10 @@ export default function ProjectCommercial() {
       </Card>
     )
   }
-  return <CommercialWorkspace projectId={projectId} currencyCode={currencyCode} />
+  return <CommercialWorkspace projectId={projectId} currencyCode={currencyCode} estimatePrefill={estimatePrefill} />
 }
 
-function CommercialWorkspace({ projectId, currencyCode }) {
+function CommercialWorkspace({ projectId, currencyCode, estimatePrefill = null }) {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const { user }    = useAuth()
@@ -529,6 +643,7 @@ function CommercialWorkspace({ projectId, currencyCode }) {
 
       {/* ── Baseline form ──────────────────────────────────────────────────── */}
       <BaselineForm
+        estimatePrefill={estimatePrefill}
         currencyCode={currencyCode}
         key={formKey}
         baseline={baseline}
@@ -546,6 +661,10 @@ function CommercialWorkspace({ projectId, currencyCode }) {
         currentUserName={profile?.name}
         baselineError={baselineError}
       />
+
+      <div className="mt-3">
+        <ContractValueCorrections projectId={projectId} baseline={baseline} currencyCode={currencyCode} currentUserId={user?.uid} estimatePrefill={estimatePrefill} />
+      </div>
 
       <p className="m-0 mt-3 text-[11px] text-brand-muted">
         Only the baseline fields above are stored; every margin figure is derived at read time from the baseline, approved

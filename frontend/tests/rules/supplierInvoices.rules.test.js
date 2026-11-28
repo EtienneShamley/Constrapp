@@ -8,7 +8,7 @@ import {
   assertFails,
 } from '@firebase/rules-unit-testing'
 import {
-  doc, getDoc, setDoc, updateDoc, deleteDoc, writeBatch, serverTimestamp, Timestamp,
+  doc, getDoc, setDoc, updateDoc, deleteDoc, writeBatch, runTransaction, serverTimestamp, Timestamp,
 } from 'firebase/firestore'
 import {
   invoiceTotals, gstForLine, allocateClaimSourcedLineGst, claimReconciliationError,
@@ -43,6 +43,25 @@ import { roundMoney } from '../../src/lib/purchaseOrders'
 // LONGER possible for a new-format claim (SHIELD 2A, ADR-68 — the claim's own
 // link is the sibling; tests/rules/claimInvoicePairing.rules.test.js).
 //
+// ⚠️ ADR-93 (Phase 2 step 3, trusted supplier finance). A supplier invoice is
+// CREATED, its draft EDITED, APPROVED, POSTED and CANCELLED — and paired with
+// its claim — ONLY by the trusted backend (functions/src/supplierFinance/),
+// which verifies everything stored under the invoice's own calculation version
+// before it becomes authoritative. The block is now
+// `allow create, update, delete: if false` and the `supplierInvoices` counter is
+// backend-only. Every test below whose subject was a client write that used to
+// SUCCEED now proves that exact write is REFUSED for every financial role
+// (company_admin, project_manager, qs) with nothing stored / the stored
+// document (and, for a paired create, the claim) unchanged (`createRefused` /
+// `pairedRefused` / `updateRefused`). Every denial the suite already asserted
+// is kept unchanged — it still holds, now trivially. Where a scenario needs the
+// document the old client write produced, it is then written with rules
+// disabled (`storeAs` / `serverUpdate`), standing for what the backend stores.
+// The "DEFERRED CONTROLS" block below therefore no longer proves gaps are
+// OPEN to a client: each former ACCEPTED shape is now REFUSED, and whether the
+// backend closes it is proven in tests/functions (supplier finance). Reads are
+// unchanged: financial roles only, tenant-isolated.
+//
 // SAFETY: this suite refuses to run unless FIRESTORE_EMULATOR_HOST is set, so it
 // can never reach a production Firebase project. The npm script starts the
 // emulator via `firebase emulators:exec`, which sets that variable.
@@ -50,7 +69,7 @@ import { roundMoney } from '../../src/lib/purchaseOrders'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A  = 'companyA'
 const COMPANY_B  = 'companyB'
 const PROJECT_A  = 'projectA'
@@ -282,6 +301,69 @@ const CLIENT_CLOCKS = [
   () => Timestamp.fromDate(new Date('2020-01-01T00:00:00Z')),
 ]
 
+const FINANCIAL = [USERS.admin, USERS.pm, USERS.qs]
+const claimDocRef = (db, id) => doc(db, `companies/${COMPANY_A}/projects/${PROJECT_A}/progressClaims`, id)
+
+async function readInv(id) {
+  let data
+  await testEnv.withSecurityRulesDisabled(async (c) => {
+    const snap = await getDoc(doc(c.firestore(), invoicesPath(), id))
+    data = snap.exists() ? snap.data() : undefined
+  })
+  return data
+}
+async function readClaimDoc(id) {
+  let data
+  await testEnv.withSecurityRulesDisabled(async (c) => {
+    const snap = await getDoc(claimDocRef(c.firestore(), id))
+    data = snap.exists() ? snap.data() : undefined
+  })
+  return data
+}
+// What the TRUSTED BACKEND stores, written with rules disabled.
+async function serverCreate(id, data) {
+  await testEnv.withSecurityRulesDisabled(async (c) => { await setDoc(doc(c.firestore(), invoicesPath(), id), data) })
+}
+async function serverUpdate(id, data) {
+  await testEnv.withSecurityRulesDisabled(async (c) => { await updateDoc(doc(c.firestore(), invoicesPath(), id), data) })
+}
+// ADR-93 — a client create is REFUSED for EVERY financial role; nothing is
+// stored. With `storeAs`, the same document is then written with rules disabled.
+async function createRefused(id, build, { storeAs = null } = {}) {
+  for (const user of FINANCIAL) await assertFails(setDoc(invRef(ctx(user), id), build(user)))
+  expect(await readInv(id)).toBeUndefined()
+  if (storeAs) await serverCreate(id, build(storeAs))
+}
+// ADR-93 — the PAIRED claim-sourced create (invoice + claim link in one batch)
+// is REFUSED for EVERY financial role: no invoice, the claim does not move.
+// With `storeAs`, the backend's pair is then written with rules disabled.
+async function pairedRefused(id, build, { claimId = null, revision = 2, storeAs = null } = {}) {
+  const cid = claimId ?? build(USERS.qs).progressClaimId
+  const before = await readClaimDoc(cid)
+  for (const user of FINANCIAL) await assertFails(pairedCreate(user, id, build(user), { claimId: cid, revision }))
+  expect(await readInv(id)).toBeUndefined()
+  expect(await readClaimDoc(cid)).toEqual(before)
+  if (storeAs) {
+    await serverCreate(id, build(storeAs))
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await updateDoc(claimDocRef(c.firestore(), cid), {
+        supplierInvoiceId: id, supplierInvoiceLinkedAt: serverTimestamp(), supplierInvoiceLinkedBy: storeAs.uid,
+        revision, updatedAt: serverTimestamp(), updatedBy: storeAs.uid,
+      })
+    })
+  }
+}
+// ADR-93 — a client update is REFUSED for EVERY financial role; the stored
+// document does not move. With `storeAs`, the update is then made with rules
+// disabled, so the rest of a scenario runs over the backend's state.
+async function updateRefused(id, build, { storeAs = null } = {}) {
+  const before = await readInv(id)
+  expect(before).toBeDefined()
+  for (const user of FINANCIAL) await assertFails(updateDoc(invRef(ctx(user), id), build(user)))
+  expect(await readInv(id)).toEqual(before)
+  if (storeAs) await serverUpdate(id, build(storeAs))
+}
+
 beforeAll(async () => {
   if (!process.env.FIRESTORE_EMULATOR_HOST) {
     throw new Error(
@@ -355,9 +437,9 @@ beforeEach(async () => {
 // ── Roles, membership & tenant isolation ─────────────────────────────────────
 
 describe('roles, membership and tenant isolation', () => {
-  it('every financial role can create a draft invoice', async () => {
-    for (const user of [USERS.admin, USERS.pm, USERS.qs]) {
-      await assertSucceeds(setDoc(invRef(ctx(user), `create-${user.uid}`), invoicePayload(user)))
+  it('ADR-93 — a draft invoice create is REFUSED for every financial role; nothing is stored', async () => {
+    for (const user of FINANCIAL) {
+      await createRefused(`create-${user.uid}`, invoicePayload)
     }
   })
 
@@ -368,15 +450,20 @@ describe('roles, membership and tenant isolation', () => {
     }
   })
 
-  it('every financial role can approve, post and cancel', async () => {
-    for (const user of [USERS.admin, USERS.pm, USERS.qs]) {
-      await seed(`ap-${user.uid}`, 'draft')
-      await assertSucceeds(updateDoc(invRef(ctx(user), `ap-${user.uid}`), approveWrite(user)))
-      await seed(`po-${user.uid}`, 'approved')
-      await assertSucceeds(updateDoc(invRef(ctx(user), `po-${user.uid}`), postWrite(user)))
-      await seed(`ca-${user.uid}`, 'draft')
-      await assertSucceeds(updateDoc(invRef(ctx(user), `ca-${user.uid}`), cancelWrite(user)))
-    }
+  it('ADR-93 — approve, post and cancel are REFUSED for every financial role; the stored invoice does not move', async () => {
+    await seed('ap', 'draft')
+    await updateRefused('ap', (user) => approveWrite(user))
+    await seed('po', 'approved')
+    await updateRefused('po', (user) => postWrite(user))
+    await seed('ca', 'draft')
+    await updateRefused('ca', (user) => cancelWrite(user))
+  })
+
+  it('tenant isolation of a REFUSED-anyway write — another company\'s admin also cannot read the backend\'s invoice', async () => {
+    await seed('ti', 'draft')
+    await assertFails(getDoc(invRef(ctx(USERS.other), 'ti')))
+    await assertFails(updateDoc(invRef(ctx(USERS.other), 'ti'), approveWrite(USERS.other)))
+    for (const user of FINANCIAL) await assertSucceeds(getDoc(invRef(ctx(user), 'ti')))
   })
 
   it('subcontractor and client can neither read nor write — the AP register is financial-role only', async () => {
@@ -420,47 +507,38 @@ describe('roles, membership and tenant isolation', () => {
 
 // ── Valid creates ────────────────────────────────────────────────────────────
 
-describe('valid create', () => {
-  it('accepts a direct_po draft against a SENT purchase order', async () => {
-    await assertSucceeds(setDoc(invRef(ctx(USERS.qs), 'c1'), invoicePayload(USERS.qs)))
+describe('formerly valid create — ADR-93: every one REFUSED for every financial role', () => {
+  it('ADR-93 — a direct_po draft against a SENT purchase order is REFUSED', async () => {
+    await createRefused('c1', invoicePayload)
   })
 
-  it('accepts a direct_po draft against a CLOSED purchase order', async () => {
-    await assertSucceeds(setDoc(
-      invRef(ctx(USERS.qs), 'c2'), invoicePayload(USERS.qs, { poId: PO_CLOSED }),
-    ))
+  it('ADR-93 — a direct_po draft against a CLOSED purchase order is REFUSED', async () => {
+    await createRefused('c2', (u) => invoicePayload(u, { poId: PO_CLOSED }))
   })
 
-  it('accepts a progress_claim draft against an APPROVED claim, with retention — paired with the claim link (ADR-68)', async () => {
-    await assertSucceeds(pairedCreate(USERS.qs, 'c3', invoicePayload(USERS.qs, { source: 'progress_claim', retention: 1000 })))
+  it('ADR-93 — a progress_claim draft against an APPROVED claim, with retention, paired with the claim link (ADR-68), is REFUSED; the claim stays unlinked', async () => {
+    await pairedRefused('c3', (u) => invoicePayload(u, { source: 'progress_claim', retention: 1000 }))
   })
 
-  it('accepts a legacy pre-Contacts supplier — supplierId null', async () => {
-    await assertSucceeds(setDoc(
-      invRef(ctx(USERS.qs), 'c4'), invoicePayload(USERS.qs, { supplierId: null }),
-    ))
+  it('ADR-93 — a legacy pre-Contacts supplier (supplierId null) create is REFUSED', async () => {
+    await createRefused('c4', (u) => invoicePayload(u, { supplierId: null }))
   })
 
-  it('accepts an empty supplierInvoiceNumber, receivedDate and dueDate', async () => {
-    await assertSucceeds(setDoc(
-      invRef(ctx(USERS.qs), 'c5'),
-      invoicePayload(USERS.qs, { supplierInvoiceNumber: '', receivedDate: '', dueDate: '' }),
-    ))
+  it('ADR-93 — an empty supplierInvoiceNumber, receivedDate and dueDate: REFUSED', async () => {
+    await createRefused('c5', (u) => invoicePayload(u, { supplierInvoiceNumber: '', receivedDate: '', dueDate: '' }))
   })
 
-  it('accepts a null paymentTerms snapshot', async () => {
-    await assertSucceeds(setDoc(
-      invRef(ctx(USERS.qs), 'c6'), invoicePayload(USERS.qs, { paymentTerms: null }),
-    ))
+  it('ADR-93 — a null paymentTerms snapshot: REFUSED', async () => {
+    await createRefused('c6', (u) => invoicePayload(u, { paymentTerms: null }))
   })
 
-  it('accepts a mixed tax-code line set', async () => {
-    await assertSucceeds(setDoc(invRef(ctx(USERS.qs), 'c7'), invoicePayload(USERS.qs, {
+  it('ADR-93 — a mixed tax-code line set: REFUSED', async () => {
+    await createRefused('c7', (u) => invoicePayload(u, {
       lines: [line(5000, 'gst'), line(3000, 'gst_free'), line(2000, 'input_taxed')],
-    })))
+    }))
   })
 
-  it('accepts a wholly GST-FREE invoice carrying retention — payableGst and payableTotal go NEGATIVE', async () => {
+  it('ADR-93 — a wholly GST-FREE invoice carrying retention (payableGst and payableTotal NEGATIVE) is REFUSED', async () => {
     // The deferred domain issue recorded in SECURITY.md → Deferred Control 29.
     // Rules deliberately apply NO `payableGst >= 0` / `payableTotal >= 0` floor,
     // because under the current financial model this document is app-reachable.
@@ -470,22 +548,20 @@ describe('valid create', () => {
     expect(payload.gstTotal).toBe(0)
     expect(payload.payableGst).toBeLessThan(0)
     expect(payload.payableTotal).toBeLessThan(0)
-    await assertSucceeds(setDoc(invRef(ctx(USERS.qs), 'c8'), payload))
+    await createRefused('c8', () => payload)
   })
 
-  it('accepts a gstTotal ABOVE 10% of subtotal — per-line roundings can exceed one rounding of the sum', async () => {
+  it('ADR-93 — a gstTotal ABOVE 10% of subtotal (per-line roundings) is REFUSED', async () => {
     // Two 0.05 lines each round to 0.01 GST, so gstTotal is 0.02 against a naive
     // ceiling of 0.01. Any `gstTotal <= 10% of subtotal` rule would reject this.
     const payload = invoicePayload(USERS.qs, { lines: [line(0.05), line(0.05)] })
     expect(payload.subtotal).toBe(0.1)
     expect(payload.gstTotal).toBe(0.02)
-    await assertSucceeds(setDoc(invRef(ctx(USERS.qs), 'c9'), payload))
+    await createRefused('c9', () => payload)
   })
 
-  it('accepts retention exactly equal to the subtotal', async () => {
-    await assertSucceeds(setDoc(
-      invRef(ctx(USERS.qs), 'c10'), invoicePayload(USERS.qs, { retention: 10000 }),
-    ))
+  it('ADR-93 — retention exactly equal to the subtotal: REFUSED', async () => {
+    await createRefused('c10', (u) => invoicePayload(u, { retention: 10000 }))
   })
 })
 
@@ -612,16 +688,14 @@ describe('create shape validation', () => {
     }
   })
 
-  it('rejects a malformed receivedDate or dueDate while allowing empty strings', async () => {
+  it('rejects a malformed receivedDate or dueDate; ADR-93 — the empty strings are REFUSED too', async () => {
     await assertFails(setDoc(
       invRef(ctx(USERS.qs), 'sh3a'), invoicePayload(USERS.qs, { receivedDate: '6 Aug' }),
     ))
     await assertFails(setDoc(
       invRef(ctx(USERS.qs), 'sh3b'), invoicePayload(USERS.qs, { dueDate: null }),
     ))
-    await assertSucceeds(setDoc(
-      invRef(ctx(USERS.qs), 'sh3c'), invoicePayload(USERS.qs, { receivedDate: '', dueDate: '' }),
-    ))
+    await createRefused('sh3c', (u) => invoicePayload(u, { receivedDate: '', dueDate: '' }))
   })
 
   it('rejects a non-string or empty invoiceNumber, and a non-number revision', async () => {
@@ -740,8 +814,8 @@ describe('scalar arithmetic identities — one cent breaks each', () => {
     ['retentionGst is exactly 10% of retention',    { retentionGst: 100.01, retentionTotal: 1100.01, payableGst: 899.99, payableTotal: 9899.99 }],
   ]
 
-  it('accepts the untouched retention-bearing payload', async () => {
-    await assertSucceeds(pairedCreate(USERS.qs, 'a0', invoicePayload(USERS.qs, { source: 'progress_claim', retention: 1000 })))
+  it('ADR-93 — the untouched retention-bearing payload is REFUSED for every financial role', async () => {
+    await pairedRefused('a0', (u) => invoicePayload(u, { source: 'progress_claim', retention: 1000 }))
   })
 
   CASES.forEach(([label, over], idx) => {
@@ -759,10 +833,10 @@ describe('retention GST rounding — math.floor((c+5)/10) matches JavaScript rou
   const RETENTIONS = [0, 0.05, 0.1, 100.05, 100.04, 100.06, 1000, 1234.55, 1234.54, 9999.95]
 
   RETENTIONS.forEach((retention, i) => {
-    it(`accepts retention ${retention.toFixed(2)} with its exact derived GST`, async () => {
+    it(`ADR-93 — retention ${retention.toFixed(2)} with its exact derived GST: REFUSED`, async () => {
       const payload = invoicePayload(USERS.qs, { retention })
       expect(payload.retentionGst).toBe(roundMoney(retention * 0.1))
-      await assertSucceeds(setDoc(invRef(ctx(USERS.qs), `g${i}`), payload))
+      await createRefused(`g${i}`, (u) => invoicePayload(u, { retention }))
     })
   })
 
@@ -777,23 +851,23 @@ describe('retention GST rounding — math.floor((c+5)/10) matches JavaScript rou
   const BOUNDARY_RETENTIONS = [40.15, 41.05, 42.65, 80.85, 81.55, 83.35]
 
   BOUNDARY_RETENTIONS.forEach((retention, i) => {
-    it(`accepts the app's own retention ${retention.toFixed(2)} payload, which rounds the half-cent DOWN`, async () => {
+    it(`ADR-93 — the app's own retention ${retention.toFixed(2)} payload (half-cent DOWN) is REFUSED`, async () => {
       const payload = invoicePayload(USERS.qs, { retention })
       // the client figure IS one cent below half-up for these values
       const halfUp = Math.floor((Math.round(retention * 100) + 5) / 10) / 100
       expect(payload.retentionGst).toBe(roundMoney(retention * 0.1))
       expect(Math.round(payload.retentionGst * 100)).toBe(Math.round(halfUp * 100) - 1)
-      await assertSucceeds(setDoc(invRef(ctx(USERS.qs), `gb${i}`), payload))
+      await createRefused(`gb${i}`, (u) => invoicePayload(u, { retention }))
     })
   })
 
-  it('accepts BOTH boundary alternatives for 40.15 — 4.01 (the client) and 4.02 (exact half-up, historical)', async () => {
+  it('ADR-93 — BOTH boundary alternatives for 40.15 — 4.01 (the client) and 4.02 (exact half-up, historical) — are REFUSED', async () => {
     const base = invoicePayload(USERS.qs, { retention: 40.15 })
     expect(base.retentionGst).toBe(4.01)
-    await assertSucceeds(setDoc(invRef(ctx(USERS.qs), 'gb-client'), base))
+    await createRefused('gb-client', (u) => invoicePayload(u, { retention: 40.15 }))
     const totals = invoiceTotals(DEFAULT_LINES, 0)
-    await assertSucceeds(setDoc(invRef(ctx(USERS.qs), 'gb-exact'), {
-      ...base,
+    await createRefused('gb-exact', (u) => ({
+      ...invoicePayload(u, { retention: 40.15 }),
       retentionGst:   4.02,
       retentionTotal: 44.17,
       payableGst:     roundMoney(totals.gstTotal - 4.02),
@@ -857,7 +931,7 @@ describe('retention GST rounding — math.floor((c+5)/10) matches JavaScript rou
   })
 })
 
-describe('the claim-sourced invoice the app now builds passes the rules (GST boundary hotfix, finding F3)', () => {
+describe('the claim-sourced invoice the app built (GST boundary hotfix, finding F3) — ADR-93: REFUSED from every client', () => {
   // Three certified claim lines of 10.05: the claim certifies GST on its net
   // total (3.02); per-line 10% roundings gave 3.03 and the client guard refused
   // the invoice. The lines now carry the certified GST APPORTIONED
@@ -866,7 +940,7 @@ describe('the claim-sourced invoice the app now builds passes the rules (GST bou
   const CLAIM_AMOUNTS = [10.05, 10.05, 10.05]
   const claimLines = CLAIM_AMOUNTS.map((amount, idx) => line(amount, 'gst', { poLineIndex: idx, costCodeId: `cc${idx}` }))
 
-  it('creates, approves and posts a claim-sourced invoice whose lines carry the apportioned certified GST', async () => {
+  it('ADR-93 — create, approve and post of a claim-sourced invoice whose lines carry the apportioned certified GST are each REFUSED for every financial role; the backend\'s document carries the certified figures', async () => {
     const certified = claimTotals(CLAIM_AMOUNTS, 0)
     expect(certified.gst).toBe(3.02)
     const lines = allocateClaimSourcedLineGst(claimLines, { certifiedGst: certified.gst, retention: 0 })
@@ -875,27 +949,27 @@ describe('the claim-sourced invoice the app now builds passes the rules (GST bou
     expect(claimReconciliationError(totals, { approvedGst: certified.gst, approvedTotal: certified.total })).toBeNull()
 
     const ref = invRef(ctx(USERS.qs), 'claim-apportioned')
-    await assertSucceeds(pairedCreate(USERS.qs, 'claim-apportioned', invoicePayload(USERS.qs, { source: 'progress_claim', lines })))
-    await assertSucceeds(updateDoc(ref, {
-      status: 'approved', approvedAt: serverTimestamp(), approvedBy: USERS.qs.uid, ...stamps(USERS.qs),
-    }))
-    await assertSucceeds(updateDoc(ref, {
-      status: 'posted', postedAt: serverTimestamp(), postedBy: USERS.qs.uid, ...stamps(USERS.qs),
-    }))
-    const snap = await getDoc(ref)
+    await pairedRefused('claim-apportioned', (u) => invoicePayload(u, { source: 'progress_claim', lines }), { storeAs: USERS.qs })
+    await updateRefused('claim-apportioned', (u) => ({
+      status: 'approved', approvedAt: serverTimestamp(), approvedBy: u.uid, ...stamps(u),
+    }), { storeAs: USERS.qs })
+    await updateRefused('claim-apportioned', (u) => ({
+      status: 'posted', postedAt: serverTimestamp(), postedBy: u.uid, ...stamps(u),
+    }), { storeAs: USERS.qs })
+    const snap = await getDoc(ref)   // a financial-role READ still succeeds
     expect(snap.data().gstTotal).toBe(3.02)
     expect(snap.data().payableGst).toBe(certified.gst)
     expect(snap.data().payableTotal).toBe(certified.total)
   })
 
-  it('the same claim with a boundary retention (803.00 at 5% = 40.15) creates through the rules', async () => {
+  it('ADR-93 — the same claim with a boundary retention (803.00 at 5% = 40.15): the paired create is REFUSED', async () => {
     const certified = claimTotals([803], 40.15)
     const srcLines = [line(803, 'gst', { poLineIndex: 0 })]
     const lines = allocateClaimSourcedLineGst(srcLines, { certifiedGst: certified.gst, retention: 40.15 })
     const totals = invoiceTotals(lines, 40.15)
     expect(totals.retentionGst).toBe(4.01)   // the client's half-cent-down figure
     expect(claimReconciliationError(totals, { approvedGst: certified.gst, approvedTotal: certified.total })).toBeNull()
-    await assertSucceeds(pairedCreate(USERS.qs, 'claim-boundary-retention', invoicePayload(USERS.qs, { source: 'progress_claim', lines, retention: 40.15 })))
+    await pairedRefused('claim-boundary-retention', (u) => invoicePayload(u, { source: 'progress_claim', lines, retention: 40.15 }))
   })
 })
 
@@ -944,7 +1018,7 @@ describe('Tier 2 source-document validation at create', () => {
     })))
   })
 
-  it('THE REFERENCES ARE NEVER REVALIDATED after create — a later PO status change cannot trap the invoice', async () => {
+  it('a later PO status change — ADR-93: the line edit, approve and post that used to pass are each REFUSED for every financial role', async () => {
     // The ADR-34 rule: an UNCHANGED reference is never re-checked. poId is
     // core-preserved, so re-validating it on an edit or a transition could only
     // strand a legitimate invoice whose PO was later closed or cancelled.
@@ -952,18 +1026,18 @@ describe('Tier 2 source-document validation at create', () => {
     await testEnv.withSecurityRulesDisabled(async (c) => {
       await updateDoc(doc(c.firestore(), `companies/${COMPANY_A}/projects/${PROJECT_A}/purchaseOrders`, PO_SENT), { status: 'cancelled' })
     })
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 't8'), lineEdit(USERS.qs)))
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 't8'), approveWrite(USERS.qs)))
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 't8'), postWrite(USERS.qs)))
+    await updateRefused('t8', (u) => lineEdit(u), { storeAs: USERS.qs })
+    await updateRefused('t8', (u) => approveWrite(u), { storeAs: USERS.qs })
+    await updateRefused('t8', (u) => postWrite(u))
   })
 
-  it('a claim-sourced invoice survives its claim changing status afterwards', async () => {
+  it('a claim-sourced invoice whose claim changed status afterwards — ADR-93: the header edit and approve are REFUSED for every financial role', async () => {
     await seed('t9', 'draft', USERS.admin, { source: 'progress_claim', retention: 1000 })
     await testEnv.withSecurityRulesDisabled(async (c) => {
       await updateDoc(doc(c.firestore(), `companies/${COMPANY_A}/projects/${PROJECT_A}/progressClaims`, CLAIM_APPROVED), { status: 'rejected' })
     })
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 't9'), headerEdit(USERS.qs)))
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 't9'), approveWrite(USERS.qs)))
+    await updateRefused('t9', (u) => headerEdit(u), { storeAs: USERS.qs })
+    await updateRefused('t9', (u) => approveWrite(u))
   })
 })
 
@@ -1011,29 +1085,29 @@ describe('immutable core identity', () => {
 
 // ── Legal transitions ────────────────────────────────────────────────────────
 
-describe('legal lifecycle transitions', () => {
-  it('draft -> approved with the exact hook payload', async () => {
+describe('formerly legal lifecycle transitions — ADR-93: every one REFUSED for every financial role', () => {
+  it('ADR-93 — draft -> approved with the exact hook payload is REFUSED', async () => {
     await seed('l1', 'draft')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'l1'), approveWrite(USERS.qs)))
+    await updateRefused('l1', (u) => approveWrite(u))
   })
 
-  it('approved -> posted with the exact hook payload', async () => {
+  it('ADR-93 — approved -> posted with the exact hook payload is REFUSED', async () => {
     await seed('l2', 'approved')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'l2'), postWrite(USERS.qs)))
+    await updateRefused('l2', (u) => postWrite(u))
   })
 
-  it('draft -> cancelled and approved -> cancelled', async () => {
+  it('ADR-93 — draft -> cancelled and approved -> cancelled are REFUSED', async () => {
     await seed('l3', 'draft')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'l3'), cancelWrite(USERS.qs)))
+    await updateRefused('l3', (u) => cancelWrite(u))
     await seed('l4', 'approved')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'l4'), cancelWrite(USERS.qs)))
+    await updateRefused('l4', (u) => cancelWrite(u))
   })
 
-  it('the full draft -> approved -> posted walk on one document', async () => {
-    const db = ctx(USERS.pm)
-    await assertSucceeds(setDoc(invRef(db, 'l5'), invoicePayload(USERS.pm)))
-    await assertSucceeds(updateDoc(invRef(db, 'l5'), approveWrite(USERS.pm)))
-    await assertSucceeds(updateDoc(invRef(db, 'l5'), postWrite(USERS.pm)))
+  it('ADR-93 — the full draft -> approved -> posted walk is REFUSED at every step (each stored state written as the backend would)', async () => {
+    await createRefused('l5', invoicePayload, { storeAs: USERS.pm })
+    await updateRefused('l5', (u) => approveWrite(u), { storeAs: USERS.pm })
+    await updateRefused('l5', (u) => postWrite(u), { storeAs: USERS.pm })
+    expect((await readInv('l5')).status).toBe('posted')
   })
 })
 
@@ -1188,11 +1262,11 @@ describe('approved is the AUTHORING FREEZE POINT', () => {
     await assertFails(updateDoc(invRef(ctx(USERS.qs), 'z4'), { notes: '', ...stamps(USERS.qs) }))
   })
 
-  it('leaves exactly two updates available from approved: post and cancel', async () => {
+  it('ADR-93 — the two updates formerly available from approved (post and cancel) are REFUSED for every financial role', async () => {
     await seed('z5', 'approved')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'z5'), postWrite(USERS.qs)))
+    await updateRefused('z5', (u) => postWrite(u))
     await seed('z6', 'approved')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'z6'), cancelWrite(USERS.qs)))
+    await updateRefused('z6', (u) => cancelWrite(u))
   })
 })
 
@@ -1256,27 +1330,27 @@ describe('delete is blocked everywhere', () => {
 
 // ── Draft editing — direct_po ────────────────────────────────────────────────
 
-describe('draft edit — direct_po', () => {
-  it('accepts the exact hook payload', async () => {
+describe('draft edit — direct_po (ADR-93: the well-formed edits are REFUSED too)', () => {
+  it('ADR-93 — the exact hook payload is REFUSED for every financial role', async () => {
     await seed('e1', 'draft')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'e1'), lineEdit(USERS.qs)))
+    await updateRefused('e1', (u) => lineEdit(u))
   })
 
-  it('accepts re-authored retention within the subtotal', async () => {
+  it('ADR-93 — re-authored retention within the subtotal is REFUSED', async () => {
     await seed('e2', 'draft')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'e2'), lineEdit(USERS.qs, { retention: 500 })))
+    await updateRefused('e2', (u) => lineEdit(u, { retention: 500 }))
   })
 
-  it('accepts a header-only correction (line money unchanged)', async () => {
+  it('ADR-93 — a header-only correction (line money unchanged) is REFUSED', async () => {
     await seed('e3', 'draft')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'e3'), headerEdit(USERS.qs)))
+    await updateRefused('e3', (u) => headerEdit(u))
   })
 
-  it('accepts a stored line taken to zero while ANOTHER line stays positive', async () => {
+  it('ADR-93 — a stored line taken to zero while ANOTHER line stays positive is REFUSED', async () => {
     await seed('e4', 'draft', USERS.admin, { lineItems: [line(6000), line(4000, 'gst', { poLineIndex: 1 })], subtotal: 10000, gstTotal: 1000, grossTotal: 11000, net: 10000, payableGst: 1000, payableTotal: 11000 })
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'e4'), lineEdit(USERS.qs, {
+    await updateRefused('e4', (u) => lineEdit(u, {
       lines: [line(6000), line(0, 'gst', { poLineIndex: 1 })],
-    })))
+    }))
   })
 
   it('REJECTS a grown or shrunk line set — the stored line set is fixed (ADR-38)', async () => {
@@ -1337,15 +1411,15 @@ describe('draft edit — progress_claim is HEADER-ONLY by rules', () => {
   // so a "change the retention" test is a genuine change rather than a no-op.
   const claimSeed = (id) => seed(id, 'draft', USERS.admin, { source: 'progress_claim', retention: 1000 })
 
-  it('accepts the exact claim-sourced hook payload', async () => {
+  it('ADR-93 — the exact claim-sourced hook payload is REFUSED for every financial role', async () => {
     await claimSeed('h1')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'h1'), headerEdit(USERS.qs)))
+    await updateRefused('h1', (u) => headerEdit(u))
   })
 
-  it('accepts a partial header correction', async () => {
+  it('ADR-93 — a partial header correction is REFUSED', async () => {
     await claimSeed('h2')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'h2'), {
-      supplierInvoiceNumber: 'INV-CORRECTED', ...stamps(USERS.qs),
+    await updateRefused('h2', (u) => ({
+      supplierInvoiceNumber: 'INV-CORRECTED', ...stamps(u),
     }))
   })
 
@@ -1385,16 +1459,16 @@ describe('draft edit — progress_claim is HEADER-ONLY by rules', () => {
     await assertFails(updateDoc(invRef(ctx(USERS.qs), 'h8'), headerEdit(USERS.qs, { invoiceDate: 'soon' })))
   })
 
-  it('still allows approve, post and cancel on a claim-sourced invoice', async () => {
+  it('ADR-93 — approve and post on a claim-sourced invoice are REFUSED for every financial role', async () => {
     await claimSeed('h9')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'h9'), approveWrite(USERS.qs)))
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'h9'), postWrite(USERS.qs)))
+    await updateRefused('h9', (u) => approveWrite(u), { storeAs: USERS.qs })
+    await updateRefused('h9', (u) => postWrite(u))
   })
 })
 
 // ── Legacy documents (raised before ADR-40) ──────────────────────────────────
 
-describe('documents raised before ADR-40 stay writable', () => {
+describe('documents raised before ADR-40 — ADR-93: no longer client-writable', () => {
   // Existing invoices carry no updatedAt, updatedBy or cancelledBy. Rules read
   // cancelledBy through get(key, null) on BOTH sides, and the new audit stamps
   // are required only of the INCOMING document, so a legacy record acquires them
@@ -1412,27 +1486,25 @@ describe('documents raised before ADR-40 stay writable', () => {
     })
   }
 
-  it('a legacy direct_po draft can still be edited, and gains the audit fields', async () => {
+  it('ADR-93 — a legacy direct_po draft edit is REFUSED for every financial role and the document acquires no audit field', async () => {
     await seedLegacy('lg1')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'lg1'), lineEdit(USERS.qs)))
-    await testEnv.withSecurityRulesDisabled(async (c) => {
-      const snap = await getDoc(doc(c.firestore(), invoicesPath(), 'lg1'))
-      expect(snap.data().updatedBy).toBe(USERS.qs.uid)
-      expect(snap.data().updatedAt).toBeTruthy()
-    })
+    await updateRefused('lg1', (u) => lineEdit(u))
+    const after = await readInv('lg1')
+    expect('updatedBy' in after).toBe(false)
+    expect('updatedAt' in after).toBe(false)
   })
 
-  it('a legacy claim-sourced draft can still take a header correction', async () => {
+  it('ADR-93 — a legacy claim-sourced draft header correction is REFUSED', async () => {
     await seedLegacy('lg2', 'draft', 'progress_claim')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'lg2'), headerEdit(USERS.qs)))
+    await updateRefused('lg2', (u) => headerEdit(u))
   })
 
-  it('a legacy draft can still be approved, posted and cancelled', async () => {
+  it('ADR-93 — a legacy draft approve, post and cancel are REFUSED', async () => {
     await seedLegacy('lg3')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'lg3'), approveWrite(USERS.qs)))
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'lg3'), postWrite(USERS.qs)))
+    await updateRefused('lg3', (u) => approveWrite(u), { storeAs: USERS.qs })
+    await updateRefused('lg3', (u) => postWrite(u))
     await seedLegacy('lg4')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'lg4'), cancelWrite(USERS.qs)))
+    await updateRefused('lg4', (u) => cancelWrite(u))
   })
 
   it('a legacy POSTED invoice is still terminal', async () => {
@@ -1444,24 +1516,29 @@ describe('documents raised before ADR-40 stay writable', () => {
 
 // ── Downstream regression — the collections that get() these documents ───────
 
-describe('downstream collections still trust a hardened invoice', () => {
+describe('downstream collections — ADR-93 / ADR-94: an invoice and its credit note / retention release are all backend-only', () => {
   // supplierCreditNotes and retentionReleases both get() a supplier invoice and
   // read status / supplierId / currency / retention / retentionTotal /
   // payableTotal. An invoice created and posted through the NEW rules must still
   // satisfy both target checks unchanged.
+  // ADR-93: each step the app used to take is REFUSED for every financial role;
+  // the backend's state is then written with rules disabled.
   async function createAndPost(id, opts = {}) {
-    const db = ctx(USERS.qs)
-    // A claim-sourced create is PAIRED with its claim's link (ADR-68).
-    if (opts.source === 'progress_claim') await assertSucceeds(pairedCreate(USERS.qs, id, invoicePayload(USERS.qs, opts)))
-    else await assertSucceeds(setDoc(invRef(db, id), invoicePayload(USERS.qs, opts)))
-    await assertSucceeds(updateDoc(invRef(db, id), approveWrite(USERS.qs)))
-    await assertSucceeds(updateDoc(invRef(db, id), postWrite(USERS.qs)))
+    if (opts.source === 'progress_claim') await pairedRefused(id, (u) => invoicePayload(u, opts), { storeAs: USERS.qs })
+    else await createRefused(id, (u) => invoicePayload(u, opts), { storeAs: USERS.qs })
+    await updateRefused(id, (u) => approveWrite(u), { storeAs: USERS.qs })
+    await updateRefused(id, (u) => postWrite(u), { storeAs: USERS.qs })
+  }
+  const refusedDownstream = async (collection, id, data) => {
+    for (const user of FINANCIAL) await assertFails(setDoc(doc(ctx(user), `companies/${COMPANY_A}/projects/${PROJECT_A}/${collection}`, id), data))
+    let stored
+    await testEnv.withSecurityRulesDisabled(async (c) => { stored = (await getDoc(doc(c.firestore(), `companies/${COMPANY_A}/projects/${PROJECT_A}/${collection}`, id))).exists() })
+    expect(stored).toBe(false)
   }
 
-  it('a Supplier Credit Note can target an invoice posted through the new rules', async () => {
+  it('ADR-94 — a Supplier Credit Note targeting a (backend-)posted invoice is REFUSED for every financial role', async () => {
     await createAndPost('dn1')   // zero retention — the credit-note precondition
-    const db = ctx(USERS.qs)
-    await assertSucceeds(setDoc(doc(db, `companies/${COMPANY_A}/projects/${PROJECT_A}/supplierCreditNotes`, 'cn1'), {
+    await refusedDownstream('supplierCreditNotes', 'cn1', {
       creditNumber: 'SCN-0001', status: 'draft', docType: 'credit_note',
       supplierInvoiceId: 'dn1', invoiceNumber: 'SI-0001', supplierInvoiceNumber: 'INV-4471',
       supplierId: 'contact1', supplierName: 'BuildCo Pty Ltd',
@@ -1474,14 +1551,13 @@ describe('downstream collections still trust a hardened invoice', () => {
       attachments: [], externalRefs: {},
       createdAt: serverTimestamp(), createdBy: USERS.qs.uid,
       updatedAt: serverTimestamp(), updatedBy: USERS.qs.uid,
-    }))
+    })
   })
 
-  it('a Retention Release can target a retention-bearing invoice posted through the new rules', async () => {
+  it('ADR-94 — a Retention Release targeting a (backend-)posted retention-bearing invoice is REFUSED for every financial role', async () => {
     await createAndPost('dn2', { source: 'progress_claim', retention: 1000 })
     const money = releaseTotals(0, 400)
-    const db = ctx(USERS.qs)
-    await assertSucceeds(setDoc(doc(db, `companies/${COMPANY_A}/projects/${PROJECT_A}/retentionReleases`, 'rr1'), {
+    await refusedDownstream('retentionReleases', 'rr1', {
       releaseNumber: 'RR-0001', status: 'draft', docType: 'retention_release',
       supplierInvoiceId: 'dn2', invoiceNumber: 'SI-0001', supplierInvoiceNumber: 'INV-4471',
       supplierId: 'contact1', supplierName: 'BuildCo Pty Ltd',
@@ -1493,108 +1569,106 @@ describe('downstream collections still trust a hardened invoice', () => {
       externalRefs: {},
       createdAt: serverTimestamp(), createdBy: USERS.qs.uid,
       updatedAt: serverTimestamp(), updatedBy: USERS.qs.uid,
-    }))
+    })
   })
 })
 
 // ── The security ceiling — deferred controls, proven UNENFORCED ──────────────
 
-describe('DEFERRED CONTROLS — these gaps are real and must never be reported as enforced', () => {
-  it('DUPLICATE supplier invoice references remain possible — rules cannot query siblings', async () => {
-    const db = ctx(USERS.qs)
-    await assertSucceeds(setDoc(invRef(db, 'dc1a'), invoicePayload(USERS.qs, { supplierInvoiceNumber: 'INV-DUP' })))
-    await assertSucceeds(setDoc(invRef(db, 'dc1b'), invoicePayload(USERS.qs, { supplierInvoiceNumber: 'INV-DUP' })))
+// ADR-93: every shape below USED to be ACCEPTED from a client (the honest
+// ceiling of the client-written block). Each is now REFUSED for every financial
+// role; whether the BACKEND closes the gap is proven in tests/functions.
+describe('formerly DEFERRED CONTROLS — ADR-93: every former client-accepted shape is now REFUSED', () => {
+  it('ADR-93 — DUPLICATE supplier invoice references: both creates REFUSED', async () => {
+    await createRefused('dc1a', (u) => invoicePayload(u, { supplierInvoiceNumber: 'INV-DUP' }), { storeAs: USERS.qs })
+    await createRefused('dc1b', (u) => invoicePayload(u, { supplierInvoiceNumber: 'INV-DUP' }))
   })
 
-  it('DUPLICATE SI-#### numbers remain possible — the counter is client-writable (DC 6)', async () => {
-    const db = ctx(USERS.qs)
-    await assertSucceeds(setDoc(invRef(db, 'dc2a'), invoicePayload(USERS.qs, { invoiceNumber: 'SI-0007' })))
-    await assertSucceeds(setDoc(invRef(db, 'dc2b'), invoicePayload(USERS.qs, { invoiceNumber: 'SI-0007' })))
+  it('ADR-93 — DUPLICATE SI-#### numbers: both creates REFUSED (and the counter is backend-only)', async () => {
+    await createRefused('dc2a', (u) => invoicePayload(u, { invoiceNumber: 'SI-0007' }), { storeAs: USERS.qs })
+    await createRefused('dc2b', (u) => invoicePayload(u, { invoiceNumber: 'SI-0007' }))
   })
 
-  it('TWO invoices against ONE approved claim are NO LONGER possible — the claim link is the sibling (ADR-68 closes DC 3 for claim-sourced invoices)', async () => {
+  it('TWO invoices against ONE approved claim are NOT possible — ADR-93: the first paired create is REFUSED too; once the backend has paired, the second is refused', async () => {
     const claimInv = { source: 'progress_claim', retention: 1000 }
-    await assertSucceeds(pairedCreate(USERS.qs, 'dc3a', invoicePayload(USERS.qs, claimInv)))
+    await pairedRefused('dc3a', (u) => invoicePayload(u, claimInv), { storeAs: USERS.qs })
     await assertFails(pairedCreate(USERS.qs, 'dc3b', invoicePayload(USERS.qs, claimInv)))
     await assertFails(setDoc(invRef(ctx(USERS.qs), 'dc3c'), invoicePayload(USERS.qs, claimInv)))
     // What rules still cannot see: a claim with NO link key at all (legacy) —
     // fail-closed, never a second invoice (tests/rules/claimInvoicePairing.rules.test.js).
   })
 
-  it('CUMULATIVE over-invoicing against a PO remains possible — rules cannot sum siblings', async () => {
-    // The seeded PO totals 20,000 ex-GST; three 10,000 invoices all succeed.
-    const db = ctx(USERS.qs)
+  it('ADR-93 — CUMULATIVE over-invoicing against a PO: every one of the three 10,000 creates is REFUSED', async () => {
+    // The seeded PO totals 20,000 ex-GST.
     for (const id of ['dc4a', 'dc4b', 'dc4c']) {
-      await assertSucceeds(setDoc(invRef(db, id), invoicePayload(USERS.qs)))
+      await createRefused(id, invoicePayload, { storeAs: USERS.qs })
     }
   })
 
-  it('HEADER TOTALS CONTRADICTING THEIR OWN LINES remain possible — rules cannot sum an array', async () => {
-    // The lines say 10.00; the headers say 10,000.00. Internally consistent
-    // headers, arbitrary lines: rules see only the scalars.
-    await assertSucceeds(setDoc(invRef(ctx(USERS.qs), 'dc5'), invoicePayload(USERS.qs, {
+  it('ADR-93 — HEADER TOTALS CONTRADICTING THEIR OWN LINES: REFUSED', async () => {
+    // The lines say 10.00; the headers say 10,000.00.
+    await createRefused('dc5', (u) => invoicePayload(u, {
       lines: [line(10)], subtotal: 10000, gstTotal: 1000, grossTotal: 11000,
       retention: 0, retentionGst: 0, retentionTotal: 0,
       net: 10000, payableGst: 1000, payableTotal: 11000,
-    })))
-  })
-
-  it('A NEGATIVE PER-LINE AMOUNT remains possible — only the header scalars are checked', async () => {
-    await assertSucceeds(setDoc(invRef(ctx(USERS.qs), 'dc6'), invoicePayload(USERS.qs, {
-      lines: [line(12000), line(-2000, 'gst', { poLineIndex: 1 })],
-    })))
-  })
-
-  it('A BOGUS per-line costCodeId and an INVALID taxCode remain possible', async () => {
-    await assertSucceeds(setDoc(invRef(ctx(USERS.qs), 'dc7'), invoicePayload(USERS.qs, {
-      lines: [line(10000, 'gst', { costCodeId: 'does-not-exist', taxCode: 'made_up' })],
-    })))
-  })
-
-  it('A per-line gstAmount that disagrees with its own amount and taxCode remains possible', async () => {
-    const lines = [{ ...line(10000), gstAmount: 1000 }]
-    const forged = [{ ...lines[0], gstAmount: 9999 }]
-    await assertSucceeds(setDoc(invRef(ctx(USERS.qs), 'dc8'), {
-      ...invoicePayload(USERS.qs, { lines }), lineItems: forged,
     }))
   })
 
-  it('A per-line poLineIndex pointing anywhere remains possible', async () => {
-    await assertSucceeds(setDoc(invRef(ctx(USERS.qs), 'dc9'), invoicePayload(USERS.qs, {
+  it('ADR-93 — A NEGATIVE PER-LINE AMOUNT: REFUSED', async () => {
+    await createRefused('dc6', (u) => invoicePayload(u, {
+      lines: [line(12000), line(-2000, 'gst', { poLineIndex: 1 })],
+    }))
+  })
+
+  it('ADR-93 — A BOGUS per-line costCodeId and an INVALID taxCode: REFUSED', async () => {
+    await createRefused('dc7', (u) => invoicePayload(u, {
+      lines: [line(10000, 'gst', { costCodeId: 'does-not-exist', taxCode: 'made_up' })],
+    }))
+  })
+
+  it('ADR-93 — A per-line gstAmount that disagrees with its own amount and taxCode: REFUSED', async () => {
+    const lines = [{ ...line(10000), gstAmount: 1000 }]
+    const forged = [{ ...lines[0], gstAmount: 9999 }]
+    await createRefused('dc8', (u) => ({
+      ...invoicePayload(u, { lines }), lineItems: forged,
+    }))
+  })
+
+  it('ADR-93 — A per-line poLineIndex pointing anywhere: REFUSED', async () => {
+    await createRefused('dc9', (u) => invoicePayload(u, {
       lines: [line(10000, 'gst', { poLineIndex: 99 })],
-    })))
+    }))
   })
 
-  it('CREATOR == APPROVER == POSTER remains possible — no segregation of duties (DC 4)', async () => {
-    const db = ctx(USERS.qs)
-    await assertSucceeds(setDoc(invRef(db, 'dc10'), invoicePayload(USERS.qs)))
-    await assertSucceeds(updateDoc(invRef(db, 'dc10'), approveWrite(USERS.qs)))
-    await assertSucceeds(updateDoc(invRef(db, 'dc10'), postWrite(USERS.qs)))
+  it('ADR-93 — CREATOR == APPROVER == POSTER: create, approve and post by one user are each REFUSED for every financial role', async () => {
+    await createRefused('dc10', invoicePayload, { storeAs: USERS.qs })
+    await updateRefused('dc10', (u) => approveWrite(u), { storeAs: USERS.qs })
+    await updateRefused('dc10', (u) => postWrite(u))
   })
 
-  it('AN IMPOSSIBLE-BUT-WELL-SHAPED DATE remains possible — rules have no calendar', async () => {
-    await assertSucceeds(setDoc(invRef(ctx(USERS.qs), 'dc11'), invoicePayload(USERS.qs, {
+  it('ADR-93 — AN IMPOSSIBLE-BUT-WELL-SHAPED DATE: REFUSED', async () => {
+    await createRefused('dc11', (u) => invoicePayload(u, {
       invoiceDate: '2026-02-30', dueDate: '2026-13-45',
-    })))
+    }))
   })
 
-  it('A FUTURE-DATED invoice remains possible', async () => {
-    await assertSucceeds(setDoc(invRef(ctx(USERS.qs), 'dc12'), invoicePayload(USERS.qs, {
+  it('ADR-93 — A FUTURE-DATED invoice: REFUSED', async () => {
+    await createRefused('dc12', (u) => invoicePayload(u, {
       invoiceDate: '2099-01-01',
-    })))
+    }))
   })
 
-  it('CONCURRENT draft editors remain last-write-wins', async () => {
+  it('ADR-93 — CONCURRENT draft editors: both edits REFUSED; the draft does not move', async () => {
     await seed('dc13', 'draft')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'dc13'), lineEdit(USERS.qs, { lines: [line(1000)] })))
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.pm), 'dc13'), lineEdit(USERS.pm, { lines: [line(2000)] })))
+    await updateRefused('dc13', (u) => lineEdit(u, { lines: [line(1000)] }))
+    await updateRefused('dc13', (u) => lineEdit(u, { lines: [line(2000)] }))
   })
 
-  it('attachments and externalRefs stay freely writable while a direct_po invoice is draft', async () => {
+  it('ADR-93 — attachments and externalRefs on a direct_po draft: REFUSED', async () => {
     await seed('dc14', 'draft')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.qs), 'dc14'), lineEdit(USERS.qs, {
+    await updateRefused('dc14', (u) => lineEdit(u, {
       attachments: ['anything'], externalRefs: { xero: 'INV-1' },
-    })))
+    }))
   })
 })
 
@@ -1630,15 +1704,10 @@ const varPaired = (user, id, over = {}) => pairedCreate(user, id, fromVarClaim(u
 const fromVarClaim = (user, over = {}) => invoicePayload(user, { source: 'progress_claim', progressClaimId: CLAIM_VAR, claimNumber: 'PC-0007', lines: [varInvLine(2000)], variationLineCount: 1, ...over })
 
 describe('ADR-63 — the claim-sourced variationLineCount guard', () => {
-  it('the NEW bundle raises an invoice from a claim with a variation line: count 1 and the variation-origin line → accepted for every financial role; the identity is stored', async () => {
-    for (const user of [USERS.admin, USERS.pm, USERS.qs]) {
-      await seedVariationClaim()   // a claim takes ONE active invoice (ADR-68) — fresh per role
-      await assertSucceeds(varPaired(user, `nv_${user.uid}`))
-    }
-    let stored
-    await testEnv.withSecurityRulesDisabled(async (c) => { stored = (await getDoc(invRef(c.firestore(), 'nv_u_qs'))).data() })
-    expect(stored.variationLineCount).toBe(1)
-    expect(stored.lineItems[0]).toMatchObject({ poLineIndex: null, variationId: 'svScoped', variationLineIndex: 0 })
+  it('ADR-93 — the NEW bundle\'s invoice from a claim with a variation line (count 1 and the variation-origin line) is REFUSED for every financial role; nothing stored, the claim unlinked', async () => {
+    await seedVariationClaim()
+    await pairedRefused('nv', (u) => fromVarClaim(u), { claimId: CLAIM_VAR, revision: 3 })
+    expect((await readClaimDoc(CLAIM_VAR)).supplierInvoiceId).toBeNull()
   })
 
   it('the OLD bundle’s payload against that claim — no count key, the line attributed to PO line 0 — is REFUSED, so a posted invoice can never carry the new-scope work onto PO line 0', async () => {
@@ -1652,7 +1721,7 @@ describe('ADR-63 — the claim-sourced variationLineCount guard', () => {
     await assertFails(pairedCreate(USERS.qs, 'old2', noCount, { revision: 3 }))
   })
 
-  it('the count is bounded by the claim’s and must match the last line’s shape: above the claim, negative, non-integer, or a mismatched last line is refused; 0 with no variation line stored is allowed', async () => {
+  it('the count is bounded by the claim’s and must match the last line’s shape: above the claim, negative, non-integer, or a mismatched last line is refused; ADR-93 — 0 with no variation line stored is REFUSED too', async () => {
     await seedVariationClaim()
     await assertFails(varPaired(USERS.qs, 'b1', { variationLineCount: 2 }))
     await assertFails(varPaired(USERS.qs, 'b2', { variationLineCount: -1 }))
@@ -1660,47 +1729,87 @@ describe('ADR-63 — the claim-sourced variationLineCount guard', () => {
     await assertFails(varPaired(USERS.qs, 'b4', { variationLineCount: 1, lines: [line(2000)] }))
     await assertFails(varPaired(USERS.qs, 'b5', { variationLineCount: 1, lines: [line(2000, 'gst', { poLineIndex: 0, variationId: 'svScoped', variationLineIndex: 0 })] }))
     await assertFails(varPaired(USERS.qs, 'b6', { variationLineCount: 0, lines: [varInvLine(2000)] }))
-    // The variation line was certified at zero and is not stored: count 0, PO lines only → accepted.
-    await assertSucceeds(varPaired(USERS.qs, 'b7', { variationLineCount: 0, lines: [line(10)] }))
+    // The variation line was certified at zero and is not stored: count 0, PO lines only → ADR-93: REFUSED.
+    await pairedRefused('b7', (u) => fromVarClaim(u, { variationLineCount: 0, lines: [line(10)] }), { claimId: CLAIM_VAR, revision: 3 })
   })
 
-  it('a claim WITHOUT variation lines takes an absent key (old bundle) or 0 (new bundle), never a positive count', async () => {
-    const absent = invoicePayload(USERS.qs, { source: 'progress_claim' })
-    delete absent.variationLineCount
-    await assertSucceeds(pairedCreate(USERS.qs, 'c1', absent))
+  it('a claim WITHOUT variation lines: ADR-93 — an absent key (old bundle) and 0 (new bundle) are REFUSED for every financial role; a positive count is refused', async () => {
+    const absent = (u) => {
+      const d = invoicePayload(u, { source: 'progress_claim' })
+      delete d.variationLineCount
+      return d
+    }
+    await pairedRefused('c1', absent)
     await unlinkClaim()
-    await assertSucceeds(pairedCreate(USERS.qs, 'c2', invoicePayload(USERS.qs, { source: 'progress_claim', variationLineCount: 0 })))
+    await pairedRefused('c2', (u) => invoicePayload(u, { source: 'progress_claim', variationLineCount: 0 }))
     await unlinkClaim()
     await assertFails(pairedCreate(USERS.qs, 'c3', invoicePayload(USERS.qs, { source: 'progress_claim', variationLineCount: 1, lines: [varInvLine(2000)] })))
   })
 
-  it('a direct PO invoice carries no variation line: count 0 or absent passes, count 1 (with or without a variation-shaped line) is refused', async () => {
+  it('a direct PO invoice carries no variation line: ADR-93 — count 0 or absent is REFUSED for every financial role; count 1 (with or without a variation-shaped line) is refused', async () => {
     const db = ctx(USERS.qs)
-    const absent = invoicePayload(USERS.qs)
-    delete absent.variationLineCount
-    await assertSucceeds(setDoc(invRef(db, 'd1'), absent))
-    await assertSucceeds(setDoc(invRef(db, 'd2'), invoicePayload(USERS.qs, { variationLineCount: 0 })))
+    await createRefused('d1', (u) => {
+      const d = invoicePayload(u)
+      delete d.variationLineCount
+      return d
+    })
+    await createRefused('d2', (u) => invoicePayload(u, { variationLineCount: 0 }))
     await assertFails(setDoc(invRef(db, 'd3'), invoicePayload(USERS.qs, { variationLineCount: 1, lines: [varInvLine(2000)] })))
     await assertFails(setDoc(invRef(db, 'd4'), invoicePayload(USERS.qs, { variationLineCount: 1 })))
     await assertFails(setDoc(invRef(db, 'd5'), invoicePayload(USERS.qs, { variationLineCount: 0, lines: [varInvLine(2000)] })))
   })
 
-  it('variationLineCount is frozen for the invoice’s life (header edit, line edit, approve, post); the lifecycle itself is unchanged', async () => {
+  it('variationLineCount is frozen for the invoice’s life (header edit, line edit, approve, post); ADR-93 — the well-formed header edit, approve and post are REFUSED for every financial role', async () => {
     await seedVariationClaim()
     await seed('f1', 'draft', USERS.admin, { source: 'progress_claim', progressClaimId: CLAIM_VAR, claimNumber: 'PC-0007', variationLineCount: 1, lineItems: [varInvLine(2000)] })
     const db = ctx(USERS.qs)
     await assertFails(updateDoc(invRef(db, 'f1'), headerEdit(USERS.qs, { variationLineCount: 0 })))
     await assertFails(updateDoc(invRef(db, 'f1'), headerEdit(USERS.qs, { variationLineCount: 2 })))
-    await assertSucceeds(updateDoc(invRef(db, 'f1'), headerEdit(USERS.qs)))
+    await updateRefused('f1', (u) => headerEdit(u), { storeAs: USERS.qs })
     await assertFails(updateDoc(invRef(db, 'f1'), approveWrite(USERS.qs, { variationLineCount: 0 })))
-    await assertSucceeds(updateDoc(invRef(db, 'f1'), approveWrite(USERS.qs)))
-    await assertSucceeds(updateDoc(invRef(db, 'f1'), postWrite(USERS.qs)))
+    await updateRefused('f1', (u) => approveWrite(u), { storeAs: USERS.qs })
+    await updateRefused('f1', (u) => postWrite(u))
     await seed('f2', 'draft')
     await assertFails(updateDoc(invRef(db, 'f2'), lineEdit(USERS.qs, { variationLineCount: 1 })))
   })
 
-  it('NOT enforced (DC40): rules cannot compare the invoice lines to the claim’s — a count of 1 with a variation line naming a DIFFERENT variation, or a different amount, is ACCEPTED (client reconciliation + SHIELD)', async () => {
+  it('formerly NOT enforced (DC40) — ADR-93: a count of 1 with a variation line naming a DIFFERENT variation, or a different amount, is REFUSED for every financial role (the backend compares the lines)', async () => {
     await seedVariationClaim()
-    await assertSucceeds(varPaired(USERS.qs, 'n1', { lines: [line(9000, 'gst', { poLineIndex: null, variationId: 'svElsewhere', variationLineIndex: 4 })] }))
+    await pairedRefused('n1', (u) => fromVarClaim(u, { lines: [line(9000, 'gst', { poLineIndex: null, variationId: 'svElsewhere', variationLineIndex: 4 })] }), { claimId: CLAIM_VAR, revision: 3 })
+  })
+})
+
+// ── ADR-93 — the supplierInvoices number counter is backend-only ─────────────
+
+describe('ADR-93 — the supplierInvoices number counter', () => {
+  const counter = (db, id) => doc(db, `companies/${COMPANY_A}/counters`, id)
+  const readCounter = async (id) => {
+    let data
+    await testEnv.withSecurityRulesDisabled(async (c) => { const s = await getDoc(counter(c.firestore(), id)); data = s.exists() ? s.data() : undefined })
+    return data
+  }
+
+  it('every financial role is REFUSED a read, a create, an advance and the old numbering transaction; the stored value does not move', async () => {
+    for (const user of FINANCIAL) await assertFails(setDoc(counter(ctx(user), 'supplierInvoices'), { next: 2 }, { merge: true }))
+    expect(await readCounter('supplierInvoices')).toBeUndefined()
+    await testEnv.withSecurityRulesDisabled(async (c) => { await setDoc(counter(c.firestore(), 'supplierInvoices'), { next: 7 }) })
+    for (const user of FINANCIAL) {
+      const db = ctx(user)
+      await assertFails(getDoc(counter(db, 'supplierInvoices')))
+      await assertFails(updateDoc(counter(db, 'supplierInvoices'), { next: 8 }))
+      await assertFails(setDoc(counter(db, 'supplierInvoices'), { next: 1 }, { merge: true }))
+      await assertFails(runTransaction(db, async (tx) => {
+        const snap = await tx.get(counter(db, 'supplierInvoices'))
+        tx.set(counter(db, 'supplierInvoices'), { next: (snap.exists() ? snap.data().next : 1) + 1 }, { merge: true })
+      }))
+    }
+    expect(await readCounter('supplierInvoices')).toEqual({ next: 7 })
+  })
+
+  it('another register\'s counter (purchaseOrders) still reads and advances for every financial role', async () => {
+    for (const user of FINANCIAL) {
+      await assertSucceeds(setDoc(counter(ctx(user), 'purchaseOrders'), { next: 2 }, { merge: true }))
+      await assertSucceeds(getDoc(counter(ctx(user), 'purchaseOrders')))
+    }
   })
 })

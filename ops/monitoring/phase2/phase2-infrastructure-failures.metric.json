@@ -1,0 +1,11 @@
+{
+  "name": "phase2_infrastructure_failures",
+  "description": "Phase 2 cutover: one count per request a Phase 2 financial callable lost to a timeout (HTTP 504 in the request log) or per untyped failure whose stack names DEADLINE_EXCEEDED, UNAVAILABLE or RESOURCE_EXHAUSTED. Counts only; extracts nothing from the log entry. Read by phase2-infrastructure-repeated.policy.json.",
+  "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.location=\"australia-southeast1\" AND resource.labels.service_name=(\"createvariation\" OR \"updatevariationdraft\" OR \"approvevariation\" OR \"applyvariationcommitment\" OR \"progressclaimoperation\" OR \"supplierinvoiceoperation\" OR \"suppliersettlementoperation\" OR \"postclientrefund\" OR \"voidclientrefund\" OR \"postclientreceiptapplication\" OR \"voidclientreceiptapplication\" OR \"voidclientinvoice\" OR \"contractvalueoperation\" OR \"estimateoperation\" OR \"postclientcreditnote\" OR \"voidclientcreditnote\" OR \"postclientretentionrelease\" OR \"voidclientretentionrelease\" OR \"postclientreceipt\" OR \"voidclientreceipt\" OR \"transferboqtobudget\" OR \"approvefinalaccount\") AND ((log_id(\"run.googleapis.com/requests\") AND httpRequest.status=504) OR (log_id(\"run.googleapis.com/stderr\") AND severity>=ERROR AND jsonPayload.message:\"call failed\" AND (jsonPayload.stack:\"DEADLINE_EXCEEDED\" OR jsonPayload.stack:\"UNAVAILABLE\" OR jsonPayload.stack:\"RESOURCE_EXHAUSTED\")))",
+  "metricDescriptor": {
+    "metricKind": "DELTA",
+    "valueType": "INT64",
+    "unit": "1",
+    "displayName": "Phase 2 infrastructure failures"
+  }
+}

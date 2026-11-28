@@ -1380,7 +1380,8 @@ describe('ProjectCashFlow wires the receivable contract and never shows a failed
     expect(code).toMatch(/clientRetentionReleases, clientRetentionReleasesLoading, clientRetentionReleasesError,\s*\} = useClientRetentionReleases\(mid\)/)
     expect(code.match(/receivableContext\(/g)).toHaveLength(1)
     expect(code).toContain('receivableContext(clientInvoices, clientCreditNotes, clientRetentionReleases)')
-    expect(code).toContain('clientInvoiceReconciliationRows(clientInvoices, clientReceipts, receivable.positions)')
+    // Phase 2 step 5: the same selector, given the settlement registers (applications, refunds).
+    expect(code).toContain('clientInvoiceReconciliationRows(clientInvoices, clientReceipts, receivable.positions, settlement)')
     expect(code).toContain('contractControl(clientInvoices, m.currentContractSum, receivable.totals).availableToInvoice')
   })
 

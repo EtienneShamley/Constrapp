@@ -211,9 +211,13 @@ describe('the live rulesets keep the shape the prover can expand', () => {
 
     it(`${file}: every use of a hoisted helper is a whole \`&& helper()\` line`, () => {
       const expanded = expandHoist(source)
-      // 54 call sites at the hoist, plus the counters substitution; later blocks
-      // written against the helpers only add to it.
-      expect(expanded.calls).toBeGreaterThanOrEqual(55)
+      // 54 call sites at the hoist, plus the counters substitution. ADR-93 /
+      // ADR-94 then REMOVED the client write branches of five financial blocks
+      // (claims, supplier invoices, payments, credit notes, releases), whose
+      // helper calls went with them: the floor follows the measured count. The
+      // requirement this pins is unchanged — every remaining use is a whole
+      // `&& helper()` line the prover can expand.
+      expect(expanded.calls).toBeGreaterThanOrEqual(42)
     })
 
     it(`${file}: the per-project counters block calls financialMember(companyId)`, () => {

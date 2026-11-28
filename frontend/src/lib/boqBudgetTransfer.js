@@ -316,8 +316,13 @@ export const normaliseZeroChoices = (ids) => [...new Set((ids ?? []).filter(id =
 // The identity of one REQUEST: the reviewed proposal plus the set-to-zero
 // choices made on it. Stored on every line the request writes, so a repeat of
 // the same request can be recognised after it has been applied.
-export const transferRequestKey = (reviewKey, setToZero) =>
-  `r1:${digest([String(reviewKey ?? ''), ...normaliseZeroChoices(setToZero)].join('|'))}`
+//
+// ADR-97: a request that names an approved estimate revision as its source is
+// a DIFFERENT request from one that does not (its provenance differs), so the
+// estimate id is part of the key — appended only when present, which leaves
+// every key computed before ADR-97 unchanged.
+export const transferRequestKey = (reviewKey, setToZero, estimateId = null) =>
+  `r1:${digest([String(reviewKey ?? ''), ...normaliseZeroChoices(setToZero), ...(estimateId ? [`estimate:${estimateId}`] : [])].join('|'))}`
 
 // ── Operations ───────────────────────────────────────────────────────────────
 
@@ -414,6 +419,13 @@ export function transferSummary(proposal, setToZero = []) {
 // ── Request validation (shared by the browser action and the callable) ───────
 
 export const BOQ_TRANSFER_REQUEST_KEYS = ['projectId', 'reviewKey', 'setToZero']
+// ADR-97 — optional: the APPROVED estimate revision this transfer is recorded
+// as the handover of. The callable accepts it only while the live BOQ is still
+// the BOQ that revision priced (lib/estimateSource.js); otherwise it refuses,
+// and the transfer can be made without the claim. Absent = the ADR-81 transfer
+// exactly as before.
+export const BOQ_TRANSFER_OPTIONAL_REQUEST_KEYS = ['estimateId']
 export const BOQ_TRANSFER_MAX_ZERO_CHOICES = 2000
 
 export { resolveProjectCurrency } from './currency'
+export { estimateSourceKey } from './estimateSource'

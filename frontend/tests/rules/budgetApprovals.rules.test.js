@@ -36,7 +36,7 @@ import { BUDGET_SNAPSHOT_MAX_BYTES, estimateBudgetSnapshotBytes } from '../../sr
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const COMPANY_B = 'companyB'
 const PROJECT_A = 'projectA'
@@ -610,5 +610,77 @@ describe('withdraw — a draft only, by an approver or its capturer, with a reas
     await assertFails(updateDoc(headerRef(ctx(USERS.pm), 'ba1'), { status: 'draft', revision: 3, updatedAt: serverTimestamp(), updatedBy: USERS.pm.uid }))
     await assertFails(updateDoc(headerRef(ctx(USERS.pm), 'ba1'), withdrawWrite(USERS.pm, 'again', { revision: 3 })))
     await assertFails(deleteDoc(headerRef(ctx(USERS.admin), 'ba1')))
+  })
+})
+
+// ── ADR-96 — approval segregation on APPROVE ────────────────────────────────
+//
+// `companies/{c}/approvalPolicy/current` with segregationEnabled == true bars
+// the header's creator and last updater from approving it; absent, or not
+// true, the rules admit every approver as before. Withdraw is unchanged.
+
+describe('ADR-96 — approval segregation: the preparer cannot approve their own version when the policy is enabled', () => {
+  const PM2 = { uid: 'u_pm2', role: 'project_manager', companyId: COMPANY_A }
+  const seedPolicy = (segregationEnabled, companyId = COMPANY_A) => testEnv.withSecurityRulesDisabled(async (c) => {
+    await setDoc(doc(c.firestore(), `companies/${companyId}/approvalPolicy/current`), { segregationEnabled, updatedAt: Timestamp.now() })
+  })
+  const expectUnchanged = async () => {
+    expect(await readHeader('ba1')).toMatchObject({ status: 'draft', version: null, approvedBy: null, revision: 1 })
+    expect(await readPointer()).toBeNull()
+  }
+
+  beforeEach(async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(doc(c.firestore(), 'users', PM2.uid), { role: PM2.role, companyId: PM2.companyId, name: PM2.uid })
+    })
+    // Created by the PM, last updated by the admin — both approvers.
+    await seedApproval('ba1', { user: USERS.pm, header: { updatedBy: USERS.admin.uid } })
+  })
+
+  it('policy ABSENT: the creator approves their own version exactly as before', async () => {
+    await assertSucceeds(approvePair(ctx(USERS.pm), USERS.pm, 'ba1'))
+    expect(await readHeader('ba1')).toMatchObject({ status: 'approved', version: 1, approvedBy: USERS.pm.uid })
+    expect(await readPointer()).toMatchObject({ activeApprovalId: 'ba1', versionCount: 1 })
+  })
+  it('policy ABSENT: the last updater approves as before', async () => {
+    await assertSucceeds(approvePair(ctx(USERS.admin), USERS.admin, 'ba1'))
+  })
+  it('policy ENABLED: the creator is refused and nothing moves (header nor pointer)', async () => {
+    await seedPolicy(true)
+    await assertFails(approvePair(ctx(USERS.pm), USERS.pm, 'ba1'))
+    await expectUnchanged()
+  })
+  it('policy ENABLED: the last updater is refused and nothing moves', async () => {
+    await seedPolicy(true)
+    await assertFails(approvePair(ctx(USERS.admin), USERS.admin, 'ba1'))
+    await expectUnchanged()
+  })
+  it('policy ENABLED: an independent approver succeeds, header and pointer together', async () => {
+    await seedPolicy(true)
+    await assertSucceeds(approvePair(ctx(PM2), PM2, 'ba1'))
+    expect(await readHeader('ba1')).toMatchObject({ status: 'approved', version: 1, approvedBy: PM2.uid })
+    expect(await readPointer()).toMatchObject({ activeApprovalId: 'ba1', originalApprovalId: 'ba1', versionCount: 1, approvedBy: PM2.uid })
+  })
+  it('policy ENABLED: an independent QS is still not an approver', async () => {
+    await seedPolicy(true)
+    await assertFails(approvePair(ctx(USERS.qs), USERS.qs, 'ba1'))
+    await expectUnchanged()
+  })
+  it('policy present with segregationEnabled: false — the creator approves', async () => {
+    await seedPolicy(false)
+    await assertSucceeds(approvePair(ctx(USERS.pm), USERS.pm, 'ba1'))
+  })
+  it('a non-boolean segregationEnabled ("true") is not enabled — the creator approves', async () => {
+    await seedPolicy('true')
+    await assertSucceeds(approvePair(ctx(USERS.pm), USERS.pm, 'ba1'))
+  })
+  it('another company\'s ENABLED policy does not affect Company A', async () => {
+    await seedPolicy(true, COMPANY_B)
+    await assertSucceeds(approvePair(ctx(USERS.pm), USERS.pm, 'ba1'))
+  })
+  it('policy ENABLED: withdraw is unchanged — the creator may still withdraw their draft', async () => {
+    await seedPolicy(true)
+    await assertSucceeds(updateDoc(headerRef(ctx(USERS.pm), 'ba1'), withdrawWrite(USERS.pm)))
+    expect(await readHeader('ba1')).toMatchObject({ status: 'withdrawn', withdrawnBy: USERS.pm.uid })
   })
 })

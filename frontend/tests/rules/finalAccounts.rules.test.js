@@ -36,7 +36,7 @@ import { readyProject, sourcesOf, EXPECTED_FIGURES, FA_PROJECT_COLLECTIONS } fro
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const COMPANY_B = 'companyB'
 const PROJECT_A = 'projectA'
@@ -95,6 +95,8 @@ function serverReads(db, c = COMPANY_A, p = PROJECT_A) {
       forecastLines: sub('forecastLines'), supplierPayments: ordered('supplierPayments'), retentionReleases: ordered('retentionReleases'),
       clientInvoices: ordered('clientInvoices'), clientReceipts: ordered('clientReceipts'),
       clientCreditNotes: ordered('clientCreditNotes'), clientRetentionReleases: ordered('clientRetentionReleases'),
+      // Phase 2 step 5: refunds and receipt applications (readable by financial roles).
+      clientRefunds: ordered('clientRefunds'), clientReceiptApplications: ordered('clientReceiptApplications'),
       costCodes: query(collection(db, `companies/${c}/costCodes`), orderBy('code', 'asc')),
     },
     refs: {

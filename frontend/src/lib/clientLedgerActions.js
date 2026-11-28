@@ -9,6 +9,7 @@ import {
 import { CLIENT_ENTRY_SHAPES, clientEntryTextError, invoiceSnapshot, pristineLifecycle } from './clientEntryShape'
 import { PAYMENT_STATUS } from './payments'
 import { fromCents } from './money'
+import { COMMERCIAL_NOT_ACTIVATED_CODE, COMMERCIAL_MAINTENANCE_TEXT } from './commercialActivation'
 
 // ── Client credit notes, retention releases and receipts — the browser's writes
 // (ADR-87 / ADR-88; the trusted transaction boundary of ADR-89)
@@ -74,6 +75,17 @@ const RETENTION_RELEASE = {
 const RECEIPT = {
   noun: 'receipt', Noun: 'Receipt', idKey: 'receiptId', status: PAYMENT_STATUS,
   postFn: 'postClientReceipt', voidFn: 'voidClientReceipt', dependents: '',
+}
+// Phase 2 step 5 (ADR-95).
+const REFUND = {
+  noun: 'refund', Noun: 'Refund', idKey: 'refundId', postFn: 'postClientRefund', voidFn: 'voidClientRefund', dependents: '',
+}
+const APPLICATION = {
+  noun: 'receipt application', Noun: 'Receipt application', idKey: 'applicationId',
+  postFn: 'postClientReceiptApplication', voidFn: 'voidClientReceiptApplication', dependents: '',
+}
+const INVOICE = {
+  noun: 'client invoice', Noun: 'Client invoice', idKey: 'invoiceId', postFn: null, voidFn: 'voidClientInvoice', dependents: '',
 }
 
 // ── Messages that name documents ─────────────────────────────────────────────
@@ -146,6 +158,14 @@ function receiptsDependMessage(kind, details) {
     + `more than the ${money(details.receivableBasisAfterCents)} it would be owed without this release. Void or re-allocate them first.`
 }
 
+function fundsUnavailableMessage(kind, details) {
+  if (details?.invoiceRemainingCents !== undefined) {
+    return `${details.invoiceNumber || 'The invoice'} is owed only ${money(details.invoiceRemainingCents)} now, so ${money(details.requestedCents ?? 0)} cannot be applied to it — an application never creates an overpayment. Nothing was changed.`
+  }
+  const where = details?.receiptNumber ? `receipt ${details.receiptNumber}` : details?.invoiceNumber ? `${details.invoiceNumber}'s overpayment` : 'the source'
+  return `Only ${money(details?.availableCents ?? 0)} is available on ${where}, so ${money(details?.requestedCents ?? 0)} cannot be ${kind === APPLICATION ? 'applied' : 'refunded'}. Nothing was changed.`
+}
+
 // The callable's `details.code` (functions/src/lib/errors.js) → what the user
 // is told. Every one of these is a REFUSAL: the server wrote nothing.
 const SERVER_REFUSALS = {
@@ -171,12 +191,28 @@ const SERVER_REFUSALS = {
   'client-receipt-disabled':           () => 'Posting and voiding client receipts is temporarily unavailable. Nothing was changed.',
   'client-finance-disabled':           () => 'Posting and voiding credit notes and retention releases is temporarily unavailable. Nothing was changed.',
   'client-finance-busy':               () => 'This invoice was being changed at the same moment. Nothing was changed — try again.',
+  // ADR-96 — approval segregation (the policy is the company's; nothing was posted).
+  'approval-segregation-required':     (k) => `Approval segregation is enabled for this company: this ${k.noun} must be posted by another authorised member — not by the user who prepared or last edited it. Nothing was posted.`,
   // EXACTLY the server's own text (functions/src/lib/errors.js).
   'client-finance-not-activated':      () => 'Client credit notes and retention releases are not yet available for this company. Nothing was changed.',
   'client-receipt-baseline-missing':   () => 'The receipt history of this project has not been brought into the invoice ledgers yet, so nothing can be posted or voided. Nothing was changed — try again.',
   'client-receipt-baseline-inconsistent': (k, d) => `The receipt history of this project does not agree with its invoice ledgers${d?.number ? ` (receipt ${d.number})` : ''}, so nothing can be posted or voided until it is reviewed. Nothing was changed — contact support.`,
   'client-receipt-baseline-invalid':   (k, d) => `${d?.number ? `Receipt ${d.number}` : 'A receipt'}, posted earlier on this project, is not stored as Constrap writes one${d?.field ? ` (${d.field})` : ''}, so the receipt history cannot be brought into the invoice ledgers. Nothing was changed — contact support.`,
   'client-receipt-baseline-too-large': () => 'The earlier receipt history of this project is too large to be brought into the invoice ledgers automatically. Nothing was changed — contact support.',
+  // Phase 2 step 5 (ADR-95) — refunds, receipt applications, invoice void.
+  'client-settlement-disabled':        () => 'Recording client refunds and receipt applications is not available. Nothing was changed.',
+  'client-settlement-invalid':         (k, d) => `This ${k.noun} cannot be recorded as entered${d?.field ? ` (${d.field})` : ''}${d?.latest ? ` — the date cannot be after ${d.latest}` : ''}. Nothing was changed.`,
+  'client-settlement-id-conflict':     (k) => `A different ${k.noun} already uses this identifier. Nothing was changed — close the form and start again.`,
+  'client-settlement-funds-unavailable': (k, d) => fundsUnavailableMessage(k, d),
+  'client-settlement-mismatch':        (k, d) => `The receipt and the invoice are not for the same ${d?.field === 'currency' ? 'currency' : 'client'}. An application stays within one client, currency and project. Nothing was changed.`,
+  'client-receipt-not-posted':         () => 'The receipt is not posted, so its money cannot be refunded or applied. Nothing was changed.',
+  'client-receipt-has-settlements':    (k, d) => `${d?.number ? `Receipt ${d.number}` : 'This receipt'} has refunds or applications recorded against its unallocated money. Void them first (as corrections), then void the receipt. Nothing was changed.`,
+  'client-refunds-depend':             (k, d) => `${d?.number ? `${d.number}: ` : ''}money already refunded to the client out of ${d?.invoiceNumber || 'this invoice'} would no longer be covered. Record the client's repayment as a receipt first, or correct the refund. Nothing was changed.`,
+  'client-invoice-has-money':          (k, d) => `${d?.invoiceNumber || 'This invoice'} cannot be voided while money is recorded against it — receipts or applications ${money(d?.receivedCents ?? 0)}, refunds ${money(d?.refundedCents ?? 0)}, credits ${money(d?.creditedSubtotalCents ?? 0)}, releases ${money(d?.releasedRetentionCents ?? 0)}. Void those first. Nothing was changed.`,
+  'client-settlement-counter-invalid': () => 'The numbering counter is not valid, so no number can be issued. Nothing was changed — contact support.',
+  // Phase 2 company activation (lib/commercialActivation.js): the company is
+  // not yet switched over — a CERTAIN refusal, nothing was written.
+  [COMMERCIAL_NOT_ACTIVATED_CODE]:     () => COMMERCIAL_MAINTENANCE_TEXT,
   'client-amount-out-of-range':        (k, d) => `${d?.invoiceNumber || (d?.field === 'amount' ? `This ${k.noun}` : 'The client invoice')} is above the largest amount Constrap supports, so nothing can be posted. Nothing was changed.`,
 }
 
@@ -209,7 +245,21 @@ export class ClientFinanceUncertainError extends Error {
 export const APP_CHECK_REFUSED_TEXT =
   'The server could not verify this app (App Check), so the request was refused. Nothing was changed — reload the page and try again.'
 
+// D3 #47 — the void of a POSTED refund is a correction that, under the
+// company's approval segregation, the server refuses for the person who
+// recorded the refund. The server's own sentence names who may void it.
+export const REFUND_VOID_SEGREGATION_TEXT =
+  'Approval segregation is enabled for this company: this refund must be voided by another authorised member — not by the person who recorded it. Nothing was changed.'
+
+const serverSentence = (err) => {
+  for (const m of [err?.details?.message, err?.message]) if (typeof m === 'string' && m.trim()) return m.trim()
+  return null
+}
+
 export function clientFinanceCallError(err, kind, operation, isSignedIn = () => false) {
+  if (err?.details?.code === 'approval-segregation-required' && kind === REFUND && operation === 'void') {
+    return refusal(serverSentence(err) ?? REFUND_VOID_SEGREGATION_TEXT, err.details.code)
+  }
   const typed = SERVER_REFUSALS[err?.details?.code]
   if (typed) return refusal(typed(kind, err.details, operation), err.details.code)
   const code = String(err?.code ?? '').replace(/^functions\//, '')
@@ -452,4 +502,74 @@ export async function runClientReceiptVoid({
   db, runTransaction, serverTimestamp, uid, receiptRef, reason, call, projectId, isSignedIn,
 }) {
   return voidEntry({ db, runTransaction, serverTimestamp, uid, ref: receiptRef, reason, call, projectId, isSignedIn }, RECEIPT)
+}
+
+// ── Refunds, receipt applications and the void of an issued invoice ──────────
+// (Phase 2 step 5, ADR-95; D6–D8)
+//
+// All five are trusted callables: the browser writes nothing itself. A request
+// carries the AUTHORED content (amount, date, method, reference, reason or
+// notes) and identifiers, and a fresh document id chosen here so a repeat
+// after a lost response is answered without a second record. The server
+// derives the client, currency and project relationship, checks the money is
+// available and moves the ledgers.
+
+const reasonOf = (reason, noun) => {
+  const r = text(reason)
+  if (!r) throw new Error(`Enter a reason for voiding this ${noun}.`)
+  if (r.length > VOID_REASON_MAX) throw new Error(`The reason cannot be longer than ${VOID_REASON_MAX} characters.`)
+  return r
+}
+
+// `input` — { source: 'receipt'|'invoice', receiptId?, clientInvoiceId?, amount,
+// refundDate, method, reference, reason }.
+export async function runClientRefundPost({ call, projectId, refundId, input, isSignedIn }) {
+  const data = {
+    projectId, refundId, source: input.source,
+    receiptId: input.source === 'receipt' ? input.receiptId : null,
+    clientInvoiceId: input.source === 'invoice' ? input.clientInvoiceId : null,
+    amount: Number(input.amount), refundDate: input.refundDate, method: input.method,
+    reference: text(input.reference), reason: text(input.reason),
+  }
+  return callClientFinance(call, data, REFUND, 'post', isSignedIn)
+}
+
+// Voiding a refund CORRECTS AN ERRONEOUS RECORD — it does not record money
+// coming back from the client (that is a new receipt).
+// The wording of a refund and of its void (D3 #47). Four different things,
+// never blurred: a refund RECORD is money actually returned; a VOID corrects
+// a record made in error and moves no money; a real repayment by the client
+// is a new receipt; Constrap itself never moves money.
+export const REFUND_WORDING = {
+  RECORD:   'A refund record means money was actually returned to the client. Record it only after the bank payment has been made.',
+  VOID:     'Void (correction) means this refund was recorded in error. The record is kept and marked void, and no money moves.',
+  REPAID:   'If the client sends the money back for real, that is not a void — record a new receipt instead.',
+  NO_MONEY: 'Constrap never moves money: recording or voiding a refund only changes the records.',
+  SEGREGATION: 'If approval segregation is enabled for this company, the void must be made by another authorised member — not by the person who recorded the refund.',
+  VOID_BUTTON: 'Void (correction)',
+  VOID_BUTTON_TITLE: 'Correct a refund recorded in error — no money moves',
+  CONFIRM_BUTTON: 'Void as correction — no money moves',
+}
+
+export async function runClientRefundVoid({ call, projectId, refundId, reason, isSignedIn }) {
+  return callClientFinance(call, { projectId, refundId, reason: reasonOf(reason, 'refund') }, REFUND, 'void', isSignedIn)
+}
+
+// `input` — { receiptId, clientInvoiceId, amount, applicationDate, notes }.
+export async function runClientApplicationPost({ call, projectId, applicationId, input, isSignedIn }) {
+  const data = {
+    projectId, applicationId, receiptId: input.receiptId, clientInvoiceId: input.clientInvoiceId,
+    amount: Number(input.amount), applicationDate: input.applicationDate, notes: text(input.notes),
+  }
+  return callClientFinance(call, data, APPLICATION, 'post', isSignedIn)
+}
+
+export async function runClientApplicationVoid({ call, projectId, applicationId, reason, isSignedIn }) {
+  return callClientFinance(call, { projectId, applicationId, reason: reasonOf(reason, 'receipt application') }, APPLICATION, 'void', isSignedIn)
+}
+
+// An ISSUED invoice is voided only by the server (D8); a DRAFT invoice is
+// voided by the browser under the Rules (hooks/useClientInvoices.jsx).
+export async function runClientInvoiceVoid({ call, projectId, invoiceId, reason, isSignedIn }) {
+  return callClientFinance(call, { projectId, invoiceId, reason: reasonOf(reason, 'client invoice') }, INVOICE, 'void', isSignedIn)
 }

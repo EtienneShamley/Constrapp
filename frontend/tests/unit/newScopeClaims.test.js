@@ -12,7 +12,7 @@ import {
   actualClaimsByCostCode, claimedPoLines, variationOriginClaimLines, claimVariationLineIssue, CLAIM_VARIATION_LINE_ISSUE,
   CLAIM_STATUS,
 } from '../../src/lib/progressClaims'
-import { variationSourceError, transitionUpdate as claimTransitionUpdate, draftUpdate as claimDraftUpdate } from '../../src/lib/progressClaimActions'
+import { variationSourceError, transitionUpdate as claimTransitionUpdate, draftUpdate as claimDraftUpdate } from '../fixtures/legacyClientWrites'
 import {
   buildInvoiceLine, invoiceVariationLineCount, postedInvoicedByPoLine, postedInvoicedByVariationLine, postedInvoicedByPo,
   directInvoicedPoLines, invoicedClaimIds, invoicedByCostCode, invoiceTotals, SI_STATUS, SI_SOURCE,

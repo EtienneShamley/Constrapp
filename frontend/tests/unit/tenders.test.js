@@ -8,8 +8,9 @@ import {
   validateTenderPackageDraft, validateBidDraft, duplicateActiveBid,
   assessBid, bidTotalExGst,
   approvedBudgetForPackage, buildTenderComparison, costCodeComparisonMatrix,
-  awardBlockedReason, awardedBidValue,
+  awardBlockedReason, awardedBidValue, TENDER_MATERIAL_KEYS,
 } from '../../src/lib/tenders'
+import { materialEditStamp } from '../../src/lib/purchaseOrders'
 import { monetaryLockReasons } from '../../src/lib/currency'
 
 // ── Tender Foundation — pure domain-logic unit tests ─────────────────────────
@@ -682,5 +683,33 @@ describe('monetaryLockReasons — tender bids are monetary evidence', () => {
 
   it('unavailable bid data (undefined) is not fabricated into a reason', () => {
     expect(monetaryLockReasons({ tenderBids: undefined })).toEqual([])
+  })
+})
+
+// ── D4 material-edit provenance (ADR-96, D3 #46) ─────────────────────────────
+
+describe('TENDER_MATERIAL_KEYS — what a package draft edit stamps', () => {
+  const NOW = Symbol('now')
+  const STAMP = { lastMaterialEditBy: 'u2', lastMaterialEditAt: NOW }
+  // The payload hooks/useTenderPackages.jsx → updateTenderPackage builds.
+  const editPayload = (p, over = {}) => ({
+    name: p.name, description: p.description, scope: p.scope,
+    costCodes: p.costCodes.map(cc => ({ costCodeId: cc.costCodeId, costCodeName: cc.costCodeName })),
+    closingDate: p.closingDate, notes: p.notes, ...over,
+  })
+
+  it('is exactly the commercial scope of the package', () => {
+    expect(TENDER_MATERIAL_KEYS).toEqual(['name', 'description', 'scope', 'costCodes'])
+  })
+  it('a notes / closing-date edit of a package is cosmetic; a scope, name, description or cost-code edit is material', () => {
+    const p = pkg()
+    const s = (next) => materialEditStamp(p, next, TENDER_MATERIAL_KEYS, 'u2', NOW)
+    expect(s(editPayload(p))).toEqual({})
+    expect(s(editPayload(p, { notes: 'n', closingDate: '2030-01-01' }))).toEqual({})
+    expect(s(editPayload(p, { name: `${p.name} (rev)` }))).toEqual(STAMP)
+    expect(s(editPayload(p, { description: 'changed' }))).toEqual(STAMP)
+    expect(s(editPayload(p, { scope: 'changed' }))).toEqual(STAMP)
+    expect(s(editPayload(p, { costCodes: [CC(9)] }))).toEqual(STAMP)
+    expect(s(editPayload(p, { notes: 'n', scope: 'changed' }))).toEqual(STAMP)
   })
 })

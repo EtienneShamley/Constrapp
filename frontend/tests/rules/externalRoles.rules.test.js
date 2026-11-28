@@ -56,7 +56,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const FIRESTORE_RULES_PATH = resolve(HERE, '../../firestore.rules')
 const STORAGE_RULES_PATH   = resolve(HERE, '../../storage.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const COMPANY_B = 'companyB'
 const PROJECT_A = 'projectA'
@@ -153,6 +153,7 @@ const COLLECTIONS = {
       sentAt: new Date('2026-01-21T00:00:00Z'), sentBy: 'u_admin', closedAt: null, closedBy: null, cancelledAt: null, cancelledBy: null, externalRefs: {},
       createdAt: new Date('2026-01-20T00:00:00Z'), createdBy: 'u_qs',
       updatedAt: new Date('2026-01-21T00:00:00Z'), updatedBy: 'u_admin',
+      lastMaterialEditBy: 'u_qs', lastMaterialEditAt: new Date('2026-01-20T00:00:00Z'),
     },
     create: (user) => ({
       poNumber: 'PO-0002', status: 'draft', supplierName: 'Beta Steel', supplierId: null,
@@ -162,6 +163,8 @@ const COLLECTIONS = {
       subtotal: 0, gst: 0, total: 0, currency: 'AUD', revision: 1, notes: '',
       sentAt: null, sentBy: null, closedAt: null, closedBy: null, cancelledAt: null, cancelledBy: null, externalRefs: {},
       createdAt: serverTimestamp(), createdBy: user.uid, updatedAt: serverTimestamp(), updatedBy: user.uid,
+      // D4 (ADR-96, D3 #46): the PO create now requires the material-edit provenance.
+      lastMaterialEditBy: user.uid, lastMaterialEditAt: serverTimestamp(),
     }),
     update: (user) => ({ status: 'closed', closedAt: serverTimestamp(), closedBy: user.uid, updatedAt: serverTimestamp(), updatedBy: user.uid }),
   },
@@ -205,6 +208,12 @@ const COLLECTIONS = {
       externalRefs: {}, createdAt: serverTimestamp(), createdBy: user.uid, updatedAt: serverTimestamp(), updatedBy: user.uid,
     }),
     update: (user) => ({ notes: 'Updated by a financial role', revision: 2, updatedAt: serverTimestamp(), updatedBy: user.uid }),
+    // ADR-93 (Phase 2 step 3): a claim is created and its draft edited ONLY by
+    // the trusted backend, so the create and update above are now REFUSED for
+    // the financial roles too (section C); the one client write left is the
+    // content-free submit, proven in progressClaims.rules.test.js and here.
+    backendWritten: true,
+    submit: (user) => ({ status: 'submitted', submittedAt: serverTimestamp(), submittedBy: user.uid, revision: 2, updatedAt: serverTimestamp(), updatedBy: user.uid }),
   },
 }
 const NAMES = Object.keys(COLLECTIONS)
@@ -275,8 +284,10 @@ beforeEach(async () => {
     for (const u of Object.values(USERS)) {
       await setDoc(doc(db, 'users', u.uid), profileFor(u))
     }
-    await setDoc(doc(db, 'companies', COMPANY_A), { name: 'Apex Builders' })
-    await setDoc(doc(db, 'companies', COMPANY_B), { name: 'Company B' })
+    // ADR-98: the claim submit / variation lifecycle Rules require an ACTIVATED company.
+    await setDoc(doc(db, 'companies', COMPANY_A), { name: 'Apex Builders', commercialCompletionEnabled: true })
+    // ADR-98: the claim submit / variation lifecycle Rules require an ACTIVATED company.
+    await setDoc(doc(db, 'companies', COMPANY_B), { name: 'Company B', commercialCompletionEnabled: true })
     for (const [c, p] of [[COMPANY_A, PROJECT_A], [COMPANY_B, PROJECT_B]]) {
       await setDoc(projectRef(db, c, p), {
         name: 'Lakeside', status: 'In Progress', budget: 0, currency: 'AUD', currencyLocked: true,
@@ -364,6 +375,24 @@ for (const name of NAMES) {
 for (const name of NAMES) {
   describe(`${name} — writes unchanged`, () => {
     for (const key of FINANCIAL) {
+      if (COLLECTIONS[name].backendWritten) {
+        // ADR-93 — the same create / update is REFUSED; nothing moves.
+        it(`${USERS[key].role} — ADR-93: a client create of a ${name} document is REFUSED (backend only)`, async () => {
+          await assertFails(setDoc(docRef(ctx(USERS[key]), name, `new-${key}`), COLLECTIONS[name].create(USERS[key])))
+          let exists
+          await testEnv.withSecurityRulesDisabled(async (c) => { exists = (await getDoc(docRef(c.firestore(), name, `new-${key}`))).exists() })
+          expect(exists).toBe(false)
+        })
+        it(`${USERS[key].role} — ADR-93: a client draft edit of a ${name} document is REFUSED; the submit still passes`, async () => {
+          let before, after
+          await testEnv.withSecurityRulesDisabled(async (c) => { before = (await getDoc(docRef(c.firestore(), name))).data() })
+          await assertFails(updateDoc(docRef(ctx(USERS[key]), name), COLLECTIONS[name].update(USERS[key])))
+          await testEnv.withSecurityRulesDisabled(async (c) => { after = (await getDoc(docRef(c.firestore(), name))).data() })
+          expect(after).toEqual(before)
+          await assertSucceeds(updateDoc(docRef(ctx(USERS[key]), name), COLLECTIONS[name].submit(USERS[key])))
+        })
+        continue
+      }
       it(`${USERS[key].role} can still create a ${name} document`, async () => {
         await assertSucceeds(setDoc(docRef(ctx(USERS[key]), name, `new-${key}`), COLLECTIONS[name].create(USERS[key])))
       })

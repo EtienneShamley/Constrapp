@@ -95,6 +95,28 @@ steps:
     displayName: Client finance bundle up to date
     workingDirectory: $(workingDirectory)
 
+  # ADR-90: the server copy of the variation domain (createVariation,
+  # approveVariation, applyVariationCommitment). Same reasoning as above.
+  - script: npm run functions:variation-calc:check
+    displayName: Variation bundle up to date
+    workingDirectory: $(workingDirectory)
+
+  # ADR-93 / ADR-94: the server copy of the supplier-finance domain (claims,
+  # supplier invoices, credits, releases, payments). Same reasoning as above.
+  - script: npm run functions:supplier-finance-calc:check
+    displayName: Supplier finance bundle up to date
+    workingDirectory: $(workingDirectory)
+
+  # ADR-97: the server copy of the estimating domain. Same reasoning as above.
+  - script: npm run functions:estimating-calc:check
+    displayName: Estimating bundle up to date
+    workingDirectory: $(workingDirectory)
+
+  # Auth + Firestore + Functions emulators: handler, real-callable, revocation
+  # and operator-script tests (ADR-72). Runs the functions on the CI Node
+  # (24.x) while production pins nodejs22 in firebase.json; the pure suite and
+  # the deploy-time predeploy hook keep the code within Node 22.
+
   # Auth + Firestore + Functions emulators: handler, real-callable, revocation
   # and operator-script tests (ADR-72). Runs the functions on the CI Node
   # (24.x) while production pins nodejs22 in firebase.json; the pure suite and

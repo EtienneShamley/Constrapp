@@ -1,22 +1,25 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import {
-  buildTransitionalRules, LINE_PAIRS, FINAL_LINE, TRANSITIONAL_LINE, HEADER_TRANSITIONAL_LINES, FINAL_RULES_PATH, TRANSITIONAL_RULES_PATH,
+  buildTransitionalRules, LINE_PAIRS, HEADER_TRANSITIONAL_LINES, FINAL_RULES_PATH, TRANSITIONAL_RULES_PATH,
 } from '../../scripts/build-transitional-rules.mjs'
 import { FIRESTORE_RULES_BUDGET_BYTES, FIRESTORE_RULES_HARD_LIMIT_BYTES } from './rulesSize.test.js'
 
-// ── ADR-62 / ADR-63 — the STAGE-1 transitional ruleset is DERIVED and cannot drift ─
+// ── The STAGE-1 transitional ruleset is DERIVED and cannot drift (ADR-63 · ADR-65 · ADR-68 · ADR-90) ─
 //
-// `firestore.rules` is FINAL: on a PO-linked supplier approve BOTH stamp pairs
-// (ADR-62 applied, ADR-63 scope) are REQUIRED, and a claim create REQUIRES the
-// `variationLineCount` header. `firestore.transitional.rules` is what is
-// deployed FIRST, while the M3-B1 bundle is still served: identical except
-// that the scope pair is OPTIONAL on that one approve branch (the applied pair
-// is still required, a present scope pair must still be the caller's at
-// server time, the PO must still be sent/closed) and `variationLineCount` is
-// OPTIONAL at claim create (absent reads 0 everywhere else). This file pins
-// the relationship so a reviewer can trust the short diff, and the emulator
-// suite `tests/rules/variationsTransitional.rules.test.js` proves the behaviour.
+// `firestore.rules` is FINAL. `firestore.transitional.rules` is the ruleset
+// that was deployed FIRST in each staged release, while the previous bundle was
+// still served: identical except for the marked lines, each of which makes ONE
+// newly required key optional (a claim's `variationLineCount` and its invoice
+// link keys at create; the activities revision contract; the invoice link keys
+// at claim approval). This file pins the relationship so a reviewer can trust
+// the short diff; the emulator suite
+// `tests/rules/variationsTransitional.rules.test.js` proves the behaviour.
+//
+// ADR-90 RETIRED THE FIRST PAIR this list carried ('variations approve — the
+// scope pair', ADR-63): approving a variation is a trusted-backend operation,
+// neither file has a client approve branch, and the two files' `variations`
+// blocks are now byte-identical (asserted below). Three pairs remain.
 
 const finalSrc = readFileSync(FINAL_RULES_PATH, 'utf8')
 const transitionalSrc = readFileSync(TRANSITIONAL_RULES_PATH, 'utf8')
@@ -27,20 +30,18 @@ describe('firestore.transitional.rules is exactly what the generator produces fr
     expect(transitionalSrc).toBe(buildTransitionalRules(finalSrc))
   })
 
-  // ADR-65 added the third pair (the activities revision contract); ADR-68
-  // (SHIELD 2A) added the fourth (the approve-time invoice link keys) and
-  // extended the second pair's FINAL side with the three link keys. The
-  // first and third pairs are preserved byte for byte.
-  it('exactly four marked line pairs, and the first is still exported as FINAL_LINE / TRANSITIONAL_LINE', () => {
-    expect(LINE_PAIRS).toHaveLength(4)
-    expect(LINE_PAIRS.map(p => p.name)).toEqual([
-      'variations approve — the scope pair',
-      'progressClaims exactKeys — variationLineCount',
-      'activities update — the revision contract',
-      'progressClaims approve — the invoice link keys',
-    ])
-    expect(FINAL_LINE).toBe(LINE_PAIRS[0].final)
-    expect(TRANSITIONAL_LINE).toBe(LINE_PAIRS[0].transitional)
+  // ADR-65 added the activities revision pair; ADR-68 (SHIELD 2A) the
+  // approve-time invoice link keys. ADR-90 retired the variations pair and
+  // ADR-93 the two progressClaims pairs: claim create and approve are trusted
+  // backend operations, so NEITHER file has a client create or approve branch
+  // left to relax. One pair remains, preserved byte for byte.
+  it('exactly ONE marked line pair — ADR-90 retired the variations pair, ADR-93 the two progressClaims pairs', () => {
+    expect(LINE_PAIRS).toHaveLength(1)
+    expect(LINE_PAIRS.map(p => p.name)).toEqual(['activities update — the revision contract'])
+    for (const pair of LINE_PAIRS) {
+      expect(pair.final).not.toContain('scopeStamped')
+      expect(pair.transitional).not.toContain('scopeAbsent')
+    }
   })
 
   it('the FINAL file carries each strict marker line exactly once and the transitional marker never', () => {
@@ -50,16 +51,12 @@ describe('firestore.transitional.rules is exactly what the generator produces fr
     }
     expect(finalSrc).not.toContain('TRANSITIONAL (STAGE 1)')
     expect(finalSrc).not.toContain('ADR-62 TRANSITIONAL')
-    expect(LINE_PAIRS[0].final).toContain('appliedStamped(request.resource.data) && scopeStamped(request.resource.data)))')
-    expect(LINE_PAIRS[0].final).not.toContain('scopeAbsent')
-    expect(LINE_PAIRS[1].final).toContain("'variationId', 'variationLineCount', 'lineItems'")
-    // ADR-68: the FINAL create requires the three link keys (null) …
-    expect(LINE_PAIRS[1].final).toContain("'invoicedAt', 'supplierInvoiceId', 'supplierInvoiceLinkedAt', 'supplierInvoiceLinkedBy', 'externalRefs'")
-    expect(LINE_PAIRS[2].final).toContain('&& revisionIncremented() // ADR-65 FINAL')
-    expect(LINE_PAIRS[2].final).not.toContain('resource.data.revision ||')
-    // … and the FINAL approve requires them present and null.
-    expect(LINE_PAIRS[3].final).toContain('&& linkUnlinked(request.resource.data) // ADR-68 FINAL')
-    expect(LINE_PAIRS[3].final).not.toContain("'supplierInvoiceId' in request.resource.data")
+    expect(finalSrc).not.toContain('ADR-63 FINAL: BOTH pairs are REQUIRED')
+    // ADR-93: the retired claim markers are gone from the FINAL file too.
+    expect(finalSrc).not.toContain('ADR-63 / ADR-68 FINAL')
+    expect(finalSrc).not.toContain('// ADR-68 FINAL')
+    expect(LINE_PAIRS[0].final).toContain('&& revisionIncremented() // ADR-65 FINAL')
+    expect(LINE_PAIRS[0].final).not.toContain('resource.data.revision ||')
     expect(finalSrc).not.toContain('ADR-68 TRANSITIONAL')
   })
 
@@ -69,21 +66,14 @@ describe('firestore.transitional.rules is exactly what the generator produces fr
       expect(transitionalSrc).not.toContain(pair.final)
     }
     expect(transitionalSrc).not.toContain('ADR-63 FINAL')
-    expect(transitionalSrc).not.toContain('ADR-63 / ADR-68 FINAL')
     expect(transitionalSrc).not.toContain('ADR-65 FINAL')
-    expect(transitionalSrc).not.toContain('ADR-68 FINAL')
-    // The applied pair stays REQUIRED in Stage 1 — only the scope pair relaxes.
-    expect(LINE_PAIRS[0].transitional).toContain('appliedStamped(request.resource.data) && (scopeAbsent(request.resource.data) || scopeStamped(request.resource.data))')
-    expect(LINE_PAIRS[0].transitional).not.toContain('appliedAbsent')
-    // Stage 1 leaves variationLineCount AND the ADR-68 link keys out of hasAll only — hasOnly still admits them.
-    expect(LINE_PAIRS[1].transitional).not.toContain("'variationLineCount'")
-    expect(LINE_PAIRS[1].transitional).not.toContain("'supplierInvoiceId'")
-    expect(transitionalSrc).toContain("hasOnly(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'variationLineCount'")
-    expect(transitionalSrc).toContain("'invoicedAt', 'supplierInvoiceId', 'supplierInvoiceLinkedAt', 'supplierInvoiceLinkedBy', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])\n")
-    // ADR-68: Stage 1 accepts an approve with the link keys ABSENT (the pre-2A bundle) or present and null — never a string.
-    expect(LINE_PAIRS[3].transitional).toContain("(!('supplierInvoiceId' in request.resource.data) || linkUnlinked(request.resource.data))")
+    // ADR-90 / ADR-93: Stage 1 relaxes NOTHING in `variations` or `progressClaims`.
+    expect(transitionalSrc).not.toContain('ADR-63 TRANSITIONAL (STAGE 1): the scope pair is OPTIONAL')
+    expect(transitionalSrc).not.toContain('ADR-63 / ADR-68 TRANSITIONAL')
+    expect(transitionalSrc).not.toContain('ADR-68 TRANSITIONAL')
+    expect(transitionalSrc).not.toContain('scopeAbsent(request.resource.data) || scopeStamped(request.resource.data)')
     // ADR-65: Stage 1 accepts an UNCHANGED revision OR +1 — never +2, never backwards.
-    expect(LINE_PAIRS[2].transitional).toContain('(request.resource.data.revision == resource.data.revision || revisionIncremented())')
+    expect(LINE_PAIRS[0].transitional).toContain('(request.resource.data.revision == resource.data.revision || revisionIncremented())')
     expect(transitionalSrc.startsWith("rules_version = '2';\n// ⚠️ ADR-63 / ADR-65 / ADR-68 STAGE-1 TRANSITIONAL RULESET")).toBe(true)
     expect(transitionalSrc).toContain('Temporary compatibility only')
     expect(transitionalSrc).toContain('firebase.transitional.json')
@@ -114,31 +104,71 @@ describe('firestore.transitional.rules is exactly what the generator produces fr
     expect(diffs.sort(byFinal)).toEqual(LINE_PAIRS.map(p => [p.final, p.transitional]).sort(byFinal))
   })
 
-  it('the PO must be sent/closed in BOTH files — the transitional file relaxes the scope pair only, never the PO state or the applied pair', () => {
-    for (const src of [finalSrc, transitionalSrc]) {
-      const block = src.slice(src.indexOf('match /companies/{companyId}/projects/{projectId}/variations/{variationId}'))
-      const branch = block.slice(block.indexOf('(c) APPROVE'), block.indexOf('(d) REJECT'))
-      expect(branch).toContain('&& poCommitted()')
-      expect(branch).toContain('&& appliedStamped(request.resource.data)')
-      expect(branch).toContain("resource.data.poId == null\n                  ? (appliedAbsent(request.resource.data) && scopeAbsent(request.resource.data))")
+  // Replaces "the PO must be sent/closed in BOTH files" (the approve branch that
+  // test read no longer exists): since ADR-90 the PO state, the stamp pairs and
+  // the certified figures are enforced by the trusted backend
+  // (tests/functions/variations.test.js), and BOTH rulesets refuse the client
+  // write outright.
+  it('ADR-90 — in BOTH files the variations block has no client create, no draft-edit branch, no approve branch and no legacy apply branch — only the read and the three content-free transitions — and the two blocks are byte-identical', () => {
+    const variationsBlock = (src) => {
+      const from = src.indexOf('match /companies/{companyId}/projects/{projectId}/variations/{variationId}')
+      const to = src.indexOf('match /companies/{companyId}/projects/{projectId}/forecastLines/{costCodeId}')
+      expect(from).toBeGreaterThan(-1)
+      expect(to).toBeGreaterThan(from)
+      return src.slice(from, to)
     }
+    for (const src of [finalSrc, transitionalSrc]) {
+      const block = variationsBlock(src)
+      expect(block).toContain('allow create: if false;')
+      expect(block).not.toContain('(c) APPROVE')
+      expect(block).not.toContain('legacyCommitValid')
+      expect(block).not.toContain('appliedStamped')
+      expect(block).not.toContain('scopeStamped')
+      expect(block).not.toContain('poCommitted')
+      expect(block).not.toContain("request.resource.data.status == 'approved'")
+      expect(block).not.toMatch(/commitmentApplied|scopeCommitted/)
+      // What stays with the Rules is still there.
+      // Checkpoint-1 correction: the draft edit is the backend's too
+      // (updateVariationDraft) — no branch, and none of the helpers that
+      // validated authored content, header money or the ADR-34 link.
+      expect(block).not.toContain('(a) DRAFT EDIT')
+      for (const gone of ['contentShapeValid', 'originRfiValid', 'originRfiDoc', 'originChanged', 'moneyValid', 'wholeCents', 'refsValid']) expect(block, gone).not.toContain(gone)
+      expect(block).not.toMatch(/'lineItems',|'submittedSubtotal'|'title'/)   // no branch names a content key
+      expect((block.match(/changedKeys\(\)\.hasOnly\(/g) || []).length).toBe(3)
+      // What stays with the Rules is still there.
+      expect(block).toContain('allow read: if variationMember();')
+      expect(block).toContain('(b) SUBMIT')
+      expect(block).toContain('(d) REJECT')
+      expect(block).toContain('(e) WITHDRAW')
+      expect(block).toContain('allow delete: if false;')
+    }
+    expect(variationsBlock(transitionalSrc)).toBe(variationsBlock(finalSrc))
   })
 
-  it('the claim line-count pin, the variation-line shape pins, the invoice count guard AND the ADR-68 invoice pairing are identical in both files — the pairing is strict from Stage 1', () => {
-    for (const needle of [
-      'po.lineItems.size() + n == d.lineItems.size()',
-      'variationLinesShaped(d.lineItems, n)',
-      '&& variationLinesPreserved()',
-      "let cc = claim.get('variationLineCount', 0);",
-      "&& 'supplierInvoiceId' in claim\n            && claim.supplierInvoiceId == null\n            && getAfter(claimPath()).data.supplierInvoiceId == invoiceId;",
-      "&& (resource.data.source != 'progress_claim' || claimReleased())",
-      '&& linkedInvoiceCreatedHere()',
-      '&& linkedInvoiceCancelledHere()',
-      '&& existingInvoiceLinkable()',
-    ]) {
-      expect(finalSrc).toContain(needle)
-      expect(transitionalSrc).toContain(needle)
+  // Replaces "the claim line-count pin … and the ADR-68 invoice pairing are
+  // identical in both files": since ADR-93 / ADR-94 the line-count pins, the
+  // pairing and every financial invariant of claims and supplier invoices are
+  // enforced by the trusted backend (tests/functions/supplierFinance.test.js),
+  // and BOTH rulesets refuse every client write to the supplier registers
+  // except the content-free claim submit — byte-identically.
+  it('ADR-93 / ADR-94 — in BOTH files the five supplier blocks admit no client write but the claim SUBMIT, and are byte-identical', () => {
+    const block = (src, name, next) => src.slice(src.indexOf(`match /companies/{companyId}/projects/{projectId}/${name}/`), src.indexOf(next, src.indexOf(`match /companies/{companyId}/projects/{projectId}/${name}/`)))
+    for (const name of ['supplierInvoices', 'supplierPayments', 'supplierCreditNotes', 'retentionReleases']) {
+      for (const src of [finalSrc, transitionalSrc]) {
+        const b = block(src, name, '\n    }\n')
+        expect(b, name).toContain('allow create, update, delete: if false;')
+        expect(b, name).not.toMatch(/allow (create|update|write)[^;]*if (?!false)/)
+      }
+      expect(block(finalSrc, name, '\n    }\n')).toBe(block(transitionalSrc, name, '\n    }\n'))
     }
+    for (const src of [finalSrc, transitionalSrc]) {
+      const b = block(src, 'progressClaims', '\n    }\n')
+      expect(b).toContain('allow create: if false;')
+      expect(b).toContain("changedKeys().hasOnly(['status', 'submittedAt', 'submittedBy', 'revision', 'updatedAt', 'updatedBy'])")
+      expect(b).toContain("&& request.resource.data.status == 'submitted'")
+      expect(b).not.toContain('linkedInvoiceCreatedHere')
+    }
+    expect(block(finalSrc, 'progressClaims', '\n    }\n')).toBe(block(transitionalSrc, 'progressClaims', '\n    }\n'))
   })
 
   it('both rulesets are under the approved budget and the hard limit', () => {
@@ -149,7 +179,7 @@ describe('firestore.transitional.rules is exactly what the generator produces fr
   })
 
   it('the generator refuses a source without exactly one marker per pair', () => {
-    expect(() => buildTransitionalRules(finalSrc.replace(LINE_PAIRS[0].final, ''))).toThrow(/exactly one FINAL marker line for "variations approve/)
-    expect(() => buildTransitionalRules(finalSrc + '\n' + LINE_PAIRS[1].final)).toThrow(/exactly one FINAL marker line for "progressClaims exactKeys/)
+    expect(() => buildTransitionalRules(finalSrc.replace(LINE_PAIRS[0].final, ''))).toThrow(/exactly one FINAL marker line for "activities update/)
+    expect(() => buildTransitionalRules(finalSrc + '\n' + LINE_PAIRS[0].final)).toThrow(/exactly one FINAL marker line for "activities update/)
   })
 })

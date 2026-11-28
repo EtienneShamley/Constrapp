@@ -9,7 +9,7 @@ import {
   claimLineToForm, buildClaimLine, claimedToDateCountError, validateClaimDraft,
   claimRetentionError, CLAIM_MAX_LINES, CLAIM_TRANSITION_STAMPS,
 } from '../../src/lib/progressClaims'
-import { draftUpdate } from '../../src/lib/progressClaimActions'
+import { draftUpdate } from '../fixtures/legacyClientWrites'
 import {
   PO_STATUS, GST_RATE, roundMoney, committedByCostCode, remainingCommittedByCostCode, PO_MAX_LINES,
 } from '../../src/lib/purchaseOrders'

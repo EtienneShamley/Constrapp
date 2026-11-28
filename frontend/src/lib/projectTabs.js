@@ -22,6 +22,9 @@ export const PROJECT_TABS = [
   // Writes NO BOQ quantity (Quant 1B). `mark` shows the static Quant line mark.
   { to: 'quant',            label: 'Quant', mark: 'quant' },
   { to: 'boq',              label: 'BOQ' },
+  // ADR-97: the estimate layer over the BOQ (cost classification, overheads,
+  // contingency, markup or margin, immutable approved revisions).
+  { to: 'estimate',         label: 'Estimate' },
   { to: 'tenders',          label: 'Tenders' },
   { to: 'budget',           label: 'Budget' },
   { to: 'cost-codes',       label: 'Cost Codes' },

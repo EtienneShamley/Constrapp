@@ -345,7 +345,9 @@ describe('readiness is judged from the records the server reads', () => {
     await base().collection('commercial').doc('baseline').update({ originalContractValue: 10500 })
     await expectTeamError(call('u_pm', ok()), A.CODE.FINAL_ACCOUNT_CHANGED)
     await base().collection('commercial').doc('baseline').update({ originalContractValue: 10000 })
-    await base().collection('clientReceipts').doc('cr2').set({ status: 'posted', amount: 100, allocatedTotal: 0, unallocatedAmount: 100, allocations: [], receiptDate: '2026-11-01', createdAt: A.Timestamp.now() })
+    // Phase 2 step 5 (CHANGED): an UNALLOCATED receipt now blocks readiness (unsettled
+    // client money), so the "still ready but different" record is an ALLOCATED one.
+    await base().collection('clientReceipts').doc('cr2').set({ status: 'posted', amount: 100, allocatedTotal: 100, unallocatedAmount: 0, allocations: [{ clientInvoiceId: 'ci1', invoiceNumber: 'CI-0001', allocatedAmount: 100 }], receiptDate: '2026-11-01', createdAt: A.Timestamp.now() })
     await expectTeamError(call('u_pm', ok()), A.CODE.FINAL_ACCOUNT_CHANGED)
     expect((await faDoc(1)).status).toBe('draft')
   })

@@ -24,7 +24,7 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const COMPANY_B = 'companyB'
 const PROJECT_A = 'projectA'
@@ -239,9 +239,14 @@ describe('MUST ALLOW', () => {
     await assertSucceeds(updateDoc(invRef(ctx(USERS.admin), 'inv1'), voidWrite(USERS.admin)))
   })
 
-  it('5. issued -> void with a non-empty reason', async () => {
+  // Phase 2 step 5 (D8) — CHANGED EXPECTATION: an ISSUED invoice is voided only by
+  // the trusted callable voidClientInvoice (it checks receipts, applications and
+  // refunds the Rules cannot read). The client write is refused, for every role.
+  it('5. issued -> void with a non-empty reason is REFUSED to the client (Phase 2 step 5: backend only)', async () => {
     await seed('inv1', 'issued')
-    await assertSucceeds(updateDoc(invRef(ctx(USERS.admin), 'inv1'), voidWrite(USERS.admin)))
+    for (const user of [USERS.admin, USERS.pm, USERS.qs]) {
+      await assertFails(updateDoc(invRef(ctx(user), 'inv1'), voidWrite(user)))
+    }
   })
 })
 
@@ -353,7 +358,8 @@ describe('MUST REJECT', () => {
     await seed('ok1', 'draft')
     await seed('ok2', 'issued')
     await assertSucceeds(updateDoc(invRef(db, 'ok1'), voidWrite(USERS.admin, '  Duplicate of CI-0007  ')))
-    await assertSucceeds(updateDoc(invRef(db, 'ok2'), voidWrite(USERS.admin, 'Client cancelled the claim')))
+    // Phase 2 step 5: an issued invoice is refused whatever the reason (backend only).
+    await assertFails(updateDoc(invRef(db, 'ok2'), voidWrite(USERS.admin, 'Client cancelled the claim')))
   })
 
   it('11. issued invoice content edit (issued invoices are immutable)', async () => {
@@ -471,13 +477,14 @@ describe('serverTimestamp satisfies request.time', () => {
     }
   })
 
+  // Phase 2 step 5: the client void path is DRAFT-only, so the timestamp pins run on drafts.
   it('void: serverTimestamp() is accepted; a client clock value is rejected', async () => {
-    await seed('inv1', 'issued')
+    await seed('inv1', 'draft')
     const db = ctx(USERS.admin)
     await assertSucceeds(updateDoc(invRef(db, 'inv1'), voidWrite(USERS.admin)))
     for (const [i, stamp] of CLIENT_CLOCKS.entries()) {
-      await seed(`vd_at_${i}`, 'issued')
-      await seed(`vd_up_${i}`, 'issued')
+      await seed(`vd_at_${i}`, 'draft')
+      await seed(`vd_up_${i}`, 'draft')
       await assertFails(updateDoc(invRef(db, `vd_at_${i}`), voidWrite(USERS.admin, 'r', { voidedAt: stamp() })))
       await assertFails(updateDoc(invRef(db, `vd_up_${i}`), voidWrite(USERS.admin, 'r', { updatedAt: stamp() })))
     }
@@ -500,6 +507,8 @@ describe('serverTimestamp satisfies request.time', () => {
     expect(after.issuedBy).toBe(USERS.qs.uid)
     expect(after.issuedAt).not.toBeNull()
     expect(after.invoiceNumber).toBe('CI-0001')
-    await assertSucceeds(updateDoc(ref, voidWrite(USERS.qs, 'Client cancelled the claim')))
+    // Phase 2 step 5 (CHANGED): an ISSUED invoice is voided only by the trusted
+    // callable voidClientInvoice (it checks the receipts Rules cannot see).
+    await assertFails(updateDoc(ref, voidWrite(USERS.qs, 'Client cancelled the claim')))
   })
 })

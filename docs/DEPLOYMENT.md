@@ -2552,7 +2552,7 @@ Exactly two files, nothing else:
 | `frontend/functions/.env.constrapp-69b5d` | `FILE_LINK_RECONCILE_INTERVAL_HOURS=0` → `FILE_LINK_RECONCILE_INTERVAL_HOURS=2`; the comment above it records the authorisation |
 | `frontend/functions/test/fileLinks.test.js` | *DEPLOY GUARD*: `toContain('FILE_LINK_RECONCILE_INTERVAL_HOURS=0')` → `toContain('FILE_LINK_RECONCILE_INTERVAL_HOURS=2')`, with its comment |
 
-`frontend/functions/.env.constrapp-rules-test` stays `0`. Without the second
+`frontend/functions/.env.constrapp-rules-test` (renamed `.env.demo-constrap-test` on 27 November 2026 with the emulator project) stays `0`. Without the second
 change the deploy's own predeploy test refuses the first.
 
 ```
@@ -5826,3 +5826,677 @@ within its tested scope.** Items 1–4, 6–8 executed; item 5 rests on emulator
 evidence (the production customer was not used for a refusal test); not
 executed: the printed credit note's paper layout, the Final Account CSV, the
 external-role part of §44 step 3a.
+
+## Phase 2 step 2 — trusted variation processing (ADR-90, ADR-91) — PROPOSED RELEASE ORDER — **NOT AUTHORISED, NOT DEPLOYED**
+
+Written at the first Phase 2 integration checkpoint (27 November 2026). Nothing
+in this section has been run against production. It records the order the
+change needs so the release boundary can be decided with the rest of Phase 2;
+**each step needs the Product Owner's explicit authorisation.**
+
+### What the release contains
+
+| Layer | Change | Deploy unit |
+|---|---|---|
+| Functions | FOUR new callables: `createVariation`, `updateVariationDraft`, `approveVariation`, `applyVariationCommitment` (`VARIATION_PROCESSING_ENABLED`, production value `false`) — *corrected at the checkpoint review, 27 November 2026: draft edits joined the boundary* | `functions:team:createVariation,functions:team:updateVariationDraft,functions:team:approveVariation,functions:team:applyVariationCommitment` |
+| Functions | Regenerated bundles in SEVEN existing callables — `approveFinalAccount` and the six client-finance callables — because their source modules import `lib/variations.js`, which gained the calculation version. **No behaviour change** (their emulator suites pass unchanged), but the deployed source must equal the repository | the seven `functions:team:<name>` targets |
+| Rules | `firestore.rules` 222,000 bytes: `variations` — create `if false`, no draft-edit, approve or legacy-apply branch (only read, submit, reject, withdraw); `counters/variationsClient` and `counters/variationsSupplier` closed to every client | Firestore Rules |
+| Hosting | The bundle that creates, approves and applies through the callables | Hosting |
+
+`transferBoqToBudget`, the eight team callables, the scheduled worker and the
+Storage Rules are unchanged.
+
+### Prerequisites (read-only; each needs authorisation)
+
+- **Inventory of unapproved and unapplied variations.** Every draft and
+  submitted variation, and every approved PO-linked supplier variation still
+  missing a commitment stamp pair, will be verified by the backend when it is
+  next approved or applied (ADR-90 correction, Decision C3) and REFUSED if its
+  stored lines deviate from the application's own shape. Count them and check
+  them against `submittedSideProblem` / `approvedSideProblem` / `lineSources`
+  before the release, so a refusal is known in advance and not discovered by a
+  user.
+- **Counter check.** `counters/variationsClient.next` and
+  `counters/variationsSupplier.next` must each be a whole number above the
+  highest existing number of its type and not above 999,999,999; the backend
+  refuses to number a variation otherwise.
+
+### Order (each step verified before the next)
+
+1. **Merge; Azure `main` green.**
+2. **Functions, switch OFF** — the three new callables and the seven with
+   regenerated bundles. Nothing changes for users: the served bundle still
+   writes variations directly and the published Rules still allow it. Verify
+   each new callable answers an unauthenticated request with a refusal (no
+   write is possible with the switch off).
+3. **Switch ON** — `VARIATION_PROCESSING_ENABLED=true` in
+   `.env.constrapp-69b5d` **and** the release-safety pin in
+   `functions/test/variations.test.js` (two lines, one commit — the Phase 1
+   lesson), then redeploy the three. Still nothing changes for users.
+4. **Hosting.** From here the application creates, approves and applies
+   through the callables; documents it creates carry `calcVersion: 2`. A tab
+   still on the previous bundle keeps writing directly under the still-published
+   Rules — both paths are valid and enforce the same lifecycle. (Hosting's
+   `index.html` is cached for up to an hour: confirm the served bundle before
+   any browser check.)
+5. **Acceptance in the acceptance company** (new records only) — plan to be
+   written with the Phase 2 integrated acceptance (step 8).
+6. **FINAL Rules.** A direct create, draft edit, approve or apply — and any
+   client write of the two variation counters — is refused from then on. A tab
+   still on the old bundle must reload for those actions; its submit, reject
+   and withdraw keep working.
+
+**Known effect of the coexistence window (steps 4–6).** A tab still on the
+previous bundle may edit a draft that the NEW bundle created (`calcVersion: 2`).
+The previous bundle recalculates line GST with the legacy expression, so on a
+half-cent boundary line (for example 40.15) it stores 4.01 where version 2
+requires 4.02. If that draft is then submitted, `approveVariation` refuses it
+(`variation-figures-inconsistent`) — it fails closed; nothing is approved on
+inconsistent figures. The remedy is to re-save the draft from the new bundle
+before submitting (the backend re-derives it), or to withdraw and raise the
+variation again. The same applies to any legacy draft whose stored lines do
+not reconcile. Keeping the
+window short (step 6 soon after step 4) keeps this from arising in practice.
+
+**Why no transitional ruleset is generated for this release.** The Rules
+published today already accept the old bundle's writes; the callables bypass
+Rules. Steps 2–5 therefore run under the currently published ruleset, and step
+6 publishes the FINAL one. `firestore.transitional.rules` and
+`firestore.m2a2-transitional.rules` are regenerated only because they are
+derived from `firestore.rules`; neither is published by this release.
+
+### Recovery
+
+- **Before step 6:** set the switch `false` and redeploy the three callables;
+  restore the previous Hosting release. Variations already created by the
+  callables stay valid — the previous bundle edits, submits, approves and
+  applies them under the published Rules, and their `calcVersion` is ignored by
+  it (their approval would then use the legacy expression: a one-cent
+  difference on a half-cent boundary line is possible on such a document, and
+  is the reason to fix forward rather than roll back once real variations
+  exist).
+- **After step 6:** fix forward. Do not restore the previous Rules. The switch
+  is the brake: with it off, nobody can create or approve a variation (draft
+  edits, submit, reject and withdraw continue).
+
+### Not covered here
+
+Alert policies for the three callables; the production acceptance plan; the
+decision whether this release ships alone or together with Phase 2 step 3
+(claims and supplier invoices), which shares the calculation version and the
+cutover pattern.
+
+## Phase 2 steps 2–6 — trusted variations, claims, supplier invoices and settlement, client refunds and applications, approval segregation, contract value (ADR-90 to ADR-96) — PROPOSED RELEASE ORDER — **NOT AUTHORISED, NOT DEPLOYED** — **SUPERSEDED** (28 November 2026)
+
+**Superseded by *Phase 2 — the complete cutover — controlled company activation* below**, which releases these steps together with step 7 and activates them company by company. Kept as written for the record; do not execute it.
+
+Proposed 28 November 2026 at the consolidated checkpoint. Every step below is
+the Product Owner's to execute after the Lead Architect's acceptance; Azure CI
+must be green on `main` before any production operation. Nothing here has run.
+
+### Read-only prerequisites (each needs its own authorisation)
+
+1. **Variation inventory and counter check** (ADR-90 correction) — as above.
+2. **Supplier-finance history inventory** (ADR-93 / ADR-94): count, per project,
+   the posted supplier credit notes, retention releases and payment allocations,
+   and the open and certified claims; run the baseline arithmetic
+   (`supplierLedgersFromHistory`, `poClaimLedgersFromHistory`) READ-ONLY and
+   list every invoice or PO it would mark INCONSISTENT and every payment it
+   would refuse (MISSING SOURCE). The baseline is established in production only
+   by the first operation after the switch is on — this inventory makes its
+   outcome known first.
+3. **Counter check** for the five supplier registers and the two client
+   settlement registers (positive whole numbers above the highest existing
+   number of their type).
+4. **Contract value check:** every project baseline's `originalContractValue`
+   is a number (a baseline without one cannot be corrected through the process).
+
+### Order (each step verified before the next)
+
+1. **Merge; Azure `main` green** (unit, Rules, Functions pure and emulator,
+   bundle checks, transitional check, lint, build).
+2. **Functions, every new callable with its switch OFF** (`VARIATION_PROCESSING_ENABLED`,
+   `SUPPLIER_FINANCE_PROCESSING_ENABLED`, `CLIENT_SETTLEMENT_ENABLED`,
+   `CONTRACT_VALUE_REVISION_ENABLED` all `false` in `.env.constrapp-69b5d`):
+   `--only functions:team:createVariation,…,functions:team:progressClaimOperation,functions:team:supplierInvoiceOperation,functions:team:supplierSettlementOperation,functions:team:contractValueOperation,` plus the client refund / application / invoice-void callables and the redeployed client-finance and Final Account callables (segregation guard).
+3. **MAINTENANCE RESTRICTION begins.** Announce that variations, progress
+   claims, supplier invoices, supplier credit notes, retention releases,
+   supplier payments and client invoice voids are unavailable for the window.
+4. **FINAL Rules.** From this moment no client can write the supplier registers
+   (claim submit excepted), the variation registers, their counters, the
+   commercial baseline's contract value or the approval policy. A tab on the old
+   bundle is refused for those writes (fails safe). There is NO transitional
+   ruleset for steps 3–6: a transitional window would let an old bundle write
+   history the ledgers do not see.
+5. **Switches ON** (a parameter change and a redeploy of the callables named in
+   step 2, alone). The first supplier-finance operation on a project establishes
+   its baseline (step 0 inventory tells what it will find).
+6. **Hosting.** The new bundle calls the callables. **Maintenance restriction ends.**
+7. **Read-only verification:** deployed sources identical to `main`; one test
+   operation of each family on the TEST company's sandbox project (separately
+   authorised); the baseline marker and audit events present.
+
+**Approval segregation** stays DISABLED for every company until the Product
+Owner asks for it per company; enabling it is
+`node scripts/set-approval-policy.mjs --project constrapp-69b5d --company <id> --enable --reason "<request>"` (dry run), then `--apply`.
+
+**Rollback.** Switches OFF restore the maintenance state (nothing written by an
+old bundle in between). Reverting the Rules alone is NOT safe once any ledger
+exists — an old bundle would write history the ledgers do not see — so a
+rollback keeps the FINAL Rules and turns the switches off.
+
+## Phase 2 — the complete cutover — controlled company activation (final batch) — PREPARED 28 November 2026, **NOT AUTHORISED, NOTHING EXECUTED**
+
+**Every production step below is the Product Owner's, each on its own
+authorisation, after the Lead Architect's acceptance and with Azure `main`
+green. None of it has run. No production read, write, deploy or monitoring
+change was made in preparing it.** This section supersedes the two Phase 2
+release orders above (*Phase 2 step 2* and *Phase 2 steps 2–6*) and this
+section's own earlier design (one global switch-on for every company at once:
+its open "per-company gate" decision is now decided — controlled company
+activation).
+
+**The decision.** Phase 2 is released to production for every company at
+once, but it ACTS only for a company the operator has activated:
+`companies/{companyId}.commercialCompletionEnabled === true`, written only by
+`frontend/functions/scripts/set-commercial-completion.mjs` (dry run by
+default; `--company`, `--enable | --disable`, `--reason`, `--apply`; one audit
+event `company.commercial_completion_set`; no client can write the field).
+Every Phase 2 callable refuses an inactive company with
+`commercial-completion-not-activated`, checked before any baseline and again
+inside the operation's own transaction (`functions/src/lib/commercialActivation.js`).
+The five global switches remain, as emergency brakes above it. Approval
+segregation stays a separate, optional company policy
+(`set-approval-policy.mjs`); activation never enables it.
+
+### One integration, not separate releases
+
+Steps 0–7 share the Rules, `functions/src/index.js`, the shared libraries and
+their generated bundles, the hooks and the approval-segregation guard. The
+final Rules close the old client paths of steps 2–7 together. They are
+integrated and released as ONE change; splitting them would need a
+transitional ruleset per step — the window ruling F forbids.
+
+### What changes — and what does not
+
+| Layer | Change |
+|---|---|
+| Functions — **14 new** | `createVariation`, `updateVariationDraft`, `approveVariation`, `applyVariationCommitment`, `progressClaimOperation`, `supplierInvoiceOperation`, `supplierSettlementOperation`, `postClientRefund`, `voidClientRefund`, `postClientReceiptApplication`, `voidClientReceiptApplication`, `voidClientInvoice`, `contractValueOperation`, `estimateOperation` |
+| Functions — **8 changed** (redeployed; their Phase 1 behaviour unchanged for every company) | `postClientCreditNote`, `voidClientCreditNote`, `postClientRetentionRelease`, `voidClientRetentionRelease`, `postClientReceipt`, `voidClientReceipt` (regenerated bundles; the segregation guard, which with no policy changes nothing; a void of a posted credit / release reads the policy), `approveFinalAccount` (segregation; refunds and applications in readiness), `transferBoqToBudget` (optional `estimateId`; a request without it is byte-identical to today's, so the released bundle keeps working) |
+| Firestore Rules | The FINAL ruleset (`frontend/firestore.rules` at the merged commit; record `wc -c`). It closes every old client write path of the Phase 2 registers **for every company**: variations (create, draft edit, approve, apply), progress claims (all but the content-free submit), supplier invoices, credit notes, retention releases, payments, their counters, client refunds and applications, the void of an issued client invoice, the contract value once a baseline exists, the estimate registers, the approval policy. The only client writes left on these registers are content-free transitions: a claim's submit, and a variation's submit / reject / withdraw. **No transitional ruleset is published.** |
+| Hosting | The bundle that calls the callables, shows the maintenance notice to an inactive company and reads the new registers. |
+| Operator tool | `set-commercial-completion.mjs` — no deploy; writes one field and one audit event per run. |
+| Monitoring | `ops/monitoring/phase2/` — five policies and four log-based metrics at Stage A, two policies at Stage F (README there). |
+
+**Unchanged production services** — not in any filter below and not touched by
+any step: the eight team-management callables, `processFileLinkRevocations`
+and its Scheduler job, Storage Rules, Firestore indexes (none exist), backups
+and point-in-time recovery, App Check registration, IAM and service accounts,
+the `EMAIL_API_KEY` secret, the custom domain, the DC46 and L3 monitoring and
+the uptime check. The team callables and the worker keep their currently
+deployed source (a targeted deploy uploads the new source only for the named
+functions); their code is unchanged apart from added error and audit
+constants they do not use.
+
+**No migration and no rewrite of any historical document.** New server-written
+data appears only for an ACTIVATED company: per project, the supplier-finance
+baseline marker with its invoice and PO-claim ledgers, client receipt ledgers,
+estimate state, contract-value state; and the company flag with its audit
+event.
+
+### Configuration
+
+- **Switches** (`frontend/functions/.env.constrapp-69b5d`, committed, not
+  secrets) — all `false` from Stage B to Stage F: `VARIATION_PROCESSING_ENABLED`,
+  `SUPPLIER_FINANCE_PROCESSING_ENABLED`, `CLIENT_SETTLEMENT_ENABLED`,
+  `CONTRACT_VALUE_REVISION_ENABLED`, `ESTIMATING_ENABLED`. The Phase 1 values
+  stay `true` (receipts, receipt scope, client finance, Final Account, BOQ
+  transfer). **The Stage F switch commit changes the five values AND their
+  release-safety pins** (the Phase 1 lesson: the value alone fails the
+  predeploy tests): `VARIATION_PROCESSING_ENABLED` in
+  `functions/test/variations.test.js`, `CLIENT_SETTLEMENT_ENABLED` in
+  `functions/test/clientFinance.test.js`, `ESTIMATING_ENABLED` in
+  `tests/unit/estimating.test.js`. *At the time of writing
+  `SUPPLIER_FINANCE_PROCESSING_ENABLED` and `CONTRACT_VALUE_REVISION_ENABLED`
+  have no production pin* — add them before the switch commit, so the commit
+  is checked like the others.
+- **Call options** (from `functions/src/index.js`; one region
+  `australia-southeast1`; `enforceAppCheck: true`; no secret; the default
+  runtime service account, as every callable but the worker):
+
+  | Callables | Memory | Timeout | `maxInstances` |
+  |---|---|---|---|
+  | the four variation callables | 256 MiB (default) | 60 s | 5 |
+  | `progressClaimOperation`, `supplierInvoiceOperation`, `supplierSettlementOperation` | 512 MiB | 120 s | 5 |
+  | the eleven client-finance callables (six Phase 1, five new) | 512 MiB | 120 s | 5 |
+  | `contractValueOperation` | 256 MiB (default) | 60 s | 2 |
+  | `estimateOperation` | 512 MiB | 120 s | 3 |
+  | `approveFinalAccount`, `transferBoqToBudget` (unchanged options) | 512 MiB | 120 s | 5 |
+
+  Concurrency is the platform default (80 requests per instance at 1 vCPU,
+  firebase-tools 15). Abuse, contention and cost assessment: *Abuse,
+  concurrency and cost* below.
+- **Company activation** — absent on every company at the cutover. Refunds
+  and receipt applications ALSO keep their Phase 1 requirement
+  `clientFinanceEnabled === true`.
+- **Approval segregation** — absent (disabled) for every company; enabled per
+  company only on request, separately.
+
+### The effective switch × company-activation matrix
+
+| Global switch | `commercialCompletionEnabled` | What a Phase 2 callable does |
+|---|---|---|
+| off | any | `…-disabled` (HTTP 503) before any read; nothing written; no baseline |
+| on | absent, `false` or anything but `true` | `commercial-completion-not-activated` (HTTP 400) before any project read; nothing written; **no baseline** |
+| on | `true` | Operates; the first operation on a project establishes that project's baseline |
+
+Per family:
+
+| Family | Switch | Also requires |
+|---|---|---|
+| Variations (4 callables) | `VARIATION_PROCESSING_ENABLED` | activation |
+| Claims, supplier invoices, supplier settlement (3) | `SUPPLIER_FINANCE_PROCESSING_ENABLED` | activation; the project's supplier baseline `complete` |
+| Client refunds and receipt applications (4) | `CLIENT_SETTLEMENT_ENABLED` | `clientFinanceEnabled` AND activation; the receipt baseline |
+| Void of an issued client invoice (`voidClientInvoice`) | `CLIENT_RECEIPT_POSTING_ENABLED` (already `true`, all companies) | activation; the receipt baseline |
+| Contract-value corrections (`contractValueOperation`) | `CONTRACT_VALUE_REVISION_ENABLED` — **off, it answers `contract-value-invalid` (HTTP 400, "not available yet"), not a `…-disabled` code** | activation |
+| Estimating (`estimateOperation`) | `ESTIMATING_ENABLED` | activation |
+| BOQ transfer recording an estimate's handover | `BOQ_BUDGET_TRANSFER_ENABLED` (`true`) | activation (read in its transaction); **a transfer without an estimate is never gated** |
+| Phase 1: receipts, credit notes, retention releases, Final Account approval | unchanged | unchanged — **never gated by activation** |
+
+| Stage | Switches | Companies activated | Phase 2 for users |
+|---|---|---|---|
+| before B | off (not deployed) | none | old client paths, as today |
+| B–C | off | none | old client paths (Rules unchanged) |
+| D–E | off | none | **read-only for every company** (maintenance) |
+| F–G | **on** | TEST company only | TEST: trusted processing; everyone else read-only |
+| H | on | each approved company | activated: trusted processing; the rest read-only |
+| brake | a switch off | any | that family refused for everyone, with a clear message |
+
+### Why no transition window lets an old client write bypass the backend
+
+1. **Before Stage D** the old bundle writes the old way, under the published
+   Rules, exactly as today. No Phase 2 callable acts (switches off) and no
+   ledger or baseline exists, so nothing can disagree with it.
+2. **At Stage D** the final Rules refuse every obsolete client write **for
+   every company** — proven by the Rules suites issuing the exact old write
+   shapes (`tests/fixtures/legacyClientWrites.js`, the variation and
+   supplier-register suites) and asserting denial. The only client writes left
+   are content-free transitions (a claim's submit; a variation's submit /
+   reject / withdraw), which change no figure, no open-claim identity and no
+   ledger. The Rules are not per company, so an inactive company is frozen
+   too.
+3. **A baseline cannot run before the Rules**: the switches stay off until
+   Stage F, which follows Stage D's verification (published ruleset equals
+   `main`) and its 10-minute propagation wait. Even then the baseline
+   re-verifies its source snapshot before it completes (ADR-94 Decision 7):
+   a write racing it abandons it, never corrupts it.
+4. **An inactive company gets no baseline**: activation is checked before
+   `ensureSupplierBaseline` / `ensureReceiptBaseline` in every Phase 2 handler
+   and again inside each operation's transaction. When a company is activated
+   later (Stage H), its history has been frozen since Stage D.
+5. **After Hosting** a tab still on the old bundle keeps failing closed
+   (refused writes, nothing saved) until it reloads.
+
+There is no ordering of these stages in which an old bundle's write is
+accepted after a ledger exists. The one condition — Stage D verified before
+the Stage F switch deploy — is a gate below.
+
+### Stage A — read-only inventories (each run separately authorised)
+
+From the repository root, with your own `gcloud` login (IAM read; nothing is
+written):
+
+    node ops/recovery/phase2-inventory.mjs --project constrapp-69b5d --summary > phase2-inventory-A-summary.json; echo "exit $?"
+    node ops/recovery/phase2-inventory.mjs --project constrapp-69b5d > phase2-inventory-A.json
+    node ops/cutover/client-receipt-inventory.mjs --project constrapp-69b5d > receipts-A.json
+
+The tool prints ids, counts, counter values and problem codes only; keep the
+full file outside the repository (it lists document ids). Exit `0` = no
+finding, `1` = findings listed, `3` = a read failed (rerun). Read
+`summary.findingsByCode`, then the `findings` list:
+
+| Finding severity | Meaning | Decision before Stage B |
+|---|---|---|
+| `refuse` | A document the backend WILL refuse (a variation whose lines or header do not reconcile, an invoice that does not verify, a counter not above its highest number, a payment allocation the baseline cannot attribute) | Known in advance, per document: accept as fail-closed (the user is told why and uses the existing remedy — reject, withdraw, raise again) or correct it through the RELEASED build before Stage D. **Counter findings block Stage F** until a separately approved repair |
+| `inconsistent` | A ledger the first operation will mark inconsistent (several open claims on one PO, an over-credit, an obligation that does not reconcile) | Postings on that invoice / PO will be refused until the supported voids or rejections bring it back; list them for the Product Owner |
+| `review` | Duplicate numbers, legacy claim link keys, drafts that would fail if submitted unedited, stranded invoice statuses, malformed policy, markers left building | Record; none blocks on its own |
+
+**Stop conditions:** `companiesByActivation` shows `commercialCompletion=absent`
+for every company; `clientRefunds`, `clientReceiptApplications`,
+`clientReceiptLedgers`, `supplierBaselineMarkers`, `supplierLedgers`,
+`estimates` and `contractValueRevisions` are 0; `supplierBaselinesWouldRefuse`
+is 0 for the TEST company (another company with a refusing baseline can still
+be released, but not activated, until a reviewed plan exists).
+
+**Also reported by the tool (final integration correction — architect
+decisions D3 #53 / #54), each a `review` finding with ids only, never text:**
+
+| Code | Meaning | Decision |
+|---|---|---|
+| `boq-text-over-estimate-bound` (reason = the field) | An active BOQ item whose description (> 1,000), section or cost-code name (> 200) or item number (> 40 characters) an estimate cannot store | **Not truncated or rewritten.** Estimating refuses that item clearly (`text-too-long`, naming it); the company shortens it on the BOQ tab if it wants an estimate. The ADR-81 transfer is unaffected. General BOQ text hardening is Phase 3 (D3 #53) |
+| `boq-key-over-estimate-bound` | An item id or cost-code id over 128, or a unit over 40 characters | Refused by estimating as `invalid-source`; list for the Product Owner |
+| `boq-over-estimate-item-limit` (reason = count) | A project with more than 5,000 active BOQ items | That project uses the ADR-81 transfer without an estimate |
+| `budget-line-estimate-provenance-unexpected` | A budget line already naming an estimate handover — impossible before the cutover | **Stop and report** (a stage-A stop condition) |
+| `po-preparer-unrecorded` / `tender-preparer-unrecorded` (reason = status) | An open PO (draft / pending approval) or tender package (draft / issued) with no recorded preparer | **No actor is fabricated** (D3 #54). With strict segregation OFF (the default) nothing changes. If a company later asks for strict mode: a DRAFT needs one material save first; an ISSUED package or PENDING_APPROVAL PO uses the existing cancel-and-reissue workflow. The approval-policy tool lists them again in its dry run |
+
+The report also carries per project `boq` (`active`, `overItemLimit`,
+`textOverBound`, `keyOverBound`), `budgetLinesWithEstimateProvenance` and
+`openDocumentsWithUnrecordedPreparer`. **Stop conditions add:**
+`budgetLinesWithEstimateProvenance` is 0 everywhere.
+
+**Release prerequisite — non-zero history in the TEST company** (the Phase 1
+architect ruling applied to Phase 2). Before Stage B, in the acceptance
+company, through the released build: a PO with a posted supplier invoice, a
+posted payment allocated to it, a posted credit note and retention release on
+a retained invoice, one open claim and one approved claim, a submitted
+variation. Record the figures. The Stage D inventory must show them, and the
+TEST baseline at Stage G must reproduce them exactly.
+
+**Monitoring, Stage A** (separately authorised): the four metrics and the
+five Stage-A policies, exactly as `ops/monitoring/phase2/README.md` →
+*Creation*. They watch services that do not exist yet; that is harmless.
+
+### Stage B — Functions, every switch OFF
+
+At the merged `main` commit, from `frontend/` (JDK 21+, Node 22), after the
+preflight (`npm ci`, both lints, `test:unit`, `functions:test`,
+`rules:transitional:check`, every `functions:*-calc:check`, `test:rules`,
+`test:functions`, `build`):
+
+    firebase deploy --project constrapp-69b5d --only functions:team:createVariation,functions:team:updateVariationDraft,functions:team:approveVariation,functions:team:applyVariationCommitment,functions:team:progressClaimOperation,functions:team:supplierInvoiceOperation,functions:team:supplierSettlementOperation,functions:team:postClientRefund,functions:team:voidClientRefund,functions:team:postClientReceiptApplication,functions:team:voidClientReceiptApplication,functions:team:voidClientInvoice,functions:team:contractValueOperation,functions:team:estimateOperation,functions:team:postClientCreditNote,functions:team:voidClientCreditNote,functions:team:postClientRetentionRelease,functions:team:voidClientRetentionRelease,functions:team:postClientReceipt,functions:team:voidClientReceipt,functions:team:approveFinalAccount,functions:team:transferBoqToBudget
+
+**Every filter names the `team` codebase** (`frontend/firebase.json`; the only
+Functions codebase): `functions:<name>` without it matches nothing (the
+Phase 1 Step A lesson). Never deploy all Functions as a workaround.
+
+Verify (read only): 22 services serving a new revision built from the merged
+commit (source generation, as for M2-A2 Stage B); each new service carries the
+five switches `false`; each has the same invoker binding as
+`approvefinalaccount`; the eight team services and `processfilelinkrevocations`
+keep their previous revision names. The released bundle calls none of the new
+callables; the eight changed ones keep serving it. **Gate before this stage:**
+evidence that the released bundle's Phase 1 requests (receipts, credit notes,
+releases, Final Account, BOQ transfer without an estimate) are accepted
+unchanged by the new code — cite the emulator suites in the release record. **Fully reversible:** redeploy the previous source of the
+eight changed callables; the new ones refuse everything.
+
+### Stage C — the maintenance restriction (announce, then it begins at Stage D)
+
+Announce before Stage D: *"Variations, progress claims, supplier invoices,
+supplier credit notes, retention releases, supplier payments, client refunds
+and receipt applications, client invoice voids, contract-value corrections and
+estimates are moving to server-checked processing. From <time> they can be
+viewed but not created or changed until your company is switched over.
+Nothing already recorded is affected. Receipts, client credit notes and
+retention releases, the Final Account and the BOQ-to-budget transfer are
+unaffected."*
+
+What a user of an INACTIVE company sees:
+
+- **On the released (old) bundle, after Stage D:** any write to those
+  registers is refused — *"You do not have permission to do this. Nothing was
+  saved."* — and nothing is saved. A reload after Stage E brings the notice.
+- **On the new bundle (Stage E onward):** the registers open read-only with
+  the notice *"Read-only during the commercial upgrade"* (the text above,
+  `src/lib/commercialActivation.js`); create, edit, approve, post and void
+  actions are not offered; a forged call is refused by the callable
+  (`commercial-completion-not-activated`) and by the Rules. The client
+  lifecycle writes that remain on these registers — the claim submit and the
+  variation submit / reject / withdraw — are refused **by the Rules** for an
+  inactive company (`commercialActive`, ADR-98 final integration correction),
+  so no Phase 2 lifecycle mutation is possible while inactive, from any client.
+- **Still available** to an inactive company: receipt post and void, client
+  credit notes and retention releases (where Phase 1 activated it), Final
+  Account preparation and approval, the BOQ-to-working-budget transfer
+  without an estimate, and every read, report, dashboard and export.
+- **Not available** while inactive, including on the old bundle: the void of
+  an ISSUED client invoice (now `voidClientInvoice`, a Phase 2 operation); a
+  DRAFT invoice can still be voided.
+
+The restriction ends for the TEST company at Stage F and for every other
+company at its own Stage H activation. Its length for the production customer
+is the time acceptance takes, not a fixed figure.
+
+### Stage D — FINAL Rules, then propagation checks. The restriction begins.
+
+    firebase deploy --project constrapp-69b5d --only firestore:rules
+
+A compiled-size refusal (HTTP 400) leaves the previous ruleset active — stop
+and report; the restriction has not begun. Then, read only:
+
+1. **The published ruleset equals `main`'s file.** From the repository root:
+
+       T=$(gcloud auth print-access-token)
+       R=$(curl -s -H "Authorization: Bearer $T" https://firebaserules.googleapis.com/v1/projects/constrapp-69b5d/releases/cloud.firestore | jq -r .rulesetName)
+       curl -s -H "Authorization: Bearer $T" "https://firebaserules.googleapis.com/v1/$R" | jq -r '.source.files[0].content' > /tmp/published.rules
+       cmp /tmp/published.rules frontend/firestore.rules && wc -c frontend/firestore.rules
+
+   `cmp` silent = byte-identical. Record the ruleset name, its create time and
+   the byte count (or use the console method in *Verifying which rules version
+   is published*).
+2. **Wait 10 minutes** from the publish (Firebase's propagation time to every
+   active listener). Writes in flight at the publish either committed under
+   the old Rules — and are part of the history the baselines will read — or
+   were refused.
+3. **Probes, TEST company only**, with the released build: create a variation
+   draft, edit a claim draft, post a supplier payment, void an issued client
+   invoice — each refused, nothing saved. A receipt post (trusted callable)
+   still works.
+4. **Frozen history:** rerun Stage A's two inventories
+   (`phase2-inventory-D*.json`). The counts are those of Stage A plus the
+   writes made in between; this is the history every baseline will reproduce.
+
+From here, recovery is **forward only** for the Rules (below).
+
+### Stage E — Hosting, and a verified compatible bundle
+
+    npm run build && firebase deploy --project constrapp-69b5d --only hosting
+
+Verify: the bundle served is the build of the merged commit —
+
+    curl -s https://app.constrap.com/ | grep -o 'assets/index-[A-Za-z0-9_-]*\.js'
+    grep -o 'assets/index-[A-Za-z0-9_-]*\.js' dist/index.html
+
+must print the same name (and the same on `https://constrapp-69b5d.web.app/`).
+`index.html` is served with `cache-control: max-age=3600`: confirm the bundle
+name in the page (`document.scripts`) before any browser check; users with an
+old tab need a reload, and fail closed until then. With the switches off and
+no company active, every user sees the maintenance notice on the Phase 2
+registers; Phase 1 works.
+
+### Stage F — switches on, then the TEST company only
+
+1. **The switch commit** — the five values `true` and their pins (see
+   *Configuration*), on its own branch, merged `--no-ff`; guard with
+   `git diff --shortstat` (only `.env.constrapp-69b5d` and the pin files) and
+   check that no other value changed; **Azure `main` green**.
+2. **Gate:** Stage D is verified (ruleset equals `main`, 10 minutes elapsed).
+3. Redeploy the thirteen SWITCHED callables (not `voidClientInvoice`, whose
+   switch is already on; not the eight changed ones):
+
+       firebase deploy --project constrapp-69b5d --only functions:team:createVariation,functions:team:updateVariationDraft,functions:team:approveVariation,functions:team:applyVariationCommitment,functions:team:progressClaimOperation,functions:team:supplierInvoiceOperation,functions:team:supplierSettlementOperation,functions:team:postClientRefund,functions:team:voidClientRefund,functions:team:postClientReceiptApplication,functions:team:voidClientReceiptApplication,functions:team:contractValueOperation,functions:team:estimateOperation
+
+   Verify (read only): each carries its switch `true`. Every company is still
+   inactive, so every call is still refused — now with
+   `commercial-completion-not-activated` instead of `…-disabled`.
+4. **Monitoring, Stage F** (authorised): the server-failure and request-surge
+   policies (`ops/monitoring/phase2/README.md`).
+5. **Activate the TEST company.** From `frontend/functions/`, with your own
+   application-default login — first the dry run, then the same with
+   `--apply`:
+
+       node scripts/set-commercial-completion.mjs --project constrapp-69b5d --company <acceptance company id> --enable --reason "Phase 2 cutover Stage F: acceptance company"
+       node scripts/set-commercial-completion.mjs --project constrapp-69b5d --company <acceptance company id> --enable --reason "Phase 2 cutover Stage F: acceptance company" --apply
+
+   Expect *"Applied, with one audit event (company.commercial_completion_set)"*.
+   Verify read only: `node ops/recovery/phase2-inventory.mjs --project
+   constrapp-69b5d --summary` shows exactly one company with
+   `commercialCompletion=true`; one audit event; nothing else changed. The
+   production customer's company shows `absent`, no marker and no ledger.
+
+### Stage G — consolidated isolated acceptance (TEST company; new records; separately authorised)
+
+1. **Release identity** — the 22 services, the ruleset (byte-identical) and
+   the Hosting bundle, each against the merged commit; the switch values; one
+   company activated.
+2. **Baselines** — the first supplier-finance operation on the project holding
+   the prerequisite history establishes its baseline: the marker `complete`
+   with counts equal to the Stage D inventory for that project;
+   `phase2-inventory.mjs --company <TEST>` then shows
+   `ledgerReconciliation.differing` 0 (the stored ledgers equal the ledgers
+   recomputed from the registers, to the cent); its source and ledger digests
+   recomputed read-only. A project with no history: an established-zero
+   marker.
+3. **One operation of every family** — variation create / edit / approve /
+   apply; claim create / approve / reject and the pairing; supplier invoice
+   approve / post / cancel; credit note, retention release and payment post
+   and void (including a refused over-allocation and a refused dependent
+   void); client refund and application post and void; issued-invoice void
+   refused with money, allowed without; contract-value propose / approve;
+   estimate build, approval by a second person with segregation enabled on
+   the TEST company only (`set-approval-policy.mjs`, dry run then `--apply`),
+   transfer with the estimate, and drift shown after a BOQ change.
+4. **Refusals, observed** — an old-bundle tab refused; a direct SDK write of an
+   old shape refused; with a second, INACTIVE test company (or the production
+   customer's evidence through the inventory only — no action is taken in the
+   customer's company), `commercial-completion-not-activated` and no baseline.
+5. **Phase 1 unchanged** — a receipt, a client credit note and a Final Account
+   approval in the TEST company; an existing regression fixture compared before
+   Stage B and after Stage F (no figure changed).
+6. **Monitoring** — the refusals-by-code metric shows the probes' codes; no
+   alerting policy fired except on a deliberately produced condition.
+
+**Stop for the architect's acceptance.** If anything does not reconcile: leave
+every other company inactive, deactivate the TEST company if needed (a brake),
+report the finding; nothing of the production customer's has been touched.
+
+### Stage H — general availability, company by company, after approval
+
+For each company the Product Owner approves:
+
+1. `node ops/recovery/phase2-inventory.mjs --project constrapp-69b5d --company <companyId>` — its findings reviewed;
+   `supplierBaselinePreview.outcome` is `would-establish` for every project
+   (a `would-refuse` project needs a reviewed plan first).
+2. From `frontend/functions/`: the dry run, then `--apply`:
+
+       node scripts/set-commercial-completion.mjs --project constrapp-69b5d --company <companyId> --enable --reason "<approval reference>"
+       node scripts/set-commercial-completion.mjs --project constrapp-69b5d --company <companyId> --enable --reason "<approval reference>" --apply
+
+3. Verify read only: the flag, exactly one audit event, nothing else changed.
+   No deploy. The company's baselines are established by its first genuine
+   operation on each project — never by an operator, never asked of a user.
+4. After the first operations: rerun the inventory for the company —
+   `ledgerReconciliation.differing` 0 for every project with a `complete`
+   marker, every `inconsistent` ledger listed with its reason for the Product
+   Owner.
+
+**General-availability criteria** — all of: Stages A–G passed and recorded;
+no `inconsistent` ledger left unexplained; no open P1/P2 defect from the
+acceptance; the monitoring in place; the architect's acceptance of the
+production evidence.
+
+### Stage I — production verification and closeout (read only)
+
+- Deployed sources of the 22 services identical to `main`; the published
+  ruleset byte-identical to `main`'s file; the Hosting bundle equal to the
+  build of `main`.
+- `gcloud monitoring policies list --filter='userLabels.programme="phase2"'`:
+  seven policies, enabled, with the channel; four `phase2_*` metrics.
+- **Independent financial reconciliation** for every activated company:
+  `phase2-inventory.mjs --company <id>` — `ledgerReconciliation.differing` 0,
+  `findingsBySeverity.inconsistent` explained; the client receipt baseline
+  markers compared with the Phase 1 inventory.
+- Watch for 72 hours: the Phase 2 policies; `supplier-finance-busy` and
+  `…-baseline-invalid` in `phase2_refusals_by_code`; markers left `building`
+  (inventory); `approval-segregation-required` on a company that did not
+  enable segregation (must be zero).
+- Docs closeout (status lines, release record, TESTING.md, tracker) on its own
+  branch.
+
+### Abuse, concurrency and cost (assessed 28 November 2026; no option changed)
+
+- **Who can call.** App Check is enforced on all 22 (a request without a valid
+  token is refused before the handler); every handler then requires a
+  signed-in, ACTIVE member of the project's company in a financial role, read
+  from `users/{uid}` and re-read inside each transaction, plus the company's
+  activation. App Check is not an abuse control against such a member: tokens
+  are not single-use (`consumeAppCheckToken` is not set), so a member's own
+  browser session can be scripted. There is **no per-user rate limit**
+  (`lib/rateLimit.js` serves invitations only).
+- **Ceiling.** `maxInstances` (2–5) × the default 80 concurrent requests per
+  instance: at most 400 requests in flight per service (240 for estimating,
+  160 for contract value). That bounds cost and blast radius per service, not
+  per user.
+- **A member hammering one operation** gets typed refusals, or contends with
+  colleagues on the same ledger: every posting and void on an invoice runs
+  through that invoice's ledger, every claim on a PO through that PO's claim
+  ledger, every numbered create through the company counter. After the SDK's
+  five attempts the loser is refused `…-busy` with nothing written. The
+  effect is confined to the member's own company and project and is
+  attributable (`uid` on every line). Detection: the request-surge and
+  contention policies. Response: deactivate the member (immediate), pull the
+  family's brake, or deactivate the company.
+- **Baseline cost.** A project's first supplier-finance operation reads its
+  five registers twice; a project whose history the baseline REFUSES
+  (missing source) re-reads them on every later attempt, because nothing is
+  written. At today's volumes (hundreds of documents in the whole database)
+  that is negligible; the inventory makes every refusing project known before
+  its company is activated.
+- **Memory and time.** An estimate build reads up to 5,000 BOQ items and their
+  breakdowns into one 512 MiB instance (ADR-97 measured one build); with the
+  default concurrency, several concurrent maximum-size builds on one instance
+  could exceed the memory limit (the instance is killed; in-flight builds stay
+  `building`, never approvable, and resume). Leases (baseline 150 s, estimate
+  180 s) exceed the 120 s timeouts, so a live run is never taken over; no test
+  pins that relation.
+- **Recommended before general availability, not done here:** a `concurrency`
+  bound on `estimateOperation` (and possibly the supplier-finance services)
+  chosen from a measured build footprint; a test pinning lease > timeout; the
+  two missing switch pins; the log additions listed in
+  `ops/monitoring/phase2/README.md` → *Gaps*. None is needed for the TEST-only
+  activation at current volumes.
+
+### Monitoring
+
+`ops/monitoring/phase2/` (README there): server failures (5xx) per callable;
+any ERROR line; baseline refusals; financial-inconsistency refusals; repeated
+contention / abandoned initialisation; repeated timeouts and Firestore
+transport failures; request surges. Ordinary business refusals, inactive
+companies and switched-off families never page — every code in `errors.js` is
+classified once in `phase2-refusal-codes.json`. Markers left `building` have
+no log signal: the inventory reports them.
+
+### Recovery and fix-forward
+
+**Disabling a switch or deactivating a company is a brake, not a reversal of
+financial data.** It stops NEW operations; every posting, ledger movement,
+baseline, estimate revision and audit event stays, and every figure continues
+to include them. Never delete or edit a historical record, ledger or marker to
+"undo" anything.
+
+| Situation | Action |
+|---|---|
+| Stages A–C | Fully reversible: the previous source of the eight changed callables; the new ones refuse everything |
+| After Stage D, before any company is activated | Hosting may go back to the previous release; the previous Rules may be restored only while no supplier baseline, Phase 2 ledger or Phase 2 record exists anywhere (inventory: all zero) — the restriction then ends |
+| **After any activation (a baseline or a Phase 2 record may exist)** | **Never restore the previous Rules** (an old bundle would write history the ledgers do not see) and never the previous Hosting. Fix forward. |
+| One company misbehaves | `set-commercial-completion.mjs --company <id> --disable --reason "…"` (dry run, then `--apply`): its Phase 2 registers return to read-only; in-flight operations are ordered against the change by Firestore |
+| One family misbehaves | Its switch `false` (value + pin), redeploy those callables only: refused for everyone with *"… not enabled / temporarily unavailable"* |
+| A baseline refusal (`…-baseline-invalid`, `…-too-large`) | That family stays refused in that project only; nothing was written. Report the code and the documents the inventory names; no repair without a reviewed, separately authorised plan (ADR-94 forbids an unrestricted repair mechanism) |
+| A wrong record | Its supported void, rejection or withdrawal |
+
+Point-in-time recovery (enabled 18 November 2026) remains the disaster
+backstop: restoring discards every later write in the database and is an
+incident decision, not a rollback step.
+
+### Impact on existing users and Phase 1 functionality
+
+- **Activated companies:** the Phase 2 registers are created, edited, approved,
+  posted and voided through the server, with the clearer messages and the
+  protections of ADR-90 to ADR-97.
+- **Inactive companies:** the Phase 2 registers are READ-ONLY from Stage D
+  until activation (*Stage C*). Receipts, client credit notes and retention
+  releases, the Final Account and the BOQ transfer without an estimate work
+  as today; only the void of an ISSUED client invoice waits for activation.
+- **Everyone:** an old tab must be reloaded after Stage E; until then it fails
+  closed. No historical document is rewritten; reports and figures read the
+  same registers as before.

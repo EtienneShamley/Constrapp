@@ -453,3 +453,7 @@ export function awardedBidValue(pkg, bids) {
   const assessment = assessBid(bid, pkg)
   return { available: assessment.valid, total: assessment.total, bid }
 }
+
+// D4 material-edit provenance (D3 #46): a draft edit changing any of these is
+// MATERIAL (the Rules stamp its editor); notes and the closing date are not.
+export const TENDER_MATERIAL_KEYS = ['name', 'description', 'scope', 'costCodes']

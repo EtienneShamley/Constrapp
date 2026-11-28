@@ -5,7 +5,11 @@ import {
   GST_RATE, roundMoney, lineTotal, poTotals,
   committedByCostCode, remainingCommittedByCostCode,
   EMPTY_PO_FORM_LINE, poLineToForm, buildPoLineItem, validatePoDraft,
+  PO_MATERIAL_KEYS, materialEditStamp, materialEditMoved, buildPurchaseOrderDocument,
 } from '../../src/lib/purchaseOrders'
+import { TENDER_MATERIAL_KEYS } from '../../src/lib/tenders'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { buildForecastRows } from '../../src/lib/forecast'
 import { computeMargin, projectForecastTotals } from '../../src/lib/margin'
 
@@ -520,5 +524,107 @@ describe('poTotals vs the rules’ whole-cent GST check (ADR-57)', () => {
     for (const c of [296912165, 8809540085, 4767333605, 1119047035]) {   // sampled large boundaries where the app rounds down
       expect(rulesAccept(poTotals([{ lineTotal: c / 100 }]))).toBe(true)
     }
+  })
+})
+
+// ── D4 material-edit provenance (ADR-96, D3 #46) ─────────────────────────────
+
+describe('D4 — material keys mirror the Rules exactly', () => {
+  const rules = readFileSync(fileURLToPath(new URL('../../firestore.rules', import.meta.url)), 'utf8')
+  const stampedLists = [...rules.matchAll(/materialStamped\((\[[^\]]*\])\)/g)].map(m => JSON.parse(m[1].replace(/'/g, '"')))
+
+  it('PO_MATERIAL_KEYS is description, the lines and the derived header — never notes', () => {
+    expect(PO_MATERIAL_KEYS).toEqual(['description', 'lineItems', 'subtotal', 'gst', 'total'])
+    expect(PO_MATERIAL_KEYS).not.toContain('notes')
+  })
+  it('TENDER_MATERIAL_KEYS is name, description, scope and cost codes — never notes or the closing date', () => {
+    expect(TENDER_MATERIAL_KEYS).toEqual(['name', 'description', 'scope', 'costCodes'])
+    expect(TENDER_MATERIAL_KEYS).not.toContain('notes')
+    expect(TENDER_MATERIAL_KEYS).not.toContain('closingDate')
+  })
+  it('the Rules call materialStamped with exactly these two lists (purchase orders, tender packages)', () => {
+    expect(stampedLists).toEqual([PO_MATERIAL_KEYS, TENDER_MATERIAL_KEYS])
+  })
+  it('a created PO carries the creator as its material editor at the injected server time', () => {
+    const NOW = Symbol('now')
+    const d = buildPurchaseOrderDocument({ poNumber: 'PO-0001', supplierName: 'A', supplierId: null, description: '', notes: '', lineItems: [], currency: 'AUD', uid: 'u7', now: NOW })
+    expect(d.lastMaterialEditBy).toBe('u7')
+    expect(d.lastMaterialEditAt).toBe(NOW)
+  })
+})
+
+describe('D4 — materialEditStamp', () => {
+  it('KEY ORDER does not make an edit material (Firestore maps are unordered; the Rules compare values)', () => {
+    const live = { description: 'd', lineItems: [{ a: 1, b: 2 }], subtotal: 1, gst: 0.1, total: 1.1 }
+    const next = { description: 'd', lineItems: [{ b: 2, a: 1 }], subtotal: 1, gst: 0.1, total: 1.1, notes: 'n' }
+    expect(materialEditStamp(live, next, PO_MATERIAL_KEYS, 'u2', 'NOW')).toEqual({})
+  })
+
+  const NOW = Symbol('serverTimestamp()')
+  const LIVE = deepFreeze({
+    description: 'Slab', notes: 'n', lineItems: [{ costCodeId: 'cc1', qty: 1, unitPrice: 10, lineTotal: 10 }],
+    subtotal: 10, gst: 1, total: 11, lastMaterialEditBy: 'u_creator', lastMaterialEditAt: 't0',
+  })
+  const STAMP = { lastMaterialEditBy: 'u2', lastMaterialEditAt: NOW }
+  const stamp = (next, live = LIVE, keys = PO_MATERIAL_KEYS) => materialEditStamp(live, next, keys, 'u2', NOW)
+
+  it('MATERIAL — any changed material key stamps the editor at the injected time', () => {
+    expect(stamp({ description: 'Slab v2' })).toEqual(STAMP)
+    expect(stamp({ lineItems: [{ costCodeId: 'cc1', qty: 2, unitPrice: 10, lineTotal: 20 }] })).toEqual(STAMP)
+    expect(stamp({ subtotal: 20 })).toEqual(STAMP)
+    expect(stamp({ gst: 2 })).toEqual(STAMP)
+    expect(stamp({ total: 22 })).toEqual(STAMP)
+  })
+  it('COSMETIC — a notes-only change writes no stamp', () => {
+    expect(stamp({ notes: 'changed' })).toEqual({})
+  })
+  it('MIXED — notes plus a material change stamps the editor', () => {
+    expect(stamp({ notes: 'changed', description: 'Slab v2' })).toEqual(STAMP)
+  })
+  it('UNCHANGED — the full edit payload with every value as stored writes no stamp', () => {
+    const { description, notes, lineItems, subtotal, gst, total } = LIVE
+    expect(stamp({ description, notes, lineItems: lineItems.map(l => ({ ...l })), subtotal, gst, total })).toEqual({})
+  })
+  it('a material key absent from the payload is not a change; a key absent from a legacy document is', () => {
+    expect(stamp({})).toEqual({})
+    expect(stamp({ description: '' }, { notes: 'legacy, no description key' })).toEqual(STAMP)
+    expect(stamp({ description: 'x' }, null)).toEqual(STAMP)
+  })
+  it('null and undefined are the same value (no spurious stamp)', () => {
+    expect(stamp({ description: null }, { description: undefined })).toEqual({})
+  })
+  it('tender keys: scope / costCodes are material; notes / closingDate are cosmetic', () => {
+    const pkg = { name: 'Steel', description: '', scope: 'S', costCodes: [{ costCodeId: 'cc1', costCodeName: 'Steel' }], notes: '', closingDate: '' }
+    const t = (next) => materialEditStamp(pkg, next, TENDER_MATERIAL_KEYS, 'u2', NOW)
+    expect(t({ ...pkg, notes: 'n', closingDate: '2026-09-01' })).toEqual({})
+    expect(t({ ...pkg, scope: 'S2' })).toEqual(STAMP)
+    expect(t({ ...pkg, costCodes: [{ costCodeId: 'cc2', costCodeName: 'Metal' }] })).toEqual(STAMP)
+    expect(t({ ...pkg, name: 'Steel', costCodes: [{ costCodeId: 'cc1', costCodeName: 'Steel' }] })).toEqual({})
+  })
+  it('is pure — neither input is mutated', () => {
+    const next = deepFreeze({ description: 'Slab v2', notes: 'n' })
+    expect(() => stamp(next)).not.toThrow()
+  })
+})
+
+describe('D4 — materialEditMoved', () => {
+  const ts = (ms) => ({ toMillis: () => ms })
+  it('false when the reviewed copy has the live stamp (by and at, Timestamps compared by value)', () => {
+    expect(materialEditMoved({ lastMaterialEditBy: 'u1', lastMaterialEditAt: ts(5) }, { lastMaterialEditBy: 'u1', lastMaterialEditAt: ts(5) })).toBe(false)
+  })
+  it('true when another editor — or the same editor later — has made a material edit since', () => {
+    expect(materialEditMoved({ lastMaterialEditBy: 'u1', lastMaterialEditAt: ts(5) }, { lastMaterialEditBy: 'u2', lastMaterialEditAt: ts(9) })).toBe(true)
+    expect(materialEditMoved({ lastMaterialEditBy: 'u1', lastMaterialEditAt: ts(5) }, { lastMaterialEditBy: 'u1', lastMaterialEditAt: ts(9) })).toBe(true)
+    expect(materialEditMoved({ lastMaterialEditBy: 'u1', lastMaterialEditAt: ts(5) }, { lastMaterialEditBy: 'u2', lastMaterialEditAt: ts(5) })).toBe(true)
+  })
+  it('legacy: no stamp on either side is unchanged; a stamp established since is a move', () => {
+    expect(materialEditMoved({}, {})).toBe(false)
+    expect(materialEditMoved({ lastMaterialEditBy: null }, { lastMaterialEditBy: undefined })).toBe(false)
+    expect(materialEditMoved({}, { lastMaterialEditBy: 'u1', lastMaterialEditAt: ts(1) })).toBe(true)
+  })
+  it('plain (non-Timestamp) values compare by identity; missing copies are tolerated', () => {
+    expect(materialEditMoved({ lastMaterialEditBy: 'u1', lastMaterialEditAt: 't' }, { lastMaterialEditBy: 'u1', lastMaterialEditAt: 't' })).toBe(false)
+    expect(materialEditMoved({ lastMaterialEditBy: 'u1', lastMaterialEditAt: 't' }, { lastMaterialEditBy: 'u1', lastMaterialEditAt: 'u' })).toBe(true)
+    expect(materialEditMoved(undefined, undefined)).toBe(false)
   })
 })

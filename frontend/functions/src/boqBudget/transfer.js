@@ -1,4 +1,5 @@
 import { CODE, fail } from '../lib/errors.js'
+import { commercialActivated } from '../lib/commercialActivation.js'
 import { userRef, assertActiveRole } from '../lib/authz.js'
 import { AUDIT, auditInTx } from '../lib/audit.js'
 import { FieldValue } from '../lib/firebaseAdmin.js'
@@ -92,7 +93,7 @@ async function runTransfer(db, log, context, body, attemptsSoFar) {
   }
 }
 
-export async function transferBoqToBudget(deps, { uid, projectId, reviewKey, setToZero, requestId = null }) {
+export async function transferBoqToBudget(deps, { uid, projectId, reviewKey, setToZero, estimateId = null, requestId = null }) {
   const { db, now, log, hooks = {}, sourceLimit = SOURCE_DOCUMENT_LIMIT } = deps
   let attempts = 0
 
@@ -120,7 +121,25 @@ export async function transferBoqToBudget(deps, { uid, projectId, reviewKey, set
     const currencyCode = calc.resolveProjectCurrency(project, { id: companySnap.id, ...companySnap.data() })
     const inputs = { boqItems: sources.boqItems, budgetLines: sources.budgetLines, costCodes: sources.costCodes, currencyCode }
     const proposal = calc.buildTransferProposal(inputs)
-    const requestKey = calc.transferRequestKey(reviewKey, setToZero)
+    const requestKey = calc.transferRequestKey(reviewKey, setToZero, estimateId)
+
+    // ADR-97 — the OPTIONAL estimate provenance. A transfer is recorded as the
+    // handover of an approved estimate revision ONLY while the live BOQ this
+    // transaction read is still the BOQ that revision priced; otherwise it is
+    // refused (the transfer stays available without the claim). The transfer
+    // itself is unchanged: it moves the BOQ's cost-coded COST amounts — never
+    // a selling price — and never needs an estimate.
+    let estimate = null
+    if (estimateId !== null) {
+      // Recording an estimate's handover is Phase 2: the company must be
+      // activated (read in this transaction). A transfer WITHOUT an estimate is
+      // the ADR-81 workflow and is never gated.
+      if (!commercialActivated(companySnap.data())) fail(CODE.COMMERCIAL_NOT_ACTIVATED)
+      const estimateSnap = await tx.get(projectRef.collection('estimates').doc(estimateId))
+      const header = estimateSnap.exists ? estimateSnap.data() : null
+      if (!header || header.state !== 'approved' || typeof header.sourceKey !== 'string') fail(CODE.BOQ_TRANSFER_ESTIMATE_INVALID)
+      estimate = { estimateId, revisionNumber: header.revisionNumber ?? null, number: header.number ?? null, sourceKey: header.sourceKey, contentSha256: header.contentSha256 ?? null }
+    }
 
     // 5. The review guard.
     if (proposal.reviewKey !== reviewKey) {
@@ -128,6 +147,7 @@ export async function transferBoqToBudget(deps, { uid, projectId, reviewKey, set
       if (applied) return { outcome: calc.TRANSFER_OUTCOME.ALREADY_APPLIED, companyId, byCaller: applied.by === uid }
       fail(CODE.BOQ_TRANSFER_STALE)
     }
+    if (estimate && calc.estimateSourceKey(sources.boqItems) !== estimate.sourceKey) fail(CODE.BOQ_TRANSFER_ESTIMATE_DRIFT)
     const planned = calc.transferOperations(proposal, setToZero)
     if (!planned.ok) fail(CODE.BOQ_TRANSFER_BLOCKED, { costCodeIds: planned.invalidZero })
     const summary = calc.transferSummary(proposal, setToZero)
@@ -152,6 +172,8 @@ export async function transferBoqToBudget(deps, { uid, projectId, reviewKey, set
         transferCount: (Number.isInteger(previous?.boqSource?.latest?.transferCount) ? previous.boqSource.latest.transferCount : 0) + 1,
         requestKey,
         resultKey,
+        // ADR-97: present ONLY on a transfer verified against an approved estimate revision.
+        ...(estimate ? { estimate } : {}),
       }
       if (op.type === calc.TRANSFER_OPERATION.CREATE) {
         // tx.create fails if the document exists: a second BOQ-sourced line
@@ -195,7 +217,7 @@ export async function transferBoqToBudget(deps, { uid, projectId, reviewKey, set
         projectId, currency: currencyCode,
         created: summary.createCount, refreshed: summary.refreshCount, zeroed: summary.zeroCount,
         amount: calc.centsToAmount(summary.afterCents),
-        requestKey, resultKey,
+        requestKey, resultKey, estimate,
         lines: planned.operations.map(op => ({
           costCodeId: op.costCodeId, operation: op.type,
           from: op.fromCents === null ? null : calc.centsToAmount(op.fromCents), to: op.amount,
@@ -218,6 +240,7 @@ export async function transferBoqToBudget(deps, { uid, projectId, reviewKey, set
     after: s ? calc.centsToAmount(s.afterCents) : null,
     resultKey: result.resultKey ?? null,
     byCaller: result.byCaller ?? null,
+    estimateId: result.outcome === calc.TRANSFER_OUTCOME.UNCHANGED ? null : estimateId,
     attempts,
   }
 }

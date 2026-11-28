@@ -320,6 +320,8 @@ describe('receiptSummary — cash recorded, and how much of it is matched', () =
   it('zeroes out on an empty set', () => {
     expect(receiptSummary([])).toEqual({
       postedCount: 0, postedAmount: 0, allocated: 0, unallocated: 0, draftCount: 0, draftAmount: 0,
+      // Phase 2 step 5: refunds, and net received (= posted − refunded).
+      refunded: 0, netReceived: 0,
     })
   })
 })

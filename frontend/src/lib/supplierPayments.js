@@ -1,6 +1,6 @@
 import { roundMoney } from './purchaseOrders'
 import { SI_STATUS } from './supplierInvoices'
-import { creditedByInvoice } from './supplierCreditNotes'
+import { creditedByInvoice, creditedRetentionByInvoice } from './supplierCreditNotes'
 import {
   PAYMENT_STATUS, PAYMENT_COUNTING_STATUSES, MAX_ALLOCATIONS,
   allocatedTotal, allocationTotals, invoiceBalance, remainingBalance,
@@ -215,6 +215,7 @@ export function invoiceReconciliation(invoice, paidMap = {}, creditedMap = {}, r
 export function supplierInvoiceReconciliationRows(invoices, payments, creditNotes = [], releasedByInvoiceId = {}) {
   const paid = paidByInvoice(payments)
   const credited = creditedByInvoice(creditNotes, invoices)
+  const creditedRetention = creditedRetentionByInvoice(creditNotes, invoices)
   return postedSupplierInvoices(invoices).map(inv => {
     const released       = roundMoney(safeAmount(releasedByInvoiceId[inv.id]))
     const basis          = payableBasis(inv, released)
@@ -235,7 +236,8 @@ export function supplierInvoiceReconciliationRows(invoices, payments, creditNote
       // Retention still held — never released, never payable. Clamped at zero so
       // an over-release (concurrent posting or a direct SDK write) can never
       // present as negative retention; the register reports it separately.
-      retentionHeld:         Math.max(0, roundMoney(retentionTotal - released)),
+      // ADR-94 (G1): less the retained part of posted credit notes.
+      retentionHeld:         Math.max(0, roundMoney(retentionTotal - released - (creditedRetention[inv.id]?.gross ?? 0))),
       releasedTotal:         released,
       invoicePayableTotal:   roundMoney(safeAmount(inv.payableTotal)),
       payableTotal:          basis,
@@ -347,6 +349,7 @@ export function allocatableSupplierInvoices(invoices, supplierId, supplierName, 
   // Posted credit notes REDUCE what remains payable, so the picker offers the
   // net figure — paying a credited slice would over-reconcile immediately.
   const credited = creditedByInvoice(creditNotes, invoices)
+  const creditedRetention = creditedRetentionByInvoice(creditNotes, invoices)
   return postedSupplierInvoices(invoices)
     .filter(inv => !!supplierId && supplierMatchesInvoice(inv, supplierId, supplierName))
     .map(inv => {
@@ -365,7 +368,7 @@ export function allocatableSupplierInvoices(invoices, supplierId, supplierName, 
         // Released retention is INSIDE payableTotal below — the allocation
         // editor shows retention still HELD so the two never read as the same
         // money twice.
-        retentionHeld:         Math.max(0, roundMoney(retentionTotal - released)),
+        retentionHeld:         Math.max(0, roundMoney(retentionTotal - released - (creditedRetention[inv.id]?.gross ?? 0))),
         releasedTotal:         released,
         invoicePayableTotal:   roundMoney(safeAmount(inv.payableTotal)),
         payableTotal:          payableBasis(inv, released),
@@ -434,7 +437,7 @@ export function invoiceOverPaymentWarnings(allocations, invoices, payments, { ex
       excess,
       message:
         `${inv.invoiceNumber} would be paid beyond its remaining payable by ${excess.toFixed(2)}. ` +
-        'This is allowed — check for a duplicate payment or a supplier credit still to be raised.',
+        'It cannot be posted (ADR-94): reduce the allocation and record the rest of the cash as unallocated.',
     })
   }
   return warnings

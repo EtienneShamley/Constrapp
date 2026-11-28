@@ -77,7 +77,7 @@ const one = (snap) => (snap.exists() ? { id: snap.id, ...snap.data() } : null)
 //   budgetLines, purchaseOrders, progressClaims, supplierInvoices,
 //   supplierCreditNotes, variations, forecastLines, supplierPayments,
 //   retentionReleases, clientInvoices, clientReceipts, clientCreditNotes,
-//   clientRetentionReleases, costCodes
+//   clientRetentionReleases, clientRefunds, clientReceiptApplications, costCodes
 // `refs` — baseline, pointer, and the factories header(id), snapshot(id),
 // adjustments(id) for the approved-budget trio.
 // Returns the `sources` object computeFinalAccount takes. Unreachable →
@@ -85,7 +85,7 @@ const one = (snap) => (snap.exists() ? { id: snap.id, ...snap.data() } : null)
 export const FINAL_ACCOUNT_QUERY_NAMES = [
   'budgetLines', 'purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes', 'variations',
   'forecastLines', 'supplierPayments', 'retentionReleases', 'clientInvoices', 'clientReceipts',
-  'clientCreditNotes', 'clientRetentionReleases', 'costCodes',
+  'clientCreditNotes', 'clientRetentionReleases', 'clientRefunds', 'clientReceiptApplications', 'costCodes',
 ]
 
 export async function readFinalAccountSourcesFromServer({ queries, refs, getDocsFromServer, getDocFromServer }) {
@@ -231,6 +231,8 @@ const CALLABLE_KIND = {
   'no-membership':                 FINAL_ACCOUNT_ERROR.PERMISSION,
   'membership-inactive':           FINAL_ACCOUNT_ERROR.PERMISSION,
   'not-approver':                  FINAL_ACCOUNT_ERROR.PERMISSION,
+  // ADR-96 — approval segregation: the preparer may not approve.
+  'approval-segregation-required': FINAL_ACCOUNT_ERROR.PERMISSION,
   'invalid-argument':              FINAL_ACCOUNT_ERROR.INVALID,
   'not-found':                     FINAL_ACCOUNT_ERROR.MISSING,
   'final-account-not-draft':       FINAL_ACCOUNT_ERROR.STALE,
@@ -271,6 +273,8 @@ export async function runFinalAccountApprove({ call, projectId, seen, acknowledg
     return await call({ projectId, number: seen.number, expectedRevision: activityRevision(seen), acknowledged: true })
   } catch (err) {
     const kind = finalAccountCallableErrorKind(err)
-    throw new FinalAccountWriteError(kind, undefined, err, err?.details?.blockers ? { blockers: err.details.blockers } : null)
+    // ADR-96: a segregation refusal carries the server's explanation.
+    const message = err?.details?.code === 'approval-segregation-required' && typeof err?.message === 'string' ? err.message : undefined
+    throw new FinalAccountWriteError(kind, message, err, err?.details?.blockers ? { blockers: err.details.blockers } : null)
   }
 }

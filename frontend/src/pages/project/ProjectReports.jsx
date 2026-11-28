@@ -23,6 +23,8 @@ import { useClientInvoices } from '../../hooks/useClientInvoices'
 import { useClientReceipts } from '../../hooks/useClientReceipts'
 import { useClientCreditNotes } from '../../hooks/useClientCreditNotes'
 import { useClientRetentionReleases } from '../../hooks/useClientRetentionReleases'
+import { useClientRefunds } from '../../hooks/useClientRefunds'
+import { useClientReceiptApplications } from '../../hooks/useClientReceiptApplications'
 import { resolveBudgetSource, budgetSourceState } from '../../lib/budgetApproval'
 import { FIGURE_STATE, MARGIN_NOT_ESTABLISHED } from '../../lib/projectSnapshot'
 import {
@@ -219,6 +221,10 @@ function CommercialReport({ project, projectId, currencyCode }) {
   const {
     clientRetentionReleases, clientRetentionReleasesLoading, clientRetentionReleasesError,
   } = useClientRetentionReleases(projectId)
+  const { clientRefunds, clientRefundsLoading, clientRefundsError } = useClientRefunds(projectId)
+  const {
+    clientReceiptApplications, clientReceiptApplicationsLoading, clientReceiptApplicationsError,
+  } = useClientReceiptApplications(projectId)
 
   const report = useMemo(() => buildCommercialReport({
     project,
@@ -227,6 +233,7 @@ function CommercialReport({ project, projectId, currencyCode }) {
       budgetLines, approvedBudget, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
       variations, forecastLines, baseline, supplierPayments, retentionReleases,
       clientInvoices, clientReceipts, clientCreditNotes, clientRetentionReleases, costCodes,
+      clientRefunds, clientReceiptApplications,
     },
     sourceStates: {
       budgetLines:         { loading: budgetLinesLoading,         error: budgetLinesError },
@@ -244,12 +251,15 @@ function CommercialReport({ project, projectId, currencyCode }) {
       clientReceipts:      { loading: clientReceiptsLoading,      error: clientReceiptsError },
       clientCreditNotes:   { loading: clientCreditNotesLoading,   error: clientCreditNotesError },
       clientRetentionReleases: { loading: clientRetentionReleasesLoading, error: clientRetentionReleasesError },
+      clientRefunds:       { loading: clientRefundsLoading,       error: clientRefundsError },
+      clientReceiptApplications: { loading: clientReceiptApplicationsLoading, error: clientReceiptApplicationsError },
     },
   }), [
     project, currencyCode,
     budgetLines, approvedBudget, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
     variations, forecastLines, baseline, supplierPayments, retentionReleases, clientInvoices, clientReceipts,
-    clientCreditNotes, clientRetentionReleases, costCodes,
+    clientCreditNotes, clientRetentionReleases, costCodes, clientRefunds, clientReceiptApplications,
+    clientRefundsLoading, clientRefundsError, clientReceiptApplicationsLoading, clientReceiptApplicationsError,
     budgetLinesLoading, budgetLinesError, approvedBudgetLoading, approvedBudgetError,
     purchaseOrdersLoading, purchaseOrdersError, progressClaimsLoading, progressClaimsError,
     supplierInvoicesLoading, supplierInvoicesError, supplierCreditNotesLoading, supplierCreditNotesError,

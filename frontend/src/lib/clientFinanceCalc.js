@@ -17,7 +17,19 @@ export {
   LEDGER_KIND, LEDGER_TOTAL_KEYS, readLedger, ledgerDocument, ledgerInvariantError, ledgerPosition,
   storedLedgerProblem, ledgerStateProblem,
   applyCredit, applyCreditVoid, applyRelease, applyReleaseVoid, applyReceipt, applyReceiptVoid,
+  // Phase 2 step 5 (ADR-95): settlement of client money.
+  netReceivedCents, ledgerRemainingCents, ledgerOwedCents, ledgerRefundableCents, settlementInvariantError,
+  applyApplication, applyApplicationVoid, applyInvoiceRefund, applyInvoiceRefundVoid,
 } from './clientLedger'
+export {
+  SETTLEMENT_STATUS, REFUND_SOURCE, CLIENT_REFUND_DOC_TYPE, CLIENT_APPLICATION_DOC_TYPE,
+  CLIENT_REFUND_COUNTER_ID, CLIENT_APPLICATION_COUNTER_ID, SETTLEMENT_COUNTER_MAX,
+  clientRefundNumberOf, clientApplicationNumberOf, counterAfter,
+  REFUND_REQUEST_KEYS, APPLICATION_REQUEST_KEYS, refundRequestProblem, applicationRequestProblem, requestCents,
+  postedReceiptUnallocatedCents, RECEIPT_LEDGER_KIND, receiptLedgerProblem, readReceiptLedger,
+  receiptAvailableCents, moveReceiptLedger, receiptLedgerStateProblem,
+  buildClientRefund, buildReceiptApplication,
+} from './clientSettlement'
 export { CCN_STATUS, CCN_DOC_TYPE, buildClientCreditNote } from './clientCreditNotes'
 export { CRR_STATUS, CRR_DOC_TYPE, buildClientRetentionRelease } from './clientRetention'
 export {

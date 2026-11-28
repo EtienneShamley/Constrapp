@@ -7,6 +7,7 @@ import { forecastRollups } from './forecast'
 import { resolveBudgetSource, budgetLinesFor, approvedVersionCaption, BUDGET_SOURCE } from './budgetApproval'
 import { contractControl, draftClientInvoices } from './clientInvoices'
 import { receivablesSummary, receiptSummary } from './clientReceipts'
+import { settlementExceptions } from './clientSettlement'
 import { receivableContext } from './clientReceivables'
 import { draftClientCreditNotes, clientCreditExceptions } from './clientCreditNotes'
 import { draftClientRetentionReleases, clientReleaseExceptions } from './clientRetention'
@@ -87,7 +88,11 @@ export const FIGURE_GROUP_LABELS = {
 }
 
 // Reading order. `open: true` marks a recognised outstanding balance: shown and
-// acknowledged, never a blocker and never treated as zero.
+// acknowledged and never treated as zero. Two of them are ALSO blockers, because
+// they are money held for the client rather than a position to acknowledge:
+// `owedToClient` (through OVER_ALLOCATED) and, since Phase 2 step 5,
+// `unallocatedReceipts` (through UNSETTLED_FUNDS) — each must be refunded or
+// applied before a Final Account is approved.
 //
 // THE SET GROWS, AND A REVISION KEEPS THE SET IT WAS APPROVED WITH. A revision
 // approved before a figure existed does not carry its key, is never rewritten
@@ -113,12 +118,12 @@ export const FINAL_ACCOUNT_FIGURES = [
   { key: 'finalProfit',               group: FIGURE_GROUP.RESULT,   basis: FIGURE_BASIS.EX_GST, label: 'Final gross profit', note: 'Final adjusted contract sum − final cost' },
   { key: 'finalMarginPct',            group: FIGURE_GROUP.RESULT,   basis: FIGURE_BASIS.PERCENT, label: 'Final margin', note: 'Final gross profit ÷ final adjusted contract sum', nullable: true },
   { key: 'invoicedToClientGross',     group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Invoiced to client (gross)', note: 'Issued client invoices less posted client credit notes, incl. GST' },
-  { key: 'receivedAgainstInvoices',   group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Received against invoices', note: 'Posted client receipts allocated to issued invoices' },
+  { key: 'receivedAgainstInvoices',   group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Received against invoices', note: 'Posted client receipts and receipt applications allocated to issued invoices, less refunds out of an invoice' },
   { key: 'receivablesOutstanding',    group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Client invoices outstanding', note: 'Issued, less credit notes and retention still held, and not yet matched to a receipt — not cash', open: true },
   { key: 'clientRetentionHeld',       group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Client retention held', note: 'Billed and withheld by the client — not receivable until released', open: true },
   { key: 'owedToClient',              group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Owed to client', note: 'Received beyond what is now receivable — a client credit balance', open: true },
-  { key: 'cashReceived',              group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Cash received', note: 'All posted client receipts' },
-  { key: 'unallocatedReceipts',       group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Unallocated client receipts', note: 'Received but not matched to an invoice', open: true },
+  { key: 'cashReceived',              group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Cash received', note: 'All posted client receipts less posted refunds to the client' },
+  { key: 'unallocatedReceipts',       group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Unallocated client receipts', note: 'Received but not matched to an invoice, applied or refunded', open: true },
   { key: 'cashPaid',                  group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Cash paid', note: 'All posted supplier payments' },
   { key: 'payablesOutstanding',       group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Supplier invoices unpaid', note: 'Posted and still payable — not cash', open: true },
   { key: 'unallocatedPayments',       group: FIGURE_GROUP.BALANCES, basis: FIGURE_BASIS.GROSS,  label: 'Unallocated supplier payments', note: 'Paid but not matched to an invoice', open: true },
@@ -134,6 +139,8 @@ export const FINAL_ACCOUNT_COUNTED_SOURCES = [
   'purchaseOrders', 'progressClaims', 'supplierInvoices', 'supplierCreditNotes', 'variations',
   'forecastLines', 'supplierPayments', 'retentionReleases', 'clientInvoices', 'clientReceipts',
   'clientCreditNotes', 'clientRetentionReleases',
+  // Phase 2 step 5 (a revision approved before it carries neither key).
+  'clientRefunds', 'clientReceiptApplications',
 ]
 
 // ── Readiness ────────────────────────────────────────────────────────────────
@@ -158,6 +165,8 @@ export const BLOCKER = {
   CLIENT_CREDIT_EXCEPTIONS: 'clientCreditExceptions',
   CLIENT_RELEASE_EXCEPTIONS: 'clientReleaseExceptions',
   OVER_ALLOCATED:       'overAllocatedInvoices',
+  UNSETTLED_FUNDS:      'unsettledClientFunds',
+  SETTLEMENT_EXCEPTIONS: 'clientSettlementExceptions',
   FORECAST_INCOMPLETE:  'forecastIncomplete',
   COST_TO_COMPLETE:     'costToComplete',
   FIGURES:              'figures',
@@ -184,7 +193,9 @@ export const READINESS_CHECKS = [
   { code: BLOCKER.DRAFT_CLIENT_RELEASES, label: 'No draft client retention releases',      fix: 'Post or void each draft client retention release.' },
   { code: BLOCKER.CLIENT_CREDIT_EXCEPTIONS, label: 'Every posted client credit note passes its integrity check', fix: 'A posted client credit note failed a read-time integrity check, so it reduces no figure. Investigate it on the Client Invoices tab; where the credit note itself is wrong, void it and record a new one.' },
   { code: BLOCKER.CLIENT_RELEASE_EXCEPTIONS, label: 'Every posted client retention release has an issued invoice that withheld retention', fix: 'A posted client retention release names an invoice that is not issued, is not readable or withheld no retention, so it releases nothing. Investigate it; where the release itself is wrong, void it.' },
-  { code: BLOCKER.OVER_ALLOCATED,       label: 'No over-allocated issued client invoices', fix: 'An issued client invoice has more receipt allocated to it than is now receivable on it (its gross value less posted credit notes and retention still held). Correct the receipt allocation on the Client Receipts tab (void the receipt and re-enter it) so no invoice is over-allocated. Nothing is reallocated automatically.' },
+  { code: BLOCKER.OVER_ALLOCATED,       label: 'No over-allocated issued client invoices', fix: 'An issued client invoice holds more money than is now receivable on it (its gross value less posted credit notes and retention still held) — money owed to the client. Refund the overpayment on the Client Receipts tab, or, where the allocation itself was wrong, void the receipt and re-enter it. Nothing is reallocated automatically. An overpayment is never moved to another invoice.' },
+  { code: BLOCKER.UNSETTLED_FUNDS,      label: 'No unallocated client receipt money', fix: 'A posted client receipt still has money that is not allocated to an invoice. Apply it to an issued invoice of the same client, or refund it to the client, on the Client Receipts tab.' },
+  { code: BLOCKER.SETTLEMENT_EXCEPTIONS, label: 'Every client refund and receipt application is supported by its records', fix: 'A posted refund or receipt application names a receipt or invoice that does not support it (not posted or not issued, another client or currency, or a receipt settled beyond its unallocated money). Investigate it; where the record itself is wrong, void it as a correction.' },
   { code: BLOCKER.FORECAST_INCOMPLETE,  label: 'Every cost code has a saved forecast',     fix: 'Save an Uncommitted Cost to Complete for each cost code named here on the Forecast tab. Enter 0 where no further cost is expected — a saved 0 is a forecast; a blank is not.' },
   { code: BLOCKER.COST_TO_COMPLETE,     label: 'Cost to complete is zero',                 fix: 'Close out remaining commitment (a closing supplier variation on each under-run purchase order line) and set every uncommitted cost to complete to zero on the Forecast tab.' },
   { code: BLOCKER.FIGURES,              label: 'Every figure is a valid amount',           fix: 'A figure could not be calculated from the records. Check SHIELD for integrity findings.' },
@@ -210,7 +221,8 @@ const namedList = (names, word) => `${names.length} ${word}: ${names.slice(0, 5)
 
 // The registers the invoiced / received figures computed in this module read.
 const ISSUED_SOURCES = ['clientInvoices', 'clientCreditNotes']
-const RECEIVED_SOURCES = ['clientInvoices', 'clientReceipts']
+const RECEIVED_SOURCES = ['clientInvoices', 'clientReceipts', 'clientRefunds', 'clientReceiptApplications']
+const UNALLOCATED_SOURCES = ['clientReceipts', 'clientRefunds', 'clientReceiptApplications']
 
 // ── THE computation ──────────────────────────────────────────────────────────
 //
@@ -226,7 +238,9 @@ export function computeFinalAccount({ project = null, currencyCode, sources = {}
     supplierInvoices = [], supplierCreditNotes = [], variations = [], forecastLines = [],
     supplierPayments = [], retentionReleases = [], clientInvoices = [], clientReceipts = [],
     clientCreditNotes = [], clientRetentionReleases = [], costCodes = [],
+    clientRefunds = [], clientReceiptApplications = [],
   } = sources
+  const settlement = { refunds: clientRefunds, applications: clientReceiptApplications }
 
   const report = buildCommercialReport({ project, currencyCode, sources, sourceStates })
   // Cost codes carry names only, so the report does not gate on them; a Final
@@ -268,14 +282,14 @@ export function computeFinalAccount({ project = null, currencyCode, sources = {}
   // held reduce what is receivable. Neither touches the contract sum or cash.
   const receivable = receivableContext(clientInvoices, clientCreditNotes, clientRetentionReleases)
   const control = contractControl(clientInvoices, finalContractSum, receivable.totals)
-  const receivables = receivablesSummary(clientInvoices, clientReceipts, receivable.positions)
+  const receivables = receivablesSummary(clientInvoices, clientReceipts, receivable.positions, settlement)
   // A figure computed HERE from a register that did not load is unknown, never
   // the figure an empty register would give (a failed credit-note read is not
   // "no credits"). The report's own figures arrive already gated.
   const known = (dependencies, value) => (figureState(dependencies, sourceStates).state === FIGURE_STATE.READY ? value : null)
-  const receipts = receiptSummary(clientReceipts)
+  const receipts = receiptSummary(clientReceipts, settlement)
   const payments = paymentSummary(supplierPayments)
-  const retention = retentionSummary(supplierInvoices, retentionReleases)
+  const retention = retentionSummary(supplierInvoices, retentionReleases, supplierCreditNotes)
 
   const raw = {
     originalContractValue:     pick(report.summary, 'originalContractValue'),
@@ -298,7 +312,7 @@ export function computeFinalAccount({ project = null, currencyCode, sources = {}
     clientRetentionHeld:       pick(report.cash, 'clientRetentionHeld'),
     owedToClient:              pick(report.cash, 'owedToClient'),
     cashReceived:              pick(report.cash, 'cashIn'),
-    unallocatedReceipts:       receipts.unallocated,
+    unallocatedReceipts:       known(UNALLOCATED_SOURCES, receipts.unallocated),
     cashPaid:                  pick(report.cash, 'cashOut'),
     payablesOutstanding:       pick(report.cash, 'remainingPayable'),
     unallocatedPayments:       payments.unallocated,
@@ -348,6 +362,10 @@ export function computeFinalAccount({ project = null, currencyCode, sources = {}
   // shown as Owed to client, and the receivables position does not reconcile
   // until the allocation is corrected.
   const overAllocated = receivables.rows.filter(r => toCents(r.received) > toCents(r.receivableBasis))
+  // Phase 2 step 5 (D6): money held for the client must be settled — applied
+  // or refunded — and every settlement record must be supported by its records.
+  const unsettled = raw => raw.unallocatedReceipts === null || toCents(raw.unallocatedReceipts) !== 0
+  const settlementProblems = settlementExceptions({ refunds: clientRefunds, applications: clientReceiptApplications, receipts: clientReceipts, invoices: clientInvoices })
   const unapplied = pick(report.variations, 'unappliedSupplierVariations')
   const awaiting = roundMoney(totals.approvedClaimsAwaitingInvoice)
 
@@ -376,6 +394,8 @@ export function computeFinalAccount({ project = null, currencyCode, sources = {}
       const names = overAllocated.slice(0, 5).map(r => r.invoiceNumber || r.id).join(', ')
       block(BLOCKER.OVER_ALLOCATED, `${overAllocated.length} over-allocated: ${names}${overAllocated.length > 5 ? ', …' : ''}`)
     }
+    if (unsettled(raw)) block(BLOCKER.UNSETTLED_FUNDS, raw.unallocatedReceipts === null ? 'Unknown' : `${raw.unallocatedReceipts.toFixed(2)} unallocated`)
+    if (settlementProblems.length > 0) block(BLOCKER.SETTLEMENT_EXCEPTIONS, namedList(settlementProblems.map(e => e.number), 'unsupported'))
     if (unforecast.length > 0) {
       const names = unforecast.slice(0, 5).map(r => r.costCodeName || r.costCodeId).join(', ')
       block(BLOCKER.FORECAST_INCOMPLETE, `${unforecast.length} of ${forecastRows.length} not forecast: ${names}${unforecast.length > 5 ? ', …' : ''}`)

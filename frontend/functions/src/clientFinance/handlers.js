@@ -1,13 +1,19 @@
 import { CODE, fail } from '../lib/errors.js'
+import { assertCommercialActivated } from '../lib/commercialActivation.js'
 import { requireAuth, loadProfile, assertActiveRole } from '../lib/authz.js'
 import {
   CLIENT_FINANCE_ROLES, parsePostClientCreditNote, parseVoidClientCreditNote,
   parsePostClientRetentionRelease, parseVoidClientRetentionRelease, parsePostClientReceipt, parseVoidClientReceipt,
+  parsePostClientRefund, parseVoidClientRefund, parsePostClientReceiptApplication, parseVoidClientReceiptApplication,
+  parseVoidClientInvoice,
 } from './contracts.js'
 import {
   postClientCreditNote, voidClientCreditNote, postClientRetentionRelease, voidClientRetentionRelease,
 } from './transactions.js'
 import { postClientReceipt, voidClientReceipt } from './receipts.js'
+import {
+  postClientRefund, voidClientRefund, postClientReceiptApplication, voidClientReceiptApplication, voidClientInvoice,
+} from './settlement.js'
 import { ensureReceiptBaseline } from './baseline.js'
 import { projectRefs } from './persistence.js'
 import * as calc from '../generated/clientFinanceCalc.js'
@@ -46,6 +52,12 @@ const financeActivated = (company) => calc.clientFinanceActivated(company)
 const receiptsActivated = (company) => company?.clientReceiptsEnabled === true
 const FINANCE = { gate: 'finance', disabled: CODE.CLIENT_FINANCE_DISABLED, activated: financeActivated, notActivated: CODE.CLIENT_FINANCE_NOT_ACTIVATED }
 const RECEIPTS = { gate: 'receipts', disabled: CODE.CLIENT_RECEIPT_DISABLED, activated: receiptsActivated, notActivated: CODE.CLIENT_RECEIPT_DISABLED, openToAll: 'receiptsAllCompanies' }
+// Phase 2 step 5 (ADR-95): refunds and receipt applications have their OWN
+// switch (`settlement`; OFF in production until released) and need the
+// company's client-finance activation, like credit notes and releases. The void
+// of an ISSUED invoice belongs to the receipts workflow it protects (D8): it is
+// gated with receipts, which are open to every company after the ADR-89 cutover.
+const SETTLEMENT = { gate: 'settlement', disabled: CODE.CLIENT_SETTLEMENT_DISABLED, activated: financeActivated, notActivated: CODE.CLIENT_FINANCE_NOT_ACTIVATED }
 
 const OPERATIONS = {
   postClientCreditNote:       { ...FINANCE,  parse: parsePostClientCreditNote,       run: postClientCreditNote },
@@ -54,6 +66,13 @@ const OPERATIONS = {
   voidClientRetentionRelease: { ...FINANCE,  parse: parseVoidClientRetentionRelease, run: voidClientRetentionRelease },
   postClientReceipt:          { ...RECEIPTS, parse: parsePostClientReceipt,          run: postClientReceipt },
   voidClientReceipt:          { ...RECEIPTS, parse: parseVoidClientReceipt,          run: voidClientReceipt },
+  // Phase 2 (final release batch): `commercial` — also require the company's
+  // Phase 2 activation (lib/commercialActivation.js), before any baseline.
+  postClientRefund:             { ...SETTLEMENT, commercial: true, parse: parsePostClientRefund,             run: postClientRefund },
+  voidClientRefund:             { ...SETTLEMENT, commercial: true, parse: parseVoidClientRefund,             run: voidClientRefund },
+  postClientReceiptApplication: { ...SETTLEMENT, commercial: true, parse: parsePostClientReceiptApplication, run: postClientReceiptApplication },
+  voidClientReceiptApplication: { ...SETTLEMENT, commercial: true, parse: parseVoidClientReceiptApplication, run: voidClientReceiptApplication },
+  voidClientInvoice:            { ...RECEIPTS,   commercial: true, parse: parseVoidClientInvoice,            run: voidClientInvoice },
 }
 
 export const CLIENT_FINANCE_HANDLER_NAMES = Object.keys(OPERATIONS)
@@ -74,7 +93,7 @@ async function assertCompanyActivated(db, { companyId, projectId }, { activated,
 }
 
 export function createClientFinanceHandlers(deps) {
-  const handler = ({ gate, disabled, activated, notActivated, openToAll, parse, run }) => async (request) => {
+  const handler = ({ gate, disabled, activated, notActivated, openToAll, commercial = false, parse, run }) => async (request) => {
     // Fail closed: anything but an explicit `true` is off.
     if (deps.config()[gate] !== true) fail(disabled)
     const { uid } = requireAuth(request)
@@ -86,6 +105,7 @@ export function createClientFinanceHandlers(deps) {
     // Fail closed: only an explicit `true` opens an operation to every company.
     const everyCompany = openToAll !== undefined && deps.config()[openToAll] === true
     if (!everyCompany) await assertCompanyActivated(deps.db, scope, { activated, notActivated })
+    if (commercial) await assertCommercialActivated(deps.db, scope.companyId)
     // Once per project, ever: bring the receipts posted before the backend
     // took over into the invoice ledgers. Afterwards this is one document read.
     // The operation's own transaction then REQUIRES the marker it leaves.

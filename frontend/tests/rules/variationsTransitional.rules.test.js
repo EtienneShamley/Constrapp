@@ -8,30 +8,33 @@ import { TAX_CODE, gstForLine, variationTotals, buildApprovedLineItems, isCommit
 import { buildClaimLine, buildVariationClaimLine, claimTotals } from '../../src/lib/progressClaims'
 import { invoiceTotals } from '../../src/lib/supplierInvoices'
 
-// ── ADR-63 STAGE-1 TRANSITIONAL ruleset — emulator proof ─────────────────────
+// ── The STAGE-1 TRANSITIONAL ruleset — emulator proof (ADR-63 · ADR-68 · ADR-90) ─
 //
 // `firestore.transitional.rules` is derived from `firestore.rules` by
-// scripts/build-transitional-rules.mjs (two rule lines differ; pinned by
-// tests/unit/rulesTransitional.test.js). It is the ruleset deployed FIRST,
-// while the M3-B1 bundle is still served. This file proves, against THAT file,
-// exactly what the rollout relies on:
+// scripts/build-transitional-rules.mjs (three rule lines differ; pinned by
+// tests/unit/rulesTransitional.test.js).
 //
-//   1. the M3-B1 bundle's PO-linked approve (applied pair, NO scope pair) is
-//      ACCEPTED, and the new bundle's scope-only legacy write then completes
-//      it once;
-//   2. the NEW bundle's approve (both pairs) is ACCEPTED;
-//   3. the pre-M3-B1 approve (no pair at all) is REFUSED — the ADR-62 applied
-//      pair stays required in Stage 1;
-//   4. a missing / cancelled / draft / other-project PO is REFUSED for every
-//      payload (Correction A holds);
-//   5. the M3-B1 bundle's claim create (no `variationLineCount`) is ACCEPTED,
-//      the new bundle's (with it) is ACCEPTED, and the ADR-63 count pin, shape
-//      pins and invoice-count guard are ACTIVE from Stage 1 on;
-//   6. every other control is unchanged — forged stamps, stamps at create or
-//      on other branches, manual / client semantics, roles and tenancy.
+// ⚠️ ADR-90 RETIRED THE VARIATIONS HALF OF THIS FILE'S ORIGINAL PURPOSE. Stage 1
+// used to relax ONE variations line — the ADR-63 scope pair was optional on a
+// PO-linked approve while the M3-B1 bundle was served. Creating a variation,
+// approving one and the legacy Apply / Commit are now trusted-backend
+// operations; NEITHER ruleset has a client create, approve or apply path, so
+// the two files no longer differ anywhere in `variations`. The variation
+// describes below therefore prove, against THIS file, that it refuses those
+// three writes exactly as the FINAL file does — the M3-B1 payload, the M3-B2
+// payload and the plain one alike, for every financial role, with nothing
+// written — while every forged or cross-tenant variant stays refused. The
+// supported replacements are proven in tests/functions/variations.test.js
+// (createVariation / approveVariation / applyVariationCommitment).
 //
-// The FINAL ruleset's behaviour (M3-B1 approve payload DENIED; claim create
-// without the count DENIED) is proven by tests/rules/variations.rules.test.js
+// What Stage 1 still relaxes, and this file still proves POSITIVELY:
+//   · the M3-B1 bundle's claim create (no `variationLineCount`) is ACCEPTED,
+//     the new bundle's (with it) is ACCEPTED, and the ADR-63 count pin, shape
+//     pins and invoice-count guard are ACTIVE from Stage 1 on;
+//   · the pre-2A claim create (no invoice link keys) is ACCEPTED while the
+//     invoice-side pairing is strict.
+//
+// The FINAL ruleset's behaviour is proven by tests/rules/variations.rules.test.js
 // and tests/rules/progressClaims.rules.test.js against firestore.rules.
 //
 // SAFETY: refuses to run unless FIRESTORE_EMULATOR_HOST is set.
@@ -39,7 +42,7 @@ import { invoiceTotals } from '../../src/lib/supplierInvoices'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.transitional.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const PROJECT_A = 'projectA'
 const PROJECT_B = 'projectB'
@@ -151,6 +154,16 @@ async function seedPo(po, projectId = PROJECT_A) {
 async function setPoStatus(po, status) {
   await testEnv.withSecurityRulesDisabled(async (c) => { await updateDoc(doc(c.firestore(), posPath(), po.id), { status }) })
 }
+// ADR-90 — what the trusted backend stores, written with rules disabled.
+async function serverUpdate(id, data) {
+  await testEnv.withSecurityRulesDisabled(async (c) => { await updateDoc(doc(c.firestore(), varsPath(), id), data) })
+}
+// A client update is refused for EVERY financial role and the document does not move.
+async function updateRefused(id, build) {
+  const before = await readVar(id)
+  for (const user of FINANCIAL) await assertFails(updateDoc(varRef(ctx(user), id), build(user)))
+  expect(await readVar(id)).toEqual(before)
+}
 async function readVar(id) {
   let data
   await testEnv.withSecurityRulesDisabled(async (c) => {
@@ -217,7 +230,7 @@ beforeAll(async () => {
   if (!process.env.FIRESTORE_EMULATOR_HOST) throw new Error('FIRESTORE_EMULATOR_HOST is not set — run `npm run test:rules`.')
   const [host, port] = process.env.FIRESTORE_EMULATOR_HOST.split(':')
   const rules = readFileSync(RULES_PATH, 'utf8')
-  if (!rules.includes('ADR-63 TRANSITIONAL')) throw new Error('firestore.transitional.rules does not carry the transitional marker')
+  if (!rules.includes('TRANSITIONAL (STAGE 1)')) throw new Error('firestore.transitional.rules does not carry the transitional marker')
   testEnv = await initializeTestEnvironment({ projectId: PROJECT_ID, firestore: { rules, host, port: Number(port) } })
 })
 afterAll(async () => { if (testEnv) await testEnv.cleanup() })
@@ -226,7 +239,8 @@ beforeEach(async () => {
   await testEnv.withSecurityRulesDisabled(async (c) => {
     const db = c.firestore()
     for (const u of Object.values(USERS)) await setDoc(doc(db, 'users', u.uid), { role: u.role, companyId: u.companyId, name: u.uid })
-    await setDoc(doc(db, 'companies', COMPANY_A), { name: 'Company A', countryCode: 'AU', baseCurrency: 'AUD' })
+    // ADR-98: the claim submit / variation lifecycle Rules require an ACTIVATED company.
+    await setDoc(doc(db, 'companies', COMPANY_A), { name: 'Company A', countryCode: 'AU', baseCurrency: 'AUD', commercialCompletionEnabled: true })
     await setDoc(doc(db, `companies/${COMPANY_A}/projects`, PROJECT_A), { name: 'Project A', currency: 'AUD', currencyLocked: true })
     await setDoc(doc(db, `companies/${COMPANY_A}/projects`, PROJECT_B), { name: 'Project B', currency: 'AUD' })
   })
@@ -235,57 +249,98 @@ beforeEach(async () => {
   await seedPo(PO_IN_PROJECT_B, PROJECT_B)
 })
 
-describe('STAGE 1 — the M3-B1 bundle (applied pair, no scope pair) keeps working', () => {
-  it('a PO-linked supplier approve WITH the applied pair only is ACCEPTED for every financial role against a sent and a closed PO; the new bundle then commits the scope once', async () => {
-    for (const user of FINANCIAL) {
-      for (const po of [PO.sent, PO.closed]) {
-        const id = `b1_${user.uid}_${po.id}`
-        await seed(id, 'submitted', payload(USERS.admin, { poId: po.id, poNumber: po.poNumber }))
-        await assertSucceeds(updateDoc(varRef(ctx(user), id), approveB1(user)))
-        const v = await readVar(id)
-        expect(v.status).toBe('approved')
-        expect(isCommitmentApplied(v)).toBe(true)
-        expect(isScopeCommitted(v)).toBe(false)
-        // …the new bundle's scope-only write completes it, once; the full legacy Apply (both pairs) is refused.
-        await assertFails(updateDoc(varRef(ctx(user), id), applyWrite(user, { revision: 3 })))
-        await assertSucceeds(updateDoc(varRef(ctx(user), id), scopeWrite(user, { revision: 3 })))
-        await assertFails(updateDoc(varRef(ctx(user), id), scopeWrite(user, { revision: 4 })))
-        expect(isScopeCommitted(await readVar(id))).toBe(true)
-      }
+describe('STAGE 1 — the M3-B1 bundle’s variation writes (ADR-90: REFUSED from every client, exactly as in the FINAL file)', () => {
+  // Positive behaviour: tests/functions/variations.test.js → approveVariation / applyVariationCommitment.
+  it('ADR-90 — a PO-linked supplier approve WITH the applied pair only is REFUSED from every client against a sent and a closed PO; the scope-only write and the full legacy Apply are refused too, before and after the backend has approved', async () => {
+    for (const po of [PO.sent, PO.closed]) {
+      const id = `b1_${po.id}`
+      await seed(id, 'submitted', payload(USERS.admin, { poId: po.id, poNumber: po.poNumber }))
+      await updateRefused(id, (user) => approveB1(user))
+      const v = await readVar(id)
+      expect(v.status).toBe('submitted')
+      expect(isCommitmentApplied(v)).toBe(false)
+      expect(isScopeCommitted(v)).toBe(false)
+      // The document an M3-B1 approval left behind (applied pair, no scope pair): the scope-only write and the full Apply are both refused.
+      await serverUpdate(id, approveB1(USERS.pm))
+      expect(isCommitmentApplied(await readVar(id))).toBe(true)
+      await updateRefused(id, (user) => applyWrite(user, { revision: 3 }))
+      await updateRefused(id, (user) => scopeWrite(user, { revision: 3 }))
+      expect(isScopeCommitted(await readVar(id))).toBe(false)
     }
   })
 
-  it('the pre-M3-B1 approve payload (NO pair at all) is REFUSED — the applied pair stays required in Stage 1', async () => {
+  it('the pre-M3-B1 approve payload (NO pair at all) is REFUSED', async () => {
     await seed('v1', 'submitted', payload(USERS.admin))
     await assertFails(updateDoc(varRef(ctx(USERS.admin), 'v1'), approvePlain(USERS.admin)))
     expect((await readVar('v1')).status).toBe('submitted')
   })
 
-  it('the M3-B1 bundle’s create, submit and withdraw are unchanged', async () => {
+  it('ADR-90 — the M3-B1 bundle’s create is REFUSED from every client; its submit and withdraw are unchanged', async () => {
+    for (const user of FINANCIAL) await assertFails(setDoc(varRef(ctx(user), 'c1'), payload(user)))
+    expect(await readVar('c1')).toBeUndefined()
+    await seed('c1', 'draft', payload(USERS.qs))
     const db = ctx(USERS.qs)
-    await assertSucceeds(setDoc(varRef(db, 'c1'), payload(USERS.qs)))
     await assertSucceeds(updateDoc(varRef(db, 'c1'), submitWrite(USERS.qs)))
     await assertSucceeds(updateDoc(varRef(db, 'c1'), { ...withdrawWrite(USERS.qs), revision: 3 }))
   })
 })
 
-describe('STAGE 1 — the NEW bundle (both pairs on approve) works too', () => {
-  it('an approve carrying both pairs is ACCEPTED for every financial role and both pairs are stored', async () => {
-    for (const user of FINANCIAL) {
-      await seed(`new_${user.uid}`, 'submitted', payload(USERS.admin))
-      await assertSucceeds(updateDoc(varRef(ctx(user), `new_${user.uid}`), approveNew(user)))
-      const v = await readVar(`new_${user.uid}`)
-      expect(v.status).toBe('approved')
-      expect(v.commitmentAppliedBy).toBe(user.uid)
-      expect(v.scopeCommittedBy).toBe(user.uid)
-    }
+// ADR-90, checkpoint-1 correction — the transitional file equals the FINAL one
+// in `variations` and in the counters block here too. Positive behaviour:
+// tests/functions/variations.test.js → updateVariationDraft / createVariation.
+describe('STAGE 1 — ADR-90: a draft admits no client content write and the variation counters are backend-only, exactly as in the FINAL file', () => {
+  it('ADR-90 — a client draft edit (content and re-derived header; one field; the originating-RFI triple; stamps only) is REFUSED from every client; submit and withdraw still pass', async () => {
+    await seed('de1', 'draft', manual(USERS.admin))
+    const t = variationTotals([line(1200, { poLineIndex: null })], 'submitted')
+    const edits = (user) => [
+      { title: 'Revised', lineItems: [line(1200, { poLineIndex: null })], submittedSubtotal: t.subtotal, submittedGst: t.gst, submittedTotal: t.total, revision: 2, ...stamps(user) },
+      { title: 'Retitled', revision: 2, ...stamps(user) },
+      { notes: 'A note', revision: 2, ...stamps(user) },
+      { originRfiId: 'rfiX', originRfiNumber: 'RFI-0001', originRfiTitle: 'Forged', revision: 2, ...stamps(user) },
+      { status: 'draft', revision: 2, ...stamps(user) },
+    ]
+    for (let i = 0; i < edits(USERS.admin).length; i += 1) await updateRefused('de1', (user) => edits(user)[i])
+    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'de1'), submitWrite(USERS.qs)))
+    await seed('de2', 'draft', manual(USERS.admin))
+    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'de2'), withdrawWrite(USERS.pm)))
   })
 
-  it('both-pairs approve against a closed PO passes; the legacy Apply (both pairs) passes once on an unstamped approved document and never again', async () => {
+  it('ADR-90 — the two variation counters refuse every client read and write; another register’s counter is untouched', async () => {
+    const counter = (db, id) => doc(db, `companies/${COMPANY_A}/counters`, id)
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      for (const id of ['variationsClient', 'variationsSupplier', 'purchaseOrders']) await setDoc(counter(c.firestore(), id), { next: 7 })
+    })
+    for (const user of FINANCIAL) {
+      for (const id of ['variationsClient', 'variationsSupplier']) {
+        await assertFails(getDoc(counter(ctx(user), id)))
+        for (const next of [8, 1, 999999, 'x']) await assertFails(setDoc(counter(ctx(user), id), { next }, { merge: true }))
+      }
+      await assertSucceeds(getDoc(counter(ctx(user), 'purchaseOrders')))
+    }
+    await assertSucceeds(setDoc(counter(ctx(USERS.qs), 'purchaseOrders'), { next: 8 }, { merge: true }))
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      for (const id of ['variationsClient', 'variationsSupplier']) expect((await getDoc(counter(c.firestore(), id))).data()).toEqual({ next: 7 })
+    })
+  })
+})
+
+describe('STAGE 1 — the NEW bundle’s old variation writes (both pairs on approve) are REFUSED from every client too (ADR-90)', () => {
+  // Positive behaviour: tests/functions/variations.test.js → approveVariation / applyVariationCommitment.
+  it('ADR-90 — an approve carrying both pairs is REFUSED from every client (every financial role); nothing is stored', async () => {
+    await seed('new', 'submitted', payload(USERS.admin))
+    await updateRefused('new', (user) => approveNew(user))
+    const v = await readVar('new')
+    expect(v.status).toBe('submitted')
+    expect(v).not.toHaveProperty('commitmentAppliedBy')
+    expect(v).not.toHaveProperty('scopeCommittedBy')
+  })
+
+  it('ADR-90 — a both-pairs approve against a closed PO and the legacy Apply (both pairs) on an unstamped approved document are REFUSED from every client; once the backend has applied, neither pair can be written again', async () => {
     await seed('closed', 'submitted', payload(USERS.admin, { poId: PO.closed.id, poNumber: PO.closed.poNumber }))
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'closed'), approveNew(USERS.pm)))
+    await updateRefused('closed', (user) => approveNew(user))
     await seed('legacy', 'approved', payload(USERS.admin))
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'legacy'), applyWrite(USERS.pm)))
+    await updateRefused('legacy', (user) => applyWrite(user))
+    await serverUpdate('legacy', applyWrite(USERS.pm))
     await assertFails(updateDoc(varRef(ctx(USERS.admin), 'legacy'), applyWrite(USERS.admin, { revision: 3 })))
     await assertFails(updateDoc(varRef(ctx(USERS.admin), 'legacy'), scopeWrite(USERS.admin, { revision: 3 })))
   })
@@ -315,30 +370,35 @@ describe('STAGE 1 — Correction A holds for EVERY payload: an invalid PO refuse
   })
 })
 
-describe('STAGE 1 — claims and invoices: the ADR-63 pins are active for both bundles', () => {
-  it('the M3-B1 bundle’s claim create (no variationLineCount, PO lines only) is ACCEPTED; the new bundle’s (count 0 or a declared variation line) is ACCEPTED', async () => {
-    const db = ctx(USERS.qs)
-    await assertSucceeds(setDoc(doc(db, claimsPath(), 'old'), claimPayload(USERS.qs)))
-    await assertSucceeds(setDoc(doc(db, claimsPath(), 'new0'), claimPayload(USERS.qs, { variationLineCount: 0 })))
-    await assertSucceeds(setDoc(doc(db, claimsPath(), 'new1'), claimPayload(USERS.qs, { lines: [poClaimLine(), varClaimLine()], variationLineCount: 1 })))
+// ADR-93 / ADR-94 replaced "STAGE 1 — claims and invoices: the ADR-63 pins are
+// active for both bundles": claim create and approve, and every supplier-invoice
+// write, are trusted-backend operations, so NEITHER ruleset admits the old or the
+// new bundle's client payload any more — the ADR-63 count pins, the shape pins,
+// the invoice-count guard and the ADR-68 pairing now live in the backend
+// (tests/functions/supplierFinance.test.js) and the client writes are refused
+// in BOTH files (tests/rules/claimInvoicePairingTransitional.rules.test.js).
+describe('STAGE 1 — claims and invoices: every client write the old and new bundles made is REFUSED (ADR-93 / ADR-94)', () => {
+  it('the M3-B1 and the new bundle’s claim creates are REFUSED for every financial role, and nothing is stored', async () => {
+    for (const user of [USERS.admin, USERS.pm, USERS.qs]) {
+      const db = ctx(user)
+      await assertFails(setDoc(doc(db, claimsPath(), `old-${user.uid}`), claimPayload(user)))
+      await assertFails(setDoc(doc(db, claimsPath(), `new0-${user.uid}`), claimPayload(user, { variationLineCount: 0 })))
+      await assertFails(setDoc(doc(db, claimsPath(), `new1-${user.uid}`), claimPayload(user, { lines: [poClaimLine(), varClaimLine()], variationLineCount: 1 })))
+      await assertFails(setDoc(doc(db, claimsPath(), `link-${user.uid}`), claimPayload(user, { variationLineCount: 0, supplierInvoiceId: null, supplierInvoiceLinkedAt: null, supplierInvoiceLinkedBy: null })))
+    }
   })
 
-  it('the count pin and the shape pins refuse a variation line without its count, a count without its line, and an old-bundle-shaped variation line', async () => {
+  it('the shapes the ADR-63 pins used to refuse are still refused (a variation line without its count, a count without its line, an old-bundle-shaped variation line)', async () => {
     const db = ctx(USERS.qs)
-    // Two lines, no count → PO has one line → refused.
     await assertFails(setDoc(doc(db, claimsPath(), 'x1'), claimPayload(USERS.qs, { lines: [poClaimLine(), varClaimLine()] })))
-    // Count 1 but a single PO line → refused.
     await assertFails(setDoc(doc(db, claimsPath(), 'x2'), claimPayload(USERS.qs, { variationLineCount: 1 })))
-    // Count 1 but the last line is PO-shaped (index 0, no variation id) → refused.
     const oldShape = { ...varClaimLine(), poLineIndex: 0 }
     delete oldShape.variationId
     await assertFails(setDoc(doc(db, claimsPath(), 'x3'), claimPayload(USERS.qs, { lines: [poClaimLine(), oldShape], variationLineCount: 1 })))
     await assertFails(setDoc(doc(db, claimsPath(), 'x4'), claimPayload(USERS.qs, { lines: [poClaimLine(), { ...varClaimLine(), poLineIndex: 0 }], variationLineCount: 1 })))
   })
 
-  // ADR-68: since SHIELD 2A a claim-sourced invoice create is PAIRED with its
-  // claim's link write in one batch, in BOTH rulesets (the pairing is strict
-  // from Stage 1) — so each create here is the batch the 2A bundle issues.
+  // The batch the 2A bundle issued: invoice create + the claim's link write.
   function pairedCreate(user, id, payload, claimId) {
     const db = ctx(user)
     const batch = writeBatch(db)
@@ -350,43 +410,31 @@ describe('STAGE 1 — claims and invoices: the ADR-63 pins are active for both b
     return batch.commit()
   }
 
-  it('the invoice-count guard is ACTIVE: a claim carrying a variation line can be invoiced only by a payload that declares the count', async () => {
+  it('claim-sourced invoice creates — paired or unpaired, with or without the variation-line count — are REFUSED for every financial role', async () => {
     await seedApprovedClaim('cVar', [poClaimLine(0), varClaimLine(2000)], 1)
     await seedApprovedClaim('cPlain', [poClaimLine(1000)], undefined)
-    // The M3-B1 bundle's shape against the variation claim: no count, the line attributed to PO line 0 → REFUSED.
-    await assertFails(pairedCreate(USERS.qs, 'oldVar', invoicePayload(USERS.qs, { claimId: 'cVar', lines: [invLine(2000)] }), 'cVar'))
-    // The new bundle: count 1 and the variation-origin line → ACCEPTED.
-    await assertSucceeds(pairedCreate(USERS.qs, 'newVar', invoicePayload(USERS.qs, { claimId: 'cVar', lines: [varInvLine(2000)], variationLineCount: 1 }), 'cVar'))
-    // A plain claim: the M3-B1 payload (no count) and the new payload (0) both pass (one claim each — a claim takes ONE active invoice).
-    await seedApprovedClaim('cPlain2', [poClaimLine(1000)], undefined)
-    await assertSucceeds(pairedCreate(USERS.qs, 'oldPlain', invoicePayload(USERS.qs, { claimId: 'cPlain', lines: [invLine(1000)] }), 'cPlain'))
-    await assertSucceeds(pairedCreate(USERS.qs, 'newPlain', invoicePayload(USERS.qs, { claimId: 'cPlain2', lines: [invLine(1000)], variationLineCount: 0 }), 'cPlain2'))
-  })
-
-  it('ADR-68 in Stage 1: an UNPAIRED claim-sourced create is REFUSED (an old tab must refresh for that one action); the pre-2A claim create and approve payloads are still ACCEPTED', async () => {
-    await seedApprovedClaim('cPlain', [poClaimLine(1000)], undefined)
-    const db = ctx(USERS.qs)
-    await assertFails(setDoc(doc(db, invPath(), 'unpaired'), invoicePayload(USERS.qs, { claimId: 'cPlain', lines: [invLine(1000)], variationLineCount: 0 })))
-    // The pre-2A bundle's claim create (no link key) passes Stage 1 …
-    await assertSucceeds(setDoc(doc(db, claimsPath(), 'oldClaim'), claimPayload(USERS.qs, { variationLineCount: 0 })))
-    // … and so does the 2A bundle's (keys present, null).
-    await assertSucceeds(setDoc(doc(db, claimsPath(), 'newClaim'), claimPayload(USERS.qs, { variationLineCount: 0, supplierInvoiceId: null, supplierInvoiceLinkedAt: null, supplierInvoiceLinkedBy: null })))
+    for (const user of [USERS.admin, USERS.pm, USERS.qs]) {
+      await assertFails(pairedCreate(user, `oldVar-${user.uid}`, invoicePayload(user, { claimId: 'cVar', lines: [invLine(2000)] }), 'cVar'))
+      await assertFails(pairedCreate(user, `newVar-${user.uid}`, invoicePayload(user, { claimId: 'cVar', lines: [varInvLine(2000)], variationLineCount: 1 }), 'cVar'))
+      await assertFails(pairedCreate(user, `plain-${user.uid}`, invoicePayload(user, { claimId: 'cPlain', lines: [invLine(1000)], variationLineCount: 0 }), 'cPlain'))
+      await assertFails(setDoc(doc(ctx(user), invPath(), `unpaired-${user.uid}`), invoicePayload(user, { claimId: 'cPlain', lines: [invLine(1000)], variationLineCount: 0 })))
+    }
   })
 })
 
 describe('STAGE 1 — every other control is unchanged', () => {
-  it('manual-mode supplier and client variations approve WITHOUT any pair and refuse both pairs', async () => {
+  it('manual-mode supplier and client variations refuse both pairs; ADR-90 — and their plain approve WITHOUT any pair is REFUSED from every client', async () => {
     await seed('manual', 'submitted', manual(USERS.admin))
     await assertFails(updateDoc(varRef(ctx(USERS.admin), 'manual'), approvePlain(USERS.admin, applied(USERS.admin))))
     await assertFails(updateDoc(varRef(ctx(USERS.admin), 'manual'), approvePlain(USERS.admin, both(USERS.admin))))
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.admin), 'manual'), approvePlain(USERS.admin)))
+    await updateRefused('manual', (user) => approvePlain(user))
     const client = clientPayload(USERS.admin)
     await seed('client', 'submitted', client)
     const clientLines = buildApprovedLineItems(client.lineItems, [900])
     const t = variationTotals(clientLines, 'approved')
-    const clientApprove = { ...approvePlain(USERS.admin), lineItems: clientLines, approvedSubtotal: t.subtotal, approvedGst: t.gst, approvedTotal: t.total }
-    await assertFails(updateDoc(varRef(ctx(USERS.admin), 'client'), { ...clientApprove, ...scoped(USERS.admin) }))
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.admin), 'client'), clientApprove))
+    const clientApprove = (user) => ({ ...approvePlain(user), lineItems: clientLines, approvedSubtotal: t.subtotal, approvedGst: t.gst, approvedTotal: t.total })
+    await assertFails(updateDoc(varRef(ctx(USERS.admin), 'client'), { ...clientApprove(USERS.admin), ...scoped(USERS.admin) }))
+    await updateRefused('client', clientApprove)
   })
 
   it('forged stamps (another actor, a client clock, half a pair) are refused; neither pair can be born at create', async () => {

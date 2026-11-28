@@ -59,9 +59,58 @@ export const AUDIT = {
   // on or off for ONE company (scripts/set-client-finance.mjs). `before` and
   // `after` carry the flag only; a run that changes nothing writes no event.
   COMPANY_CLIENT_FINANCE_SET:          'company.client_finance_set',
+  COMPANY_COMMERCIAL_COMPLETION_SET:   'company.commercial_completion_set',
   // ADR-89 (S6) — the same script with --receipts: trusted receipt processing
   // for ONE company while receipts are not yet open to every company.
   COMPANY_CLIENT_RECEIPTS_SET:         'company.client_receipts_set',
+  // Phase 2 step 5 (ADR-95) — one event per committed refund, application,
+  // their correction (void), and the trusted void of an issued client invoice.
+  // A void of a refund or application is a CORRECTION of an erroneous record
+  // (`after.correction: true`), never a reversal of a real payment.
+  CLIENT_REFUND_POSTED:                'client_refund.posted',
+  CLIENT_REFUND_VOIDED:                'client_refund.voided',
+  CLIENT_APPLICATION_POSTED:           'client_receipt_application.posted',
+  CLIENT_APPLICATION_VOIDED:           'client_receipt_application.voided',
+  CLIENT_INVOICE_VOIDED:               'client_invoice.voided',
+  // ADR-90 — one event per variation the backend created, approved or applied
+  // to its purchase order commitment, in its transaction. A repeated request
+  // writes none. `after` carries the document number, the calculation version
+  // and whole-cent header figures; an approval also records who the approver
+  // is in relation to the document (creator / submitter / last editor).
+  VARIATION_CREATED:                   'variation.created',
+  VARIATION_APPROVED:                  'variation.approved',
+  VARIATION_COMMITMENT_APPLIED:        'variation.commitment_applied',
+  // ADR-93 / ADR-94 — one event per supplier-finance FACT the backend
+  // committed, in its transaction: a claim created, approved or rejected; an
+  // invoice approved, posted or cancelled, or linked to its claim; a credit
+  // note, retention release or payment posted or voided; the project's
+  // historical baseline established. Draft creation and draft edits create no
+  // financial fact and write none. A repeated request writes none.
+  PROGRESS_CLAIM_CREATED:              'progress_claim.created',
+  PROGRESS_CLAIM_APPROVED:             'progress_claim.approved',
+  PROGRESS_CLAIM_REJECTED:             'progress_claim.rejected',
+  SUPPLIER_INVOICE_CREATED:            'supplier_invoice.created',
+  SUPPLIER_INVOICE_APPROVED:           'supplier_invoice.approved',
+  SUPPLIER_INVOICE_POSTED:             'supplier_invoice.posted',
+  SUPPLIER_INVOICE_CANCELLED:          'supplier_invoice.cancelled',
+  SUPPLIER_INVOICE_LINKED:             'supplier_invoice.linked',
+  SUPPLIER_CREDIT_POSTED:              'supplier_credit_note.posted',
+  SUPPLIER_CREDIT_VOIDED:              'supplier_credit_note.voided',
+  RETENTION_RELEASE_POSTED:            'retention_release.posted',
+  RETENTION_RELEASE_VOIDED:            'retention_release.voided',
+  SUPPLIER_PAYMENT_POSTED:             'supplier_payment.posted',
+  SUPPLIER_PAYMENT_VOIDED:             'supplier_payment.voided',
+  SUPPLIER_BASELINE_ESTABLISHED:       'supplier_finance.baseline_established',
+  // ADR-96 — the original contract value correction process (G5) and the
+  // approval-segregation policy (operator tool).
+  CONTRACT_VALUE_PROPOSED:             'contract_value.proposed',
+  CONTRACT_VALUE_APPROVED:             'contract_value.approved',
+  CONTRACT_VALUE_WITHDRAWN:            'contract_value.withdrawn',
+  APPROVAL_POLICY_CHANGED:             'approval_policy.changed',
+  // ADR-97 — estimate revisions (Phase 2 step 7)
+  ESTIMATE_BUILT:                      'estimate.built',
+  ESTIMATE_APPROVED:                   'estimate.approved',
+  ESTIMATE_DISCARDED:                  'estimate.discarded',
 }
 
 export const auditCollection = (db, companyId) =>

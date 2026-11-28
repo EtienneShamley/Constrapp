@@ -27,6 +27,7 @@ import Quant          from './pages/Quant'
 import Gantt          from './pages/Gantt'
 import ProjectOverview   from './pages/project/ProjectOverview'
 import ProjectBoq        from './pages/project/ProjectBoq'
+import ProjectEstimate   from './pages/project/ProjectEstimate'
 import ProjectBudget     from './pages/project/ProjectBudget'
 import ProjectCostCodes  from './pages/project/ProjectCostCodes'
 import ProjectPurchaseOrders from './pages/project/ProjectPurchaseOrders'
@@ -89,10 +90,12 @@ export default function App() {
                     <Route path="projects/:projectId" element={<ProjectDetailLayout />}>
                       <Route index element={<Navigate to="overview" replace />} />
                       <Route path="overview" element={<ProjectOverview />} />
-                      {/* BOQ — the measured Bill of Quantities (ADR-32 Part 1).
-                          Estimating (margin/overheads) and BOQ → Budget transfer
-                          are later branches. */}
+                      {/* BOQ — the measured Bill of Quantities (ADR-32 Part 1),
+                          with the BOQ → working budget transfer (ADR-81, live).
+                          Estimating (margin/overheads) is Phase 2 step 7. */}
                       <Route path="boq" element={<ProjectBoq />} />
+                      {/* ADR-97: the estimate layer over the BOQ — revisions written only by the trusted estimateOperation callable. */}
+                      <Route path="estimate" element={<ProjectEstimate />} />
                       {/* Tenders — packages, bids, Tender Comparison, and the
                           award decision record (ADR-32 Part 2). Deliberately
                           BOQ-independent: cost-code + free-text scope. */}

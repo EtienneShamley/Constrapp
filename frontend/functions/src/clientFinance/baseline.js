@@ -146,6 +146,12 @@ export async function ensureReceiptBaseline(db, { companyId, projectId, uid }, {
     return { established: true, ...summary }
   }, () => attempts)
 
-  if (result.established) log.info('client receipt baseline established', { uid, projectId, attempts, ...result })
+  // Counts only in the log — never a money total (ADR-98 monitoring review);
+  // the marker document and the audit event keep the figure.
+  if (result.established) {
+    const counts = { ...result }
+    delete counts.legacyCents
+    log.info('client receipt baseline established', { uid, projectId, attempts, ...counts })
+  }
   return { established: result.established, attempts }
 }

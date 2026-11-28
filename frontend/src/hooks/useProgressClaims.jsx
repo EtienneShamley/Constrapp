@@ -3,24 +3,25 @@ import {
   collection, doc, onSnapshot, query, orderBy,
   runTransaction, serverTimestamp,
 } from 'firebase/firestore'
-import { db } from '../lib/firebase'
+import { httpsCallable } from 'firebase/functions'
+import { db, functions } from '../lib/firebase'
 import { useAuth } from './useAuth'
 import { useCompany } from './useCompany'
-import { useProject } from './useProject'
-import { stageProjectCurrencyLock } from './projectCurrencyLock'
-import { resolveProjectCurrency } from '../lib/currency'
+import { CLAIM_STATUS, CLAIMABLE_PO_STATUSES, canTransition, hasOpenClaim, validateClaimDraft } from '../lib/progressClaims'
+import { runTransitionClaim } from '../lib/progressClaimActions'
 import {
-  CLAIM_STATUS, CLAIMABLE_PO_STATUSES, CLAIM_LINK_INITIAL, canTransition, claimTotals,
-  formatClaimNumber, hasOpenClaim, validateClaimDraft, claimVariationLineCount,
-} from '../lib/progressClaims'
-import { runUpdateClaimDraft, runTransitionClaim, variationSourceError } from '../lib/progressClaimActions'
-import { runLinkExistingInvoice } from '../lib/supplierInvoiceActions'
-import { isVariationOriginLine } from '../lib/sourceLine'
+  SF_CALLABLE, SF_CALL_TIMEOUT_MS, runSupplierFinance, claimLineRequest, claimHeaderRequest,
+} from '../lib/supplierFinanceActions'
+
+// ADR-93: a claim is created, its draft edited, approved and rejected — and an
+// approved claim linked to an existing invoice — only by the supplier-finance
+// callables. Submit stays a content-free Rules transition.
+const callSupplierFinance = async (name, data) =>
+  (await httpsCallable(functions, name, { timeout: SF_CALL_TIMEOUT_MS })(data)).data
 
 export function useProgressClaims(projectId) {
   const { user }    = useAuth()
   const { company } = useCompany()
-  const { project } = useProject(projectId)
   // Live subscription state, tagged with the target (`key`) it belongs to —
   // the keyed-snapshot pattern used by useProjectActivities / useDrawings. The
   // effect is subscription-only: state is written ONLY from the async
@@ -37,10 +38,8 @@ export function useProgressClaims(projectId) {
 
   const companyId = company?.id ?? null
 
-  // The currency this project reports in — project.currency, falling back to
-  // the company base currency and finally AUD for records predating the
-  // Company Country & Currency foundation.
-  const projectCurrency = resolveProjectCurrency(project, company)
+  // The claim's currency snapshot is the backend's (ADR-93): it reads the
+  // project and company itself.
 
   useEffect(() => {
     if (!companyId || !projectId) return undefined
@@ -79,188 +78,74 @@ export function useProgressClaims(projectId) {
   const progressClaimsLoading = targetKey !== null && !settled
   const progressClaimsError = settled ? snap.error : false
 
-  // Creates a draft claim against one sent PO. The company-wide counter is read
-  // and incremented in the same transaction as the claim write, matching POs.
-  // Since ADR-58 (M2-B2) the rules get() the PO at create — it must exist in
-  // this project and be `sent`, and the claim's number, supplier snapshot and
-  // line count must be the PO's — and require the creator / audit stamps at
-  // server time, the exact key set and the whole-cent claimed header. The
-  // one-open-claim check below stays CLIENT-ONLY (rules cannot see sibling
-  // claims — SECURITY.md Deferred Control 36).
-  //
-  // M3-B2 (ADR-63): a claim may carry VARIATION-ORIGIN lines after the PO
-  // lines — one per positive new-scope line of an approved, applied,
-  // scope-committed supplier variation on this PO. The header
-  // `variationLineCount` records how many (rules pin the line count to the
-  // PO's lines + this number). Every referenced variation AND the PO are
-  // re-read INSIDE the transaction and the sources re-validated on the server
-  // copies (approved · supplier · same PO · scope-committed · line exists · new
-  // scope · positive · cost code matches); a stale or missing source refuses
-  // the create with nothing written. Line CONTENTS stay client-only (DC40).
-  // The reserved header `variationId` stays null — several variations may
-  // share one claim, so the identity lives on the lines.
-  const createProgressClaim = useCallback(async ({ po, periodEnding, claimRef, notes, retention, lineItems }) => {
+  // Creates a draft claim against one sent PO (ADR-93). The request carries
+  // each line's SOURCE identity and the authored claimed-to-date; the backend
+  // reads the PO, the variations and the PO's claim ledger, derives every
+  // figure (calculation version 2) and enforces one open claim per PO —
+  // authoritatively now (Deferred Control 36). The checks below are the UX
+  // mirror and fail fast. `claimId` may be chosen by the caller and re-sent
+  // on a retry, which makes the retry safe.
+  const createProgressClaim = useCallback(async ({ po, periodEnding, claimRef, notes, retention, lineItems, claimId = null }) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (!CLAIMABLE_PO_STATUSES.includes(po.status)) throw new Error('Claims can only be raised against sent purchase orders')
     if (hasOpenClaim(progressClaims, po.id)) throw new Error('This purchase order already has an open claim')
-    // The same draft validation the editor and the draft edit apply — the
-    // hook is the domain boundary, the editor's disabled button is not.
     const draftError = validateClaimDraft({ lineItems, retention, poId: po.id })
     if (draftError) throw new Error(draftError)
-    const variationLineCount = claimVariationLineCount(lineItems)
-    const variationIds = [...new Set(lineItems.filter(isVariationOriginLine).map(li => li.variationId))]
-
-    const counterRef  = doc(db, 'companies', companyId, 'counters', 'progressClaims')
-    const claimDocRef = doc(collection(db, 'companies', companyId, 'projects', projectId, 'progressClaims'))
-    const poRef       = doc(db, 'companies', companyId, 'projects', projectId, 'purchaseOrders', po.id)
-    const variationRefs = variationIds.map(id => doc(db, 'companies', companyId, 'projects', projectId, 'variations', id))
-
-    await runTransaction(db, async (tx) => {
-      const counterSnap = await tx.get(counterRef)
-      const next = counterSnap.exists() ? counterSnap.data().next : 1
-      // The currency ratchet is staged during the transaction's READ phase and
-      // committed below, so this claim and the project lock succeed or fail
-      // together — the project can never hold amounts with a still-changeable
-      // currency. Firestore requires all transaction reads before any writes.
-      const commitLock = await stageProjectCurrencyLock(tx, companyId, projectId)
-      // Source re-validation on the SERVER copies (ADR-63) — fail closed.
-      const poSnap = await tx.get(poRef)
-      const livePo = poSnap.exists() ? { id: poSnap.id, ...poSnap.data() } : null
-      if (!livePo || !CLAIMABLE_PO_STATUSES.includes(livePo.status)) {
-        throw new Error(`${po.poNumber || 'The purchase order'} is no longer a sent purchase order on the server, so the claim was not created.`)
-      }
-      const liveVariations = []
-      for (const ref of variationRefs) {
-        const snap = await tx.get(ref)
-        liveVariations.push(snap.exists() ? { id: snap.id, ...snap.data() } : null)
-      }
-      const sourceError = variationSourceError(lineItems, { po: livePo, variations: liveVariations, variationIds })
-      if (sourceError) throw new Error(sourceError)
-
-      tx.set(counterRef, { next: next + 1 }, { merge: true })
-
-      const totals = claimTotals(lineItems.map(li => li.claimedThisPeriod), retention)
-      tx.set(claimDocRef, {
-        claimNumber:  formatClaimNumber(next),
-        status:       CLAIM_STATUS.DRAFT,
-        poId:         po.id,
-        poNumber:     po.poNumber,
-        supplierName: po.supplierName,
-        supplierId:   po.supplierId ?? null,
-        claimRef:     claimRef?.trim() || '',
-        periodEnding: periodEnding || '',
-        variationId:  null,
-        variationLineCount,
-        lineItems,
-        retention:        totals.retention,
-        claimedSubtotal:  totals.subtotal,
-        claimedGst:       totals.gst,
-        claimedTotal:     totals.total,
-        approvedSubtotal: null,
-        approvedGst:      null,
-        approvedTotal:    null,
-        notes:            notes?.trim() || '',
-        assessmentNotes:  '',
-        // Audit snapshot of the currency this document was raised in (the frozen
-        // supplierName/costCodeName idiom). The PROJECT currency remains the
-        // display authority — this field is never read for rendering, so a
-        // project can never show mixed currencies. Historical documents keep
-        // their stored 'AUD' and are never rewritten.
-        currency:         projectCurrency,
-        revision:         1,
-        // Lifecycle stamps — born null. Each transition writes its own
-        // (at, by) pair; Firestore rules require the actor to be the caller
-        // and the time to be the server's (ADR-58). `invoicedAt` is reserved
-        // (no application path writes it).
-        submittedAt:      null,
-        submittedBy:      null,
-        approvedAt:       null,
-        approvedBy:       null,
-        rejectedAt:       null,
-        rejectedBy:       null,
-        invoicedAt:       null,
-        // SHIELD 2A (ADR-68): the claim ↔ supplier-invoice link, born
-        // UNLINKED (present and null — a claim with no such key is LEGACY and
-        // cannot be invoiced until reconciled). Workflow state, never a figure.
-        ...CLAIM_LINK_INITIAL,
-        externalRefs:     {},
-        createdAt:        serverTimestamp(),
-        createdBy:        user.uid,
-        // Audit stamps — required by rules on EVERY write since ADR-58.
-        updatedAt:        serverTimestamp(),
-        updatedBy:        user.uid,
-      })
-      commitLock()
+    const id = claimId ?? doc(collection(db, 'companies', companyId, 'projects', projectId, 'progressClaims')).id
+    return runSupplierFinance(callSupplierFinance, SF_CALLABLE.CLAIM, 'create', {
+      projectId, claimId: id, poId: po.id, ...claimHeaderRequest({ periodEnding, claimRef, notes, retention }),
+      lines: lineItems.map(claimLineRequest),
     })
-  }, [companyId, projectId, user, progressClaims, projectCurrency])
+  }, [companyId, projectId, user, progressClaims])
 
-  // Draft-only edits (ADR-37) — claimed amounts freeze once a claim is submitted.
-  //
-  // The caller supplies NO line items. `claimedToDate` is the ordered set of
-  // authored cumulative figures, one per STORED line, and the stored claim
-  // document is the sole authority for line identity: every line is rebuilt over
-  // the SERVER copy's `lineItems` inside the guarded transaction
-  // (lib/progressClaimActions.js → runUpdateClaimDraft), so poLineIndex,
-  // costCodeId, costCodeName, description, poLineTotal and previouslyApproved
-  // cannot be rewritten by any caller. `previouslyApproved` is deliberately NOT
-  // re-derived — the one-open-claim rule means no later approved claim can
-  // legitimately appear while this draft is open. `claimedThisPeriod` is always
-  // re-derived and `approvedThisPeriod` forced null.
-  //
-  // Since ADR-58 (M2-B2) the edit is a REVISION-GUARDED transaction: the server
-  // copy must still be a draft at the revision the user reviewed (STALE
-  // otherwise — the editor keeps the user's entries and shows the reason), and
-  // the write carries `revision + 1` and the audit stamps. The rules admit
-  // exactly these keys on a draft and require the +1, so the draft-only edit
-  // and the freeze after submit are RULES-ENFORCED; the status check here is
-  // the UX mirror. Immutable fields are never written — updateDoc is partial.
-  // No currency ratchet is staged (the project locked when the claim was
-  // created).
+  // Draft-only edit (ADR-37 contract, ADR-93 authority): one claimed-to-date
+  // per STORED line, the revision the editor was OPENED on. The backend
+  // re-derives every line from the stored identities and the PO's claim
+  // ledger, and stores the draft under the current calculation version.
   const updateProgressClaim = useCallback(async (claim, data) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (claim.status !== CLAIM_STATUS.DRAFT) throw new Error('Only draft claims can be edited')
-    const claimRef = doc(db, 'companies', companyId, 'projects', projectId, 'progressClaims', claim.id)
-    await runUpdateClaimDraft({
-      db, claimRef, seen: claim, data, uid: user.uid, runTransaction, serverTimestamp,
+    return runSupplierFinance(callSupplierFinance, SF_CALLABLE.CLAIM, 'update', {
+      projectId, claimId: claim.id, expectedRevision: Number.isSafeInteger(claim.revision) ? claim.revision : 0,
+      ...claimHeaderRequest(data), claimedToDate: (data?.claimedToDate ?? []).map(v => Number(v) || 0),
     })
   }, [companyId, projectId, user])
 
-  // Submit / approve / reject through ONE guarded transaction (ADR-58,
-  // lib/progressClaimActions.js): the server copy must still be in the status
-  // AND at the revision the user acted on, the move must be legal, and the
-  // write is status + the transition's (at, by) stamps + the audit stamps +
-  // revision — plus, for approval, the certified lines, the approved header
-  // (claimTotals over the certified amounts and the STORED retention) and the
-  // assessment notes — exactly what the rules' transition branches admit.
-  // `under_review` and `invoiced` are reserved targets with no application
-  // path; the transaction refuses them and so do the rules. Approved amounts
-  // are frozen forever: an approved claim matches no update branch.
+  // Submit is the content-free Rules transition (ADR-58). Approve and reject
+  // are backend operations: approval verifies the stored claim and certifies
+  // under its own calculation version; both move the PO's claim ledger.
   const transitionStatus = useCallback(async (claim, nextStatus, { approvedAmounts, assessmentNotes } = {}) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (!canTransition(claim.status, nextStatus)) {
       throw new Error(`Cannot move a ${claim.status} claim to ${nextStatus}`)
     }
-    const claimRef = doc(db, 'companies', companyId, 'projects', projectId, 'progressClaims', claim.id)
+    const expectedRevision = Number.isSafeInteger(claim.revision) ? claim.revision : 0
+    if (nextStatus === CLAIM_STATUS.APPROVED) {
+      return runSupplierFinance(callSupplierFinance, SF_CALLABLE.CLAIM, 'approve', {
+        projectId, claimId: claim.id, expectedRevision,
+        approvedAmounts: (approvedAmounts ?? []).map(a => Math.round((Number(a) || 0) * 100) / 100),
+        assessmentNotes: (assessmentNotes ?? '').trim(),
+      })
+    }
+    if (nextStatus === CLAIM_STATUS.REJECTED) {
+      return runSupplierFinance(callSupplierFinance, SF_CALLABLE.CLAIM, 'reject', {
+        projectId, claimId: claim.id, expectedRevision, assessmentNotes: (assessmentNotes ?? '').trim(),
+      })
+    }
+    const claimDocRef = doc(db, 'companies', companyId, 'projects', projectId, 'progressClaims', claim.id)
     await runTransitionClaim({
-      db, claimRef, seen: claim, nextStatus, extras: { approvedAmounts, assessmentNotes },
+      db, claimRef: claimDocRef, seen: claim, nextStatus,
       uid: user.uid, runTransaction, serverTimestamp,
     })
   }, [companyId, projectId, user])
 
-  // SHIELD 2A (ADR-68) — RECONCILE a claim that has no current link (legacy
-  // key-absent, or new-format null) with an EXISTING active claim-sourced
-  // invoice of its own, through one guarded transaction
-  // (lib/supplierInvoiceActions.js → runLinkExistingInvoice; rules branch
-  // (g) verifies the one invoice named). Records a fact, never creates one;
-  // the page offers it only from a settled, error-free invoice register that
-  // shows exactly one active invoice for the claim. There is deliberately NO
-  // "confirm no invoice" action: rules cannot prove absence.
+  // SHIELD 2A (ADR-68) — RECONCILE a claim that has no current link with an
+  // EXISTING active claim-sourced invoice of its own, through the backend.
   const linkExistingInvoice = useCallback(async (claim, invoice) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
-    const claimRef   = doc(db, 'companies', companyId, 'projects', projectId, 'progressClaims', claim.id)
-    const invoiceRef = doc(db, 'companies', companyId, 'projects', projectId, 'supplierInvoices', invoice.id)
-    await runLinkExistingInvoice({
-      db, claimRef, invoiceRef, seenClaim: claim, seenInvoice: invoice, uid: user.uid, runTransaction, serverTimestamp,
+    return runSupplierFinance(callSupplierFinance, SF_CALLABLE.INVOICE, 'link', {
+      projectId, claimId: claim.id, invoiceId: invoice.id,
+      expectedClaimRevision: Number.isSafeInteger(claim.revision) ? claim.revision : 0,
     })
   }, [companyId, projectId, user])
 

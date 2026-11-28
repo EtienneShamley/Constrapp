@@ -33,7 +33,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const FIRESTORE_RULES_PATH = resolve(HERE, '../../firestore.rules')
 const STORAGE_RULES_PATH = resolve(HERE, '../../storage.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const COMPANY_B = 'companyB'
 const P1 = 'p1'          // exists in BOTH companies on purpose (same id, different tenant)

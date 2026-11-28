@@ -332,12 +332,14 @@ describe('buildPurchaseOrderDocument — one shape for manual and award-raised P
     'poNumber', 'status', 'supplierName', 'supplierId', 'description', 'lineItems', 'subtotal', 'gst', 'total',
     'currency', 'revision', 'notes', 'sentAt', 'sentBy', 'closedAt', 'closedBy', 'cancelledAt', 'cancelledBy',
     'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy',
+    // D4 (ADR-96, D3 #46): the Rules now REQUIRE the material-edit provenance at create.
+    'lastMaterialEditBy', 'lastMaterialEditAt',
   ].sort()
 
-  it('a manual document carries exactly the 23 rules-pinned keys and no source key', () => {
+  it('a manual document carries exactly the 25 rules-pinned keys (23 + the two D4 provenance stamps) and no source key', () => {
     const d = buildPurchaseOrderDocument({ poNumber: 'PO-0001', supplierName: ' Acme ', supplierId: 'c1', description: ' Slab ', notes: undefined, lineItems: [{ lineTotal: 10 }], currency: 'AUD', uid: 'u1', now: NOW })
     expect(Object.keys(d).sort()).toEqual(MANUAL_KEYS)
-    expect(d).toMatchObject({ status: 'draft', supplierName: 'Acme', supplierId: 'c1', description: 'Slab', notes: '', subtotal: 10, gst: 1, total: 11, currency: 'AUD', revision: 1, externalRefs: {}, createdAt: NOW, createdBy: 'u1', updatedAt: NOW, updatedBy: 'u1' })
+    expect(d).toMatchObject({ status: 'draft', supplierName: 'Acme', supplierId: 'c1', description: 'Slab', notes: '', subtotal: 10, gst: 1, total: 11, currency: 'AUD', revision: 1, externalRefs: {}, createdAt: NOW, createdBy: 'u1', updatedAt: NOW, updatedBy: 'u1', lastMaterialEditBy: 'u1', lastMaterialEditAt: NOW })
     for (const k of ['sentAt', 'sentBy', 'closedAt', 'closedBy', 'cancelledAt', 'cancelledBy']) expect(d[k]).toBeNull()
     expect(isAwardRaisedPo(d)).toBe(false)
   })

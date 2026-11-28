@@ -47,7 +47,7 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const COMPANY_B = 'companyB'
 const PROJECT_A = 'projectA'
@@ -973,84 +973,92 @@ describe.each(KINDS)('$label — voiding a DRAFT', (kind) => {
 // 6. INVOICE VOID vs the ledger
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('voiding an invoice against its ledger (ledgerClear)', () => {
+// Phase 2 step 5 (D8) — CHANGED EXPECTATIONS. Before it, an ISSUED invoice was
+// voided by the browser under `ledgerClear()` (no posted credit or release);
+// receipts were NOT checked — Rules cannot read a receipt. Since step 5 an
+// issued invoice is voided ONLY by the trusted callable `voidClientInvoice`,
+// which refuses while its ledger records ANY money (receipts — including those
+// posted before the backend took over, through the receipt baseline —
+// applications, refunds, credits, releases): tests/functions/clientSettlement.test.js.
+// So every issued-invoice void below is now REFUSED by the Rules, for every
+// role, whatever the ledger says — each former "allowed" became "denied"
+// (stronger), each former "denied" is still denied. A DRAFT invoice (it
+// billed nothing, so it can carry no ledger money) is still voided here.
+describe('voiding an invoice against its ledger (Rules: drafts only since Phase 2 step 5)', () => {
   const voidInvoice = (id, user = USERS.admin) => updateDoc(invRef(ctx(user), id), {
     status: 'void', voidedAt: serverTimestamp(), voidedBy: user.uid, voidReason: 'Issued in error',
     updatedAt: serverTimestamp(), updatedBy: user.uid,
   })
   const statusOf = async (id) => (await read(invRef(ctx(USERS.admin), id))).status
 
-  it('an invoice with NO ledger voids, for every financial role', async () => {
-    await allowed('admin voids inv2', voidInvoice('inv2', USERS.admin))
-    await allowed('pm voids inv1', voidInvoice('inv1', USERS.pm))
-    await allowed('qs voids inv3', voidInvoice('inv3', USERS.qs))
+  it('an ISSUED invoice with NO ledger is refused for every financial role (was allowed; the backend decides now)', async () => {
+    await denied('admin voids inv2', voidInvoice('inv2', USERS.admin))
+    await denied('pm voids inv1', voidInvoice('inv1', USERS.pm))
+    await denied('qs voids inv3', voidInvoice('inv3', USERS.qs))
+    for (const id of ['inv1', 'inv2', 'inv3']) expect(await statusOf(id)).toBe('issued')
   })
 
-  it('DRAFT (and voided-draft) credit notes and releases do not block the void — they never reach the ledger', async () => {
+  it('a DRAFT invoice is still voided by every financial role', async () => {
+    for (const [i, user] of FINANCIAL.entries()) {
+      await admin((db) => setDoc(invRef(db, `draft${i}`), { ...INVOICES.invDraft, invoiceNumber: `CI-01${i}` }))
+      await allowed(`${who(user)} voids a draft`, voidInvoice(`draft${i}`, user))
+      expect(await statusOf(`draft${i}`)).toBe('void')
+    }
+  })
+
+  it('outstanding DRAFT credit notes and releases change nothing: the issued invoice is still refused', async () => {
     await seedDraft(CREDIT, 'c1')
     await seedDraft(RELEASE, 'r1')
     await seedVoidedDraft(CREDIT, 'c2')
     expect(await ledgerOf('inv3')).toBeNull()
-    await allowed('void with drafts outstanding', voidInvoice('inv3'))
+    await denied('void with drafts outstanding', voidInvoice('inv3'))
   })
 
-  it('a ledger whose totals are ZERO does not block the void', async () => {
-    // inv3: a ledger that has moved and come back (post, then void, by the backend).
+  it('a ledger whose totals are ZERO, or an empty ledger, does not open the Rules path either', async () => {
     await seedPostedThenVoided(CREDIT, 'c1', 'inv3')
     expect(await ledgerOf('inv3')).toMatchObject({ seq: 2, creditedSubtotalCents: 0, releasedRetentionCents: 0 })
-    await allowed('void with a zeroed ledger', voidInvoice('inv3', USERS.pm))
-    // inv1: a ledger document at its empty state.
+    await denied('void with a zeroed ledger', voidInvoice('inv3', USERS.pm))
     await seedLedger('inv1', { ...readLedger(null), lastEntryId: null, lastEntryKind: null })
-    await allowed('void with an empty ledger', voidInvoice('inv1', USERS.qs))
+    await denied('void with an empty ledger', voidInvoice('inv1', USERS.qs))
   })
 
-  it('DENIED for admin, pm and qs while the ledger shows a CREDITED amount; allowed once it returns to zero', async () => {
+  it('DENIED for admin, pm and qs while the ledger shows a CREDITED amount, and still denied once it returns to zero', async () => {
     const posted = await seedPosted(CREDIT, 'c1', 'inv3')
     expect((await ledgerOf('inv3')).creditedSubtotalCents).toBe(1000)
     for (const user of FINANCIAL) await denied(`${who(user)} voids a credited invoice`, voidInvoice('inv3', user))
     expect(await statusOf('inv3')).toBe('issued')
-    // Control: an identical void on an invoice with no ledger succeeds.
-    await allowed('void inv1 (no ledger)', voidInvoice('inv1'))
-    // The backend voids the credit: the ledger returns to zero and the invoice may be voided.
     await seedLedger('inv3', applyCreditVoid(readLedger(await ledgerOf('inv3')), posted))
     expect((await ledgerOf('inv3')).creditedSubtotalCents).toBe(0)
-    await allowed('void once the ledger is back to zero', voidInvoice('inv3', USERS.qs))
+    await denied('void once the ledger is back to zero', voidInvoice('inv3', USERS.qs))
   })
 
-  it('DENIED for admin, pm and qs while the ledger shows a RELEASED amount; allowed once it returns to zero', async () => {
+  it('DENIED for admin, pm and qs while the ledger shows a RELEASED amount, and still denied once it returns to zero', async () => {
     const posted = await seedPosted(RELEASE, 'r1', 'inv3')
     expect(await ledgerOf('inv3')).toMatchObject({ creditedSubtotalCents: 0, releasedRetentionCents: 500 })
     for (const user of FINANCIAL) await denied(`${who(user)} voids a released invoice`, voidInvoice('inv3', user))
     expect(await statusOf('inv3')).toBe('issued')
     await seedLedger('inv3', applyReleaseVoid(readLedger(await ledgerOf('inv3')), posted))
-    await allowed('void once the ledger is back to zero', voidInvoice('inv3', USERS.pm))
+    await denied('void once the ledger is back to zero', voidInvoice('inv3', USERS.pm))
   })
 
-  it('DENIED while BOTH a credit and a release are posted, and still denied after only one of them is reversed', async () => {
+  it('DENIED while BOTH a credit and a release are posted, and after either is reversed', async () => {
     const credit = await seedPosted(CREDIT, 'c1', 'inv3')
     await seedPosted(RELEASE, 'r1', 'inv3')
     await denied('both posted', voidInvoice('inv3'))
     await seedLedger('inv3', applyCreditVoid(readLedger(await ledgerOf('inv3')), credit))
-    expect(await ledgerOf('inv3')).toMatchObject({ creditedSubtotalCents: 0, releasedRetentionCents: 500 })
     for (const user of FINANCIAL) await denied(`${who(user)} voids with the release still posted`, voidInvoice('inv3', user))
-    await allowed('control: another invoice', voidInvoice('inv2'))
   })
 
-  it('a ledger of one invoice does not block the void of another', async () => {
-    await seedPosted(CREDIT, 'c1', 'inv3')
-    await allowed('inv1 voids while inv3 is credited', voidInvoice('inv1'))
-    await denied('inv3 does not', voidInvoice('inv3'))
+  it('a ledger with RECEIVED money (the D8 case Rules could never see) is refused, as is every other issued invoice', async () => {
+    await seedLedger('inv2', { ...readLedger(null), receivedCents: 10000, lastEntryId: 'r1', lastEntryKind: 'receipt' })
+    for (const user of FINANCIAL) await denied(`${who(user)} voids an invoice that holds receipts`, voidInvoice('inv2', user))
   })
 
-  it('a ledger with a total MISSING reads it as zero (a receipt-only ledger must not block); a total of the WRONG TYPE fails closed', async () => {
-    // Only the backend writes ledgers, and it always writes every total; a
-    // missing key is read as zero so that no shape of receipt-only ledger can
-    // trap an invoice. A non-numeric total is not zero: the void is refused.
+  it('a ledger with a total of the WRONG TYPE, or no totals, changes nothing: issued is refused', async () => {
     await admin((db) => setDoc(ledRef(db, 'inv3'), { seq: 1, creditedSubtotalCents: 'none', releasedRetentionCents: 0 }))
     for (const user of FINANCIAL) await denied(`${who(user)} voids against a ledger with a non-numeric total`, voidInvoice('inv3', user))
     await admin((db) => setDoc(ledRef(db, 'inv3'), { seq: 1 }))
-    await allowed('a ledger with no totals at all reads as nothing posted', voidInvoice('inv3'))
-    await allowed('control: an invoice with no ledger', voidInvoice('inv1'))
+    await denied('a ledger with no totals at all', voidInvoice('inv3'))
   })
 
   it('a client cannot clear the way by writing the ledger itself', async () => {
@@ -1244,8 +1252,9 @@ describe('client retention on the invoice', () => {
       await denied(`${who(user)} changes retention GST only`, updateDoc(invRef(mine, 'inv3'), { retentionGst: 0, ...STAMP(user) }))
     }
     expect(await read(invRef(db, 'inv3'))).toMatchObject({ retention: 10, retentionGst: 1, status: 'issued' })
-    // Control: the one update an issued invoice admits.
-    await allowed('void inv3', updateDoc(invRef(db, 'inv3'), {
+    // Phase 2 step 5 (CHANGED): an issued invoice now admits NO client update at
+    // all — even its void is the trusted backend's (voidClientInvoice, D8).
+    await denied('void inv3', updateDoc(invRef(db, 'inv3'), {
       status: 'void', voidedAt: serverTimestamp(), voidedBy: USERS.admin.uid, voidReason: 'Issued in error', ...STAMP(USERS.admin),
     }))
   })
@@ -1333,6 +1342,28 @@ describe('company activation — credit notes and retention exist only for a com
     await assertFails(updateDoc(doc(ctx(USERS.admin), 'companies', COMPANY_B), { clientFinanceEnabled: true }))
   })
 
+  it('Phase 2 company activation (commercialCompletionEnabled) is out of every client\'s reach — set, smuggled with permitted keys, replaced, cleared, or on another company', async () => {
+    await setFlag(undefined)
+    const ref = (user) => doc(ctx(user), 'companies', COMPANY_A)
+    for (const user of [...FINANCIAL, USERS.sub, USERS.client]) {
+      await denied(`${who(user)} sets the Phase 2 flag`, updateDoc(ref(user), { commercialCompletionEnabled: true }))
+      await denied(`${who(user)} sets the Phase 2 flag with a permitted key`, updateDoc(ref(user), {
+        commercialCompletionEnabled: true, countryCode: 'AU', baseCurrency: 'AUD',
+        currencyUpdatedAt: serverTimestamp(), currencyUpdatedBy: user.uid,
+      }))
+      await denied(`${who(user)} replaces the document with the Phase 2 flag`, setDoc(ref(user), { name: COMPANY_A, baseCurrency: 'AUD', commercialCompletionEnabled: true }))
+    }
+    expect((await read({ path: `companies/${COMPANY_A}` })).commercialCompletionEnabled).toBeUndefined()
+    // An ACTIVE company's admin can neither deactivate it nor activate another company.
+    await admin(async (db) => {
+      await setDoc(doc(db, 'companies', COMPANY_A), { commercialCompletionEnabled: true }, { merge: true })
+      await setDoc(doc(db, 'companies', COMPANY_B), { name: COMPANY_B, baseCurrency: 'AUD' })
+    })
+    await assertFails(updateDoc(ref(USERS.admin), { commercialCompletionEnabled: false }))
+    await assertFails(updateDoc(doc(ctx(USERS.admin), 'companies', COMPANY_B), { commercialCompletionEnabled: true }))
+    expect((await read({ path: `companies/${COMPANY_A}` })).commercialCompletionEnabled).toBe(true)
+  })
+
   it('activation is per company: A activated does not open B, and B\'s flag does not open A', async () => {
     await admin(async (db) => {
       await setDoc(doc(db, 'companies', COMPANY_B), { name: COMPANY_B, baseCurrency: 'AUD' })
@@ -1360,6 +1391,68 @@ describe('the receipt-baseline marker (clientFinanceState) is server-only — no
       await denied(`${who(user)} deletes`, deleteDoc(ref))
       await denied(`${who(user)} creates another`, setDoc(doc(ctx(user), ...base(), 'clientFinanceState', 'x'), { a: 1 }))
     }
+  })
+})
+
+// Phase 2 step 5 (D6–D8) — refunds and receipt applications are written ONLY by
+// the trusted backend; financial roles may read them; the per-receipt ledger
+// and the two numbering counters are server-only.
+describe('client refunds, receipt applications and their ledger/counters (Phase 2 step 5)', () => {
+  const refundDoc = { docType: 'client_refund', refundNumber: 'CRF-0001', status: 'posted', source: 'receipt', receiptId: 'r1', clientInvoiceId: null, clientId: 'c1', currency: 'AUD', amount: 10 }
+  const appDoc = { docType: 'client_receipt_application', applicationNumber: 'CRA-0001', status: 'posted', receiptId: 'r1', clientInvoiceId: 'inv1', clientId: 'c1', currency: 'AUD', amount: 10 }
+
+  it('financial roles of the company read both registers; nobody else does', async () => {
+    await admin(async (db) => {
+      await setDoc(doc(db, ...base(), 'clientRefunds', 'f1'), refundDoc)
+      await setDoc(doc(db, ...base(), 'clientReceiptApplications', 'a1'), appDoc)
+    })
+    for (const user of FINANCIAL) {
+      await allowed(`${who(user)} reads a refund`, getDoc(doc(ctx(user), ...base(), 'clientRefunds', 'f1')))
+      await allowed(`${who(user)} reads an application`, getDoc(doc(ctx(user), ...base(), 'clientReceiptApplications', 'a1')))
+    }
+    for (const user of OUTSIDERS) {
+      await denied(`${who(user)} reads a refund`, getDoc(doc(ctx(user), ...base(), 'clientRefunds', 'f1')))
+      await denied(`${who(user)} reads an application`, getDoc(doc(ctx(user), ...base(), 'clientReceiptApplications', 'a1')))
+    }
+  })
+
+  it('NO client creates, changes, voids or deletes either — every financial role is refused', async () => {
+    await admin(async (db) => {
+      await setDoc(doc(db, ...base(), 'clientRefunds', 'f1'), refundDoc)
+      await setDoc(doc(db, ...base(), 'clientReceiptApplications', 'a1'), appDoc)
+    })
+    for (const user of [...FINANCIAL, ...OUTSIDERS]) {
+      const db = ctx(user)
+      await denied(`${who(user)} creates a refund`, setDoc(doc(db, ...base(), 'clientRefunds', 'x'), refundDoc))
+      await denied(`${who(user)} creates an application`, setDoc(doc(db, ...base(), 'clientReceiptApplications', 'x'), appDoc))
+      await denied(`${who(user)} voids a refund`, updateDoc(doc(db, ...base(), 'clientRefunds', 'f1'), { status: 'void', voidReason: 'x' }))
+      await denied(`${who(user)} raises an application`, updateDoc(doc(db, ...base(), 'clientReceiptApplications', 'a1'), { amount: 9999 }))
+      await denied(`${who(user)} deletes a refund`, deleteDoc(doc(db, ...base(), 'clientRefunds', 'f1')))
+      await denied(`${who(user)} deletes an application`, deleteDoc(doc(db, ...base(), 'clientReceiptApplications', 'a1')))
+    }
+  })
+
+  it('the per-receipt settlement ledger (clientReceiptLedgers) has no Rules block: no role reads or writes it', async () => {
+    await admin((db) => setDoc(doc(db, ...base(), 'clientReceiptLedgers', 'r1'), { seq: 1, appliedCents: 1000, refundedCents: 0 }))
+    for (const user of [...FINANCIAL, ...OUTSIDERS]) {
+      const ref = doc(ctx(user), ...base(), 'clientReceiptLedgers', 'r1')
+      await denied(`${who(user)} reads`, getDoc(ref))
+      await denied(`${who(user)} zeroes it`, setDoc(ref, { seq: 2, appliedCents: 0, refundedCents: 0 }))
+      await denied(`${who(user)} deletes it`, deleteDoc(ref))
+    }
+  })
+
+  it('the refund and application counters are server-only; the receipt counter is still the client’s (DC6 unchanged)', async () => {
+    for (const id of ['clientRefunds', 'clientReceiptApplications']) {
+      await admin((db) => setDoc(doc(db, 'companies', COMPANY_A, 'counters', id), { next: 5 }))
+      for (const user of FINANCIAL) {
+        const ref = doc(ctx(user), 'companies', COMPANY_A, 'counters', id)
+        await denied(`${who(user)} reads ${id}`, getDoc(ref))
+        await denied(`${who(user)} rolls back ${id}`, setDoc(ref, { next: 1 }))
+        await denied(`${who(user)} advances ${id}`, updateDoc(ref, { next: 999 }))
+      }
+    }
+    await allowed('control: the receipt counter', setDoc(doc(ctx(USERS.qs), 'companies', COMPANY_A, 'counters', 'clientReceipts'), { next: 3 }, { merge: true }))
   })
 })
 

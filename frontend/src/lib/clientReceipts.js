@@ -8,6 +8,7 @@ import {
   isFutureDate, isIsoDateShape, todayIso,
   validateAmount, validatePaymentMethod, validateAllocations,
 } from './payments'
+import { settlementByInvoice, settlementByReceipt, settlementSummary, refundCashRows } from './clientSettlement'
 
 // ── Client Receipts (accounts receivable — money IN) ─────────────────────────
 //
@@ -50,12 +51,22 @@ export const draftClientReceipts = (receipts) =>
 // wrong). Both are excluded here, which is exactly why voiding a posted receipt
 // restores the invoice's balance immediately at the next render — with no
 // reversal document and no write to the invoice.
-export function receivedByInvoice(receipts) {
+//
+// `settlement` (Phase 2 step 5) — `{ refunds, applications }`, optional: the
+// money an invoice HOLDS is also what posted applications brought to it, less
+// what has been refunded to the client out of its overpayment. Without it the
+// figures are exactly those of receipts alone.
+export function receivedByInvoice(receipts, settlement = null) {
   const map = {}
   for (const r of postedClientReceipts(receipts)) {
     for (const a of r.allocations ?? []) {
       if (!a?.clientInvoiceId) continue
       map[a.clientInvoiceId] = roundMoney((map[a.clientInvoiceId] || 0) + safeAmount(a.allocatedAmount))
+    }
+  }
+  if (settlement) {
+    for (const [invoiceId, s] of Object.entries(settlementByInvoice(settlement))) {
+      map[invoiceId] = roundMoney((map[invoiceId] || 0) + (s.appliedCents - s.refundedCents) / 100)
     }
   }
   return map
@@ -104,8 +115,8 @@ export function invoiceReconciliation(invoice, receivedMap = {}, positions = {})
 //
 // Only ISSUED invoices can be reconciled: a draft has billed nothing, and a void
 // invoice is nothing forever. Both are excluded from every AR figure.
-export function clientInvoiceReconciliationRows(invoices, receipts, positions = {}) {
-  const received = receivedByInvoice(receipts)
+export function clientInvoiceReconciliationRows(invoices, receipts, positions = {}, settlement = null) {
+  const received = receivedByInvoice(receipts, settlement)
   return (invoices ?? [])
     .filter(inv => inv.status === CI_STATUS.ISSUED)
     .map(inv => {
@@ -135,8 +146,8 @@ export function clientInvoiceReconciliationRows(invoices, receipts, positions = 
 }
 
 // Project-level receivables totals, all read-time.
-export function receivablesSummary(invoices, receipts, positions = {}) {
-  const rows = clientInvoiceReconciliationRows(invoices, receipts, positions)
+export function receivablesSummary(invoices, receipts, positions = {}, settlement = null) {
+  const rows = clientInvoiceReconciliationRows(invoices, receipts, positions, settlement)
   let issuedGross = 0
   let received = 0
   let remaining = 0
@@ -176,30 +187,49 @@ export const overReconciledRows = (rows) =>
 // `unallocated` is surfaced on its own and is NEVER netted against any invoice:
 // money on account has not been matched to a debt, and auto-applying it would be
 // an accounting policy Constrapp is not making on the user's behalf.
-export function receiptSummary(receipts) {
+//
+// With `settlement` (Phase 2 step 5): `unallocated` is what is STILL on
+// account — less what has since been applied to an invoice or refunded to the
+// client — and `refunded` / `netReceived` are reported beside the gross
+// `postedAmount`. Net cash received = posted receipts − posted refunds; an
+// application moves money from "unallocated" to "allocated" and is not cash.
+export function receiptSummary(receipts, settlement = null) {
   const posted = postedClientReceipts(receipts)
   const drafts = draftClientReceipts(receipts)
+  const used = settlement ? settlementByReceipt(settlement) : {}
 
   let postedAmount = 0
   let allocated = 0
   let unallocated = 0
   for (const r of posted) {
+    const u = used[r.id]
     postedAmount = roundMoney(postedAmount + safeAmount(r.amount))
-    allocated    = roundMoney(allocated + safeAmount(r.allocatedTotal))
-    unallocated  = roundMoney(unallocated + safeAmount(r.unallocatedAmount))
+    allocated    = roundMoney(allocated + safeAmount(r.allocatedTotal) + (u ? u.appliedCents / 100 : 0))
+    unallocated  = roundMoney(unallocated + safeAmount(r.unallocatedAmount) - (u ? (u.appliedCents + u.refundedCents) / 100 : 0))
   }
 
   let draftAmount = 0
   for (const r of drafts) draftAmount = roundMoney(draftAmount + safeAmount(r.amount))
 
+  const totals = settlement ? settlementSummary(settlement) : null
+  const refunded = totals ? roundMoney(totals.refundedCents / 100) : 0
   return {
     postedCount: posted.length,
     postedAmount,
     allocated,
     unallocated,
+    refunded,
+    netReceived: roundMoney(postedAmount - refunded),
     draftCount: drafts.length,
     draftAmount,
   }
+}
+
+// What ONE posted receipt can still settle (apply or refund), in money: its
+// unallocated amount less what has been applied and refunded from it.
+export function receiptAvailable(receipt, settlement = null) {
+  const u = settlement ? settlementByReceipt(settlement)[receipt?.id] : null
+  return roundMoney(safeAmount(receipt?.unallocatedAmount) - (u ? (u.appliedCents + u.refundedCents) / 100 : 0))
 }
 
 // Posted receipts that allocated against one invoice — the "linked receipts"
@@ -228,17 +258,21 @@ export function receiptsForInvoice(receipts, clientInvoiceId) {
 // The invoices a receipt may allocate against: ISSUED, non-void, belonging to
 // the SELECTED CLIENT, in THIS project.
 //
-// ⚠️ CLIENT-ENFORCED. Firestore rules cannot verify any of this — checking each
-// allocation's target would need a get() per array element, and rules cannot
-// iterate an array. A direct SDK call can allocate against anything.
+// ⚠️ A UX FILTER FOR THE DRAFT. Firestore rules cannot verify any of this for
+// a DRAFT — checking each allocation's target would need a get() per array
+// element, and rules cannot iterate an array — so a direct SDK call can DRAFT
+// an allocation against anything. Since ADR-89 it cannot be POSTED: the trusted
+// `postClientReceipt` reads every allocated invoice and refuses unless it is
+// issued, of the receipt's client, in the receipt's currency and carries the
+// stated number (functions/src/clientFinance/receipts.js).
 //
 // `excludeReceiptId` removes the receipt being edited from the "already
 // received" figures, so editing a draft does not double-count its own
 // allocations (drafts contribute nothing anyway, but a posted-receipt edit path
 // must never silently misreport a balance).
-export function allocatableInvoices(invoices, clientId, receipts, { excludeReceiptId = null, positions = {} } = {}) {
+export function allocatableInvoices(invoices, clientId, receipts, { excludeReceiptId = null, positions = {}, settlement = null } = {}) {
   const others = (receipts ?? []).filter(r => r.id !== excludeReceiptId)
-  const received = receivedByInvoice(others)
+  const received = receivedByInvoice(others, settlement)
   return (invoices ?? [])
     .filter(inv => inv.status === CI_STATUS.ISSUED)
     .filter(inv => !!clientId && inv.clientId === clientId)
@@ -280,16 +314,19 @@ export function allocateOldestFirst(amount, rows) {
   return out
 }
 
-// ── Over-allocation (warned, never blocked) ──────────────────────────────────
+// ── Over-allocation (warned; posting needs an explicit acknowledgement) ──────
 //
-// ⚠️ NOT ENFORCED, AND NOT ENFORCEABLE. Firestore rules have no list, query, or
-// count, so no rule can sum what OTHER receipts have already allocated to an
-// invoice. Two users can allocate the same remaining balance concurrently and
-// both writes succeed. These are advisory warnings requiring an explicit
-// acknowledgement — never a guarantee. See docs/SECURITY.md → Deferred Controls.
-export function invoiceOverAllocationWarnings(allocations, invoices, receipts, { excludeReceiptId = null, positions = {} } = {}) {
+// These are the browser's warnings while a draft is prepared. Firestore rules
+// have no list, query or count, so no RULE can sum what other receipts have
+// allocated to an invoice. SINCE ADR-89 THE SERVER DOES: `postClientReceipt`
+// reads each invoice's ledger (`receivedCents`) inside its transaction and
+// refuses an over-allocating receipt unless the request carries the
+// acknowledgement; two concurrent postings contend on the invoice ledger and
+// are ordered, so a stale tab cannot over-allocate silently. An ACKNOWLEDGED
+// over-allocation is still accepted — it becomes an amount owed to the client.
+export function invoiceOverAllocationWarnings(allocations, invoices, receipts, { excludeReceiptId = null, positions = {}, settlement = null } = {}) {
   const others = (receipts ?? []).filter(r => r.id !== excludeReceiptId)
-  const received = receivedByInvoice(others)
+  const received = receivedByInvoice(others, settlement)
   const byId = new Map((invoices ?? []).map(inv => [inv.id, inv]))
 
   const warnings = []
@@ -367,8 +404,8 @@ export const ALLOCATION_EXCEPTION_REMEDY =
 //     dedicated callout (a negative balance must never offset real arrears);
 //   · voiding a receipt restores the balance at the next render;
 //   · unallocated receipts reduce NO invoice balance and appear nowhere here.
-export function arAgeing(invoices, receipts, now = new Date(), positions = {}) {
-  const rows = clientInvoiceReconciliationRows(invoices, receipts, positions)
+export function arAgeing(invoices, receipts, now = new Date(), positions = {}, settlement = null) {
+  const rows = clientInvoiceReconciliationRows(invoices, receipts, positions, settlement)
   return ageBalances(
     rows,
     { dueDateOf: (r) => r.dueDate, balanceOf: (r) => r.remaining },
@@ -439,10 +476,13 @@ export function validateReceiptDraft({
 // known settlement) but must not be POSTED: posting asserts that money has
 // actually been received, and Cash Flow will consume receiptDate as real cash.
 //
-// ⚠️ CLIENT-ENFORCED. Firestore rules validate only the 'YYYY-MM-DD' SHAPE of
-// receiptDate — rules have no reliable calendar comparison against the caller's
-// local date, so a direct SDK call can post a future-dated receipt. Backdating
-// is always allowed (entering last month's bank statement is the normal case).
+// ⚠️ THE BROWSER'S CHECK, against the user's local day. Firestore rules validate
+// only the 'YYYY-MM-DD' SHAPE of receiptDate. Since ADR-89 posting is the
+// trusted `postClientReceipt`, which refuses a receipt dated after the latest
+// calendar day anywhere on Earth at the server's time (lib/clientReceiptPosting.js
+// → latestPostableReceiptDate), so a direct SDK call cannot post a future-dated
+// receipt. Backdating is always allowed (entering last month's bank statement
+// is the normal case).
 export function postBlockedReason(receipt, now = new Date()) {
   if (!receipt) return 'Receipt not found.'
   if (receipt.status !== PAYMENT_STATUS.DRAFT) {
@@ -491,8 +531,11 @@ export function buildAllocations(rows, invoices) {
 // ⚠️ Cash Flow must group by `receiptDate` (e.g. `receiptDate.slice(0, 7)`) and
 // NEVER by `createdAt`/`postedAt`, and must never sum across currencies — one
 // currency per project, and there is no FX.
-export function cashInRows(receipts, { projectId } = {}) {
-  return postedClientReceipts(receipts).map(r => ({
+//
+// `refunds` (Phase 2 step 5): posted refunds follow as NEGATIVE rows, so every
+// total over these rows is net cash received — receipts less refunds.
+export function cashInRows(receipts, { projectId, refunds = null } = {}) {
+  const rows = postedClientReceipts(receipts).map(r => ({
     receiptId:         r.id,
     receiptNumber:     r.receiptNumber,
     amount:            roundMoney(safeAmount(r.amount)),
@@ -504,6 +547,7 @@ export function cashInRows(receipts, { projectId } = {}) {
     allocatedTotal:    roundMoney(safeAmount(r.allocatedTotal)),
     unallocatedAmount: roundMoney(safeAmount(r.unallocatedAmount)),
   }))
+  return refunds ? [...rows, ...refundCashRows(refunds, { projectId: projectId ?? null })] : rows
 }
 
 // Re-exported so pages import ONE module for receipt behaviour.

@@ -21,11 +21,19 @@
     "functions:transfer-calc:check": "node scripts/build-boq-transfer-bundle.mjs --check",
     "functions:finance-calc": "node scripts/build-client-finance-bundle.mjs",
     "functions:finance-calc:check": "node scripts/build-client-finance-bundle.mjs --check",
+    "functions:variation-calc": "node scripts/build-variation-bundle.mjs",
+    "functions:variation-calc:check": "node scripts/build-variation-bundle.mjs --check",
+    "functions:supplier-finance-calc": "node scripts/build-supplier-finance-bundle.mjs",
+    "functions:supplier-finance-calc:check": "node scripts/build-supplier-finance-bundle.mjs --check",
+    "functions:estimating-calc": "node scripts/build-estimating-bundle.mjs",
+    "functions:estimating-calc:check": "node scripts/build-estimating-bundle.mjs --check",
     "test:unit": "vitest run --config vitest.config.js",
-    "test:rules": "firebase emulators:exec --only firestore,storage --project constrapp-rules-test \"vitest run --config vitest.rules.config.js\"",
-    "test:functions": "firebase emulators:exec --only auth,firestore,functions --project constrapp-rules-test \"vitest run --config vitest.functions.config.js\"",
+    "test:rules": "node scripts/emulators-isolated.mjs firestore,storage \"vitest run --config vitest.rules.config.js\"",
+    "test:functions": "node scripts/emulators-isolated.mjs auth,firestore,functions \"vitest run --config vitest.functions.config.js\"",
+    "test:functions:node22": "node scripts/require-node-major.mjs 22 && npm run test:functions",
     "functions:lint": "npm --prefix functions run lint",
-    "functions:test": "npm --prefix functions test"
+    "functions:test": "npm --prefix functions test",
+    "functions:test:node22": "node scripts/require-node-major.mjs 22 && npm --prefix functions test"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.1",

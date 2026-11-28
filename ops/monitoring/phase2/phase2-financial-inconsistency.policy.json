@@ -1,0 +1,30 @@
+{
+  "displayName": "Phase 2 financial callables: stored records do not reconcile",
+  "combiner": "OR",
+  "enabled": true,
+  "severity": "ERROR",
+  "userLabels": {
+    "programme": "phase2",
+    "component": "financial-callables",
+    "policy": "financial-inconsistency"
+  },
+  "conditions": [
+    {
+      "displayName": "A refusal with a ledger, figures, invariant or unsupported-record code",
+      "conditionMatchedLog": {
+        "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.location=\"australia-southeast1\" AND resource.labels.service_name=(\"createvariation\" OR \"updatevariationdraft\" OR \"approvevariation\" OR \"applyvariationcommitment\" OR \"progressclaimoperation\" OR \"supplierinvoiceoperation\" OR \"suppliersettlementoperation\" OR \"postclientrefund\" OR \"voidclientrefund\" OR \"postclientreceiptapplication\" OR \"voidclientreceiptapplication\" OR \"voidclientinvoice\" OR \"contractvalueoperation\" OR \"estimateoperation\" OR \"postclientcreditnote\" OR \"voidclientcreditnote\" OR \"postclientretentionrelease\" OR \"voidclientretentionrelease\" OR \"postclientreceipt\" OR \"voidclientreceipt\" OR \"transferboqtobudget\" OR \"approvefinalaccount\") AND log_id(\"run.googleapis.com/stdout\") AND jsonPayload.message=(\"variation call refused\" OR \"supplier-finance call refused\" OR \"client finance call refused\" OR \"contract-value call refused\" OR \"estimate call refused\" OR \"boq transfer call refused\" OR \"final account call refused\") AND jsonPayload.code=(\"client-entry-invalid\" OR \"client-invoice-inconsistent\" OR \"client-ledger-invariant\" OR \"client-settlement-counter-invalid\" OR \"estimate-inconsistent\" OR \"supplier-finance-figures-inconsistent\" OR \"supplier-finance-ledger-inconsistent\" OR \"supplier-finance-unsupported-record\" OR \"variation-figures-inconsistent\" OR \"variation-unsupported-record\")"
+      }
+    }
+  ],
+  "alertStrategy": {
+    "notificationRateLimit": {
+      "period": "3600s"
+    },
+    "autoClose": "86400s"
+  },
+  "documentation": {
+    "mimeType": "text/markdown",
+    "subject": "A Phase 2 operation was refused because stored financial records do not reconcile",
+    "content": "## What this means\n\nAn operation was refused because the records it depends on do not reconcile: a stored figure is not what Constrap derives, a ledger is inconsistent or malformed, an invariant would not hold, or a stored record is not shaped as Constrap writes one. **Nothing was written.** It is not a user error and must be explained.\n\n| Code | Usual cause |\n|---|---|\n| `variation-figures-inconsistent` | A submitted or approved variation whose lines or header do not reconcile (a legacy record, or a draft edited by an old tab on a half-cent line: DEPLOYMENT.md, Phase 2 step 2, known coexistence effect). Remedy: reject or withdraw and raise again. |\n| `supplier-finance-ledger-inconsistent` | A ledger the baseline marked inconsistent (over-credit, several open claims on one PO, an entry naming no invoice), or a stored ledger figure not whole cents. Postings on it stay refused; only a corrective void is accepted. |\n| `supplier-finance-figures-inconsistent` | A claim or invoice whose stored figures do not reconcile under its own calculation version. |\n| `variation-unsupported-record`, `supplier-finance-unsupported-record` | Unknown calculation version, malformed lines or dates, or a counter that is not a whole number in range. |\n| `client-ledger-invariant` | A client ledger is malformed, OR the requested posting or void would breach an invariant (the log line does not say which). |\n| `client-invoice-inconsistent`, `client-entry-invalid` | A client invoice or entry whose stored totals or shape do not reconcile. |\n| `client-settlement-counter-invalid` | `counters/clientRefunds` or `counters/clientReceiptApplications` is not a whole number in range. |\n| `estimate-inconsistent` | An estimate revision's stored chunks, totals or hash do not verify at approval. Remedy: rebuild. |\n\n## Do this\n\n1. Logs Explorer (read only): `resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"<service from the incident>\" AND jsonPayload.message:\"call refused\" AND jsonPayload.code=\"<code>\"` — note time, `fn`, `uid`.\n2. Run `node ops/recovery/phase2-inventory.mjs --project constrapp-69b5d --company <companyId>` (read only); it names the documents and ledgers by id with the same codes.\n3. Report to the Product Owner. Corrections go through the supported lifecycle (void, reject, withdraw, rebuild). Never edit a record, ledger or marker in the console; nothing is clamped or repaired by hand.\n\nNever paste a log entry, an amount, a customer name or a token into a ticket or chat: give the service, the time, the project and document ids, and the code.\n\nRunbook: `ops/monitoring/phase2/README.md`. Cutover and recovery: `docs/DEPLOYMENT.md`, section *Phase 2 — the complete cutover*."
+  }
+}

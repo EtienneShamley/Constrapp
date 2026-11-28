@@ -8,7 +8,7 @@ import {
   assertFails,
 } from '@firebase/rules-unit-testing'
 import {
-  doc, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, Timestamp,
+  doc, getDoc, setDoc, updateDoc, deleteDoc, runTransaction, serverTimestamp, Timestamp,
 } from 'firebase/firestore'
 
 // ── Supplier Payment Security Rules — emulator tests ─────────────────────────
@@ -20,6 +20,20 @@ import {
 // The money-OUT mirror of clientReceipts.rules.test.js, deliberately built to
 // the same standard and reusing its conventions unchanged.
 //
+// ⚠️ ADR-94 (Phase 2 step 4, trusted supplier finance). A supplier payment is
+// CREATED, its draft EDITED, POSTED and VOIDED only by the trusted backend
+// (functions/src/supplierFinance/), which caps every allocation by what remains
+// payable on the invoice ledger (Deferred Control 18). The block is now
+// `allow create, update, delete: if false` and the `supplierPayments` counter
+// is backend-only. Every test below whose subject was a client write that used
+// to SUCCEED now proves that exact write is REFUSED for every financial role
+// (company_admin, project_manager, qs) with nothing stored / the stored
+// document unchanged (`createRefused` / `updateRefused`). Every denial the
+// suite already asserted is kept unchanged — it still holds, now trivially.
+// Where a scenario needs the document the old client write produced, it is
+// written with rules disabled (`serverUpdate`), standing for what the backend
+// stores. Reads are unchanged: financial roles only, tenant-isolated.
+//
 // SAFETY: this suite refuses to run unless FIRESTORE_EMULATOR_HOST is set, so it
 // can never reach a production Firebase project. The npm script starts the
 // emulator via `firebase emulators:exec`, which sets that variable.
@@ -27,7 +41,7 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const COMPANY_B = 'companyB'
 const PROJECT_A = 'projectA'
@@ -42,6 +56,8 @@ const USERS = {
   client:{ uid: 'u_client',role: 'client',          companyId: COMPANY_A },
   other: { uid: 'u_other', role: 'company_admin',   companyId: COMPANY_B },
 }
+
+const FINANCIAL = [USERS.admin, USERS.pm, USERS.qs]
 
 let testEnv
 
@@ -117,6 +133,34 @@ async function seed(id, status, user = USERS.admin, extra = {}) {
       ...lifecycle,
       ...extra,
     })
+  })
+}
+
+async function readPay(id, companyId = COMPANY_A) {
+  let data
+  await testEnv.withSecurityRulesDisabled(async (c) => {
+    const snap = await getDoc(doc(c.firestore(), paymentsPath(companyId), id))
+    data = snap.exists() ? snap.data() : undefined
+  })
+  return data
+}
+// ADR-94 — a client create is REFUSED for EVERY financial role; nothing is stored.
+async function createRefused(id, build, companyId = COMPANY_A) {
+  for (const user of FINANCIAL) await assertFails(setDoc(payRef(ctx(user), id, companyId), build(user)))
+  expect(await readPay(id, companyId)).toBeUndefined()
+}
+// ADR-94 — a client update is REFUSED for EVERY financial role; the stored
+// document does not move.
+async function updateRefused(id, build) {
+  const before = await readPay(id)
+  expect(before).toBeDefined()
+  for (const user of FINANCIAL) await assertFails(updateDoc(payRef(ctx(user), id), build(user)))
+  expect(await readPay(id)).toEqual(before)
+}
+// What the TRUSTED BACKEND stores, written with rules disabled.
+async function serverUpdate(id, data) {
+  await testEnv.withSecurityRulesDisabled(async (c) => {
+    await updateDoc(doc(c.firestore(), paymentsPath(), id), data)
   })
 }
 
@@ -201,25 +245,25 @@ beforeEach(async () => {
   })
 })
 
-// ── MUST ALLOW ───────────────────────────────────────────────────────────────
+// ── formerly MUST ALLOW — ADR-94: every client write is now REFUSED ──────────
 
-describe('MUST ALLOW', () => {
-  it('1. financial roles create a draft (company_admin, project_manager, qs)', async () => {
-    for (const user of [USERS.admin, USERS.pm, USERS.qs]) {
-      await assertSucceeds(setDoc(payRef(ctx(user), `d_${user.uid}`), draftPayload(user)))
+describe('formerly MUST ALLOW — ADR-94: every client write REFUSED for every financial role; reads unchanged', () => {
+  it('1. ADR-94 — a draft create is REFUSED for every financial role (company_admin, project_manager, qs); nothing is stored', async () => {
+    for (const user of FINANCIAL) {
+      await createRefused(`d_${user.uid}`, draftPayload)
     }
   })
 
   it('1b. financial roles read the register', async () => {
     await seed('p1', 'draft')
-    for (const user of [USERS.admin, USERS.pm, USERS.qs]) {
+    for (const user of FINANCIAL) {
       await assertSucceeds(getDoc(payRef(ctx(user), 'p1')))
     }
   })
 
-  it('2. financial role edits a draft (supplier, amount, date, method, references, allocations)', async () => {
+  it('2. ADR-94 — a draft edit (supplier, amount, date, method, references, allocations) is REFUSED for every financial role; the draft does not move', async () => {
     await seed('p1', 'draft')
-    await assertSucceeds(updateDoc(payRef(ctx(USERS.qs), 'p1'), draftEdit(USERS.qs, {
+    await updateRefused('p1', (user) => draftEdit(user, {
       supplierId: 'contact2',
       supplierName: 'SteelCo Pty Ltd',
       amount: 2500,
@@ -234,46 +278,46 @@ describe('MUST ALLOW', () => {
       allocatedTotal: 2100,
       unallocatedAmount: 400,
       notes: 'part settlement',
-    })))
+    }))
   })
 
-  it('3. draft -> posted with correct postedAt/postedBy', async () => {
+  it('3. ADR-94 — draft -> posted with correct postedAt/postedBy is REFUSED for every financial role', async () => {
     await seed('p1', 'draft')
-    await assertSucceeds(updateDoc(payRef(ctx(USERS.pm), 'p1'), postWrite(USERS.pm)))
+    await updateRefused('p1', (user) => postWrite(user))
   })
 
-  it('4. draft -> void with a non-empty reason', async () => {
+  it('4. ADR-94 — draft -> void with a non-empty reason is REFUSED for every financial role', async () => {
     await seed('p1', 'draft')
-    await assertSucceeds(updateDoc(payRef(ctx(USERS.admin), 'p1'), voidWrite(USERS.admin)))
+    await updateRefused('p1', (user) => voidWrite(user))
   })
 
-  it('5. posted -> void with a non-empty reason', async () => {
+  it('5. ADR-94 — posted -> void with a non-empty reason is REFUSED for every financial role', async () => {
     await seed('p1', 'posted')
-    await assertSucceeds(updateDoc(payRef(ctx(USERS.admin), 'p1'), voidWrite(USERS.admin)))
+    await updateRefused('p1', (user) => voidWrite(user))
   })
 
-  it('6. a fully UNALLOCATED payment (supplier advance / on account) is permitted', async () => {
-    await assertSucceeds(setDoc(payRef(ctx(USERS.admin), 'onacct'), draftPayload(USERS.admin, {
+  it('6. ADR-94 — a fully UNALLOCATED payment (supplier advance / on account) create is REFUSED', async () => {
+    await createRefused('onacct', (user) => draftPayload(user, {
       allocations: [], allocatedTotal: 0, unallocatedAmount: 990,
-    })))
+    }))
   })
 
-  it('7. exactly MAX_ALLOCATIONS (100) allocations are permitted', async () => {
-    await assertSucceeds(setDoc(payRef(ctx(USERS.admin), 'max'), draftPayload(USERS.admin, manyAllocations(100))))
+  it('7. ADR-94 — exactly MAX_ALLOCATIONS (100) allocations: the create is REFUSED', async () => {
+    await createRefused('max', (user) => draftPayload(user, manyAllocations(100)))
   })
 
-  it('8. a backdated payment is permitted (last month\'s bank statement)', async () => {
-    await assertSucceeds(setDoc(payRef(ctx(USERS.admin), 'back'), draftPayload(USERS.admin, {
+  it('8. ADR-94 — a backdated payment create is REFUSED (last month\'s bank statement)', async () => {
+    await createRefused('back', (user) => draftPayload(user, {
       paymentDate: '2020-01-31',
-    })))
+    }))
   })
 
-  it('8b. an allocation with an EMPTY supplierInvoiceNumber is permitted (legacy invoice, no supplier reference)', async () => {
-    await assertSucceeds(setDoc(payRef(ctx(USERS.admin), 'nosupref'), draftPayload(USERS.admin, {
+  it('8b. ADR-94 — an allocation with an EMPTY supplierInvoiceNumber: the create is REFUSED', async () => {
+    await createRefused('nosupref', (user) => draftPayload(user, {
       allocations: [
         { supplierInvoiceId: 'si1', invoiceNumber: 'SI-0001', supplierInvoiceNumber: '', allocatedAmount: 990 },
       ],
-    })))
+    }))
   })
 })
 
@@ -285,35 +329,35 @@ describe('MUST ALLOW', () => {
 // via math.round(v * 100) instead — equivalent to a half-cent tolerance, so a
 // discrepancy of one cent or more still fails. These cases prove both halves.
 
-describe('cent arithmetic (the scalar invariant must accept real money)', () => {
-  it('accepts 0.30 = 0.10 + 0.20 (the classic float failure)', async () => {
-    await assertSucceeds(setDoc(payRef(ctx(USERS.admin), 'c1'), draftPayload(USERS.admin, {
+describe('cent arithmetic (ADR-94: the scalar invariant is the backend\'s; every client create is REFUSED)', () => {
+  it('ADR-94 — 0.30 = 0.10 + 0.20 (the classic float failure): the create is REFUSED', async () => {
+    await createRefused('c1', (user) => draftPayload(user, {
       amount: 0.30,
       allocations: [{ supplierInvoiceId: 'si1', invoiceNumber: 'SI-0001', supplierInvoiceNumber: 'INV-4471', allocatedAmount: 0.10 }],
       allocatedTotal: 0.10,
       unallocatedAmount: 0.20,
-    })))
+    }))
   })
 
-  it('accepts 10.01 = 3.33 + 6.68', async () => {
-    await assertSucceeds(setDoc(payRef(ctx(USERS.admin), 'c2'), draftPayload(USERS.admin, {
+  it('ADR-94 — 10.01 = 3.33 + 6.68: the create is REFUSED', async () => {
+    await createRefused('c2', (user) => draftPayload(user, {
       amount: 10.01,
       allocations: [{ supplierInvoiceId: 'si1', invoiceNumber: 'SI-0001', supplierInvoiceNumber: 'INV-4471', allocatedAmount: 3.33 }],
       allocatedTotal: 3.33,
       unallocatedAmount: 6.68,
-    })))
+    }))
   })
 
-  it('accepts 1000.00 = 999.99 + 0.01', async () => {
-    await assertSucceeds(setDoc(payRef(ctx(USERS.admin), 'c3'), draftPayload(USERS.admin, {
+  it('ADR-94 — 1000.00 = 999.99 + 0.01: the create is REFUSED', async () => {
+    await createRefused('c3', (user) => draftPayload(user, {
       amount: 1000.00,
       allocations: [{ supplierInvoiceId: 'si1', invoiceNumber: 'SI-0001', supplierInvoiceNumber: 'INV-4471', allocatedAmount: 999.99 }],
       allocatedTotal: 999.99,
       unallocatedAmount: 0.01,
-    })))
+    }))
   })
 
-  it('accepts several other cent combinations', async () => {
+  it('ADR-94 — several other cent combinations: every create is REFUSED', async () => {
     const cases = [
       { amount: 0.03, allocatedTotal: 0.01, unallocatedAmount: 0.02 },
       { amount: 1.15, allocatedTotal: 1.10, unallocatedAmount: 0.05 },
@@ -323,10 +367,10 @@ describe('cent arithmetic (the scalar invariant must accept real money)', () => 
       { amount: 990.00, allocatedTotal: 990.00, unallocatedAmount: 0 },
     ]
     for (const [i, c] of cases.entries()) {
-      await assertSucceeds(setDoc(payRef(ctx(USERS.admin), `cc${i}`), draftPayload(USERS.admin, {
+      await createRefused(`cc${i}`, (user) => draftPayload(user, {
         ...c,
         allocations: [{ supplierInvoiceId: 'si1', invoiceNumber: 'SI-0001', supplierInvoiceNumber: 'INV-4471', allocatedAmount: c.allocatedTotal }],
-      })))
+      }))
     }
   })
 
@@ -622,20 +666,20 @@ describe('MUST REJECT', () => {
 
 // ── serverTimestamp() must satisfy the request.time checks ───────────────────
 
-describe('serverTimestamp satisfies request.time', () => {
-  it('create: serverTimestamp() is accepted; a client clock value is rejected', async () => {
+describe('serverTimestamp stamps (ADR-94: the well-formed write is REFUSED too)', () => {
+  it('create: ADR-94 — the serverTimestamp() create is REFUSED for every financial role; a client clock value is rejected', async () => {
     const db = ctx(USERS.admin)
-    await assertSucceeds(setDoc(payRef(db, 'ok'), draftPayload(USERS.admin)))
+    await createRefused('ok', draftPayload)
     for (const [i, stamp] of CLIENT_CLOCKS.entries()) {
       await assertFails(setDoc(payRef(db, `badc${i}`), draftPayload(USERS.admin, { createdAt: stamp() })))
       await assertFails(setDoc(payRef(db, `badu${i}`), draftPayload(USERS.admin, { updatedAt: stamp() })))
     }
   })
 
-  it('post: serverTimestamp() is accepted; a client clock value is rejected', async () => {
+  it('post: ADR-94 — the serverTimestamp() post is REFUSED for every financial role; a client clock value is rejected', async () => {
     await seed('p_ok', 'draft')
     const db = ctx(USERS.admin)
-    await assertSucceeds(updateDoc(payRef(db, 'p_ok'), postWrite(USERS.admin)))
+    await updateRefused('p_ok', (user) => postWrite(user))
     for (const [i, stamp] of CLIENT_CLOCKS.entries()) {
       await seed(`pp${i}`, 'draft')
       await seed(`pu${i}`, 'draft')
@@ -644,10 +688,10 @@ describe('serverTimestamp satisfies request.time', () => {
     }
   })
 
-  it('void: serverTimestamp() is accepted; a client clock value is rejected', async () => {
+  it('void: ADR-94 — the serverTimestamp() void is REFUSED for every financial role; a client clock value is rejected', async () => {
     await seed('p_ok', 'posted')
     const db = ctx(USERS.admin)
-    await assertSucceeds(updateDoc(payRef(db, 'p_ok'), voidWrite(USERS.admin)))
+    await updateRefused('p_ok', (user) => voidWrite(user))
     for (const [i, stamp] of CLIENT_CLOCKS.entries()) {
       await seed(`pv${i}`, 'posted')
       await seed(`pw${i}`, 'posted')
@@ -656,11 +700,8 @@ describe('serverTimestamp satisfies request.time', () => {
     }
   })
 
-  it('the full app write sequence succeeds end to end: create -> edit -> post -> void', async () => {
-    const db = ctx(USERS.qs)
-    const ref = payRef(db, 'flow')
-    await assertSucceeds(setDoc(ref, draftPayload(USERS.qs)))
-    await assertSucceeds(updateDoc(ref, draftEdit(USERS.qs, {
+  it('ADR-94 — the old app write sequence create -> edit -> post -> void is REFUSED at EVERY step for every financial role; each stored state (written as the backend would) stays put and stays readable', async () => {
+    const edit = (user) => draftEdit(user, {
       amount: 2500,
       allocations: [
         { supplierInvoiceId: 'si1', invoiceNumber: 'SI-0001', supplierInvoiceNumber: 'INV-4471', allocatedAmount: 1500 },
@@ -668,14 +709,15 @@ describe('serverTimestamp satisfies request.time', () => {
       ],
       allocatedTotal: 2499.99,
       unallocatedAmount: 0.01,
-    })))
-    await assertSucceeds(updateDoc(ref, postWrite(USERS.qs)))
-
-    // withSecurityRulesDisabled resolves to undefined — capture via closure.
-    let after
-    await testEnv.withSecurityRulesDisabled(async (c) => {
-      after = (await getDoc(doc(c.firestore(), paymentsPath(), 'flow'))).data()
     })
+    await createRefused('flow', draftPayload)
+    await seed('flow', 'draft', USERS.qs)
+    await updateRefused('flow', edit)
+    await serverUpdate('flow', edit(USERS.qs))
+    await updateRefused('flow', (user) => postWrite(user))
+    await serverUpdate('flow', postWrite(USERS.qs))
+
+    const after = await readPay('flow')
     expect(after.status).toBe('posted')
     expect(after.postedBy).toBe(USERS.qs.uid)
     expect(after.postedAt).not.toBeNull()
@@ -683,9 +725,45 @@ describe('serverTimestamp satisfies request.time', () => {
     expect(after.allocatedTotal).toBe(2499.99)
     expect(after.unallocatedAmount).toBe(0.01)
     expect(after.allocations[0].supplierInvoiceNumber).toBe('INV-4471')
+    for (const user of FINANCIAL) await assertSucceeds(getDoc(payRef(ctx(user), 'flow')))
 
-    // Posted content is now immutable; voiding is the only permitted update.
-    await assertFails(updateDoc(ref, draftEdit(USERS.qs, { notes: 'too late' })))
-    await assertSucceeds(updateDoc(ref, voidWrite(USERS.qs, 'Bank rejected the transfer')))
+    // Posted content was always immutable; now the void is refused too.
+    await assertFails(updateDoc(payRef(ctx(USERS.qs), 'flow'), draftEdit(USERS.qs, { notes: 'too late' })))
+    await updateRefused('flow', (user) => voidWrite(user, 'Bank rejected the transfer'))
+  })
+})
+
+// ── ADR-94 — the supplierPayments counter is backend-only ────────────────────
+
+describe('ADR-94 — the supplierPayments number counter', () => {
+  const counter = (db, id, companyId = COMPANY_A) => doc(db, `companies/${companyId}/counters`, id)
+  const readCounter = async (id) => {
+    let data
+    await testEnv.withSecurityRulesDisabled(async (c) => { const s = await getDoc(counter(c.firestore(), id)); data = s.exists() ? s.data() : undefined })
+    return data
+  }
+
+  it('every financial role is REFUSED a read, a create, an advance and the old numbering transaction; the stored value does not move', async () => {
+    for (const user of FINANCIAL) await assertFails(setDoc(counter(ctx(user), 'supplierPayments'), { next: 2 }, { merge: true }))
+    expect(await readCounter('supplierPayments')).toBeUndefined()
+    await testEnv.withSecurityRulesDisabled(async (c) => { await setDoc(counter(c.firestore(), 'supplierPayments'), { next: 7 }) })
+    for (const user of FINANCIAL) {
+      const db = ctx(user)
+      await assertFails(getDoc(counter(db, 'supplierPayments')))
+      await assertFails(updateDoc(counter(db, 'supplierPayments'), { next: 8 }))
+      await assertFails(setDoc(counter(db, 'supplierPayments'), { next: 1 }, { merge: true }))
+      await assertFails(runTransaction(db, async (tx) => {
+        const snap = await tx.get(counter(db, 'supplierPayments'))
+        tx.set(counter(db, 'supplierPayments'), { next: (snap.exists() ? snap.data().next : 1) + 1 }, { merge: true })
+      }))
+    }
+    expect(await readCounter('supplierPayments')).toEqual({ next: 7 })
+  })
+
+  it('another register\'s counter (purchaseOrders) still reads and advances for every financial role', async () => {
+    for (const user of FINANCIAL) {
+      await assertSucceeds(setDoc(counter(ctx(user), 'purchaseOrders'), { next: 2 }, { merge: true }))
+      await assertSucceeds(getDoc(counter(ctx(user), 'purchaseOrders')))
+    }
   })
 })

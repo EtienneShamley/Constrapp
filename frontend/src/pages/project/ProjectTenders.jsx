@@ -7,6 +7,9 @@ import { formatCurrency } from '../../lib/formatters'
 import { roundMoney } from '../../lib/purchaseOrders'
 import { todayIso } from '../../lib/payments'
 import { useProfile } from '../../hooks/useProfile'
+import { useAuth } from '../../hooks/useAuth'
+import { useApprovalPolicy } from '../../hooks/useApprovalPolicy'
+import { APPROVAL_ACTION, SEGREGATION_NOTE, segregationNote, describeApprovalRefusal } from '../../lib/approvalSegregation'
 import { useTenderPackages } from '../../hooks/useTenderPackages'
 import { useTenderBids } from '../../hooks/useTenderBids'
 import { useBudgetLines } from '../../hooks/useBudgetLines'
@@ -520,8 +523,14 @@ function BidEditorModal({
 }
 
 // ── Award ────────────────────────────────────────────────────────────────────
+//
+// APPROVAL SEGREGATION (`segregation` = segregationNote, `segregationContext`
+// for the refusal mapper): when the Rules would refuse this viewer — they
+// created the package or made its last material edit, or its preparer was
+// never recorded — Award is disabled and the reason shown; an independent
+// awarder is told so; a refusal is explained, not "no permission". UX only.
 
-function AwardModal({ pkg, bids, budgetLines, currencyCode, onClose, onConfirm }) {
+function AwardModal({ pkg, bids, budgetLines, currencyCode, onClose, onConfirm, segregation = null, segregationContext = null }) {
   const money = (n) => formatCurrency(n, currencyCode)
   const [awardedBidId, setAwardedBidId] = useState('')
   const [awardNotes, setAwardNotes]     = useState('')
@@ -536,17 +545,18 @@ function AwardModal({ pkg, bids, budgetLines, currencyCode, onClose, onConfirm }
   const packageBids = bidsForPackage(bids, pkg.id)
   const selected = packageBids.find(b => b.id === awardedBidId) ?? null
   const blocked = selected ? awardBlockedReason(pkg, selected) : null
+  const segregationBlocked = segregation?.kind === SEGREGATION_NOTE.BLOCKED
 
   async function submit(e) {
     e.preventDefault()
-    if (!selected || blocked) return
+    if (!selected || blocked || segregationBlocked) return
     setSaving(true)
     setError(null)
     try {
       await onConfirm(pkg, selected, awardNotes)
       onClose()
     } catch (err) {
-      setError(err?.message || 'Failed to award. Check your connection and try again.')
+      setError(describeApprovalRefusal(err, segregationContext ?? {})?.message || err?.message || 'Failed to award. Check your connection and try again.')
       setSaving(false)
     }
   }
@@ -592,11 +602,13 @@ function AwardModal({ pkg, bids, budgetLines, currencyCode, onClose, onConfirm }
             onChange={e => setAwardNotes(e.target.value)}
           />
         </div>
+        {segregationBlocked && <p className="text-[12px] text-brand-amber m-0" role="status">{segregation.text} Awarding is disabled.</p>}
+        {segregation?.kind === SEGREGATION_NOTE.INDEPENDENT && <p className="text-[12px] text-brand-text-soft m-0">{segregation.text}</p>}
         {blocked && <p className="text-[12px] text-brand-red m-0">{blocked}</p>}
         {error && <p className="text-[12px] text-brand-red m-0">{error}</p>}
         <div className="flex justify-end gap-2 pt-1 border-t border-brand-border">
           <Btn variant="ghost" type="button" onClick={onClose} sm disabled={saving}>Cancel</Btn>
-          <Btn type="submit" sm disabled={saving || !selected || !!blocked}>
+          <Btn type="submit" sm disabled={saving || !selected || !!blocked || segregationBlocked}>
             {saving ? 'Awarding…' : 'Award package'}
           </Btn>
         </div>
@@ -780,6 +792,8 @@ function PackageDetailModal({
   onClose, onAddBid, onEditBid, onVoidBid, onAward, onCancel, onEditIssued, onIssue, onEditDraft,
   // M3-A (ADR-61): the PO register and the raise action.
   purchaseOrders, raiseGate, onRaisePo, onOpenPo,
+  // Approval segregation for Award (segregationNote) — UX only.
+  awardNote = null,
 }) {
   const money = (n) => formatCurrency(n, currencyCode)
   const packageBids = bidsForPackage(bids, pkg.id)
@@ -813,12 +827,15 @@ function PackageDetailModal({
           {pkg.status === TENDER_STATUS.ISSUED && (
             <>
               <Btn sm onClick={() => onAddBid(pkg)}>+ Record bid</Btn>
-              <Btn sm variant="success" onClick={() => onAward(pkg)} disabled={bidsUnavailable || activeBids.length === 0}>Award…</Btn>
+              <Btn sm variant="success" onClick={() => onAward(pkg)} disabled={bidsUnavailable || activeBids.length === 0 || awardNote?.kind === SEGREGATION_NOTE.BLOCKED}>Award…</Btn>
               <Btn sm variant="ghost" onClick={() => onEditIssued(pkg)}>Closing date / notes</Btn>
               <Btn sm variant="ghost" onClick={() => onCancel(pkg)}>Cancel package</Btn>
             </>
           )}
         </div>
+        {pkg.status === TENDER_STATUS.ISSUED && awardNote?.kind === SEGREGATION_NOTE.BLOCKED && (
+          <p className="m-0 -mt-2 text-[12px] text-brand-amber" role="status">{awardNote.text}</p>
+        )}
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
           <DetailRow label="Description" value={pkg.description} />
@@ -961,6 +978,15 @@ export default function ProjectTenders() {
   const { projectId, currencyCode } = useOutletContext()
 
   const { profile, profileLoading } = useProfile()
+  const { user } = useAuth()
+  // Approval segregation for Award (UX mirror; the Rules enforce it). Loading
+  // or unreadable ⇒ not known: Award is not blocked and nothing is claimed.
+  const { approvalPolicy, approvalPolicyKnown } = useApprovalPolicy()
+  const awardContext = (pkg) => ({
+    policy: approvalPolicy, uid: user?.uid, createdBy: pkg?.createdBy, lastMaterialEditBy: pkg?.lastMaterialEditBy,
+    requireStamp: true, action: APPROVAL_ACTION.TENDER_AWARD,
+  })
+  const awardNoteFor = (pkg) => segregationNote({ ...awardContext(pkg), policyKnown: approvalPolicyKnown })
 
   const canView = isFinancialRole(profile?.role)
   // Non-financial roles never trigger the commercially-sensitive reads (rules
@@ -1016,6 +1042,8 @@ export default function ProjectTenders() {
 
   // The detail modal reads the LIVE package so an award/void refreshes in place.
   const detailPkg = detailId ? (tenderPackages.find(p => p.id === detailId) ?? null) : null
+  // The LIVE package being awarded, for its preparers (the modal keeps its own copy).
+  const liveAwarding = awarding ? (tenderPackages.find(p => p.id === awarding.id) ?? awarding) : null
 
   // The raise dialog likewise reads the LIVE package, bid and registers, so
   // the proposal it shows is the one the transaction will re-verify.
@@ -1245,6 +1273,8 @@ export default function ProjectTenders() {
           currencyCode={currencyCode}
           onClose={() => setAwarding(null)}
           onConfirm={awardTenderPackage}
+          segregation={awardNoteFor(liveAwarding)}
+          segregationContext={awardContext(liveAwarding)}
         />
       )}
 
@@ -1299,6 +1329,7 @@ export default function ProjectTenders() {
           onEditIssued={(p) => setIssuedEditing(p)}
           onIssue={(p) => setIssuing(p)}
           onEditDraft={(p) => setEditing(p)}
+          awardNote={awardNoteFor(detailPkg)}
         />
       )}
     </div>

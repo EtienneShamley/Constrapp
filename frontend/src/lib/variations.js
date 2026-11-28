@@ -1,5 +1,6 @@
-import { PO_STATUS, GST_RATE, roundMoney } from './purchaseOrders'
+import { PO_STATUS, roundMoney } from './purchaseOrders'
 import { RFI_STATUS } from './rfis'
+import { CALC_VERSION, calcVersionOf, gstOnAmount, roundAmount, sumAmounts as sumVersioned } from './supplierCalc'
 
 // ── Variations (commercial change control) ───────────────────────────────────
 // One type-discriminated collection joins two commercial realities:
@@ -138,10 +139,21 @@ export const TAX_CODE_LABELS = {
 
 // GST for one line: 10% of the ex-GST amount for `gst`, otherwise zero. Signed —
 // a negative amount yields a negative GST so credits/omissions reconcile.
-export function gstForLine(amount, taxCode) {
+//
+// `version` is the CALCULATION POLICY OF THE VARIATION the line belongs to
+// (lib/supplierCalc.js, ADR-91): omitted or 1 is the legacy expression every
+// stored variation was written with — `roundMoney(amount × GST_RATE)`,
+// unchanged; 2 is exact, half away from zero (40.15 → 4.02, -40.15 → -4.02).
+// A variation is always recalculated under its OWN version, never the newest.
+export function gstForLine(amount, taxCode, version = CALC_VERSION.LEGACY) {
   const amt = Number(amount) || 0
-  return taxCode === TAX_CODE.GST ? roundMoney(amt * GST_RATE) : 0
+  return taxCode === TAX_CODE.GST ? gstOnAmount(amt, version) : 0
 }
+
+// The calculation policy a stored variation was written under: 1 (legacy) when
+// the key is absent, 2 for a variation the trusted backend created, and NULL
+// for a value this code does not know — which every caller refuses.
+export const variationCalcVersion = (variation) => calcVersionOf(variation)
 
 // ── Reasons (optional, reserved enum) ────────────────────────────────────────
 export const VARIATION_REASON = {
@@ -164,22 +176,28 @@ export const VARIATION_REASON_LABELS = {
 // Header subtotal/GST/total always derive from the line items — never a flat
 // header rate. `side` selects submitted vs approved amounts. Amounts and GST may
 // be negative (credits/omissions) — nothing is clamped here.
-export function variationTotals(lineItems, side = 'submitted') {
+export function variationTotals(lineItems, side = 'submitted', version = CALC_VERSION.LEGACY) {
   const amountKey = side === 'approved' ? 'approvedAmount' : 'submittedAmount'
   const gstKey    = side === 'approved' ? 'approvedGst'    : 'submittedGst'
-  const subtotal  = roundMoney((lineItems ?? []).reduce((sum, li) => sum + (Number(li[amountKey]) || 0), 0))
-  const gst       = roundMoney((lineItems ?? []).reduce((sum, li) => sum + (Number(li[gstKey])    || 0), 0))
-  return { subtotal, gst, total: roundMoney(subtotal + gst) }
+  if (version === CALC_VERSION.LEGACY) {
+    // The expressions every stored variation header was written with.
+    const subtotal  = roundMoney((lineItems ?? []).reduce((sum, li) => sum + (Number(li[amountKey]) || 0), 0))
+    const gst       = roundMoney((lineItems ?? []).reduce((sum, li) => sum + (Number(li[gstKey])    || 0), 0))
+    return { subtotal, gst, total: roundMoney(subtotal + gst) }
+  }
+  const subtotal  = sumVersioned((lineItems ?? []).map(li => li[amountKey]), version)
+  const gst       = sumVersioned((lineItems ?? []).map(li => li[gstKey]), version)
+  return { subtotal, gst, total: sumVersioned([subtotal, gst], version) }
 }
 
 // ── Approval assessment ──────────────────────────────────────────────────────
 
 // Whether any approved amount differs from its submitted amount — assessment
 // notes are then required.
-export function approvalNeedsNotes(lineItems, approvedAmounts) {
+export function approvalNeedsNotes(lineItems, approvedAmounts, version = CALC_VERSION.LEGACY) {
   return (lineItems ?? []).some((li, idx) => {
-    const approved  = roundMoney(Number(approvedAmounts?.[idx]) || 0)
-    const submitted = roundMoney(Number(li.submittedAmount) || 0)
+    const approved  = roundAmount(Number(approvedAmounts?.[idx]) || 0, version)
+    const submitted = roundAmount(Number(li.submittedAmount) || 0, version)
     return approved !== submitted
   })
 }
@@ -189,7 +207,7 @@ export function approvalNeedsNotes(lineItems, approvedAmounts) {
 // equal to, zero, or negative relative to what was submitted (negotiation).
 // Only requires finite numbers, matching line count, and notes when values
 // differ. Returns null when valid, otherwise the first error.
-export function validateApprovedAmounts(lineItems, approvedAmounts, assessmentNotes) {
+export function validateApprovedAmounts(lineItems, approvedAmounts, assessmentNotes, version = CALC_VERSION.LEGACY) {
   const lines = lineItems ?? []
   if (!Array.isArray(approvedAmounts) || approvedAmounts.length !== lines.length) {
     return 'Approval requires an amount for every variation line'
@@ -198,7 +216,7 @@ export function validateApprovedAmounts(lineItems, approvedAmounts, assessmentNo
     const raw = approvedAmounts[i] === '' || approvedAmounts[i] == null ? 0 : Number(approvedAmounts[i])
     if (!Number.isFinite(raw)) return `Line ${i + 1}: amount must be a number`
   }
-  if (approvalNeedsNotes(lines, approvedAmounts) && !(assessmentNotes || '').trim()) {
+  if (approvalNeedsNotes(lines, approvedAmounts, version) && !(assessmentNotes || '').trim()) {
     return 'Assessment notes are required when approved amounts differ from submitted amounts'
   }
   return null
@@ -206,13 +224,13 @@ export function validateApprovedAmounts(lineItems, approvedAmounts, assessmentNo
 
 // Builds the approved line items from raw approved-amount inputs, carrying each
 // line's taxCode so approvedGst reconciles per line. Signed throughout.
-export function buildApprovedLineItems(lineItems, approvedAmounts) {
+export function buildApprovedLineItems(lineItems, approvedAmounts, version = CALC_VERSION.LEGACY) {
   return (lineItems ?? []).map((li, idx) => {
-    const amount = roundMoney(Number(approvedAmounts?.[idx]) || 0)
+    const amount = roundAmount(Number(approvedAmounts?.[idx]) || 0, version)
     return {
       ...li,
       approvedAmount: amount,
-      approvedGst:    gstForLine(amount, li.taxCode),
+      approvedGst:    gstForLine(amount, li.taxCode, version),
     }
   })
 }
@@ -430,8 +448,9 @@ export function variationLineToForm(line) {
 // new-scope line uses the chosen cost code with a fresh "CODE — NAME" snapshot
 // (empty when the id is unknown, which validateVariationDraft then rejects).
 // Amounts are rounded, GST derives from the tax code, and the approved side is
-// ALWAYS null — a draft never carries certified values.
-export function buildVariationLineItem(formLine, { po = null, costCodes = [] } = {}) {
+// ALWAYS null — a draft never carries certified values. `calcVersion` is the
+// variation's calculation policy (1 when omitted — the legacy expressions).
+export function buildVariationLineItem(formLine, { po = null, costCodes = [], calcVersion = CALC_VERSION.LEGACY } = {}) {
   const l = formLine && typeof formLine === 'object' ? formLine : {}
   const poLine = po && l.poLineIndex !== '' && l.poLineIndex != null
     ? ((po.lineItems ?? [])[Number(l.poLineIndex)] ?? null)
@@ -453,8 +472,8 @@ export function buildVariationLineItem(formLine, { po = null, costCodes = [] } =
     costCodeId,
     costCodeName,
     description:     String(l.description ?? '').trim(),
-    submittedAmount: roundMoney(amount),
-    submittedGst:    gstForLine(amount, taxCode),
+    submittedAmount: roundAmount(amount, calcVersion),
+    submittedGst:    gstForLine(amount, taxCode, calcVersion),
     approvedAmount:  null,
     approvedGst:     null,
     poLineIndex:     poLine ? Number(l.poLineIndex) : null,

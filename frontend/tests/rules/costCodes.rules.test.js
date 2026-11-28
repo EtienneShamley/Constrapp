@@ -52,7 +52,7 @@ import { doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, serverTimestamp
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const COMPANY_B = 'companyB'
 const CODE_A = 'costCodeA'

@@ -43,8 +43,17 @@ describe('handler gates before any data access', () => {
 describe('request schema — identifiers and guards only', () => {
   const ok = { projectId: 'projectA', reviewKey: KEY, setToZero: ['cc2', 'cc1'] }
   it('accepts the exact shape and returns the choices sorted', () => {
-    expect(parseTransferBoqToBudget(ok)).toEqual({ projectId: 'projectA', reviewKey: KEY, setToZero: ['cc1', 'cc2'] })
+    // ADR-97: the parsed request now also carries `estimateId` — null when the
+    // request does not name an estimate, so an ADR-81 request is unchanged.
+    expect(parseTransferBoqToBudget(ok)).toEqual({ projectId: 'projectA', reviewKey: KEY, setToZero: ['cc1', 'cc2'], estimateId: null })
     expect(parseTransferBoqToBudget({ ...ok, setToZero: [] }).setToZero).toEqual([])
+  })
+  it('ADR-97: accepts ONE optional key, an estimate identifier — never an amount', () => {
+    expect(parseTransferBoqToBudget({ ...ok, estimateId: 'est1' }).estimateId).toBe('est1')
+    for (const bad of [null, '', 'a/b', 5, { id: 'x' }, 'x'.repeat(200)]) {
+      expect(() => parseTransferBoqToBudget({ ...ok, estimateId: bad }), JSON.stringify(bad)).toThrow()
+    }
+    expect(() => parseTransferBoqToBudget({ ...ok, estimateId: 'est1', sellCents: 1 })).toThrow()
   })
   it.each([
     ['an amount', { ...ok, budgeted: 100 }],
@@ -174,7 +183,7 @@ describe('release safety', () => {
     const index = src('index.js')
     expect(index.match(/^export const transferBoqToBudget = onCall\(/m)).not.toBeNull()
     const names = [...index.matchAll(/^export const (\w+)\s+=\s+(wrap|onCall|onSchedule|clientFinanceCall)\(/gm)].map(m => m[1])
-    expect(names).toHaveLength(17)   // + the six client-finance callables (ADR-89)
+    expect(names).toHaveLength(24)   // + estimateOperation (ADR-97) + the six client-finance callables (ADR-89) + five of Phase 2 step 5 (refunds, applications, invoice void) + contractValueOperation (ADR-96)
     expect(names.filter(n => n === 'transferBoqToBudget' || n.startsWith('transferBoqToBudget-'))).toEqual(['transferBoqToBudget'])
   })
 })

@@ -132,8 +132,12 @@ export function useProjectCommercial(projectId) {
       const commitLock = await stageProjectCurrencyLock(tx, companyId, projectId)
 
       if (snap.exists()) {
-        // Preserve createdAt/createdBy; refresh inputs + audit.
-        tx.update(ref, fields)
+        // Preserve createdAt/createdBy; refresh inputs + audit. ADR-96 (G5):
+        // the ORIGINAL CONTRACT VALUE is established by the first save and
+        // changes afterwards only through the audited correction process
+        // (useContractValueRevisions) — the stored value is always re-sent
+        // unchanged here, whatever the form holds (the Rules refuse a change).
+        tx.update(ref, { ...fields, originalContractValue: snap.data().originalContractValue })
       } else {
         tx.set(ref, {
           ...fields,

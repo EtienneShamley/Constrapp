@@ -27,7 +27,7 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const COMPANY_B = 'companyB'
 const PROJECT_A = 'projectA'
@@ -192,6 +192,7 @@ beforeEach(async () => {
       cancelledAt: null, cancelledBy: null,
       createdAt: Timestamp.now(), createdBy: USERS.admin.uid,
       updatedAt: Timestamp.now(), updatedBy: USERS.admin.uid,
+      lastMaterialEditBy: USERS.admin.uid, lastMaterialEditAt: Timestamp.now(),   // D4 provenance (D3 #46)
     }
     await setDoc(doc(db, packagesPath(), PKG_ISSUED), {
       ...basePkg, tenderNumber: 'TP-0001', status: 'issued',

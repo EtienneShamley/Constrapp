@@ -1,4 +1,4 @@
-import { PO_STATUS, PO_STATUS_LABELS, PO_TRANSITION_STAMPS, canTransition } from './purchaseOrders'
+import { PO_STATUS, PO_STATUS_LABELS, PO_TRANSITION_STAMPS, canTransition, materialEditMoved } from './purchaseOrders'
 import { PO_CANCEL_BLOCKER_KIND, poCancellationBlockers, poCancellationReason } from './poCancellation'
 
 // ── Guarded purchase-order transitions (ADR-57, M2-B1) ───────────────────────
@@ -106,6 +106,14 @@ export async function runTransitionPurchaseOrder({
         }
       }
       if (!canTransition(live.status, nextStatus)) return { kind: PO_WRITE_ERROR.INVALID }
+      // D4: SENDING approves the content the sender reviewed. A material edit
+      // landed since (by anyone) makes this a different PO — review it again.
+      if (nextStatus === PO_STATUS.SENT && materialEditMoved(seen, live)) {
+        return {
+          kind: PO_WRITE_ERROR.STALE,
+          message: `${seen.poNumber || 'This purchase order'} was changed since you reviewed it. Reload the page and review it again before sending.`,
+        }
+      }
 
       if (nextStatus === PO_STATUS.CANCELLED) {
         // All reads before any write. Server copies decide; a vanished record

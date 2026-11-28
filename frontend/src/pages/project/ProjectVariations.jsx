@@ -31,9 +31,12 @@ import {
   EMPTY_VARIATION_FORM_LINE, variationLineToForm, buildVariationLineItem, validateVariationDraft,
   INCORPORATION_STATE, INCORPORATION_STATE_LABELS, INCORPORATION_STATE_HELP, variationIncorporation, commitmentApplyEligibility,
   appliedSupplierVariationsTotal, unappliedSupplierVariationsTotal,
-  COMMITMENT_LINE_ISSUE_LABELS,
+  COMMITMENT_LINE_ISSUE_LABELS, variationCalcVersion,
 } from '../../lib/variations'
 import { VariationWriteError } from '../../lib/variationActions'
+import { CALC_VERSION, CURRENT_CALC_VERSION } from '../../lib/supplierCalc'
+import { useCommercialActivation } from '../../hooks/useCommercialActivation'
+import CommercialMaintenanceNotice from '../../components/CommercialMaintenanceNotice'
 
 // A guarded refusal (stale copy, invalid content, permission, offline —
 // ADR-59) carries its reason; anything else keeps the generic text.
@@ -109,8 +112,9 @@ function SummaryCards({ variations, purchaseOrders, currencyCode }) {
 // approved side, status, stamps and identity are never touched. Line mapping
 // and validation are the shared pure helpers in lib/variations.js.
 
-function VariationEditorModal({ variation = null, variations, purchaseOrders, contacts, costCodes, eligibleRfis, currencyCode, onClose, onSave }) {
-  const money  = (n) => formatCurrency(n, currencyCode)
+function VariationEditorModal({ variation = null, variations, purchaseOrders, contacts, costCodes, eligibleRfis, currencyCode, onClose, onSave, newVariationId }) {
+  // To the cent: this dialog is where GST is derived, and a one-cent difference must be visible.
+  const money  = (n) => formatCurrency(n, currencyCode, { precise: true })
   const isEdit = !!variation
 
   const [variationType, setVariationType] = useState(variation?.variationType ?? '')
@@ -129,6 +133,20 @@ function VariationEditorModal({ variation = null, variations, purchaseOrders, co
   const [responseDueDate, setResponseDueDate] = useState(variation?.responseDueDate ?? '')
   const [effectiveDate, setEffectiveDate]     = useState(variation?.effectiveDate ?? '')
   const [notes]                               = useState('') // create only — on edit the stored notes pass through untouched
+  // ONE document id for this new variation, chosen when the editor opens and
+  // re-sent on every save attempt, so repeating a save after an unconfirmed
+  // outcome can never create a second variation (ADR-90).
+  const [variationId] = useState(() => {
+    if (isEdit || !newVariationId) return null
+    try { return newVariationId() } catch { return null }
+  })
+  // The calculation version the figures are previewed under. Every draft the
+  // server saves — new, or an edit of an existing one — is derived under the
+  // CURRENT version (ADR-91), so the preview always uses it. A draft created
+  // before exact calculation may therefore show a GST figure one cent different
+  // from the one it stores until it is saved again; the notice below says so.
+  const calcVersion = CURRENT_CALC_VERSION
+  const upgradesOnSave = isEdit && (variationCalcVersion(variation) ?? CALC_VERSION.LEGACY) !== CURRENT_CALC_VERSION
   const [lines, setLines]             = useState(() =>
     isEdit && (variation.lineItems ?? []).length > 0
       ? variation.lineItems.map(variationLineToForm)
@@ -205,11 +223,11 @@ function VariationEditorModal({ variation = null, variations, purchaseOrders, co
   const addLine    = () => setLines(ls => [...ls, { ...EMPTY_LINE }])
   const removeLine = (idx) => setLines(ls => ls.filter((_, i) => i !== idx))
 
-  const builtLines = lines.map(l => buildVariationLineItem(l, { po: usesPoLines ? po : null, costCodes }))
+  const builtLines = lines.map(l => buildVariationLineItem(l, { po: usesPoLines ? po : null, costCodes, calcVersion }))
   // NEW authoring offers ACTIVE cost codes only (ADR-39/55); a code this draft
   // already carries stays selectable. Line building still reads the FULL library.
   const pickerCostCodes = selectableCostCodes(costCodes, lines.map(l => l.costCodeId))
-  const totals     = variationTotals(builtLines, 'submitted')
+  const totals     = variationTotals(builtLines, 'submitted', calcVersion)
   const draftError = validateVariationDraft({ title, lineItems: builtLines })
 
   const counterpartyValid = isEdit ? true :
@@ -262,6 +280,7 @@ function VariationEditorModal({ variation = null, variations, purchaseOrders, co
         })
       } else {
         await onSave({
+          ...(variationId ? { variationId } : {}),
           variationType,
           title, description, reason,
           clientId:   isClient ? clientId : null,
@@ -551,6 +570,12 @@ function VariationEditorModal({ variation = null, variations, purchaseOrders, co
                 <p className="m-0">Submitted subtotal <span className="font-semibold ml-2">{money(totals.subtotal)}</span></p>
                 <p className="m-0 text-brand-muted">GST <span className="ml-2">{money(totals.gst)}</span></p>
                 <p className="m-0 font-bold">Submitted total <span className="ml-2">{money(totals.total)}</span></p>
+                {upgradesOnSave && (
+                  <p className="m-0 mt-1 max-w-[520px] text-right text-[12px] text-brand-muted">
+                    This draft was created before exact-cent calculation. Saving recalculates every line exactly, so GST may
+                    differ by one cent from the figures stored now. The figures above are what will be saved.
+                  </p>
+                )}
               </div>
             </>
           )}
@@ -885,7 +910,8 @@ function ApplyCommitmentModal({ variation, purchaseOrders, progressClaims, suppl
 // ── Assess ───────────────────────────────────────────────────────────────────
 
 function AssessVariationModal({ variation, purchaseOrders = [], progressClaims = [], supplierInvoices = [], variations = [], forecastLines = [], currencyCode, onClose, onTransition }) {
-  const money = (n) => formatCurrency(n, currencyCode)
+  // To the cent: the approver certifies these figures.
+  const money = (n) => formatCurrency(n, currencyCode, { precise: true })
 
   const [approvedAmounts, setApprovedAmounts] = useState(
     (variation.lineItems ?? []).map(li => String(li.submittedAmount ?? 0))
@@ -900,10 +926,13 @@ function AssessVariationModal({ variation, purchaseOrders = [], progressClaims =
     setApprovedAmounts(vals => vals.map((v, i) => (i === idx ? value : v)))
   }
 
-  const previewLines = buildApprovedLineItems(variation.lineItems, approvedAmounts)
-  const totals       = variationTotals(previewLines, 'approved')
-  const needsNotes   = approvalNeedsNotes(variation.lineItems, approvedAmounts)
-  const validationError = validateApprovedAmounts(variation.lineItems, approvedAmounts, assessmentNotes)
+  // Previewed under the variation's OWN calculation version (ADR-91) — the
+  // server certifies the same amounts under the same version.
+  const calcVersion  = variationCalcVersion(variation) ?? CALC_VERSION.LEGACY
+  const previewLines = buildApprovedLineItems(variation.lineItems, approvedAmounts, calcVersion)
+  const totals       = variationTotals(previewLines, 'approved', calcVersion)
+  const needsNotes   = approvalNeedsNotes(variation.lineItems, approvedAmounts, calcVersion)
+  const validationError = validateApprovedAmounts(variation.lineItems, approvedAmounts, assessmentNotes, calcVersion)
 
   // Commercial effect of THESE certified amounts on the linked PO (ADR-62) —
   // approval of a PO-linked supplier variation applies them in the same write
@@ -1000,6 +1029,12 @@ function AssessVariationModal({ variation, purchaseOrders = [], progressClaims =
             <p className="m-0">Approved subtotal <span className="font-semibold ml-2">{money(totals.subtotal)}</span></p>
             <p className="m-0 text-brand-muted">GST <span className="ml-2">{money(totals.gst)}</span></p>
             <p className="m-0 font-bold">Approved total <span className="ml-2">{money(totals.total)}</span></p>
+            {calcVersion === CALC_VERSION.LEGACY && (
+              <p className="m-0 mt-1 max-w-[520px] text-right text-[12px] text-brand-muted">
+                This variation was created before exact-cent calculation. It is approved with the calculation it was
+                created with, so its GST can be one cent lower than an exact calculation would give.
+              </p>
+            )}
           </div>
 
           <CommitmentEffectPanel preview={preview} mode="approve" currencyCode={currencyCode} acknowledged={ctcAcknowledged} onAcknowledge={setCtcAcknowledged} />
@@ -1084,7 +1119,13 @@ export default function ProjectVariations() {
   const { projectId, currencyCode } = useOutletContext()
   const money = (n) => formatCurrency(n, currencyCode)
 
-  const { variations, variationsLoading, createVariation, updateVariation, transitionStatus, applyVariationCommitment } = useVariations(projectId)
+  const { variations, variationsLoading, createVariation, newVariationId, updateVariation, transitionStatus, applyVariationCommitment } = useVariations(projectId)
+  // Phase 2 activation (lib/commercialActivation.js): a company not yet
+  // switched over sees this register READ-ONLY — every write action (create,
+  // edit, submit, assess, withdraw, apply) is withheld. UX only; the server and
+  // the Rules refuse regardless.
+  const activation = useCommercialActivation()
+  const writable = activation.writable
   const { purchaseOrders } = usePurchaseOrders(projectId)
   // Read for the commercial-effect preview only (ADR-62): what the linked PO
   // has recognised and the saved Uncommitted CTC per cost code. The page
@@ -1164,7 +1205,13 @@ export default function ProjectVariations() {
     if (!live || live.status !== VARIATION_STATUS.DRAFT) {
       throw new Error('This variation is no longer Draft. Close the editor and review the latest version.')
     }
-    await updateVariation(live, data)
+    // The revision sent is the one the editor was OPENED on (`editing` is the
+    // snapshot taken at the click), never the live one: the form holds what the
+    // user saw then, so if anybody saved the draft since, this save must be
+    // refused as stale — not silently written over their edit. (Found in local
+    // browser acceptance, 28 November 2026: the live revision let a stale
+    // editor overwrite a concurrent save.)
+    await updateVariation({ ...live, revision: editing.revision }, data)
   }
 
   const liveEditing = editing && editing !== 'new'
@@ -1189,9 +1236,10 @@ export default function ProjectVariations() {
             </button>
           ))}
         </div>
-        <Btn sm onClick={() => setEditing('new')}>+ New Variation</Btn>
+        {writable && <Btn sm onClick={() => setEditing('new')}>+ New Variation</Btn>}
       </div>
 
+      <CommercialMaintenanceNotice activation={activation} />
       {actionError && <p className="text-[12px] text-brand-red mb-3">{actionError}</p>}
       {(costCodesError || contactsError) && (
         <Card className="mb-3.5">
@@ -1244,7 +1292,7 @@ export default function ProjectVariations() {
             <p className="text-[13px] text-brand-muted mb-3">
               No variations yet. Record a client (head-contract) or supplier (subcontract) change.
             </p>
-            <Btn onClick={() => setEditing('new')}>+ Create your first variation</Btn>
+            {writable && <Btn onClick={() => setEditing('new')}>+ Create your first variation</Btn>}
           </div>
         ) : filtered.length === 0 ? (
           <div className="px-5 py-12 text-center text-[13px] text-brand-muted">No variations match your filters.</div>
@@ -1284,7 +1332,7 @@ export default function ProjectVariations() {
                       <Badge label={VARIATION_STATUS_LABELS[v.status] ?? v.status} variant={VARIATION_BADGE_VARIANTS[v.status]} sm />
                     </td>
                     <td className="px-3.5 py-3">
-                      <RowActions variation={v} purchaseOrders={purchaseOrders} onTransition={handleTransition} onAssess={setAssessing} onEdit={setEditing} onApply={setApplying} />
+                      {writable && <RowActions variation={v} purchaseOrders={purchaseOrders} onTransition={handleTransition} onAssess={setAssessing} onEdit={setEditing} onApply={setApplying} />}
                     </td>
                   </tr>
                 ))}
@@ -1300,7 +1348,7 @@ export default function ProjectVariations() {
         </p>
       )}
 
-      {editing && (
+      {writable && editing && (
         <VariationEditorModal
           key={editing === 'new' ? 'new' : editing.id}
           variation={liveEditing}
@@ -1312,9 +1360,10 @@ export default function ProjectVariations() {
           eligibleRfis={eligibleRfis}
           onClose={() => setEditing(null)}
           onSave={editing === 'new' ? createVariation : (data) => handleUpdate(editing.id, data)}
+          newVariationId={newVariationId}
         />
       )}
-      {assessing && (
+      {writable && assessing && (
         <AssessVariationModal
           currencyCode={currencyCode}
           variation={assessing}
@@ -1327,7 +1376,7 @@ export default function ProjectVariations() {
           onTransition={handleTransition}
         />
       )}
-      {applying && (
+      {writable && applying && (
         <ApplyCommitmentModal
           key={applying.id}
           currencyCode={currencyCode}

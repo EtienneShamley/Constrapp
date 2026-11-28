@@ -408,6 +408,9 @@ describe('emptyLedger / readLedger / ledgerDocument', () => {
       creditedRetentionCents: 0, creditedRetentionGstCents: 0,
       releasedRetentionCents: 0, releasedRetentionGstCents: 0,
       receivedCents: 0,
+      // Phase 2 step 5: refunds out of the invoice's overpayment (stored only once one exists).
+      refundedCents: 0,
+      refundedPresent: false,
       lines: {},
     })
     // A fresh object every call — never a shared mutable default.
@@ -460,9 +463,12 @@ describe('emptyLedger / readLedger / ledgerDocument', () => {
     expect(LEDGER_KIND).toEqual({
       CREDIT: 'credit', CREDIT_VOID: 'credit_void', RELEASE: 'release', RELEASE_VOID: 'release_void',
       RECEIPT: 'receipt', RECEIPT_VOID: 'receipt_void',
+      // Phase 2 step 5 (D6): settlement of client money.
+      APPLICATION: 'application', APPLICATION_VOID: 'application_void', REFUND: 'refund', REFUND_VOID: 'refund_void',
     })
     expect(LEDGER_TOTAL_KEYS).toHaveLength(6)
     expect(LEDGER_TOTAL_KEYS).not.toContain('receivedCents')
+    expect(LEDGER_TOTAL_KEYS).not.toContain('refundedCents')
   })
 
   it('readLedger / ledgerDocument carry receivedCents: 0 by default, and anything not a whole number reads as 0', () => {

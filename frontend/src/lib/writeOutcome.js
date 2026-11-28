@@ -115,6 +115,14 @@ const firestoreCode = (err) => {
 //     refusal ("Only draft receipts can be edited"), thrown BEFORE any write —
 //     definite, and its message is already written for the user
 export function describeWriteError(err) {
+  // A trusted-callable failure (ADR-90 / ADR-93 / ADR-94) has already been
+  // classified by its action module: a typed refusal is CERTAIN with the
+  // server's own reason; an untyped transport failure is UNCERTAIN — the
+  // operation may have committed — and must never be reported as refused.
+  if ((err?.name === 'SupplierFinanceError' || err?.name === 'VariationWriteError' || err?.name === 'EstimateError') && typeof err?.kind === 'string') {
+    if (err.kind === 'uncertain') return { certain: false, kind: WRITE_FAILURE.NO_ANSWER, message: err.message || WRITE_MESSAGES.noAnswer }
+    return { certain: true, kind: WRITE_FAILURE.REJECTED, message: err.message }
+  }
   const code = firestoreCode(err)
   if (code && code in DEFINITE) {
     const [kind, message] = DEFINITE[code]

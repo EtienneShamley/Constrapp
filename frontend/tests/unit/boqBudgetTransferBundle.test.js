@@ -76,7 +76,7 @@ describe('the generated bundle is self-contained', () => {
   })
   it('the source module imports only sibling lib modules, and both export the same names', () => {
     const imports = [...read('src/lib/boqBudgetTransfer.js').matchAll(/from '([^']+)'/g)].map(m => m[1])
-    expect(imports.sort()).toEqual(['./boq', './costCodes', './currency', './payments'])
+    expect(imports.sort()).toEqual(['./boq', './costCodes', './currency', './estimateSource', './payments'])   // + the estimate source key (ADR-97)
     expect(Object.keys(server).sort()).toEqual(Object.keys(client).sort())
   })
 })
@@ -124,12 +124,15 @@ describe('the trusted backend surface', () => {
     expect(opts).toMatch(/enforceAppCheck:\s*true/)
     expect(opts).toMatch(/region:\s*REGION/)
     expect(opts).not.toMatch(/secrets|serviceAccount/)
-    expect((index.match(/onCall\(/g) || []).length).toBe(4)   // the team wrapper, approveFinalAccount, this one and the client-finance wrapper (ADR-89)
+    expect((index.match(/onCall\(/g) || []).length).toBe(8)   // the team wrapper, approveFinalAccount, transferBoqToBudget (ADR-81), the client-finance wrapper (ADR-89), the variation wrapper (ADR-90), the supplier-finance wrapper (ADR-93 / ADR-94), contractValueOperation (ADR-96) and estimateOperation (ADR-97)
     expect(index).not.toMatch(/onRequest\(/)
   })
   it('the request schema is identifiers and guards only', () => {
     expect(client.BOQ_TRANSFER_REQUEST_KEYS).toEqual(['projectId', 'reviewKey', 'setToZero'])
-    expect(handlers).toMatch(/Object\.keys\(data\)\.some\(k => !KEYS\.includes\(k\)\)/)
+    // ADR-97: one OPTIONAL key, an identifier — every other key is still refused.
+    expect(client.BOQ_TRANSFER_OPTIONAL_REQUEST_KEYS).toEqual(['estimateId'])
+    expect(handlers).toMatch(/Object\.keys\(data\)\.some\(k => !KEYS\.includes\(k\) && !BOQ_TRANSFER_OPTIONAL_REQUEST_KEYS\.includes\(k\)\)/)
+    expect(handlers).toContain("if ('estimateId' in data && !isValidId(estimateId)) fail(CODE.INVALID_ARGUMENT)")
   })
   it('the proposal is the generated bundle, the company comes from the membership, and every read is transactional', () => {
     expect(transfer).toContain("import * as calc from '../generated/boqBudgetTransferCalc.js'")
@@ -173,7 +176,8 @@ describe('the browser surface', () => {
     expect(hook).not.toMatch(/firebase\/firestore/)
   })
   it('the request the browser builds carries no amount', () => {
-    expect(actions).toContain('call({ projectId, reviewKey, setToZero: normaliseZeroChoices(setToZero) })')
+    // ADR-97: plus the optional estimate IDENTIFIER, only when the reviewer chose it — still no amount.
+    expect(actions).toContain('call({ projectId, reviewKey, setToZero: normaliseZeroChoices(setToZero), ...(estimateId ? { estimateId } : {}) })')
     // L4 correction: the dialog builds the request through the confirmation
     // check, which returns only these two fields.
     expect(modal).toContain('transferRequestToSend({ pending, reviewKey: proposal.reviewKey, zeroChoices, confirmedFor })')

@@ -28,8 +28,10 @@ import { runUpdateBoqItem, runApplyBoqQuantity } from '../lib/boqActions'
 // This hook writes ONLY boqItem documents (plus the project currency ratchet,
 // inside the create/edit/apply transactions). It NEVER mutates budget lines,
 // POs, claims, invoices, variations, forecast lines, cash-flow lines, or the
-// commercial baseline — the BOQ feeds no financial figure, and the
-// BOQ-vs-budget comparison is derived at read time in lib/boq.js (ADR-32).
+// commercial baseline — the BOQ feeds no financial figure through this hook
+// (the explicit BOQ → working budget transfer is a separate trusted callable,
+// ADR-81), and the BOQ-vs-budget comparison is derived at read time in
+// lib/boq.js (ADR-32).
 // Since ADR-52 the edit and the Quant apply are version-guarded transactions
 // in lib/boqActions.js.
 export function useBoqItems(projectId) {

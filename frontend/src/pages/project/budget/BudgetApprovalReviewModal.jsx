@@ -8,6 +8,7 @@ import {
 } from '../../../lib/budgetApproval'
 import { budgetAdjustmentLabel, budgetAdjustmentMovementText } from '../../../lib/budgetAdjustment'
 import { BUDGET_APPROVAL_ERROR } from '../../../lib/budgetApprovalActions'
+import { APPROVAL_ACTION, SEGREGATION_NOTE, segregationNote, describeApprovalRefusal } from '../../../lib/approvalSegregation'
 
 // ── Review a DRAFT budget approval — approve or withdraw (ADR-70) ────────────
 //
@@ -24,8 +25,12 @@ import { BUDGET_APPROVAL_ERROR } from '../../../lib/budgetApprovalActions'
 // What approval means, stated on the dialog: the approver accepts the
 // identified captured snapshot as the Approved Budget. It does not certify
 // that the working register cannot change afterwards. Self-approval is
-// permitted and shown. QS may prepare but not approve (the button is hidden;
-// Firestore rules enforce it).
+// permitted and shown — UNLESS the company enables approval segregation
+// (companies/{c}/approvalPolicy/current), when the Rules refuse an approval by
+// the capturer: Approve is then disabled with the reason, and a refusal is
+// explained rather than shown as a generic permission error (UX only — the
+// Rules are the boundary). QS may prepare but not approve (the button is
+// hidden; Firestore rules enforce it).
 //
 // SUPERSESSION (ADR-71). The comparison is against the CURRENT ADJUSTED
 // approved budget — the active version PLUS its approved adjustments — never
@@ -72,6 +77,7 @@ export default function BudgetApprovalReviewModal({
   header, versionLabel, nextVersion, snapshot, snapshotLoading, snapshotError,
   budget, adjustments = [], currencyCode,
   currentUid, canApprove, canWithdraw, onCheckDrift, onApprove, onWithdraw, onClose,
+  approvalPolicy = null, approvalPolicyKnown = false,
 }) {
   const money = (n) => formatCurrency(n, currencyCode)
   const [check, setCheck]           = useState({ key: null, drift: null, error: null })
@@ -88,6 +94,14 @@ export default function BudgetApprovalReviewModal({
 
   const usable = isBudgetSnapshotUsable(snapshot)
   const selfApproval = Boolean(header?.createdBy) && header.createdBy === currentUid
+  // Approval segregation: the Rules' preparers of a budget draft are its
+  // creator and its last writer (drafts are never edited, so the capturer).
+  const segregationContext = {
+    policy: approvalPolicy, uid: currentUid, createdBy: header?.createdBy, lastMaterialEditBy: header?.updatedBy,
+    action: APPROVAL_ACTION.BUDGET_VERSION,
+  }
+  const segregation = segregationNote({ ...segregationContext, policyKnown: approvalPolicyKnown })
+  const segregationBlocked = segregation.kind === SEGREGATION_NOTE.BLOCKED
   const checkKey = usable ? `${snapshot.id ?? ''}:${snapshot.entryCount}:${checkToken}` : null
 
   useEffect(() => {
@@ -122,7 +136,7 @@ export default function BudgetApprovalReviewModal({
   const baseResolved = budget?.kind === BUDGET_SOURCE.APPROVED || budget?.kind === BUDGET_SOURCE.WORKING
 
   const driftReviewed = drift ? (!drift.any || acknowledgedKey === drift.key) : false
-  const approvable = canApprove && usable && baseResolved && !checking && !checkError && drift !== null && driftReviewed && supersessionReviewed && !saving
+  const approvable = canApprove && !segregationBlocked && usable && baseResolved && !checking && !checkError && drift !== null && driftReviewed && supersessionReviewed && !saving
 
   async function handleApprove() {
     if (!approvable) return
@@ -140,7 +154,7 @@ export default function BudgetApprovalReviewModal({
       if (err?.kind === BUDGET_APPROVAL_ERROR.DRIFT && err?.details?.drift) {
         setCheck({ key: checkKey, drift: err.details.drift, error: null })
       }
-      setError(err?.message || 'The budget approval could not be approved. Nothing was changed.')
+      setError(describeApprovalRefusal(err, segregationContext)?.message || err?.message || 'The budget approval could not be approved. Nothing was changed.')
       setSaving(false)
     }
   }
@@ -171,11 +185,17 @@ export default function BudgetApprovalReviewModal({
           {header?.entryCount ?? '—'} budget lines · total {typeof header?.total === 'number' ? money(header.total) : '—'} {header?.currency ?? ''}
         </p>
 
-        {selfApproval && canApprove && (
+        {selfApproval && canApprove && segregation.kind === SEGREGATION_NOTE.OFF && (
           <p className="m-0 mt-3 text-[11.5px] text-brand-amber">
             You captured this draft. Approving it yourself is permitted, and the version will show it was captured
             and approved by the same person.
           </p>
+        )}
+        {canApprove && segregationBlocked && (
+          <p className="m-0 mt-3 text-[11.5px] text-brand-amber" role="status">{segregation.text} Approval is disabled.</p>
+        )}
+        {canApprove && segregation.kind === SEGREGATION_NOTE.INDEPENDENT && (
+          <p className="m-0 mt-3 text-[11.5px] text-brand-text-soft">{segregation.text}</p>
         )}
         {!canApprove && (
           <p className="m-0 mt-3 text-[11.5px] text-brand-amber">

@@ -11,6 +11,7 @@ import {
 } from '../../../lib/budgetAdjustment'
 import { BUDGET_ADJUSTMENT_ERROR } from '../../../lib/budgetAdjustmentActions'
 import { PreviewTable } from './BudgetAdjustmentPrepareModal'
+import { APPROVAL_ACTION, SEGREGATION_NOTE, segregationNote, describeApprovalRefusal } from '../../../lib/approvalSegregation'
 
 // ── Review a budget ADJUSTMENT — approve or withdraw (ADR-71) ────────────────
 //
@@ -25,6 +26,12 @@ import { PreviewTable } from './BudgetAdjustmentPrepareModal'
 // A STALE draft — its version replaced by a re-approval — can only be
 // withdrawn: its movement was prepared against figures that no longer apply.
 // An approved or withdrawn adjustment is shown read-only: history.
+//
+// APPROVAL SEGREGATION. When the company enables it
+// (companies/{c}/approvalPolicy/current), the Rules refuse an approval by the
+// adjustment's preparer: Approve is disabled with the reason, and a refusal is
+// explained rather than shown as a generic permission error. Only when it is
+// known to be OFF does the dialog say self-approval is permitted (UX only).
 
 const inputCls = 'w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
 const labelCls = 'block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1.5'
@@ -41,6 +48,7 @@ function Row({ label, children }) {
 
 export default function BudgetAdjustmentReviewModal({
   adjustment, budget, currencyCode, currentUid, canApprove, canWithdraw, onApprove, onWithdraw, onClose,
+  approvalPolicy = null, approvalPolicyKnown = false,
 }) {
   const money = (n) => formatCurrency(n, currencyCode)
   const [withdrawing, setWithdrawing] = useState(false)
@@ -55,7 +63,14 @@ export default function BudgetAdjustmentReviewModal({
   const approvedSource = budget?.kind === BUDGET_SOURCE.APPROVED
   const preview = isDraft && !stale && approvedSource ? adjustmentPreview(adjustedByCostCode(budget), adjustment) : null
   const selfApproval = Boolean(adjustment?.createdBy) && adjustment.createdBy === currentUid
-  const approvable = canApprove && isDraft && !stale && approvedSource && preview?.ok && !saving
+  // The Rules' preparers of an adjustment draft: its creator and last writer.
+  const segregationContext = {
+    policy: approvalPolicy, uid: currentUid, createdBy: adjustment?.createdBy, lastMaterialEditBy: adjustment?.updatedBy,
+    action: APPROVAL_ACTION.BUDGET_ADJUSTMENT,
+  }
+  const segregation = segregationNote({ ...segregationContext, policyKnown: approvalPolicyKnown })
+  const segregationBlocked = segregation.kind === SEGREGATION_NOTE.BLOCKED
+  const approvable = canApprove && !segregationBlocked && isDraft && !stale && approvedSource && preview?.ok && !saving
 
   async function handleApprove() {
     if (!approvable) return
@@ -65,7 +80,7 @@ export default function BudgetAdjustmentReviewModal({
       onClose({ approved: true, sequence: result?.sequence })
     } catch (err) {
       if (err?.kind === BUDGET_ADJUSTMENT_ERROR.NEGATIVE && err?.details?.preview) setRefused(err.details.preview)
-      setError(err?.message || 'The adjustment could not be approved. Nothing was changed.')
+      setError(describeApprovalRefusal(err, segregationContext)?.message || err?.message || 'The adjustment could not be approved. Nothing was changed.')
       setSaving(false)
     }
   }
@@ -123,8 +138,14 @@ export default function BudgetAdjustmentReviewModal({
             {!preview.ok && <p className="m-0 mt-1 text-[12px] text-brand-red" role="alert">A cost code would fall below zero. This adjustment cannot be approved as it stands.</p>}
           </div>
         )}
-        {isDraft && selfApproval && canApprove && !stale && (
+        {isDraft && selfApproval && canApprove && !stale && segregation.kind === SEGREGATION_NOTE.OFF && (
           <p className="m-0 mt-3 text-[11.5px] text-brand-amber">You prepared this adjustment. Approving it yourself is permitted and will show it was prepared and approved by the same person.</p>
+        )}
+        {isDraft && canApprove && !stale && segregationBlocked && (
+          <p className="m-0 mt-3 text-[11.5px] text-brand-amber" role="status">{segregation.text} Approval is disabled.</p>
+        )}
+        {isDraft && canApprove && !stale && segregation.kind === SEGREGATION_NOTE.INDEPENDENT && (
+          <p className="m-0 mt-3 text-[11.5px] text-brand-text-soft">{segregation.text}</p>
         )}
         {isDraft && !canApprove && (
           <p className="m-0 mt-3 text-[11.5px] text-brand-amber">Approval is reserved for Company Admin and Project Manager roles (enforced by Firestore Security Rules).</p>

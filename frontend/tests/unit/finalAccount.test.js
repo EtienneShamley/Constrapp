@@ -502,7 +502,8 @@ describe('client credit notes and client retention follow the ONE receivable con
     const src = stripComments(read('src/lib/finalAccount.js'))
     expect(src).toContain('receivableContext(clientInvoices, clientCreditNotes, clientRetentionReleases)')
     expect(src).toContain('contractControl(clientInvoices, finalContractSum, receivable.totals)')
-    expect(src).toContain('receivablesSummary(clientInvoices, clientReceipts, receivable.positions)')
+    // Phase 2 step 5: the same selector, given the settlement registers.
+    expect(src).toContain('receivablesSummary(clientInvoices, clientReceipts, receivable.positions, settlement)')
   })
 
   it('client retention withheld is BILLED but not receivable: invoiced is unchanged, outstanding excludes it, and it is held', () => {
@@ -630,7 +631,8 @@ describe('client credit notes and client retention follow the ONE receivable con
     // `sources` holds five keys; the register counts are ONE nested map.
     expect(Object.keys(content.sources).sort()).toEqual(['adjustmentCount', 'budgetApprovalId', 'budgetCaption', 'budgetVersion', 'counts'])
     expect(Object.keys(content.sources).length).toBeLessThanOrEqual(limit(/d\.sources is map && d\.sources\.size\(\) <= (\d+)/))
-    expect(Object.keys(content.sources.counts)).toHaveLength(12)
+    // Phase 2 step 5: + clientRefunds, clientReceiptApplications.
+    expect(Object.keys(content.sources.counts)).toHaveLength(14)
   })
 })
 
@@ -788,7 +790,8 @@ describe('an approved revision is compared with live records, never recalculated
 
 describe('a revision is compared on its OWN schema', () => {
   const NEW_FIGURES = ['creditedToClient', 'clientRetentionHeld', 'owedToClient']
-  const NEW_SOURCES = ['clientCreditNotes', 'clientRetentionReleases']
+  // A revision approved before ADR-87 also predates the Phase 2 step 5 registers.
+  const NEW_SOURCES = ['clientCreditNotes', 'clientRetentionReleases', 'clientRefunds', 'clientReceiptApplications']
   const strip = (obj, keys) => Object.fromEntries(Object.entries(obj).filter(([k]) => !keys.includes(k)))
   const legacy = (over = {}) => {
     const s = stored(over)
@@ -1186,7 +1189,9 @@ describe('presentation', () => {
   })
 
   it('the approve dialog states the disclaimer, names a self-approval, lists every outstanding balance and starts unacknowledged', () => {
-    const html = renderToStaticMarkup(h(ApproveFinalAccountModal, { account: stored({ status: 'draft' }), currencyCode: 'AUD', selfApproval: true, onApprove() {}, onClose() {} }))
+    // ADR-98: the self-approval wording is shown only once the company's segregation
+    // policy is KNOWN to be off — here it is (no policy document).
+    const html = renderToStaticMarkup(h(ApproveFinalAccountModal, { account: stored({ status: 'draft' }), currencyCode: 'AUD', selfApproval: true, approvalPolicy: null, approvalPolicyKnown: true, onApprove() {}, onClose() {} }))
     expect(html).toContain('role="dialog"')
     expect(html).toContain('aria-modal="true"')
     expect(html).toContain(FINAL_ACCOUNT_DISCLAIMER)
@@ -1194,6 +1199,20 @@ describe('presentation', () => {
     for (const item of openItemsOf(EXPECTED_FIGURES)) expect(html).toContain(item.label)
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Approve revision<\/button>/)
     expect(html).toContain('type="checkbox"')
+  })
+
+  it('ADR-96 / ADR-98: with segregation ON the preparer is told they cannot approve (button disabled); an independent approver is told they may; unknown policy claims nothing', () => {
+    const render = (props) => renderToStaticMarkup(h(ApproveFinalAccountModal, { account: stored({ status: 'draft' }), currencyCode: 'AUD', onApprove() {}, onClose() {}, ...props }))
+    const on = { segregationEnabled: true }
+    const blocked = render({ selfApproval: true, approvalPolicy: on, approvalPolicyKnown: true })
+    expect(blocked).toContain('so you cannot approve it')
+    expect(blocked).not.toContain('Approving it yourself is permitted')
+    expect(blocked).toMatch(/<button[^>]*disabled=""[^>]*>Approve revision<\/button>/)
+    const independent = render({ selfApproval: false, approvalPolicy: on, approvalPolicyKnown: true })
+    expect(independent).toContain('You did not prepare this draft, so you can approve it')
+    const unknown = render({ selfApproval: true, approvalPolicy: null, approvalPolicyKnown: false })
+    expect(unknown).not.toContain('Approving it yourself is permitted')
+    expect(unknown).not.toContain('so you cannot approve it')
   })
 
   it('the prepare dialog asks for the basis and the acknowledgement', () => {
@@ -1266,5 +1285,82 @@ describe('page wiring', () => {
 
   it('the status vocabulary is exactly draft / approved / withdrawn', () => {
     expect(Object.values(FINAL_ACCOUNT_STATUS)).toEqual(['draft', 'approved', 'withdrawn'])
+  })
+})
+
+// ── Phase 2 step 5 (ADR-95) — settlement of client money ─────────────────
+//
+// Expected figures are integer-cent arithmetic on the fixture's own amounts
+// (invoice CI-0001 gross 9,900.00; receipt CR-0001 7,700.00 allocated to it).
+describe('client refunds and receipt applications in the Final Account', () => {
+  const extraReceipt = (over = {}) => ({
+    id: 'cr2', receiptNumber: 'CR-0002', status: 'posted', clientId: 'c1', clientName: 'Owner Pty Ltd', receiptDate: '2026-10-20',
+    amount: 500, allocatedTotal: 0, unallocatedAmount: 500, allocations: [], ...over,
+  })
+  const settlementDoc = (over) => ({ status: 'posted', clientId: 'c1', clientName: 'Owner Pty Ltd', currency: undefined, ...over })
+
+  it('UNALLOCATED receipt money blocks approval — it must be applied or refunded first', () => {
+    const r = compute(mutate(p => { p.clientReceipts.push(extraReceipt()) }))
+    expect(r.figures.unallocatedReceipts).toBe(500)
+    expect(blockerCodes(r)).toContain(BLOCKER.UNSETTLED_FUNDS)
+    expect(r.blockers.find(b => b.code === BLOCKER.UNSETTLED_FUNDS).detail).toBe('500.00 unallocated')
+  })
+
+  it('applying it to the invoice settles it: received rises, outstanding falls, cash unchanged', () => {
+    const r = compute(mutate(p => {
+      p.clientReceipts.push(extraReceipt())
+      p.clientReceiptApplications.push(settlementDoc({ id: 'a1', applicationNumber: 'CRA-0001', receiptId: 'cr2', clientInvoiceId: 'ci1', amount: 500, applicationDate: '2026-10-21' }))
+    }))
+    expect(blockerCodes(r)).not.toContain(BLOCKER.UNSETTLED_FUNDS)
+    expect(r.figures.unallocatedReceipts).toBe(0)
+    expect(r.figures.receivedAgainstInvoices).toBe((770000 + 50000) / 100)
+    expect(r.figures.receivablesOutstanding).toBe((990000 - 820000) / 100)
+    expect(r.figures.cashReceived).toBe((770000 + 50000) / 100)       // an application is not cash
+  })
+
+  it('refunding it settles it too: net cash received = receipts − refunds', () => {
+    const r = compute(mutate(p => {
+      p.clientReceipts.push(extraReceipt())
+      p.clientRefunds.push(settlementDoc({ id: 'f1', refundNumber: 'CRF-0001', source: 'receipt', receiptId: 'cr2', clientInvoiceId: null, amount: 500, refundDate: '2026-10-22' }))
+    }))
+    expect(blockerCodes(r)).not.toContain(BLOCKER.UNSETTLED_FUNDS)
+    expect(r.figures.cashReceived).toBe((770000 + 50000 - 50000) / 100)
+    expect(r.figures.receivedAgainstInvoices).toBe(7700)
+  })
+
+  it('an overpaid invoice blocks (owed to client) until the overpayment is refunded', () => {
+    const over = (p) => { p.clientReceipts[0] = { ...p.clientReceipts[0], amount: 10000, allocatedTotal: 10000, allocations: [{ clientInvoiceId: 'ci1', invoiceNumber: 'CI-0001', allocatedAmount: 10000 }] } }
+    const before = compute(mutate(over))
+    expect(blockerCodes(before)).toContain(BLOCKER.OVER_ALLOCATED)
+    expect(before.figures?.owedToClient ?? before.partialFigures.owedToClient).toBe((1000000 - 990000) / 100)
+    const after = compute(mutate(p => {
+      over(p)
+      p.clientRefunds.push(settlementDoc({ id: 'f2', refundNumber: 'CRF-0002', source: 'invoice', receiptId: null, clientInvoiceId: 'ci1', amount: 100, refundDate: '2026-10-23' }))
+    }))
+    expect(blockerCodes(after)).not.toContain(BLOCKER.OVER_ALLOCATED)
+    expect(after.figures.owedToClient).toBe(0)
+    expect(after.figures.cashReceived).toBe((1000000 - 10000) / 100)
+    expect(after.figures.receivablesOutstanding).toBe(0)
+  })
+
+  it('an unsupported settlement record blocks, named', () => {
+    const r = compute(mutate(p => {
+      p.clientReceiptApplications.push(settlementDoc({ id: 'a9', applicationNumber: 'CRA-0009', receiptId: 'missing', clientInvoiceId: 'ci1', amount: 1 }))
+    }))
+    expect(blockerCodes(r)).toContain(BLOCKER.SETTLEMENT_EXCEPTIONS)
+    expect(r.blockers.find(b => b.code === BLOCKER.SETTLEMENT_EXCEPTIONS).detail).toContain('CRA-0009')
+  })
+
+  it('a failed refunds read makes the unsettled figure unknown — never zero — and blocks', () => {
+    const states = { ...settledSourceStates(), clientRefunds: { loading: false, error: true } }
+    const r = compute(readyProject(), states)
+    expect(r.partialFigures.unallocatedReceipts).toBeNull()
+    expect(r.ready).toBe(false)
+  })
+
+  it('a project with no refunds or applications is exactly as before (the fixture is ready)', () => {
+    const r = compute()
+    expect(r.ready).toBe(true)
+    expect(r.figures).toEqual(EXPECTED_FIGURES)
   })
 })

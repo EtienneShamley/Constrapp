@@ -8,9 +8,11 @@ import {
   assertFails,
 } from '@firebase/rules-unit-testing'
 import {
-  doc, getDoc, setDoc, updateDoc, deleteDoc, runTransaction, serverTimestamp, Timestamp,
+  doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, runTransaction, serverTimestamp, Timestamp,
 } from 'firebase/firestore'
-import { poTotals, lineTotal, roundMoney, PO_STATUS } from '../../src/lib/purchaseOrders'
+import {
+  poTotals, lineTotal, roundMoney, PO_STATUS, poLineToForm, buildPoLineItem, materialEditStamp, PO_MATERIAL_KEYS,
+} from '../../src/lib/purchaseOrders'
 import { invoiceTotals, gstForLine } from '../../src/lib/supplierInvoices'
 import { runTransitionPurchaseOrder, PoWriteError, PO_WRITE_ERROR } from '../../src/lib/purchaseOrderActions'
 import { PO_CANCEL_BLOCKER_KIND } from '../../src/lib/poCancellation'
@@ -48,7 +50,7 @@ import { PO_CANCEL_BLOCKER_KIND } from '../../src/lib/poCancellation'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A  = 'companyA'   // baseCurrency NZD
 const COMPANY_B  = 'companyB'   // no baseCurrency
 const PROJECT_A  = 'projectA'   // currency AUD (explicit)
@@ -99,13 +101,16 @@ function poPayload(user, { lines = DEFAULT_LINES, ...overrides } = {}) {
     externalRefs: {},
     createdAt: serverTimestamp(), createdBy: user.uid,
     updatedAt: serverTimestamp(), updatedBy: user.uid,
+    // D4 material-edit provenance (ADR-96, D3 #46) — required at create.
+    lastMaterialEditBy: user.uid, lastMaterialEditAt: serverTimestamp(),
     ...overrides,
   }
 }
 
 // Seeds a PO directly, bypassing rules. `status` selects the stamps a real
 // document would carry; `legacy: true` strips every ADR-57 key (the pre-M2-B1
-// shape the hook wrote), and `extra` is pasted over the top.
+// shape the hook wrote) and the D4 provenance stamps (which post-date it), and
+// `extra` is pasted over the top.
 async function seed(id, status = 'draft', user = USERS.admin, extra = {}, { legacy = false, projectId = PROJECT_A, companyId = COMPANY_A } = {}) {
   await testEnv.withSecurityRulesDisabled(async (c) => {
     const db = c.firestore()
@@ -117,21 +122,27 @@ async function seed(id, status = 'draft', user = USERS.admin, extra = {}, { lega
       status === 'cancelled'        ? { status, cancelledAt: now, cancelledBy: user.uid } :
       status === 'pending_approval' ? { status } :
       { status: 'draft' }
-    const docData = { ...base, createdAt: now, updatedAt: now, ...lifecycle, ...extra }
+    const docData = { ...base, createdAt: now, updatedAt: now, lastMaterialEditAt: now, ...lifecycle, ...extra }
     if (legacy) {
-      for (const k of ['sentBy', 'closedBy', 'cancelledBy', 'updatedAt', 'updatedBy']) delete docData[k]
+      for (const k of ['sentBy', 'closedBy', 'cancelledBy', 'updatedAt', 'updatedBy', 'lastMaterialEditBy', 'lastMaterialEditAt']) delete docData[k]
     }
     await setDoc(doc(db, posPath(companyId, projectId), id), docData)
   })
 }
 
 const stamps = (user) => ({ updatedAt: serverTimestamp(), updatedBy: user.uid })
+// D4: the provenance a MATERIAL draft edit must carry (lib/purchaseOrders.js → materialEditStamp).
+const materialStamp = (user) => ({ lastMaterialEditBy: user.uid, lastMaterialEditAt: serverTimestamp() })
 
-// hooks/usePurchaseOrders.jsx → updatePurchaseOrder.
+// hooks/usePurchaseOrders.jsx → updatePurchaseOrder. The defaults change the
+// description and the lines against every seed, so this is a MATERIAL edit and
+// carries the D4 stamps (the hook adds them exactly when a material key changes).
 function draftEdit(user, { lines = [line(8, 250)], description = 'Level 1 concrete — revised', notes = 'Rate confirmed', ...extra } = {}) {
   const { subtotal, gst, total } = poTotals(lines)
-  return { description, notes, lineItems: lines, subtotal, gst, total, ...stamps(user), ...extra }
+  return { description, notes, lineItems: lines, subtotal, gst, total, ...stamps(user), ...materialStamp(user), ...extra }
 }
+// A COSMETIC draft edit — notes only, so the hook adds no D4 stamp.
+const cosmeticEdit = (user, extra = {}) => ({ notes: `note by ${user.uid}`, ...stamps(user), ...extra })
 
 // lib/purchaseOrderActions.js → transitionUpdate, as the app writes them.
 const sendWrite   = (user, extra = {}) => ({ status: 'sent',      sentAt: serverTimestamp(),      sentBy: user.uid,      ...stamps(user), ...extra })
@@ -361,7 +372,7 @@ describe('create shape — identity, stamps and exact keys', () => {
   })
 
   it('the key set is exact — a missing key or an extra key is refused', async () => {
-    for (const key of ['sentBy', 'updatedAt', 'updatedBy', 'externalRefs', 'currency', 'revision', 'notes']) {
+    for (const key of ['sentBy', 'updatedAt', 'updatedBy', 'externalRefs', 'currency', 'revision', 'notes', 'lastMaterialEditBy', 'lastMaterialEditAt']) {
       const p = poPayload(USERS.qs)
       delete p[key]
       await assertFails(setDoc(poRef(ctx(USERS.qs), `mk-${key}`), p))
@@ -567,6 +578,7 @@ describe('legal transitions', () => {
     await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 't6'), cancelWrite(USERS.qs)))
   })
 
+  // ADR-96: true while the company's segregation policy is absent/disabled (the default) — the D4 block below covers strict mode.
   it('the creator may send their own PO — self-approval is permitted (separation of duties is not approved)', async () => {
     await seed('t7', 'draft', USERS.qs)
     await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 't7'), sendWrite(USERS.qs)))
@@ -584,7 +596,7 @@ describe('legal transitions', () => {
   it('a legacy document with NO externalRefs key and NO supplierId key still takes every write', async () => {
     await testEnv.withSecurityRulesDisabled(async (c) => {
       const base = poPayload(USERS.admin)
-      for (const k of ['sentBy', 'closedBy', 'cancelledBy', 'updatedAt', 'updatedBy', 'externalRefs', 'supplierId']) delete base[k]
+      for (const k of ['sentBy', 'closedBy', 'cancelledBy', 'updatedAt', 'updatedBy', 'externalRefs', 'supplierId', 'lastMaterialEditBy', 'lastMaterialEditAt']) delete base[k]
       await setDoc(doc(c.firestore(), posPath(), 't11'), { ...base, createdAt: Timestamp.now() })
     })
     await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 't11'), draftEdit(USERS.qs)))
@@ -782,18 +794,33 @@ describe('dependent collections are unaffected', () => {
     }
   }
 
-  it('a PO created and sent through the new rules is a valid direct_po invoice source; a draft or cancelled one is not', async () => {
+  // ADR-93: supplier invoices and progress claims are written ONLY by the
+  // trusted backend (which reads the PO in its transaction). A client create is
+  // refused against a draft, sent, closed or cancelled PO alike, for every
+  // financial role, and nothing is stored; the PO lifecycle itself is unchanged.
+  const FINANCIAL_USERS = [USERS.admin, USERS.pm, USERS.qs]
+  const exists = async (ref) => {
+    let found
+    await testEnv.withSecurityRulesDisabled(async (c) => { found = (await getDoc(ref(c.firestore()))).exists() })
+    return found
+  }
+  async function refusedForAll(ref, build) {
+    for (const user of FINANCIAL_USERS) await assertFails(setDoc(ref(ctx(user)), build(user)))
+    expect(await exists(ref)).toBe(false)
+  }
+
+  it('ADR-93 — a direct_po supplier invoice create is REFUSED from every client against a draft, sent, closed or cancelled PO created and moved through the new rules', async () => {
     await assertSucceeds(setDoc(poRef(ctx(USERS.qs), 'dep1'), poPayload(USERS.qs)))
     await assertFails(setDoc(invoiceRef(ctx(USERS.qs), 'inv0'), invoicePayload(USERS.qs, 'dep1')))     // still draft
     await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 'dep1'), sendWrite(USERS.qs)))
-    await assertSucceeds(setDoc(invoiceRef(ctx(USERS.qs), 'inv1'), invoicePayload(USERS.qs, 'dep1')))
+    await refusedForAll((db) => invoiceRef(db, 'inv1'), (user) => invoicePayload(user, 'dep1'))       // sent — formerly accepted
     await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 'dep1'), closeWrite(USERS.qs)))
-    await assertSucceeds(setDoc(invoiceRef(ctx(USERS.qs), 'inv2'), invoicePayload(USERS.qs, 'dep1')))  // closed still invoiceable
+    await refusedForAll((db) => invoiceRef(db, 'inv2'), (user) => invoicePayload(user, 'dep1'))       // closed — formerly accepted
     await seed('dep2', 'cancelled')
     await assertFails(setDoc(invoiceRef(ctx(USERS.qs), 'inv3'), invoicePayload(USERS.qs, 'dep2')))
   })
 
-  it('a progress claim against a PO sent through these rules creates; against a draft or cancelled one it does not (ADR-58 get()s the PO)', async () => {
+  it('ADR-93 — a progress claim create is REFUSED from every client against a draft, sent or cancelled PO (the backend reads the PO now)', async () => {
     // The ADR-58 claim shape (hooks/useProgressClaims.jsx): one claim line per
     // PO line, a balanced claimed header, the creator / audit stamps.
     const claim = (poId) => ({
@@ -810,7 +837,7 @@ describe('dependent collections are unaffected', () => {
     await seed('dep3', 'draft')
     await assertFails(setDoc(claimRef(ctx(USERS.qs), 'cl0'), claim('dep3')))
     await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 'dep3'), sendWrite(USERS.qs)))
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'cl1'), claim('dep3')))
+    await refusedForAll((db) => claimRef(db, 'cl1'), () => claim('dep3'))   // sent — formerly accepted
     await seed('dep4', 'cancelled')
     await assertFails(setDoc(claimRef(ctx(USERS.qs), 'cl2'), claim('dep4')))
   })
@@ -838,10 +865,19 @@ describe('runTransitionPurchaseOrder — the app’s own transaction against the
     })
   }
 
+  // The copy the page shows (the hook snapshot) — including the D4 stamps.
+  async function reviewed(id) {
+    let data
+    await testEnv.withSecurityRulesDisabled(async (c) => { data = (await getDoc(doc(c.firestore(), posPath(), id))).data() })
+    return { id, ...data }
+  }
+
   it('send from the reviewed copy writes exactly status + sentAt/sentBy + the audit stamps', async () => {
     await seed('tx1', 'draft')
     const qs = sdk(USERS.qs)
-    await runTransitionPurchaseOrder({ ...qs, poRef: poRef(qs.db, 'tx1'), seen: seen('tx1', 'draft'), nextStatus: PO_STATUS.SENT })
+    // D4: `seen` is now the stored copy with its material-edit stamps — a copy
+    // without them no longer matches the server and send is refused as STALE.
+    await runTransitionPurchaseOrder({ ...qs, poRef: poRef(qs.db, 'tx1'), seen: await reviewed('tx1'), nextStatus: PO_STATUS.SENT })
     let data
     await testEnv.withSecurityRulesDisabled(async (c) => { data = (await getDoc(doc(c.firestore(), posPath(), 'tx1'))).data() })
     expect(data.status).toBe('sent')
@@ -863,6 +899,31 @@ describe('runTransitionPurchaseOrder — the app’s own transaction against the
     expect(await readStatus('tx1')).toBe('sent')
     await runTransitionPurchaseOrder({ ...qs, poRef: poRef(qs.db, 'tx1'), seen: seen('tx1', 'sent'), nextStatus: PO_STATUS.CLOSED })
     expect(await readStatus('tx1')).toBe('closed')
+  })
+
+  it('D4 — send is refused as STALE when a MATERIAL edit landed after the sender reviewed the copy; a COSMETIC edit does not stale it', async () => {
+    await seed('tx1', 'draft')
+    const pm = sdk(USERS.pm)
+    const before = await reviewed('tx1')
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 'tx1'), draftEdit(USERS.qs)))   // material, by someone else
+    const e = await expectKind(runTransitionPurchaseOrder({ ...pm, poRef: poRef(pm.db, 'tx1'), seen: before, nextStatus: PO_STATUS.SENT }), PO_WRITE_ERROR.STALE)
+    expect(e.message).toContain('changed since you reviewed it')
+    expect(await readStatus('tx1')).toBe('draft')
+    const fresh = await reviewed('tx1')
+    expect(fresh.lastMaterialEditBy).toBe(USERS.qs.uid)
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 'tx1'), cosmeticEdit(USERS.qs)))  // notes only — stamps unchanged
+    await runTransitionPurchaseOrder({ ...pm, poRef: poRef(pm.db, 'tx1'), seen: fresh, nextStatus: PO_STATUS.SENT })
+    expect(await readStatus('tx1')).toBe('sent')
+  })
+
+  it('D4 — the material-edit check applies to SEND only: close and cancel from a copy without the stamps proceed', async () => {
+    const qs = sdk(USERS.qs)
+    await seed('tx1', 'sent')
+    await runTransitionPurchaseOrder({ ...qs, poRef: poRef(qs.db, 'tx1'), seen: seen('tx1', 'sent'), nextStatus: PO_STATUS.CLOSED })
+    expect(await readStatus('tx1')).toBe('closed')
+    await seed('tx2', 'draft')
+    await runTransitionPurchaseOrder({ ...qs, poRef: poRef(qs.db, 'tx2'), seen: seen('tx2', 'draft'), nextStatus: PO_STATUS.CANCELLED })
+    expect(await readStatus('tx2')).toBe('cancelled')
   })
 
   it('an illegal move, a missing document and a reserved target are refused before any read', async () => {
@@ -980,6 +1041,7 @@ describe('NOT ENFORCED by rules — proven, so the ceiling is documented (DC35)'
     await assertSucceeds(setDoc(poRef(ctx(USERS.qs), 'nz3'), { ...poPayload(USERS.qs), subtotal: 1, gst: 0.1, total: 1.1 }))
   })
 
+  // ADR-96: creator == sender is accepted only with the segregation policy absent/disabled (see the D4 block).
   it('creator == sender is ACCEPTED (self-approval permitted by decision); duplicate PO numbers are ACCEPTED (the counter is client-written — DC6)', async () => {
     await seed('nz4', 'draft', USERS.qs)
     await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 'nz4'), sendWrite(USERS.qs)))
@@ -998,6 +1060,313 @@ describe('NOT ENFORCED by rules — proven, so the ceiling is documented (DC35)'
   it('a blind last-write-wins draft edit (no version guard) is ACCEPTED', async () => {
     await seed('nz9', 'draft')
     await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 'nz9'), draftEdit(USERS.qs, { notes: 'A' })))
-    await assertSucceeds(updateDoc(poRef(ctx(USERS.pm), 'nz9'), draftEdit(USERS.pm, { notes: 'B' })))
+    // D4: the second write now changes the lines too — re-sending the first
+    // edit's description/lines unchanged would be COSMETIC, and a cosmetic edit
+    // may not move the material-edit stamp. Still a blind overwrite, unguarded.
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.pm), 'nz9'), draftEdit(USERS.pm, { notes: 'B', lines: [line(9, 250)] })))
+  })
+})
+
+// ── ADR-96 / D4 — approval segregation on SEND ──────────────────────────────
+//
+// D4: with `approvalPolicy/current.segregationEnabled == true` the sender may be
+// neither the PO's creator nor its LAST MATERIAL draft editor
+// (`lastMaterialEditBy`, D3 #46). A material edit (description, lines, header)
+// must stamp its editor at server time; a cosmetic one (notes) must leave the
+// stamp exactly as it was. A draft whose provenance was never recorded fails
+// CLOSED under strict mode. No administrator bypass; disabled ⇒ unchanged.
+
+describe('ADR-96 / D4 — approval segregation: a PO\'s preparer cannot send it when the policy is enabled', () => {
+  // A fourth financial member, so creator, material editor, cosmetic editor
+  // and an independent sender can all be different people.
+  const PM2 = { uid: 'u_pm2', role: 'project_manager', companyId: COMPANY_A }
+  const seedPolicy = (segregationEnabled, companyId = COMPANY_A) => testEnv.withSecurityRulesDisabled(async (c) => {
+    await setDoc(doc(c.firestore(), `companies/${companyId}/approvalPolicy/current`), { segregationEnabled, updatedAt: Timestamp.now() })
+  })
+  const readPo = async (id) => {
+    let data = null
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      const s = await getDoc(doc(c.firestore(), posPath(), id))
+      data = s.exists() ? s.data() : null
+    })
+    return data
+  }
+
+  // Created by the QS, last MATERIALLY edited (and last updated) by the PM; the
+  // admin and PM2 are independent. D4 changed this fixture: before D3 #46 the
+  // Rules compared `updatedBy`, so `updatedBy: pm` alone made the PM a preparer;
+  // now only `lastMaterialEditBy` does, so the seed states it.
+  beforeEach(async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(doc(c.firestore(), 'users', PM2.uid), { role: PM2.role, companyId: PM2.companyId, name: PM2.uid })
+    })
+    await seed('s1', 'draft', USERS.qs, { updatedBy: USERS.pm.uid, lastMaterialEditBy: USERS.pm.uid })
+    await seed('s2', 'pending_approval', USERS.qs, { updatedBy: USERS.pm.uid, lastMaterialEditBy: USERS.pm.uid })
+  })
+
+  // ── policy disabled / absent / other company — unchanged ──────────────────
+
+  it('policy ABSENT: the creator sends their own PO exactly as before', async () => {
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 's1'), sendWrite(USERS.qs)))
+    expect(await readPo('s1')).toMatchObject({ status: 'sent', sentBy: USERS.qs.uid })
+  })
+  it('policy ABSENT: the last (material) editor sends as before (pending_approval → sent too)', async () => {
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.pm), 's1'), sendWrite(USERS.pm)))
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 's2'), sendWrite(USERS.qs)))
+  })
+  it('policy present with segregationEnabled: false — the creator and the material editor send', async () => {
+    await seedPolicy(false)
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 's1'), sendWrite(USERS.qs)))
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.pm), 's2'), sendWrite(USERS.pm)))
+  })
+  it('policy ABSENT: a legacy draft with NO provenance stamp is sent by its creator as before', async () => {
+    await seed('lg0', 'draft', USERS.qs, {}, { legacy: true })
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 'lg0'), sendWrite(USERS.qs)))
+  })
+  it('another company\'s ENABLED policy does not affect Company A', async () => {
+    await seedPolicy(true, COMPANY_B)
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 's1'), sendWrite(USERS.qs)))
+  })
+
+  // ── strict mode — who may send ─────────────────────────────────────────────
+
+  it('policy ENABLED: the creator and the last material editor are refused, from draft and from pending_approval; the PO is unchanged', async () => {
+    await seedPolicy(true)
+    for (const id of ['s1', 's2']) {
+      const before = await readPo(id)
+      await assertFails(updateDoc(poRef(ctx(USERS.qs), id), sendWrite(USERS.qs)))
+      await assertFails(updateDoc(poRef(ctx(USERS.pm), id), sendWrite(USERS.pm)))
+      expect(await readPo(id)).toEqual(before)
+    }
+  })
+  it('policy ENABLED: an independent financial member sends', async () => {
+    await seedPolicy(true)
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.admin), 's1'), sendWrite(USERS.admin)))
+    await assertSucceeds(updateDoc(poRef(ctx(PM2), 's2'), sendWrite(PM2)))
+    expect(await readPo('s1')).toMatchObject({ status: 'sent', sentBy: USERS.admin.uid })
+  })
+  it('policy ENABLED: the company administrator has NO bypass — an admin creator and an admin material editor are refused', async () => {
+    await seedPolicy(true)
+    await seed('adm1', 'draft', USERS.admin)
+    await seed('adm2', 'draft', USERS.qs, { lastMaterialEditBy: USERS.admin.uid })
+    await assertFails(updateDoc(poRef(ctx(USERS.admin), 'adm1'), sendWrite(USERS.admin)))
+    await assertFails(updateDoc(poRef(ctx(USERS.admin), 'adm2'), sendWrite(USERS.admin)))
+  })
+
+  it('ARCHITECT CASE — A materially edits, B makes a cosmetic edit, A tries to send → REFUSED; B (not the creator) may send', async () => {
+    await seedPolicy(true)
+    // Creator: admin (through the rules).
+    await assertSucceeds(setDoc(poRef(ctx(USERS.admin), 'ac1'), poPayload(USERS.admin)))
+    // A = QS: a material edit — the stamp moves to A.
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 'ac1'), draftEdit(USERS.qs)))
+    expect(await readPo('ac1')).toMatchObject({ lastMaterialEditBy: USERS.qs.uid, updatedBy: USERS.qs.uid })
+    // B = PM: a cosmetic (notes-only) edit — B becomes the LAST editor, A stays the material editor.
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.pm), 'ac1'), cosmeticEdit(USERS.pm)))
+    const afterCosmetic = await readPo('ac1')
+    expect(afterCosmetic).toMatchObject({ lastMaterialEditBy: USERS.qs.uid, updatedBy: USERS.pm.uid, notes: `note by ${USERS.pm.uid}` })
+    // A (the material editor hidden behind B's cosmetic edit) is refused; so is the creator.
+    await assertFails(updateDoc(poRef(ctx(USERS.qs), 'ac1'), sendWrite(USERS.qs)))
+    await assertFails(updateDoc(poRef(ctx(USERS.admin), 'ac1'), sendWrite(USERS.admin)))
+    expect(await readPo('ac1')).toEqual(afterCosmetic)
+    // B made only a cosmetic edit and is not the creator — B may send.
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.pm), 'ac1'), sendWrite(USERS.pm)))
+    expect(await readPo('ac1')).toMatchObject({ status: 'sent', sentBy: USERS.pm.uid, lastMaterialEditBy: USERS.qs.uid })
+  })
+
+  it('the creator stays excluded after someone else\'s material edit (both preparers are checked)', async () => {
+    await seedPolicy(true)
+    await seed('cr1', 'draft', USERS.qs)
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.pm), 'cr1'), draftEdit(USERS.pm)))
+    await assertFails(updateDoc(poRef(ctx(USERS.qs), 'cr1'), sendWrite(USERS.qs)))    // creator
+    await assertFails(updateDoc(poRef(ctx(USERS.pm), 'cr1'), sendWrite(USERS.pm)))    // material editor
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.admin), 'cr1'), sendWrite(USERS.admin)))
+  })
+
+  it('a MIXED material + cosmetic edit stamps the editor at server time (the stamp equals the audit time of that write)', async () => {
+    await seed('mx1', 'draft', USERS.qs)
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.pm), 'mx1'), draftEdit(USERS.pm, { notes: 'mixed — notes and lines' })))
+    const po = await readPo('mx1')
+    expect(po.lastMaterialEditBy).toBe(USERS.pm.uid)
+    expect(po.lastMaterialEditAt.isEqual(po.updatedAt)).toBe(true)
+    expect(po.notes).toBe('mixed — notes and lines')
+    // Each material key alone is material too.
+    for (const [i, patch] of [
+      { description: 'only the description' },
+      { lineItems: [line(3, 250)], subtotal: 750, gst: 75, total: 825 },
+    ].entries()) {
+      await seed(`mx-${i}`, 'draft', USERS.qs)
+      await assertFails(updateDoc(poRef(ctx(USERS.pm), `mx-${i}`), { ...patch, ...stamps(USERS.pm) }))                         // without the stamp
+      await assertSucceeds(updateDoc(poRef(ctx(USERS.pm), `mx-${i}`), { ...patch, ...stamps(USERS.pm), ...materialStamp(USERS.pm) }))
+      expect((await readPo(`mx-${i}`)).lastMaterialEditBy).toBe(USERS.pm.uid)
+    }
+  })
+
+  it('policy toggled between edit and send: the policy at SEND time decides', async () => {
+    // Edited while disabled, sent after enabling → the material editor is refused.
+    await seed('tg1', 'draft', USERS.admin)
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 'tg1'), draftEdit(USERS.qs)))
+    await seedPolicy(true)
+    await assertFails(updateDoc(poRef(ctx(USERS.qs), 'tg1'), sendWrite(USERS.qs)))
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.pm), 'tg1'), sendWrite(USERS.pm)))
+    // Edited while enabled, sent after disabling → the material editor sends.
+    await seed('tg2', 'draft', USERS.admin)
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 'tg2'), draftEdit(USERS.qs)))
+    await seedPolicy(false)
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 'tg2'), sendWrite(USERS.qs)))
+  })
+
+  // ── stamp manipulation ─────────────────────────────────────────────────────
+
+  it('create: the stamp must be the caller at server time — another uid, null, a client clock or an omitted stamp is refused', async () => {
+    await assertFails(setDoc(poRef(ctx(USERS.qs), 'sm1'), poPayload(USERS.qs, { lastMaterialEditBy: USERS.admin.uid })))
+    await assertFails(setDoc(poRef(ctx(USERS.qs), 'sm2'), poPayload(USERS.qs, { lastMaterialEditBy: null })))
+    await assertFails(setDoc(poRef(ctx(USERS.qs), 'sm3'), poPayload(USERS.qs, { lastMaterialEditAt: null })))
+    for (const [i, clock] of CLIENT_CLOCKS.entries()) {
+      await assertFails(setDoc(poRef(ctx(USERS.qs), `sm4-${i}`), poPayload(USERS.qs, { lastMaterialEditAt: clock() })))
+    }
+    for (const key of ['lastMaterialEditBy', 'lastMaterialEditAt']) {
+      const p = poPayload(USERS.qs)
+      delete p[key]
+      await assertFails(setDoc(poRef(ctx(USERS.qs), `sm5-${key}`), p))
+    }
+    await assertSucceeds(setDoc(poRef(ctx(USERS.qs), 'sm6'), poPayload(USERS.qs)))
+  })
+
+  it('material edit: a stamp naming someone else, a client clock, a null, a deleted, an omitted or a STALE (stored) stamp is refused', async () => {
+    await seed('me1', 'draft', USERS.qs)
+    const stored = await readPo('me1')
+    const db = ctx(USERS.pm)
+    await assertFails(updateDoc(poRef(db, 'me1'), draftEdit(USERS.pm, { lastMaterialEditBy: USERS.admin.uid })))
+    await assertFails(updateDoc(poRef(db, 'me1'), draftEdit(USERS.pm, { lastMaterialEditBy: USERS.qs.uid })))     // pin it on the creator
+    await assertFails(updateDoc(poRef(db, 'me1'), draftEdit(USERS.pm, { lastMaterialEditBy: null })))
+    for (const clock of CLIENT_CLOCKS) {
+      await assertFails(updateDoc(poRef(db, 'me1'), draftEdit(USERS.pm, { lastMaterialEditAt: clock() })))
+    }
+    await assertFails(updateDoc(poRef(db, 'me1'), draftEdit(USERS.pm, { lastMaterialEditBy: deleteField(), lastMaterialEditAt: deleteField() })))
+    const omitted = draftEdit(USERS.pm)
+    delete omitted.lastMaterialEditBy; delete omitted.lastMaterialEditAt
+    await assertFails(updateDoc(poRef(db, 'me1'), omitted))
+    // Stale: the stored stamp re-sent unchanged with a material change.
+    await assertFails(updateDoc(poRef(db, 'me1'), draftEdit(USERS.pm, { lastMaterialEditBy: stored.lastMaterialEditBy, lastMaterialEditAt: stored.lastMaterialEditAt })))
+    // The caller's uid with the STORED time is stale too.
+    await assertFails(updateDoc(poRef(db, 'me1'), draftEdit(USERS.pm, { lastMaterialEditAt: stored.lastMaterialEditAt })))
+    expect(await readPo('me1')).toEqual(stored)
+  })
+
+  it('cosmetic edit: moving the stamp to the caller, to anyone else, refreshing its time, or deleting it is refused', async () => {
+    await seed('ce1', 'draft', USERS.qs)
+    const stored = await readPo('ce1')
+    const db = ctx(USERS.pm)
+    await assertFails(updateDoc(poRef(db, 'ce1'), cosmeticEdit(USERS.pm, materialStamp(USERS.pm))))
+    await assertFails(updateDoc(poRef(db, 'ce1'), cosmeticEdit(USERS.pm, { lastMaterialEditBy: USERS.admin.uid })))
+    await assertFails(updateDoc(poRef(db, 'ce1'), cosmeticEdit(USERS.pm, { lastMaterialEditBy: USERS.pm.uid })))
+    await assertFails(updateDoc(poRef(db, 'ce1'), cosmeticEdit(USERS.pm, { lastMaterialEditAt: serverTimestamp() })))
+    await assertFails(updateDoc(poRef(db, 'ce1'), cosmeticEdit(USERS.pm, { lastMaterialEditBy: deleteField() })))
+    await assertFails(updateDoc(poRef(db, 'ce1'), cosmeticEdit(USERS.pm, { lastMaterialEditBy: deleteField(), lastMaterialEditAt: deleteField() })))
+    // A bare audit re-stamp (no content key at all) may not move it either.
+    await assertFails(updateDoc(poRef(db, 'ce1'), { ...stamps(USERS.pm), ...materialStamp(USERS.pm) }))
+    expect(await readPo('ce1')).toEqual(stored)
+    // The cosmetic edit itself, leaving the stamp alone, is accepted.
+    await assertSucceeds(updateDoc(poRef(db, 'ce1'), cosmeticEdit(USERS.pm)))
+    expect(await readPo('ce1')).toMatchObject({ lastMaterialEditBy: USERS.qs.uid, updatedBy: USERS.pm.uid })
+  })
+
+  // The exact browser path (pages/project/ProjectPurchaseOrders.jsx → poLineToForm
+  // → buildPoLineItem → hooks/usePurchaseOrders.jsx → updatePurchaseOrder with
+  // materialEditStamp) for a save that changes NOTES ONLY, from the copy the
+  // client SDK returns. The Rules see no material change, so the hook must add
+  // no stamp; the second half proves a real line change is still stamped.
+  it('BROWSER PATH — a notes-only save through the editor is cosmetic and accepted; a re-priced line through the same path is stamped', async () => {
+    await seed('bp1', 'draft', USERS.qs)
+    const COST_CODES = [{ id: 'cc1', code: '03-100', name: 'Concrete' }]
+    const db = ctx(USERS.pm)
+    const save = async (edit) => {
+      const snap = await getDoc(poRef(db, 'bp1'))
+      const po = { id: snap.id, ...snap.data() }
+      const form = { description: po.description, notes: po.notes, lines: po.lineItems.map(poLineToForm), ...edit }
+      const lines = form.lines.map(l => buildPoLineItem(l, { costCodes: COST_CODES })).map(li => ({ ...li, lineTotal: lineTotal(li.qty, li.unitPrice) }))
+      const { subtotal, gst, total } = poTotals(lines)
+      const next = { description: form.description.trim(), notes: form.notes.trim(), lineItems: lines, subtotal, gst, total }
+      return updateDoc(poRef(db, 'bp1'), { ...next, ...materialEditStamp(po, next, PO_MATERIAL_KEYS, USERS.pm.uid, serverTimestamp()), ...stamps(USERS.pm) })
+    }
+    await assertSucceeds(save({ notes: 'only the notes changed' }))
+    expect(await readPo('bp1')).toMatchObject({ notes: 'only the notes changed', lastMaterialEditBy: USERS.qs.uid })
+    const repriced = (await readPo('bp1')).lineItems.map(poLineToForm).map(l => ({ ...l, unitPrice: '300' }))
+    await assertSucceeds(save({ lines: repriced }))
+    expect((await readPo('bp1')).lastMaterialEditBy).toBe(USERS.pm.uid)
+  })
+
+  it('re-writing the material keys with their STORED values is not a material change — the stamp may not move', async () => {
+    await seed('rw1', 'draft', USERS.qs)
+    const s = await readPo('rw1')
+    const same = { description: s.description, lineItems: s.lineItems, subtotal: s.subtotal, gst: s.gst, total: s.total }
+    await assertFails(updateDoc(poRef(ctx(USERS.pm), 'rw1'), { ...same, notes: 'n', ...stamps(USERS.pm), ...materialStamp(USERS.pm) }))
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.pm), 'rw1'), { ...same, notes: 'n', ...stamps(USERS.pm) }))
+    expect((await readPo('rw1')).lastMaterialEditBy).toBe(USERS.qs.uid)
+  })
+
+  it('a send, close or cancel cannot write or move the stamp; a send cannot ESTABLISH one on a legacy draft', async () => {
+    await seedPolicy(true)
+    await seed('tr1', 'draft', USERS.qs)
+    await assertFails(updateDoc(poRef(ctx(USERS.admin), 'tr1'), sendWrite(USERS.admin, materialStamp(USERS.admin))))
+    await assertFails(updateDoc(poRef(ctx(USERS.admin), 'tr1'), sendWrite(USERS.admin, { lastMaterialEditBy: USERS.pm.uid })))
+    await assertFails(updateDoc(poRef(ctx(USERS.admin), 'tr1'), cancelWrite(USERS.admin, materialStamp(USERS.admin))))
+    // The creator may not launder their own provenance through a send that names someone else.
+    await assertFails(updateDoc(poRef(ctx(USERS.qs), 'tr1'), sendWrite(USERS.qs, { lastMaterialEditBy: USERS.pm.uid })))
+    await seed('tr2', 'sent', USERS.qs)
+    await assertFails(updateDoc(poRef(ctx(USERS.admin), 'tr2'), closeWrite(USERS.admin, materialStamp(USERS.admin))))
+    await assertFails(updateDoc(poRef(ctx(USERS.admin), 'tr2'), cancelWrite(USERS.admin, { lastMaterialEditAt: serverTimestamp() })))
+    await assertFails(updateDoc(poRef(ctx(USERS.admin), 'tr2'), { ...stamps(USERS.admin), ...materialStamp(USERS.admin) }))   // no edit branch after send
+    await seed('tr3', 'draft', USERS.qs, {}, { legacy: true })
+    await assertFails(updateDoc(poRef(ctx(USERS.admin), 'tr3'), sendWrite(USERS.admin, materialStamp(USERS.admin))))
+    // The transitions themselves (without stamp keys) leave the stamp as it was.
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.admin), 'tr1'), sendWrite(USERS.admin)))
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.admin), 'tr1'), closeWrite(USERS.admin)))
+    expect(await readPo('tr1')).toMatchObject({ status: 'closed', lastMaterialEditBy: USERS.qs.uid })
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.admin), 'tr2'), cancelWrite(USERS.admin)))
+    expect(await readPo('tr2')).toMatchObject({ status: 'cancelled', lastMaterialEditBy: USERS.qs.uid })
+  })
+
+  // ── legacy drafts (no provenance recorded) ─────────────────────────────────
+
+  it('LEGACY draft without a stamp, strict mode: send is refused for EVERYONE (fails closed); a cosmetic edit cannot establish the stamp', async () => {
+    await seedPolicy(true)
+    await seed('lg1', 'draft', USERS.qs, {}, { legacy: true })
+    await seed('lg2', 'pending_approval', USERS.qs, {}, { legacy: true })
+    for (const id of ['lg1', 'lg2']) {
+      for (const user of [USERS.admin, USERS.pm, USERS.qs, PM2]) {
+        await assertFails(updateDoc(poRef(ctx(user), id), sendWrite(user)))
+      }
+    }
+    await assertFails(updateDoc(poRef(ctx(USERS.pm), 'lg1'), cosmeticEdit(USERS.pm, materialStamp(USERS.pm))))
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.pm), 'lg1'), cosmeticEdit(USERS.pm)))      // allowed, but records nothing
+    expect((await readPo('lg1')).lastMaterialEditBy).toBeUndefined()
+    await assertFails(updateDoc(poRef(ctx(USERS.admin), 'lg1'), sendWrite(USERS.admin)))
+  })
+
+  it('LEGACY draft, strict mode: a material save by A records A; then B (not the creator) may send, A and the creator may not', async () => {
+    await seedPolicy(true)
+    await seed('lg3', 'draft', USERS.qs, {}, { legacy: true })
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.pm), 'lg3'), draftEdit(USERS.pm)))   // A = PM
+    expect((await readPo('lg3')).lastMaterialEditBy).toBe(USERS.pm.uid)
+    await assertFails(updateDoc(poRef(ctx(USERS.pm), 'lg3'), sendWrite(USERS.pm)))      // A
+    await assertFails(updateDoc(poRef(ctx(USERS.qs), 'lg3'), sendWrite(USERS.qs)))      // creator
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.admin), 'lg3'), sendWrite(USERS.admin)))   // B
+  })
+
+  it('LEGACY draft, strict mode: the CREATOR\'s own material save records the creator; an independent member then sends', async () => {
+    await seedPolicy(true)
+    await seed('lg4', 'draft', USERS.qs, {}, { legacy: true })
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 'lg4'), draftEdit(USERS.qs)))
+    await assertFails(updateDoc(poRef(ctx(USERS.qs), 'lg4'), sendWrite(USERS.qs)))
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.pm), 'lg4'), sendWrite(USERS.pm)))
+  })
+
+  it('policy ENABLED: draft edit, close and cancel are unchanged for the preparer', async () => {
+    await seedPolicy(true)
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 's1'), draftEdit(USERS.qs)))
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 's2'), cancelWrite(USERS.qs)))
+    await seed('s3', 'sent', USERS.qs)
+    await assertSucceeds(updateDoc(poRef(ctx(USERS.qs), 's3'), closeWrite(USERS.qs)))
   })
 })

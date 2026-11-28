@@ -1,16 +1,32 @@
 import {
-  VARIATION_TYPE, VARIATION_STATUS, VARIATION_STATUS_LABELS, VARIATION_TRANSITION_STAMPS,
+  VARIATION_STATUS, VARIATION_STATUS_LABELS, VARIATION_TRANSITION_STAMPS,
   canTransition, variationTotals, validateApprovedAmounts, buildApprovedLineItems,
-  validateVariationDraft, stripApprovedFromLines, normaliseOriginRfi, isEligibleOriginRfi,
+  validateVariationDraft, isEligibleOriginRfi,
   isPoLinkedSupplierVariation, isCommitmentApplied, isScopeCommitted, shouldApplyOnApproval,
   commitmentApplyEligibility, COMMITMENT_APPLY_BLOCKER,
+  variationCalcVersion,
 } from './variations'
-import { PO_STATUS_LABELS } from './purchaseOrders'
+import {
+  createVariationRequest, createVariationRequestProblem, approvedAmountsProblem,
+  updateVariationRequest, updateVariationRequestProblem,
+} from './variationProcessing'
+import { isCommercialNotActivated, COMMERCIAL_MAINTENANCE_TEXT } from './commercialActivation'
 
-// ── Guarded variation writes (ADR-59, M2-B3) ─────────────────────────────────
+// ── Guarded variation writes (ADR-59, M2-B3 · ADR-90) ────────────────────────
 //
-// Two transactions — the DRAFT EDIT and the SUBMIT / APPROVE / REJECT /
-// WITHDRAW transition — on the lib/progressClaimActions.js convention:
+// SINCE ADR-90 FOUR OPERATIONS ARE PROCESSED BY THE TRUSTED BACKEND and are
+// CALLS here, not transactions: CREATING a variation, EDITING A DRAFT,
+// APPROVING one, and the one-time legacy APPLY / COMMIT NEW SCOPE
+// (runCreateVariation, runUpdateVariationDraft, runApproveVariation,
+// runApplyVariationCommitment at the foot of this file). Security Rules give a
+// browser no path to any of them, so no client can write a variation's lines,
+// figures, cost codes or commitment stamps. `transitionUpdate` and
+// `applyCommitmentUpdate` remain the ONE description of the approve and apply
+// writes — the callables run the generated copy of this module.
+//
+// ONE transaction remains in the browser — the SUBMIT / REJECT / WITHDRAW
+// transition, which writes a status and stamps and no content — on the
+// lib/progressClaimActions.js convention:
 //
 //   1. read the SERVER copy of the variation inside the transaction
 //   2. confirm it exists, is still in the status the user acted on AND still
@@ -43,6 +59,8 @@ export const VARIATION_WRITE_ERROR = {
   PO_INVALID:      'po_invalid',      // M3-B1 — the linked PO is missing or not sent/closed; approval refused
   PERMISSION:      'permission',
   OFFLINE:         'offline',
+  UNAVAILABLE:     'unavailable',     // ADR-90 — the server operation is switched off or not deployed; nothing was saved
+  UNCERTAIN:       'uncertain',       // ADR-90 — no typed answer from the server: the change MAY have been saved
   UNKNOWN:         'unknown',
 }
 
@@ -54,6 +72,8 @@ export const VARIATION_WRITE_ERROR_MESSAGES = {
   [VARIATION_WRITE_ERROR.PO_INVALID]:      'The linked purchase order is missing or is not sent or closed, so this variation cannot be approved. Withdraw or reject it, or raise it again against a current purchase order.',
   [VARIATION_WRITE_ERROR.PERMISSION]:      'You do not have permission to change variations on this project.',
   [VARIATION_WRITE_ERROR.OFFLINE]:         'Could not reach the server. Check your connection and try again — nothing was saved.',
+  [VARIATION_WRITE_ERROR.UNAVAILABLE]:     'This action is temporarily unavailable on the server. Nothing was saved.',
+  [VARIATION_WRITE_ERROR.UNCERTAIN]:       'The server did not confirm this change, so it may or may not have been saved. Check the variation register before trying again — repeating the same action is safe.',
   [VARIATION_WRITE_ERROR.UNKNOWN]:         'The change did not complete. Nothing was saved — try again.',
 }
 
@@ -107,85 +127,6 @@ function staleMessage(seen, live) {
   return null
 }
 
-// ── Draft edit ───────────────────────────────────────────────────────────────
-
-// The exact update a draft edit writes (hooks/useVariations.jsx →
-// updateVariation, ADR-35): the authored content, the re-derived submitted
-// header and — only when `originRfi` is passed — the originating-RFI triple.
-// The variation TYPE is read from the server copy, never the caller, so the
-// external reference always lands on the document's own side and the other
-// side stays null. Every line's approved side is forced null (a draft never
-// carries certified values). `notes` passes through when omitted. Exported so
-// the unit suite can pin the contract without Firestore; `now` is the injected
-// serverTimestamp(). Throws VariationWriteError(INVALID) with the readable
-// reason.
-export function draftUpdate(live, {
-  title, description, reason,
-  clientRef, supplierRef,
-  identifiedDate, responseDueDate, effectiveDate,
-  lineItems, notes,
-  originRfi,
-} = {}, uid, now) {
-  const draftError = validateVariationDraft({ title, lineItems })
-  if (draftError) throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, draftError)
-  if (originRfi && !isEligibleOriginRfi(originRfi)) {
-    throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, 'Only open, answered or closed RFIs can originate a variation')
-  }
-  const isClient  = live?.variationType === VARIATION_TYPE.CLIENT
-  const lines     = stripApprovedFromLines(lineItems)
-  const submitted = variationTotals(lines, 'submitted')
-  return {
-    ...(originRfi === undefined ? {} : normaliseOriginRfi(originRfi)),
-    title:       title?.trim()       || '',
-    description: description?.trim() || '',
-    reason:      reason || '',
-    clientRef:   isClient ? (clientRef?.trim() || '')  : null,
-    supplierRef: isClient ? null : (supplierRef?.trim() || ''),
-    identifiedDate:  identifiedDate  || '',
-    responseDueDate: responseDueDate || '',
-    effectiveDate:   effectiveDate   || '',
-    lineItems: lines,
-    submittedSubtotal: submitted.subtotal,
-    submittedGst:      submitted.gst,
-    submittedTotal:    submitted.total,
-    ...(notes === undefined ? {} : { notes: notes?.trim() || '' }),
-    revision:  nextRevision(live),
-    updatedAt: now,
-    updatedBy: uid,
-  }
-}
-
-export async function runUpdateVariationDraft({ db, variationRef, seen, data, uid, runTransaction, serverTimestamp }) {
-  if (!uid) throw new VariationWriteError(VARIATION_WRITE_ERROR.PERMISSION)
-  if (!seen?.id) throw new VariationWriteError(VARIATION_WRITE_ERROR.MISSING)
-  if (seen.status !== VARIATION_STATUS.DRAFT) {
-    throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, 'Only draft variations can be edited')
-  }
-  // Validate against the copy the user reviewed BEFORE any read, so a plainly
-  // invalid edit never opens a transaction; the same validation runs again
-  // over the server copy below.
-  draftUpdate(seen, data, uid, null)
-
-  let outcome
-  try {
-    outcome = await runTransaction(db, async (tx) => {
-      const snap = await tx.get(variationRef)
-      if (!snap.exists()) return { kind: VARIATION_WRITE_ERROR.MISSING }
-      const live = snap.data()
-      const stale = staleMessage(seen, live)
-      if (stale) return { kind: VARIATION_WRITE_ERROR.STALE, message: stale }
-      if (live.status !== VARIATION_STATUS.DRAFT) return { kind: VARIATION_WRITE_ERROR.INVALID }
-      tx.update(variationRef, draftUpdate(live, data, uid, serverTimestamp()))
-      return { kind: null }
-    })
-  } catch (err) {
-    if (err instanceof VariationWriteError) throw err
-    throw new VariationWriteError(variationWriteErrorKind(err?.code), undefined, err)
-  }
-  if (outcome.kind) throw new VariationWriteError(outcome.kind, outcome.message)
-  return outcome
-}
-
 // ── Transitions ──────────────────────────────────────────────────────────────
 
 // The commitment-application stamp pair (M3-B1, ADR-62): rules require
@@ -221,13 +162,19 @@ export function transitionUpdate(live, nextStatus, { approvedAmounts, assessment
     return { ...base, submittedDate: live?.submittedDate || today }
   }
   if (nextStatus === VARIATION_STATUS.APPROVED) {
-    const validationError = validateApprovedAmounts(live?.lineItems, approvedAmounts, assessmentNotes)
+    // Certified under the variation's OWN calculation version (ADR-91).
+    const version = variationCalcVersion(live)
+    if (version === null) throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, 'This variation records a calculation version this version of Constrap does not know.')
+    const validationError = validateApprovedAmounts(live?.lineItems, approvedAmounts, assessmentNotes, version)
     if (validationError) throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, validationError)
     if (applyCommitment && !isPoLinkedSupplierVariation(live)) {
       throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, 'Only a supplier variation that names a purchase order can be applied to a commitment.')
     }
-    const lineItems = buildApprovedLineItems(live.lineItems, approvedAmounts)
-    const approved  = variationTotals(lineItems, 'approved')
+    const lineItems = buildApprovedLineItems(live.lineItems, approvedAmounts, version)
+    if (lineItems.some(li => li.approvedAmount === null || li.approvedGst === null)) {
+      throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, 'An approved amount is above the largest Constrap supports.')
+    }
+    const approved  = variationTotals(lineItems, 'approved', version)
     return {
       ...base,
       lineItems,
@@ -247,29 +194,22 @@ export function transitionUpdate(live, nextStatus, { approvedAmounts, assessment
   return base
 }
 
-// `poRef` (M3-B1, ADR-62 Correction A) — the document reference of the
-// variation's PO, REQUIRED by the hook for an APPROVE of a PO-linked supplier
-// variation. It is read INSIDE the transaction, after the variation, so the
-// decision is made on the SERVER copy: the PO must exist in this project and be
-// sent/closed, and the approve write then carries the commitment stamps
-// (approve + apply in ONE write, `commitmentApplied: true`). A missing, draft,
-// pending or cancelled PO — or a PO-linked approve with no `poRef` — is REFUSED
-// (PO_INVALID) with nothing written; there is NO fallback to an unapplied
-// approval. The rules enforce the same: the pair and a sent/closed PO are
-// required on every PO-linked approve (FINAL ruleset), and the PO state is
-// required even by the Stage-1 transitional ruleset.
-export async function runTransitionVariation({ db, variationRef, poRef = null, seen, nextStatus, extras = {}, uid, runTransaction, serverTimestamp, today }) {
+// SUBMIT / REJECT / WITHDRAW — the transitions a browser still writes itself.
+// APPROVAL is not one of them (ADR-90): it certifies figures and applies a
+// commitment, so it is processed by the trusted backend (runApproveVariation
+// below) and Security Rules refuse it from any client. Asking this function to
+// approve is refused before any read.
+export async function runTransitionVariation({ db, variationRef, seen, nextStatus, extras = {}, uid, runTransaction, serverTimestamp, today }) {
   if (!uid) throw new VariationWriteError(VARIATION_WRITE_ERROR.PERMISSION)
   if (!seen?.id) throw new VariationWriteError(VARIATION_WRITE_ERROR.MISSING)
+  if (nextStatus === VARIATION_STATUS.APPROVED) {
+    throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, 'A variation is approved by the Constrap server, not by a direct write.')
+  }
   if (!canTransition(seen.status, nextStatus)) {
     throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, `Cannot move a ${label(seen.status)} variation to ${label(nextStatus)}.`)
   }
-  // A reserved target, or invalid certified amounts, is refused BEFORE any
-  // read; the amounts are validated again over the server copy below.
-  transitionUpdate(seen, nextStatus, { ...extras, applyCommitment: false }, uid, null, today)
-  if (nextStatus === VARIATION_STATUS.APPROVED && isPoLinkedSupplierVariation(seen) && !poRef) {
-    throw new VariationWriteError(VARIATION_WRITE_ERROR.PO_INVALID, 'The purchase order reference is required to approve a variation that names a purchase order.')
-  }
+  // A reserved target is refused BEFORE any read.
+  transitionUpdate(seen, nextStatus, extras, uid, null, today)
 
   let outcome
   try {
@@ -280,28 +220,8 @@ export async function runTransitionVariation({ db, variationRef, poRef = null, s
       const stale = staleMessage(seen, live)
       if (stale) return { kind: VARIATION_WRITE_ERROR.STALE, message: stale }
       if (!canTransition(live.status, nextStatus)) return { kind: VARIATION_WRITE_ERROR.INVALID }
-
-      // All reads before the write. The PO is read for an approve of a
-      // PO-linked supplier variation; its SERVER state decides, and anything
-      // but a sent/closed PO refuses the approval outright (Correction A).
-      let applyCommitment = false
-      if (nextStatus === VARIATION_STATUS.APPROVED && isPoLinkedSupplierVariation(live)) {
-        if (!poRef) return { kind: VARIATION_WRITE_ERROR.PO_INVALID, message: 'The purchase order reference is required to approve a variation that names a purchase order.' }
-        const poSnap = await tx.get(poRef)
-        const po = poSnap.exists() ? { id: poSnap.id, ...poSnap.data() } : null
-        const name = live.variationNumber || 'This variation'
-        if (!po) {
-          return { kind: VARIATION_WRITE_ERROR.PO_INVALID, message: `${live.poNumber || 'The linked purchase order'} could not be found in this project, so ${name} cannot be approved. Withdraw or reject it, or raise it again against a current purchase order.` }
-        }
-        if (!shouldApplyOnApproval(live, po)) {
-          const status = PO_STATUS_LABELS[po.status] ?? String(po.status ?? 'unknown')
-          return { kind: VARIATION_WRITE_ERROR.PO_INVALID, message: `${po.poNumber || live.poNumber} is ${status}; a supplier variation can only be approved while its purchase order is sent or closed. Withdraw or reject ${name}, or raise it again against a current purchase order.` }
-        }
-        applyCommitment = true
-      }
-
-      tx.update(variationRef, transitionUpdate(live, nextStatus, { ...extras, applyCommitment }, uid, serverTimestamp(), today))
-      return { kind: null, commitmentApplied: applyCommitment }
+      tx.update(variationRef, transitionUpdate(live, nextStatus, extras, uid, serverTimestamp(), today))
+      return { kind: null }
     })
   } catch (err) {
     if (err instanceof VariationWriteError) throw err
@@ -318,16 +238,13 @@ export async function runTransitionVariation({ db, variationRef, poRef = null, s
 // or applied under M3-B1 (the ADR-62 pair present, the ADR-63 scope pair
 // absent). The write is EXACTLY the MISSING pair(s) + revision + audit stamps,
 // nothing else — a present pair is NEVER rewritten, and approved money, lines,
-// PO link and every lifecycle stamp stay frozen. Rules admit exactly this write
-// (branch (f)): approved → approved, each written pair's stored value null,
-// actor == caller, time == server, revision + 1, the PO sent/closed through
-// get(). The per-pair "stored value must be null" precondition makes a repeat
-// RULES-REFUSED, not merely client-refused, so two users or two tabs cannot
-// both commit; the revision guard is, as on every other variation write,
-// rules-ASSISTED (DC37).
+// PO link and every lifecycle stamp stay frozen. Since ADR-90 the write is made
+// by the trusted backend (`applyVariationCommitment`), inside a transaction
+// that reads the variation and its purchase order; two users or two tabs
+// cannot both commit, and Security Rules admit the stamps from no client.
 
 // The exact update the legacy action writes: the pairs the live copy lacks.
-// Exported for the unit suite.
+// Composed by the callable; exported for the unit suite.
 export function applyCommitmentUpdate(live, uid, now) {
   return {
     ...(isCommitmentApplied(live) ? {} : commitmentStamps(uid, now)),
@@ -340,40 +257,192 @@ function applyBlockerKind(blocker) {
   return blocker === COMMITMENT_APPLY_BLOCKER.ALREADY_APPLIED ? VARIATION_WRITE_ERROR.ALREADY_APPLIED : VARIATION_WRITE_ERROR.INVALID
 }
 
-// `poRef` is REQUIRED: the PO is re-read inside the transaction and must be
-// sent/closed on the server. `seen` is the copy the user reviewed.
-export async function runApplyVariationCommitment({ db, variationRef, poRef, seen, uid, runTransaction, serverTimestamp }) {
+// ── The three server operations: the CALLS (ADR-90) ──────────────────────────
+//
+// Each takes an INJECTED `call(name, data)` (so this module imports no Firebase
+// code) and resolves to the server's answer, or throws a VariationWriteError:
+//
+//   a TYPED refusal        the server says why; NOTHING WAS WRITTEN
+//   a CERTAIN transport    not signed in, App Check refused, function absent —
+//   failure                answered before the handler ran; nothing was written
+//   UNCERTAIN              no typed answer (timeout, dropped connection,
+//                          internal error): the change MAY have been saved.
+//                          Never reported as "nothing was saved".
+//
+// ⚠️ NOTHING HERE RETRIES. A repeat is the user's decision, and it is SAFE:
+// creating with the same variation id, approving with the same amounts and
+// applying an applied variation are each answered `alreadyApplied` by the
+// server with nothing written a second time.
+
+export const VARIATION_CALLABLE = {
+  CREATE:  'createVariation',
+  UPDATE:  'updateVariationDraft',
+  APPROVE: 'approveVariation',
+  APPLY:   'applyVariationCommitment',
+}
+
+// The browser waits LONGER than the function may run (60 s, functions/src/
+// index.js → VARIATION_CALL_OPTIONS), so the server's own answer arrives first.
+export const VARIATION_CALL_TIMEOUT_MS = 70000
+
+// details.code (functions/src/lib/errors.js) → kind. The server's own message
+// is shown for the refusals whose reason the user can act on.
+const TYPED = {
+  'variation-processing-disabled': [VARIATION_WRITE_ERROR.UNAVAILABLE, false],
+  'variation-forbidden':           [VARIATION_WRITE_ERROR.PERMISSION,  false],
+  'no-membership':                 [VARIATION_WRITE_ERROR.PERMISSION,  false],
+  'membership-inactive':           [VARIATION_WRITE_ERROR.PERMISSION,  false],
+  'unauthenticated':               [VARIATION_WRITE_ERROR.PERMISSION,  true],
+  'not-found':                     [VARIATION_WRITE_ERROR.MISSING,     false],
+  'invalid-argument':              [VARIATION_WRITE_ERROR.INVALID,     false],
+  'variation-invalid':             [VARIATION_WRITE_ERROR.INVALID,     true],
+  'variation-id-conflict':         [VARIATION_WRITE_ERROR.INVALID,     true],
+  'variation-po-invalid':          [VARIATION_WRITE_ERROR.PO_INVALID,  true],
+  'variation-rfi-invalid':         [VARIATION_WRITE_ERROR.INVALID,     true],
+  'variation-cost-code-invalid':   [VARIATION_WRITE_ERROR.INVALID,     true],
+  'variation-not-submitted':       [VARIATION_WRITE_ERROR.STALE,       true],
+  'variation-not-draft':           [VARIATION_WRITE_ERROR.STALE,       true],
+  'variation-stale':               [VARIATION_WRITE_ERROR.STALE,       false],
+  'variation-figures-inconsistent':[VARIATION_WRITE_ERROR.INVALID,     true],
+  'variation-unsupported-record':  [VARIATION_WRITE_ERROR.INVALID,     true],
+  'variation-not-applicable':      [VARIATION_WRITE_ERROR.INVALID,     true],
+  'variation-amount-out-of-range': [VARIATION_WRITE_ERROR.INVALID,     true],
+  'variation-busy':                [VARIATION_WRITE_ERROR.OFFLINE,     true],
+  // ADR-96 — approval segregation: the server explains who may approve.
+  'approval-segregation-required': [VARIATION_WRITE_ERROR.PERMISSION,  true],
+}
+
+// Untyped callable failures whose outcome is nonetheless CERTAIN: each is
+// answered before the handler can run.
+const CERTAIN_TRANSPORT = {
+  'unauthenticated':   [VARIATION_WRITE_ERROR.PERMISSION,  'Your session has ended or this browser could not be verified. Nothing was saved — reload the page, sign in and try again.'],
+  'permission-denied': [VARIATION_WRITE_ERROR.PERMISSION,  undefined],
+  'not-found':         [VARIATION_WRITE_ERROR.UNAVAILABLE, 'This action is not available on the server yet. Nothing was saved.'],
+  'invalid-argument':  [VARIATION_WRITE_ERROR.INVALID,     undefined],
+}
+
+export function describeVariationCallFailure(err) {
+  if (err instanceof VariationWriteError) return err
+  // Phase 2 company activation (lib/commercialActivation.js): CERTAIN — the
+  // company is not yet switched over; nothing was written. Decided here, not
+  // in TYPED: TYPED is part of the generated server bundle
+  // (functions/src/generated/variationCalc.js), this function is not.
+  if (isCommercialNotActivated(err)) return new VariationWriteError(VARIATION_WRITE_ERROR.UNAVAILABLE, COMMERCIAL_MAINTENANCE_TEXT, err)
+  const typed = TYPED[err?.details?.code]
+  if (typed) {
+    const message = typed[1] && typeof err?.message === 'string' && err.message.length > 0 ? err.message : undefined
+    return new VariationWriteError(typed[0], message, err)
+  }
+  const code = String(err?.code ?? '').replace(/^functions\//, '')
+  const certain = CERTAIN_TRANSPORT[code]
+  if (certain) return new VariationWriteError(certain[0], certain[1], err)
+  return new VariationWriteError(VARIATION_WRITE_ERROR.UNCERTAIN, undefined, err)
+}
+
+async function invoke(call, name, data) {
+  let result
+  try {
+    result = await call(name, data)
+  } catch (err) {
+    throw describeVariationCallFailure(err)
+  }
+  // An answer that is not the operation's own says nothing reliable.
+  if (!result || typeof result !== 'object' || typeof result.alreadyApplied !== 'boolean') {
+    throw new VariationWriteError(VARIATION_WRITE_ERROR.UNCERTAIN)
+  }
+  return result
+}
+
+// CREATE. `variationId` is chosen by the caller ONCE per editor session and
+// re-sent on a retry — it is what makes a repeat safe. `data` is what the
+// editor produces (the authored fields plus its built `lineItems`); only the
+// authored part is sent (lib/variationProcessing.js → createVariationRequest).
+// Resolves to { variationId, variationNumber, alreadyApplied }.
+export async function runCreateVariation({ call, projectId, variationId, data, uid }) {
+  if (!uid) throw new VariationWriteError(VARIATION_WRITE_ERROR.PERMISSION)
+  if (data?.originRfi && !isEligibleOriginRfi(data.originRfi)) {
+    throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, 'Only open, answered or closed RFIs can originate a variation')
+  }
+  const draftError = validateVariationDraft({ title: data?.title, lineItems: data?.lineItems })
+  if (draftError) throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, draftError)
+  const request = createVariationRequest({ ...data, projectId, variationId })
+  if (createVariationRequestProblem(request)) {
+    throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, 'This variation cannot be saved as entered. Check the title, the dates and every line, then try again.')
+  }
+  return invoke(call, VARIATION_CALLABLE.CREATE, request)
+}
+
+// EDIT A DRAFT. `seen` is the copy the editor was opened on: its revision
+// travels as `expectedRevision`, so an edit can only replace the exact draft
+// that was edited (STALE otherwise — the editor keeps the user's entries).
+// `data` is what the editor produces; only the authored part is sent, and the
+// server derives every line and the header again. Resolves to
+// { variationId, alreadyApplied, calcVersion }.
+export async function runUpdateVariationDraft({ call, projectId, seen, data, uid }) {
   if (!uid) throw new VariationWriteError(VARIATION_WRITE_ERROR.PERMISSION)
   if (!seen?.id) throw new VariationWriteError(VARIATION_WRITE_ERROR.MISSING)
-  if (!poRef) throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, 'The purchase order reference is required to apply a variation to its commitment.')
-  // Decide on the reviewed copy first (status, type, link, stamps) so a plainly
-  // ineligible variation never opens a transaction. The PO is unknown here, so
-  // a PO-related refusal can only come from the server read below; the
-  // reviewed copy's own lines decide "nothing to commit" (the server copy
-  // decides again below).
+  if (seen.status !== VARIATION_STATUS.DRAFT) {
+    throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, 'Only draft variations can be edited')
+  }
+  if (data?.originRfi && !isEligibleOriginRfi(data.originRfi)) {
+    throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, 'Only open, answered or closed RFIs can originate a variation')
+  }
+  const draftError = validateVariationDraft({ title: data?.title, lineItems: data?.lineItems })
+  if (draftError) throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, draftError)
+  const request = updateVariationRequest({ projectId, seen, data })
+  if (updateVariationRequestProblem(request)) {
+    throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, 'This variation cannot be saved as entered. Check the title, the dates and every line, then try again.')
+  }
+  return invoke(call, VARIATION_CALLABLE.UPDATE, request)
+}
+
+// APPROVE. `seen` is the copy the user assessed: its revision travels as
+// `expectedRevision`, so an approval can only land on the exact submitted
+// revision that was reviewed. The certified amounts are the approver's input;
+// every GST figure, the approved header, the stamps and the commitment
+// application are the server's. Resolves to
+// { variationId, alreadyApplied, commitmentApplied }.
+export async function runApproveVariation({ call, projectId, seen, approvedAmounts, assessmentNotes, uid, today = todayIso() }) {
+  if (!uid) throw new VariationWriteError(VARIATION_WRITE_ERROR.PERMISSION)
+  if (!seen?.id) throw new VariationWriteError(VARIATION_WRITE_ERROR.MISSING)
+  if (!canTransition(seen.status, VARIATION_STATUS.APPROVED)) {
+    throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, `Cannot move a ${label(seen.status)} variation to ${label(VARIATION_STATUS.APPROVED)}.`)
+  }
+  // Refused before any call: a count mismatch, a non-number, or differing
+  // amounts without notes. The server validates again over its own copy.
+  transitionUpdate(seen, VARIATION_STATUS.APPROVED, { approvedAmounts, assessmentNotes, applyCommitment: false }, uid, null, today)
+  const amounts = (approvedAmounts ?? []).map(a => (a === '' || a == null ? 0 : Number(a)))
+  if (approvedAmountsProblem(amounts)) {
+    throw new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, 'An approved amount is not a number Constrap can store.')
+  }
+  return invoke(call, VARIATION_CALLABLE.APPROVE, {
+    projectId,
+    variationId: seen.id,
+    expectedRevision: storedRevision(seen),
+    approvedAmounts: amounts,
+    assessmentNotes: String(assessmentNotes ?? '').trim(),
+    approvedDate: today,
+  })
+}
+
+// LEGACY APPLY / COMMIT NEW SCOPE. Decided on the reviewed copy first, so a
+// plainly ineligible variation never reaches the server; the server decides
+// again over its own copies of the variation and the purchase order. Resolves
+// to { variationId, alreadyApplied, applied, scopeCommitted }. An answer of
+// `alreadyApplied` for stamps this user did not write is the existing
+// ALREADY_APPLIED refusal — nothing was changed.
+export async function runApplyVariationCommitment({ call, projectId, seen, uid }) {
+  if (!uid) throw new VariationWriteError(VARIATION_WRITE_ERROR.PERMISSION)
+  if (!seen?.id) throw new VariationWriteError(VARIATION_WRITE_ERROR.MISSING)
   const pre = commitmentApplyEligibility(seen, [{ id: seen.poId, status: 'sent' }])
   if (!pre.eligible) throw new VariationWriteError(applyBlockerKind(pre.blocker), pre.message)
-
-  let outcome
-  try {
-    outcome = await runTransaction(db, async (tx) => {
-      const snap = await tx.get(variationRef)
-      if (!snap.exists()) return { kind: VARIATION_WRITE_ERROR.MISSING }
-      const live = { id: snap.id, ...snap.data() }
-      if (isCommitmentApplied(live) && isScopeCommitted(live)) return { kind: VARIATION_WRITE_ERROR.ALREADY_APPLIED }
-      const stale = staleMessage(seen, live)
-      if (stale) return { kind: VARIATION_WRITE_ERROR.STALE, message: stale }
-      const poSnap = await tx.get(poRef)
-      const po = poSnap.exists() ? { id: poSnap.id, ...poSnap.data() } : null
-      const eligibility = commitmentApplyEligibility(live, po ? [po] : [])
-      if (!eligibility.eligible) return { kind: applyBlockerKind(eligibility.blocker), message: eligibility.message }
-      tx.update(variationRef, applyCommitmentUpdate(live, uid, serverTimestamp()))
-      return { kind: null, applied: eligibility.missing.applied, scopeCommitted: eligibility.missing.scope }
-    })
-  } catch (err) {
-    if (err instanceof VariationWriteError) throw err
-    throw new VariationWriteError(variationWriteErrorKind(err?.code), undefined, err)
-  }
-  if (outcome.kind) throw new VariationWriteError(outcome.kind, outcome.message)
-  return outcome
+  const result = await invoke(call, VARIATION_CALLABLE.APPLY, {
+    projectId, variationId: seen.id, expectedRevision: storedRevision(seen),
+  })
+  if (result.alreadyApplied && result.byCaller !== true) throw new VariationWriteError(VARIATION_WRITE_ERROR.ALREADY_APPLIED)
+  return result
 }
+
+// Kept for callers that decide the approve-time commitment themselves (the
+// callable does, over the SERVER copy of the purchase order).
+export { shouldApplyOnApproval, isPoLinkedSupplierVariation }

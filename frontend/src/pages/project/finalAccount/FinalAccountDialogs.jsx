@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import Btn from '../../../components/Btn'
 import ActivityDialog from '../timeline/ActivityDialog'
+import { segregationEnabled, SEGREGATION_EXPLANATION } from '../../../lib/approvalSegregation'
 import {
   FINAL_ACCOUNT_LIMITS, FINAL_ACCOUNT_DISCLAIMER, validateFinalAccountInput, validateFinalAccountWithdrawReason,
   openItemsOf, finalAccountRevisionLabel,
@@ -93,7 +94,12 @@ export function PrepareFinalAccountModal({ number, figures, currencyCode, onPrep
   )
 }
 
-export function ApproveFinalAccountModal({ account, currencyCode, selfApproval, onApprove, onClose }) {
+export function ApproveFinalAccountModal({ account, currencyCode, selfApproval, approvalPolicy = null, approvalPolicyKnown = false, onApprove, onClose }) {
+  // The server refuses a self-approval when the company's segregation policy is
+  // on (ADR-96); the dialog says so instead of claiming it is permitted, and says
+  // nothing either way until the policy is known.
+  const segregated = approvalPolicyKnown && segregationEnabled(approvalPolicy)
+  const selfBlocked = selfApproval && segregated
   const [acknowledged, setAcknowledged] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
@@ -117,16 +123,26 @@ export function ApproveFinalAccountModal({ account, currencyCode, selfApproval, 
           correction is a new revision. The server recalculates every figure from the project records and approves only if they match this draft.
         </p>
         <p className="m-0 text-[12.5px] font-semibold text-brand-text" role="note">{FINAL_ACCOUNT_DISCLAIMER}</p>
-        {selfApproval && (
+        {selfApproval && approvalPolicyKnown && !segregated && (
           <p className="m-0 text-[12.5px] text-brand-amber" role="note">
             You prepared this draft. Approving it yourself is permitted and is recorded on the revision as a self-approval.
+          </p>
+        )}
+        {selfBlocked && (
+          <p className="m-0 text-[12.5px] text-brand-amber" role="note">
+            You prepared this draft, so you cannot approve it. {SEGREGATION_EXPLANATION} Another authorised member must approve it.
+          </p>
+        )}
+        {!selfApproval && segregated && (
+          <p className="m-0 text-[12.5px] text-brand-text-soft" role="note">
+            You did not prepare this draft, so you can approve it. {SEGREGATION_EXPLANATION}
           </p>
         )}
         <OpenItems figures={account.figures} currencyCode={currencyCode} checked={acknowledged} onChange={setAcknowledged} disabled={saving} id="fa-approve-ack" verb="approval" />
         {error && <p className="m-0 text-[12.5px] text-brand-red" role="alert">{error}</p>}
         <div className="flex flex-wrap justify-end gap-2">
           <Btn type="button" variant="ghost" onClick={onClose} disabled={saving}>Cancel</Btn>
-          <Btn type="button" onClick={approve} disabled={saving || !acknowledged}>{saving ? 'Approving…' : 'Approve revision'}</Btn>
+          <Btn type="button" onClick={approve} disabled={saving || !acknowledged || selfBlocked}>{saving ? 'Approving…' : 'Approve revision'}</Btn>
         </div>
       </div>
     </ActivityDialog>

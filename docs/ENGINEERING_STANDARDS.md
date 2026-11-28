@@ -23,6 +23,11 @@ These are facts about the system, restated as rules. Do not "improve" around the
 without an approved architecture change (record it in
 [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) first).
 
+- *Reconciliation note (27 November 2026): the heading below predates
+  ADR-77, ADR-81, ADR-89 and ADR-90. The trusted backend now also holds
+  `approveFinalAccount`, `transferBoqToBudget`, the six client-finance
+  callables and (implemented, not deployed) the three variation callables;
+  read this item together with §9, which governs where a mutation goes.*
 - **Client-SDK backend for all financial data; ONE narrow trusted backend for
   team management (ADR-72).** Every financial and project collection is read and
   written by the client SDK, and Firestore + Storage Security Rules are the

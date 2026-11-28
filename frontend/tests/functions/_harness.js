@@ -15,8 +15,9 @@ import { createHash } from 'node:crypto'
 import { initializeApp as initClientApp, getApps as getClientApps } from 'firebase/app'
 import { getAuth as getClientAuth, connectAuthEmulator, signInWithEmailAndPassword, signOut as clientSignOut } from 'firebase/auth'
 import { getFirestore as getClientFirestore, connectFirestoreEmulator } from 'firebase/firestore'
+import { assertEmulatorEnvironment, TEST_PROJECT_ID } from '../_emulatorGuard.js'
 
-export const PROJECT_ID = 'constrapp-rules-test'
+export const PROJECT_ID = TEST_PROJECT_ID
 export const REGION = 'australia-southeast1'
 export const FUNCTIONS_PORT = 5001
 
@@ -24,6 +25,9 @@ export function requireEmulators() {
   if (!process.env.FIRESTORE_EMULATOR_HOST || !process.env.FIREBASE_AUTH_EMULATOR_HOST) {
     throw new Error('FIRESTORE_EMULATOR_HOST / FIREBASE_AUTH_EMULATOR_HOST not set — refusing to run outside the emulators. Run `npm run test:functions`.')
   }
+  // The full check (loopback hosts, the test project id, no explicit credential
+  // file) — also run once before the suite as vitest globalSetup.
+  assertEmulatorEnvironment('functions')
 }
 
 const hostPort = (env) => { const [host, port] = env.split(':'); return { host, port: Number(port) } }
@@ -34,7 +38,13 @@ let adminMods = null
 export async function admin() {
   requireEmulators()
   if (adminMods) return adminMods
-  process.env.GCLOUD_PROJECT ??= PROJECT_ID
+  // The Admin SDK takes its project from GCLOUD_PROJECT, which `firebase
+  // emulators:exec` exports. requireEmulators() above has already refused
+  // anything but the demo project in an isolated, credential-free environment;
+  // it is never defaulted here, so a mis-wired run cannot pick another one.
+  if (process.env.GCLOUD_PROJECT !== PROJECT_ID) {
+    throw new Error(`GCLOUD_PROJECT is "${process.env.GCLOUD_PROJECT}", not the emulator test project — refusing to initialise the Admin SDK.`)
+  }
   const fb = await import('../../functions/src/lib/firebaseAdmin.js')
   const handlers = await import('../../functions/src/team/handlers.js')
   const errors = await import('../../functions/src/lib/errors.js')
@@ -110,6 +120,14 @@ export const COMPANY_B = 'companyB'
 export async function seedCompany(id, name = `Company ${id}`) {
   const a = await admin()
   await a.db.collection('companies').doc(id).set({ name, countryCode: 'AU', baseCurrency: 'AUD' })
+}
+
+// Phase 2 company activation (functions/src/lib/commercialActivation.js): the
+// field only the operator tool writes in production. Phase 2 suites activate
+// their companies explicitly; `false` / omitted means inactive.
+export async function activateCommercial(id, value = true) {
+  const a = await admin()
+  await a.db.collection('companies').doc(id).set({ commercialCompletionEnabled: value }, { merge: true })
 }
 
 // An Auth account plus the authoritative users/{uid} profile, exactly as the

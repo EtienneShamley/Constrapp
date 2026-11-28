@@ -23,7 +23,10 @@ import { useClientInvoices } from '../../hooks/useClientInvoices'
 import { useClientReceipts } from '../../hooks/useClientReceipts'
 import { useClientCreditNotes } from '../../hooks/useClientCreditNotes'
 import { useClientRetentionReleases } from '../../hooks/useClientRetentionReleases'
+import { useClientRefunds } from '../../hooks/useClientRefunds'
+import { useClientReceiptApplications } from '../../hooks/useClientReceiptApplications'
 import { useFinalAccounts } from '../../hooks/useFinalAccounts'
+import { useApprovalPolicy } from '../../hooks/useApprovalPolicy'
 import { resolveBudgetSource, budgetSourceState } from '../../lib/budgetApproval'
 import {
   FINAL_ACCOUNT_STATUS, FINAL_ACCOUNT_STATUS_LABELS, FINAL_ACCOUNT_STATUS_BADGE, FINAL_ACCOUNT_DISCLAIMER,
@@ -132,6 +135,8 @@ function AuditBlock({ account, currentUid }) {
 function FinalAccount({ project, projectId, currencyCode, role }) {
   const { user } = useAuth()
   const currentUid = user?.uid ?? null
+  // ADR-96 / ADR-98: what the approve dialog may say about self-approval.
+  const { approvalPolicy, approvalPolicyKnown } = useApprovalPolicy()
 
   // ── Live subscriptions — the Commercial Report's sixteen, plus the revisions. ──
   const { budgetLines, budgetLinesLoading, budgetLinesError }                         = useBudgetLines(projectId)
@@ -157,6 +162,10 @@ function FinalAccount({ project, projectId, currencyCode, role }) {
   const {
     clientRetentionReleases, clientRetentionReleasesLoading, clientRetentionReleasesError,
   } = useClientRetentionReleases(projectId)
+  const { clientRefunds, clientRefundsLoading, clientRefundsError } = useClientRefunds(projectId)
+  const {
+    clientReceiptApplications, clientReceiptApplicationsLoading, clientReceiptApplicationsError,
+  } = useClientReceiptApplications(projectId)
   const {
     finalAccounts, finalAccountsLoading, finalAccountsError,
     prepareFinalAccount, withdrawFinalAccount, approveFinalAccount,
@@ -171,6 +180,7 @@ function FinalAccount({ project, projectId, currencyCode, role }) {
       budgetLines, approvedBudget, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
       variations, forecastLines, baseline, supplierPayments, retentionReleases,
       clientInvoices, clientReceipts, clientCreditNotes, clientRetentionReleases, costCodes,
+      clientRefunds, clientReceiptApplications,
     },
     sourceStates: {
       budgetLines:         { loading: budgetLinesLoading,         error: budgetLinesError },
@@ -188,13 +198,16 @@ function FinalAccount({ project, projectId, currencyCode, role }) {
       clientReceipts:      { loading: clientReceiptsLoading,      error: clientReceiptsError },
       clientCreditNotes:   { loading: clientCreditNotesLoading,   error: clientCreditNotesError },
       clientRetentionReleases: { loading: clientRetentionReleasesLoading, error: clientRetentionReleasesError },
+      clientRefunds:       { loading: clientRefundsLoading,       error: clientRefundsError },
+      clientReceiptApplications: { loading: clientReceiptApplicationsLoading, error: clientReceiptApplicationsError },
       costCodes:           { loading: costCodesLoading,           error: Boolean(costCodesError) },
     },
   }), [
     project, currencyCode,
     budgetLines, approvedBudget, purchaseOrders, progressClaims, supplierInvoices, supplierCreditNotes,
     variations, forecastLines, baseline, supplierPayments, retentionReleases, clientInvoices, clientReceipts,
-    clientCreditNotes, clientRetentionReleases, costCodes,
+    clientCreditNotes, clientRetentionReleases, costCodes, clientRefunds, clientReceiptApplications,
+    clientRefundsLoading, clientRefundsError, clientReceiptApplicationsLoading, clientReceiptApplicationsError,
     budgetLinesLoading, budgetLinesError, approvedBudgetLoading, approvedBudgetError,
     purchaseOrdersLoading, purchaseOrdersError, progressClaimsLoading, progressClaimsError,
     supplierInvoicesLoading, supplierInvoicesError, supplierCreditNotesLoading, supplierCreditNotesError,
@@ -445,6 +458,8 @@ function FinalAccount({ project, projectId, currencyCode, role }) {
           account={selected}
           currencyCode={selected.currency}
           selfApproval={Boolean(selected.createdBy) && selected.createdBy === currentUid}
+          approvalPolicy={approvalPolicy}
+          approvalPolicyKnown={approvalPolicyKnown}
           onApprove={(acknowledged) => approveFinalAccount(selected, acknowledged)}
           onClose={() => setDialog(null)}
         />

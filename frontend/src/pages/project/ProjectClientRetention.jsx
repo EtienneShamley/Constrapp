@@ -10,6 +10,8 @@ import { useClientInvoices } from '../../hooks/useClientInvoices'
 import { useClientReceipts } from '../../hooks/useClientReceipts'
 import { useClientCreditNotes } from '../../hooks/useClientCreditNotes'
 import { useClientRetentionReleases } from '../../hooks/useClientRetentionReleases'
+import { useClientRefunds } from '../../hooks/useClientRefunds'
+import { useClientReceiptApplications } from '../../hooks/useClientReceiptApplications'
 import { useClientInvoiceLedgers } from '../../hooks/useClientInvoiceLedgers'
 import { formatCurrency } from '../../lib/formatters'
 import { isFinancialRole } from '../../lib/margin'
@@ -92,7 +94,14 @@ function ClientRetentionRegister() {
   const mid = canView ? projectId : null
 
   const { clientInvoices, clientInvoicesLoading, clientInvoicesError } = useClientInvoices(mid)
-  const { clientReceipts, clientReceiptsLoading, clientReceiptsError } = useClientReceipts(mid)
+  const { clientReceipts, clientReceiptsLoading: receiptsLoading, clientReceiptsError: receiptsError } = useClientReceipts(mid)
+  // Phase 2 step 5: what an invoice HOLDS also counts applications and refunds.
+  const { clientRefunds, clientRefundsLoading, clientRefundsError } = useClientRefunds(mid)
+  const {
+    clientReceiptApplications, clientReceiptApplicationsLoading, clientReceiptApplicationsError,
+  } = useClientReceiptApplications(mid)
+  const clientReceiptsLoading = receiptsLoading || clientRefundsLoading || clientReceiptApplicationsLoading
+  const clientReceiptsError = receiptsError || clientRefundsError || clientReceiptApplicationsError
   const { clientCreditNotes, clientCreditNotesLoading, clientCreditNotesError } = useClientCreditNotes(mid)
   const {
     clientRetentionReleases, clientRetentionReleasesLoading, clientRetentionReleasesError,
@@ -130,8 +139,8 @@ function ClientRetentionRegister() {
   const invoiceById = useMemo(() => new Map(clientInvoices.map(inv => [inv.id, inv])), [clientInvoices])
   const ledgerById = useMemo(() => new Map(clientInvoiceLedgers.map(l => [l.id, l])), [clientInvoiceLedgers])
   const reconciliationById = useMemo(
-    () => new Map(clientInvoiceReconciliationRows(clientInvoices, clientReceipts, ctx.positions).map(r => [r.id, r])),
-    [clientInvoices, clientReceipts, ctx.positions],
+    () => new Map(clientInvoiceReconciliationRows(clientInvoices, clientReceipts, ctx.positions, { refunds: clientRefunds, applications: clientReceiptApplications }).map(r => [r.id, r])),
+    [clientInvoices, clientReceipts, ctx.positions, clientRefunds, clientReceiptApplications],
   )
 
   const releaseProblems = useMemo(
