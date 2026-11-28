@@ -10,7 +10,7 @@
   },
   "conditions": [
     {
-      "displayName": "More than 2 timeouts or DEADLINE_EXCEEDED / UNAVAILABLE / RESOURCE_EXHAUSTED failures from one service in 15 minutes",
+      "displayName": "More than 2 timeouts or Firestore transport failures from one service in 15 minutes",
       "conditionThreshold": {
         "filter": "metric.type=\"logging.googleapis.com/user/phase2_infrastructure_failures\" AND resource.type=\"cloud_run_revision\" AND resource.labels.location=\"australia-southeast1\"",
         "aggregations": [

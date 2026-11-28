@@ -13588,3 +13588,58 @@ LOCAL, at `c74f8f4` plus this change: `tests/unit/phase2Monitoring.test.js` 30 /
 1. Accept the `+ct-pm2` invitation: open the emailed link with its host changed from `app.constrap.com` to **`constrapp-69b5d.firebaseapp.com`** (not web.app, which holds the TEST admin session; not app.constrap.com, the Apex session), register with a new password of your choosing, and report; Claude verifies Auth, the invitation and the `acceptinvitation` request read-only.
 2. Confirm channel `13613525651613947442` is yours and that alert e-mail should go there.
 3. Integrate this change (Block 2) and wait for Azure `main` green.
+
+## 92. Phase 2 — Stage B interrupted at monitoring creation; monitoring validation correction — 28 November 2026
+
+Evidence classes as in §91. Nothing in this section was written to production by Claude; the monitoring objects were created by the Product Owner's Block 3.
+
+### 92.1 What happened (PROD-VERIFIED from the evidence directory and the audit log)
+
+| Time (UTC) | Event |
+|---|---|
+| 05:01 | Product Owner accepted the `+ct-pm2` TEST PM invitation: invitation `accepted`, member active as `project_manager`, user e-mail equal to the alias (compared locally). TEST now has two active eligible approvers (`company_admin`, `project_manager`); the four older test identities remain deactivated. Segregation not enabled |
+| 05:14–05:38 | Azure Build #20261128.3 on `11485a3` — succeeded (public GitHub check-run) |
+| 05:56 | Block 3, first run: stopped silently after writing `inventory-before.json`. Cause: `phase2-inventory.mjs` exits 1 when findings are listed (documented contract, in the tool's header) and the block ran it under `set -e`. Output complete and valid; stderr empty; no further command ran. **No production change** (17 functions and revisions, Rules, Hosting, monitoring, admin-activity audit log and whole-database fingerprint checked) |
+| 06:18:16–06:18:25 | Block 3, second run: `CreateLogMetric` × 4 — `phase2_contention_refusals`, `phase2_infrastructure_failures`, `phase2_refusals_by_code`, `phase2_baselines_established` |
+| 06:18:31, 06:18:35 | `CreateAlertPolicy` × 2 succeeded — `callable-error-log` `7829793872908465132`, `baseline-failure` `3721707461277719113` |
+| 06:18:39 | `CreateAlertPolicy` for `financial-inconsistency` refused, status 3: `INVALID_ARGUMENT: display_name must not be more than 100 characters`. The block stopped; **the Functions deploy was not reached** |
+
+### 92.2 Production state after the interruption (PROD-VERIFIED read-only, 28 Nov ~08:50 UTC)
+
+| Check | Result |
+|---|---|
+| Log-based metrics | 5: the DC46 metric and the four `phase2_*`. Each Phase 2 metric equals its file (name, description, filter, descriptor kind / type / unit / display name, label extractor); the service added only the output-only descriptor `name`, `type`, `description` and omits the default label value type |
+| Alert policies | 7: the five earlier ones unchanged, plus the two above. Both equal their files (display name, combiner, severity, labels, alert strategy, documentation, condition, filter), enabled, notifying channel `13613525651613947442` only |
+| Not created | `financial-inconsistency`, `contention-repeated`, `infrastructure-repeated` (Stage A); `callable-server-failure`, `request-surge` (Stage F) |
+| Functions | 17; all 17 services on the revisions recorded at 05:56 |
+| Rules / Storage rules / Hosting | `0e228bd0…` / `2f3a4788…` / `2f85dee4071c61d6`, `index-BEwVCddF.js` on the three origins — unchanged |
+| Admin-activity audit log since 06:00 | The seven monitoring / logging calls above and nothing else |
+| Inventory | Identical to the pre-run capture: 6 review findings, no Phase 2 server state, no activation |
+| Switches | Five Phase 2 switches `false` in `.env.constrapp-69b5d`; no Phase 2 function exists |
+
+The two live policies watch services that are not deployed, so they cannot fire; the four metrics count nothing yet.
+
+### 92.3 Root cause and correction (LOCAL)
+
+The refused field is the **condition** `displayName`. Lengths before: baseline-failure 76, callable-error-log 55, callable-server-failure 85, contention-repeated 69, **financial-inconsistency 118**, **infrastructure-repeated 116**, request-surge 78. The 118 came from the M1 wording added on 28 November; the 116 pre-dated it and would have been refused next. The 100-character limit is enforced by the service and is absent from the published v3 reference (discovery document read 28 Nov 2026: `AlertPolicy.displayName` 512; `Condition.displayName` no stated limit), so the existing "inside the API limits" test did not cover it.
+
+| File | Condition display name now | Length |
+|---|---|---|
+| `phase2-financial-inconsistency.policy.json` | Ledger, figures, invariant or unsupported-record refusal (approved void-invariant refusal excluded) | 99 |
+| `phase2-infrastructure-repeated.policy.json` | More than 2 timeouts or Firestore transport failures from one service in 15 minutes | 83 |
+
+Nothing else changed in either file: filter (including the M1 exclusion), threshold, aggregation, labels, strategy and documentation are byte-identical; the three status names remain in the infrastructure policy's documentation and in the metric filter.
+
+### 92.4 Validation of every Phase 2 definition (seven policies, four metrics)
+
+- **Schema (LOCAL, pinned by tests):** the field constraints listed in `ops/monitoring/phase2/README.md` → *API field constraints*, taken from the monitoring v3 and logging v2 discovery documents, plus the observed 100-character limit applied to policy and condition names. The `autoClose` (30 minutes – 7 days) and notification-rate-limit (5 minutes – 2 days) bounds are from the product documentation, not the discovery documents. All eleven files pass.
+- **Read-only against the services (PROD, no mutation):** all three log-match policy filters and all four metric filters accepted by `entries.list` (the financial-inconsistency filter still excludes the 27 Nov void probe); all four threshold filters, each with its own alignment period, aligner, reducer and group-by, accepted by `timeSeries.list` (the request-count filter returns the seven live Phase 1 services over three days; both user-metric filters resolve now that the metrics exist); the structure of the threshold policies matches the live, accepted L3 `approvefinalaccount` 5xx policy.
+- **NOT proven:** acceptance by `alertPolicies.create` of the five policies not yet created. Neither API has a validate-only create; the service may enforce other unpublished limits. A refusal at creation stops the sitting before the Functions deploy.
+
+### 92.5 Regression tests and validation of this change (LOCAL)
+
+`tests/unit/phase2Monitoring.test.js` gained *API field constraints*: per policy, names / labels / strategy / documentation and every condition; per metric, identifier, description, filter and descriptor; unique names (49 tests in the file, from 30). Run against the previous definitions it fails exactly the two defective files (mutation check). **Full unit suite 130 files / 6,509 tests** (Node 24.19.0; 6,490 + 19); `git diff --check` clean; all monitoring JSON parses; relative Markdown links resolve. No application, Rules or Functions source changed, so the Functions and emulator suites accepted by Azure on `11485a3` were not repeated.
+
+### 92.6 Phase 3 roadmap addition (REPORTED)
+
+**Business Formation, Ownership and Infrastructure Governance** — approved by the Product Owner and Lead Architect on 28 November 2026 as a Phase 3 workstream and a commercial-launch prerequisite; recorded in ROADMAP.md → *Phase 3* and CHATGPT_HANDOVER.md sections K and O. No implementation during Phase 2; no test applies.

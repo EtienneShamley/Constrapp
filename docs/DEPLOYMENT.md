@@ -5985,7 +5985,7 @@ old bundle in between). Reverting the Rules alone is NOT safe once any ledger
 exists — an old bundle would write history the ledgers do not see — so a
 rollback keeps the FINAL Rules and turns the switches off.
 
-## Phase 2 — the complete cutover — controlled company activation (final batch) — PREPARED 28 November 2026; **Stage A EXECUTED and ACCEPTED 28 November 2026 (read-only inventories, the A2 TEST fixture, the TEST approver invitation); Stages B–I NOT EXECUTED**
+## Phase 2 — the complete cutover — controlled company activation (final batch) — PREPARED 28 November 2026; **Stage A EXECUTED and ACCEPTED 28 November 2026 (read-only inventories, the A2 TEST fixture, the TEST approver invitation — accepted); Stage B INTERRUPTED before the Functions deploy (partial Stage-A monitoring exists — see *Stage B — first attempts, interrupted*); Stages B–I NOT EXECUTED**
 
 **Every production step below is the Product Owner's, each on its own
 authorisation, after the Lead Architect's acceptance and with Azure `main`
@@ -6224,11 +6224,46 @@ harmless.
   including the baseline preview the first operation will store. Apex
   unchanged (whole-database fingerprint); no baseline, ledger or activation.
 - **Second approver:** PM invitation to the owner-controlled alias `+ct-pm2`
-  (the deactivated `+ct-pm` was not re-invited); pending until the Product
-  Owner accepts it; segregation NOT enabled.
+  (the deactivated `+ct-pm` was not re-invited); **ACCEPTED 28 Nov 2026
+  05:01 UTC** (member active as `project_manager`, verified read-only), so
+  the TEST company has two eligible approvers; segregation NOT enabled.
 - **Apex legacy claims (verify again before Apex's Stage H):** no claim has
   more than one live invoice; the backend refuses claim-sourced invoicing of a
   legacy claim, so no duplicate pairing is possible.
+
+### Stage B — first attempts, interrupted (28 November 2026; TESTING.md §92)
+
+Recorded so the next sitting starts from the real state. **The Functions
+deploy has not run.**
+
+1. **05:56 UTC — stopped silently, nothing changed.** The before-state step
+   ran `ops/recovery/phase2-inventory.mjs` under `set -e`. The tool exits
+   **1 whenever it lists findings** (0 none · 1 findings listed · 2 usage ·
+   3 read failure), and the six accepted `review` findings are always listed.
+   A release block must capture the exit code and accept 1 only for the
+   accepted review-only profile; it must never discard it with `|| true`.
+2. **06:18 UTC — partial monitoring created.** The four `phase2_*` metrics,
+   then `callable-error-log` (`7829793872908465132`) and `baseline-failure`
+   (`3721707461277719113`) were created; `financial-inconsistency` was
+   refused: `INVALID_ARGUMENT: display_name must not be more than 100
+   characters` — its CONDITION display name was 118 characters. The limit is
+   enforced by the service and is not in the published v3 reference (which
+   gives 512 for the policy name). `infrastructure-repeated` (116) would have
+   failed next. Both are corrected and the limit is pinned in
+   `tests/unit/phase2Monitoring.test.js`.
+3. **State left in production (verified read-only):** 4 metrics and 2
+   policies, each equal to its file and bound to the Product Owner channel
+   only; 17 functions on their recorded revisions; Rules, Storage rules and
+   Hosting unchanged; no Phase 2 server state; inventory identical. The two
+   policies watch services that do not exist yet and cannot fire.
+4. **Resume:** keep the existing six objects, verify them against their
+   files, create ONLY `financial-inconsistency`, `contention-repeated` and
+   `infrastructure-repeated`, verify the set of five, then deploy.
+5. **Run release blocks as `/bin/bash /dev/fd/3 3<<'BASH'`,** in the Product
+   Owner's own terminal: with `/bin/bash <<'BASH'` the script IS stdin, so
+   `firebase deploy` sees no terminal and turns non-interactive
+   (firebase-tools `command.js`), and any command that reads stdin would
+   consume the rest of the script.
 
 ### Stage B — Functions, every switch OFF
 

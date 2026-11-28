@@ -8,12 +8,12 @@ hierarchy* below).
 
 | | |
 |---|---|
-| **Last updated** | 28 November 2026 (NZDT) — Phase 2 Stage A accepted; Stage A completion (A2 TEST fixture, TEST PM invitation, M1 monitoring correction) delivered for review |
-| **Branch** | `fix/phase2-release-preparation` from `main` (VERIFIED) |
-| **HEAD** | `c74f8f4` = `origin/main` = remote `main` (*Merge Phase 2 CI validation fix (D3 #56)*) (VERIFIED) |
-| **Working tree** | **Uncommitted** M1 monitoring correction, its test, and the Stage A documentation (VERIFIED) |
-| **Production** | Commercial Finance Phase 1 LIVE (PROD-VERIFIED read-only 28 Nov 2026: 17 functions; Firestore ruleset `0e228bd0…` = the Phase 1 rules, 236,120 B; Storage rules = `main`; Hosting `2f85dee4071c61d6`, bundle `index-BEwVCddF.js`). **Phase 2 NOT deployed; no company activated; no Phase 2 server state; every Phase 2 switch `false`.** Only TEST-company writes made: the A2 fixture and one PM invitation (TESTING.md §91) |
-| **Azure CI** | **GREEN on `c74f8f4`** — Build #20261128.2 succeeded, 0 errors / 0 warnings (PROD-VERIFIED via the public GitHub check-run); suite counts unit 6,489 · Rules 2,861 · Functions pure 296 · emulator 834 (REPORTED) |
+| **Last updated** | 28 November 2026 (NZDT) — Phase 2 Stage B attempt interrupted at monitoring creation (a condition display name over the API's 100-character limit); corrected definitions and constraint tests delivered for review |
+| **Branch** | `fix/phase2-monitoring-validation` from `main` (VERIFIED) |
+| **HEAD** | `11485a3` = `origin/main` (*Merge Phase 2 Stage A release preparation*) (VERIFIED) |
+| **Working tree** | **Uncommitted** monitoring validation correction: two condition display names, the API-constraint tests, and the records of the interruption (VERIFIED) |
+| **Production** | Commercial Finance Phase 1 LIVE (PROD-VERIFIED read-only 28 Nov 2026 after the interruption: 17 functions on their recorded revisions; Firestore ruleset `0e228bd0…`; Storage `2f3a4788…`; Hosting `2f85dee4071c61d6`, bundle `index-BEwVCddF.js`). **Phase 2 Functions NOT deployed; no company activated; no Phase 2 server state; every Phase 2 switch `false`.** **Partial Phase 2 monitoring EXISTS** (created by the Product Owner, 28 Nov 06:18 UTC): the four `phase2_*` log-based metrics and two of the five Stage-A policies (`callable-error-log` `7829793872908465132`, `baseline-failure` `3721707461277719113`), each verified equal to its file; three Stage-A policies and the two Stage-F policies do not exist (TESTING.md §92) |
+| **Azure CI** | **GREEN on `11485a3`** — Build #20261128.3 succeeded (PROD-VERIFIED via the public GitHub check-run); the branch is uncommitted |
 | **History** | Earlier revisions of this file, verbatim: [CHATGPT_HANDOVER_HISTORY.md](CHATGPT_HANDOVER_HISTORY.md) (archive, not authoritative) |
 
 **Evidence classes used throughout:** **VERIFIED** (checked in the repository,
@@ -475,18 +475,18 @@ Rules-validated paths (ADR-90, Phase 2).
 | Item | State |
 |---|---|
 | Date | 28 November 2026 (NZDT) |
-| Active phase / workstream | Phase 2 — Commercial Completion; **production release, Stage A completion — awaiting the Lead Architect** (Stage A assessment ACCEPTED, REPORTED) |
-| Branch / HEAD / tree | `fix/phase2-release-preparation` / `c74f8f4` — created from a clean `main` equal to `origin/main` and remote `main` (VERIFIED) |
-| Working tree | Uncommitted: M1 monitoring correction (`ops/monitoring/phase2/phase2-financial-inconsistency.policy.json`, `phase2-refusal-codes.json`, README), `tests/unit/phase2Monitoring.test.js`, and docs (DEPLOYMENT, TESTING §91, tracker, this handover) |
+| Active phase / workstream | Phase 2 — Commercial Completion; **production release, Stage B interrupted before the Functions deploy — monitoring validation correction awaiting the Lead Architect** |
+| Branch / HEAD / tree | `fix/phase2-monitoring-validation` / `11485a3` — created from a clean `main` equal to `origin/main` (VERIFIED) |
+| Working tree | Uncommitted: `ops/monitoring/phase2/phase2-financial-inconsistency.policy.json` and `phase2-infrastructure-repeated.policy.json` (condition display names only), README, `tests/unit/phase2Monitoring.test.js` (API field constraints), and docs (ROADMAP, DEPLOYMENT, TESTING §92, tracker, this handover) |
 | Latest accepted checkpoint | Phase 2 integrated (`7e71793`) and CI-corrected (`c74f8f4`, D3 #56); Stage A read-only assessment accepted (REPORTED) |
 | Latest implementation checkpoint | Steps 3–6 implemented in one programme (ADR-93 claims and supplier invoices; ADR-94 supplier ledgers, G1–G3, DC18; ADR-95 client refunds and receipt applications, D8; ADR-96 approval segregation and G5). Steps 0–2 closed LOCALLY by the architect (rulings recorded on the ADR-90 / ADR-91 correction). Report delivered 28 November 2026 |
 | Accepted test baseline | 10,480 tests at `c74f8f4`: unit 6,489 · Rules 2,861 · Functions pure 296 · Functions emulator 834 (REPORTED; Azure #20261128.2 green VERIFIED) |
-| Latest results (branch, local) | TESTING.md §91.10 / the Stage A completion report: `phase2Monitoring.test.js` 30 / 30; Phase 1 callable emulator suites; whitespace and link checks |
+| Latest results (branch, local) | TESTING.md §92.5: `phase2Monitoring.test.js` and the full unit suite; whitespace and link checks |
 | Runtimes | Node 24.19.0 (frontend, Rules suite, CI); Node 22.23.2 (both Functions suites); JDK 26 for the emulators |
-| CI | `c74f8f4` GREEN (Build #20261128.2); the branch is uncommitted |
-| Production | Phase 1 LIVE, verified read-only 28 Nov 2026; Phase 2 not deployed; TEST-company writes only (A2 fixture, PM invitation) |
-| Changed-file scope | The eight files of the Stage A completion (release-preparation manifest in the report); no application, Rules or Functions source change |
-| Authorised scope | Stage A completion only: read-only production inspection; A2 synthetic fixture and the PM invitation in the TEST company; monitoring definitions and docs. **No deployment, monitoring creation, activation, IAM change or Git integration** |
+| CI | `11485a3` GREEN (Build #20261128.3); the branch is uncommitted |
+| Production | Phase 1 LIVE, verified read-only 28 Nov 2026; Phase 2 Functions not deployed; partial Phase 2 monitoring (4 metrics, 2 policies) exists; TEST PM `+ct-pm2` accepted |
+| Changed-file scope | The nine files of the monitoring validation correction (manifest in the report); no application, Rules or Functions source change |
+| Authorised scope | Read-only production verification; monitoring definitions, tests and docs. **No production write, monitoring creation or deletion, deployment, activation, IAM change or Git integration** |
 | Pending Product Owner actions | Review; commit in the dependency-ordered groups of the checkpoint report; no deploy. Earlier: two stale local allowlist entries naming the old emulator project |
 | Pending architect decisions | Accept steps 3–6; confirm the refinements (three callables with operation discriminators; payments / receipts / refunds / applications recorded, not segregated; supplier credits by cost-code and tax-code group; posting re-derives and refuses moved figures; no transitional ruleset for steps 3–6 — a maintenance restriction instead); authorise the read-only production inventories (variations, supplier history, counters, baselines); release grouping; then Step 7 |
 | Known limitations | Nothing deployed. Production history (variations, claims, supplier settlement) not inventoried: the baselines refuse or mark inconsistent what they cannot account for. Compiled Rules size and post-change expression headroom not measured. No per-user rate limiting on the new callables. Rules-held approvals compare creator / last updater only. Refusals on Rules-held approvals show a generic permission message. Browser acceptance is local only and partial (TESTING.md §87.5) |
@@ -541,6 +541,17 @@ plan*). The earlier gap — "Phase 4" undefined in the repository — is closed.
 - *Constrap IQ and Quant AI:* deferred; the AI placeholder rule stays in force.
 - *Security:* essential customer-readiness security is never deferred to
   Phase 4.
+- *Business Formation, Ownership and Infrastructure Governance (Phase 3,
+  added 28 November 2026 — APPROVED, REPORTED; a commercial-launch
+  prerequisite):* Australian Pty Ltd registration; formal shareholding; a
+  shareholders' agreement; intellectual-property assignment to the company;
+  company banking and billing; shared, independent founder access;
+  business-controlled cloud, GitHub, Azure DevOps, domain and e-mail; MFA,
+  least privilege and recovery; financial accountability; Australian and New
+  Zealand legal and accounting considerations; business-continuity and
+  founder-departure procedures. The existing infrastructure and database are
+  retained wherever technically possible. **No implementation during
+  Phase 2.** Detail: ROADMAP.md → *Phase 3*.
 
 **Not recorded anywhere — do not assume:** pricing, subscription tiers, an
 entitlement model, mobile requirements, AI architecture, launch dates.
@@ -693,6 +704,8 @@ ships alone or with step 3 is open.
 | — | Firestore restore beyond the verification sample; Storage files outside backups | Recovery | Partially proven | 3 (DR) | — |
 | — | Load and cost unmeasured | Scale | Designed, not measured | 3 | Load test |
 | — | External customer onboarding | Commercial launch | Gated | 3 | Readiness decision after refunds, D3 #36 and the residual risks |
+| — | Phase 2 monitoring is PARTIAL in production | Three Stage-A alerts (financial inconsistency, repeated contention, repeated infrastructure failure) do not exist yet; nothing they watch is deployed either | 4 metrics + 2 policies created 28 Nov 06:18 UTC, verified equal to their files; the creation stopped on a condition display name of 118 characters (limit 100, enforced by the service, not in the published reference). Corrected and pinned by tests (D3 #60, TESTING.md §92) | 2 | Integrate the correction, then the corrected Block 3 resume creates only the three missing policies before the Functions deploy |
+| — | Business formation, ownership and infrastructure governance | The product, its cloud project, repositories, domain and billing are not yet held by a company | **Phase 3 workstream APPROVED 28 November 2026 (REPORTED); commercial-launch prerequisite; not started** | 3 | Phase 3 assessment (ROADMAP.md) |
 | — | Phase 3 / Phase 4 boundaries | Planning | **RESOLVED 27 November 2026 (REPORTED):** defined in section K and ROADMAP.md. Still open: Phase 3's internal sequencing and architecture (future assessment); no pricing, tier or entitlement model exists | Product Owner / Lead Architect |
 
 Full registers: [SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md)
@@ -702,7 +715,30 @@ Full registers: [SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md)
 
 ## P. Immediate continuation instructions
 
-**State (28 November 2026, Stage A):** Phase 2 is merged (`c74f8f4`), Azure
+**State (28 November 2026, Stage B interrupted):** `main` is `11485a3`
+(Stage A release preparation merged; Azure #20261128.3 green). The TEST PM
+`+ct-pm2` ACCEPTED the invitation (28 Nov 05:01 UTC; member active as
+`project_manager`), so the TEST company has two eligible approvers for
+Stage G. The Product Owner ran Block 3 twice: the first run stopped silently
+on the inventory tool's exit code 1 (its documented "findings listed" answer —
+the six accepted review findings — under `set -e`; nothing was changed); the
+second created the four `phase2_*` metrics and two policies, then stopped at
+`phase2-financial-inconsistency` with `INVALID_ARGUMENT: display_name must
+not be more than 100 characters` (a CONDITION name of 118 characters). The
+Functions deploy was not reached; production is otherwise unchanged
+(TESTING.md §92). Corrected on `fix/phase2-monitoring-validation`
+(uncommitted): two condition names shortened (the second, 116 characters,
+would have failed next), every Phase 2 definition checked against the
+published field constraints, and those constraints pinned in
+`phase2Monitoring.test.js`.
+
+**ChatGPT, next:** review the correction; on GO the Product Owner runs the
+integration block, waits for Azure `main` green, then the corrected Block 3
+resume (keeps the four metrics and two policies, creates only the three
+missing Stage-A policies, then deploys the same 22 callables with every
+switch off).
+
+**Earlier state (28 November 2026, Stage A completion):** Phase 2 is merged (`c74f8f4`), Azure
 green, NOT deployed. The architect accepted the Stage A read-only assessment
 (2 companies, 22 projects, 22 / 22 baselines would establish, 0 inconsistent,
 0 duplicates, 6 review findings). Stage A completion (TESTING.md §91): the A2
@@ -712,7 +748,7 @@ the Product Owner's acceptance; M1 corrected and validated read-only; the
 22-function filter, the five switch pins and Phase 1 callable compatibility
 re-verified. Uncommitted on `fix/phase2-release-preparation`.
 
-**ChatGPT, next:** review the Stage A completion report; on GO the Product
+**ChatGPT, next (as written at Stage A completion):** review the Stage A completion report; on GO the Product
 Owner runs Block 2 (integration), waits for Azure `main` green, accepts the
 PM invitation, confirms the alert channel, then Block 3 (Stage-A monitoring +
 Stage B disabled backend) on its own authorisation.
