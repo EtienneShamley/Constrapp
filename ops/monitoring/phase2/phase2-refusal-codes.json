@@ -14,7 +14,7 @@
     },
     "financialInconsistency": {
       "alert": "phase2-financial-inconsistency.policy.json",
-      "meaning": "Stored records, a ledger or an invariant do not reconcile, or a stored record is not shaped as Constrap writes one. The operation was refused and nothing was written; the data needs review. client-ledger-invariant is also raised when a requested posting or void would itself breach an invariant (the refusal log line does not say which).",
+      "meaning": "Stored records, a ledger or an invariant do not reconcile, or a stored record is not shaped as Constrap writes one. The operation was refused and nothing was written; the data needs review. client-ledger-invariant is also raised when a requested void of a posted client credit note or retention release would itself breach an invariant (ADR-89 Void policy, an ordinary user outcome); the log line does not say which, so the alert excludes exactly that pair (code client-ledger-invariant with fn voidClientCreditNote or voidClientRetentionRelease: M1, 28 November 2026). Those refusals stay in the logs and in phase2_refusals_by_code. Splitting the code is Phase 3.",
       "codes": [
         "client-entry-invalid",
         "client-invoice-inconsistent",

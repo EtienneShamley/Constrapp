@@ -5985,7 +5985,7 @@ old bundle in between). Reverting the Rules alone is NOT safe once any ledger
 exists — an old bundle would write history the ledgers do not see — so a
 rollback keeps the FINAL Rules and turns the switches off.
 
-## Phase 2 — the complete cutover — controlled company activation (final batch) — PREPARED 28 November 2026, **NOT AUTHORISED, NOTHING EXECUTED**
+## Phase 2 — the complete cutover — controlled company activation (final batch) — PREPARED 28 November 2026; **Stage A EXECUTED and ACCEPTED 28 November 2026 (read-only inventories, the A2 TEST fixture, the TEST approver invitation); Stages B–I NOT EXECUTED**
 
 **Every production step below is the Product Owner's, each on its own
 authorisation, after the Lead Architect's acceptance and with Azure `main`
@@ -6056,10 +6056,10 @@ event.
   predeploy tests): `VARIATION_PROCESSING_ENABLED` in
   `functions/test/variations.test.js`, `CLIENT_SETTLEMENT_ENABLED` in
   `functions/test/clientFinance.test.js`, `ESTIMATING_ENABLED` in
-  `tests/unit/estimating.test.js`. *At the time of writing
-  `SUPPLIER_FINANCE_PROCESSING_ENABLED` and `CONTRACT_VALUE_REVISION_ENABLED`
-  have no production pin* — add them before the switch commit, so the commit
-  is checked like the others.
+  `tests/unit/estimating.test.js`, **and all five in
+  `functions/test/phase2Release.test.js`** (verified 28 Nov 2026 — the earlier
+  note that two switches had no production pin is superseded). The switch
+  commit is therefore exactly 5 files / 9 lines (dry-run on a scratch copy).
 - **Call options** (from `functions/src/index.js`; one region
   `australia-southeast1`; `enforceAppCheck: true`; no secret; the default
   runtime service account, as every callable but the worker):
@@ -6194,7 +6194,41 @@ TEST baseline at Stage G must reproduce them exactly.
 
 **Monitoring, Stage A** (separately authorised): the four metrics and the
 five Stage-A policies, exactly as `ops/monitoring/phase2/README.md` →
-*Creation*. They watch services that do not exist yet; that is harmless.
+*Creation* — the policies only after Monitoring reports both threshold
+metrics (the README's availability gate, not a fixed delay), with the M1
+filter (*M1* there). They watch services that do not exist yet; that is
+harmless.
+
+#### Stage A — as executed (28 November 2026; TESTING.md §91)
+
+- **Git / CI:** `main` = `origin/main` = `c74f8f4`; Azure Build #20261128.2
+  succeeded (GitHub check-run, verified); D3 #56 closed.
+- **Inventory (04:22 UTC):** 2 companies, 22 projects; every stop condition
+  met — `commercialCompletion` absent everywhere; supplier markers, supplier
+  ledgers, refunds, applications, Phase 2 receipt ledgers, estimates and
+  contract-value revisions 0; 22 / 22 `would-establish`; 0 inconsistent; 0
+  duplicates; counters valid; 0 estimate provenance; 6 `review` findings
+  (5 Apex legacy claim link keys, 1 Apex draft PO without a recorded
+  preparer).
+- **Do not conflate:** `receiptBaselineMarkers` (3, TEST) are the Phase 1
+  markers `clientFinanceState/receiptBaseline`, live since 26 Nov;
+  `clientReceiptLedgers` are the Phase 2 per-receipt ledgers and must be 0
+  until a company is activated.
+- **A2 fixture (release prerequisite — MET):** TEST project
+  `2psmNzd4N2PED8OR23Az` through the released build: PO-0004 (two lines) and
+  PO-0005 (one line) sent; PC-0003 approved → SI-0006 claim-sourced, retained,
+  posted; SI-0007 direct, non-retained, posted; SP-0001 posted across both;
+  SCN-0001 posted on SI-0007 (the released build cannot credit a retained
+  invoice); RR-0005 posted (partial); PC-0004 submitted (open) on PO-0005;
+  SV-0001 and CV-0001 submitted. Independent cent sheet: 17 / 17 MATCH,
+  including the baseline preview the first operation will store. Apex
+  unchanged (whole-database fingerprint); no baseline, ledger or activation.
+- **Second approver:** PM invitation to the owner-controlled alias `+ct-pm2`
+  (the deactivated `+ct-pm` was not re-invited); pending until the Product
+  Owner accepts it; segregation NOT enabled.
+- **Apex legacy claims (verify again before Apex's Stage H):** no claim has
+  more than one live invoice; the backend refuses claim-sourced invoicing of a
+  legacy claim, so no duplicate pairing is possible.
 
 ### Stage B — Functions, every switch OFF
 
@@ -6217,8 +6251,15 @@ keep their previous revision names. The released bundle calls none of the new
 callables; the eight changed ones keep serving it. **Gate before this stage:**
 evidence that the released bundle's Phase 1 requests (receipts, credit notes,
 releases, Final Account, BOQ transfer without an estimate) are accepted
-unchanged by the new code — cite the emulator suites in the release record. **Fully reversible:** redeploy the previous source of the
-eight changed callables; the new ones refuse everything.
+unchanged by the new code — cite the emulator suites in the release record
+(Stage A: 5 suites / 387 tests at `c74f8f4`, TESTING.md §91.9). **Fully
+reversible:** redeploy the previous source of the eight changed callables —
+seven (`postClientCreditNote`, `voidClientCreditNote`,
+`postClientRetentionRelease`, `voidClientRetentionRelease`,
+`postClientReceipt`, `voidClientReceipt`, `approveFinalAccount`) from a
+worktree at `c9df38b`, and `transferBoqToBudget` from a worktree at `a30699e`
+(its live revision `-00001-zol` predates `c9df38b`); the new ones refuse
+everything.
 
 ### Stage C — the maintenance restriction (announce, then it begins at Stage D)
 
@@ -6267,8 +6308,9 @@ and report; the restriction has not begun. Then, read only:
 1. **The published ruleset equals `main`'s file.** From the repository root:
 
        T=$(gcloud auth print-access-token)
-       R=$(curl -s -H "Authorization: Bearer $T" https://firebaserules.googleapis.com/v1/projects/constrapp-69b5d/releases/cloud.firestore | jq -r .rulesetName)
-       curl -s -H "Authorization: Bearer $T" "https://firebaserules.googleapis.com/v1/$R" | jq -r '.source.files[0].content' > /tmp/published.rules
+       Q="x-goog-user-project: constrapp-69b5d"   # required with a user login (verified at Stage A)
+       R=$(curl -s -H "Authorization: Bearer $T" -H "$Q" https://firebaserules.googleapis.com/v1/projects/constrapp-69b5d/releases/cloud.firestore | jq -r .rulesetName)
+       curl -s -H "Authorization: Bearer $T" -H "$Q" "https://firebaserules.googleapis.com/v1/$R" | jq -r '.source.files[0].content' > /tmp/published.rules
        cmp /tmp/published.rules frontend/firestore.rules && wc -c frontend/firestore.rules
 
    `cmp` silent = byte-identical. Record the ruleset name, its create time and
@@ -6355,7 +6397,9 @@ registers; Phase 1 works.
    refused with money, allowed without; contract-value propose / approve;
    estimate build, approval by a second person with segregation enabled on
    the TEST company only (`set-approval-policy.mjs`, dry run then `--apply`),
-   transfer with the estimate, and drift shown after a BOQ change.
+   transfer with the estimate, and drift shown after a BOQ change. The
+   second approver is the TEST project manager invited at Stage A (`+ct-pm2`),
+   once accepted — never a reactivated account.
 4. **Refusals, observed** — an old-bundle tab refused; a direct SDK write of an
    old shape refused; with a second, INACTIVE test company (or the production
    customer's evidence through the inventory only — no action is taken in the

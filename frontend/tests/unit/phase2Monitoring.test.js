@@ -127,6 +127,28 @@ describe('ops/monitoring/phase2 — refusal codes', () => {
     }
   })
 
+  it('M1: client-ledger-invariant pages everywhere except the two approved void-invariant refusals, which stay counted', () => {
+    // The live Phase 1 void of a posted client credit note / retention release
+    // refuses a void that would breach an invariant with this code (ADR-89 Void
+    // policy) — an ordinary user outcome. Only that (code, fn) pair is excluded.
+    const f = filterOf(read('phase2-financial-inconsistency.policy.json'))
+    expect(f).toContain(' AND (jsonPayload.code=("client-entry-invalid" OR ')
+    expect(f.endsWith(' OR (jsonPayload.code="client-ledger-invariant" AND NOT jsonPayload.fn=("voidClientCreditNote" OR "voidClientRetentionRelease")))')).toBe(true)
+    expect(f.match(/client-ledger-invariant/g)).toHaveLength(1)
+    expect(f.match(/jsonPayload\.fn/g)).toHaveLength(1)
+    // `fn` is the exported name the client-finance wrapper logs on every refusal.
+    for (const n of ['voidClientCreditNote', 'voidClientRetentionRelease']) expect(index).toMatch(new RegExp(`export const ${n}\\s*= clientFinanceCall\\('${n}'\\)`))
+    expect(index).toMatch(/logger\.info\('client finance call refused', \{ fn: name, code: err\.details\.code/)
+    // The refusal being excluded is the void path's invariant check.
+    const tx = readFileSync(path.resolve(here, '../../functions/src/clientFinance/transactions.js'), 'utf8')
+    expect(tx).toContain('if (broken) fail(CODE.CLIENT_LEDGER_INVARIANT, { invariant: broken, number: refused.number })')
+    // Still visible: the refusal metric counts every code of these services.
+    const metric = filterOf(read('phase2-refusals-by-code.metric.json'))
+    expect(metric).toContain('"voidclientcreditnote"')
+    expect(metric).toContain('"voidclientretentionrelease"')
+    expect(metric).not.toContain('jsonPayload.fn')
+  })
+
   it('maps the switch-off codes to HTTP 503 and every alerting refusal to a 4xx', () => {
     const grpc = (code) => {
       const key = errors.slice(0, errors.indexOf('const GRPC')).match(new RegExp(`([A-Z_]+):\\s*'${code}'`))[1]
