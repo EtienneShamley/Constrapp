@@ -8,12 +8,12 @@ hierarchy* below).
 
 | | |
 |---|---|
-| **Last updated** | 28 November 2026 (NZDT) — consolidated checkpoint for Phase 2 steps 3–6 (Steps 0–2 closed locally) |
-| **Branch** | `feature/commercial-completion-phase-2` (VERIFIED) |
-| **HEAD** | `dfe3618` = `origin/main` (*Merge Commercial Finance Phase 1 closeout*); tree `a3514a50` (VERIFIED) |
-| **Working tree** | **Uncommitted** Phase 2 steps 0–2 implementation plus this documentation (VERIFIED) |
-| **Production** | Last recorded release: Commercial Finance Phase 1, cutover executed 26–27 November 2026 UTC (REPORTED; DEPLOYMENT.md → *Release record (as executed)*). **Nothing on the Phase 2 branch is deployed.** Production was not read for this revision |
-| **Azure CI** | Green on the Phase 1 merges `9e31bb0` → `c9df38b` (REPORTED). **CI on `dfe3618` not verified in this session** |
+| **Last updated** | 28 November 2026 (NZDT) — Phase 2 integrated into `main`; Azure CI correction (D3 #56) |
+| **Branch** | `fix/phase2-ci-validation` from `main` (VERIFIED) |
+| **HEAD** | `7e71793` = `origin/main` (*Merge Phase 2 Commercial Completion (ADR-90 to ADR-98; switches OFF)*) (VERIFIED) |
+| **Working tree** | **Uncommitted** CI-isolation correction and its documentation (VERIFIED) |
+| **Production** | Last recorded release: Commercial Finance Phase 1 (REPORTED). **Phase 2 is merged but NOT deployed; every Phase 2 switch is `false` in `functions/.env.constrapp-69b5d`** (VERIFIED). Production was not read |
+| **Azure CI** | **RED on `7e71793`** (run #20261128.1, REPORTED): unit stage, `finalAccountPage.test.js` `auth/invalid-api-key`; later stages not executed. Correction on this branch; the whole pipeline replayed credential-free on macOS (TESTING.md §90). Azure re-run pending |
 | **History** | Earlier revisions of this file, verbatim: [CHATGPT_HANDOVER_HISTORY.md](CHATGPT_HANDOVER_HISTORY.md) (archive, not authoritative) |
 
 **Evidence classes used throughout:** **VERIFIED** (checked in the repository,
@@ -491,6 +491,7 @@ Rules-validated paths (ADR-90, Phase 2).
 | Pending architect decisions | Accept steps 3–6; confirm the refinements (three callables with operation discriminators; payments / receipts / refunds / applications recorded, not segregated; supplier credits by cost-code and tax-code group; posting re-derives and refuses moved figures; no transitional ruleset for steps 3–6 — a maintenance restriction instead); authorise the read-only production inventories (variations, supplier history, counters, baselines); release grouping; then Step 7 |
 | Known limitations | Nothing deployed. Production history (variations, claims, supplier settlement) not inventoried: the baselines refuse or mark inconsistent what they cannot account for. Compiled Rules size and post-change expression headroom not measured. No per-user rate limiting on the new callables. Rules-held approvals compare creator / last updater only. Refusals on Rules-held approvals show a generic permission message. Browser acceptance is local only and partial (TESTING.md §87.5) |
 | Next recommended action | Lead Architect review of the consolidated checkpoint → authorise Step 7 (CC1 estimating) and the read-only production inventories that gate the release of steps 2–6 |
+| CI correction (28 Nov 2026) | D3 #56: Azure #20261128.1 failed because `ProjectFinalAccount.jsx` gained `useApprovalPolicy` (D3 #51) and its render test did not mock it — the hook imports `src/lib/firebase.js`, whose `getAuth(app)` throws without an API key. Local runs passed only because `.env.local` reached the unit suite. Fixed on `fix/phase2-ci-validation`: mock added, `vitest.config.js` `envDir: false`, `tests/unit/unitIsolation.test.js`, ENGINEERING_STANDARDS §4. No application, Rules, Functions, pipeline or production-configuration change. Evidence TESTING.md §90 |
 
 ---
 
@@ -661,6 +662,7 @@ ships alone or with step 3 is open.
 
 | Id | Item | Impact | Status | Phase | Next action |
 |---|---|---|---|---|---|
+| D3 #56 | Azure CI red on `main` `7e71793` (unit suite reached real Firebase) | Integration gate | Fixed on `fix/phase2-ci-validation`; Azure re-run pending | 2 | Merge; confirm Azure `main` green before stage A |
 | — | Phase 2 steps 0–2 acceptance | Gate to step 3 | Awaiting architect | 2 | Review the checkpoint report and TESTING.md §83 |
 | D3 #37 | Near-ceiling Rules paths | Rules capacity | Variations resolved on the branch; claims and invoices open | 2 (step 3) | Step 3; re-measure headroom |
 | D3 #35 | Payable-side GST precision | One-cent differences | Foundation on the branch; supplier formulas unchanged | 2 (steps 3–4) | Apply ADR-91 per document type |
@@ -704,7 +706,13 @@ inventory tool `ops/recovery/phase2-inventory.mjs`; the controlled-activation
 cutover in DEPLOYMENT.md → *Phase 2 — the complete cutover*). Evidence:
 TESTING.md §88–§89; tracker D3 #44–#54.
 
-**ChatGPT, next:** the architect gave a CONDITIONAL GO for Git integration
+**Update (28 November 2026, later):** Phase 2 was merged to `main` as
+`7e71793` (switches OFF, not deployed). Azure run #20261128.1 then failed in
+the unit stage (D3 #56, a test-isolation defect; TESTING.md §90). The
+correction is on `fix/phase2-ci-validation`; after its merge, Azure `main`
+must be green before stage A is authorised.
+
+**ChatGPT, next (as written before integration):** the architect gave a CONDITIONAL GO for Git integration
 with a targeted correction, now done (ADR-98 Decision 9; TESTING.md §89.8;
 tracker D3 #52–#55): claim submit and variation submit / reject / withdraw are
 Rules-gated on company activation; D3 #53, #54, #52 and the estimating drift

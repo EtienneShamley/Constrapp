@@ -41,6 +41,12 @@ vi.mock('../../src/hooks/useClientRetentionReleases', () => ({ useClientRetentio
 // Phase 2 step 5: the two settlement registers (refunds, receipt applications).
 vi.mock('../../src/hooks/useClientRefunds', () => ({ useClientRefunds: () => list('clientRefunds') }))
 vi.mock('../../src/hooks/useClientReceiptApplications', () => ({ useClientReceiptApplications: () => list('clientReceiptApplications') }))
+// Phase 2 step 6 (ADR-96): the approval-segregation policy. Returned exactly as
+// the real hook returns without a CompanyProvider — not known, no policy — so
+// the page's figures and states are unchanged. Unmocked, the hook imports
+// src/lib/firebase.js and initialises real Firebase Auth at import time, which
+// fails without credentials (Azure #20261128.1: auth/invalid-api-key).
+vi.mock('../../src/hooks/useApprovalPolicy', () => ({ useApprovalPolicy: () => ({ approvalPolicy: null, approvalPolicyLoading: false, approvalPolicyError: false, approvalPolicyKnown: false }) }))
 vi.mock('../../src/hooks/useFinalAccounts', () => ({
   useFinalAccounts: () => ({
     finalAccounts: S.accountsError ? [] : S.accounts, finalAccountsLoading: false, finalAccountsError: S.accountsError,

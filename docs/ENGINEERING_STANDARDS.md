@@ -122,6 +122,23 @@ without an approved architecture change (record it in
   unchanged after the new flow).
 - Run `npm audit` when dependencies change; do not add a package with an unresolved
   high/critical advisory.
+- **The unit suite is credential-free and must pass on a machine with no Firebase
+  configuration** (Azure #20261128.1, tracker D3 #56). A unit test that renders a page
+  or component must mock **every** hook or module that reaches `src/lib/firebase.js`
+  — including hooks added later to a page an existing test already renders; a new
+  hook on a page means a new `vi.mock` in that page's test. `vitest.config.js` sets
+  `envDir: false`, so no `.env*` file (notably the git-ignored `.env.local`) is loaded,
+  and `tests/unit/unitIsolation.test.js` fails if any `VITE_FIREBASE_*` value reaches
+  the suite from the shell. Never "fix" an `auth/invalid-api-key` in unit tests by
+  supplying configuration — to CI, to a `.env` file or to the test — and never relax
+  the isolation test. The Rules and Functions suites run only against the emulators
+  on a fail-closed test project (`scripts/emulators-isolated.mjs`,
+  `tests/functions/_harness.js`).
+- **CI parity before integration.** Every suite must pass on the Linux Azure agent,
+  which differs from a developer Mac in: a case-sensitive filesystem (an import must
+  match the file name's case exactly), no `.env.local`, no Firebase CLI login, no
+  gcloud Application Default Credentials, and JDK 21. When local evidence is the only
+  evidence, state which of these were reproduced.
 
 ## 5. Security review checklist (run on every change touching data or rules)
 

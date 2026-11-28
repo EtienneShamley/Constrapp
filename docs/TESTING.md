@@ -13419,3 +13419,65 @@ reach the ceiling before returning false (D3 #37, D3 #52 — pre-existing).
 
 The full automated gate (every suite) runs inside the integration block before
 anything is committed.
+
+## 90. Phase 2 — Azure CI correction: credential-free unit suite (D3 #56) — 28 November 2026
+
+**Status: FIXED on `fix/phase2-ci-validation` (from `main` `7e71793`), uncommitted; awaiting integration and an Azure re-run.** Evidence class: **LOCAL** (macOS, clean worktree, credential-free). No production access; nothing deployed; every Phase 2 switch remains `false` in `functions/.env.constrapp-69b5d`.
+
+### 90.1 Failure (Azure run #20261128.1 on `7e71793`, REPORTED)
+
+Ubuntu agent, Node 24.19.0, Java 21. *Unit and behaviour tests*: 128 files / 6,463 tests passed; `tests/unit/finalAccountPage.test.js` failed at import with `FirebaseError: auth/invalid-api-key` at `src/lib/firebase.js:132` (`export const auth = getAuth(app)`). Later stages did not run.
+
+### 90.2 Root cause (VERIFIED)
+
+Dependency chain: `tests/unit/finalAccountPage.test.js` → `await import('src/pages/project/ProjectFinalAccount.jsx')` → `import { useApprovalPolicy } from '../../hooks/useApprovalPolicy'` (added in Phase 2, D3 #51; absent at the Phase 1 baseline `dfe3618`) → `useApprovalPolicy.jsx` `import { db } from '../lib/firebase'` → `src/lib/firebase.js` runs `initializeApp(firebaseConfig)` then `getAuth(app)` at module load. The test mocks every other hook the page uses (the Phase 2 additions `useClientRefunds` and `useClientReceiptApplications` were mocked); `useApprovalPolicy` was not.
+
+Why local passed: Vite loads `.env`, `.env.local`, `.env.[mode]` and `.env.[mode].local` into `import.meta.env` for the unit suite too. The developer's git-ignored `frontend/.env.local` holds the real Firebase web config, so `getAuth` succeeded (no network is touched at import). The Azure checkout has only `.env.example`, so `apiKey` is `undefined` and `getAuth` throws.
+
+Reproduction: a clean `git worktree` of `7e71793` (no `.env*` other than `.env.example`), `env -i`: the suite fails with the identical error and stack; the full unit run gives **1 failed / 128 passed files** — exactly the Azure result. No other unit suite reaches `src/lib/firebase.js` unmocked.
+
+### 90.3 Correction
+
+| File | Change |
+|---|---|
+| `frontend/tests/unit/finalAccountPage.test.js` | `vi.mock('../../src/hooks/useApprovalPolicy', …)` returning what the real hook returns with no `CompanyProvider` (`approvalPolicy: null`, loading `false`, error `false`, known `false`) — the value the suite already rendered with locally, so no assertion changed (24 / 24) |
+| `frontend/vitest.config.js` | `envDir: false` — no `.env*` file is loaded into the unit suite on any machine |
+| `frontend/tests/unit/unitIsolation.test.js` (new) | fails if any `VITE_FIREBASE_*` key reaches `import.meta.env` (shell exports pass through regardless of `envDir`), and pins `envDir: false` |
+| `docs/ENGINEERING_STANDARDS.md` §4 | the credential-free unit-suite rule and the CI-parity rule |
+
+Unchanged: application code, `src/lib/firebase.js`, App Check, Auth, Rules, Functions, `azure-pipelines.yml`, every `.env.*` file, production configuration.
+
+Recurrence proof: with the correction to `vitest.config.js` in place but the mock removed, the suite now **fails locally** with `auth/invalid-api-key` even though `.env.local` is present.
+
+### 90.4 Clean-environment replay of the whole pipeline (28 Nov 2026)
+
+Clean worktree of `7e71793` plus the correction; real `npm ci` in `frontend/` and `frontend/functions/` from the committed lockfiles; `env -i` with only `PATH`, `HOME`, `JAVA_HOME`, `CI=true`; **no `.env*` file, an empty `XDG_CONFIG_HOME` (no Firebase CLI login) and an empty `CLOUDSDK_CONFIG` (no gcloud ADC)**; Node 24.19.0, npm 11.17.0, OpenJDK 26.0.2.1; under `caffeinate`. Every step in `azure-pipelines.yml` order:
+
+| Step | Result |
+|---|---|
+| `npm ci` (frontend, Functions) | pass |
+| Lint, Functions lint | clean (0 warnings) |
+| Unit | **130 files / 6,489 passed** (`main`: 129 / 6,487 = Azure's 6,463 + the suite's 24; +2 isolation tests) |
+| Functions pure | 11 files / **296** passed |
+| Functions audit (gating, high) | pass — 6 moderate, none high (unchanged) |
+| Frontend audit (report only) | 1 moderate, 10 high — reported, not gating (pre-existing) |
+| Rules (Firestore + Storage emulators, isolating launcher) | 42 files / **2,861** passed |
+| Transitional rules up to date | pass |
+| Bundles: client finance, variation, supplier finance, estimating | up to date |
+| Functions emulator (Auth + Firestore + Functions, isolating launcher, Node 24.19.0 as on Azure) | 22 files / **834** passed (512 s). Non-fatal, pre-existing (L1, `a85ffcc`) notice: the emulator cannot read the `EMAIL_API_KEY` secret without credentials — the expected CI condition |
+| Production build | pass (chunk-size advisory only, pre-existing) |
+| Not in the pipeline: Final Account and BOQ-transfer bundle checks | up to date |
+
+The same unit run in the developer checkout (with `.env.local` present, now ignored): 130 / 6,489.
+
+### 90.5 CI-parity review (no further defect found)
+
+| Check | Finding |
+|---|---|
+| Case-sensitive filesystem | All **2,811** relative imports in `src/`, `tests/`, `scripts/`, `functions/` resolve with exact case; no case-colliding tracked paths |
+| Shell / path portability | CI scripts use Node APIs; the only platform branch is `firebase` vs `firebase.cmd`; bundle generators normalise CRLF |
+| Credential-free execution | Functions harness refuses a non-emulator project or missing emulator hosts; replay above had no CLI login and no ADC |
+| Node 24 / Node 22 | Azure runs everything on 24.19.0; production Functions pin `nodejs22` — Node 22 acceptance stays local (`test:functions:node22`, `functions:test:node22`), unchanged |
+| Java | Azure 21; local replay 26 (no JDK 21 installed). Both satisfy firebase-tools' ≥ 21 floor |
+
+**Limitations:** no Linux execution was available (no Docker / VM runtime); the replay is macOS with Linux conditions simulated (credential-free, clean checkout, case audit). JDK 21 was not exercised. The pipeline's duplicated comment block before *Trusted backend emulator tests* is cosmetic and left unchanged (out of scope).
