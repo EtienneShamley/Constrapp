@@ -1,11 +1,16 @@
 # ops/monitoring/phase2 — Phase 2 financial callables: alert policies and log-based metrics
 
-**Status: PREPARED, NOT CREATED (28 November 2026; M1 correction and read-only
-production validation the same day — below).** Nothing in this folder
-exists in any cloud project. Every creation, change or deletion below is a
-production cloud change that needs the Product Owner's explicit authorisation
-for that sitting. The stage at which each object is created is part of the
-cutover (docs/DEPLOYMENT.md → *Phase 2 — the complete cutover*).
+**Status: PARTLY CREATED (28 November 2026, 06:18 UTC, by the Product
+Owner).** In `constrapp-69b5d` there exist the four `phase2_*` log-based
+metrics and two policies — `callable-error-log` (`7829793872908465132`) and
+`baseline-failure` (`3721707461277719113`) — each verified read-only to equal
+its file and to notify the Product Owner channel only. The other three
+Stage-A policies and the two Stage-F policies do NOT exist: creation stopped
+on an over-long condition display name (*API field constraints*, below).
+Every creation, change or deletion below is a production cloud change that
+needs the Product Owner's explicit authorisation for that sitting. The stage
+at which each object is created is part of the cutover (docs/DEPLOYMENT.md →
+*Phase 2 — the complete cutover*).
 
 Conventions are those of the DC46 and L3 files one level up
 (`ops/monitoring/README.md`): request bodies for `projects.alertPolicies.create`
@@ -142,6 +147,47 @@ read): the revised filter is accepted and matches 0 entries in 30 days; the
 previous filter matched the probe; the revised filter with the exclusion
 pointed at a non-existent function matches it again; `NOT jsonPayload.fn=(…)`
 keeps entries with no `fn`. `phase2Monitoring.test.js` pins the clause.
+
+## API field constraints (28 November 2026)
+
+`alertPolicies.create` refused `phase2-financial-inconsistency.policy.json`
+with `INVALID_ARGUMENT: display_name must not be more than 100 characters`.
+The field was the CONDITION display name (118 characters after the M1
+wording was added). **This limit is enforced by the service and is not in the
+published v3 reference**, which states 512 characters for the policy name
+only; it is recorded here as observed. `phase2-infrastructure-repeated` (116)
+had the same defect. Both names were shortened — nothing else in either file
+changed; the filters, thresholds, aggregations, labels, documentation and the
+M1 exclusion are byte-identical.
+
+`frontend/tests/unit/phase2Monitoring.test.js` → *API field constraints* now
+checks every policy and metric file against: policy and condition display
+names ≤ 100; 1–6 conditions of one supported type with exactly the expected
+fields; combiner, severity, comparison (GT / LT only), aligner and reducer
+values; `userLabels` (≤ 64, key and value ≤ 63, lowercase letters, digits,
+`_`, `-`, key starts with a letter); documentation (markdown, content ≤ 8,192
+characters and ≤ 10,240 bytes, subject ≤ 255 bytes); a notification rate
+limit on every log-match policy and on no other; `autoClose`; threshold
+filter ≤ 2,048 characters naming the metric and resource type; duration and
+alignment period in whole minutes (alignment 60 s – 25 h); metric identifier
+≤ 100 characters from the permitted set; metric description ≤ 8,000 and
+filter ≤ 20,000 characters; a DELTA / INT64 / unit `1` descriptor sending no
+output-only field; every descriptor label matched by an extractor.
+
+**What that proves and what it does not.** It is schema validation of the
+request bodies. Read-only validation against the live services was also run
+(every log filter through `entries.list`; every threshold filter with its
+aggregation through `timeSeries.list`; the two created policies and four
+created metrics compared with their files). **Neither API offers a
+validate-only create**, so acceptance of the five policies not yet created is
+NOT proven — the service may enforce further limits it does not publish, as
+it did here. Only creation proves it; a refusal stops the sitting.
+
+**Resuming after the partial creation:** keep the four metrics and the two
+policies; create only `financial-inconsistency`, `contention-repeated` and
+`infrastructure-repeated` (the loop under *Creation* would duplicate the two
+existing policies — display names are not unique keys — so it is not re-run
+as written).
 
 ## Notification channel (verified read-only, 28 November 2026)
 

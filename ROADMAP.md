@@ -519,6 +519,21 @@ of the work still to do:
         including the jurisdiction-specific treatment of credit notes,
         retention and voids (currency support is not tax compliance);
       - legal company identity and printable tax invoices (DC15);
+      - **Business Formation, Ownership and Infrastructure Governance
+        (added 28 November 2026 — APPROVED by the Product Owner and Lead
+        Architect, REPORTED; a COMMERCIAL-LAUNCH PREREQUISITE; no
+        implementation during Phase 2):** Australian Pty Ltd registration;
+        formal shareholding; a shareholders' agreement; assignment of the
+        intellectual property to the company; company banking and billing;
+        shared, independent founder access; business-controlled cloud
+        (Google Cloud / Firebase), GitHub, Azure DevOps, domain and e-mail;
+        MFA, least privilege and account recovery; financial accountability;
+        Australian and New Zealand legal and accounting considerations;
+        business-continuity and founder-departure procedures. **The existing
+        infrastructure and database are retained wherever technically
+        possible** (ownership and billing are transferred, not rebuilt). Its
+        sequencing and design are subject to the Phase 3 assessment; this
+        entry records scope only and is not legal or accounting advice;
       - duplicate document numbering (DC6 / G6) and the client over-invoicing
         policy (DC14 / G4);
       - production monitoring, recovery and operational readiness;

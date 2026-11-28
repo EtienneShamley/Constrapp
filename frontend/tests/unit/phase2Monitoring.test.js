@@ -191,3 +191,162 @@ describe('ops/monitoring/phase2 — the log lines the filters rely on', () => {
     expect(readFileSync(path.resolve(here, '../../functions/src/clientFinance/baseline.js'), 'utf8')).toContain("log.info('client receipt baseline established', {")
   })
 })
+
+// ── API field constraints ────────────────────────────────────────────────────
+//
+// Block 3 (28 Nov 2026) stopped at `alertPolicies.create` with
+// "`display_name` must not be more than 100 characters": a CONDITION display
+// name of 118 characters. That limit is enforced by the service and is NOT in
+// the published v3 reference (which states 512 for the POLICY name only), so
+// it is pinned here as OBSERVED. Every other bound below is the documented
+// one (monitoring v3 AlertPolicy / MetricThreshold / Aggregation /
+// Documentation; logging v2 LogMetric / MetricDescriptor / LabelDescriptor).
+// This is schema validation of the request bodies. It is not API acceptance:
+// neither API has a validate-only create, so only creation proves that.
+const seconds = (d) => { expect(d).toMatch(/^\d+s$/); return Number(d.slice(0, -1)) }
+const CONDITION_KEYS = { conditionMatchedLog: ['filter'], conditionThreshold: ['aggregations', 'comparison', 'duration', 'filter', 'thresholdValue', 'trigger'] }
+const ALIGNERS = ['ALIGN_DELTA', 'ALIGN_RATE', 'ALIGN_SUM', 'ALIGN_COUNT', 'ALIGN_MEAN', 'ALIGN_MIN', 'ALIGN_MAX']
+const REDUCERS = ['REDUCE_SUM', 'REDUCE_COUNT', 'REDUCE_MEAN', 'REDUCE_MIN', 'REDUCE_MAX']
+
+describe('ops/monitoring/phase2 — API field constraints', () => {
+  it.each(policies)('%s: names, labels, strategy and documentation are inside the limits', (name) => {
+    const p = read(name)
+    // Only fields alertPolicies.create accepts from a client; nothing server-assigned.
+    expect(Object.keys(p).sort()).toEqual(['alertStrategy', 'combiner', 'conditions', 'displayName', 'documentation', 'enabled', 'severity', 'userLabels'])
+    // Documented 512 for the policy; the stricter observed 100 is applied to both names.
+    expect(p.displayName.trim()).toBe(p.displayName)
+    expect([...p.displayName].length).toBeGreaterThan(0)
+    expect([...p.displayName].length).toBeLessThanOrEqual(100)
+    expect(['AND', 'OR', 'AND_WITH_MATCHING_RESOURCE']).toContain(p.combiner)
+    expect(['CRITICAL', 'ERROR', 'WARNING']).toContain(p.severity)
+    expect(p.conditions.length).toBeGreaterThanOrEqual(1)
+    expect(p.conditions.length).toBeLessThanOrEqual(6)
+    // userLabels: at most 64; key and value at most 63 characters; lowercase
+    // letters, digits, underscores and dashes; a key begins with a letter.
+    const labels = Object.entries(p.userLabels)
+    expect(labels.length).toBeLessThanOrEqual(64)
+    for (const [k, v] of labels) {
+      expect(k).toMatch(/^[a-z][a-z0-9_-]{0,62}$/)
+      expect(v).toMatch(/^[a-z0-9_-]{1,63}$/)
+    }
+    expect(p.userLabels.programme).toBe('phase2')
+    expect(`phase2-${p.userLabels.policy}.policy.json`).toBe(name)
+    // Documentation: markdown only; content 8,192 characters AND 10,240 bytes; subject 255 bytes.
+    expect(Object.keys(p.documentation).sort()).toEqual(['content', 'mimeType', 'subject'])
+    expect(p.documentation.mimeType).toBe('text/markdown')
+    expect([...p.documentation.content].length).toBeLessThanOrEqual(8192)
+    expect(Buffer.byteLength(p.documentation.content, 'utf8')).toBeLessThanOrEqual(10240)
+    expect(Buffer.byteLength(p.documentation.subject, 'utf8')).toBeGreaterThan(0)
+    expect(Buffer.byteLength(p.documentation.subject, 'utf8')).toBeLessThanOrEqual(255)
+    // autoClose: at least 30 minutes, at most 7 days.
+    expect(seconds(p.alertStrategy.autoClose)).toBeGreaterThanOrEqual(1800)
+    expect(seconds(p.alertStrategy.autoClose)).toBeLessThanOrEqual(604800)
+  })
+
+  it.each(policies)('%s: every condition is one supported, fully specified type', (name) => {
+    const p = read(name)
+    const seen = new Set()
+    for (const c of p.conditions) {
+      // The observed service limit that stopped Block 3.
+      expect([...c.displayName].length).toBeGreaterThan(0)
+      expect([...c.displayName].length).toBeLessThanOrEqual(100)
+      expect(seen.has(c.displayName)).toBe(false)
+      seen.add(c.displayName)
+      expect(c.name).toBeUndefined()
+      const types = Object.keys(c).filter(k => k !== 'displayName')
+      expect(types).toHaveLength(1)
+      const type = types[0]
+      expect(Object.keys(CONDITION_KEYS)).toContain(type)
+      expect(Object.keys(c[type]).sort()).toEqual(CONDITION_KEYS[type])
+      const f = c[type].filter
+      expect(typeof f).toBe('string')
+      expect(f.trim()).toBe(f)
+      expect(f.length).toBeGreaterThan(0)
+      // Balanced quotes and parentheses: a truncated or mis-edited filter never ships.
+      expect((f.match(/"/g) ?? []).length % 2).toBe(0)
+      expect((f.match(/\(/g) ?? []).length).toBe((f.match(/\)/g) ?? []).length)
+      if (type === 'conditionMatchedLog') {
+        // A log-match condition must be the only condition, is combined by OR,
+        // and REQUIRES a notification rate limit (5 minutes to 2 days).
+        expect(p.conditions).toHaveLength(1)
+        expect(p.combiner).toBe('OR')
+        expect(Object.keys(p.alertStrategy).sort()).toEqual(['autoClose', 'notificationRateLimit'])
+        const period = seconds(p.alertStrategy.notificationRateLimit.period)
+        expect(period).toBeGreaterThanOrEqual(300)
+        expect(period).toBeLessThanOrEqual(172800)
+        expect(f).toMatch(/^resource\.type="cloud_run_revision" AND /)
+        expect(f.length).toBeLessThanOrEqual(20000)
+      } else {
+        // The rate limit is not implemented for a non-log policy: never sent.
+        expect(Object.keys(p.alertStrategy)).toEqual(['autoClose'])
+        const t = c.conditionThreshold
+        // The filter names the metric type AND the resource type; at most 2,048 characters.
+        expect(f.length).toBeLessThanOrEqual(2048)
+        expect(f).toMatch(/^metric\.type="[a-z0-9_./-]+" AND resource\.type="cloud_run_revision" AND /)
+        // Only COMPARISON_GT and COMPARISON_LT are supported.
+        expect(['COMPARISON_GT', 'COMPARISON_LT']).toContain(t.comparison)
+        expect(typeof t.thresholdValue).toBe('number')
+        expect(Number.isFinite(t.thresholdValue)).toBe(true)
+        // duration: a whole number of minutes (0 allowed).
+        expect(seconds(t.duration) % 60).toBe(0)
+        expect(Object.keys(t.trigger)).toEqual(['count'])
+        expect(Number.isInteger(t.trigger.count)).toBe(true)
+        expect(t.trigger.count).toBeGreaterThanOrEqual(1)
+        expect(t.aggregations).toHaveLength(1)
+        for (const a of t.aggregations) {
+          expect(Object.keys(a).sort()).toEqual(['alignmentPeriod', 'crossSeriesReducer', 'groupByFields', 'perSeriesAligner'])
+          // alignmentPeriod: at least 60 s, at most 25 h for an alerting policy, whole minutes.
+          const period = seconds(a.alignmentPeriod)
+          expect(period).toBeGreaterThanOrEqual(60)
+          expect(period).toBeLessThanOrEqual(90000)
+          expect(period % 60).toBe(0)
+          // A reducer requires an aligner other than ALIGN_NONE; both metrics
+          // read here are DELTA / INT64 counters, for which these are valid.
+          expect(ALIGNERS).toContain(a.perSeriesAligner)
+          expect(REDUCERS).toContain(a.crossSeriesReducer)
+          expect(a.groupByFields).toEqual(['resource.labels.service_name'])
+        }
+      }
+    }
+  })
+
+  it.each(metrics)('%s: a counter the logging API accepts, named as its file and as the policies read it', (name) => {
+    const m = read(name)
+    expect(Object.keys(m).filter(k => k !== 'labelExtractors').sort()).toEqual(['description', 'filter', 'metricDescriptor', 'name'])
+    // Identifier: at most 100 characters from the permitted set, not starting with "/".
+    expect(m.name).toMatch(/^[A-Za-z0-9_\-.,+!*'()%][A-Za-z0-9_\-.,+!*'()%/]{0,99}$/)
+    expect(`phase2-${m.name.replace(/^phase2_/, '').replaceAll('_', '-')}.metric.json`).toBe(name)
+    expect(m.description.length).toBeGreaterThan(0)
+    expect(m.description.length).toBeLessThanOrEqual(8000)
+    expect(m.filter.length).toBeGreaterThan(0)
+    expect(m.filter.length).toBeLessThanOrEqual(20000)
+    expect(m.filter).toMatch(/^resource\.type="cloud_run_revision" AND /)
+    expect((m.filter.match(/"/g) ?? []).length % 2).toBe(0)
+    expect((m.filter.match(/\(/g) ?? []).length).toBe((m.filter.match(/\)/g) ?? []).length)
+    // A counter: DELTA / INT64 / unit "1"; name, type and description of the
+    // descriptor are output only and never sent.
+    const d = m.metricDescriptor
+    expect(Object.keys(d).filter(k => k !== 'labels').sort()).toEqual(['displayName', 'metricKind', 'unit', 'valueType'])
+    expect(d.metricKind).toBe('DELTA')
+    expect(d.valueType).toBe('INT64')
+    expect(d.unit).toBe('1')
+    expect(d.displayName.length).toBeGreaterThan(0)
+    expect(d.displayName.length).toBeLessThanOrEqual(100)
+    // Every descriptor label has an extractor and every extractor a label; at most 10.
+    const labels = d.labels ?? []
+    expect(labels.length).toBeLessThanOrEqual(10)
+    expect(labels.map(l => l.key).sort()).toEqual(Object.keys(m.labelExtractors ?? {}).sort())
+    for (const l of labels) {
+      expect(l.key).toMatch(/^[a-zA-Z_][a-zA-Z0-9_]{0,99}$/)
+      expect(['STRING', 'BOOL', 'INT64']).toContain(l.valueType)
+      expect(m.labelExtractors[l.key]).toMatch(/^(EXTRACT\([A-Za-z0-9_.]+\)|REGEXP_EXTRACT\(.+\))$/)
+    }
+  })
+
+  it('no two policies and no two metrics share a display name', () => {
+    const names = policies.map(f => read(f).displayName)
+    expect(new Set(names).size).toBe(names.length)
+    const metricNames = metrics.map(f => read(f).name)
+    expect(new Set(metricNames).size).toBe(metricNames.length)
+  })
+})

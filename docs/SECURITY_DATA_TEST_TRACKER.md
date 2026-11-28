@@ -1174,6 +1174,7 @@ convenient milestone; **P3** backlog.
 | 57 | **M1 — the Phase 2 financial-inconsistency alert would page on an approved Phase 1 business refusal.** `client-ledger-invariant` is raised both for genuine ledger problems and by the live void of a posted client credit note / retention release that would breach an invariant (ADR-89 Void policy); production showed it once (2026-11-27T02:58:50Z, the Phase 1 Stage H probe). Corrected in `ops/monitoring/phase2/phase2-financial-inconsistency.policy.json`: that code is not alerted when `fn` is `voidClientCreditNote` / `voidClientRetentionRelease`; logs and `phase2_refusals_by_code` unchanged. Validated read-only against production logs; pinned in `phase2Monitoring.test.js`. Gap: a malformed ledger first met by those voids pages only on the next other operation. Splitting the code: Phase 3 | Monitoring | **Corrected on `fix/phase2-release-preparation` — awaiting integration; no monitoring resource exists yet** | P2 | Before Block 3 monitoring creation | Phase 2 release | TESTING.md §91.5 |
 | 58 | **Frontend production dependency audit: 10 high, 1 moderate** (`npm audit --omit=dev`): grpc-js GHSA-m9gg-hp2v-232j / -f596-whhp-79r4 and protobufjs GHSA-j3f2-48v5-ccww via `firebase` → `@firebase/firestore` (absent from the built bundle — WebChannel); vite (dev server, launch-editor), postcss, nanoid, source-map-js (build-time); react-router GHSA-qwww-vcr4-c8h2 (RSC mode, not used; 7.18.2 patched). Functions audit 0 high (gating). Not a Phase 2 release blocker on present evidence; not proof of non-exploitability (build and developer-machine exposure remain) | Dependency security | **OPEN — Phase 3** | P3 | Phase 3 dependency upgrade | Phase 3 | TESTING.md §91.8 |
 | 59 | **Five Apex approved claims carry no invoice-link key** (2 with one posted claim-sourced invoice, 1 with only a cancelled one, 2 with none; no claim has two live invoices). The backend refuses claim-sourced invoicing of a legacy claim, so no duplicate pairing is possible; the three without a live invoice cannot be invoiced through pairing once Apex is activated. Not rewritten | Data / lifecycle | **OPEN — verify again and decide the reconcile path before Apex activation (Stage H)** | P2 | Before Apex Stage H | Phase 2 release | TESTING.md §91.7 |
+| 60 | **Two Phase 2 alert-policy condition display names exceeded the Monitoring API's 100-character limit** (financial-inconsistency 118, infrastructure-repeated 116). The limit is enforced by the service and absent from the published reference; creation of the third Stage-A policy was refused (28 Nov 2026 06:18 UTC), stopping Block 3 before the Functions deploy and leaving 4 metrics + 2 policies created. Names shortened (semantics and the M1 exclusion unchanged); every Phase 2 definition checked against the published field constraints and pinned in `phase2Monitoring.test.js`. Acceptance of the five uncreated policies is provable only by creation | Monitoring / release | **FIXED on `fix/phase2-monitoring-validation` — closes when the three remaining Stage-A policies are created** | P2 | Before Stage B resumes | Phase 2 release | TESTING.md §92 |
 
 **Reconciled against the repository, 25 Nov 2026 (`main` `875910e`; no fix made).**
 #5 unchanged (`Projects.jsx` line 300: the button is shown to every internal
@@ -1474,6 +1475,21 @@ Full record: TESTING.md §82; release record DEPLOYMENT.md → *Release record (
 | Channel | `13613525651613947442` = *DC46 - Product Owner*, the owner's address; owner to confirm |
 | Dependency audit | D3 #58 (Phase 3) |
 | Not done | Stage B onward; monitoring creation; PM acceptance (owner) |
+
+### B21. Phase 2 — Stage B interrupted; monitoring validation correction (28 November 2026) — **delivered for review; Functions NOT deployed**
+
+[TESTING.md §92](TESTING.md); DEPLOYMENT.md → *Stage B — first attempts, interrupted*.
+
+| Item | Result |
+|---|---|
+| Git / Azure | `main` `11485a3`; Build #20261128.3 green (PROD-VERIFIED via GitHub) |
+| Second approver | `+ct-pm2` ACCEPTED 05:01 UTC; TEST has two eligible approvers; segregation not enabled |
+| Block 3, run 1 | Stopped on the inventory tool's exit 1 (findings listed) under `set -e`; no production change |
+| Block 3, run 2 | 4 metrics + 2 policies created; third policy refused (D3 #60); deploy not reached |
+| Production | 17 functions unchanged; Rules, Hosting, inventory unchanged; no Phase 2 state (PROD-VERIFIED read-only) |
+| Correction | Two condition names shortened; API field constraints pinned for all 7 policies and 4 metrics |
+| Phase 3 | Business Formation, Ownership and Infrastructure Governance recorded (ROADMAP.md) |
+| Not done | Three Stage-A policies; Stage B deploy; Stages C–I |
 
 ## E. Test history
 
